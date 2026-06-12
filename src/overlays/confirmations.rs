@@ -164,6 +164,7 @@ impl PlexiApp {
             ai_broker,
             http_tx,
             proc_pane_id,
+            mut pending_async_completions,
         ) = {
             let pane = match self.windows[active].panes.get_mut(&pane_id) {
                 Some(crate::host::pane::Pane::App(a)) => a,
@@ -188,8 +189,9 @@ impl PlexiApp {
                 proc.type_id.clone(),
                 proc.workspace_root.clone(),
                 std::sync::Arc::clone(&proc.ai_broker),
-                proc.http_tx.clone(),
+                proc.waking_http_tx("ai_query_deferred"),
                 proc.pane_id,
+                proc.pending_async_completions,
             )
         };
 
@@ -212,6 +214,7 @@ impl PlexiApp {
             ai_broker,
             http_tx,
             proc_pane_id,
+            &mut pending_async_completions,
         );
 
         // Put the data back.
@@ -230,6 +233,10 @@ impl PlexiApp {
         proc.grant_store = grant_store;
         proc.deferred_ai_queries = deferred_ai_queries;
         proc.deferred_gated_requests = deferred_gated_requests;
+        // Restore the async-wake count, including arms added for deferred
+        // ai.query dispatches. Nothing else mutates the counter while the
+        // modal renders (single-threaded UI pass), so copy-back is safe.
+        proc.pending_async_completions = pending_async_completions;
         // The modal may have appended ForwardPaneRequest commands for
         // deferred gated requests; anything routed onto proc.pending_commands
         // between take and restore would be lost, so append rather than

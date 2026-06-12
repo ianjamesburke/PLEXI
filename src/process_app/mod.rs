@@ -25,7 +25,7 @@ mod render_session;
 mod routing;
 mod runtime_state;
 mod scheduler;
-mod transport;
+pub(crate) mod transport;
 
 pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
 use render_diag::RenderDiagnostics;
@@ -146,6 +146,13 @@ pub struct ProcessApp {
     pub(crate) render_in_queue: Arc<AtomicBool>,
     /// Receives draw commands from the subprocess on a background thread.
     draw_rx: Option<Receiver<DrawCommand>>,
+    /// True when the stdout reader has queued at least one draw command since
+    /// the last `drain_draw_commands` (issue #2021). Set by the reader thread
+    /// AFTER each send; cleared by the host BEFORE each drain, so a queued
+    /// command can never be left behind with the flag unset. This is what
+    /// lets `needs_background_tick` skip idle apps without ever stranding a
+    /// spontaneous command (e.g. `emit.notify` outside a frame).
+    pub(crate) draw_pending: Arc<AtomicBool>,
     /// The last fully committed frame (commands between two FrameDones).
     pub(crate) frame: Vec<RenderCommand>,
     /// Accumulates draw commands for the frame currently being received.
@@ -159,7 +166,7 @@ pub struct ProcessApp {
     /// Absolute frame clock — `Some` iff `scheduler_mode` is `Continuous`.
     animation_clock: Option<scheduler::AnimationClock>,
     render_diag: RenderDiagnostics,
-    pending_async_completions: usize,
+    pub(crate) pending_async_completions: usize,
     idle_render_poll_logged: bool,
     sdk: Option<String>,
     features_used: Vec<String>,
@@ -333,7 +340,7 @@ pub struct ProcessApp {
     /// `MAX_STREAM_THREADS` to bound peak stack memory.
     pub(crate) active_stream_threads: Arc<AtomicUsize>,
     /// MCP server handle — `Some` when the app has `[app.mcp]` in its manifest.
-    mcp_server: Option<mcp_server::McpServerHandle>,
+    pub(crate) mcp_server: Option<mcp_server::McpServerHandle>,
     /// Pending MCP tool call responses awaiting `AppRequest::McpToolResult`.
     /// Key = call_id, value = channel to the blocked HTTP handler thread.
     pub(crate) mcp_pending:
@@ -353,6 +360,10 @@ pub struct ProcessApp {
     /// Launch arguments passed via CLI or SpawnPane. Forwarded in PlexiEvent::Init
     /// so the SDK can expose them as ctx.args.
     pub(crate) launch_args: Vec<String>,
+    /// Number of `background_tick()` calls — observable proof for the #2021
+    /// gating tests that idle apps are skipped and pending apps are ticked.
+    #[cfg(test)]
+    pub(crate) background_tick_count: usize,
 }
 
 impl ProcessApp {
@@ -502,10 +513,16 @@ impl ProcessApp {
             active_channel.as_deref().unwrap_or("main")
         );
 
+        // Shared egui-context slot, populated on the first `ui()` frame.
+        // Background threads (stdout/stderr readers, reaper, MCP connections,
+        // async workers) use it to wake the host when work arrives.
+        let repaint_ctx: Arc<Mutex<Option<egui::Context>>> = Arc::new(Mutex::new(None));
+
         // Start the MCP server when the manifest declares [app.mcp].
         let mcp_server_handle = mcp
-            .map(
-                |section| match mcp_server::start_mcp_server(section.tools.clone()) {
+            .map(|section| {
+                match mcp_server::start_mcp_server(section.tools.clone(), Arc::clone(&repaint_ctx))
+                {
                     Ok(handle) => {
                         cmd.env("PLEXI_MCP_PORT", handle.port.to_string());
                         cmd.env("PLEXI_MCP_TOKEN", &handle.token);
@@ -515,8 +532,8 @@ impl ProcessApp {
                         log::error!("ProcessApp[{type_id}]: failed to start MCP server: {e}");
                         None
                     }
-                },
-            )
+                }
+            })
             .flatten();
         // Prepend the bundled Python interpreter's bin/ dir to PATH so that
         // dev-mode .py entries without the bundle still resolve python3 correctly.
@@ -592,7 +609,6 @@ impl ProcessApp {
         // waiting for `try_wait` to observe the eventual exit.
         let recent_stderr_capture = Arc::new(Mutex::new(VecDeque::<String>::new()));
         let lifecycle_tracker = Arc::new(LifecycleTracker::new());
-        let repaint_ctx = Arc::new(Mutex::new(None));
         transport::spawn_stderr_reader(
             type_id.clone(),
             stderr,
@@ -606,10 +622,12 @@ impl ProcessApp {
         //   - Malformed JSON → on_parse_error() (counts toward ProtocolError).
         //   - Stdout EOF / read error → on_stdout_closed() (sticky Crashed).
         let (draw_tx, draw_rx) = mpsc::channel::<DrawCommand>();
+        let draw_pending: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         transport::spawn_stdout_reader(
             type_id.clone(),
             stdout,
             draw_tx,
+            Arc::clone(&draw_pending),
             Arc::clone(&lifecycle_tracker),
             Arc::clone(&repaint_ctx),
         );
@@ -670,6 +688,7 @@ impl ProcessApp {
             render_slot,
             render_in_queue,
             draw_rx: Some(draw_rx),
+            draw_pending,
             frame: Vec::new(),
             pending_frame: Vec::new(),
             pending_commands: Vec::new(),
@@ -747,6 +766,8 @@ impl ProcessApp {
             wants_close_self: false,
             click_awaiting_frame: false,
             launch_args: args.to_vec(),
+            #[cfg(test)]
+            background_tick_count: 0,
         })
     }
 
@@ -839,6 +860,7 @@ impl ProcessApp {
             render_slot: Arc::new(Mutex::new(None)),
             render_in_queue: Arc::new(AtomicBool::new(false)),
             draw_rx: Some(draw_rx),
+            draw_pending: Arc::new(AtomicBool::new(false)),
             frame: Vec::new(),
             pending_frame: Vec::new(),
             pending_commands: Vec::new(),
@@ -915,6 +937,7 @@ impl ProcessApp {
             wants_close_self: false,
             click_awaiting_frame: false,
             launch_args: Vec::new(),
+            background_tick_count: 0,
         };
         (app, draw_tx)
     }
@@ -1298,6 +1321,26 @@ impl ProcessApp {
         self.pending_async_completions = self.pending_async_completions.saturating_sub(1);
     }
 
+    /// An `http_tx` clone that wakes the host after every send, so worker
+    /// thread completions surface on the next frame instead of waiting for
+    /// the bounded async-wake poll (#2021).
+    pub(crate) fn waking_http_tx(&self, reason: &'static str) -> transport::WakingEventSender {
+        transport::WakingEventSender::new(
+            self.http_tx.clone(),
+            Arc::clone(&self.repaint_ctx),
+            reason,
+        )
+    }
+
+    /// `file_picker_tx` counterpart of [`Self::waking_http_tx`].
+    fn waking_file_picker_tx(&self, reason: &'static str) -> transport::WakingEventSender {
+        transport::WakingEventSender::new(
+            self.file_picker_tx.clone(),
+            Arc::clone(&self.repaint_ctx),
+            reason,
+        )
+    }
+
     fn drain_async_events(&mut self) {
         while let Ok(event) = self.http_rx.try_recv() {
             match &event {
@@ -1322,12 +1365,44 @@ impl ProcessApp {
         self.pending_async_completions > 0
             || !self.pending_timers.is_empty()
             || self.active_stream_threads.load(Ordering::Relaxed) > 0
-            || self.mcp_server.is_some()
+            || self.has_pending_mcp_work()
             || self.image_cache.has_pending()
     }
 
-    pub(crate) fn needs_headless_wake_poll(&self) -> bool {
+    /// An MCP server only counts as pending work while a tool call is queued
+    /// (awaiting delivery to the app) or delivered-but-unanswered. A merely
+    /// *present* MCP server must not pin the host in a permanent wake loop
+    /// (#2021) — the MCP connection thread wakes the host when a call arrives.
+    fn has_pending_mcp_work(&self) -> bool {
+        if !self.mcp_pending.is_empty() {
+            return true;
+        }
+        self.mcp_server
+            .as_ref()
+            .is_some_and(|mcp| mcp.call_queue.lock().map_or(true, |q| !q.is_empty()))
+    }
+
+    fn needs_headless_wake_poll(&self) -> bool {
         self.runtime.is_rendering() || self.needs_async_wake_poll()
+    }
+
+    /// Does this app have any background work that `background_tick()` would
+    /// make progress on? Used by the host to skip idle background/parked apps
+    /// on every frame (#2021). Every source of background work must be
+    /// represented here:
+    /// - queued draw commands from the app process → `draw_pending`
+    ///   (set by the stdout reader, which also wakes the host)
+    /// - host-queued events awaiting flush to the app → `outbound_events`
+    /// - timer/HTTP/file-picker/AI/audio/MIDI worker completions →
+    ///   `pending_async_completions` / `pending_timers` / stream threads
+    /// - MCP tool calls → `has_pending_mcp_work`
+    /// - async image loads → `image_cache.has_pending`
+    /// - an in-flight render that may need the hung-timeout check →
+    ///   `is_rendering` (via `needs_headless_wake_poll`)
+    pub(crate) fn needs_background_tick(&self) -> bool {
+        self.draw_pending.load(Ordering::Acquire)
+            || !self.outbound_events.is_empty()
+            || self.needs_headless_wake_poll()
     }
 
     /// Drain the MCP call queue and forward each request to the app as a
@@ -1375,6 +1450,10 @@ impl ProcessApp {
     }
 
     fn drain_draw_commands(&mut self) -> Vec<DrawCommand> {
+        // Clear BEFORE draining (paired with the stdout reader's send-then-set)
+        // so a command sent after this drain always leaves the flag set for
+        // the next frame (#2021).
+        self.draw_pending.store(false, Ordering::Release);
         let Some(rx) = self.draw_rx.as_ref() else {
             return vec![];
         };
@@ -1599,6 +1678,10 @@ impl ProcessApp {
     ///
     /// Visual draw commands are discarded — there is no pane to render into.
     pub(crate) fn background_tick(&mut self) {
+        #[cfg(test)]
+        {
+            self.background_tick_count += 1;
+        }
         self.drain_async_events();
         self.poll_mcp_calls();
         self.flush_outbound_events();

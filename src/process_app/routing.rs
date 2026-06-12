@@ -639,25 +639,29 @@ impl ProcessApp {
                     }
                     StreamChannel::Stderr => Box::new(child.stderr.take().expect("stderr piped")),
                 };
-                let tx = self.http_tx.clone();
+                let tx = self.waking_http_tx("stream_process");
                 let type_id = self.type_id.clone();
                 let corr_id = correlation_id.clone();
                 const MAX_STREAM_THREADS: usize = 32;
                 let active = Arc::clone(&self.active_stream_threads);
                 let prior = active.fetch_add(1, Ordering::Relaxed);
+                // Arm before the limit check: the reject path below sends a
+                // StreamEnd, whose drain decrements the pending-completion
+                // count — an unmatched decrement would steal another pending
+                // operation's wake.
+                self.arm_async_completion_wake("stream_process");
                 if prior >= MAX_STREAM_THREADS {
                     active.fetch_sub(1, Ordering::Relaxed);
                     log::warn!(
                         "ProcessApp[{}]: StreamProcess {correlation_id} rejected — stream thread limit ({MAX_STREAM_THREADS}) reached",
                         self.type_id
                     );
-                    let _ = self.http_tx.send(PlexiEvent::StreamEnd {
+                    let _ = tx.send(PlexiEvent::StreamEnd {
                         correlation_id,
                         exit_code: -1,
                     });
                     return;
                 }
-                self.arm_async_completion_wake("stream_process");
                 let thread_name = format!("stream-reader-{}-{}", type_id, corr_id);
                 std::thread::Builder::new()
                     .name(thread_name)
@@ -748,7 +752,7 @@ impl ProcessApp {
                     self.type_id
                 );
                 self.arm_async_completion_wake("file_picker");
-                let tx = self.file_picker_tx.clone();
+                let tx = self.waking_file_picker_tx("file_picker");
                 let type_id = self.type_id.clone();
                 std::thread::Builder::new()
                     .name(format!("file-picker-{type_id}"))
@@ -925,7 +929,7 @@ impl ProcessApp {
                 self.arm_async_completion_wake("http_request");
                 let allowed_hosts = normalized_allowed_hosts;
                 let net = std::sync::Arc::clone(&self.net);
-                let tx = self.http_tx.clone();
+                let tx = self.waking_http_tx("http_request");
                 let type_id = self.type_id.clone();
 
                 std::thread::Builder::new()
@@ -1125,7 +1129,7 @@ impl ProcessApp {
                 let broker = self.ai_broker.clone();
                 let app_id = self.type_id.clone();
                 self.arm_async_completion_wake("ai_query");
-                let tx = self.http_tx.clone();
+                let tx = self.waking_http_tx("ai_query");
                 let workspace_root = self.workspace_root.clone();
                 let open_panes = crate::plexi_ai::broker::get_pane_snapshot();
                 let tool_dispatcher = std::sync::Arc::new(
@@ -1333,7 +1337,7 @@ impl ProcessApp {
                 // block for hundreds of milliseconds on macOS (Bluetooth scan).
                 let audio = std::sync::Arc::clone(&self.audio_device);
                 self.arm_async_completion_wake("list_audio_devices");
-                let tx = self.http_tx.clone();
+                let tx = self.waking_http_tx("list_audio_devices");
                 let type_id = self.type_id.clone();
                 std::thread::Builder::new()
                     .name(format!("audio-devices-{type_id}"))
@@ -1364,7 +1368,7 @@ impl ProcessApp {
                 // Offload to a background thread for the same reason as audio.
                 let midi = std::sync::Arc::clone(&self.midi_device);
                 self.arm_async_completion_wake("list_midi_devices");
-                let tx = self.http_tx.clone();
+                let tx = self.waking_http_tx("list_midi_devices");
                 let type_id = self.type_id.clone();
                 std::thread::Builder::new()
                     .name(format!("midi-devices-{type_id}"))
@@ -1532,7 +1536,7 @@ impl ProcessApp {
                 let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 self.pending_timers
                     .insert(timer_id.clone(), std::sync::Arc::clone(&cancelled));
-                let tx = self.http_tx.clone();
+                let tx = self.waking_http_tx("timer_fired");
                 let type_id = self.type_id.clone();
                 std::thread::Builder::new()
                     .name(format!("timer-{type_id}-{timer_id}"))

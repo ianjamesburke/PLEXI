@@ -345,6 +345,16 @@ impl AppRuntime {
         }
     }
 
+    /// Does this pane have pending background work that `background_tick`
+    /// would make progress on? Always false for builtins — they have no
+    /// subprocess, timers, or async workers (#2021).
+    pub fn needs_background_tick(&self) -> bool {
+        match self {
+            AppRuntime::Process(app) => app.needs_background_tick(),
+            AppRuntime::Builtin(_) => false,
+        }
+    }
+
     /// Current nav stack depth as reported by the app via `PushNav`/`PopNav`.
     /// Always 0 for builtin apps — they manage their own internal navigation.
     pub fn nav_stack_depth(&self) -> usize {

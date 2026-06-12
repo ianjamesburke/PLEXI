@@ -61,7 +61,14 @@ pub struct McpServerHandle {
 
 /// Start the HTTP/SSE MCP server for `tools`. Returns the handle with the
 /// bound port, per-app auth token, and the shared call queue.
-pub fn start_mcp_server(tools: Vec<McpTool>) -> std::io::Result<McpServerHandle> {
+///
+/// `repaint_ctx` is the pane's shared egui-context slot: when an external
+/// client enqueues a tool call, the connection thread wakes the host so the
+/// queue is drained promptly even while the host is fully idle (#2021).
+pub fn start_mcp_server(
+    tools: Vec<McpTool>,
+    repaint_ctx: Arc<Mutex<Option<egui::Context>>>,
+) -> std::io::Result<McpServerHandle> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let token = uuid::Uuid::new_v4().to_string();
@@ -79,10 +86,13 @@ pub fn start_mcp_server(tools: Vec<McpTool>) -> std::io::Result<McpServerHandle>
                         let tools = Arc::clone(&tools);
                         let queue = Arc::clone(&queue_clone);
                         let token = Arc::clone(&token_arc);
+                        let repaint_ctx = Arc::clone(&repaint_ctx);
                         std::thread::Builder::new()
                             .name("mcp-conn".to_string())
                             .spawn(move || {
-                                if let Err(e) = handle_connection(stream, &tools, &queue, &token) {
+                                if let Err(e) =
+                                    handle_connection(stream, &tools, &queue, &token, &repaint_ctx)
+                                {
                                     log::warn!("mcp_server: connection error: {e}");
                                 }
                             })
@@ -114,6 +124,7 @@ fn handle_connection(
     tools: &[McpTool],
     queue: &Arc<Mutex<VecDeque<McpCallRequest>>>,
     token: &str,
+    repaint_ctx: &Arc<Mutex<Option<egui::Context>>>,
 ) -> std::io::Result<()> {
     let peer = stream
         .peer_addr()
@@ -259,6 +270,9 @@ fn handle_connection(
                     response_tx,
                 });
             }
+            // Wake the host so poll_mcp_calls drains the queue promptly even
+            // while the host is fully idle (#2021).
+            super::transport::wake_host_for_background_work(repaint_ctx, "mcp_tool_call");
 
             log::info!("mcp_server: tool_call call_id={call_id} tool={tool_name} peer={peer}");
 
@@ -386,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_no_auth_returns_401() {
-        let handle = start_mcp_server(vec![]).unwrap();
+        let handle = start_mcp_server(vec![], Arc::new(Mutex::new(None))).unwrap();
         let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
         let (status, _) = post_mcp(handle.port, None, body);
         assert_eq!(status, 401);
@@ -394,7 +408,7 @@ mod tests {
 
     #[test]
     fn test_wrong_token_returns_401() {
-        let handle = start_mcp_server(vec![]).unwrap();
+        let handle = start_mcp_server(vec![], Arc::new(Mutex::new(None))).unwrap();
         let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
         let (status, _) = post_mcp(handle.port, Some("wrong-token"), body);
         assert_eq!(status, 401);
@@ -402,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_correct_token_tools_list_returns_200() {
-        let handle = start_mcp_server(vec![]).unwrap();
+        let handle = start_mcp_server(vec![], Arc::new(Mutex::new(None))).unwrap();
         let token = handle.token.clone();
         let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
         let (status, resp_body) = post_mcp(handle.port, Some(&token), body);
@@ -413,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_correct_token_initialize_returns_200() {
-        let handle = start_mcp_server(vec![]).unwrap();
+        let handle = start_mcp_server(vec![], Arc::new(Mutex::new(None))).unwrap();
         let token = handle.token.clone();
         let body = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#;
         let (status, resp_body) = post_mcp(handle.port, Some(&token), body);
@@ -424,7 +438,7 @@ mod tests {
 
     #[test]
     fn test_oversized_body_returns_413() {
-        let handle = start_mcp_server(vec![]).unwrap();
+        let handle = start_mcp_server(vec![], Arc::new(Mutex::new(None))).unwrap();
         let token = handle.token.clone();
         // Send a legitimate-looking request but with a content-length exceeding MAX_BODY.
         // We only send the headers — the server checks content_length before reading.
@@ -450,8 +464,8 @@ mod tests {
 
     #[test]
     fn test_each_server_has_unique_token() {
-        let h1 = start_mcp_server(vec![]).unwrap();
-        let h2 = start_mcp_server(vec![]).unwrap();
+        let h1 = start_mcp_server(vec![], Arc::new(Mutex::new(None))).unwrap();
+        let h2 = start_mcp_server(vec![], Arc::new(Mutex::new(None))).unwrap();
         assert_ne!(h1.token, h2.token);
     }
 }
