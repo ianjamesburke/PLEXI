@@ -1,15 +1,21 @@
 ---
 id: "0028"
 title: "v1: docs source cleanup and public docs refresh"
-status: backlog
+status: done
+estimate: "8h"
+completed_at: "2026-06-12T06:18:42Z"
 sprint: "s14"
-estimate: 8h
 blocked_by:
   - 27
 gh_issue: []
-area: ["infra/docs"]
-tags: ["v1", "docs", "cleanup"]
+area:
+  - "infra/docs"
+tags:
+  - "v1"
+  - "docs"
+  - "cleanup"
 ---
+
 
 Remove stale planning docs, regenerate public docs, and align README, website docs, SDK docs, PGAP reference, and security model with the v1 app-platform contract.
 
