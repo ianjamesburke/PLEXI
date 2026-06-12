@@ -1381,7 +1381,6 @@ impl eframe::App for PlexiApp {
                 self.frame_diag_window = Some((std::time::Instant::now(), 0));
             }
         }
-        let _frame_start = std::time::Instant::now();
         self.update_preamble(ctx);
 
         // Unified overlay dispatch: each overlay owns its complete keyboard
@@ -3042,11 +3041,6 @@ impl eframe::App for PlexiApp {
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.
         self.reconcile_focus_logging(FOCUS_HEARTBEAT_INTERVAL);
-
-        let frame_ms = _frame_start.elapsed().as_millis();
-        if frame_ms > 50 {
-            log::warn!("slow frame: {}ms", frame_ms);
-        }
     }
 
     fn on_exit(&mut self) {
