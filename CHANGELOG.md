@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.747] — 2026-06-12
+
+### Changes
+- Themeable status pips + SessionStart idle fix (#2219, #2220) (#2223)
 ## [0.0.746] — 2026-06-12
 
 ### Changes
