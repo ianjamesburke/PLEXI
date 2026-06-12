@@ -856,7 +856,7 @@ impl PlexiApp {
                 );
                 (name, desc, Some(a.root.clone()))
             }
-            None => ("Default".to_string(), None, None),
+            None => ("Default".to_string(), None, dirs::home_dir()),
         };
 
         let default_cwd = std::env::current_dir().unwrap_or_default();
