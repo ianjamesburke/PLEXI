@@ -652,19 +652,20 @@ pub(crate) fn render_draw_commands(
                                     Some(ListViewLeading::None) | None => list_rect.min.x + PAD_X,
                                 };
 
-                                // Trailing text (right-aligned)
-                                let mut trailing_reserve = 0.0f32;
-                                if let Some(trailing) = &row.trailing {
-                                    let t_x = list_rect.max.x - PAD_X;
-                                    painter.text(
-                                        egui::pos2(t_x, primary_y),
-                                        egui::Align2::RIGHT_TOP,
-                                        trailing.as_str(),
-                                        egui::FontId::proportional(FONT_HINT),
-                                        colors.text_dim,
-                                    );
-                                    trailing_reserve = trailing.chars().count() as f32 * 6.0 + 16.0;
-                                }
+                                let trailing_font = egui::FontId::proportional(FONT_HINT);
+                                let trailing_galley = row.trailing.as_ref().map(|trailing| {
+                                    ui.fonts(|f| {
+                                        f.layout_no_wrap(
+                                            trailing.clone(),
+                                            trailing_font.clone(),
+                                            colors.text_dim,
+                                        )
+                                    })
+                                });
+                                let trailing_reserve = trailing_galley
+                                    .as_ref()
+                                    .map(|galley| galley.size().x + BADGE_TEXT_GAP)
+                                    .unwrap_or(0.0);
 
                                 // Chips (right-aligned)
                                 let chips_reserve: f32 = row
@@ -719,59 +720,46 @@ pub(crate) fn render_draw_commands(
                                     list_rect.max.x - PAD_X
                                 };
                                 let avail_w = (text_right - text_start_x).max(0.0);
-                                let display_primary: std::borrow::Cow<'_, str> = {
-                                    let galley = ui.fonts(|f| {
-                                        f.layout_no_wrap(
-                                            row.primary.clone(),
-                                            primary_font.clone(),
-                                            colors.text_primary,
-                                        )
-                                    });
-                                    if galley.size().x > avail_w {
-                                        let mut lo = 0usize;
-                                        let mut hi = row.primary.chars().count();
-                                        while lo + 1 < hi {
-                                            let mid = (lo + hi) / 2;
-                                            let candidate: String =
-                                                row.primary.chars().take(mid).collect::<String>()
-                                                    + "…";
-                                            let g = ui.fonts(|f| {
-                                                f.layout_no_wrap(
-                                                    candidate,
-                                                    primary_font.clone(),
-                                                    colors.text_primary,
-                                                )
-                                            });
-                                            if g.size().x <= avail_w {
-                                                lo = mid;
-                                            } else {
-                                                hi = mid;
-                                            }
-                                        }
-                                        std::borrow::Cow::Owned(
-                                            row.primary.chars().take(lo).collect::<String>() + "…",
-                                        )
-                                    } else {
-                                        std::borrow::Cow::Borrowed(row.primary.as_str())
-                                    }
-                                };
+                                let display_primary = elide_no_wrap(
+                                    ui,
+                                    row.primary.as_str(),
+                                    primary_font.clone(),
+                                    colors.text_primary,
+                                    avail_w,
+                                );
                                 painter.text(
                                     egui::pos2(text_start_x, primary_y),
                                     egui::Align2::LEFT_TOP,
-                                    display_primary.as_ref(),
+                                    display_primary.as_str(),
                                     primary_font,
                                     colors.text_primary,
                                 );
 
                                 // Secondary text
                                 if let Some(sec) = &row.secondary {
+                                    let secondary_font = egui::FontId::proportional(FONT_HINT);
+                                    let display_secondary = elide_no_wrap(
+                                        ui,
+                                        sec.as_str(),
+                                        secondary_font.clone(),
+                                        colors.text_dim,
+                                        avail_w,
+                                    );
                                     painter.text(
                                         egui::pos2(text_start_x, primary_y + FONT_CAPTION + 4.0),
                                         egui::Align2::LEFT_TOP,
-                                        sec.as_str(),
-                                        egui::FontId::proportional(FONT_HINT),
+                                        display_secondary.as_str(),
+                                        secondary_font,
                                         colors.text_dim,
                                     );
+                                }
+
+                                if let Some(galley) = trailing_galley {
+                                    let tr_pos = egui::pos2(
+                                        list_rect.max.x - PAD_X - galley.size().x,
+                                        primary_y,
+                                    );
+                                    painter.galley(tr_pos, galley, colors.text_dim);
                                 }
                             }
                         }
@@ -1191,6 +1179,42 @@ pub(crate) fn render_draw_commands(
 // Called by the DrawCommand match arms above. Badge / KeyChip sizing uses
 // real egui font metrics so app-emitted primitives and any future host-side
 // overlays that reuse these helpers always match.
+
+fn elide_no_wrap(
+    ui: &egui::Ui,
+    text: &str,
+    font_id: egui::FontId,
+    color: egui::Color32,
+    max_width: f32,
+) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    let fits = |candidate: &str| {
+        ui.fonts(|f| f.layout_no_wrap(candidate.to_owned(), font_id.clone(), color))
+            .size()
+            .x
+            <= max_width
+    };
+    if fits(text) {
+        return text.to_owned();
+    }
+    if !fits("…") {
+        return String::new();
+    }
+    let mut lo = 0usize;
+    let mut hi = text.chars().count();
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        let candidate = text.chars().take(mid).collect::<String>() + "…";
+        if fits(&candidate) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    text.chars().take(lo).collect::<String>() + "…"
+}
 
 /// Render a Badge pill. `x` is the left edge; `y` is the vertical centre.
 /// Renders a pill badge at (`origin.x + x`, vertically centred on `origin.y + y_center`).
