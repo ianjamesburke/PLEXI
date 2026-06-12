@@ -22,6 +22,9 @@ struct StateToml {
     active_conversation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session_name: Option<String>,
+    /// `/thoughts` toggle: show reasoning sections in the transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    show_thoughts: Option<bool>,
 }
 
 /// Handle to the on-disk Assistant store for one workspace.
@@ -47,11 +50,11 @@ impl AssistantStore {
         self.dir.join("conversations").join(format!("{id}.jsonl"))
     }
 
-    /// The persisted active conversation id, if any.
-    pub fn active_conversation(&self) -> Option<String> {
+    /// Parse the current `state.toml`, if present and valid.
+    fn read_state(&self) -> Option<StateToml> {
         let raw = std::fs::read_to_string(self.state_path()).ok()?;
         match toml::from_str::<StateToml>(&raw) {
-            Ok(state) => Some(state.active_conversation),
+            Ok(state) => Some(state),
             Err(e) => {
                 log::error!(
                     "assistant store: invalid {}: {e}",
@@ -62,23 +65,53 @@ impl AssistantStore {
         }
     }
 
-    /// Persist `id` as the active conversation, along with an optional session name.
-    pub fn set_active_conversation(&self, id: &str, session_name: Option<&str>) -> Result<(), String> {
+    fn write_state(&self, state: &StateToml) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
-        let state = StateToml {
-            active_conversation: id.to_string(),
-            session_name: session_name.map(str::to_string),
-        };
-        let raw = toml::to_string(&state).map_err(|e| format!("serialize state.toml: {e}"))?;
+        let raw = toml::to_string(state).map_err(|e| format!("serialize state.toml: {e}"))?;
         std::fs::write(self.state_path(), raw)
             .map_err(|e| format!("write {}: {e}", self.state_path().display()))
     }
 
+    /// The persisted active conversation id, if any.
+    pub fn active_conversation(&self) -> Option<String> {
+        Some(self.read_state()?.active_conversation)
+    }
+
+    /// Persist `id` as the active conversation, along with an optional
+    /// session name. Other persisted preferences are preserved.
+    pub fn set_active_conversation(&self, id: &str, session_name: Option<&str>) -> Result<(), String> {
+        let mut state = self.read_state().unwrap_or(StateToml {
+            active_conversation: String::new(),
+            session_name: None,
+            show_thoughts: None,
+        });
+        state.active_conversation = id.to_string();
+        state.session_name = session_name.map(str::to_string);
+        self.write_state(&state)
+    }
+
     /// The persisted session name for the active conversation, if any.
     pub fn active_session_name(&self) -> Option<String> {
-        let raw = std::fs::read_to_string(self.state_path()).ok()?;
-        toml::from_str::<StateToml>(&raw).ok()?.session_name
+        self.read_state()?.session_name
+    }
+
+    /// The persisted `/thoughts` toggle. Default: hidden.
+    pub fn show_thoughts(&self) -> bool {
+        self.read_state()
+            .and_then(|s| s.show_thoughts)
+            .unwrap_or(false)
+    }
+
+    /// Persist the `/thoughts` toggle, preserving the rest of the state.
+    pub fn set_show_thoughts(&self, show: bool) -> Result<(), String> {
+        let mut state = self.read_state().unwrap_or(StateToml {
+            active_conversation: String::new(),
+            session_name: None,
+            show_thoughts: None,
+        });
+        state.show_thoughts = Some(show);
+        self.write_state(&state)
     }
 
     /// Append one turn to the conversation's JSONL file.
@@ -169,6 +202,26 @@ mod tests {
             .join("assistant")
             .join("state.toml");
         assert!(expected.is_file(), "missing {}", expected.display());
+    }
+
+    #[test]
+    fn show_thoughts_round_trips_and_survives_conversation_switch() {
+        let ws = tempfile::tempdir().unwrap();
+        let store = AssistantStore::new(ws.path());
+        assert!(!store.show_thoughts(), "default is hidden");
+
+        store.set_show_thoughts(true).unwrap();
+        assert!(store.show_thoughts());
+
+        // Switching conversations must not clobber the preference.
+        store.set_active_conversation("c2", Some("notes")).unwrap();
+        assert!(store.show_thoughts());
+        assert_eq!(store.active_conversation().as_deref(), Some("c2"));
+        assert_eq!(store.active_session_name().as_deref(), Some("notes"));
+
+        store.set_show_thoughts(false).unwrap();
+        assert!(!store.show_thoughts());
+        assert_eq!(store.active_conversation().as_deref(), Some("c2"));
     }
 
     #[test]

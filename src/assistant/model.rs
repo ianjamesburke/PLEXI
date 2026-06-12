@@ -38,6 +38,10 @@ pub struct Turn {
     /// Final status for `TurnRole::Tool` rows; `None` for every other role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<ToolStatus>,
+    /// Reasoning tokens streamed during this turn, kept for `TurnRole::
+    /// Assistant` rows so `/thoughts` can reveal them after the turn ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thoughts: Option<String>,
 }
 
 impl Turn {
@@ -47,6 +51,7 @@ impl Turn {
             text: text.into(),
             created_at: crate::host::event_log::now_timestamp(),
             status: None,
+            thoughts: None,
         }
     }
 
@@ -110,6 +115,8 @@ pub enum AssistantEffect {
     RevokeGrant { target_id: String },
     /// `/audit`: show recent audit events.
     ShowAudit,
+    /// `/thoughts`: persist the flipped show-thoughts preference.
+    PersistShowThoughts(bool),
     /// Phase 3: host pane control (open/focus/read).
     PaneAction { action: String },
 }
@@ -138,6 +145,9 @@ pub struct AssistantModel {
     /// appended to `turns`; this count tells the pump to dispatch one
     /// follow-up turn that folds them in.
     pub queued_user_turns: usize,
+    /// Show reasoning ("thoughts") sections in the transcript. Toggled by
+    /// `/thoughts`, persisted in the assistant store's `state.toml`.
+    pub show_thoughts: bool,
 }
 
 impl AssistantModel {
@@ -153,6 +163,7 @@ impl AssistantModel {
             active_tools: Vec::new(),
             pending_permission: None,
             queued_user_turns: 0,
+            show_thoughts: false,
         }
     }
 
@@ -290,6 +301,25 @@ impl AssistantModel {
             }
             // Real Phase 2 views: the pane shell reads the broker/audit state
             // and answers with an info row.
+            // Toggle reasoning visibility for every turn, past and future.
+            "thoughts" => {
+                self.show_thoughts = !self.show_thoughts;
+                self.turns.push(Turn::now(
+                    TurnRole::Assistant,
+                    if self.show_thoughts {
+                        "Thoughts are now shown. Run /thoughts again to hide them."
+                    } else {
+                        "Thoughts are now hidden. Run /thoughts again to show them."
+                    },
+                ));
+                log::info!("assistant: /thoughts — show_thoughts={}", self.show_thoughts);
+                vec![
+                    AssistantEffect::PersistShowThoughts(self.show_thoughts),
+                    AssistantEffect::SessionWrite {
+                        conversation_id: self.conversation_id.clone(),
+                    },
+                ]
+            }
             "tools" => vec![AssistantEffect::ListTools],
             "permissions" => vec![AssistantEffect::ListPermissions],
             "audit" => vec![AssistantEffect::ShowAudit],
@@ -439,11 +469,16 @@ impl AssistantModel {
         match outcome {
             Ok(text) => {
                 log::info!(
-                    "assistant[{}]: turn end ({} chars)",
+                    "assistant[{}]: turn end ({} chars, {} reasoning chars)",
                     self.conversation_id,
-                    text.len()
+                    text.len(),
+                    self.streaming.partial_reasoning.len()
                 );
-                self.turns.push(Turn::now(TurnRole::Assistant, text));
+                let mut turn = Turn::now(TurnRole::Assistant, text);
+                if !self.streaming.partial_reasoning.is_empty() {
+                    turn.thoughts = Some(std::mem::take(&mut self.streaming.partial_reasoning));
+                }
+                self.turns.push(turn);
             }
             Err(e) => {
                 log::warn!("assistant[{}]: turn failed: {e}", self.conversation_id);
@@ -698,6 +733,38 @@ mod tests {
         m.finish_turn(&id, Err("worker died".to_string()));
         assert!(m.active_tools.is_empty());
         assert!(m.pending_permission.is_none());
+    }
+
+    #[test]
+    fn finish_turn_attaches_streamed_thoughts() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "q");
+        m.apply_reasoning_delta("step 1, ");
+        m.apply_reasoning_delta("step 2");
+        let id = m.conversation_id.clone();
+        m.finish_turn(&id, Ok("answer".to_string()));
+        let turn = m.turns.last().unwrap();
+        assert_eq!(turn.thoughts.as_deref(), Some("step 1, step 2"));
+
+        // No reasoning streamed → no thoughts attached.
+        submitted(&mut m, "q2");
+        m.finish_turn(&id, Ok("answer 2".to_string()));
+        assert_eq!(m.turns.last().unwrap().thoughts, None);
+    }
+
+    #[test]
+    fn thoughts_command_toggles_and_persists() {
+        let mut m = AssistantModel::fresh();
+        assert!(!m.show_thoughts);
+        let effects = submitted(&mut m, "/thoughts");
+        assert!(m.show_thoughts);
+        assert!(effects.contains(&AssistantEffect::PersistShowThoughts(true)));
+        assert!(m.turns.last().unwrap().text.contains("shown"));
+
+        let effects = submitted(&mut m, "/thoughts");
+        assert!(!m.show_thoughts);
+        assert!(effects.contains(&AssistantEffect::PersistShowThoughts(false)));
+        assert!(m.turns.last().unwrap().text.contains("hidden"));
     }
 
     #[test]

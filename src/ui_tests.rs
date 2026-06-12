@@ -658,6 +658,7 @@ mod tests {
             text: text.to_string(),
             created_at: "2026-06-12T00:00:00Z".to_string(),
             status: None,
+            thoughts: None,
         };
         assistant.model.turns = vec![
             turn(

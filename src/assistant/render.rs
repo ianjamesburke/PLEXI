@@ -57,6 +57,13 @@ impl AssistantRenderer {
 
         Self::draw_header(ui, model, colors);
 
+        // Egui ids are salted by the pane's own ui id — NOT the conversation
+        // id. A conversation-salted id would reset the bottom panel's stored
+        // height on /new and /clear, making the composer visibly re-converge
+        // (flash) the moment the conversation switches.
+        let pane_id = ui.id();
+        let te_id = pane_id.with("assistant_composer");
+
         let total_h = ui.available_rect_before_wrap().height();
         let picker_max_h = (total_h * 0.4).max(0.0);
         let mut event = None;
@@ -64,7 +71,7 @@ impl AssistantRenderer {
 
         // Bottom-anchored, content-sized: composer pinned to the pane bottom.
         // Stable height (composer + hints only) — the picker floats above it.
-        egui::TopBottomPanel::bottom(egui::Id::new("assistant_bottom").with(&model.conversation_id))
+        egui::TopBottomPanel::bottom(pane_id.with("assistant_bottom"))
             .show_separator_line(false)
             .frame(egui::Frame::new().inner_margin(egui::Margin {
                 left: style::SPACE_MD as i8,
@@ -79,10 +86,10 @@ impl AssistantRenderer {
                 // Keys first: Enter/Tab/arrows must be consumed before the
                 // TextEdit processes input, or completion renders a one-frame
                 // stale buffer (the autocomplete "glitch").
-                if let Some(key_event) = Self::handle_composer_keys(ui, model) {
+                if let Some(key_event) = Self::handle_composer_keys(ui, model, te_id) {
                     event = Some(key_event);
                 }
-                composer_rect = Some(Self::draw_composer(ui, model, colors, is_focused));
+                composer_rect = Some(Self::draw_composer(ui, model, te_id, colors, is_focused));
                 let hints = [
                     HintGroup::new(&["\u{21b5}"], "send"),
                     HintGroup::new(&["\u{21e7}", "\u{21b5}"], "newline"),
@@ -102,7 +109,7 @@ impl AssistantRenderer {
 
         if model.picker_active() {
             if let Some(rect) = composer_rect {
-                Self::draw_picker_popup(ui, model, colors, rect, picker_max_h);
+                Self::draw_picker_popup(ui, model, te_id, pane_id, colors, rect, picker_max_h);
             }
         }
 
@@ -172,7 +179,7 @@ impl AssistantRenderer {
                 ui.add_space(style::SPACE_SM);
                 for (i, turn) in model.turns.iter().enumerate() {
                     ui.push_id(i, |ui| {
-                        Self::draw_turn_row(ui, md_cache, colors, turn.role, &turn.text, turn.status);
+                        Self::draw_turn_row(ui, md_cache, colors, turn, model.show_thoughts);
                     });
                 }
                 for active in &model.active_tools {
@@ -185,6 +192,29 @@ impl AssistantRenderer {
                 }
                 ui.add_space(style::SPACE_SM);
             });
+    }
+
+    /// Convert markdown soft breaks to hard breaks: every newline outside a
+    /// fenced code block gets a trailing two-space hard break, so single
+    /// newlines stay visible line breaks (the chat-client convention) instead
+    /// of collapsing into one paragraph. Block structure — lists, headings,
+    /// fences — is decided per line before inline rendering, so the trailing
+    /// spaces never change it.
+    fn soften_newlines(text: &str) -> String {
+        let mut out = String::with_capacity(text.len() + text.lines().count() * 2);
+        let mut in_fence = false;
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+            }
+            out.push_str(line);
+            if !in_fence && !line.trim().is_empty() {
+                out.push_str("  ");
+            }
+            out.push('\n');
+        }
+        out
     }
 
     /// Render `text` as markdown (links, emphasis, inline code, fenced
@@ -216,18 +246,19 @@ impl AssistantRenderer {
             egui::TextStyle::Small,
             egui::FontId::proportional(style::TEXT_HINT),
         );
-        egui_commonmark::CommonMarkViewer::new().show(ui, md_cache, text);
+        egui_commonmark::CommonMarkViewer::new().show(ui, md_cache, &Self::soften_newlines(text));
     }
 
     fn draw_turn_row(
         ui: &mut egui::Ui,
         md_cache: &mut egui_commonmark::CommonMarkCache,
         colors: &Colors,
-        role: TurnRole,
-        text: &str,
-        status: Option<ToolStatus>,
+        turn: &super::model::Turn,
+        show_thoughts: bool,
     ) {
-        match role {
+        let text = turn.text.as_str();
+        let status = turn.status;
+        match turn.role {
             // Delivered app events are compact single-line rows.
             TurnRole::Event => {
                 ui.label(
@@ -260,7 +291,7 @@ impl AssistantRenderer {
                     egui::Frame::new()
                         .fill(colors.bg_active)
                         .stroke(egui::Stroke::new(1.0, colors.border))
-                        .corner_radius(style::RADIUS_LG)
+                        .corner_radius(style::RADIUS_MD)
                         .inner_margin(egui::Margin::symmetric(
                             style::SPACE_SM as i8,
                             style::SPACE_XS as i8,
@@ -279,10 +310,15 @@ impl AssistantRenderer {
             // Assistant replies sit left-aligned in a soft unstroked bubble —
             // visible against the terminal surface — and render as markdown.
             TurnRole::Assistant => {
+                if show_thoughts {
+                    if let Some(thoughts) = &turn.thoughts {
+                        Self::draw_thoughts_section(ui, colors, thoughts);
+                    }
+                }
                 let bubble_max = ui.available_width() * 0.85;
                 egui::Frame::new()
                     .fill(colors.bg_active)
-                    .corner_radius(style::RADIUS_LG)
+                    .corner_radius(style::RADIUS_MD)
                     .inner_margin(egui::Margin::symmetric(
                         style::SPACE_SM as i8,
                         style::SPACE_XS as i8,
@@ -378,27 +414,34 @@ impl AssistantRenderer {
         choice
     }
 
+    /// Collapsed "thoughts" section: the model's reasoning tokens, visible
+    /// only while the `/thoughts` toggle is on. Used both for the in-flight
+    /// turn and for persisted assistant turns.
+    fn draw_thoughts_section(ui: &mut egui::Ui, colors: &Colors, thoughts: &str) {
+        egui::CollapsingHeader::new(
+            RichText::new("thoughts")
+                .size(style::TEXT_CAPTION)
+                .color(colors.text_dim),
+        )
+        .id_salt("assistant_thoughts")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(thoughts)
+                    .size(style::TEXT_CAPTION)
+                    .color(colors.text_dim),
+            );
+        });
+    }
+
     fn draw_streaming_row(
         ui: &mut egui::Ui,
         model: &AssistantModel,
         md_cache: &mut egui_commonmark::CommonMarkCache,
         colors: &Colors,
     ) {
-        if !model.streaming.partial_reasoning.is_empty() {
-            egui::CollapsingHeader::new(
-                RichText::new("thinking…")
-                    .size(style::TEXT_CAPTION)
-                    .color(colors.text_dim),
-            )
-            .id_salt("assistant_thinking")
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new(&model.streaming.partial_reasoning)
-                        .size(style::TEXT_CAPTION)
-                        .color(colors.text_dim),
-                );
-            });
+        if model.show_thoughts && !model.streaming.partial_reasoning.is_empty() {
+            Self::draw_thoughts_section(ui, colors, &model.streaming.partial_reasoning);
         }
         if model.streaming.partial_answer.is_empty() {
             Self::draw_thinking_dots(ui, colors);
@@ -425,12 +468,6 @@ impl AssistantRenderer {
         }
     }
 
-    /// Stable egui id for the composer TextEdit, salted by conversation so
-    /// two assistant panes never share cursor state.
-    fn composer_id(model: &AssistantModel) -> egui::Id {
-        egui::Id::new("assistant_composer").with(&model.conversation_id)
-    }
-
     /// Move the composer caret to the end of `text` — used after picker
     /// completion replaces the buffer, so typing continues after the
     /// inserted trailing space instead of mid-command.
@@ -446,9 +483,15 @@ impl AssistantRenderer {
 
     /// Replace the composer with the completed slash command plus a trailing
     /// space, caret at the end ready for arguments.
-    fn complete_command(ctx: &egui::Context, model: &mut AssistantModel, name: &str, via: &str) {
+    fn complete_command(
+        ctx: &egui::Context,
+        model: &mut AssistantModel,
+        te_id: egui::Id,
+        name: &str,
+        via: &str,
+    ) {
         model.composer = format!("/{name} ");
-        Self::set_caret_to_end(ctx, Self::composer_id(model), &model.composer);
+        Self::set_caret_to_end(ctx, te_id, &model.composer);
         model.picker_selected = 0;
         log::info!("assistant: picker completed '/{name}' via {via}");
     }
@@ -460,8 +503,8 @@ impl AssistantRenderer {
     fn handle_composer_keys(
         ui: &mut egui::Ui,
         model: &mut AssistantModel,
+        te_id: egui::Id,
     ) -> Option<ComposerEvent> {
-        let te_id = Self::composer_id(model);
         if !ui.memory(|m| m.has_focus(te_id)) {
             return None;
         }
@@ -491,7 +534,7 @@ impl AssistantRenderer {
                 });
                 if complete {
                     let (name, _) = matches[model.picker_selected];
-                    Self::complete_command(ui.ctx(), model, name, "key");
+                    Self::complete_command(ui.ctx(), model, te_id, name, "key");
                 }
                 return None;
             }
@@ -513,6 +556,8 @@ impl AssistantRenderer {
     fn draw_picker_popup(
         ui: &egui::Ui,
         model: &mut AssistantModel,
+        te_id: egui::Id,
+        pane_id: egui::Id,
         colors: &Colors,
         composer_rect: egui::Rect,
         max_h: f32,
@@ -526,8 +571,22 @@ impl AssistantRenderer {
         }
         let selected_idx = model.picker_selected;
         let mut clicked: Option<&'static str> = None;
+        let mut hover_select: Option<usize> = None;
 
-        egui::Area::new(egui::Id::new("assistant_picker").with(&model.conversation_id))
+        // Command-palette scroll/hover discipline: scroll-to-selected only
+        // when the selection actually changed (a per-frame scroll_to_me
+        // fights the user's wheel and snaps the list back), and hover moves
+        // the selection only when the mouse itself moved (so rows sliding
+        // under a stationary cursor during scroll don't steal selection).
+        let prev_selected_id = pane_id.with("assistant_picker_prev_selected");
+        let prev_selected = ui
+            .ctx()
+            .data(|d| d.get_temp::<usize>(prev_selected_id))
+            .unwrap_or(selected_idx);
+        let should_scroll = selected_idx != prev_selected;
+        let mouse_moved = ui.ctx().input(|i| i.pointer.delta().length_sq() > 0.5);
+
+        egui::Area::new(pane_id.with("assistant_picker"))
             .pivot(egui::Align2::LEFT_BOTTOM)
             .fixed_pos(composer_rect.left_top() - egui::vec2(0.0, style::SPACE_XS))
             .order(egui::Order::Foreground)
@@ -548,21 +607,31 @@ impl AssistantRenderer {
                                 for (i, (name, purpose)) in matches.iter().enumerate() {
                                     let row = ListRow::new(&format!("/{name}"))
                                         .secondary(purpose)
-                                        .dense()
                                         .selected(i == selected_idx)
                                         .show(ui, colors);
-                                    if i == selected_idx {
+                                    if i == selected_idx && should_scroll {
                                         row.scroll_to_me(None);
                                     }
                                     if row.row_clicked() {
                                         clicked = Some(*name);
                                     }
+                                    if row.row_hovered() {
+                                        hover_select = Some(i);
+                                    }
                                 }
                             });
                     });
             });
+
+        if let Some(i) = hover_select {
+            if mouse_moved {
+                model.picker_selected = i;
+            }
+        }
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(prev_selected_id, model.picker_selected));
         if let Some(name) = clicked {
-            Self::complete_command(ui.ctx(), model, name, "click");
+            Self::complete_command(ui.ctx(), model, te_id, name, "click");
         }
     }
 
@@ -572,10 +641,10 @@ impl AssistantRenderer {
     fn draw_composer(
         ui: &mut egui::Ui,
         model: &mut AssistantModel,
+        te_id: egui::Id,
         colors: &Colors,
         is_focused: bool,
     ) -> egui::Rect {
-        let te_id = Self::composer_id(model);
         let font_id = egui::FontId::proportional(style::TEXT_BODY);
         let row_height = ui.fonts(|f| f.row_height(&font_id));
         let max_text_h = row_height * Self::COMPOSER_MAX_ROWS;
@@ -589,13 +658,18 @@ impl AssistantRenderer {
         let frame_response = egui::Frame::new()
             .fill(colors.bg_active)
             .stroke(egui::Stroke::new(1.0, stroke_color))
-            .corner_radius(style::RADIUS_LG)
+            .corner_radius(style::RADIUS_MD)
             .inner_margin(egui::Margin::symmetric(
                 style::SPACE_SM as i8,
                 style::SPACE_XS as i8,
             ))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                // Caret styling from the host TextField primitive (the
+                // singleline widget itself can't host a growable multiline
+                // composer, but its visual conventions carry over).
+                ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                ui.visuals_mut().text_cursor.stroke.color = colors.accent;
                 // Grows with content up to COMPOSER_MAX_ROWS, then scrolls —
                 // same shape as the quick-note entry.
                 egui::ScrollArea::vertical()
@@ -623,5 +697,24 @@ impl AssistantRenderer {
             }
         }
         frame_response.response.rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AssistantRenderer;
+
+    #[test]
+    fn soften_newlines_makes_single_breaks_hard_outside_fences() {
+        let out = AssistantRenderer::soften_newlines("line one\nline two\n\nline three");
+        assert_eq!(out, "line one  \nline two  \n\nline three  \n");
+    }
+
+    #[test]
+    fn soften_newlines_leaves_fenced_code_untouched() {
+        let out = AssistantRenderer::soften_newlines("before\n```\nlet x = 1;\nlet y = 2;\n```\nafter");
+        assert!(out.contains("before  \n"));
+        assert!(out.contains("let x = 1;\nlet y = 2;\n"), "code lines must stay byte-identical");
+        assert!(out.contains("after  \n"));
     }
 }

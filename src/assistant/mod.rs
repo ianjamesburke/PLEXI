@@ -261,6 +261,7 @@ impl AssistantApp {
         };
         // Load persisted session name (if any) so it survives restarts.
         model.session_name = store.active_session_name();
+        model.show_thoughts = store.show_thoughts();
         let persisted_turns = model.turns.len();
         let persisted_conversation = model.conversation_id.clone();
         let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
@@ -395,6 +396,11 @@ impl AssistantApp {
                 AssistantEffect::ListPermissions => self.cmd_list_permissions(),
                 AssistantEffect::RevokeGrant { target_id } => self.cmd_revoke(&target_id),
                 AssistantEffect::ShowAudit => self.cmd_show_audit(),
+                AssistantEffect::PersistShowThoughts(show) => {
+                    if let Err(e) = self.store.set_show_thoughts(show) {
+                        log::error!("assistant: failed to persist show_thoughts={show}: {e}");
+                    }
+                }
                 // Phase 3 stub: correctly shaped, logged, never panics.
                 AssistantEffect::PaneAction { action } => {
                     log::info!("assistant: PaneAction '{action}' not yet implemented (Phase 3)");
