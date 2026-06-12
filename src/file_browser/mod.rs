@@ -2137,7 +2137,7 @@ impl App for FileBrowserApp {
                                 crate::ui::list::keyboard_scroll_update(
                                     ui.ctx(),
                                     fb_scroll_id,
-                                    self.selected,
+                                    self.selected as f32 * style::LIST_ROW_DENSE_H,
                                     self.pending_scroll,
                                     style::LIST_ROW_DENSE_H,
                                     body_height,
@@ -2188,7 +2188,7 @@ impl App for FileBrowserApp {
                         crate::ui::list::keyboard_scroll_update(
                             ui.ctx(),
                             fb_scroll_id,
-                            self.selected,
+                            self.selected as f32 * style::LIST_ROW_DENSE_H,
                             self.pending_scroll,
                             style::LIST_ROW_DENSE_H,
                             body_height,

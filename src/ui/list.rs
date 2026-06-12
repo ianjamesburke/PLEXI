@@ -433,10 +433,12 @@ pub fn paint_selection(painter: &egui::Painter, row_rect: egui::Rect, colors: &C
 ///
 /// Call BEFORE `ScrollArea::show()`. `scroll_id` must match the id used by the
 /// scroll area (i.e. `ui.make_persistent_id(egui::Id::new("my_scroll"))`).
+/// `row_top_px` is the pixel offset of the selected row's top edge within the
+/// scroll area (i.e. `idx * row_h + any_header_px_above`).
 pub(crate) fn keyboard_scroll_update(
     ctx: &egui::Context,
     scroll_id: egui::Id,
-    selected_idx: usize,
+    row_top_px: f32,
     should_scroll: bool,
     row_h: f32,
     visible_h: f32,
@@ -447,7 +449,7 @@ pub(crate) fn keyboard_scroll_update(
     let mut state =
         egui::containers::scroll_area::State::load(ctx, scroll_id).unwrap_or_default();
     let current = state.offset.y;
-    let row_top = selected_idx as f32 * row_h;
+    let row_top = row_top_px;
     let row_bottom = row_top + row_h;
     let new_offset = if row_top < current {
         row_top
@@ -687,8 +689,8 @@ mod tests {
         ctx.begin_pass(egui::RawInput::default());
         egui::CentralPanel::default().show(&ctx, |ui| {
             let id = ui.make_persistent_id(egui::Id::new("ks_test_down"));
-            // selected=6, row_h=48, visible_h=200 → row_bottom=336 > 200 → offset = 136
-            keyboard_scroll_update(&ctx, id, 6, true, 48.0, 200.0);
+            // row_top=288 (6*48), row_h=48, visible_h=200 → row_bottom=336 > 200 → offset = 136
+            keyboard_scroll_update(&ctx, id, 6.0 * 48.0, true, 48.0, 200.0);
             let state = egui::containers::scroll_area::State::load(&ctx, id)
                 .expect("state written");
             assert_eq!(state.offset.y, 6.0 * 48.0 + 48.0 - 200.0);
@@ -706,8 +708,8 @@ mod tests {
             let mut state = egui::containers::scroll_area::State::default();
             state.offset.y = 300.0;
             state.store(&ctx, id);
-            // selected=2 → row_top=96 < 300 → offset should become 96
-            keyboard_scroll_update(&ctx, id, 2, true, 48.0, 200.0);
+            // row_top=96 (2*48) < 300 → offset should become 96
+            keyboard_scroll_update(&ctx, id, 2.0 * 48.0, true, 48.0, 200.0);
             let state = egui::containers::scroll_area::State::load(&ctx, id)
                 .expect("state written");
             assert_eq!(state.offset.y, 2.0 * 48.0);

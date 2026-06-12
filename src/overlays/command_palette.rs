@@ -542,14 +542,26 @@ impl PlexiApp {
 
                 let palette_scroll_id =
                     ui.make_persistent_id(egui::Id::new("palette_list"));
-                crate::ui::list::keyboard_scroll_update(
-                    ctx,
-                    palette_scroll_id,
-                    self.palette_selected,
-                    should_scroll,
-                    style::LIST_ROW_H,
-                    palette_max_list_h,
-                );
+                {
+                    // Account for inline APPS/NOTES section headers above the selected row.
+                    let first_app = entries.iter().position(|e| matches!(e, PaletteEntry::App { .. }));
+                    let first_note = entries.iter().position(|e| matches!(e, PaletteEntry::Note { .. }));
+                    let headers_above: f32 = [first_app, first_note]
+                        .into_iter()
+                        .flatten()
+                        .filter(|&k| self.palette_selected >= k)
+                        .map(|_| style::INLINE_SECTION_H)
+                        .sum();
+                    let row_top_px = self.palette_selected as f32 * style::LIST_ROW_H + headers_above;
+                    crate::ui::list::keyboard_scroll_update(
+                        ctx,
+                        palette_scroll_id,
+                        row_top_px,
+                        should_scroll,
+                        style::LIST_ROW_H,
+                        palette_max_list_h,
+                    );
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("palette_list")
                     .max_height(palette_max_list_h)

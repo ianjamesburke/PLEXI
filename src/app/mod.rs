@@ -2924,7 +2924,8 @@ impl eframe::App for PlexiApp {
                                 .iter()
                                 .filter_map(|p| crate::notes::NotePickerEntry::load(p, true))
                                 .collect();
-                        let workspace_slug = crate::config::active_workspace_root()
+                        let workspace_slug = self.palette_workspace_root
+                            .as_ref()
                             .and_then(|p| p.file_name().map(|n| n.to_os_string()))
                             .map(|n| n.to_string_lossy().into_owned());
                         let notes_dir = match workspace_slug {
