@@ -335,6 +335,47 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_with_pane.png");
     }
 
+    /// Regression: zoomed app panes must render through the shared
+    /// `render::app_pane::render` path (full-rect fill, no collapsing
+    /// `egui::Frame`) and exercise the overtake-bar chrome. Guards against
+    /// the black-square / missing-chrome zoom bugs (zoom overlay previously
+    /// duplicated pane rendering inline and called `runtime.ui()` directly).
+    #[test]
+    fn zoomed_app_pane_renders_via_shared_path() {
+        let mut h = PlexiUiHarness::new();
+        let pane_id = add_focused_pane(&mut h);
+        h.step();
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            // Set overlay_replaced so the zoom path renders the overtake bar
+            // ("← <replaced> / Esc return") via render::app_pane::render.
+            if let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) {
+                app_pane.overlay_replaced =
+                    Some(Box::new(Pane::Portal(Box::new(PortalPane {
+                        pane_id: pane_id + 1_000,
+                        target_context_id: 42,
+                        context_state: None,
+                        hidden: false,
+                    }))));
+            }
+            let tile_id = win
+                .tree
+                .tiles
+                .find_pane(&pane_id)
+                .expect("test pane tile missing");
+            win.zoom_to(tile_id);
+        });
+        h.run_steps(3);
+        h.render()
+            .expect("zoomed app pane frame should render without panic");
+        assert!(
+            h.with_app(|app| app.windows[app.active_window].zoomed_pane.is_some()),
+            "pane should remain zoomed after stepping frames"
+        );
+        h.save_screenshot("/tmp/plexi_zoomed_app_pane.png")
+            .expect("render failed");
+    }
+
     #[test]
     fn screenshot_host_ui_gallery_trust_states() {
         let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);
