@@ -6,8 +6,6 @@ sprint: "s21"
 estimate: 8h
 blocked_by:
   - 80
-  - 30
-  - 31
 gh_issue: ["616"]
 area: ["cli/commands"]
 tags: ["v2", "cli", "rendering"]

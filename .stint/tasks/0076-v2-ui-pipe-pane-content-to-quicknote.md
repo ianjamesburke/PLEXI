@@ -7,8 +7,6 @@ estimate: 6h
 blocked_by:
   - 61
   - 74
-  - 30
-  - 31
 gh_issue: ["1557"]
 area: ["ui/overlays", "host/pane-ops"]
 tags: ["v2", "ui", "quicknote", "agents"]

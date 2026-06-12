@@ -6,8 +6,6 @@ sprint: "s26"
 estimate: 8h
 blocked_by:
   - 80
-  - 30
-  - 31
 gh_issue: ["1148"]
 area: ["sdk/python", "sdk/pgap"]
 tags: ["v2", "pgap", "rendering"]

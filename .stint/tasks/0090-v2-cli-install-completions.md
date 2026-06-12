@@ -5,8 +5,6 @@ status: backlog
 sprint: "s21"
 estimate: 3h
 blocked_by:
-  - 30
-  - 31
 gh_issue: ["716"]
 area: ["cli/commands"]
 tags: ["v2", "cli", "completions"]

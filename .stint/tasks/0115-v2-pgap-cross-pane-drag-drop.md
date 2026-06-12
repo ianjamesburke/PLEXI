@@ -6,8 +6,6 @@ sprint: "s26"
 estimate: 10h
 blocked_by:
   - 81
-  - 30
-  - 31
 gh_issue: ["1647"]
 area: ["host/pane-ops", "sdk/pgap"]
 tags: ["v2", "pgap", "drag-drop"]

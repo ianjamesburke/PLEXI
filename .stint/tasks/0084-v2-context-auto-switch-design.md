@@ -6,8 +6,6 @@ sprint: "s20"
 estimate: 4h
 blocked_by:
   - 81
-  - 30
-  - 31
 gh_issue: ["786"]
 area: ["host/context"]
 tags: ["v2", "navigation", "context"]

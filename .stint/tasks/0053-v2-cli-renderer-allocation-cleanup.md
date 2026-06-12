@@ -6,8 +6,6 @@ sprint: "s16"
 estimate: 6h
 blocked_by:
   - 147
-  - 30
-  - 31
 gh_issue: ["2027"]
 area: ["cli/commands"]
 tags: ["v2", "performance", "cli-renderer"]

@@ -7,8 +7,6 @@ estimate: 10h
 blocked_by:
   - 61
   - 100
-  - 30
-  - 31
 gh_issue: ["1456"]
 area: ["infra/skills", "apps/crew", "agents"]
 tags: ["v2", "dispatch", "agents", "app"]

@@ -5,8 +5,6 @@ status: backlog
 sprint: "s27"
 estimate: 12h
 blocked_by:
-  - 30
-  - 31
 gh_issue: ["947"]
 area: ["host/video"]
 tags: ["v2", "media", "video"]

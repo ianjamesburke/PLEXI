@@ -6,8 +6,6 @@ sprint: "s19"
 estimate: 8h
 blocked_by:
   - 71
-  - 30
-  - 31
 gh_issue: ["1555"]
 area: ["ui/widgets"]
 tags: ["v2", "ui", "input"]

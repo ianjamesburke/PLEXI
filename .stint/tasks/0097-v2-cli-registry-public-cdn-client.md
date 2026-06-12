@@ -6,8 +6,6 @@ sprint: "s22"
 estimate: 6h
 blocked_by:
   - 96
-  - 30
-  - 31
 gh_issue: ["356"]
 area: ["cli/commands"]
 tags: ["v2", "cli-registry"]
