@@ -7,6 +7,9 @@ pub const ACTION_ZONE_WIDTH: f32 = 30.0;
 /// Fixed-width left gutter that holds the context index number.
 const GUTTER_W: f32 = 24.0;
 
+/// Top and bottom padding added inside each row for vertical breathing room.
+const ROW_PAD_V: f32 = 7.0;
+
 const PANE_DOT_RADIUS: f32 = 4.0;
 const PANE_DOT_SPACING: f32 = 11.0;
 const PANE_DOT_MAX: usize = 8;
@@ -166,6 +169,8 @@ impl ContextItem {
         let scope_out = ui.scope(|ui| {
             ui.set_width(ui.available_width());
 
+            ui.add_space(ROW_PAD_V);
+
             // --- Outer row: left gutter (index number) + content column ---
             let y_before = ui.cursor().min.y;
             // name_row_h is captured from inside the horizontal closure and
@@ -180,21 +185,39 @@ impl ContextItem {
                 // centered across the full row height.
                 ui.add_space(GUTTER_W);
 
-                // Content column: name row + optional path+pips row.
-                // Capture name_row_h so the action zone is limited to the
-                // header line regardless of how many metadata rows follow.
+                // Content column: name row + optional path row.
+                // Pips live on the name row, right-aligned before the action zone.
                 let name_row_h = ui.vertical(|ui| {
-                    // --- Name row ---
+                    // --- Name row (includes pips right-aligned) ---
                     let name_y_before = ui.cursor().min.y;
                     ui.horizontal(|ui| {
+                        // Compute pip strip width so we can budget the name text.
+                        let pip_strip_w = if let Some(ref dots) = pane_dots {
+                            if dots.count > 0 {
+                                let capped = dots.count.min(PANE_DOT_MAX);
+                                let mut w = (capped as f32) * PANE_DOT_SPACING;
+                                if dots.count > PANE_DOT_MAX {
+                                    w += 20.0;
+                                }
+                                w + 6.0 // gap between name text and dots
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            0.0
+                        };
+
                         let right_reserve = if action_enabled {
                             ACTION_ZONE_WIDTH + 4.0
                         } else {
                             8.0
                         };
                         let badge_w = if badge_count > 0 { 26.0 } else { 0.0 };
-                        let text_max =
-                            (ui.available_width() - right_reserve - badge_w).max(0.0);
+                        let text_max = (ui.available_width()
+                            - right_reserve
+                            - badge_w
+                            - pip_strip_w)
+                            .max(0.0);
 
                         ui.scope(|ui| {
                             ui.set_max_width(text_max);
@@ -208,6 +231,16 @@ impl ContextItem {
                                 .truncate(),
                             );
                         });
+
+                        // Pips: rendered inline right of the name, before badge/action.
+                        draw_pips(
+                            ui,
+                            &pane_dots,
+                            accent_color,
+                            text_dim,
+                            row_alpha,
+                            is_dragging,
+                        );
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(if action_enabled { ACTION_ZONE_WIDTH } else { 0.0 });
@@ -225,32 +258,13 @@ impl ContextItem {
                             }
                         });
                     });
-                    // Capture name-row height before any metadata rows are added.
+                    // Capture name-row height before the subtitle row is added.
                     let name_h = ui.cursor().min.y - name_y_before;
 
-                    // --- Path row with inline pips on the right ---
-                    // When subtitle is present, pips go inline to its right.
-                    // When subtitle is absent but pips exist, render pips alone.
+                    // --- Path row (subtitle only, no pips) ---
                     if let Some(ref path) = subtitle {
                         ui.horizontal(|ui| {
-                            // × is on the name row only — full width minus pip strip and margin.
-                            let pip_strip_w = if let Some(ref dots) = pane_dots {
-                                if dots.count > 0 {
-                                    let capped = dots.count.min(PANE_DOT_MAX);
-                                    let mut w = (capped as f32) * PANE_DOT_SPACING;
-                                    if dots.count > PANE_DOT_MAX {
-                                        w += 20.0;
-                                    }
-                                    w + 6.0 // gap between path text and dots
-                                } else {
-                                    0.0
-                                }
-                            } else {
-                                0.0
-                            };
-
-                            let path_max = (ui.available_width() - pip_strip_w - 8.0).max(0.0);
-
+                            let path_max = (ui.available_width() - 8.0).max(0.0);
                             ui.scope(|ui| {
                                 ui.set_max_width(path_max);
                                 ui.add(
@@ -263,39 +277,15 @@ impl ContextItem {
                                     .truncate(),
                                 );
                             });
-
-                            draw_pips(
-                                ui,
-                                &pane_dots,
-                                accent_color,
-                                text_dim,
-                                row_alpha,
-                                is_dragging,
-                            );
-                        });
-                    } else if pane_dots
-                        .as_ref()
-                        .map_or(false, |d| d.count > 0)
-                    {
-                        // No subtitle — render pips on their own metadata row so
-                        // contexts without a root path still show pane indicators.
-                        ui.horizontal(|ui| {
-                            draw_pips(
-                                ui,
-                                &pane_dots,
-                                accent_color,
-                                text_dim,
-                                row_alpha,
-                                is_dragging,
-                            );
                         });
                     }
 
                     name_h
                 }).inner;
                 name_row_h_capture = name_row_h;
-
             });
+
+            ui.add_space(ROW_PAD_V);
 
             (ui.cursor().min.y - y_before, name_row_h_capture)
         });
