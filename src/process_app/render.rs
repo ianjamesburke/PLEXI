@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::app_protocol::{LayoutChild, LayoutDirection, RenderCommand, ResponsiveTier};
+use crate::protocol::commands::TextAlign;
 use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::Color32;
@@ -153,13 +154,16 @@ pub(crate) fn render_draw_commands(
                 }
 
                 let pos = egui::pos2(origin.x + x, origin.y + y);
-                let anchor = match align.as_str() {
-                    "center" => egui::Align2::CENTER_CENTER,
-                    "top_center" => egui::Align2::CENTER_TOP,
-                    "right" => egui::Align2::RIGHT_TOP,
-                    "right_center" => egui::Align2::RIGHT_CENTER,
-                    "left_center" => egui::Align2::LEFT_CENTER,
-                    _ => egui::Align2::LEFT_TOP, // default
+                let anchor = match align {
+                    TextAlign::LeftTop => egui::Align2::LEFT_TOP,
+                    TextAlign::CenterTop => egui::Align2::CENTER_TOP,
+                    TextAlign::RightTop => egui::Align2::RIGHT_TOP,
+                    TextAlign::LeftCenter => egui::Align2::LEFT_CENTER,
+                    TextAlign::CenterCenter => egui::Align2::CENTER_CENTER,
+                    TextAlign::RightCenter => egui::Align2::RIGHT_CENTER,
+                    TextAlign::LeftBottom => egui::Align2::LEFT_BOTTOM,
+                    TextAlign::CenterBottom => egui::Align2::CENTER_BOTTOM,
+                    TextAlign::RightBottom => egui::Align2::RIGHT_BOTTOM,
                 };
 
                 // Apply max_width clipping / elision using host font metrics.
@@ -1457,7 +1461,7 @@ pub(crate) fn render_text_row(
     y: f32,
     items: &[crate::app_protocol::TextRowItem],
     gap: f32,
-    align: &str,
+    align: &TextAlign,
     colors: &Colors,
 ) {
     let mut cursor_x = x;
@@ -1475,10 +1479,15 @@ pub(crate) fn render_text_row(
         let text_w = galley.size().x;
 
         let align2 = match align {
-            "center" => egui::Align2::CENTER_CENTER,
-            "left_top" => egui::Align2::LEFT_TOP,
-            "left_center" => egui::Align2::LEFT_CENTER,
-            _ => egui::Align2::LEFT_TOP,
+            TextAlign::LeftTop => egui::Align2::LEFT_TOP,
+            TextAlign::CenterTop => egui::Align2::CENTER_TOP,
+            TextAlign::RightTop => egui::Align2::RIGHT_TOP,
+            TextAlign::LeftCenter => egui::Align2::LEFT_CENTER,
+            TextAlign::CenterCenter => egui::Align2::CENTER_CENTER,
+            TextAlign::RightCenter => egui::Align2::RIGHT_CENTER,
+            TextAlign::LeftBottom => egui::Align2::LEFT_BOTTOM,
+            TextAlign::CenterBottom => egui::Align2::CENTER_BOTTOM,
+            TextAlign::RightBottom => egui::Align2::RIGHT_BOTTOM,
         };
 
         let rect = align2.anchor_size(egui::pos2(origin.x + cursor_x, origin.y + y), galley.size());

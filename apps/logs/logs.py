@@ -467,7 +467,7 @@ class LogsApp(App):
             if right_parts:
                 ctx.text(w - PAD, AppBar.BAND_H / 2 - TEXT_HINT / 2,
                          "  ".join(right_parts),
-                         size=TEXT_HINT, color=ctx.theme.accent, align="right")
+                         size=TEXT_HINT, color=ctx.theme.accent, align="right_top")
 
         # ── L1 footer ───────────────────────────────────────────────────────
         footer = FooterKeys(self._footer_shortcuts())
@@ -481,14 +481,14 @@ class LogsApp(App):
             n_sel = hi - lo + 1
             label = f"COPY — {n_sel} line{'s' if n_sel != 1 else ''}"
             ctx.text(w - PAD, foot_y + foot_h / 2 - TEXT_HINT / 2,
-                     label, size=TEXT_HINT, color=COPY_ROW_FG, align="right")
+                     label, size=TEXT_HINT, color=COPY_ROW_FG, align="right_top")
         elif self._search_mode:
             ctx.text(w - PAD, foot_y + foot_h / 2 - TEXT_HINT / 2,
-                     "SEARCH", size=TEXT_HINT, color=ctx.theme.accent, align="right")
+                     "SEARCH", size=TEXT_HINT, color=ctx.theme.accent, align="right_top")
         else:
             ctx.text(w - PAD, foot_y + foot_h / 2 - TEXT_HINT / 2,
                      f"{len(filtered)} lines", size=TEXT_HINT, color=ctx.theme.muted,
-                     align="right")
+                     align="right_top")
 
         # ── log rows ────────────────────────────────────────────────────────
         # Custom pixel-level rendering: timestamp column, colored level badges,
@@ -546,7 +546,7 @@ class LogsApp(App):
             ctx.rect(x, badge_y, BADGE_W, BADGE_H, badge_fill, radius=BADGE_R)
             ctx.text(x + BADGE_W / 2, badge_y + BADGE_H / 2,
                      ll.level[:4], size=10.0, color=badge_fg,
-                     bold=True, monospace=True, align="center")
+                     bold=True, monospace=True, align="center_center")
             x += BADGE_ADV
 
             # target

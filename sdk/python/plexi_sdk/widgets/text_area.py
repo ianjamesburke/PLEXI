@@ -195,7 +195,7 @@ class TextArea:
                 "color": t.foreground,
                 "monospace": t.monospace,
                 "bold": False,
-                "align": "top_left",
+                "align": "left_top",
                 "max_width": None,
                 "elide": True,
                 "selectable": False,

@@ -41,7 +41,7 @@ below the minimum pane size, or use `ScrollLog` for variable content.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Protocol, Union, runtime_checkable
+from typing import Callable, List, Optional, Protocol, Union, runtime_checkable
 
 
 @runtime_checkable
@@ -386,6 +386,37 @@ class Divider(Component):
 
     def to_node(self) -> dict:
         return {"type": "divider", "color": self.color or ""}
+
+
+@dataclass
+class Canvas(Component):
+    """Leaf component for custom drawing. The draw callable receives
+    ``(ctx, x, y, w, h)`` and emits draw commands directly.
+
+    ``grow=True`` (default) makes the Canvas fill remaining vertical space.
+    ``height`` fixes the height in pixels when grow is False.
+
+    Example::
+
+        def draw_grid(ctx, x, y, w, h):
+            for i in range(5):
+                cx = x + (i + 0.5) * w / 5
+                ctx.circle(cx, y + h / 2, 4.0, "#89b4fa")
+
+        Canvas(draw=draw_grid)
+    """
+    draw: "Callable[[Any, float, float, float, float], None]"
+    grow: bool = True
+    height: "float | None" = None
+
+    def measure(self, _avail_w: float) -> float:
+        return self.height if self.height is not None else 0.0
+
+    def is_grow(self) -> bool:
+        return self.grow and self.height is None
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self.draw(ctx, x, y, w, h)
 
 
 @dataclass
@@ -1395,7 +1426,7 @@ class SelectList(Component):
 
         if not self.items:
             ctx.text(x + w / 2, y + h / 2, "No items",
-                     size=TEXT_HINT, color=theme.muted, align="center")
+                     size=TEXT_HINT, color=theme.muted, align="center_center")
             return
 
         ctx.push_clip(x, y, w, h)
@@ -2080,7 +2111,7 @@ __all__ = [
     # components
     "Component", "Column", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
-    "Spacer", "Divider", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
+    "Spacer", "Divider", "Canvas", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
     "ListItem", "Row", "TextInput", "TextEdit", "ChatBubble",
     "SelectList", "FormField",
     "InfoTable", "ButtonRow",
