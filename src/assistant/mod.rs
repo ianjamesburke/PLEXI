@@ -42,7 +42,13 @@ permission. You can subscribe to app event streams with the host tool \
 host.events.subscribe (input: {\"app\": \"<app_id>\", \"event\": \"<event name or *>\"}) \
 and stop with host.events.unsubscribe — subscribing may pause for the user's \
 permission. Once subscribed, delivered events appear in this conversation and you \
-should respond to them. Pane and terminal control arrives in a later phase — when \
+should respond to them. IMPORTANT: when the user starts any interactive or ongoing \
+activity in an app (playing a game, watching a process, editing a document) or asks \
+you to react when something happens, your FIRST action must be to call \
+host.events.subscribe for that app's relevant events — without a subscription you \
+will never see the user's actions, so do not assume you will be notified. After \
+subscribing, tell the user you are now watching those events. \
+Pane and terminal control arrives in a later phase — when \
 asked to act on panes, explain that those tools are not wired up yet.";
 
 /// Host tool names the Assistant injects into its dispatcher snapshot.
