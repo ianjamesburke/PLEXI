@@ -1223,7 +1223,7 @@ impl PlexiApp {
         use chrono::Utc;
         let now = Utc::now();
         let captured_at = now.to_rfc3339();
-        let filename = format!("note-{}.md", now.format("%Y%m%d-%H%M%S"));
+        let filename = format!("note-{}.md", now.format("%Y%m%d-%H%M%S%.3f"));
 
         let workspace = ctx
             .workspace_root
@@ -2029,7 +2029,7 @@ fn scratchpad_file() -> PathBuf {
     use chrono::Utc;
     let now = Utc::now();
     let dir = crate::config::config_dir().join("notes").join("inbox");
-    let filename = format!("scratch-{}.md", now.format("%Y%m%d-%H%M%S"));
+    let filename = format!("scratch-{}.md", now.format("%Y%m%d-%H%M%S%.3f"));
     // Return path only — do not pre-write. TextEditorApp creates the file on first
     // save, so abandoning scratchpad without typing leaves no phantom inbox note.
     let _ = std::fs::create_dir_all(&dir);

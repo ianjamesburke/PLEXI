@@ -12,7 +12,7 @@ pub fn note_capture_cli(text: &str) -> i32 {
 
     // Timestamp for filename and frontmatter.
     let now = chrono::Utc::now();
-    let ts = now.format("%Y%m%dT%H%M%SZ").to_string();
+    let ts = now.format("%Y%m%dT%H%M%S%.3fZ").to_string();
     let ts_human = now.to_rfc3339();
 
     let cwd = std::env::current_dir()

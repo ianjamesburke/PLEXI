@@ -24,12 +24,18 @@ pub enum ConfigDiagnostic {
         path: String,
         section: String,
         hint: String,
+        /// true → error (config key completely removed); false → warning (migration path still works).
+        error: bool,
     },
 }
 
 impl ConfigDiagnostic {
     pub fn is_error(&self) -> bool {
-        matches!(self, Self::ReadError { .. } | Self::ParseError { .. } | Self::DeprecatedSection { .. })
+        match self {
+            Self::ReadError { .. } | Self::ParseError { .. } => true,
+            Self::DeprecatedSection { error, .. } => *error,
+            Self::UnknownKey { .. } => false,
+        }
     }
 }
 
@@ -45,8 +51,9 @@ impl std::fmt::Display for ConfigDiagnostic {
                     write!(f, "{path}: unknown key `{key}` in [{table}]")
                 }
             }
-            Self::DeprecatedSection { path, section, hint } => {
-                write!(f, "{path}: `{section}` has been removed. {hint}")
+            Self::DeprecatedSection { path, section, hint, error } => {
+                let severity = if *error { "error" } else { "warning" };
+                write!(f, "{path}: {severity}: `{section}` is deprecated. {hint}")
             }
         }
     }
@@ -251,6 +258,7 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                     path: path_str.clone(),
                     section: "quick_note".to_string(),
                     hint: "Quick note now saves directly to notes/inbox/ — remove the [[quick_note.destinations]] section from your config. See https://plexiapp.com/docs/config".to_string(),
+                    error: true,
                 });
             }
             if table.contains_key("theme_preset") {
@@ -258,6 +266,7 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                     path: path_str.clone(),
                     section: "theme_preset".to_string(),
                     hint: "Use [theme] preset = \"name\" instead. See https://plexiapp.com/docs/config".to_string(),
+                    error: false, // still works via fallback; migrate at your convenience
                 });
             }
         }
