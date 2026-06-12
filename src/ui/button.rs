@@ -1,4 +1,4 @@
-use egui::RichText;
+use egui::{Align2, Color32, RichText, Vec2};
 
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -74,6 +74,57 @@ pub(crate) fn icon_button(
             .color(colors.text_dim),
         hover_text,
     )
+}
+
+/// Full-width option button for `NotifyKind::Choice` lists.
+///
+/// Paints a fixed-height rect with a centered label and an optional
+/// right-gutter shortcut hint. The focused option receives an accent fill;
+/// non-focused options lift slightly on hover.
+pub(crate) fn choice_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    shortcut_hint: &str,
+    focused: bool,
+    colors: &Colors,
+) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(width, style::BUTTON_H_LG), egui::Sense::click());
+
+    let (bg, fg, hint_color) = if focused {
+        (colors.accent, Color32::BLACK, Color32::from_black_alpha(140))
+    } else {
+        (colors.bg_hover, colors.text_primary, colors.text_dim)
+    };
+    let actual_bg = if resp.hovered() && !focused {
+        colors.bg_active
+    } else {
+        bg
+    };
+
+    let painter = ui.painter();
+    painter.rect_filled(rect, style::RADIUS_MD, actual_bg);
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(style::TEXT_BODY),
+        fg,
+    );
+    if !shortcut_hint.is_empty() {
+        painter.text(
+            egui::pos2(rect.right() - 18.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            shortcut_hint,
+            egui::FontId::proportional(style::TEXT_CAPTION),
+            hint_color,
+        );
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
 }
 
 pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::Response {

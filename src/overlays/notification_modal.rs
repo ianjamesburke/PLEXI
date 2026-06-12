@@ -1,98 +1,5 @@
 use super::*;
-
-/// Full-width option button for the notification modal's `choice` kind.
-///
-/// Egui's built-in `Button` left-aligns its label and gives you no hook to
-/// center it inside a wider fixed-width rect. We paint the rect, label, and
-/// shortcut-hint manually so:
-///   • The label sits center-horizontal and center-vertical.
-///   • The shortcut hint (e.g. `[Y]`) sits right-aligned in the gutter.
-///   • The focused option gets an accent fill + darker text for contrast.
-fn option_button(
-    ui: &mut egui::Ui,
-    label: &str,
-    shortcut_hint: &str,
-    focused: bool,
-    colors: &Colors,
-) -> egui::Response {
-    let width = ui.available_width();
-    let height = style::BUTTON_H_LG;
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
-
-    let (bg, fg, hint_color) = if focused {
-        (
-            colors.accent,
-            Color32::BLACK,
-            Color32::from_black_alpha(140),
-        )
-    } else {
-        (colors.bg_hover, colors.text_primary, colors.text_dim)
-    };
-
-    // Hover lifts the bg slightly for non-focused options (focused is already
-    // the accent and looks clearly active — no hover lift needed).
-    let actual_bg = if resp.hovered() && !focused {
-        colors.bg_active
-    } else {
-        bg
-    };
-
-    let painter = ui.painter();
-    painter.rect_filled(rect, style::RADIUS_MD, actual_bg);
-
-    // Centered label.
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(style::TEXT_BODY + 1.0),
-        fg,
-    );
-
-    // Right-gutter shortcut hint.
-    if !shortcut_hint.is_empty() {
-        let hint_pos = egui::pos2(rect.right() - 18.0, rect.center().y);
-        painter.text(
-            hint_pos,
-            Align2::RIGHT_CENTER,
-            shortcut_hint,
-            egui::FontId::proportional(style::TEXT_CAPTION),
-            hint_color,
-        );
-    }
-
-    if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-
-    resp
-}
-
-/// Primary action button — used for the message-kind Acknowledge. Fixed width,
-/// center-aligned label, accent fill. Keyboard dispatch is handled separately.
-fn primary_button(ui: &mut egui::Ui, label: &str, colors: &Colors, width: f32) -> egui::Response {
-    let height = style::BUTTON_H_MD;
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
-
-    let bg = if resp.hovered() {
-        colors.accent.gamma_multiply(1.15)
-    } else {
-        colors.accent
-    };
-    let painter = ui.painter();
-    painter.rect_filled(rect, style::RADIUS_MD, bg);
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(style::TEXT_BODY + 1.0),
-        Color32::BLACK,
-    );
-    if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    resp
-}
+use crate::ui::button::{ButtonKind, chrome_button, choice_button};
 
 /// Maximum displayed image height inside the notification card. Width is
 /// constrained by the card's available width; aspect ratio is preserved.
@@ -471,7 +378,7 @@ impl PlexiApp {
                             ui.add_space(style::SPACE_SM);
                             ui.add_space(style::SPACE_MD);
                             ui.vertical_centered(|ui| {
-                                let resp = primary_button(ui, "Dismiss", &self.colors, 180.0);
+                                let resp = chrome_button(ui, "Dismiss", ButtonKind::Accent, &self.colors, 180.0);
                                 if resp.clicked() {
                                     if let Some(n) = self.pending_notifications
                                         .iter()
@@ -514,7 +421,7 @@ impl PlexiApp {
                                         .as_ref()
                                         .map(|s| format!("[{}]", s.to_uppercase()))
                                         .unwrap_or_else(|| format!("[{}]", idx + 1));
-                                    let resp = option_button(
+                                    let resp = choice_button(
                                         ui,
                                         &opt.label,
                                         &shortcut_hint,
@@ -577,12 +484,7 @@ impl PlexiApp {
                         // centered hint row describing keyboard shortcuts.
                         if matches!(notif.kind, NotifyKind::Message) {
                             ui.vertical_centered(|ui| {
-                                let resp = primary_button(
-                                    ui,
-                                    "Acknowledge",
-                                    &self.colors,
-                                    180.0,
-                                );
+                                let resp = chrome_button(ui, "Acknowledge", ButtonKind::Accent, &self.colors, 180.0);
                                 if resp.clicked() {
                                     action_cmd = Some(AppCommand::DeliverNotifyAction {
                                         pane_id: notif.sender_pane_id,
