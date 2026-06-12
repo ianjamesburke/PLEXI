@@ -1247,7 +1247,7 @@ impl PlexiApp {
         use chrono::Utc;
         let now = Utc::now();
         let captured_at = now.to_rfc3339();
-        let filename = format!("note-{}.md", now.format("%Y%m%d-%H%M%S%.3f"));
+        let stamp = now.format("%Y%m%d-%H%M%S%.3f").to_string();
 
         let workspace = ctx
             .workspace_root
@@ -1274,7 +1274,15 @@ impl PlexiApp {
             );
             return None;
         }
-        let path = dir.join(&filename);
+        // Millisecond timestamps collide when two notes land in the same ms
+        // (e.g. back-to-back scratchpad calls); suffix until the path is free
+        // so the second note never overwrites the first.
+        let mut path = dir.join(format!("note-{stamp}.md"));
+        let mut n = 1u32;
+        while path.exists() {
+            path = dir.join(format!("note-{stamp}-{n}.md"));
+            n += 1;
+        }
         match std::fs::write(&path, &content) {
             Ok(()) => {
                 log::info!("QuickNote: saved to {}", path.display());

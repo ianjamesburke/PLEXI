@@ -30,7 +30,6 @@ pub struct TextEditorApp {
     wants_close: bool,
     load_error: Option<String>,
     font_size: f32,
-    cursor_blink_start: f64,
 }
 
 impl TextEditorApp {
@@ -54,7 +53,6 @@ impl TextEditorApp {
             wants_close: false,
             load_error,
             font_size: FONT_SIZE_DEFAULT,
-            cursor_blink_start: 0.0,
         }
     }
 
@@ -486,8 +484,11 @@ impl App for TextEditorApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                // egui's built-in cursor handles blink (timer resets on edits
+                // and cursor movement) and paints a full-row caret. Never
+                // hand-roll an erase-and-redraw cursor on top of it: the
+                // erase rect destroys glyph edges under a monospace font.
                 let output = ui.scope(|ui| {
-                    ui.visuals_mut().text_cursor.blink = false;
                     ui.visuals_mut().text_cursor.stroke =
                         egui::Stroke::new(2.0, colors.accent);
                     egui::TextEdit::multiline(&mut self.content)
@@ -499,56 +500,6 @@ impl App for TextEditorApp {
                         .frame(false)
                         .show(ui)
                 }).inner;
-
-                // Erase egui's full-height cursor and draw a shorter one matching font_size.
-                if output.response.has_focus() {
-                    let now = ui.ctx().input(|i| i.time);
-                    if output.response.changed() || output.response.gained_focus() {
-                        self.cursor_blink_start = now;
-                    }
-                    if let Some(cursor_range) = &output.cursor_range {
-                        let primary = cursor_range.primary;
-                        let cursor_pos = output.galley.pos_from_cursor(&primary);
-                        let row_h = if cursor_pos.height() > 0.01 {
-                            cursor_pos.height()
-                        } else {
-                            row_height
-                        };
-                        let erase_rect = egui::Rect::from_min_max(
-                            egui::pos2(
-                                output.galley_pos.x + cursor_pos.center().x - 2.0,
-                                output.galley_pos.y + cursor_pos.min.y - 2.0,
-                            ),
-                            egui::pos2(
-                                output.galley_pos.x + cursor_pos.center().x + 2.0,
-                                output.galley_pos.y + cursor_pos.min.y + row_h + 2.0,
-                            ),
-                        );
-                        ui.painter().rect_filled(erase_rect, 0.0, colors.terminal_bg);
-                        let on = 0.5_f64;
-                        let off = 0.5_f64;
-                        let t = (now - self.cursor_blink_start) % (on + off);
-                        if t < on {
-                            let target_h = self.font_size;
-                            let row_top = output.galley_pos.y + cursor_pos.min.y;
-                            let start_y = row_top + (row_h - target_h) * 0.5;
-                            let cx = output.galley_pos.x + cursor_pos.center().x;
-                            ui.painter().line_segment(
-                                [
-                                    egui::pos2(cx, start_y),
-                                    egui::pos2(cx, start_y + target_h),
-                                ],
-                                egui::Stroke::new(2.0, colors.accent),
-                            );
-                        }
-                        let wake = if t < on {
-                            (on - t) as f32
-                        } else {
-                            (on + off - t) as f32
-                        };
-                        ui.ctx().request_repaint_after_secs(wake);
-                    }
-                }
 
                 if output.response.changed() {
                     self.last_edit = Some(Instant::now());
