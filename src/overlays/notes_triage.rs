@@ -438,3 +438,71 @@ impl PlexiApp {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::notes::NoteFrontmatter;
+
+    fn inbox_note(name: &str) -> InboxNote {
+        InboxNote {
+            path: std::env::temp_dir().join(format!("plexi-triage-test-{name}.md")),
+            frontmatter: NoteFrontmatter::default(),
+            body: format!("note {name}\n"),
+        }
+    }
+
+    fn test_app() -> PlexiApp {
+        let ctx = egui::Context::default();
+        let frame_tick = crate::platform::logging::FrameTick::default();
+        let (app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+        app
+    }
+
+    #[test]
+    fn triage_advance_returns_to_picker_when_inbox_empties() {
+        let mut app = test_app();
+        app.notes_triage_notes = vec![inbox_note("only")];
+        app.notes_triage_index = 0;
+        app.push_focus_layer(FocusLayer::NotesTriage);
+
+        // Removing the last note must land back on the picker, not just close.
+        app.notes_triage_advance();
+
+        assert!(!app.focus_stack.contains(&FocusLayer::NotesTriage));
+        assert!(app.focus_stack.contains(&FocusLayer::NotesPicker));
+    }
+
+    #[test]
+    fn triage_advance_keeps_overlay_open_while_notes_remain() {
+        let mut app = test_app();
+        app.notes_triage_notes = vec![inbox_note("a"), inbox_note("b")];
+        app.notes_triage_index = 0;
+        app.push_focus_layer(FocusLayer::NotesTriage);
+
+        app.notes_triage_advance();
+
+        assert!(app.focus_stack.contains(&FocusLayer::NotesTriage));
+        assert!(!app.focus_stack.contains(&FocusLayer::NotesPicker));
+        assert_eq!(app.notes_triage_notes.len(), 1);
+        assert_eq!(app.notes_triage_index, 0);
+    }
+
+    #[test]
+    fn triage_back_to_picker_does_not_double_push_picker_layer() {
+        let mut app = test_app();
+        app.push_focus_layer(FocusLayer::NotesPicker);
+        app.push_focus_layer(FocusLayer::NotesTriage);
+
+        app.notes_triage_back_to_picker();
+
+        assert!(!app.focus_stack.contains(&FocusLayer::NotesTriage));
+        assert_eq!(
+            app.focus_stack
+                .iter()
+                .filter(|l| **l == FocusLayer::NotesPicker)
+                .count(),
+            1
+        );
+    }
+}

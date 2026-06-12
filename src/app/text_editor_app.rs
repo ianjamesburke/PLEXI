@@ -37,16 +37,9 @@ impl TextEditorApp {
         }
     }
 
-    /// A note is empty when it has no content at all, or — for files under the
-    /// notes dir — when only capture frontmatter remains (scratch/quick notes
-    /// the user never typed into).
     fn is_effectively_empty(&self) -> bool {
-        if self.content.is_empty() {
-            return true;
-        }
         let notes_dir = crate::config::config_dir().join("notes");
-        self.path.starts_with(&notes_dir)
-            && crate::notes::parse_note(&self.content).1.trim().is_empty()
+        content_is_effectively_empty(&self.path, &notes_dir, &self.content)
     }
 
     fn flush(&mut self) {
@@ -101,6 +94,35 @@ mod tests {
     }
 
     #[test]
+    fn frontmatter_only_note_counts_as_empty_inside_notes_dir() {
+        let notes_dir = PathBuf::from("/fake-home/.plexi/notes");
+        let inbox_note = notes_dir.join("inbox").join("note-1.md");
+        let outside = PathBuf::from("/projects/readme.md");
+        let frontmatter_only = "---\ntitle: \"\"\nsource: \"scratchpad\"\n---\n\n";
+        let with_body = "---\nsource: \"scratchpad\"\n---\nactual content\n";
+
+        // Frontmatter-only is empty only for files under the notes dir.
+        assert!(content_is_effectively_empty(
+            &inbox_note,
+            &notes_dir,
+            frontmatter_only
+        ));
+        assert!(!content_is_effectively_empty(
+            &outside,
+            &notes_dir,
+            frontmatter_only
+        ));
+
+        // A real body is never empty; zero bytes always is.
+        assert!(!content_is_effectively_empty(
+            &inbox_note,
+            &notes_dir,
+            with_body
+        ));
+        assert!(content_is_effectively_empty(&outside, &notes_dir, ""));
+    }
+
+    #[test]
     fn note_path_identity_matches_existing_file_aliases() {
         let dir = unique_temp_dir("plexi-note-identity");
         std::fs::create_dir_all(&dir).expect("create temp dir");
@@ -147,6 +169,16 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// A note is empty when it has no content at all, or — for files under
+/// `notes_dir` — when only capture frontmatter remains (scratch/quick notes the
+/// user never typed into). Empty notes are deleted instead of saved.
+fn content_is_effectively_empty(path: &Path, notes_dir: &Path, content: &str) -> bool {
+    if content.is_empty() {
+        return true;
+    }
+    path.starts_with(notes_dir) && crate::notes::parse_note(content).1.trim().is_empty()
 }
 
 pub(crate) fn note_path_identity(path: &Path) -> PathBuf {
