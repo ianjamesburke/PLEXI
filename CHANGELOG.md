@@ -1,6 +1,14 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.751] — 2026-06-12
+
+### Changes
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
 ## [0.0.750] — 2026-06-12
 
 ### Changes
