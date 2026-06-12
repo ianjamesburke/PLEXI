@@ -59,6 +59,8 @@ pub struct MiniPane {
     pub title: Option<String>,
     /// False for terminal panes that have exited; dims the pane in the minimap.
     pub active: bool,
+    /// Agent/terminal activity state; renders a dot in the pane's top-left corner.
+    pub activity: Option<crate::app_protocol::AgentState>,
 }
 
 /// One window in the child context, with its spatial grid position.
@@ -78,11 +80,6 @@ pub struct PortalPreview {
     pub notification_count: usize,
     pub windows: Vec<MiniWindow>,
     pub window_count: usize,
-    /// Rollup agent state for all panes in the subcontext. `None` = no agents.
-    pub agent_rollup: Option<crate::app_protocol::AgentState>,
-    /// Per-pane agent state in spatial order (parallel to the pip row in the
-    /// portal header). `None` entries mean that pane has no agent running.
-    pub pane_activities: Vec<Option<crate::app_protocol::AgentState>>,
 }
 
 impl Default for PortalPreview {
@@ -94,8 +91,6 @@ impl Default for PortalPreview {
             notification_count: 0,
             windows: Vec::new(),
             window_count: 0,
-            agent_rollup: None,
-            pane_activities: Vec::new(),
         }
     }
 }
@@ -223,29 +218,12 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
             let colors_for_portal = self.colors.clone();
             portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                // Title row: optional rollup dot + context name.
-                ui.horizontal(|ui| {
-                    if let Some(ref state) = preview.agent_rollup {
-                        let t = ui.input(|i| i.time);
-                        let dot_color =
-                            crate::ui::activity::dot_color_from_time(state, &colors_for_portal, t);
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(8.0, 8.0),
-                            egui::Sense::hover(),
-                        );
-                        ui.painter().circle_filled(rect.center(), 3.0, dot_color);
-                        if matches!(state, crate::app_protocol::AgentState::Working) {
-                            ui.ctx().request_repaint();
-                        }
-                        ui.add_space(style::SPACE_XS);
-                    }
-                    ui.label(
-                        egui::RichText::new(&preview.context_name)
-                            .size(style::TEXT_BODY)
-                            .strong()
-                            .color(colors_for_portal.text_primary),
-                    );
-                });
+                ui.label(
+                    egui::RichText::new(&preview.context_name)
+                        .size(style::TEXT_BODY)
+                        .strong()
+                        .color(colors_for_portal.text_primary),
+                );
                 if !preview.context_description.is_empty() {
                     ui.scope(|ui| {
                         ui.set_max_width(inner.width());
@@ -282,33 +260,6 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             .color(colors_for_portal.text_dim),
                     );
                 }
-                // Per-pane activity pip row (only when agents are present).
-                if preview.pane_activities.iter().any(|s| s.is_some()) {
-                    ui.add_space(style::SPACE_XS);
-                    ui.horizontal(|ui| {
-                        let t = ui.input(|i| i.time);
-                        let has_working = preview.pane_activities.iter().any(|s| {
-                            matches!(s, Some(crate::app_protocol::AgentState::Working))
-                        });
-                        if has_working {
-                            ui.ctx().request_repaint();
-                        }
-                        const PIP_R: f32 = 3.0;
-                        for state_opt in &preview.pane_activities {
-                            // Portals have no focused pane; activity pips render at
-                            // full strength, neutral pips at the shared unfocused dim.
-                            let color = crate::ui::activity::pip_color(
-                                state_opt.as_ref(),
-                                state_opt.is_some(),
-                                &colors_for_portal,
-                                t,
-                            );
-                            let (rect, _) =
-                                ui.allocate_exact_size(egui::vec2(PIP_R * 2.0, PIP_R * 2.0), egui::Sense::hover());
-                            ui.painter().circle_filled(rect.center(), PIP_R, color);
-                        }
-                    });
-                }
                 ui.add_space(style::SPACE_SM);
                 if !preview.windows.is_empty() {
                     let header_used = ui.cursor().min.y - inner.min.y;
@@ -317,8 +268,14 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         egui::vec2(inner.width(), map_h),
                         egui::Sense::hover(),
                     );
+                    let t = ui.input(|i| i.time);
+                    if preview.windows.iter().flat_map(|w| &w.panes).any(|p| {
+                        matches!(p.activity, Some(crate::app_protocol::AgentState::Working))
+                    }) {
+                        ui.ctx().request_repaint();
+                    }
                     let painter = ui.painter();
-                    paint_portal_minimap(painter, map_area, &preview.windows, &colors_for_portal);
+                    paint_portal_minimap(painter, map_area, &preview.windows, &colors_for_portal, t);
                 }
             });
             // Double-click on portal pane to zoom into the sub-context.
@@ -574,6 +531,7 @@ pub(crate) fn paint_portal_minimap(
     area: egui::Rect,
     windows: &[MiniWindow],
     colors: &Colors,
+    time: f64,
 ) {
     if windows.is_empty() {
         return;
@@ -705,6 +663,22 @@ pub(crate) fn paint_portal_minimap(
                 );
             }
 
+            // Activity dot — top-left corner of the pane, mirroring the
+            // title-bar dot on real panes.
+            const ACTIVITY_DOT_R: f32 = 2.5;
+            let activity_dot = pane.activity.as_ref().filter(|_| cell.width() > 14.0);
+            if let Some(state) = activity_dot {
+                let color = crate::ui::activity::dot_color_from_time(state, colors, time);
+                painter.circle_filled(
+                    egui::pos2(
+                        cell.min.x + 3.0 + ACTIVITY_DOT_R,
+                        cell.min.y + 3.0 + ACTIVITY_DOT_R,
+                    ),
+                    ACTIVITY_DOT_R,
+                    color,
+                );
+            }
+
             if !pane.has_content {
                 continue;
             }
@@ -732,8 +706,13 @@ pub(crate) fn paint_portal_minimap(
                         title_alpha,
                     );
                     let font_size = if cell.width() > 80.0 { 11.0 } else { 9.0 };
+                    let title_x_offset = if activity_dot.is_some() {
+                        3.0 + ACTIVITY_DOT_R * 2.0 + 3.0
+                    } else {
+                        1.0
+                    };
                     painter.text(
-                        egui::pos2(content_area.min.x + 1.0, content_area.min.y),
+                        egui::pos2(content_area.min.x + title_x_offset, content_area.min.y),
                         egui::Align2::LEFT_TOP,
                         title,
                         egui::FontId::proportional(font_size),

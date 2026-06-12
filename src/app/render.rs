@@ -283,6 +283,9 @@ impl PlexiApp {
                                             .or_else(|| p.as_app().map(|a| a.name.clone()))
                                     });
                                     let focused = is_active_win && w.focused_pane == Some(*tile_id);
+                                    let activity = pane_ref
+                                        .and_then(|p| p.effective_activity())
+                                        .cloned();
                                     crate::spatial::tiling::MiniPane {
                                         norm_rect: *norm_rect,
                                         kind,
@@ -290,6 +293,7 @@ impl PlexiApp {
                                         has_content: true,
                                         title,
                                         active: true,
+                                        activity,
                                     }
                                 }).collect();
                                 Some(crate::spatial::tiling::MiniWindow {
@@ -300,32 +304,6 @@ impl PlexiApp {
                             })
                             .collect();
                         let window_count = child_windows.len();
-                        // Collect per-pane agent states in spatial order for the portal pip row.
-                        let pane_activities: Vec<Option<crate::app_protocol::AgentState>> = self
-                            .windows
-                            .iter()
-                            .filter(|w| w.context_id == child_ctx_id)
-                            .flat_map(|w| {
-                                if let Some(root) = w.tree.root() {
-                                    crate::spatial::tiling::collect_pane_ids_spatial(
-                                        &w.tree.tiles,
-                                        root,
-                                    )
-                                    .into_iter()
-                                    .map(|pid| {
-                                        w.panes
-                                            .get(&pid)
-                                            .and_then(|p| p.effective_activity())
-                                            .cloned()
-                                    })
-                                    .collect::<Vec<_>>()
-                                } else {
-                                    vec![]
-                                }
-                            })
-                            .collect();
-                        let agent_rollup =
-                            crate::ui::activity::rollup_activity(pane_activities.iter());
                         map.insert(pane_id, crate::spatial::tiling::PortalPreview {
                             context_name: ctx_name,
                             context_description: ctx_description,
@@ -333,8 +311,6 @@ impl PlexiApp {
                             notification_count: notif_count,
                             windows: child_windows,
                             window_count,
-                            agent_rollup,
-                            pane_activities,
                         });
                     }
                     map
