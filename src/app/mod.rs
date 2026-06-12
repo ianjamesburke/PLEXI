@@ -153,6 +153,11 @@ pub struct PlexiApp {
     /// Repaint-cause diagnostics sample window (#2019): start instant and
     /// frame count. `None` until the first frame opens a window.
     pub(crate) frame_diag_window: Option<(std::time::Instant, u32)>,
+    /// Last window title sent via `ViewportCommand::Title`. egui's
+    /// `send_viewport_cmd` unconditionally requests a repaint, so sending the
+    /// title every frame creates a self-sustaining repaint loop (60fps
+    /// visible, uncapped when occluded). Only send on change.
+    pub(crate) last_sent_window_title: Option<String>,
     /// Directory holding `permissions.toml` for the host-level permission
     /// management handlers (`ListPermissions` / `SetPermission`, stint 0017).
     /// `config_dir()` in production; an isolated temp dir in tests so harness
@@ -732,6 +737,7 @@ impl PlexiApp {
                     pending_context_close: None,
                     frame_tick: frame_tick.clone(),
                     frame_diag_window: None,
+                    last_sent_window_title: None,
                     permission_store_dir: crate::config::config_dir(),
                     renaming_window: None,
                     rename_buffer: String::new(),
@@ -920,6 +926,7 @@ impl PlexiApp {
             pending_context_close: None,
             frame_tick,
             frame_diag_window: None,
+            last_sent_window_title: None,
             permission_store_dir: crate::config::config_dir(),
             renaming_window: None,
             rename_buffer: String::new(),
@@ -1117,6 +1124,7 @@ impl PlexiApp {
                 pending_context_close: None,
                 frame_tick,
                 frame_diag_window: None,
+                last_sent_window_title: None,
                 permission_store_dir: {
                     let dir = std::env::temp_dir()
                         .join(format!("plexi-test-perms-{}", uuid::Uuid::new_v4()));
@@ -2424,7 +2432,13 @@ impl eframe::App for PlexiApp {
                 Some(name) => format!("{} — {}", context_label, name),
                 None => context_label,
             };
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+            // Only send on change: egui's `send_viewport_cmd` unconditionally
+            // requests a repaint, so sending every frame pins the render loop
+            // at 60fps (uncapped when occluded).
+            if self.last_sent_window_title.as_deref() != Some(title.as_str()) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+                self.last_sent_window_title = Some(title);
+            }
         }
 
         // Determine if the focused pane has an active app surface, and whether
