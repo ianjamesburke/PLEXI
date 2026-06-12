@@ -4,34 +4,33 @@ use super::binary_in_path;
 
 pub fn notes_list_cli() -> i32 {
     let notes_base = crate::config::config_dir().join("notes");
+
+    // Always include inbox.
+    let inbox_dir = notes_base.join("inbox");
+
+    // Workspace-scoped dir (kept notes).
     let workspace_slug = crate::config::active_workspace_root()
         .and_then(|p| p.file_name().map(|n| n.to_os_string()))
         .map(|n| n.to_string_lossy().into_owned());
-    let notes_dir = match workspace_slug {
-        Some(ref slug) => notes_base.join(slug),
-        None => notes_base,
-    };
-    log::info!("notes_list: scanning {:?}", notes_dir);
-    let entries = match std::fs::read_dir(&notes_dir) {
-        Ok(r) => r,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            log::info!("notes_list: notes dir does not exist yet");
-            return 0;
+    let workspace_dir = workspace_slug.map(|slug| notes_base.join(slug));
+
+    log::info!("notes_list: scanning inbox={:?} workspace={:?}", inbox_dir, workspace_dir);
+
+    let mut paths: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+
+    for dir in [Some(inbox_dir), workspace_dir].into_iter().flatten() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            if entry.path().extension().map_or(false, |x| x == "md") {
+                if let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) {
+                    paths.push((mtime, entry.path()));
+                }
+            }
         }
-        Err(e) => {
-            eprintln!("error: could not read notes directory: {e}");
-            return 1;
-        }
-    };
-    let mut paths: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
-        .filter_map(|e| {
-            let p = e.path();
-            let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
-            Some((mtime, p))
-        })
-        .collect();
+    }
+
     paths.sort_by(|a, b| b.0.cmp(&a.0));
     log::info!("notes_list: found {} notes", paths.len());
     for (_, path) in &paths {

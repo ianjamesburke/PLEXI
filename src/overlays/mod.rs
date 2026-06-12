@@ -14,30 +14,6 @@ pub(crate) mod setup;
 pub(crate) mod toolbar;
 pub(crate) mod ui_gallery;
 
-/// Consume the first digit key (0–9) pressed this frame; return its value.
-pub(crate) fn consume_digit_key(ctx: &egui::Context) -> Option<u8> {
-    ctx.input_mut(|i| {
-        let keys = [
-            (egui::Key::Num0, 0u8),
-            (egui::Key::Num1, 1),
-            (egui::Key::Num2, 2),
-            (egui::Key::Num3, 3),
-            (egui::Key::Num4, 4),
-            (egui::Key::Num5, 5),
-            (egui::Key::Num6, 6),
-            (egui::Key::Num7, 7),
-            (egui::Key::Num8, 8),
-            (egui::Key::Num9, 9),
-        ];
-        for (key, n) in keys {
-            if i.consume_key(egui::Modifiers::NONE, key) {
-                return Some(n);
-            }
-        }
-        None
-    })
-}
-
 use crate::app::PlexiApp;
 
 pub(crate) const MODAL_WIDTH: f32 = 400.0;

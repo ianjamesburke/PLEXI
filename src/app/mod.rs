@@ -65,9 +65,7 @@ fn is_auto_window_name(name: &str) -> bool {
 pub(crate) struct QuickNoteCtx {
     pub cwd: std::path::PathBuf,
     pub workspace_root: Option<std::path::PathBuf>,
-    pub context: String,
     pub context_root: Option<std::path::PathBuf>,
-    pub context_description: Option<String>,
 }
 
 /// What a `TextInputOverlay` commit should do.
@@ -221,17 +219,6 @@ pub struct PlexiApp {
     pub(crate) notes_picker_entries: Vec<(std::path::PathBuf, String)>,
     /// Notes picker: currently highlighted row index.
     pub(crate) notes_picker_selected: usize,
-    /// Cursor row in the destination picker (0 = global backlog, 1+ = config destinations).
-    pub(crate) quick_note_dest_cursor: usize,
-    /// Cursor row in the sub-destination picker.
-    pub(crate) quick_note_sub_cursor: usize,
-    /// Cache of dynamically loaded children, keyed by full key path. Cleared on modal open.
-    pub(crate) quick_note_children_cache: HashMap<Vec<u8>, Vec<crate::config::QuickNoteNode>>,
-    /// Pending children_cmd receiver: (key_path, receiver).
-    pub(crate) quick_note_children_rx: Option<(
-        Vec<u8>,
-        std::sync::mpsc::Receiver<Result<Vec<crate::config::QuickNoteNode>, String>>,
-    )>,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
     pub(crate) modal_state_notify_id: String,
@@ -761,10 +748,6 @@ impl PlexiApp {
                     quick_note_ctx: QuickNoteCtx::default(),
                     notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
-                    quick_note_dest_cursor: 0,
-                    quick_note_sub_cursor: 0,
-                    quick_note_children_cache: HashMap::new(),
-                    quick_note_children_rx: None,
                     modal_state_notify_id: String::new(),
                     notification_images: HashMap::new(),
                     notifications_enabled,
@@ -947,10 +930,6 @@ impl PlexiApp {
             quick_note_ctx: QuickNoteCtx::default(),
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
-            quick_note_dest_cursor: 0,
-            quick_note_sub_cursor: 0,
-            quick_note_children_cache: HashMap::new(),
-            quick_note_children_rx: None,
             modal_state_notify_id: String::new(),
             notification_images: HashMap::new(),
             notifications_enabled,
@@ -1145,10 +1124,6 @@ impl PlexiApp {
                 quick_note_ctx: QuickNoteCtx::default(),
                 notes_picker_entries: Vec::new(),
                 notes_picker_selected: 0,
-                quick_note_dest_cursor: 0,
-                quick_note_sub_cursor: 0,
-                quick_note_children_cache: HashMap::new(),
-                quick_note_children_rx: None,
                 modal_state_notify_id: String::new(),
                 notification_images: HashMap::new(),
                 notifications_enabled: false,
@@ -1434,12 +1409,6 @@ impl eframe::App for PlexiApp {
                         self.context_description_handle_key(ctx)
                     }
                     Some(FocusLayer::QuickNote) => self.quick_note_handle_key(ctx),
-                    Some(FocusLayer::QuickNoteDestination) => {
-                        self.quick_note_destination_handle_key(ctx)
-                    }
-                    Some(FocusLayer::QuickNoteSubDestination(_)) => {
-                        self.quick_note_sub_destination_handle_key(ctx)
-                    }
                     Some(FocusLayer::CliSetupPrompt) => self.cli_setup_prompt_handle_key(ctx),
                     Some(FocusLayer::TextInput) => self.text_input_handle_key(ctx),
                     Some(FocusLayer::ContextCloseConfirm) => {
@@ -1453,8 +1422,6 @@ impl eframe::App for PlexiApp {
                     None => crate::app::app_trait::KeyDisposition::Passthrough,
                 };
                 // Step 2: render the overlay (visual only — key reads already done above).
-                // .cloned() is required: the QuickNoteSubDestination arm borrows `path` from
-                // focus_stack while calling draw_quick_note_menu which needs &mut self.
                 match self.focus_stack.last().cloned() {
                     Some(FocusLayer::NotificationModal) => {
                         early_modal_cmds = self.draw_notification_modal(ctx);
@@ -1476,12 +1443,6 @@ impl eframe::App for PlexiApp {
                     }
                     Some(FocusLayer::QuickNote) => {
                         self.draw_quick_note_modal(ctx);
-                    }
-                    Some(FocusLayer::QuickNoteDestination) => {
-                        self.draw_quick_note_destination(ctx);
-                    }
-                    Some(FocusLayer::QuickNoteSubDestination(path)) => {
-                        self.draw_quick_note_menu(ctx, &path);
                     }
                     Some(FocusLayer::CliSetupPrompt) => {
                         self.draw_cli_setup_modal(ctx);

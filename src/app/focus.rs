@@ -57,11 +57,6 @@ pub(crate) enum FocusLayer {
     ContextDescription,
     /// Quick note compose modal (text input phase).
     QuickNote,
-    /// Quick note destination picker.
-    QuickNoteDestination,
-    /// Quick note sub-destination picker. Inner Vec<u8> = key path from root to current node.
-    /// E.g. vec![3] = inside destination 3's children; vec![3,2] = destination 3 -> child 2.
-    QuickNoteSubDestination(Vec<u8>),
     /// First-launch CLI setup prompt. No text input — intercepts keys so they
     /// don't fall through to the active terminal while the modal is visible.
     CliSetupPrompt,
@@ -269,8 +264,6 @@ impl PlexiApp {
                 | Some(FocusLayer::ContextRename)
                 | Some(FocusLayer::ContextDescription)
                 | Some(FocusLayer::QuickNote)
-                | Some(FocusLayer::QuickNoteDestination)
-                | Some(FocusLayer::QuickNoteSubDestination(_))
                 | Some(FocusLayer::CliSetupPrompt)
                 | Some(FocusLayer::TextInput)
                 | Some(FocusLayer::ContextCloseConfirm)
