@@ -225,7 +225,7 @@ fn pane_row_identity(
         ),
         crate::host::pane::Pane::App(a) => {
             let chip = if a.manifest_id == "text-editor" {
-                "txt"
+                "text"
             } else {
                 "app"
             };
@@ -717,7 +717,7 @@ impl PlexiApp {
                                         ui.add_space(style::SPACE_XS);
                                     }
                                     let row = ListRow::new(title.as_str())
-                                        .chip("txt")
+                                        .chip("text")
                                         .secondary(preview.as_str())
                                         .selected(is_selected);
                                     let row_response = row.show(ui, &colors);
@@ -1006,7 +1006,7 @@ mod tests {
         assert_eq!((name.as_str(), chip), ("My Notes", "app"));
 
         let (name, chip) = pane_row_identity(&make_app("text-editor", "todo.md"), &[]);
-        assert_eq!((name.as_str(), chip), ("todo.md", "txt"));
+        assert_eq!((name.as_str(), chip), ("todo.md", "text"));
 
         // Empty pane name falls back to the runtime display name.
         let (name, _) = pane_row_identity(&make_app("notes", ""), &[]);
