@@ -39,6 +39,13 @@ curl -fsSL https://plexiapp.com/install | sh
 
 Downloads the latest release, installs to `/Applications`, sets up the `plexi` CLI, and wires ZSH integration. Restart your terminal when done.
 
+To install a pre-release channel, pass `--channel`:
+
+```bash
+curl -fsSL https://plexiapp.com/install | bash -s -- --channel beta
+curl -fsSL https://plexiapp.com/install | bash -s -- --channel alpha
+```
+
 **First launch (unsigned app):** macOS may block it on first open.
 - **macOS 15+:** System Settings → Privacy & Security → "Open Anyway".
 - **Or:** `xattr -cr /Applications/Plexi.app && open /Applications/Plexi.app`
