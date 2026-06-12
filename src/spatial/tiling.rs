@@ -663,16 +663,19 @@ pub(crate) fn paint_portal_minimap(
                 );
             }
 
-            // Activity dot — top-left corner of the pane, mirroring the
-            // title-bar dot on real panes.
+            // Activity dot — top-left of the pane, mirroring the title-bar
+            // dot on real panes. Vertically centered on the title line so it
+            // reads as part of the title row, with matching left padding.
             const ACTIVITY_DOT_R: f32 = 2.5;
+            const ACTIVITY_DOT_PAD: f32 = 5.0;
+            let title_font_size: f32 = if cell.width() > 80.0 { 11.0 } else { 9.0 };
             let activity_dot = pane.activity.as_ref().filter(|_| cell.width() > 14.0);
             if let Some(state) = activity_dot {
                 let color = crate::ui::activity::dot_color_from_time(state, colors, time);
                 painter.circle_filled(
                     egui::pos2(
-                        cell.min.x + 3.0 + ACTIVITY_DOT_R,
-                        cell.min.y + 3.0 + ACTIVITY_DOT_R,
+                        cell.min.x + ACTIVITY_DOT_PAD + ACTIVITY_DOT_R,
+                        cell.min.y + 2.0 + title_font_size * 0.5,
                     ),
                     ACTIVITY_DOT_R,
                     color,
@@ -705,9 +708,11 @@ pub(crate) fn paint_portal_minimap(
                         colors.text_dim.b(),
                         title_alpha,
                     );
-                    let font_size = if cell.width() > 80.0 { 11.0 } else { 9.0 };
+                    let font_size = title_font_size;
+                    // Title clears the dot (pad + diameter + gap), measured
+                    // from the cell edge like the dot itself.
                     let title_x_offset = if activity_dot.is_some() {
-                        3.0 + ACTIVITY_DOT_R * 2.0 + 3.0
+                        ACTIVITY_DOT_PAD + ACTIVITY_DOT_R * 2.0 + 4.0 - 2.0
                     } else {
                         1.0
                     };
