@@ -446,7 +446,7 @@ mod tests {
         });
         // ListRow titles are painted as galleys (not accessible labels);
         // assert on the section headers, which are real ui.label widgets.
-        h.harness().get_by_label("Inbox (1) — press t to triage");
+        h.harness().get_by_label("Inbox (1)");
         // "Notes" appears as both the modal title and the kept-notes header.
         let notes_labels = h.harness().get_all_by_label("Notes").count();
         assert_eq!(notes_labels, 2, "modal title + kept-notes section header");

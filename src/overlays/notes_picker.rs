@@ -3,7 +3,7 @@
 //! One navigable list: inbox notes (scratch + quick-note captures) on top,
 //! kept workspace notes below. Keys:
 //!   j/k or arrows — navigate          ↵ — open in focused pane
-//!   s — open in new pane              t — switch to inbox triage
+//!   s — open in new pane
 //!   / — fuzzy-find (title, file name, body)
 //!   r — rename (frontmatter title)    x — delete
 //!   Esc — close (or exit search/rename mode first)
@@ -237,7 +237,6 @@ impl PlexiApp {
             Enter,
             Delete,
             OpenNew,
-            Triage,
             Search,
             Rename,
         }
@@ -259,8 +258,6 @@ impl PlexiApp {
                 Some(PickerKey::Delete)
             } else if i.consume_key(egui::Modifiers::NONE, egui::Key::S) {
                 Some(PickerKey::OpenNew)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::T) {
-                Some(PickerKey::Triage)
             } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Slash) {
                 Some(PickerKey::Search)
             } else if i.consume_key(egui::Modifiers::NONE, egui::Key::R) {
@@ -293,13 +290,6 @@ impl PlexiApp {
                 }
             }
             Some(PickerKey::OpenNew) => self.notes_picker_open_in_new(),
-            Some(PickerKey::Triage) => {
-                self.pop_focus_layer(&FocusLayer::NotesPicker);
-                if !self.focus_stack.contains(&FocusLayer::NotesTriage) {
-                    log::info!("notes_picker: t key — switching to triage");
-                    self.open_notes_triage();
-                }
-            }
             Some(PickerKey::Search) => {
                 log::info!("notes_picker: / key — entering search mode");
                 self.notes_picker_filtering = true;
@@ -464,9 +454,7 @@ impl PlexiApp {
                             if entry.inbox && !shown_inbox_header {
                                 shown_inbox_header = true;
                                 ui.label(
-                                    egui::RichText::new(format!(
-                                        "Inbox ({inbox_total}) — press t to triage"
-                                    ))
+                                    egui::RichText::new(format!("Inbox ({inbox_total})"))
                                     .size(style::TEXT_CAPTION)
                                     .color(colors.text_dim),
                                 );
@@ -534,11 +522,10 @@ impl PlexiApp {
                         HintGroup::alternatives(&[&["j"], &["k"]], "navigate"),
                         HintGroup::new(&["\u{21b5}"], "open"),
                         HintGroup::new(&["/"], "search"),
-                        HintGroup::new(&["r"], "rename"),
                     ])
                     .show(ui, &colors);
                     HintBar::new(&[
-                        HintGroup::new(&["t"], "triage"),
+                        HintGroup::new(&["r"], "rename"),
                         HintGroup::new(&["x"], "delete"),
                         HintGroup::new(&["esc"], "dismiss"),
                     ])

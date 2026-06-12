@@ -428,11 +428,13 @@ impl App for TextEditorApp {
             return;
         }
 
-        // Fill the entire pane rect for consistent background in both tiled and
-        // zoomed modes. Matches the terminal pane background so note panes and
-        // terminals read as the same surface.
+        // Fill only the remaining rect, not `max_rect()`: when this editor
+        // overtakes another pane, `app_pane::render` has already allocated the
+        // overtake bar above us, and filling max_rect would paint over it —
+        // leaving an invisible bar-sized gap. Matches the terminal pane
+        // background so note panes and terminals read as the same surface.
         ui.painter()
-            .rect_filled(ui.max_rect(), 0.0, colors.terminal_bg);
+            .rect_filled(ui.available_rect_before_wrap(), 0.0, colors.terminal_bg);
 
         ui.visuals_mut().extreme_bg_color = colors.terminal_bg;
         ui.visuals_mut().override_text_color = Some(colors.text_primary);

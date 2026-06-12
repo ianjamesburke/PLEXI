@@ -1,4 +1,7 @@
-//! Notes inbox triage overlay — reached via `t` from the notes picker.
+//! Notes inbox triage overlay. Currently has no UI entry point — the `t`
+//! binding in the notes picker was removed pending a triage rework; the
+//! overlay is kept alive (and smoke-tested) by pushing
+//! `FocusLayer::NotesTriage` directly.
 //!
 //! Shows inbox notes one at a time. Key bindings:
 //!   h / ←          — previous note
@@ -25,21 +28,6 @@ impl PlexiApp {
         if !self.focus_stack.contains(&FocusLayer::NotesPicker) {
             self.open_notes_picker();
         }
-    }
-
-    /// Open the notes triage overlay. Loads inbox + actions and pushes the focus layer.
-    pub(crate) fn open_notes_triage(&mut self) {
-        let notes = crate::notes::scan_inbox();
-        let actions = crate::notes::load_triage_actions();
-        log::info!(
-            "notes_triage: opening with {} note(s) and {} action(s)",
-            notes.len(),
-            actions.len()
-        );
-        self.notes_triage_notes = notes;
-        self.notes_triage_actions = actions;
-        self.notes_triage_index = 0;
-        self.push_focus_layer(FocusLayer::NotesTriage);
     }
 
     /// Handle keyboard input for the triage overlay. Must surrender egui focus
