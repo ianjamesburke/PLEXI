@@ -149,6 +149,14 @@ workspace-local apps) and in `app init` (to decide where to scaffold). In those 
 `None` gracefully degrades (falls back to global) rather than hard-failing.
 
 
+## New POC/example apps must live under `apps/dev/`, not `apps/examples/` · ship · sdk
+
+`scripts/install.sh` flattens `apps/dev/` into `$profile_dir/apps/` via `rsync -a apps/dev/ "$profile_dir/apps/"`. There is no equivalent rsync for any other subdirectory of `apps/`. A new app placed in `apps/examples/anything/` installs as `$profile_dir/apps/examples/anything/` — one level too deep for the Rust app scanner, so `plexi app open <id>` fails with "not found".
+
+**Rule:** every new POC, gallery, or example app goes in `apps/dev/<id>/`. That's the only non-root `apps/` subdirectory the install script flattens.
+
+---
+
 ## `just pr-install` must run from the feature worktree
 
 `scripts/install.sh` derives `REPO_ROOT` from `${BASH_SOURCE[0]}/..`. Running from the repo root resolves to alpha's working tree, so `rsync -a apps/dev/` syncs alpha's `apps/dev/` — missing any apps that only exist on the feature branch. Always `cd worktrees/feature/<branch> && just pr-install <N>`.
