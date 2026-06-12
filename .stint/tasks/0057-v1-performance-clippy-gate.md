@@ -1,9 +1,11 @@
 ---
 id: "0057"
 title: "v1 performance: clippy perf gate"
-status: in-progress
+status: done
 estimate: "4h"
+actual: "20m"
 started_at: "2026-06-12T17:49:15Z"
+completed_at: "2026-06-12T18:09:42Z"
 sprint: "s13"
 blocked_by:
   - 49
@@ -18,6 +20,7 @@ tags:
   - "testing"
   - "clippy"
 ---
+
 
 
 Make the Rust performance clippy pass actionable by fixing current all-target blockers and first-party perf lint warnings.
