@@ -1,14 +1,13 @@
 ---
 id: "0167"
-title: "Host Assistant pane UI polish — picker clipping, stub-command feedback"
+title: "Assistant native chat UI overhaul — visual parity, rename, multiline, picker, mocked broker tests"
 status: backlog
-estimate: "2h"
-sprint: "s5"
+estimate: "8h"
+sprint: "s12"
 blocked_by: []
-blocked_by_gh:
-  - "2187"
+blocked_by_gh: []
 gh_issue:
-  - "2201"
+  - "2216"
 area:
   - "ui/widgets"
   - "host/ai"
@@ -17,19 +16,24 @@ tags: []
 
 ## What
 
-Polish the Phase D1 host Assistant pane: bound the slash-command picker to the
-visible pane rect (scrollable list, selected item kept in view), render
-not-yet-implemented commands as a distinct planned-command row instead of a
-plain error-looking message, and sweep transcript/composer spacing against
-style.rs tokens.
+Overhaul the host Assistant pane into a native-feeling chat surface: visual
+parity with the text-editor pane chrome, Cmd+R session/pane rename, growing
+multiline composer (Enter sends, Shift+Enter newline), slash-command picker
+rendered above the composer bounded to the pane rect, thinking/streaming
+indicator, styled stub-command rows, subscription chips, and a MockBroker
+test double driving an aggressive HostHarness/ui_tests suite.
+
+Supersedes the narrower picker-clipping polish scope (#2201, closed).
 
 ## Why
 
-The Assistant is the flagship surface of the agent platform; a picker that
-clips off screen reads as broken even though selection works.
+The Assistant is the flagship surface of the agent platform; it must read as
+a finished chat app, and the mocked broker makes every UI state testable
+without a live model.
 
 ## References
 
-- GitHub issue #2201
-- src/assistant/render.rs (draw_picker)
+- GitHub issue #2216 (supersedes #2201)
+- src/assistant/render.rs (draw_picker, composer)
 - src/assistant/model.rs
+- src/app/text_editor_app.rs (rename + multiline patterns)
