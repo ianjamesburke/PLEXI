@@ -42,6 +42,9 @@ pub struct AppEventRecord {
     pub actor: AppEventActor,
     /// Actor identity. Defaults to the emitting app id when not supplied.
     pub actor_id: String,
+    /// Causal tool caller (e.g. `"agent:chess-opponent"`) when this event
+    /// was emitted while servicing a `ToolCall`; `None` for organic events.
+    pub caused_by: Option<String>,
     pub summary: String,
     /// Document, game, pane, or app-instance id.
     pub resource_id: String,
@@ -66,6 +69,7 @@ pub struct EmittedEvent {
     pub event: String,
     pub actor: AppEventActor,
     pub actor_id: Option<String>,
+    pub caused_by: Option<String>,
     pub summary: String,
     pub resource_id: String,
     pub resource_scope: Option<String>,
@@ -226,6 +230,11 @@ pub struct EventDelivery {
     pub event: String,
     pub event_id: u64,
     pub resource_id: String,
+    pub actor: AppEventActor,
+    pub actor_id: String,
+    /// Causal tool caller — agent runtimes must not trigger on deliveries
+    /// the subscriber itself caused.
+    pub caused_by: Option<String>,
     /// Always delivered — every mode but `off` includes the summary.
     pub summary: Option<String>,
     /// Present only for `payload_mode = full`.
@@ -349,6 +358,7 @@ impl AppTimeline {
             event: emitted.event,
             actor: emitted.actor,
             actor_id: emitted.actor_id.unwrap_or_else(|| app_id.to_string()),
+            caused_by: emitted.caused_by,
             summary: emitted.summary,
             resource_id: emitted.resource_id,
             resource_scope: emitted.resource_scope.unwrap_or_else(|| "pane".to_string()),
@@ -446,6 +456,9 @@ impl AppTimeline {
                 event: record.event.clone(),
                 event_id: record.event_id,
                 resource_id: record.resource_id.clone(),
+                actor: record.actor,
+                actor_id: record.actor_id.clone(),
+                caused_by: record.caused_by.clone(),
                 summary,
                 payload,
                 state_ref,
@@ -671,6 +684,7 @@ mod tests {
             event: event.to_string(),
             actor: AppEventActor::User,
             actor_id: None,
+            caused_by: None,
             summary: "White played e4".to_string(),
             resource_id: "game-abc".to_string(),
             resource_scope: Some("game".to_string()),

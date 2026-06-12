@@ -1212,6 +1212,12 @@ pub enum AppRequest {
         /// Defaults to the emitting app's id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         actor_id: Option<String>,
+        /// Causal identity: the tool caller whose call produced this event
+        /// (e.g. `"agent:chess-opponent"`). The SDK stamps this automatically
+        /// for events emitted while servicing a `ToolCall`. The agent runtime
+        /// uses it to never trigger an agent from its own actions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caused_by: Option<String>,
         /// One-line human-readable description, e.g. `"White played e4"`.
         summary: String,
         /// Document, game, pane, or app-instance id the event is about.

@@ -474,8 +474,25 @@ impl AgentHost {
 
     fn handle_deliveries(&mut self, agent_idx: usize, deliveries: Vec<EventDelivery>) {
         let mut conversation_events = Vec::new();
+        // Broker identity this agent's tool calls carry (`ToolDispatcher`
+        // caller id) — events it caused come back stamped with it.
+        let self_id = format!("agent:{}", self.agents[agent_idx].def.id);
         for d in deliveries {
             let agent = &mut self.agents[agent_idx];
+            // Never trigger an agent from its own actions: events it emitted
+            // as the actor, or events an app emitted while servicing one of
+            // its tool calls (`caused_by`). Without this, a move → move.played
+            // → turn → move feedback loop plays the game against itself.
+            let self_caused = d.actor_id == self_id
+                || d.caused_by.as_deref() == Some(self_id.as_str());
+            if self_caused {
+                log::info!(
+                    "agent[{}]: delivery {} of '{}' is self-caused — recorded, no turn",
+                    agent.def.id,
+                    d.delivery_id,
+                    d.event
+                );
+            }
             let line = format!(
                 "[{}] {} {}{}",
                 d.app_id,
@@ -488,7 +505,8 @@ impl AgentHost {
             );
             agent.push_transcript("event", line.clone());
             match d.trigger_mode {
-                TriggerMode::Conversation => conversation_events.push(line),
+                TriggerMode::Conversation if !self_caused => conversation_events.push(line),
+                TriggerMode::Conversation => {}
                 // Ambient workflows and ask-prompts are Phase D surface; the
                 // event is recorded in the transcript either way.
                 TriggerMode::Ambient | TriggerMode::Ask | TriggerMode::Never => {
@@ -861,5 +879,66 @@ default_tier = "low"
         host.reload_workspace(None);
         assert!(host.agents.is_empty());
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
+    }
+
+    /// Self-caused deliveries (the agent as actor, or events an app emitted
+    /// while servicing the agent's tool call) must never trigger a turn —
+    /// otherwise an agent that moves causes `move.played`/`turn.ready` which
+    /// trigger it again, and it plays the game against itself.
+    #[test]
+    fn self_caused_deliveries_do_not_trigger_turns() {
+        use crate::app_protocol::AppEventActor;
+        use crate::host::app_timeline::EventDelivery;
+
+        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        let mut host = AgentHost::new_for_test(
+            timeline,
+            Arc::new(InertAiBroker),
+            std::env::temp_dir(),
+        );
+        host.attach(AgentDefinition::parse("prose", SETTINGS).unwrap());
+        assert_eq!(host.agents[0].in_flight, 0);
+
+        let delivery = |id: u64, actor: AppEventActor, actor_id: &str, caused_by: Option<&str>| {
+            EventDelivery {
+                delivery_id: id,
+                subscription_id: "sub-1".to_string(),
+                subscriber_type: ActorType::Agent,
+                subscriber_id: "chess-opponent".to_string(),
+                trigger_mode: TriggerMode::Conversation,
+                app_id: "chess".to_string(),
+                event: "turn.ready".to_string(),
+                event_id: id,
+                resource_id: "game-1".to_string(),
+                actor,
+                actor_id: actor_id.to_string(),
+                caused_by: caused_by.map(str::to_string),
+                summary: Some("black to move".to_string()),
+                payload: None,
+                state_ref: None,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+            }
+        };
+
+        // Agent's own move (actor_id matches its caller identity): no turn.
+        host.handle_deliveries(
+            0,
+            vec![delivery(1, AppEventActor::Agent, "agent:chess-opponent", None)],
+        );
+        assert_eq!(host.agents[0].in_flight, 0, "own action must not trigger");
+
+        // App-emitted event caused by the agent's tool call: no turn.
+        host.handle_deliveries(
+            0,
+            vec![delivery(2, AppEventActor::App, "chess", Some("agent:chess-opponent"))],
+        );
+        assert_eq!(host.agents[0].in_flight, 0, "caused-by-self must not trigger");
+
+        // Both still land in the transcript as event lines.
+        assert_eq!(host.agents[0].transcript.len(), 2);
+
+        // A user-caused event triggers a turn.
+        host.handle_deliveries(0, vec![delivery(3, AppEventActor::User, "chess", None)]);
+        assert_eq!(host.agents[0].in_flight, 1, "user event must trigger");
     }
 }

@@ -99,3 +99,23 @@ def test_emit_event_rejects_unknown_suggested_trigger():
     with pytest.raises(ValueError, match="suggested_trigger"):
         _emitter().emit_event("ev", "user", "s", "r", "rev-1",
                               suggested_trigger="sometimes")
+
+
+def test_emit_event_stamps_caused_by_during_tool_call():
+    """Events emitted while a tool handler runs carry the caller identity as
+    caused_by; outside a tool call the field is absent."""
+    from plexi_sdk._emitter import _current_tool_caller
+
+    emitted = []
+    with patch("plexi_sdk._emitter._emit", side_effect=lambda d: emitted.append(d)):
+        e = _emitter()
+        token = _current_tool_caller.set("agent:chess-opponent")
+        try:
+            e.emit_event("move.played", "agent", "Black played Nf6",
+                         "game-1", "rev-2")
+        finally:
+            _current_tool_caller.reset(token)
+        e.emit_event("move.played", "user", "White played e4",
+                     "game-1", "rev-3")
+    assert emitted[0]["caused_by"] == "agent:chess-opponent"
+    assert "caused_by" not in emitted[1]

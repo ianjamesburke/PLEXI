@@ -341,6 +341,7 @@ impl ToolDispatcher {
                     call_id: call_id.clone(),
                     name: name.to_string(),
                     input_json,
+                    caller_id: self.caller_app_id.clone(),
                 });
                 true
             } else {

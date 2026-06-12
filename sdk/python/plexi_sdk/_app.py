@@ -565,6 +565,11 @@ class App:
             })
             return
 
+        # Events emitted while this handler runs carry the caller's broker
+        # identity as `caused_by` (see _emitter._current_tool_caller) so the
+        # host can attribute them to this tool call.
+        from ._emitter import _current_tool_caller
+        caller_token = _current_tool_caller.set(ev.get("caller_id") or None)
         try:
             import inspect as _inspect
             if _inspect.iscoroutinefunction(handler):
@@ -587,6 +592,8 @@ class App:
                 "output_json": None,
                 "error": f"tool_handler_error: {exc}",
             })
+        finally:
+            _current_tool_caller.reset(caller_token)
 
     async def _handle_mcp_tool_call(self, ev: dict) -> None:
         """Dispatch a PlexiEvent::McpToolCall to on_mcp_call."""

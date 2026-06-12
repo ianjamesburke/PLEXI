@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import json
 import os
@@ -17,6 +18,16 @@ from ._types import CapabilityDeniedError, VideoHandle
 if TYPE_CHECKING:
     from ._app import App
     from ._pipe import Pipe
+
+# ── Tool-call causality ──────────────────────────────────────────────────────
+# Set by App._handle_tool_call to the caller's broker identity (e.g.
+# "agent:chess-opponent") while a tool handler runs. emit_event stamps it as
+# `caused_by` so the host can attribute events to the tool call that produced
+# them — the agent runtime uses this to never trigger an agent on its own
+# actions.
+_current_tool_caller: contextvars.ContextVar["str | None"] = contextvars.ContextVar(
+    "plexi_current_tool_caller", default=None
+)
 
 # ── Reserved notification shortcuts ──────────────────────────────────────────
 # Keys reserved by the notification overlay for navigation. The host strips
@@ -1478,6 +1489,9 @@ class Emitter:
             msg["resource_scope"] = resource_scope
         if actor_id is not None:
             msg["actor_id"] = actor_id
+        caused_by = _current_tool_caller.get()
+        if caused_by is not None:
+            msg["caused_by"] = caused_by
         _emit(msg)
 
     def rollback_verify_result(self, checkpoint_id: str, current_revision: str) -> None:

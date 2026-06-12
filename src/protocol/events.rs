@@ -255,6 +255,10 @@ pub enum PlexiEvent {
         call_id: String,
         name: String,
         input_json: String,
+        /// Broker identity of the caller (e.g. `"agent:chess-opponent"` or
+        /// an app id). The SDK stamps `caused_by` on events emitted while
+        /// this call is being serviced.
+        caller_id: String,
     },
     /// External MCP client called a tool declared in `[app.mcp]`. The app must
     /// reply with `DrawCommand::Host(AppRequest::McpToolResult { call_id, … })`.
