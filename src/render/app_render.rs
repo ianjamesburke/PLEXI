@@ -7,7 +7,7 @@ use crate::app_protocol::{
 };
 use crate::ui::theme::Colors;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write as IoWrite};
+use std::io::{BufRead, BufReader, Cursor, Write as IoWrite};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -412,14 +412,13 @@ fn render_commands_to_png(
 
     // ── 5. Encode PNG ─────────────────────────────────────────────────────
     let mut png_data: Vec<u8> = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut png_data, width, height);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.write_header()
-            .and_then(|mut w| w.write_image_data(&pixels))
-            .map_err(|e| format!("PNG encoding failed: {e}"))?;
-    }
+    image::RgbaImage::from_raw(width, height, pixels)
+        .ok_or_else(|| "PNG encoding failed: buffer size mismatch".to_string())?
+        .write_to(
+            &mut Cursor::new(&mut png_data),
+            image::ImageFormat::Png,
+        )
+        .map_err(|e| format!("PNG encoding failed: {e}"))?;
     log::info!(
         "app_render: encoded {} bytes for {width}×{height}",
         png_data.len()

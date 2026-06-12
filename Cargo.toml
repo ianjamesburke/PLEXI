@@ -70,7 +70,6 @@ rfd = "0.17"
 pollster = "0.4"
 wgpu = { version = "24", default-features = false, features = ["wgsl", "metal"] }
 egui-wgpu = "0.31"
-png = "0.17"
 taffy = "0.5"
 # Single-app package artifact `.plexipkg` (stint 0015): gzipped tar + sha256 manifest.
 tar = "0.4"

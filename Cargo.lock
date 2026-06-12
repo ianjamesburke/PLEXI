@@ -3396,7 +3396,6 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-foundation 0.3.2",
- "png 0.17.16",
  "pollster",
  "rfd",
  "rodio",
