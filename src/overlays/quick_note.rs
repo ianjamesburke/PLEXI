@@ -111,22 +111,109 @@ impl PlexiApp {
                             .max_height(max_text_h)
                             .show(ui, |ui| {
                                 ui.scope(|ui| {
-                                    ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                                    ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut self.quick_note_text)
-                                            .id(egui::Id::new("quick_note_text"))
-                                            .font(egui::FontId::monospace(style::TEXT_BODY))
-                                            .text_color(self.colors.text_primary)
-                                            .desired_width(f32::INFINITY)
-                                            .desired_rows(initial_rows)
-                                            .frame(false)
-                                            .hint_text(
-                                                RichText::new("What's on your mind?")
-                                                    .color(self.colors.text_dim.linear_multiply(0.3))
-                                                    .size(style::TEXT_BODY),
-                                            ),
-                                    );
+                                    ui.visuals_mut().text_cursor.blink = false;
+                                    ui.visuals_mut().text_cursor.stroke =
+                                        egui::Stroke::new(1.5, self.colors.accent);
+
+                                    let te_id = egui::Id::new("quick_note_text");
+                                    let qn_font_id = egui::FontId::monospace(style::TEXT_BODY);
+                                    let qn_row_height =
+                                        ui.fonts(|f| f.row_height(&qn_font_id));
+                                    let output = egui::TextEdit::multiline(
+                                        &mut self.quick_note_text,
+                                    )
+                                    .id(te_id)
+                                    .font(qn_font_id)
+                                    .text_color(self.colors.text_primary)
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(initial_rows)
+                                    .frame(false)
+                                    .hint_text(
+                                        RichText::new("What's on your mind?")
+                                            .color(
+                                                self.colors.text_dim.linear_multiply(0.3),
+                                            )
+                                            .size(style::TEXT_BODY),
+                                    )
+                                    .show(ui);
+
+                                    if output.response.has_focus() {
+                                        let blink_key =
+                                            egui::Id::new("quick_note_cursor_blink");
+                                        let now = ui.ctx().input(|i| i.time);
+                                        if output.response.changed()
+                                            || output.response.gained_focus()
+                                        {
+                                            ui.ctx().data_mut(|d| {
+                                                d.insert_temp(blink_key, now)
+                                            });
+                                        }
+                                        let blink_start: f64 = ui.ctx().data(|d| {
+                                            d.get_temp(blink_key).unwrap_or(0.0_f64)
+                                        });
+                                        if let Some(cursor_range) = &output.cursor_range {
+                                            let primary = cursor_range.primary;
+                                            let cursor_pos =
+                                                output.galley.pos_from_cursor(&primary);
+                                            let row_h = if cursor_pos.height() > 0.01 {
+                                                cursor_pos.height()
+                                            } else {
+                                                qn_row_height
+                                            };
+                                            let erase_rect = egui::Rect::from_min_max(
+                                                egui::pos2(
+                                                    output.galley_pos.x
+                                                        + cursor_pos.center().x
+                                                        - 2.0,
+                                                    output.galley_pos.y
+                                                        + cursor_pos.min.y
+                                                        - 2.0,
+                                                ),
+                                                egui::pos2(
+                                                    output.galley_pos.x
+                                                        + cursor_pos.center().x
+                                                        + 2.0,
+                                                    output.galley_pos.y
+                                                        + cursor_pos.min.y
+                                                        + row_h
+                                                        + 2.0,
+                                                ),
+                                            );
+                                            ui.painter().rect_filled(
+                                                erase_rect,
+                                                0.0,
+                                                self.colors.bg_sidebar,
+                                            );
+                                            let on = 0.5_f64;
+                                            let off = 0.5_f64;
+                                            let t = (now - blink_start) % (on + off);
+                                            if t < on {
+                                                let target_h = style::TEXT_BODY;
+                                                let row_top = output.galley_pos.y
+                                                    + cursor_pos.min.y;
+                                                let start_y =
+                                                    row_top + (row_h - target_h) * 0.5;
+                                                let cx = output.galley_pos.x
+                                                    + cursor_pos.center().x;
+                                                ui.painter().line_segment(
+                                                    [
+                                                        egui::pos2(cx, start_y),
+                                                        egui::pos2(cx, start_y + target_h),
+                                                    ],
+                                                    egui::Stroke::new(
+                                                        1.5,
+                                                        self.colors.accent,
+                                                    ),
+                                                );
+                                            }
+                                            let wake = if t < on {
+                                                (on - t) as f32
+                                            } else {
+                                                (on + off - t) as f32
+                                            };
+                                            ui.ctx().request_repaint_after_secs(wake);
+                                        }
+                                    }
                                 });
                             });
                     }
