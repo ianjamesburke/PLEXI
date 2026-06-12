@@ -80,7 +80,7 @@ const DEFAULT_ACTIONS_TOML: &str = r#"# Plexi notes triage actions
 [[action]]
 key = 1
 label = "pbcopy"
-command = "echo {note} | pbcopy"
+command = "printf '%s' {note} | pbcopy"
 hidden = true
 
 [[action]]

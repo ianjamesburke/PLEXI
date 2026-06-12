@@ -2958,26 +2958,12 @@ impl eframe::App for PlexiApp {
                     self.open_scratchpad();
                 }
                 Action::OpenNotesPicker => {
-                    let active = self.active_window;
-                    let is_text_editor = self.windows[active]
-                        .focused_pane
-                        .and_then(|tile_id| {
-                            if let Some(egui_tiles::Tile::Pane(pane_id)) = self.windows[active].tree.tiles.get(tile_id) {
-                                self.windows[active].panes.get(pane_id)
-                            } else {
-                                None
-                            }
-                        })
-                        .map(|pane| matches!(pane, crate::host::pane::Pane::App(a) if a.runtime.type_id() == "text-editor"))
-                        .unwrap_or(false);
-                    if is_text_editor {
-                        log::info!("notes_picker: Cmd+O — opening picker");
-                        self.open_notes_picker();
-                    }
+                    log::info!("notes_picker: Cmd+O — opening picker");
+                    self.open_notes_picker();
                 }
                 Action::OpenNotesTriage => {
                     if !self.focus_stack.contains(&FocusLayer::NotesTriage) {
-                        log::info!("notes_triage: Cmd+Shift+0 — opening triage");
+                        log::info!("notes_triage: opening triage overlay");
                         self.open_notes_triage();
                     } else {
                         self.pop_focus_layer(&FocusLayer::NotesTriage);

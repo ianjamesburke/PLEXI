@@ -89,6 +89,8 @@ impl PlexiApp {
             Up,
             Enter,
             Delete,
+            OpenNew,
+            Triage,
         }
 
         let action = ctx.input_mut(|i| {
@@ -106,6 +108,10 @@ impl PlexiApp {
                 Some(PickerKey::Enter)
             } else if i.consume_key(egui::Modifiers::NONE, egui::Key::X) {
                 Some(PickerKey::Delete)
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::S) {
+                Some(PickerKey::OpenNew)
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::T) {
+                Some(PickerKey::Triage)
             } else {
                 None
             }
@@ -125,6 +131,14 @@ impl PlexiApp {
                     self.notes_picker_selected
                 );
                 self.notes_picker_delete_entry(self.notes_picker_selected);
+            }
+            Some(PickerKey::OpenNew) => self.notes_picker_open_in_new(),
+            Some(PickerKey::Triage) => {
+                self.pop_focus_layer(&FocusLayer::NotesPicker);
+                if !self.focus_stack.contains(&FocusLayer::NotesTriage) {
+                    log::info!("notes_picker: t key — switching to triage");
+                    self.open_notes_triage();
+                }
             }
             None => {}
         }
@@ -170,6 +184,20 @@ impl PlexiApp {
         self.pop_focus_layer(&FocusLayer::NotesPicker);
     }
 
+    fn notes_picker_open_in_new(&mut self) {
+        let Some((path, _)) = self
+            .notes_picker_entries
+            .get(self.notes_picker_selected)
+            .cloned()
+        else {
+            return;
+        };
+        let path_str = path.display().to_string();
+        log::info!("notes_picker: s key — opening {:?} in new text-editor pane", path);
+        let _ = self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None);
+        self.pop_focus_layer(&FocusLayer::NotesPicker);
+    }
+
     pub(crate) fn draw_notes_picker(&mut self, ctx: &egui::Context) {
         let colors = self.colors;
         let entries = self.notes_picker_entries.clone();
@@ -211,7 +239,7 @@ impl PlexiApp {
                     if inbox_count > 5 {
                         ui.label(
                             egui::RichText::new(format!(
-                                "  … and {} more — press \u{2318}+Shift+0 to triage",
+                                "  … and {} more — press t to triage",
                                 inbox_count - 5
                             ))
                             .size(style::TEXT_HINT)
@@ -219,7 +247,7 @@ impl PlexiApp {
                         );
                     } else {
                         ui.label(
-                            egui::RichText::new("  Press \u{2318}+Shift+0 to triage inbox")
+                            egui::RichText::new("  press t to triage inbox")
                                 .size(style::TEXT_HINT)
                                 .color(colors.text_dim),
                         );
@@ -268,7 +296,9 @@ impl PlexiApp {
                 ui.add_space(style::SPACE_SM);
                 let hints = [
                     HintGroup::new(&["j", "k"], "navigate"),
-                    HintGroup::new(&["\u{21b5}"], "open"),
+                    HintGroup::new(&["\u{21b5}"], "open in place"),
+                    HintGroup::new(&["s"], "open new pane"),
+                    HintGroup::new(&["t"], "triage inbox"),
                     HintGroup::new(&["x"], "delete"),
                     HintGroup::new(&["esc"], "dismiss"),
                 ];
