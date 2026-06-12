@@ -1193,8 +1193,8 @@ impl FileBrowserApp {
                 .dense()
                 .selected(is_selected)
                 .show(ui, colors);
-            if is_selected && should_scroll {
-                response.scroll_to_me(None);
+            if is_selected {
+                response.scroll_into_view(ui, should_scroll);
             }
             if response.row_clicked() {
                 let modifiers = ui.input(|input| input.modifiers);
@@ -1230,10 +1230,10 @@ impl FileBrowserApp {
                 egui::vec2(ui.available_width(), DETAILS_ROW_H),
                 egui::Sense::click(),
             );
-            if self.selected == idx && should_scroll {
-                response.scroll_to_me(None);
-            }
             let selected = self.is_entry_selected(idx, &entry);
+            if self.selected == idx {
+                crate::ui::list::scroll_row_into_view(ui, &response, should_scroll);
+            }
             let fill = if selected {
                 colors.bg_active
             } else if response.hovered() {
@@ -2141,6 +2141,10 @@ impl App for FileBrowserApp {
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
                                 egui::ScrollArea::vertical()
+                                    // animated(false): required by scroll_row_into_view —
+                                    // see src/ui/list.rs.
+                                    .animated(false)
+                                    .id_salt("fb_list")
                                     .auto_shrink([false, false])
                                     .max_height(body_height)
                                     .show(ui, |ui| {
@@ -2179,16 +2183,22 @@ impl App for FileBrowserApp {
                         );
                     });
                 } else {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .max_height(body_height)
-                        .show(ui, |ui| {
-                            navigate_to = if layout.shows_details() {
-                                self.draw_details_table(ui, colors)
-                            } else {
-                                self.draw_compact_list(ui, colors)
-                            };
-                        });
+                    {
+                        egui::ScrollArea::vertical()
+                            // animated(false): required by scroll_row_into_view —
+                            // see src/ui/list.rs.
+                            .animated(false)
+                            .id_salt("fb_list")
+                            .auto_shrink([false, false])
+                            .max_height(body_height)
+                            .show(ui, |ui| {
+                                navigate_to = if layout.shows_details() {
+                                    self.draw_details_table(ui, colors)
+                                } else {
+                                    self.draw_compact_list(ui, colors)
+                                };
+                            });
+                    }
                 }
 
                 self.draw_status_bar(ui, colors, show_inspector);

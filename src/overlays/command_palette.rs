@@ -28,6 +28,11 @@ enum PaletteEntry {
         running_in_background: bool,
         is_workspace_local: bool,
     },
+    Note {
+        path: std::path::PathBuf,
+        title: String,
+        preview: String,
+    },
 }
 
 pub(crate) fn app_metadata_chips(
@@ -389,6 +394,20 @@ impl PlexiApp {
             });
         }
 
+        // ── Note entries ────────────────────────────────────────────────────
+        for note in &self.palette_notes {
+            let matches = query.is_empty()
+                || note.title.to_lowercase().contains(&query)
+                || note.search_text.contains(&query);
+            if matches {
+                entries.push(PaletteEntry::Note {
+                    path: note.path.clone(),
+                    title: note.title.clone(),
+                    preview: note.preview.clone(),
+                });
+            }
+        }
+
         let total = entries.len();
 
         if self.palette_selected >= total && total > 0 {
@@ -400,6 +419,7 @@ impl PlexiApp {
         enum Action {
             JumpContext(usize, u64, Option<u64>),
             LaunchApp(String),
+            OpenNote(std::path::PathBuf),
         }
         let mut action: Option<Action> = None;
         let prev_selected = self.palette_selected;
@@ -437,6 +457,9 @@ impl PlexiApp {
                     Some(PaletteEntry::App { id, .. }) => {
                         action = Some(Action::LaunchApp(id.clone()));
                     }
+                    Some(PaletteEntry::Note { path, .. }) => {
+                        action = Some(Action::OpenNote(path.clone()));
+                    }
                     None => {}
                 }
             }
@@ -453,6 +476,27 @@ impl PlexiApp {
                 self.show_command_palette = false;
                 self.palette_query.clear();
                 self.launch_app_by_id(&id);
+                return;
+            }
+            Some(Action::OpenNote(path)) => {
+                self.show_command_palette = false;
+                self.palette_query.clear();
+                let active = self.active_window;
+                let path_str = path.display().to_string();
+                if let Some((existing_tile_id, _)) =
+                    self.find_open_text_editor_tile(active, &path)
+                {
+                    log::info!("palette: note already open, focusing pane");
+                    self.set_window_focused_pane(active, existing_tile_id);
+                } else {
+                    log::info!("palette: opening note {:?} in new pane", path);
+                    let _ = self.launch_app_by_id_with_layout(
+                        "text-editor",
+                        None,
+                        &[path_str],
+                        None,
+                    );
+                }
                 return;
             }
             None => {}
@@ -494,8 +538,12 @@ impl PlexiApp {
                 let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
                 let should_scroll = self.palette_selected != prev_selected;
                 let mut shown_apps_header = false;
+                let mut shown_notes_header = false;
 
                 egui::ScrollArea::vertical()
+                    // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
+                    .animated(false)
+                    .id_salt("palette_list")
                     .max_height(palette_max_list_h)
                     .min_scrolled_height(palette_max_list_h)
                     .auto_shrink([false, false])
@@ -526,10 +574,10 @@ impl PlexiApp {
                                         row = row.pane_pips(pips);
                                     }
                                     let row_response = row.show(ui, &colors);
-
-                                    if is_selected && should_scroll {
-                                        row_response.scroll_to_me(None);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
                                     }
+
                                     if row_response.row_clicked() {
                                         click_action = Some(Action::JumpContext(
                                             *ctx_idx,
@@ -568,12 +616,39 @@ impl PlexiApp {
                                         .selected(is_selected);
 
                                     let row_response = row.show(ui, &colors);
-
-                                    if is_selected && should_scroll {
-                                        row_response.scroll_to_me(None);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
                                     }
+
                                     if row_response.row_clicked() {
                                         click_action = Some(Action::LaunchApp(id.clone()));
+                                    }
+                                    if row_response.row_hovered() {
+                                        hover_select = Some(i);
+                                    }
+                                }
+                                PaletteEntry::Note { path, title, preview } => {
+                                    if !shown_notes_header {
+                                        shown_notes_header = true;
+                                        ui.add_space(style::SPACE_XS);
+                                        ui.label(
+                                            RichText::new("NOTES")
+                                                .size(style::TEXT_HINT)
+                                                .color(colors.text_dim),
+                                        );
+                                        ui.add_space(style::SPACE_XS);
+                                    }
+                                    let row = ListRow::new(title.as_str())
+                                        .chip("txt")
+                                        .secondary(preview.as_str())
+                                        .selected(is_selected);
+                                    let row_response = row.show(ui, &colors);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
+                                    }
+                                    if row_response.row_clicked() {
+                                        click_action =
+                                            Some(Action::OpenNote(path.clone()));
                                     }
                                     if row_response.row_hovered() {
                                         hover_select = Some(i);
@@ -608,6 +683,31 @@ impl PlexiApp {
                             self.show_command_palette = false;
                             self.palette_query.clear();
                             self.launch_app_by_id(&id);
+                        }
+                        Action::OpenNote(path) => {
+                            self.show_command_palette = false;
+                            self.palette_query.clear();
+                            let active = self.active_window;
+                            let path_str = path.display().to_string();
+                            if let Some((existing_tile_id, _)) =
+                                self.find_open_text_editor_tile(active, &path)
+                            {
+                                log::info!(
+                                    "palette: note already open, focusing pane"
+                                );
+                                self.set_window_focused_pane(active, existing_tile_id);
+                            } else {
+                                log::info!(
+                                    "palette: opening note {:?} in new pane",
+                                    path
+                                );
+                                let _ = self.launch_app_by_id_with_layout(
+                                    "text-editor",
+                                    None,
+                                    &[path_str],
+                                    None,
+                                );
+                            }
                         }
                     }
                 }
