@@ -338,7 +338,7 @@ impl AssistantRenderer {
                 ui.set_width(ui.available_width());
                 egui::ScrollArea::vertical()
                     .id_salt("assistant_picker_scroll")
-                    .max_height(max_h.max(80.0))
+                    .max_height(max_h.max(0.0))
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         for (i, (name, purpose)) in matches.iter().enumerate() {
