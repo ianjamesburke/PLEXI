@@ -312,7 +312,7 @@ impl SceneRunner {
             }
             Step::Key { key } => {
                 let (modifiers, k) = parse_key(key)?;
-                self.h.harness().press_key_modifiers(modifiers, k);
+                self.h.press_key_modifiers(modifiers, k);
                 self.h.step();
                 Ok(None)
             }

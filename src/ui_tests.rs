@@ -87,6 +87,42 @@ impl PlexiUiHarness {
         self
     }
 
+    /// Press a key the way an OS keyboard normally reaches egui.
+    ///
+    /// egui_kittest's `press_key_modifiers` emits only `Event::Key`. Real
+    /// printable keys also emit `Event::Text`, and PGAP apps receive bare
+    /// letter shortcuts through that text path. Scenes should use this helper
+    /// so `key = "z"` exercises the same route as live typing.
+    pub fn press_key_modifiers(&mut self, modifiers: egui::Modifiers, key: egui::Key) -> &mut Self {
+        let previous_modifiers = self.inner.input().modifiers;
+        self.inner.input_mut().modifiers |= modifiers;
+        self.inner.input_mut().events.push(egui::Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            repeat: false,
+            physical_key: None,
+        });
+        if !modifiers.ctrl && !modifiers.command {
+            if let Some(text) = printable_key_text(key, modifiers.shift) {
+                self.inner
+                    .input_mut()
+                    .events
+                    .push(egui::Event::Text(text));
+            }
+        }
+        self.step();
+        self.inner.input_mut().events.push(egui::Event::Key {
+            key,
+            pressed: false,
+            modifiers,
+            repeat: false,
+            physical_key: None,
+        });
+        self.inner.input_mut().modifiers = previous_modifiers;
+        self
+    }
+
     /// Access the kittest Harness directly for semantic queries:
     /// `h.harness().get_by_label("Split")`, `h.harness().state()`, etc.
     pub fn harness(&mut self) -> &mut egui_kittest::Harness<'static, PlexiApp> {
@@ -165,7 +201,12 @@ impl PlexiUiHarness {
         });
         let path = app_dir.to_string_lossy().into_owned();
         self.with_app_mut(|app| {
-            app.launch_app_by_path_with_layout(&path, Some("split_v".to_string()), None, args)
+            app.launch_app_by_path_with_layout(
+                &path,
+                Some("split_v".to_string()),
+                Some(app_dir.to_path_buf()),
+                args,
+            )
         })?;
         self.with_app(|app| {
             app.windows[app.active_window]
@@ -266,6 +307,26 @@ impl PlexiUiHarness {
     pub fn push_focused_pane_to_subcontext(&mut self, name: Option<String>) {
         self.with_app_mut(|app| app.push_pane_to_subcontext(name));
     }
+}
+
+fn printable_key_text(key: egui::Key, shift: bool) -> Option<String> {
+    let label = format!("{key:?}");
+    if label.len() != 1 {
+        return None;
+    }
+    let ch = label.chars().next()?;
+    if ch.is_ascii_alphabetic() {
+        let ch = if shift {
+            ch.to_ascii_uppercase()
+        } else {
+            ch.to_ascii_lowercase()
+        };
+        return Some(ch.to_string());
+    }
+    if ch.is_ascii_digit() {
+        return Some(ch.to_string());
+    }
+    None
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
