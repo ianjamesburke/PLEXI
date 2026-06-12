@@ -27,7 +27,10 @@ impl<'a> HintGroup<'a> {
         }
     }
 
-    fn width(&self, ui: &egui::Ui) -> f32 {
+    /// Rendered width of this group: chips, intra-group gaps, and label.
+    /// Callers fitting hints into a constrained row measure with this
+    /// instead of guessing width breakpoints.
+    pub(crate) fn width(&self, ui: &egui::Ui) -> f32 {
         match self.combos {
             HintCombos::One(keys) => shortcuts::key_combo_list_width(ui, &[keys], Some(self.label)),
             HintCombos::Many(combos) => {

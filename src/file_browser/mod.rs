@@ -23,8 +23,13 @@ const DETAILS_TABLE_MIN_WIDTH: f32 = 560.0;
 const INSPECTOR_MIN_WIDTH: f32 = 920.0;
 const DIR_PREVIEW_CAP: usize = 500;
 const DETAILS_HEADER_H: f32 = 28.0;
-const DETAILS_ROW_H: f32 = style::LIST_ROW_H;
+const DETAILS_ROW_H: f32 = style::LIST_ROW_DENSE_H;
+// Total footer reservation subtracted from the body scroll area: SPACE_XS
+// gap + separator + the status row + item spacing. Must cover everything
+// draw_status_bar allocates or the footer collides with the list rows.
 const STATUS_BAR_H: f32 = 44.0;
+// Height of the single status row inside that reservation.
+const STATUS_BAR_ROW_H: f32 = 28.0;
 const INSPECTOR_DEFAULT_WIDTH: f32 = 280.0;
 const INSPECTOR_MIN_PANEL_WIDTH: f32 = 220.0;
 const INSPECTOR_SPLITTER_W: f32 = 7.0;
@@ -74,6 +79,7 @@ enum FileBrowserAction {
     ToggleInspector,
     ToggleQuickLook,
     Refresh,
+    CdTerminalAndClose,
     SelectAll,
     NewFolder,
     Rename,
@@ -102,6 +108,41 @@ struct FileOperationClipboard {
 #[derive(Debug, Clone)]
 enum PendingFileOperation {
     MoveToTrash { paths: Vec<PathBuf> },
+}
+
+/// Elide a path label from the left so the leaf directory stays visible —
+/// `…/projects/plexi/src` reads better than `/Users/ian/Documents/proj…`.
+/// Width-measured against the actual font, not a char-count guess.
+fn elide_path_leading(
+    ui: &egui::Ui,
+    path: &str,
+    font_id: egui::FontId,
+    max_width: f32,
+) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    let width = |s: &str| {
+        ui.fonts(|f| {
+            f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE)
+                .size()
+                .x
+        })
+    };
+    if width(path) <= max_width {
+        return path.to_string();
+    }
+    const ELLIPSIS: char = '\u{2026}';
+    let chars: Vec<char> = path.chars().collect();
+    for keep in (1..chars.len()).rev() {
+        let candidate: String = std::iter::once(ELLIPSIS)
+            .chain(chars[chars.len() - keep..].iter().copied())
+            .collect();
+        if width(&candidate) <= max_width {
+            return candidate;
+        }
+    }
+    ELLIPSIS.to_string()
 }
 
 fn key_pressed_no_repeat(input: &egui::InputState, key: egui::Key) -> bool {
@@ -199,6 +240,9 @@ fn classify_key(input: &egui::InputState, in_search: bool) -> Option<FileBrowser
     }
     if !in_search && key_pressed_no_repeat(input, egui::Key::R) && !input.modifiers.any() {
         return Some(FileBrowserAction::Refresh);
+    }
+    if !in_search && key_pressed_no_repeat(input, egui::Key::T) && !input.modifiers.any() {
+        return Some(FileBrowserAction::CdTerminalAndClose);
     }
     let mut text = String::new();
     for event in &input.events {
@@ -385,10 +429,6 @@ impl FileBrowserApp {
         self.selected = 0;
         self.refresh();
         self.pending_scroll = true;
-        self.pending_cmds.push(AppCommand::CdRequest {
-            cwd: self.cwd.to_string_lossy().to_string(),
-            sender_pane_id: 0, // dispatch.rs stamps the real pane_id
-        });
         self.clear_multi_selection();
     }
 
@@ -459,6 +499,21 @@ impl FileBrowserApp {
         }
     }
 
+    /// Explicit cwd handoff (#2145): the ONLY path that writes a `cd` into
+    /// the linked terminal. Browsing must never inject keystrokes into the
+    /// terminal behind the explorer — a coding agent may be running there.
+    fn cd_terminal_and_close(&mut self) {
+        log::info!(
+            "file_browser: explicit cd handoff to linked terminal: '{}'",
+            self.cwd.display()
+        );
+        self.pending_cmds.push(AppCommand::CdRequest {
+            cwd: self.cwd.to_string_lossy().to_string(),
+            sender_pane_id: 0, // dispatch.rs stamps the real pane_id
+        });
+        self.should_close = true;
+    }
+
     fn navigate_up(&mut self) {
         if let Some(parent) = self.cwd.parent().map(|p| p.to_path_buf()) {
             let leaving_name = self
@@ -468,10 +523,6 @@ impl FileBrowserApp {
             self.cwd = parent.clone();
             self.selected = 0;
             self.refresh();
-            self.pending_cmds.push(AppCommand::CdRequest {
-                cwd: self.cwd.to_string_lossy().to_string(),
-                sender_pane_id: 0, // dispatch.rs stamps the real pane_id
-            });
             let restore_name = self
                 .directory_selection_memory
                 .remove(&self.cwd)
@@ -1133,23 +1184,13 @@ impl FileBrowserApp {
         for (idx, actual_idx) in self.visible_entry_indices().into_iter().enumerate() {
             let entry = self.entries[actual_idx].clone();
             let is_selected = self.is_entry_selected(idx, &entry);
-            let secondary = if entry.is_dir {
-                format!(
-                    "{} \u{00b7} {}",
-                    Self::entry_kind(&entry),
-                    format_modified(entry.modified)
-                )
-            } else {
-                format!(
-                    "{} \u{00b7} {}",
-                    format_size(entry.size_bytes),
-                    format_modified(entry.modified)
-                )
-            };
+            // Compact rows are single-line per the file-explorer PRD —
+            // metadata lives in the details table and the status bar, not
+            // in a second line that doubles every row's height.
             let title = Self::entry_title(&entry);
             let response = ListRow::new(&title)
-                .secondary(&secondary)
                 .chip(Self::entry_chip(&entry))
+                .dense()
                 .selected(is_selected)
                 .show(ui, colors);
             if is_selected && should_scroll {
@@ -1876,80 +1917,88 @@ impl FileBrowserApp {
         }
     }
 
-    fn draw_toolbar(
-        &mut self,
-        ui: &mut egui::Ui,
-        colors: &Colors,
-        layout: FileBrowserLayout,
-        show_inspector: bool,
-    ) {
+    fn draw_toolbar(&mut self, ui: &mut egui::Ui, colors: &Colors, layout: FileBrowserLayout) {
+        // Path gets its own full-width row, elided from the left so the
+        // leaf directory always stays visible. The old single-row layout
+        // (path left, chips right) collided at narrow widths: the chips
+        // wrapped under the path and the toolbar grew unpredictably.
         ui.horizontal(|ui| {
+            let elided = elide_path_leading(
+                ui,
+                &self.cwd.display().to_string(),
+                egui::FontId::monospace(style::TEXT_HINT),
+                ui.available_width(),
+            );
             ui.colored_label(
                 colors.accent,
-                egui::RichText::new(self.cwd.display().to_string())
-                    .size(style::TEXT_HINT)
-                    .monospace(),
+                egui::RichText::new(elided).size(style::TEXT_HINT).monospace(),
+            );
+        });
+        ui.add_space(style::SPACE_XS);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(match layout {
+                    FileBrowserLayout::CompactList => "compact",
+                    FileBrowserLayout::DetailsTable => "details",
+                })
+                .size(style::TEXT_HINT)
+                .color(colors.text_dim),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let folders_label = if self.columns.folders_on_top {
-                    "Folders \u{2713}"
-                } else {
-                    "Folders"
-                };
-                if ui.small_button(folders_label).clicked() {
-                    self.columns.folders_on_top = !self.columns.folders_on_top;
-                    self.refresh_preserving_filter();
-                    log::info!(
-                        "file_browser: folders_on_top changed to {}",
-                        self.columns.folders_on_top
-                    );
-                }
-                for id in [
-                    ColumnId::Tags,
-                    ColumnId::Permissions,
-                    ColumnId::Extension,
-                    ColumnId::Created,
-                    ColumnId::Modified,
-                    ColumnId::Size,
-                    ColumnId::Kind,
-                ] {
-                    let visible = self
-                        .columns
-                        .columns
-                        .iter()
-                        .find(|column| column.id == id)
-                        .map(|column| column.visible)
-                        .unwrap_or(false);
-                    let label = if visible {
-                        format!("{} \u{2713}", id.label())
-                    } else {
-                        id.label().to_string()
-                    };
-                    if ui.small_button(label).clicked() {
-                        self.columns.set_column_visible(id, !visible);
-                        log::info!(
-                            "file_browser: column {} visibility changed to {}",
-                            id.key(),
-                            !visible
-                        );
-                    }
-                }
-                ui.label(
-                    egui::RichText::new(match layout {
-                        FileBrowserLayout::CompactList => "compact",
-                        FileBrowserLayout::DetailsTable => "details",
-                    })
-                    .size(style::TEXT_HINT)
-                    .color(colors.text_dim),
+                // A single menu button instead of a strip of toggle chips.
+                // The chip strip needed ~750px and, being right-to-left,
+                // overflowed past the pane's LEFT edge when it didn't fit —
+                // egui then extended every sibling row's left boundary, which
+                // shoved the whole table off-screen at middle widths. A menu
+                // is one fixed-width control: it fits at every pane size.
+                ui.menu_button(
+                    egui::RichText::new("View \u{2304}").size(style::TEXT_HINT),
+                    |ui| {
+                        let mut folders_on_top = self.columns.folders_on_top;
+                        if ui.checkbox(&mut folders_on_top, "Folders first").changed() {
+                            self.columns.folders_on_top = folders_on_top;
+                            self.refresh_preserving_filter();
+                            log::info!(
+                                "file_browser: folders_on_top changed to {}",
+                                self.columns.folders_on_top
+                            );
+                        }
+                        let mut inspector = self.inspector_open;
+                        if ui.checkbox(&mut inspector, "Inspector").changed() {
+                            self.toggle_inspector();
+                        }
+                        // Column toggles only exist in the details table — in
+                        // the compact list they would be seven dead entries.
+                        if layout.shows_details() {
+                            ui.separator();
+                            for id in [
+                                ColumnId::Kind,
+                                ColumnId::Size,
+                                ColumnId::Modified,
+                                ColumnId::Created,
+                                ColumnId::Extension,
+                                ColumnId::Permissions,
+                                ColumnId::Tags,
+                            ] {
+                                let mut visible = self
+                                    .columns
+                                    .columns
+                                    .iter()
+                                    .find(|column| column.id == id)
+                                    .map(|column| column.visible)
+                                    .unwrap_or(false);
+                                if ui.checkbox(&mut visible, id.label()).changed() {
+                                    self.columns.set_column_visible(id, visible);
+                                    log::info!(
+                                        "file_browser: column {} visibility changed to {}",
+                                        id.key(),
+                                        visible
+                                    );
+                                }
+                            }
+                        }
+                    },
                 );
-                let inspector_label = if show_inspector {
-                    "Inspector \u{2713}"
-                } else {
-                    "Inspector"
-                };
-                if ui.small_button(inspector_label).clicked() {
-                    self.toggle_inspector();
-                }
             });
         });
     }
@@ -1978,8 +2027,11 @@ impl FileBrowserApp {
     fn draw_status_bar(&self, ui: &mut egui::Ui, colors: &Colors, show_inspector: bool) {
         ui.add_space(style::SPACE_XS);
         ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            ui.set_min_height(STATUS_BAR_H);
+        // Single non-wrapping row. The old `horizontal_wrapped` let the hint
+        // bar wrap to a second line at narrow widths, overflowing the
+        // STATUS_BAR_H reservation and colliding with the list rows above it.
+        ui.horizontal(|ui| {
+            ui.set_min_height(STATUS_BAR_ROW_H);
             let selected_label = self.selected_count().to_string();
             ui.label(
                 egui::RichText::new(format!(
@@ -1998,15 +2050,32 @@ impl FileBrowserApp {
                 );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let hints = [
+                // Hints are measured, not breakpointed: drop the least
+                // important groups (front of the list) until the rest fit in
+                // the width left over after the item-count label. Guessed
+                // width tiers kept landing wrong, and a right-to-left layout
+                // that overflows extends past the pane's LEFT edge — egui
+                // then shifts every sibling row off-screen with it.
+                let rem = ui.available_width();
+                let all = [
                     HintGroup::new(&["/"], "search"),
                     HintGroup::new(&["s"], "sort"),
                     HintGroup::new(&["i"], "inspector"),
                     HintGroup::new(&["Space"], "quick look"),
                     HintGroup::new(&["Enter"], "open"),
+                    HintGroup::new(&["t"], "cd terminal"),
                     HintGroup::new(&["Esc"], "close"),
                 ];
-                HintBar::new(&hints).show(ui, colors);
+                let fits = |groups: &[HintGroup]| {
+                    let total = groups.iter().map(|g| g.width(ui)).sum::<f32>()
+                        + style::SPACE_MD * groups.len().saturating_sub(1) as f32;
+                    total + style::SPACE_XL <= rem
+                };
+                let mut start = 0;
+                while start < all.len() - 1 && !fits(&all[start..]) {
+                    start += 1;
+                }
+                HintBar::new(&all[start..]).show(ui, colors);
             });
         });
     }
@@ -2033,7 +2102,7 @@ impl App for FileBrowserApp {
             .show(ui, |ui| {
                 let layout = FileBrowserLayout::for_width(ui.available_width());
                 let show_inspector = self.should_show_inspector(ui.available_width());
-                self.draw_toolbar(ui, colors, layout, show_inspector);
+                self.draw_toolbar(ui, colors, layout);
 
                 if self.in_search {
                     self.draw_search_bar(ui, colors);
@@ -2209,6 +2278,13 @@ impl App for FileBrowserApp {
             }
             (_, Some(FileBrowserAction::Escape)) => {
                 self.should_close = true;
+                KeyDisposition::Consumed
+            }
+            // Works in Normal and Empty mode alike — an empty directory is
+            // still a valid handoff target. Search mode never produces this
+            // action (classify_key gates on !in_search).
+            (_, Some(FileBrowserAction::CdTerminalAndClose)) => {
+                self.cd_terminal_and_close();
                 KeyDisposition::Consumed
             }
             // NavigateUp (← / H): global — no modal conflict
@@ -2408,10 +2484,6 @@ impl App for FileBrowserApp {
         self.sync_cwd(new_cwd.to_path_buf());
     }
 
-    fn current_cwd(&self) -> Option<std::path::PathBuf> {
-        Some(self.cwd.clone())
-    }
-
     fn serialize_state(&self) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "cwd": self.cwd.display().to_string(),
@@ -2535,6 +2607,75 @@ mod tests {
 
         run_handle_key(&mut app, vec![key_event(Key::I, Modifiers::default())]);
         assert!(!app.inspector_open);
+    }
+
+    #[test]
+    fn browsing_never_queues_cd_request() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("sub")).expect("mkdir");
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        app.take_pending_commands();
+
+        app.navigate_into(dir.path().join("sub"));
+        app.navigate_up();
+
+        let cmds = app.take_pending_commands();
+        assert!(
+            !cmds
+                .iter()
+                .any(|c| matches!(c, AppCommand::CdRequest { .. })),
+            "browsing must not write cd into the linked terminal"
+        );
+        assert!(!app.should_close);
+    }
+
+    #[test]
+    fn t_hands_off_cwd_and_closes() {
+        let (mut app, dir) = make_populated_dir_app();
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::T, Modifiers::default())]);
+
+        assert!(consumed);
+        assert!(app.should_close);
+        let cd_cwd = app.take_pending_commands().into_iter().find_map(|c| match c {
+            AppCommand::CdRequest { cwd, .. } => Some(cwd),
+            _ => None,
+        });
+        assert_eq!(cd_cwd.as_deref(), Some(dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn t_in_search_mode_is_not_a_handoff() {
+        let (mut app, _dir) = make_populated_dir_app();
+        run_handle_key(&mut app, vec![key_event(Key::Slash, Modifiers::default())]);
+        assert!(app.in_search);
+
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::T, Modifiers::default())]);
+
+        assert!(consumed);
+        assert!(!app.should_close);
+        assert!(!app
+            .take_pending_commands()
+            .iter()
+            .any(|c| matches!(c, AppCommand::CdRequest { .. })));
+    }
+
+    #[test]
+    fn elide_path_keeps_leaf_visible() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let font = egui::FontId::monospace(11.0);
+                let full = "/Users/ian/Documents/GitHub/PLEXI/src/file_browser";
+                assert_eq!(elide_path_leading(ui, full, font.clone(), 10_000.0), full);
+
+                let narrow = elide_path_leading(ui, full, font.clone(), 160.0);
+                assert!(narrow.starts_with('\u{2026}'));
+                assert!(narrow.ends_with("file_browser"));
+                assert!(narrow.chars().count() < full.chars().count());
+
+                assert!(elide_path_leading(ui, full, font, 0.0).is_empty());
+            });
+        });
     }
 
     #[test]

@@ -68,6 +68,10 @@ pub const BUTTON_H_LG: f32 = 52.0; // Primary action buttons in modals.
 // the selection highlight; 14 horizontal padding keeps the title clear of
 // the highlight's left edge — 10 read as cramped against the outline.
 pub const LIST_ROW_H: f32 = 48.0;
+// Dense single-line variant for data-dense listings (file browser rows).
+// 30 fits one 12pt medium line with ~7px of air — the file-explorer PRD's
+// 28-32px density target. The 48px two-line row above is for pickers.
+pub const LIST_ROW_DENSE_H: f32 = 30.0;
 pub const LIST_ROW_PAD_H: f32 = 14.0;
 pub const LIST_ROW_GAP: f32 = 8.0;
 

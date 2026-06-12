@@ -1854,6 +1854,10 @@ impl eframe::App for PlexiApp {
                     cwd,
                     sender_pane_id,
                 } => {
+                    // Explicit, app-requested cd only (#2145). Two delivery
+                    // targets: a linked terminal pane, or — for overlay apps —
+                    // the hidden terminal stored in `overlay_replaced`, whose
+                    // PTY stays alive while the overlay covers it.
                     let active = self.active_window;
                     let escaped = cwd.replace('\'', "'\\''");
                     let cd_cmd = format!("\x15cd '{}'\n", escaped);
@@ -1862,6 +1866,7 @@ impl eframe::App for PlexiApp {
                         .get(&sender_pane_id)
                         .and_then(|p| p.as_app())
                         .and_then(|a| a.linked_pane_id);
+                    let mut delivered = false;
                     if let Some(tid) = linked_id {
                         if let Some(t) = self.windows[active]
                             .panes
@@ -1875,6 +1880,31 @@ impl eframe::App for PlexiApp {
                                 "file_browser: CdRequest synced cwd '{}' to terminal pane {}",
                                 cwd,
                                 tid
+                            );
+                            delivered = true;
+                        }
+                    }
+                    if !delivered {
+                        if let Some(t) = self.windows[active]
+                            .panes
+                            .get_mut(&sender_pane_id)
+                            .and_then(|p| p.as_app_mut())
+                            .and_then(|a| a.overlay_replaced.as_deref_mut())
+                            .and_then(|p| p.as_terminal_mut())
+                        {
+                            t.backend.process_command(egui_term::BackendCommand::Write(
+                                cd_cmd.as_bytes().to_vec(),
+                            ));
+                            log::info!(
+                                "file_browser: CdRequest synced cwd '{}' to overlay-hidden terminal under pane {}",
+                                cwd,
+                                sender_pane_id
+                            );
+                        } else {
+                            log::warn!(
+                                "file_browser: CdRequest from pane {} found no linked or overlay-hidden terminal; cwd '{}' dropped",
+                                sender_pane_id,
+                                cwd
                             );
                         }
                     }
@@ -2325,6 +2355,15 @@ impl eframe::App for PlexiApp {
                 })
                 .unwrap_or(false);
             if should_close {
+                // The keystroke that triggered the close (e.g. `t` in the file
+                // browser) is still in this frame's input queue. The restored
+                // terminal renders later this same frame and would forward it
+                // to its PTY — swallow all key/text events before closing.
+                ctx.input_mut(|i| {
+                    i.events.retain(|e| {
+                        !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_))
+                    });
+                });
                 self.close_focused_app();
             }
         }

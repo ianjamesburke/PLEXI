@@ -1540,7 +1540,14 @@ mod tests {
         assert_eq!(app.workspace_root, workspace.path());
         assert_eq!(app.pane_group.as_deref(), Some("cwd"));
         assert_eq!(app.runtime.type_id(), "file_browser");
-        assert_eq!(app.runtime.current_cwd().as_deref(), Some(restored.path()));
+        let state_json = app
+            .runtime
+            .serialize_state()
+            .expect("file_browser serializes state");
+        assert_eq!(
+            state_json["cwd"],
+            serde_json::json!(restored.path().display().to_string())
+        );
     }
 
     #[test]

@@ -1,0 +1,14 @@
+# Smallest plausible pane — the explorer must stay usable, not overflow.
+size = [360.0, 280.0]
+
+[[steps]]
+open_file_browser = "."
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 1 }
+
+[[steps]]
+shot = "file-browser-tiny.png"
