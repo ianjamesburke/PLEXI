@@ -223,12 +223,6 @@ pub trait App: Send {
     /// Apps that track directories (like the file browser) should update.
     fn sync_cwd(&mut self, _new_cwd: &std::path::Path) {}
 
-    /// Returns the app's current working directory, if it tracks one.
-    /// Used to sync CWD back to the terminal when an overlay app closes.
-    fn current_cwd(&self) -> Option<std::path::PathBuf> {
-        None
-    }
-
     /// Queue a PlexiEvent to be sent to the app on the next flush.
     /// Used to deliver host-originated events (e.g. AppSpawned) back to
     /// external process apps. Built-in apps ignore this by default.

@@ -1917,13 +1917,7 @@ impl FileBrowserApp {
         }
     }
 
-    fn draw_toolbar(
-        &mut self,
-        ui: &mut egui::Ui,
-        colors: &Colors,
-        layout: FileBrowserLayout,
-        show_inspector: bool,
-    ) {
+    fn draw_toolbar(&mut self, ui: &mut egui::Ui, colors: &Colors, layout: FileBrowserLayout) {
         // Path gets its own full-width row, elided from the left so the
         // leaf directory always stays visible. The old single-row layout
         // (path left, chips right) collided at narrow widths: the chips
@@ -1951,62 +1945,60 @@ impl FileBrowserApp {
                 .color(colors.text_dim),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let folders_label = if self.columns.folders_on_top {
-                    "Folders \u{2713}"
-                } else {
-                    "Folders"
-                };
-                if ui.small_button(folders_label).clicked() {
-                    self.columns.folders_on_top = !self.columns.folders_on_top;
-                    self.refresh_preserving_filter();
-                    log::info!(
-                        "file_browser: folders_on_top changed to {}",
-                        self.columns.folders_on_top
-                    );
-                }
-                // Column toggles only exist in the details table — in the
-                // compact list they would be seven dead chips fighting for
-                // a width that doesn't have them.
-                if layout.shows_details() {
-                    for id in [
-                        ColumnId::Tags,
-                        ColumnId::Permissions,
-                        ColumnId::Extension,
-                        ColumnId::Created,
-                        ColumnId::Modified,
-                        ColumnId::Size,
-                        ColumnId::Kind,
-                    ] {
-                        let visible = self
-                            .columns
-                            .columns
-                            .iter()
-                            .find(|column| column.id == id)
-                            .map(|column| column.visible)
-                            .unwrap_or(false);
-                        let label = if visible {
-                            format!("{} \u{2713}", id.label())
-                        } else {
-                            id.label().to_string()
-                        };
-                        if ui.small_button(label).clicked() {
-                            self.columns.set_column_visible(id, !visible);
+                // A single menu button instead of a strip of toggle chips.
+                // The chip strip needed ~750px and, being right-to-left,
+                // overflowed past the pane's LEFT edge when it didn't fit —
+                // egui then extended every sibling row's left boundary, which
+                // shoved the whole table off-screen at middle widths. A menu
+                // is one fixed-width control: it fits at every pane size.
+                ui.menu_button(
+                    egui::RichText::new("View \u{2304}").size(style::TEXT_HINT),
+                    |ui| {
+                        let mut folders_on_top = self.columns.folders_on_top;
+                        if ui.checkbox(&mut folders_on_top, "Folders first").changed() {
+                            self.columns.folders_on_top = folders_on_top;
+                            self.refresh_preserving_filter();
                             log::info!(
-                                "file_browser: column {} visibility changed to {}",
-                                id.key(),
-                                !visible
+                                "file_browser: folders_on_top changed to {}",
+                                self.columns.folders_on_top
                             );
                         }
-                    }
-                }
-                let inspector_label = if show_inspector {
-                    "Inspector \u{2713}"
-                } else {
-                    "Inspector"
-                };
-                if ui.small_button(inspector_label).clicked() {
-                    self.toggle_inspector();
-                }
+                        let mut inspector = self.inspector_open;
+                        if ui.checkbox(&mut inspector, "Inspector").changed() {
+                            self.toggle_inspector();
+                        }
+                        // Column toggles only exist in the details table — in
+                        // the compact list they would be seven dead entries.
+                        if layout.shows_details() {
+                            ui.separator();
+                            for id in [
+                                ColumnId::Kind,
+                                ColumnId::Size,
+                                ColumnId::Modified,
+                                ColumnId::Created,
+                                ColumnId::Extension,
+                                ColumnId::Permissions,
+                                ColumnId::Tags,
+                            ] {
+                                let mut visible = self
+                                    .columns
+                                    .columns
+                                    .iter()
+                                    .find(|column| column.id == id)
+                                    .map(|column| column.visible)
+                                    .unwrap_or(false);
+                                if ui.checkbox(&mut visible, id.label()).changed() {
+                                    self.columns.set_column_visible(id, visible);
+                                    log::info!(
+                                        "file_browser: column {} visibility changed to {}",
+                                        id.key(),
+                                        visible
+                                    );
+                                }
+                            }
+                        }
+                    },
+                );
             });
         });
     }
@@ -2038,7 +2030,6 @@ impl FileBrowserApp {
         // Single non-wrapping row. The old `horizontal_wrapped` let the hint
         // bar wrap to a second line at narrow widths, overflowing the
         // STATUS_BAR_H reservation and colliding with the list rows above it.
-        let bar_width = ui.available_width();
         ui.horizontal(|ui| {
             ui.set_min_height(STATUS_BAR_ROW_H);
             let selected_label = self.selected_count().to_string();
@@ -2059,29 +2050,32 @@ impl FileBrowserApp {
                 );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Hints shrink with the pane. The full set needs ~700px next
-                // to the item count; the mid tier keeps the actions that
-                // matter (close, handoff, open); tiny panes get close only.
-                let hints: Vec<HintGroup> = if bar_width >= 700.0 {
-                    vec![
-                        HintGroup::new(&["/"], "search"),
-                        HintGroup::new(&["s"], "sort"),
-                        HintGroup::new(&["i"], "inspector"),
-                        HintGroup::new(&["Space"], "quick look"),
-                        HintGroup::new(&["Enter"], "open"),
-                        HintGroup::new(&["t"], "cd terminal"),
-                        HintGroup::new(&["Esc"], "close"),
-                    ]
-                } else if bar_width >= 430.0 {
-                    vec![
-                        HintGroup::new(&["Enter"], "open"),
-                        HintGroup::new(&["t"], "cd terminal"),
-                        HintGroup::new(&["Esc"], "close"),
-                    ]
-                } else {
-                    vec![HintGroup::new(&["Esc"], "close")]
+                // Hints are measured, not breakpointed: drop the least
+                // important groups (front of the list) until the rest fit in
+                // the width left over after the item-count label. Guessed
+                // width tiers kept landing wrong, and a right-to-left layout
+                // that overflows extends past the pane's LEFT edge — egui
+                // then shifts every sibling row off-screen with it.
+                let rem = ui.available_width();
+                let all = [
+                    HintGroup::new(&["/"], "search"),
+                    HintGroup::new(&["s"], "sort"),
+                    HintGroup::new(&["i"], "inspector"),
+                    HintGroup::new(&["Space"], "quick look"),
+                    HintGroup::new(&["Enter"], "open"),
+                    HintGroup::new(&["t"], "cd terminal"),
+                    HintGroup::new(&["Esc"], "close"),
+                ];
+                let fits = |groups: &[HintGroup]| {
+                    let total = groups.iter().map(|g| g.width(ui)).sum::<f32>()
+                        + style::SPACE_MD * groups.len().saturating_sub(1) as f32;
+                    total + style::SPACE_XL <= rem
                 };
-                HintBar::new(&hints).show(ui, colors);
+                let mut start = 0;
+                while start < all.len() - 1 && !fits(&all[start..]) {
+                    start += 1;
+                }
+                HintBar::new(&all[start..]).show(ui, colors);
             });
         });
     }
@@ -2108,7 +2102,7 @@ impl App for FileBrowserApp {
             .show(ui, |ui| {
                 let layout = FileBrowserLayout::for_width(ui.available_width());
                 let show_inspector = self.should_show_inspector(ui.available_width());
-                self.draw_toolbar(ui, colors, layout, show_inspector);
+                self.draw_toolbar(ui, colors, layout);
 
                 if self.in_search {
                     self.draw_search_bar(ui, colors);
@@ -2488,10 +2482,6 @@ impl App for FileBrowserApp {
 
     fn sync_cwd(&mut self, new_cwd: &std::path::Path) {
         self.sync_cwd(new_cwd.to_path_buf());
-    }
-
-    fn current_cwd(&self) -> Option<std::path::PathBuf> {
-        Some(self.cwd.clone())
     }
 
     fn serialize_state(&self) -> Option<serde_json::Value> {

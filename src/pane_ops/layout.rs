@@ -24,31 +24,31 @@ pub(crate) enum SwapResult {
 /// If `pane_id` is an app pane that was opened as an overlay over another
 /// pane (`hint = Some("overlay")`), restore the original pane and return
 /// `true`. Otherwise return `false` and leave the map unchanged.
-/// Restores the pane hidden by an overlay app.
-/// Returns `Some(cwd)` if an overlay was restored and the closed app reported a CWD to sync,
-/// `Some(None)` if restored with no CWD to sync, or `None` if this was not an overlay.
+///
+/// Restoring NEVER writes into the restored terminal. Cwd handoff is an
+/// explicit `AppCommand::CdRequest` only (#2145) — a coding agent may be
+/// running in the terminal behind the overlay.
 pub(super) fn restore_overlay_replacement(
     panes: &mut HashMap<PaneId, Pane>,
     pane_id: PaneId,
-) -> Option<Option<std::path::PathBuf>> {
+) -> bool {
     let Some(pane) = panes.remove(&pane_id) else {
-        return None;
+        return false;
     };
 
     match pane {
         Pane::App(mut app) => {
             if let Some(replaced) = app.overlay_replaced.take() {
-                let cwd = app.runtime.current_cwd();
                 panes.insert(pane_id, *replaced);
-                Some(cwd)
+                true
             } else {
                 panes.insert(pane_id, Pane::App(app));
-                None
+                false
             }
         }
         other => {
             panes.insert(pane_id, other);
-            None
+            false
         }
     }
 }
@@ -630,27 +630,7 @@ impl PlexiApp {
                 _ => None,
             });
         if let Some(pane_id) = focused_pane_id {
-            if let Some(maybe_cwd) =
-                restore_overlay_replacement(&mut self.windows[self.active_window].panes, pane_id)
-            {
-                if let Some(cwd) = maybe_cwd {
-                    let escaped = cwd.to_string_lossy().replace('\'', "'\\''");
-                    let cd_cmd = format!("\x15cd '{}'\n", escaped);
-                    if let Some(t) = self.windows[self.active_window]
-                        .panes
-                        .get_mut(&pane_id)
-                        .and_then(|p| p.as_terminal_mut())
-                    {
-                        t.backend.process_command(egui_term::BackendCommand::Write(
-                            cd_cmd.as_bytes().to_vec(),
-                        ));
-                        log::info!(
-                            "file_browser: synced cwd '{}' to terminal pane {}",
-                            cwd.display(),
-                            pane_id
-                        );
-                    }
-                }
+            if restore_overlay_replacement(&mut self.windows[self.active_window].panes, pane_id) {
                 return;
             }
         }
@@ -1475,27 +1455,7 @@ impl PlexiApp {
         else {
             return;
         };
-        if let Some(maybe_cwd) =
-            restore_overlay_replacement(&mut self.windows[active].panes, pane_id)
-        {
-            if let Some(cwd) = maybe_cwd {
-                let escaped = cwd.to_string_lossy().replace('\'', "'\\''");
-                let cd_cmd = format!("\x15cd '{}'\n", escaped);
-                if let Some(t) = self.windows[active]
-                    .panes
-                    .get_mut(&pane_id)
-                    .and_then(|p| p.as_terminal_mut())
-                {
-                    t.backend.process_command(egui_term::BackendCommand::Write(
-                        cd_cmd.as_bytes().to_vec(),
-                    ));
-                    log::info!(
-                        "file_browser: synced cwd '{}' to terminal pane {}",
-                        cwd.display(),
-                        pane_id
-                    );
-                }
-            }
+        if restore_overlay_replacement(&mut self.windows[active].panes, pane_id) {
             return;
         }
 
@@ -1915,6 +1875,60 @@ mod send_pane_tests {
             app.send_pane(Direction::Right),
             SwapResult::AtBoundary
         ));
+    }
+}
+
+#[cfg(test)]
+mod restore_overlay_replacement_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn make_app_pane(id: u64, overlay_replaced: Option<Box<Pane>>) -> Pane {
+        use crate::app::permissions::AppPermissions;
+        use crate::host::pane::{AppPane, AppRuntime};
+        use crate::process_app::ProcessApp;
+        let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
+        Pane::App(Box::new(AppPane {
+            id,
+            runtime: AppRuntime::Process(Box::new(process_app)),
+            workspace_root: std::env::temp_dir(),
+            permissions: AppPermissions::builtin(),
+            manifest_id: "test".to_string(),
+            name: "Test".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced,
+            hidden: false,
+            agent: None,
+            slots: HashMap::new(),
+        }))
+    }
+
+    #[test]
+    fn restores_replaced_pane_in_place() {
+        let mut panes: HashMap<PaneId, Pane> = HashMap::new();
+        let replaced = make_app_pane(1, None);
+        panes.insert(1, make_app_pane(1, Some(Box::new(replaced))));
+
+        assert!(restore_overlay_replacement(&mut panes, 1));
+        // The slot now holds the previously hidden pane, not the overlay.
+        let pane = panes.get(&1).expect("pane restored in place");
+        assert!(pane.as_app().is_some_and(|a| a.overlay_replaced.is_none()));
+    }
+
+    #[test]
+    fn non_overlay_app_is_left_untouched() {
+        let mut panes: HashMap<PaneId, Pane> = HashMap::new();
+        panes.insert(1, make_app_pane(1, None));
+
+        assert!(!restore_overlay_replacement(&mut panes, 1));
+        assert!(panes.contains_key(&1));
+    }
+
+    #[test]
+    fn missing_pane_returns_false() {
+        let mut panes: HashMap<PaneId, Pane> = HashMap::new();
+        assert!(!restore_overlay_replacement(&mut panes, 99));
     }
 }
 
