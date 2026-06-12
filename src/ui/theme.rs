@@ -47,6 +47,12 @@ pub struct Colors {
     pub danger: Color32,
     pub success: Color32,
     pub warning: Color32,
+    // Activity pip colors — override success/warning/danger when set in [theme]
+    pub pip_working: Color32,
+    pub pip_idle: Color32,
+    pub pip_blocked: Color32,
+    // Opacity multiplier for unfocused pips (default 0.45)
+    pub pip_dim: f32,
     // Terminal fg/bg as bytes for dynamic colors
     pub terminal_fg_bytes: [u8; 3],
     pub terminal_bg_bytes: [u8; 3],
@@ -120,6 +126,19 @@ impl Colors {
             danger: parse_hex_or(&cfg.red, Color32::from_rgb(0xff, 0x55, 0x55)),
             success: parse_hex_or(&cfg.green, Color32::from_rgb(0xa6, 0xe3, 0xa1)),
             warning: parse_hex_or(&cfg.yellow, Color32::from_rgb(0xf9, 0xe2, 0xaf)),
+            pip_working: parse_hex_or(
+                &cfg.pip_working,
+                parse_hex_or(&cfg.green, Color32::from_rgb(0xa6, 0xe3, 0xa1)),
+            ),
+            pip_idle: parse_hex_or(
+                &cfg.pip_idle,
+                parse_hex_or(&cfg.yellow, Color32::from_rgb(0xf9, 0xe2, 0xaf)),
+            ),
+            pip_blocked: parse_hex_or(
+                &cfg.pip_blocked,
+                parse_hex_or(&cfg.red, Color32::from_rgb(0xff, 0x55, 0x55)),
+            ),
+            pip_dim: cfg.pip_dim.unwrap_or(0.45),
             terminal_fg_bytes: hex_to_bytes(cfg.foreground.as_deref(), [0xe8, 0xe6, 0xed]),
             terminal_bg_bytes: hex_to_bytes(cfg.background.as_deref(), [0x29, 0x2a, 0x44]),
         }
@@ -298,6 +317,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_cyan: s("#8bfde1"),
             bright_white: s("#f4f2f9"),
             bright_foreground: s("#f4f2f9"),
+            ..ThemeConfig::default()
         }),
         "dracula" => Some(ThemeConfig {
             preset: None,
@@ -332,6 +352,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_cyan: s("#a4ffff"),
             bright_white: s("#ffffff"),
             bright_foreground: s("#ffffff"),
+            ..ThemeConfig::default()
         }),
         "tokyo-night" => Some(ThemeConfig {
             preset: None,
@@ -366,6 +387,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_cyan: s("#90d8ff"),
             bright_white: s("#c0caf5"),
             bright_foreground: s("#c0caf5"),
+            ..ThemeConfig::default()
         }),
         "tokyo-day" => Some(ThemeConfig {
             preset: None,
@@ -400,6 +422,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_cyan: s("#007197"),
             bright_white: s("#3760bf"),
             bright_foreground: s("#3760bf"),
+            ..ThemeConfig::default()
         }),
         "gruvbox-dark" => Some(ThemeConfig {
             preset: None,
@@ -434,6 +457,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_cyan: s("#8ec07c"),
             bright_white: s("#fbf1c7"),
             bright_foreground: s("#fbf1c7"),
+            ..ThemeConfig::default()
         }),
         "gruvbox-light" => Some(ThemeConfig {
             preset: None,
@@ -468,6 +492,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_cyan: s("#427b58"),
             bright_white: s("#3c3836"),
             bright_foreground: s("#3c3836"),
+            ..ThemeConfig::default()
         }),
         "nord" => Some(ThemeConfig {
             preset: None,
@@ -502,6 +527,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_cyan: s("#8fbcbb"),
             bright_white: s("#e5e9f0"),
             bright_foreground: s("#e5e9f0"),
+            ..ThemeConfig::default()
         }),
         "solarized-dark" => Some(ThemeConfig {
             preset: None,
@@ -536,6 +562,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_cyan: s("#2aa198"),
             bright_white: s("#fdf6e3"),
             bright_foreground: s("#fdf6e3"),
+            ..ThemeConfig::default()
         }),
         "catppuccin-latte" => Some(ThemeConfig {
             preset: None,
@@ -570,6 +597,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_cyan: s("#04a5e5"),
             bright_white: s("#bcc0cc"),
             bright_foreground: s("#4c4f69"),
+            ..ThemeConfig::default()
         }),
         "solarized-light" => Some(ThemeConfig {
             preset: None,
@@ -604,6 +632,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_cyan: s("#2aa198"),
             bright_white: s("#fdf6e3"),
             bright_foreground: s("#fdf6e3"),
+            ..ThemeConfig::default()
         }),
         _ => None,
     }
@@ -645,6 +674,10 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
         bright_cyan: m(&user.bright_cyan, &preset.bright_cyan),
         bright_white: m(&user.bright_white, &preset.bright_white),
         bright_foreground: m(&user.bright_foreground, &preset.bright_foreground),
+        pip_working: m(&user.pip_working, &preset.pip_working),
+        pip_idle: m(&user.pip_idle, &preset.pip_idle),
+        pip_blocked: m(&user.pip_blocked, &preset.pip_blocked),
+        pip_dim: user.pip_dim.or(preset.pip_dim),
     }
 }
 
@@ -903,6 +936,32 @@ pub fn setup_fonts(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ThemeConfig;
+
+    /// pip_working/idle/blocked fall back to success/warning/danger when not set,
+    /// and use the override color when set. pip_dim defaults to 0.45.
+    #[test]
+    fn pip_colors_fall_back_to_semantic_and_accept_overrides() {
+        let default_cfg = ThemeConfig::default();
+        let colors = Colors::from_config(&default_cfg);
+        assert_eq!(colors.pip_working, colors.success);
+        assert_eq!(colors.pip_idle, colors.warning);
+        assert_eq!(colors.pip_blocked, colors.danger);
+        assert!((colors.pip_dim - 0.45).abs() < f32::EPSILON);
+
+        let override_cfg = ThemeConfig {
+            pip_working: Some("#ff0000".to_string()),
+            pip_idle: Some("#00ff00".to_string()),
+            pip_blocked: Some("#0000ff".to_string()),
+            pip_dim: Some(0.7),
+            ..ThemeConfig::default()
+        };
+        let oc = Colors::from_config(&override_cfg);
+        assert_eq!(oc.pip_working, Color32::from_rgb(0xff, 0x00, 0x00));
+        assert_eq!(oc.pip_idle, Color32::from_rgb(0x00, 0xff, 0x00));
+        assert_eq!(oc.pip_blocked, Color32::from_rgb(0x00, 0x00, 0xff));
+        assert!((oc.pip_dim - 0.7).abs() < f32::EPSILON);
+    }
 
     /// Every preset's accent button must render legible text: text_on must
     /// return a color with at least 3:1 WCAG contrast against the accent and

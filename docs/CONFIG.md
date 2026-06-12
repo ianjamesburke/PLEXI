@@ -61,6 +61,10 @@ Apply a named preset and optionally override individual color tokens.
 | `bright_cyan` | hex color | preset | ANSI color 14. |
 | `bright_white` | hex color | preset | ANSI color 15. |
 | `bright_foreground` | hex color | preset | Bright terminal foreground. |
+| `pip_working` | hex color | `green` | Status pip color for Working state. Defaults to the `green` ANSI color. |
+| `pip_idle` | hex color | `yellow` | Status pip color for Idle state. Defaults to the `yellow` ANSI color. |
+| `pip_blocked` | hex color | `red` | Status pip color for Blocked state. Defaults to the `red` ANSI color. |
+| `pip_dim` | float | 0.45 | Opacity multiplier applied to status pips on unfocused panes. Range: 0.0–1.0. |
 
 **Available presets:** `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-night`, `gruvbox-dark`, `nord`, `solarized-dark`, `solarized-light`
 
