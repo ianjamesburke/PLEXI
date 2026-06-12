@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod button;
 pub mod focus;
 pub mod hints;

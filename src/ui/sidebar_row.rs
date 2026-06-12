@@ -51,6 +51,8 @@ pub struct PaneDots {
     pub focused_idx: Option<usize>,
     /// Set of dot indices that are hidden (rendered as stroke-only outlines).
     pub hidden_set: std::collections::HashSet<usize>,
+    /// Per-dot agent state (parallel to dot index). `None` means no agent.
+    pub activities: Vec<Option<crate::app_protocol::AgentState>>,
 }
 
 pub struct ContextItem {
@@ -191,13 +193,32 @@ impl ContextItem {
                         }
                         let dot_size = Vec2::new(dot_area_width, PANE_DOT_RADIUS * 2.0 + 4.0);
                         let (rect, _) = ui.allocate_exact_size(dot_size, Sense::hover());
+                        let t = ui.input(|i| i.time);
+                        let has_working = dots.activities.iter().any(|s| {
+                            matches!(s, Some(crate::app_protocol::AgentState::Working))
+                        });
+                        if has_working {
+                            ui.ctx().request_repaint();
+                        }
                         let painter = ui.painter();
                         let cy = rect.center().y;
                         for dot_i in 0..capped {
                             let cx =
                                 rect.min.x + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
                             let is_hidden = dots.hidden_set.contains(&dot_i);
-                            let color = if dots.focused_idx == Some(dot_i) {
+                            let agent_state = dots.activities.get(dot_i).and_then(|s| s.as_ref());
+                            let color = if let Some(state) = agent_state {
+                                use crate::app_protocol::AgentState;
+                                match state {
+                                    AgentState::Working => {
+                                        let alpha = 0.45 + 0.55 * (0.5 + 0.5 * (t * std::f64::consts::PI).sin()) as f32;
+                                        let c = colors.success;
+                                        with_alpha(c, alpha * row_alpha)
+                                    }
+                                    AgentState::Idle => with_alpha(colors.warning, row_alpha),
+                                    AgentState::Blocked => with_alpha(colors.danger, row_alpha),
+                                }
+                            } else if dots.focused_idx == Some(dot_i) {
                                 with_alpha(accent_color, row_alpha)
                             } else {
                                 with_alpha(text_dim, if is_dragging { 0.15 } else { 0.35 })

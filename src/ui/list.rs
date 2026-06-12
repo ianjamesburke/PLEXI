@@ -8,6 +8,8 @@ pub(crate) struct ListRowPips {
     pub count: usize,
     pub focused_idx: Option<usize>,
     pub hidden_indices: Vec<usize>,
+    /// Per-pip agent state (parallel to pip index). `None` = no agent.
+    pub activities: Vec<Option<crate::app_protocol::AgentState>>,
 }
 
 pub struct ListRow<'a> {
@@ -249,7 +251,14 @@ impl<'a> ListRow<'a> {
             let center_y = text_metrics
                 .secondary_center_y
                 .unwrap_or(text_metrics.primary_center_y + COMPACT_METADATA_PIP_OFFSET_Y);
-            draw_pips(ui, pips, colors, lane_left, lane_right, center_y);
+            let t = ui.input(|i| i.time);
+            let has_working = pips.activities.iter().any(|s| {
+                matches!(s, Some(crate::app_protocol::AgentState::Working))
+            });
+            if has_working {
+                ui.ctx().request_repaint();
+            }
+            draw_pips(ui, pips, colors, lane_left, lane_right, center_y, t);
         }
     }
 }
@@ -527,6 +536,7 @@ fn draw_pips(
     lane_left: f32,
     lane_right: f32,
     center_y: f32,
+    time: f64,
 ) {
     if pips.count == 0 {
         return;
@@ -540,7 +550,10 @@ fn draw_pips(
             center_y,
         );
         let hidden = pips.hidden_indices.contains(&dot_i);
-        let color = if pips.focused_idx == Some(dot_i) {
+        let agent_state = pips.activities.get(dot_i).and_then(|s| s.as_ref());
+        let color = if let Some(state) = agent_state {
+            crate::ui::activity::dot_color_from_time(state, colors, time)
+        } else if pips.focused_idx == Some(dot_i) {
             colors.accent
         } else {
             colors.text_dim.gamma_multiply(0.45)
@@ -614,6 +627,7 @@ mod tests {
                 count: 3,
                 focused_idx: Some(1),
                 hidden_indices: vec![2],
+                activities: vec![None, None, None],
             });
 
             assert!(row.metadata_lane_width(ui) > 0.0);

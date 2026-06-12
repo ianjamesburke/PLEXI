@@ -78,6 +78,11 @@ pub struct PortalPreview {
     pub notification_count: usize,
     pub windows: Vec<MiniWindow>,
     pub window_count: usize,
+    /// Rollup agent state for all panes in the subcontext. `None` = no agents.
+    pub agent_rollup: Option<crate::app_protocol::AgentState>,
+    /// Per-pane agent state in spatial order (parallel to the pip row in the
+    /// portal header). `None` entries mean that pane has no agent running.
+    pub pane_activities: Vec<Option<crate::app_protocol::AgentState>>,
 }
 
 impl Default for PortalPreview {
@@ -89,6 +94,8 @@ impl Default for PortalPreview {
             notification_count: 0,
             windows: Vec::new(),
             window_count: 0,
+            agent_rollup: None,
+            pane_activities: Vec::new(),
         }
     }
 }
@@ -214,20 +221,38 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let padding = style::SPACE_MD;
             let inner = pane_rect.shrink(padding);
             let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+            let colors_for_portal = self.colors.clone();
             portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                ui.label(
-                    egui::RichText::new(&preview.context_name)
-                        .size(style::TEXT_BODY)
-                        .strong()
-                        .color(self.colors.text_primary),
-                );
+                // Title row: optional rollup dot + context name.
+                ui.horizontal(|ui| {
+                    if let Some(ref state) = preview.agent_rollup {
+                        let t = ui.input(|i| i.time);
+                        let dot_color =
+                            crate::ui::activity::dot_color_from_time(state, &colors_for_portal, t);
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(8.0, 8.0),
+                            egui::Sense::hover(),
+                        );
+                        ui.painter().circle_filled(rect.center(), 3.0, dot_color);
+                        if matches!(state, crate::app_protocol::AgentState::Working) {
+                            ui.ctx().request_repaint();
+                        }
+                        ui.add_space(style::SPACE_XS);
+                    }
+                    ui.label(
+                        egui::RichText::new(&preview.context_name)
+                            .size(style::TEXT_BODY)
+                            .strong()
+                            .color(colors_for_portal.text_primary),
+                    );
+                });
                 if !preview.context_description.is_empty() {
                     ui.scope(|ui| {
                         ui.set_max_width(inner.width());
                         crate::ui::labels::description_label(
                             ui,
                             &preview.context_description,
-                            &self.colors,
+                            &colors_for_portal,
                         );
                     });
                 }
@@ -254,8 +279,36 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     ui.label(
                         egui::RichText::new(count_label)
                             .size(style::TEXT_HINT)
-                            .color(self.colors.text_dim),
+                            .color(colors_for_portal.text_dim),
                     );
+                }
+                // Per-pane activity pip row (only when agents are present).
+                if preview.pane_activities.iter().any(|s| s.is_some()) {
+                    ui.add_space(style::SPACE_XS);
+                    ui.horizontal(|ui| {
+                        let t = ui.input(|i| i.time);
+                        let has_working = preview.pane_activities.iter().any(|s| {
+                            matches!(s, Some(crate::app_protocol::AgentState::Working))
+                        });
+                        if has_working {
+                            ui.ctx().request_repaint();
+                        }
+                        const PIP_R: f32 = 3.0;
+                        for state_opt in &preview.pane_activities {
+                            let color = if let Some(state) = state_opt {
+                                crate::ui::activity::dot_color_from_time(
+                                    state,
+                                    &colors_for_portal,
+                                    t,
+                                )
+                            } else {
+                                colors_for_portal.text_dim.gamma_multiply(0.35)
+                            };
+                            let (rect, _) =
+                                ui.allocate_exact_size(egui::vec2(PIP_R * 2.0, PIP_R * 2.0), egui::Sense::hover());
+                            ui.painter().circle_filled(rect.center(), PIP_R, color);
+                        }
+                    });
                 }
                 ui.add_space(style::SPACE_SM);
                 if !preview.windows.is_empty() {
@@ -266,8 +319,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         egui::Sense::hover(),
                     );
                     let painter = ui.painter();
-                    let colors = self.colors.clone();
-                    paint_portal_minimap(painter, map_area, &preview.windows, &colors);
+                    paint_portal_minimap(painter, map_area, &preview.windows, &colors_for_portal);
                 }
             });
             // Double-click on portal pane to zoom into the sub-context.

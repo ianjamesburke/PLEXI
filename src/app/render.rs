@@ -299,6 +299,32 @@ impl PlexiApp {
                             })
                             .collect();
                         let window_count = child_windows.len();
+                        // Collect per-pane agent states in spatial order for the portal pip row.
+                        let pane_activities: Vec<Option<crate::app_protocol::AgentState>> = self
+                            .windows
+                            .iter()
+                            .filter(|w| w.context_id == child_ctx_id)
+                            .flat_map(|w| {
+                                if let Some(root) = w.tree.root() {
+                                    crate::spatial::tiling::collect_pane_ids_spatial(
+                                        &w.tree.tiles,
+                                        root,
+                                    )
+                                    .into_iter()
+                                    .map(|pid| {
+                                        w.panes
+                                            .get(&pid)
+                                            .and_then(|p| p.agent())
+                                            .map(|a| a.state.clone())
+                                    })
+                                    .collect::<Vec<_>>()
+                                } else {
+                                    vec![]
+                                }
+                            })
+                            .collect();
+                        let agent_rollup =
+                            crate::ui::activity::rollup_activity(pane_activities.iter());
                         map.insert(pane_id, crate::spatial::tiling::PortalPreview {
                             context_name: ctx_name,
                             context_description: ctx_description,
@@ -306,6 +332,8 @@ impl PlexiApp {
                             notification_count: notif_count,
                             windows: child_windows,
                             window_count,
+                            agent_rollup,
+                            pane_activities,
                         });
                     }
                     map
