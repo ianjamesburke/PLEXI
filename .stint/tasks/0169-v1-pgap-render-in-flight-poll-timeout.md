@@ -16,6 +16,7 @@ tags:
   - "rendering"
 ---
 
+
 ## What
 
 `RENDER_IN_FLIGHT_POLL` (16ms) saturates to an immediate repaint after egui

@@ -16,6 +16,7 @@ tags:
   - "instrumentation"
 ---
 
+
 ## What
 
 frame_diag counts note() calls, and some sites note once per rendered frame
