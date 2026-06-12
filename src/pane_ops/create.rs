@@ -1164,6 +1164,7 @@ impl PlexiApp {
         let app = Box::new(crate::assistant::AssistantApp::new(
             workspace_root.clone(),
             broker,
+            &crate::config::config_dir(),
         ));
         let perms = crate::app::permissions::AppPermissions::builtin();
         self.open_builtin_app_pane(app, perms, workspace_root, None, Some("split_h"), None);

@@ -16,6 +16,16 @@ pub enum TurnRole {
     Error,
 }
 
+/// Final state of a tool-call transcript row. In-flight states (pending,
+/// running) live in `AssistantModel::active_tools`; only completed calls are
+/// persisted as turns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStatus {
+    Succeeded,
+    Failed,
+}
+
 /// One row in the conversation transcript.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Turn {
@@ -23,6 +33,9 @@ pub struct Turn {
     pub text: String,
     /// RFC 3339.
     pub created_at: String,
+    /// Final status for `TurnRole::Tool` rows; `None` for every other role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ToolStatus>,
 }
 
 impl Turn {
@@ -31,8 +44,40 @@ impl Turn {
             role,
             text: text.into(),
             created_at: crate::host::event_log::now_timestamp(),
+            status: None,
         }
     }
+
+    /// A completed tool-call row.
+    pub fn tool(text: impl Into<String>, status: ToolStatus) -> Self {
+        Self {
+            status: Some(status),
+            ..Self::now(TurnRole::Tool, text)
+        }
+    }
+}
+
+/// One tool call currently running inside the in-flight turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveToolCall {
+    pub tool: String,
+}
+
+/// A permission sheet awaiting the user's decision (renderable state only —
+/// the worker reply channel lives in `AssistantApp`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPermission {
+    pub tool: String,
+    pub input_summary: String,
+}
+
+/// What the user chose on the permission sheet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionChoice {
+    AllowOnce,
+    AllowSession,
+    AllowAlways,
+    Deny,
 }
 
 /// Live state of an in-flight model turn. Reasoning deltas are carried
@@ -45,9 +90,7 @@ pub struct StreamingState {
     pub partial_reasoning: String,
 }
 
-/// Side effects the model requests from the pane shell. Phase 1 implements
-/// `AiQuery` and `SessionWrite`; the rest are correctly-shaped stubs for the
-/// Phase 2 host-tool work (executed as logged no-ops, never panics).
+/// Side effects the model requests from the pane shell.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssistantEffect {
     /// Run a model turn for `prompt` in `conversation_id`.
@@ -57,16 +100,16 @@ pub enum AssistantEffect {
     },
     /// Persist unwritten turns and the active conversation id to disk.
     SessionWrite { conversation_id: String },
-    /// Phase 2: typed app-connector tool call.
-    ToolCall {
-        conversation_id: String,
-        tool: String,
-        input_json: String,
-    },
-    /// Phase 2: host pane control (open/focus/read).
+    /// `/tools`: list discovered app connector tools with broker decisions.
+    ListTools,
+    /// `/permissions`: list persisted grants for the assistant actor.
+    ListPermissions,
+    /// `/revoke <target_id>`: remove persisted grants for one target.
+    RevokeGrant { target_id: String },
+    /// `/audit`: show recent audit events.
+    ShowAudit,
+    /// Phase 3: host pane control (open/focus/read).
     PaneAction { action: String },
-    /// Phase 2: permission sheet for a tool or connector grant.
-    PermissionPrompt { target: String },
 }
 
 fn new_conversation_id() -> String {
@@ -82,6 +125,11 @@ pub struct AssistantModel {
     pub streaming: StreamingState,
     /// Selected row in the slash-command picker (clamped by the renderer).
     pub picker_selected: usize,
+    /// Tool calls currently running inside the in-flight turn.
+    pub active_tools: Vec<ActiveToolCall>,
+    /// Permission sheet awaiting a decision; the in-flight turn's worker
+    /// thread is blocked until it resolves.
+    pub pending_permission: Option<PendingPermission>,
 }
 
 impl AssistantModel {
@@ -93,6 +141,8 @@ impl AssistantModel {
             composer: String::new(),
             streaming: StreamingState::default(),
             picker_selected: 0,
+            active_tools: Vec::new(),
+            pending_permission: None,
         }
     }
 
@@ -202,6 +252,26 @@ impl AssistantModel {
                     conversation_id: self.conversation_id.clone(),
                 }]
             }
+            // Real Phase 2 views: the pane shell reads the broker/audit state
+            // and answers with an info row.
+            "tools" => vec![AssistantEffect::ListTools],
+            "permissions" => vec![AssistantEffect::ListPermissions],
+            "audit" => vec![AssistantEffect::ShowAudit],
+            "revoke" => {
+                if cmd.args.is_empty() {
+                    self.turns.push(Turn::now(
+                        TurnRole::Error,
+                        "Usage: /revoke <target_id> — see /permissions for target ids.",
+                    ));
+                    vec![AssistantEffect::SessionWrite {
+                        conversation_id: self.conversation_id.clone(),
+                    }]
+                } else {
+                    vec![AssistantEffect::RevokeGrant {
+                        target_id: cmd.args.clone(),
+                    }]
+                }
+            }
             name if commands::is_builtin(name) => {
                 self.turns.push(Turn::now(
                     TurnRole::Assistant,
@@ -210,22 +280,12 @@ impl AssistantModel {
                 let mut effects = vec![AssistantEffect::SessionWrite {
                     conversation_id: self.conversation_id.clone(),
                 }];
-                // Route the Phase 2 surfaces through their future effect
-                // shapes so the executor seam is exercised today (the
-                // executors are logged no-ops until Phase 2).
-                match name {
-                    "permissions" => effects.push(AssistantEffect::PermissionPrompt {
-                        target: "assistant".to_string(),
-                    }),
-                    "tools" => effects.push(AssistantEffect::ToolCall {
-                        conversation_id: self.conversation_id.clone(),
-                        tool: "host.tools.list".to_string(),
-                        input_json: "{}".to_string(),
-                    }),
-                    "apps" => effects.push(AssistantEffect::PaneAction {
+                // Route the remaining Phase 3 surface through its future
+                // effect shape so the executor seam stays exercised.
+                if name == "apps" {
+                    effects.push(AssistantEffect::PaneAction {
                         action: "list_app_connectors".to_string(),
-                    }),
-                    _ => {}
+                    });
                 }
                 effects
             }
@@ -255,6 +315,73 @@ impl AssistantModel {
         }
     }
 
+    /// Push an informational assistant row (slash-view output). Returns the
+    /// persistence effect.
+    pub fn push_info(&mut self, text: impl Into<String>) -> Vec<AssistantEffect> {
+        self.turns.push(Turn::now(TurnRole::Assistant, text));
+        vec![AssistantEffect::SessionWrite {
+            conversation_id: self.conversation_id.clone(),
+        }]
+    }
+
+    /// A tool call started running inside the in-flight turn.
+    pub fn tool_call_started(&mut self, tool: &str) {
+        self.active_tools.push(ActiveToolCall {
+            tool: tool.to_string(),
+        });
+    }
+
+    /// A tool call finished: drop its running row and append a completed
+    /// tool turn. Returns the persistence effect.
+    pub fn tool_call_finished(
+        &mut self,
+        tool: &str,
+        error: Option<String>,
+    ) -> Vec<AssistantEffect> {
+        if let Some(pos) = self.active_tools.iter().position(|t| t.tool == tool) {
+            self.active_tools.remove(pos);
+        }
+        let turn = match error {
+            None => Turn::tool(tool.to_string(), ToolStatus::Succeeded),
+            Some(e) => Turn::tool(format!("{tool} — {e}"), ToolStatus::Failed),
+        };
+        self.turns.push(turn);
+        vec![AssistantEffect::SessionWrite {
+            conversation_id: self.conversation_id.clone(),
+        }]
+    }
+
+    /// The in-flight turn hit an ask-gated tool: show the permission sheet.
+    pub fn permission_requested(&mut self, tool: &str, input_summary: &str) {
+        self.pending_permission = Some(PendingPermission {
+            tool: tool.to_string(),
+            input_summary: input_summary.to_string(),
+        });
+    }
+
+    /// The user decided the pending permission sheet. A denial appends a
+    /// failed tool row; allows append nothing (the running/finished rows
+    /// follow from the call itself). Returns the persistence effects.
+    pub fn permission_resolved(&mut self, choice: PermissionChoice) -> Vec<AssistantEffect> {
+        let Some(pending) = self.pending_permission.take() else {
+            return Vec::new();
+        };
+        match choice {
+            PermissionChoice::Deny => {
+                self.turns.push(Turn::tool(
+                    format!("{} — denied by user", pending.tool),
+                    ToolStatus::Failed,
+                ));
+                vec![AssistantEffect::SessionWrite {
+                    conversation_id: self.conversation_id.clone(),
+                }]
+            }
+            PermissionChoice::AllowOnce
+            | PermissionChoice::AllowSession
+            | PermissionChoice::AllowAlways => Vec::new(),
+        }
+    }
+
     /// Complete the in-flight turn with the broker outcome. Returns the
     /// persistence effects. Outcomes for a conversation that was cleared
     /// mid-turn are dropped.
@@ -269,6 +396,8 @@ impl AssistantModel {
                 self.conversation_id
             );
             self.streaming = StreamingState::default();
+            self.active_tools.clear();
+            self.pending_permission = None;
             return Vec::new();
         }
         match outcome {
@@ -286,6 +415,8 @@ impl AssistantModel {
             }
         }
         self.streaming = StreamingState::default();
+        self.active_tools.clear();
+        self.pending_permission = None;
         vec![AssistantEffect::SessionWrite {
             conversation_id: self.conversation_id.clone(),
         }]
@@ -414,9 +545,32 @@ mod tests {
     #[test]
     fn stubbed_builtin_answers_not_yet_implemented() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "/permissions");
+        submitted(&mut m, "/skills");
         assert_eq!(m.turns[0].role, TurnRole::Assistant);
         assert!(m.turns[0].text.contains("not yet implemented"));
+    }
+
+    #[test]
+    fn phase2_views_route_to_their_effects() {
+        let mut m = AssistantModel::fresh();
+        assert_eq!(submitted(&mut m, "/tools"), vec![AssistantEffect::ListTools]);
+        assert_eq!(
+            submitted(&mut m, "/permissions"),
+            vec![AssistantEffect::ListPermissions]
+        );
+        assert_eq!(submitted(&mut m, "/audit"), vec![AssistantEffect::ShowAudit]);
+        assert_eq!(
+            submitted(&mut m, "/revoke app.csv.write_range"),
+            vec![AssistantEffect::RevokeGrant {
+                target_id: "app.csv.write_range".to_string()
+            }]
+        );
+        assert!(m.turns.is_empty(), "views answer via the pane shell");
+
+        // Bare /revoke is a usage error row, not an effect.
+        let effects = submitted(&mut m, "/revoke");
+        assert!(matches!(&effects[0], AssistantEffect::SessionWrite { .. }));
+        assert_eq!(m.turns.last().unwrap().role, TurnRole::Error);
     }
 
     #[test]
@@ -435,23 +589,79 @@ mod tests {
         assert_eq!(m.turns[0].role, TurnRole::User);
     }
 
-    /// Phase 2 effect variants stay correctly shaped — constructing and
-    /// matching them is the contract until real executors land.
     #[test]
-    fn phase2_effect_stubs_construct() {
-        let effects = vec![
-            AssistantEffect::ToolCall {
-                conversation_id: "c".to_string(),
-                tool: "csv.read_range".to_string(),
-                input_json: "{}".to_string(),
-            },
-            AssistantEffect::PaneAction {
-                action: "focus:1".to_string(),
-            },
-            AssistantEffect::PermissionPrompt {
-                target: "app_connector:app.csv.write_range".to_string(),
-            },
-        ];
-        assert_eq!(effects.len(), 3);
+    fn tool_call_rows_track_running_then_completed_states() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "do work");
+
+        m.tool_call_started("csv.read_range");
+        assert_eq!(m.active_tools.len(), 1);
+        assert_eq!(m.active_tools[0].tool, "csv.read_range");
+
+        let effects = m.tool_call_finished("csv.read_range", None);
+        assert!(m.active_tools.is_empty());
+        let row = m.turns.last().unwrap();
+        assert_eq!(row.role, TurnRole::Tool);
+        assert_eq!(row.status, Some(ToolStatus::Succeeded));
+        assert!(matches!(&effects[0], AssistantEffect::SessionWrite { .. }));
+
+        m.tool_call_started("csv.write_range");
+        m.tool_call_finished("csv.write_range", Some("tool_timeout".to_string()));
+        let row = m.turns.last().unwrap();
+        assert_eq!(row.status, Some(ToolStatus::Failed));
+        assert!(row.text.contains("tool_timeout"));
+    }
+
+    #[test]
+    fn permission_sheet_state_round_trips() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "write the sheet");
+
+        m.permission_requested("csv.write_range", "{\"range\": \"A1:B2\"}");
+        let pending = m.pending_permission.as_ref().unwrap();
+        assert_eq!(pending.tool, "csv.write_range");
+
+        // Allow: sheet clears, nothing appended (the call rows follow).
+        let effects = m.permission_resolved(PermissionChoice::AllowOnce);
+        assert!(m.pending_permission.is_none());
+        assert!(effects.is_empty());
+
+        // Deny: sheet clears and a failed tool row is appended.
+        m.permission_requested("csv.write_range", "{}");
+        let effects = m.permission_resolved(PermissionChoice::Deny);
+        assert!(m.pending_permission.is_none());
+        let row = m.turns.last().unwrap();
+        assert_eq!(row.status, Some(ToolStatus::Failed));
+        assert!(row.text.contains("denied by user"));
+        assert!(matches!(&effects[0], AssistantEffect::SessionWrite { .. }));
+
+        // Resolving with no pending sheet is a no-op.
+        assert!(m.permission_resolved(PermissionChoice::Deny).is_empty());
+    }
+
+    #[test]
+    fn finish_turn_clears_tool_and_permission_state() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "q");
+        m.tool_call_started("csv.read_range");
+        m.permission_requested("csv.write_range", "{}");
+        let id = m.conversation_id.clone();
+        m.finish_turn(&id, Err("worker died".to_string()));
+        assert!(m.active_tools.is_empty());
+        assert!(m.pending_permission.is_none());
+    }
+
+    #[test]
+    fn tool_turn_serde_round_trips_status() {
+        let turn = Turn::tool("csv.write_range", ToolStatus::Failed);
+        let json = serde_json::to_string(&turn).unwrap();
+        let back: Turn = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.status, Some(ToolStatus::Failed));
+        // Pre-Phase-2 rows without a status field still load.
+        let legacy: Turn = serde_json::from_str(
+            r#"{"role":"user","text":"hi","created_at":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.status, None);
     }
 }

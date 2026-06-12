@@ -47,15 +47,25 @@ pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
         "audit",
         "Show recent Assistant tool calls, grants, app writes, and denied attempts.",
     ),
+    ("revoke", "Revoke a persisted grant by target id."),
     ("export", "Export the current transcript and tool-call log."),
     ("rewind", "Restore the conversation to an earlier checkpoint."),
     ("new", "Create a new named conversation without deleting the current one."),
     ("history", "Open conversation history and checkpoint browser."),
 ];
 
-/// Commands with a real Phase 1 implementation. Everything else in
-/// `BUILT_IN_COMMANDS` is recognized but stubbed.
-pub const IMPLEMENTED_COMMANDS: &[&str] = &["help", "clear", "new"];
+/// Commands with a real implementation (Phase 1: help/clear/new; Phase 2:
+/// tools/permissions/revoke/audit). Everything else in `BUILT_IN_COMMANDS`
+/// is recognized but stubbed.
+pub const IMPLEMENTED_COMMANDS: &[&str] = &[
+    "help",
+    "clear",
+    "new",
+    "tools",
+    "permissions",
+    "revoke",
+    "audit",
+];
 
 /// Parse `input` as a slash command. Returns `None` when the input is not a
 /// command: empty, `/` not the first non-whitespace character, or a bare `/`

@@ -4,16 +4,19 @@
 
 use egui::RichText;
 
+use crate::ui::button::{chrome_button, ButtonKind};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
 use super::commands;
-use super::model::{AssistantModel, TurnRole};
+use super::model::{AssistantModel, PermissionChoice, ToolStatus, TurnRole};
 
 /// What the composer asked the pane shell to do this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerEvent {
     Submit,
+    /// The user decided the pending permission sheet.
+    Permission(PermissionChoice),
 }
 
 /// Stateless renderer for the Assistant pane.
@@ -22,6 +25,8 @@ pub struct AssistantRenderer;
 impl AssistantRenderer {
     /// Height reserved for the composer + picker at the bottom of the pane.
     const COMPOSER_H: f32 = 72.0;
+    /// Height reserved for the permission sheet when one is pending.
+    const SHEET_H: f32 = 110.0;
 
     pub fn draw(
         ui: &mut egui::Ui,
@@ -33,14 +38,24 @@ impl AssistantRenderer {
         let mut event = None;
 
         ui.vertical(|ui| {
-            let transcript_h = (total.height() - Self::COMPOSER_H).max(0.0);
+            let sheet_h = if model.pending_permission.is_some() {
+                Self::SHEET_H
+            } else {
+                0.0
+            };
+            let transcript_h = (total.height() - Self::COMPOSER_H - sheet_h).max(0.0);
             ui.allocate_ui(egui::vec2(total.width(), transcript_h), |ui| {
                 Self::draw_transcript(ui, model, colors);
             });
+            if let Some(choice) = Self::draw_permission_sheet(ui, model, colors) {
+                event = Some(ComposerEvent::Permission(choice));
+            }
             if model.picker_active() {
                 Self::draw_picker(ui, model, colors);
             }
-            event = Self::draw_composer(ui, model, colors, is_focused);
+            if let Some(composer_event) = Self::draw_composer(ui, model, colors, is_focused) {
+                event = Some(composer_event);
+            }
         });
         event
     }
@@ -54,7 +69,10 @@ impl AssistantRenderer {
             .show(ui, |ui| {
                 ui.add_space(style::SPACE_SM);
                 for turn in &model.turns {
-                    Self::draw_turn_row(ui, colors, turn.role, &turn.text);
+                    Self::draw_turn_row(ui, colors, turn.role, &turn.text, turn.status);
+                }
+                for active in &model.active_tools {
+                    Self::draw_active_tool_row(ui, colors, &active.tool);
                 }
                 if model.streaming.in_flight {
                     Self::draw_streaming_row(ui, model, colors);
@@ -81,7 +99,31 @@ impl AssistantRenderer {
         }
     }
 
-    fn draw_turn_row(ui: &mut egui::Ui, colors: &Colors, role: TurnRole, text: &str) {
+    fn draw_turn_row(
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        role: TurnRole,
+        text: &str,
+        status: Option<ToolStatus>,
+    ) {
+        // Completed tool calls are compact single-line rows.
+        if role == TurnRole::Tool {
+            let (icon, color) = match status {
+                Some(ToolStatus::Succeeded) | None => ("✓", colors.text_dim),
+                Some(ToolStatus::Failed) => ("✗", colors.danger),
+            };
+            ui.horizontal(|ui| {
+                ui.add_space(style::SPACE_SM);
+                ui.label(
+                    RichText::new(format!("{icon} {text}"))
+                        .size(style::TEXT_CAPTION)
+                        .monospace()
+                        .color(color),
+                );
+            });
+            ui.add_space(style::SPACE_SM);
+            return;
+        }
         ui.horizontal(|ui| {
             ui.add_space(style::SPACE_SM);
             ui.vertical(|ui| {
@@ -103,6 +145,78 @@ impl AssistantRenderer {
             });
         });
         ui.add_space(style::SPACE_MD);
+    }
+
+    /// A tool call currently running inside the in-flight turn.
+    fn draw_active_tool_row(ui: &mut egui::Ui, colors: &Colors, tool: &str) {
+        ui.horizontal(|ui| {
+            ui.add_space(style::SPACE_SM);
+            ui.label(
+                RichText::new(format!("⟳ {tool} — running…"))
+                    .size(style::TEXT_CAPTION)
+                    .monospace()
+                    .color(colors.accent),
+            );
+        });
+        ui.add_space(style::SPACE_SM);
+    }
+
+    /// Permission sheet for the pending ask-gated tool call, rendered above
+    /// the composer. Returns the user's decision, if any, this frame.
+    fn draw_permission_sheet(
+        ui: &mut egui::Ui,
+        model: &AssistantModel,
+        colors: &Colors,
+    ) -> Option<PermissionChoice> {
+        let pending = model.pending_permission.as_ref()?;
+        let mut choice = None;
+        egui::Frame::new()
+            .fill(colors.bg_active)
+            .stroke(egui::Stroke::new(1.0, colors.accent))
+            .corner_radius(style::RADIUS_MD)
+            .inner_margin(egui::Margin::same(style::SPACE_SM as i8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new("Permission required")
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.accent),
+                );
+                ui.label(
+                    RichText::new(format!(
+                        "assistant (medium) wants to run the app tool '{}'",
+                        pending.tool
+                    ))
+                    .size(style::TEXT_BODY)
+                    .color(colors.text_primary),
+                );
+                if !pending.input_summary.is_empty() {
+                    ui.scope(|ui| {
+                        ui.set_max_width(ui.available_width());
+                        crate::ui::labels::description_label(ui, &pending.input_summary, colors);
+                    });
+                }
+                ui.add_space(style::SPACE_XS);
+                ui.horizontal(|ui| {
+                    if chrome_button(ui, "Allow once", ButtonKind::Accent, colors, 0.0).clicked() {
+                        choice = Some(PermissionChoice::AllowOnce);
+                    }
+                    if chrome_button(ui, "Allow this session", ButtonKind::Primary, colors, 0.0)
+                        .clicked()
+                    {
+                        choice = Some(PermissionChoice::AllowSession);
+                    }
+                    if chrome_button(ui, "Always allow", ButtonKind::Primary, colors, 0.0).clicked()
+                    {
+                        choice = Some(PermissionChoice::AllowAlways);
+                    }
+                    if chrome_button(ui, "Deny", ButtonKind::Danger, colors, 0.0).clicked() {
+                        choice = Some(PermissionChoice::Deny);
+                    }
+                });
+            });
+        ui.add_space(style::SPACE_XS);
+        choice
     }
 
     fn draw_streaming_row(ui: &mut egui::Ui, model: &AssistantModel, colors: &Colors) {

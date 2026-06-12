@@ -481,6 +481,21 @@ impl GrantStore {
         ));
     }
 
+    /// Remove every grant for `(actor_type, actor_id, target_id)` regardless
+    /// of workspace, source, or duration. Returns the number of records
+    /// removed. The caller decides whether to `save()`.
+    pub fn revoke(&mut self, actor_type: ActorType, actor_id: &str, target_id: &str) -> usize {
+        let before = self.data.records.len();
+        self.data.records.retain(|r| {
+            !(r.actor_type == actor_type && r.actor_id == actor_id && r.target_id == target_id)
+        });
+        let removed = before - self.data.records.len();
+        log::info!(
+            "grant_store: revoked {removed} record(s) for {actor_type:?} '{actor_id}' -> '{target_id}'"
+        );
+        removed
+    }
+
     /// All persisted records (read-only).
     pub fn records(&self) -> &[GrantRecord] {
         &self.data.records
@@ -815,6 +830,24 @@ mod tests {
         store.record(agent_grant(Decision::Deny, GrantSource::User));
         assert_eq!(store.records().len(), 1, "same identity+source must replace");
         assert_eq!(store.evaluate(&agent_request(), None), Decision::Deny);
+    }
+
+    #[test]
+    fn revoke_removes_matching_records_only() {
+        let mut store = GrantStore::default();
+        store.record(agent_grant(Decision::Allow, GrantSource::User));
+        store.record(agent_grant(Decision::Allow, GrantSource::Session));
+        assert_eq!(
+            store.revoke(ActorType::Agent, "chess-opponent", "chess.make_move"),
+            2
+        );
+        assert!(store.records().is_empty());
+        assert_eq!(store.evaluate(&agent_request(), None), Decision::Ask);
+        assert_eq!(
+            store.revoke(ActorType::Agent, "chess-opponent", "chess.make_move"),
+            0,
+            "second revoke must be a no-op"
+        );
     }
 
     #[test]
