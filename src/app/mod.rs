@@ -459,7 +459,9 @@ impl PlexiApp {
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
-        let dark_mode = !theme::is_light_preset(config.theme_preset.as_deref().unwrap_or(""));
+        let dark_mode = !theme::is_light_preset(
+            config.theme.as_ref().and_then(|t| t.preset.as_deref()).unwrap_or(""),
+        );
         theme::setup_style(&cc.egui_ctx, &colors, dark_mode);
         let window_theme = if dark_mode {
             egui::SystemTheme::Dark
@@ -1211,7 +1213,7 @@ impl PlexiApp {
 
     fn resolve_theme_config(config: &config::PlexiConfig) -> config::ThemeConfig {
         let user_theme = config.theme.clone().unwrap_or_default();
-        if let Some(preset_name) = &config.theme_preset {
+        if let Some(preset_name) = user_theme.preset.as_deref() {
             if let Some(preset) = theme::preset_colors(preset_name) {
                 log::info!("Applying theme preset: {}", preset_name.trim());
                 return theme::apply_preset(&preset, &user_theme);

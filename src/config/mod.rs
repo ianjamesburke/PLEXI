@@ -74,6 +74,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
 const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_THEME: &[&str] = &[
+    "preset",
     "bg_darkest",
     "bg_sidebar",
     "bg_toolbar",
@@ -249,6 +250,13 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                     path: path_str.clone(),
                     section: "quick_note".to_string(),
                     hint: "Quick note now saves directly to notes/inbox/ — remove the [[quick_note.destinations]] section from your config. See https://plexiapp.com/docs/config".to_string(),
+                });
+            }
+            if table.contains_key("theme_preset") {
+                diags.push(ConfigDiagnostic::DeprecatedSection {
+                    path: path_str.clone(),
+                    section: "theme_preset".to_string(),
+                    hint: "Use [theme] preset = \"name\" instead. See https://plexiapp.com/docs/config".to_string(),
                 });
             }
         }
@@ -655,6 +663,8 @@ pub struct BetaConfig {
 
 #[derive(Deserialize, Default, Clone)]
 pub struct ThemeConfig {
+    /// Theme preset name. Applied first; individual color fields override the preset.
+    pub preset: Option<String>,
     // UI chrome
     pub bg_darkest: Option<String>,
     pub bg_sidebar: Option<String>,
@@ -1214,6 +1224,7 @@ impl ThemeConfig {
                 }
             };
         }
+        overlay_field!(preset);
         overlay_field!(bg_darkest);
         overlay_field!(bg_sidebar);
         overlay_field!(bg_toolbar);
@@ -1412,7 +1423,7 @@ mod tests {
     fn validate_valid_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        fs::write(&path, "font_size = 14.0\ntheme_preset = \"dracula\"\n").unwrap();
+        fs::write(&path, "font_size = 14.0\n[theme]\npreset = \"dracula\"\n").unwrap();
         let diags = validate_from_path(&path);
         assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }

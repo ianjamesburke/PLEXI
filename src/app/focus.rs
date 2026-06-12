@@ -565,7 +565,9 @@ impl PlexiApp {
         if self.colors != new_colors {
             self.colors = new_colors.clone();
             let dark_mode =
-                !crate::ui::theme::is_light_preset(fresh.theme_preset.as_deref().unwrap_or(""));
+                !crate::ui::theme::is_light_preset(
+                    fresh.theme.as_ref().and_then(|t| t.preset.as_deref()).unwrap_or(""),
+                );
             crate::ui::theme::setup_style(&self.ctx, &new_colors, dark_mode);
             let window_theme = if dark_mode {
                 egui::SystemTheme::Dark
@@ -642,7 +644,7 @@ impl PlexiApp {
     /// Auto-switch to the paired preset for `system_theme`.
     /// No-ops if the configured preset has no paired variant (e.g. nord, dracula).
     pub(super) fn apply_auto_theme(&mut self, system_theme: egui::Theme) {
-        let current_preset = self.config.theme_preset.as_deref().unwrap_or("");
+        let current_preset = self.config.theme.as_ref().and_then(|t| t.preset.as_deref()).unwrap_or("");
         let Some(new_preset) = crate::ui::theme::paired_preset(current_preset, system_theme) else {
             return;
         };
