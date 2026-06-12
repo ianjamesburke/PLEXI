@@ -11,6 +11,24 @@ use crate::app_protocol::{PinnedEdge, StackDirection, UiNode};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
+/// Persistent per-pane render resources threaded into `UiNode::Raw` nodes.
+///
+/// Raw escape-hatch nodes delegate to `render_draw_commands`, which needs the
+/// pane's long-lived caches (markdown, images) and per-widget state maps.
+/// Threading these from the parent render pass instead of creating throwaway
+/// instances per node per frame avoids re-allocating caches every frame and
+/// lets Raw-embedded markdown/images/list views keep state across frames,
+/// matching top-level draw-command behavior.
+pub(crate) struct RawNodeCaches<'a> {
+    pub(crate) commonmark_cache: &'a mut egui_commonmark::CommonMarkCache,
+    pub(crate) image_cache: &'a mut crate::process_app::image_cache::ImageCache,
+    pub(crate) audio_peaks: &'a std::collections::HashMap<String, f32>,
+    pub(crate) workspace_root: &'a std::path::Path,
+    pub(crate) net_http_granted: bool,
+    pub(crate) list_view_scroll_offsets: &'a mut std::collections::HashMap<String, f32>,
+    pub(crate) list_view_last_aligned_sel: &'a mut std::collections::HashMap<String, usize>,
+}
+
 /// Carries the data needed to emit a `PlexiEvent::ComponentEvent`.
 ///
 /// Returned from `render_component_tree` and converted to `PlexiEvent` by
@@ -83,6 +101,7 @@ pub(crate) fn render_component_tree(
     colors: &Colors,
     text_edit_buffers: &mut std::collections::HashMap<String, String>,
     focus_ctx: &mut TextEditFocusCtx,
+    raw_caches: &mut RawNodeCaches<'_>,
 ) -> Vec<ComponentEventPayload> {
     let mut events: Vec<ComponentEventPayload> = Vec::new();
 
@@ -110,6 +129,7 @@ pub(crate) fn render_component_tree(
                         colors,
                         text_edit_buffers,
                         focus_ctx,
+                        raw_caches,
                     ));
                 });
         }
@@ -127,6 +147,7 @@ pub(crate) fn render_component_tree(
                     colors,
                     text_edit_buffers,
                     focus_ctx,
+                    raw_caches,
                 ));
             });
         }
@@ -140,6 +161,7 @@ pub(crate) fn render_component_tree(
                     colors,
                     text_edit_buffers,
                     focus_ctx,
+                    raw_caches,
                 ));
             }
         }
@@ -178,8 +200,14 @@ pub(crate) fn render_component_tree(
             // Render the child inside an interact-sense scope so we get a
             // Response covering the child's bounding rect.
             let child_response = ui.scope(|ui| {
-                let child_evts =
-                    render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx);
+                let child_evts = render_component_tree(
+                    ui,
+                    child,
+                    colors,
+                    text_edit_buffers,
+                    focus_ctx,
+                    raw_caches,
+                );
                 // Bubble child events up.
                 (child_evts, ui.min_rect())
             });
@@ -223,36 +251,40 @@ pub(crate) fn render_component_tree(
                 colors,
                 text_edit_buffers,
                 focus_ctx,
+                raw_caches,
             ));
         }
 
         UiNode::Raw { command } => {
-            // Delegate to the existing flat renderer for a single draw command.
+            // Delegate to the existing flat renderer for a single draw command,
+            // threading the pane's persistent caches so markdown/image/list
+            // state survives across frames instead of being rebuilt per node.
             let pane_rect = ui.clip_rect();
-            // V1: fresh cache per Raw node — loses cache state across frames.
-            // A future pass will thread parent caches through. See epic #1897 A2.
             let mut raw_events: Vec<crate::app_protocol::PlexiEvent> = Vec::new();
             // Raw escape-hatch uses a throwaway focus ctx — focus tracking doesn't
             // apply to legacy draw commands embedded inside a component tree.
+            // (Fresh HashSets are allocation-free until first insert.)
             let mut raw_focus_ctx = TextEditFocusCtx::new();
             crate::process_app::render::render_draw_commands(
                 ui,
                 pane_rect,
                 std::slice::from_ref(command.as_ref()),
                 colors,
-                &mut egui_commonmark::CommonMarkCache::default(),
-                &std::collections::HashMap::new(),
-                &mut crate::process_app::image_cache::ImageCache::new(),
-                std::path::Path::new("."),
-                false,
-                &mut std::collections::HashMap::new(),
-                &mut std::collections::HashMap::new(),
+                &mut *raw_caches.commonmark_cache,
+                raw_caches.audio_peaks,
+                &mut *raw_caches.image_cache,
+                raw_caches.workspace_root,
+                raw_caches.net_http_granted,
+                &mut *raw_caches.list_view_scroll_offsets,
+                &mut *raw_caches.list_view_last_aligned_sel,
                 &mut raw_events,
                 text_edit_buffers,
                 &mut raw_focus_ctx,
             );
             // Convert any ComponentEvent payloads back from PlexiEvent (unlikely
             // from a Raw draw command, but keep the pipeline consistent).
+            // Non-ComponentEvent PlexiEvents are intentionally dropped here,
+            // preserving pre-existing Raw-node behavior.
             for evt in raw_events {
                 if let crate::app_protocol::PlexiEvent::ComponentEvent {
                     node_id,
@@ -387,9 +419,14 @@ pub(crate) fn render_component_tree(
             ..
         } => {
             // Seed the buffer from the app's value when this node_id first appears.
+            // contains_key-then-insert avoids cloning node_id on the steady-state
+            // (already-seeded) path, unlike `entry(node_id.clone())`.
+            if !text_edit_buffers.contains_key(node_id.as_str()) {
+                text_edit_buffers.insert(node_id.clone(), value.clone());
+            }
             let buffer = text_edit_buffers
-                .entry(node_id.clone())
-                .or_insert_with(|| value.clone());
+                .get_mut(node_id.as_str())
+                .expect("text_edit_buffers: buffer seeded above");
 
             // Enforce max_length by truncating the buffer if it exceeds the limit.
             if *max_length > 0 && buffer.len() > *max_length {
@@ -583,6 +620,7 @@ pub(crate) fn render_component_tree(
                         colors,
                         text_edit_buffers,
                         focus_ctx,
+                        raw_caches,
                     ));
                 });
         }
@@ -905,6 +943,7 @@ pub(crate) fn render_component_tree(
                             colors,
                             text_edit_buffers,
                             focus_ctx,
+                            raw_caches,
                         ));
                     }
                 });
@@ -1054,6 +1093,7 @@ fn render_stack(
     colors: &Colors,
     text_edit_buffers: &mut std::collections::HashMap<String, String>,
     focus_ctx: &mut TextEditFocusCtx,
+    raw_caches: &mut RawNodeCaches<'_>,
 ) -> Vec<ComponentEventPayload> {
     let mut events = Vec::new();
     match direction {
@@ -1069,6 +1109,7 @@ fn render_stack(
                         colors,
                         text_edit_buffers,
                         focus_ctx,
+                        raw_caches,
                     ));
                 }
             });
@@ -1133,6 +1174,7 @@ fn render_stack(
                             colors,
                             text_edit_buffers,
                             focus_ctx,
+                            raw_caches,
                         ));
                     }
                 });
@@ -1143,6 +1185,7 @@ fn render_stack(
                         colors,
                         text_edit_buffers,
                         focus_ctx,
+                        raw_caches,
                     ));
                 }
                 log::info!(
@@ -1160,6 +1203,7 @@ fn render_stack(
                             colors,
                             text_edit_buffers,
                             focus_ctx,
+                            raw_caches,
                         ));
                     }
                 });

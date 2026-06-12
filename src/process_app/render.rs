@@ -124,7 +124,10 @@ pub(crate) fn render_draw_commands(
                         .unwrap_or((pane_rect.max.x - (origin.x + x)).max(1.0));
                     let galley =
                         ui.fonts(|f| f.layout(text.clone(), font_id.clone(), color, wrap_w));
-                    let final_text: std::borrow::Cow<str> = if galley.rows.len() > *n as usize {
+                    // Reuse the measured galley directly when the text fits —
+                    // re-laying-out identical text would clone the string again
+                    // for the same result. Only the overflow path allocates.
+                    let final_galley = if galley.rows.len() > *n as usize {
                         let mut lo = 0usize;
                         let mut hi = text.chars().count();
                         while lo + 1 < hi {
@@ -139,13 +142,11 @@ pub(crate) fn render_draw_commands(
                                 hi = mid;
                             }
                         }
-                        std::borrow::Cow::Owned(text.chars().take(lo).collect::<String>() + "…")
+                        let truncated = text.chars().take(lo).collect::<String>() + "…";
+                        ui.fonts(|f| f.layout(truncated, font_id.clone(), color, wrap_w))
                     } else {
-                        std::borrow::Cow::Borrowed(text.as_str())
+                        galley
                     };
-                    let final_galley = ui.fonts(|f| {
-                        f.layout(final_text.to_string(), font_id.clone(), color, wrap_w)
-                    });
                     let pos = egui::pos2(origin.x + x, origin.y + y);
                     ui.painter()
                         .with_clip_rect(clip)
@@ -723,7 +724,10 @@ pub(crate) fn render_draw_commands(
                                     list_rect.max.x - PAD_X
                                 };
                                 let avail_w = (text_right - text_start_x).max(0.0);
-                                let display_primary: std::borrow::Cow<'_, str> = {
+                                // Reuse the measured galley when the title fits —
+                                // `painter.text` would clone + re-lay-out the same
+                                // string. Only the overflow path allocates.
+                                let primary_galley = {
                                     let galley = ui.fonts(|f| {
                                         f.layout_no_wrap(
                                             row.primary.clone(),
@@ -752,18 +756,23 @@ pub(crate) fn render_draw_commands(
                                                 hi = mid;
                                             }
                                         }
-                                        std::borrow::Cow::Owned(
-                                            row.primary.chars().take(lo).collect::<String>() + "…",
-                                        )
+                                        let truncated =
+                                            row.primary.chars().take(lo).collect::<String>() + "…";
+                                        ui.fonts(|f| {
+                                            f.layout_no_wrap(
+                                                truncated,
+                                                primary_font.clone(),
+                                                colors.text_primary,
+                                            )
+                                        })
                                     } else {
-                                        std::borrow::Cow::Borrowed(row.primary.as_str())
+                                        galley
                                     }
                                 };
-                                painter.text(
+                                // LEFT_TOP anchor: galley min == anchor pos.
+                                painter.galley(
                                     egui::pos2(text_start_x, primary_y),
-                                    egui::Align2::LEFT_TOP,
-                                    display_primary.as_ref(),
-                                    primary_font,
+                                    primary_galley,
                                     colors.text_primary,
                                 );
 
@@ -1156,12 +1165,24 @@ pub(crate) fn render_draw_commands(
                     "render: ComponentTree received; rendering via render_component_tree; pane_origin={:?}",
                     pane_rect.min
                 );
+                // Thread the pane's persistent caches so `UiNode::Raw` nodes
+                // reuse them instead of building throwaway caches per node.
+                let mut raw_caches = crate::render::components::RawNodeCaches {
+                    commonmark_cache: &mut *commonmark_cache,
+                    image_cache: &mut *image_cache,
+                    audio_peaks,
+                    workspace_root,
+                    net_http_granted,
+                    list_view_scroll_offsets: &mut *list_view_scroll_offsets,
+                    list_view_last_aligned_sel: &mut *list_view_last_aligned_sel,
+                };
                 let component_events = crate::render::components::render_component_tree(
                     ui,
                     root,
                     colors,
                     text_edit_buffers,
                     text_edit_focus_ctx,
+                    &mut raw_caches,
                 );
                 for evt in component_events {
                     log::info!(

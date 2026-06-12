@@ -17,6 +17,10 @@ pub(crate) struct RenderSession {
     /// IDs of `TextInput` widgets visible in the most recently rendered frame.
     /// Used to detect newly-visible inputs for auto-focus.
     text_input_visible_prev: HashSet<String>,
+    /// Scratch set for the current frame's visible `TextInput` ids. Swapped
+    /// into `text_input_visible_prev` at the end of each render pass so the
+    /// allocation is reused instead of rebuilt every frame.
+    text_input_visible_current: HashSet<String>,
     /// True when any `TextInput` or `TextEdit` widget had egui focus during the
     /// last render pass. Read by `handle_key` in mod.rs to suppress key
     /// forwarding while the user types.
@@ -50,6 +54,7 @@ impl RenderSession {
             text_input_buffers: HashMap::new(),
             text_edit_buffers: HashMap::new(),
             text_input_visible_prev: HashSet::new(),
+            text_input_visible_current: HashSet::new(),
             text_input_has_focus: false,
             scroll_offsets: HashMap::new(),
             list_view_scroll_offsets: HashMap::new(),
@@ -146,7 +151,7 @@ impl RenderSession {
     ) {
         let origin = pane_rect.min;
         let mut submitted: Vec<String> = Vec::new();
-        let mut visible_this_frame: HashSet<String> = HashSet::new();
+        self.text_input_visible_current.clear();
         let mut focus_granted = false;
         let mut any_has_focus = false;
 
@@ -165,7 +170,7 @@ impl RenderSession {
                 continue;
             };
 
-            visible_this_frame.insert(id.clone());
+            self.text_input_visible_current.insert(id.clone());
             let newly_visible = !self.text_input_visible_prev.contains(id.as_str());
 
             let desired_h = h.max(24.0);
@@ -359,7 +364,12 @@ impl RenderSession {
             }
         }
 
-        self.text_input_visible_prev = visible_this_frame;
+        // Rotate visibility sets, reusing both allocations across frames.
+        std::mem::swap(
+            &mut self.text_input_visible_prev,
+            &mut self.text_input_visible_current,
+        );
+        self.text_input_visible_current.clear();
         self.pane_just_focused = false;
         self.text_input_has_focus = any_has_focus;
 
@@ -511,21 +521,16 @@ impl RenderSession {
         // Reset intercept flag — recalculate from current frame
         self.list_view_intercepts_nav = false;
 
-        // Prune scroll state for lists no longer in the frame
-        let live_ids: std::collections::HashSet<String> = frame
-            .iter()
-            .filter_map(|cmd| {
-                if let RenderCommand::ListView { id, .. } = cmd {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        self.list_view_scroll_offsets
-            .retain(|id, _| live_ids.contains(id));
-        self.list_view_last_aligned_sel
-            .retain(|id, _| live_ids.contains(id));
+        // Prune scroll state for lists no longer in the frame. A frame holds
+        // at most a handful of ListView commands, so a linear scan per stale
+        // key beats rebuilding a HashSet of cloned ids every frame.
+        let is_live = |id: &String| {
+            frame
+                .iter()
+                .any(|cmd| matches!(cmd, RenderCommand::ListView { id: live, .. } if live == id))
+        };
+        self.list_view_scroll_offsets.retain(|id, _| is_live(id));
+        self.list_view_last_aligned_sel.retain(|id, _| is_live(id));
 
         let mut handled_nav = false;
         for cmd in frame {
