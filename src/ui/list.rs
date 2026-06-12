@@ -10,6 +10,7 @@ pub struct ListRow<'a> {
     trailing: Option<&'a str>,
     selected: bool,
     danger_trailing: bool,
+    dense: bool,
 }
 
 impl<'a> ListRow<'a> {
@@ -21,7 +22,17 @@ impl<'a> ListRow<'a> {
             trailing: None,
             selected: false,
             danger_trailing: false,
+            dense: false,
         }
+    }
+
+    /// Single-line row at `LIST_ROW_DENSE_H` for data-dense listings.
+    /// Dense rows carry no secondary line — callers wanting two lines
+    /// keep the default height.
+    pub fn dense(mut self) -> Self {
+        self.dense = true;
+        self.secondary = None;
+        self
     }
 
     pub fn secondary(mut self, secondary: &'a str) -> Self {
@@ -50,8 +61,13 @@ impl<'a> ListRow<'a> {
     }
 
     pub fn show(self, ui: &mut egui::Ui, colors: &Colors) -> ListRowResponse {
+        let row_h = if self.dense {
+            style::LIST_ROW_DENSE_H
+        } else {
+            style::LIST_ROW_H
+        };
         let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), style::LIST_ROW_H),
+            Vec2::new(ui.available_width(), row_h),
             egui::Sense::click(),
         );
         if response.hovered() {
