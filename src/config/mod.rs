@@ -707,6 +707,12 @@ pub struct ThemeConfig {
     pub bright_cyan: Option<String>,
     pub bright_white: Option<String>,
     pub bright_foreground: Option<String>,
+    // Activity pip color overrides — optional; fall back to success/warning/danger.
+    pub pip_working: Option<String>,
+    pub pip_idle: Option<String>,
+    pub pip_blocked: Option<String>,
+    // Opacity multiplier for unfocused pips. Default 0.45.
+    pub pip_dim: Option<f32>,
 }
 
 use std::sync::{Mutex, OnceLock};
@@ -1265,6 +1271,10 @@ impl ThemeConfig {
         overlay_field!(bright_cyan);
         overlay_field!(bright_white);
         overlay_field!(bright_foreground);
+        overlay_field!(pip_working);
+        overlay_field!(pip_idle);
+        overlay_field!(pip_blocked);
+        overlay_field!(pip_dim);
     }
 }
 

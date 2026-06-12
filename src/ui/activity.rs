@@ -3,15 +3,10 @@
 use crate::app_protocol::AgentState;
 use crate::ui::theme::Colors;
 
-/// Opacity multiplier for activity pips on panes that are not the focused
-/// pane in their context — keeps the focused pip locatable when several
-/// pips carry activity colors.
-pub const UNFOCUSED_DIM: f32 = 0.45;
-
 /// Single source of truth for pip coloring across every pip surface
 /// (sidebar rows, palette rows, portal rows). Handles both the activity
 /// color and the focused/unfocused dim uniformly: focused pips render at
-/// full strength, unfocused pips at `UNFOCUSED_DIM` — regardless of
+/// full strength, unfocused pips at `colors.pip_dim` — regardless of
 /// whether the pip carries an activity color or the neutral/accent pair.
 pub fn pip_color(
     state: Option<&AgentState>,
@@ -27,7 +22,7 @@ pub fn pip_color(
     if focused {
         base
     } else {
-        base.gamma_multiply(UNFOCUSED_DIM)
+        base.gamma_multiply(colors.pip_dim)
     }
 }
 
@@ -39,7 +34,7 @@ pub fn dot_color_from_time(state: &AgentState, colors: &Colors, time: f64) -> eg
         AgentState::Working => {
             // Sine oscillates –1..1; remap to 0.45..1.0.
             let alpha = 0.45 + 0.55 * (0.5 + 0.5 * (time * std::f64::consts::PI).sin()) as f32;
-            let c = colors.success;
+            let c = colors.pip_working;
             egui::Color32::from_rgba_unmultiplied(
                 c.r(),
                 c.g(),
@@ -47,7 +42,7 @@ pub fn dot_color_from_time(state: &AgentState, colors: &Colors, time: f64) -> eg
                 (c.a() as f32 * alpha) as u8,
             )
         }
-        AgentState::Idle => colors.warning,
-        AgentState::Blocked => colors.danger,
+        AgentState::Idle => colors.pip_idle,
+        AgentState::Blocked => colors.pip_blocked,
     }
 }
