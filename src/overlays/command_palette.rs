@@ -551,7 +551,7 @@ impl PlexiApp {
                     palette_max_list_h,
                 );
                 egui::ScrollArea::vertical()
-                    .id_source("palette_list")
+                    .id_salt("palette_list")
                     .max_height(palette_max_list_h)
                     .min_scrolled_height(palette_max_list_h)
                     .auto_shrink([false, false])

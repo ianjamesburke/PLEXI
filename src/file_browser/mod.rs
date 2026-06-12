@@ -2143,7 +2143,7 @@ impl App for FileBrowserApp {
                                     body_height,
                                 );
                                 egui::ScrollArea::vertical()
-                                    .id_source("fb_list")
+                                    .id_salt("fb_list")
                                     .auto_shrink([false, false])
                                     .max_height(body_height)
                                     .show(ui, |ui| {
@@ -2194,7 +2194,7 @@ impl App for FileBrowserApp {
                             body_height,
                         );
                         egui::ScrollArea::vertical()
-                            .id_source("fb_list")
+                            .id_salt("fb_list")
                             .auto_shrink([false, false])
                             .max_height(body_height)
                             .show(ui, |ui| {

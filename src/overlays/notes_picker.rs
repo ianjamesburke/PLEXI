@@ -456,7 +456,7 @@ impl PlexiApp {
                     320.0,
                 );
                 egui::ScrollArea::vertical()
-                    .id_source("notes_picker_list")
+                    .id_salt("notes_picker_list")
                     .max_height(320.0)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
