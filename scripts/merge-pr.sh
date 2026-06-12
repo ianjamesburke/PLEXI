@@ -3,6 +3,7 @@
 #
 # Usage:
 #   scripts/merge-pr.sh <PR>                   full flow (rebase→squash→sync→cleanup→bump→close)
+#   scripts/merge-pr.sh <PR> no-issue          full flow for a standalone PR — skips issue/stint close
 #   scripts/merge-pr.sh rebase <BRANCH>        rebase feature branch on origin/alpha + force-push
 #   scripts/merge-pr.sh squash <PR>            squash-merge only
 #   scripts/merge-pr.sh sync                   reset local alpha to origin/alpha (safe — fails if unexpected commits)
@@ -254,27 +255,42 @@ case "$CMD" in
         ;;
     *)
         PR="${1:?PR number required}"
+        NO_ISSUE=0
+        case "${2:-}" in
+            "") ;;
+            no-issue|--no-issue) NO_ISSUE=1 ;;
+            *)
+                echo "ERROR: unknown argument '${2}' (did you mean 'no-issue'?)" >&2
+                exit 1
+                ;;
+        esac
 
         INFO=$(gh pr view "$PR" --json headRefName,state,body --jq '{branch: .headRefName, state: .state, body: .body}')
         BRANCH=$(echo "$INFO" | jq -r .branch)
         STATE=$(echo "$INFO" | jq -r .state)
         PR_BODY=$(echo "$INFO" | jq -r '.body // ""')
-        ISSUE=$(resolve_issue "$PR" "$BRANCH" "$PR_BODY" || true)
+        ISSUE=""
         STINTS=""
         STINT_ARGS=()
-        if [ -z "$ISSUE" ]; then
-            STINTS=$(resolve_stints "$BRANCH" "$PR_BODY")
-            if [ -z "$STINTS" ]; then
-                echo "ERROR: could not resolve GitHub issue or stint tasks for PR #$PR ($BRANCH)" >&2
-                echo "Add a closing keyword like 'Closes #1234', use a numeric feature/fix branch, or include stint ids in the branch/body." >&2
-                exit 1
+        if [ "$NO_ISSUE" -eq 0 ]; then
+            ISSUE=$(resolve_issue "$PR" "$BRANCH" "$PR_BODY" || true)
+            if [ -z "$ISSUE" ]; then
+                STINTS=$(resolve_stints "$BRANCH" "$PR_BODY")
+                if [ -z "$STINTS" ]; then
+                    echo "ERROR: could not resolve GitHub issue or stint tasks for PR #$PR ($BRANCH)" >&2
+                    echo "Add a closing keyword like 'Closes #1234', use a numeric feature/fix branch, or include stint ids in the branch/body." >&2
+                    echo "For a standalone follow-up PR with nothing to close, re-run: just merge-pr $PR no-issue" >&2
+                    exit 1
+                fi
+                while IFS= read -r STINT; do
+                    [ -n "$STINT" ] && STINT_ARGS+=("$STINT")
+                done <<< "$STINTS"
             fi
-            while IFS= read -r STINT; do
-                [ -n "$STINT" ] && STINT_ARGS+=("$STINT")
-            done <<< "$STINTS"
         fi
 
-        if [ -n "$ISSUE" ]; then
+        if [ "$NO_ISSUE" -eq 1 ]; then
+            echo "==> PR #$PR: $BRANCH (standalone — no issue/stint to close, state: $STATE)"
+        elif [ -n "$ISSUE" ]; then
             echo "==> PR #$PR: $BRANCH (issue #$ISSUE, state: $STATE)"
         else
             echo "==> PR #$PR: $BRANCH (stint tasks: $(join_by ", " "${STINT_ARGS[@]}"), state: $STATE)"
@@ -298,7 +314,9 @@ case "$CMD" in
         do_sync
         do_cleanup "$PR" "$BRANCH"
         do_bump
-        if [ -n "$ISSUE" ]; then
+        if [ "$NO_ISSUE" -eq 1 ]; then
+            echo "==> Skipping issue/stint close (no-issue)"
+        elif [ -n "$ISSUE" ]; then
             do_close "$ISSUE" "$PR"
         else
             do_close_stints "$PR" "${STINT_ARGS[@]}"
@@ -306,7 +324,9 @@ case "$CMD" in
 
         VERSION=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         echo ""
-        if [ -n "$ISSUE" ]; then
+        if [ "$NO_ISSUE" -eq 1 ]; then
+            echo "==> Done: PR #$PR merged → alpha v$VERSION (standalone — nothing closed)"
+        elif [ -n "$ISSUE" ]; then
             echo "==> Done: PR #$PR merged → alpha v$VERSION, issue #$ISSUE closed"
         else
             echo "==> Done: PR #$PR merged → alpha v$VERSION, stint task(s) $(join_by ", " "${STINT_ARGS[@]}") closed"
