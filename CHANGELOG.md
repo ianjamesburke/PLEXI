@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.748] — 2026-06-12
+
+### Changes
+- feat(install): add --channel flag to one-liner install script
+- Themeable status pips + SessionStart idle fix (#2219, #2220) (#2223)
 ## [0.0.747] — 2026-06-12
 
 ### Changes
