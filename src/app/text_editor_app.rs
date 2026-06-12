@@ -37,9 +37,21 @@ impl TextEditorApp {
         }
     }
 
+    /// A note is empty when it has no content at all, or — for files under the
+    /// notes dir — when only capture frontmatter remains (scratch/quick notes
+    /// the user never typed into).
+    fn is_effectively_empty(&self) -> bool {
+        if self.content.is_empty() {
+            return true;
+        }
+        let notes_dir = crate::config::config_dir().join("notes");
+        self.path.starts_with(&notes_dir)
+            && crate::notes::parse_note(&self.content).1.trim().is_empty()
+    }
+
     fn flush(&mut self) {
         // Empty content → delete the file rather than writing an empty document.
-        if self.content.is_empty() {
+        if self.is_effectively_empty() {
             if self.path.exists() {
                 if let Err(e) = std::fs::remove_file(&self.path) {
                     log::warn!(
@@ -355,8 +367,8 @@ impl App for TextEditorApp {
 
 impl Drop for TextEditorApp {
     fn drop(&mut self) {
-        // Save unsaved edits; also clean up if content was cleared (flush deletes empty files).
-        if self.last_edit.is_some() || self.content.is_empty() {
+        // Save unsaved edits; also clean up empty notes (flush deletes them).
+        if self.last_edit.is_some() || self.is_effectively_empty() {
             self.flush();
         }
     }

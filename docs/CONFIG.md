@@ -192,13 +192,13 @@ Keys: `a`–`z`, `0`–`9`, `enter`, `escape`, `tab`, `space`, `backspace`, `del
 | `open_secrets_manager` | Open the secrets manager. |
 | `force_reload_app` | Force-reload the active app. |
 | `toggle_notification_modal` | Open/close the notification modal. |
-| `open_scratchpad` | Open the scratchpad. |
+| `open_scratchpad` | Create a new scratch note in the inbox and open it in a text-editor pane. |
 | `set_context_root_from_cwd` | Set the context root to the CWD of the active pane. |
 | `push_to_subcontext` | Push the active pane into a subcontext. |
 | `new_child_context` | Create a child context under the current one. |
 | `hide_pane` | Hide the active pane. |
 | `park_context` | Park (minimize) the current context. |
-| `open_notes_picker` | Open the notes picker overlay. |
+| `open_notes_picker` | Open the notes picker overlay (inbox + kept notes; `t` switches to triage). |
 
 Example:
 ```toml

@@ -27,10 +27,12 @@ use std::path::{Path, PathBuf};
 pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<Box<dyn App>> {
     match id {
         "text-editor" => {
+            // No explicit path → a fresh scratch note in the inbox. The file is
+            // only created once content is typed (empty notes are deleted).
             let path = args
                 .first()
                 .map(|s| std::path::PathBuf::from(s))
-                .unwrap_or_else(|| crate::config::config_dir().join("notes").join("scratch.md"));
+                .unwrap_or_else(new_inbox_note_path);
             Some(Box::new(crate::app::text_editor_app::TextEditorApp::new(
                 path,
             )))
@@ -1170,24 +1172,77 @@ impl PlexiApp {
         self.open_builtin_app_pane(app, perms, workspace_root, None, Some("split_h"), None);
     }
 
-    /// Open a native text-editor pane for scratchpad editing.
+    /// Create a new scratch note in `notes/inbox/` and open it in a text-editor
+    /// pane. Each press creates a fresh timestamped note — scratch notes share
+    /// the inbox with quick notes and flow through the same triage. Notes whose
+    /// body is still empty on close are deleted by the editor.
     ///
-    /// Launches the built-in `text-editor` app pane with the scratchpad file path.
     /// Works from any focused pane type (terminal, app, file browser).
     pub(crate) fn open_scratchpad(&mut self) {
-        let path = scratchpad_file();
         let active = self.active_window;
-        // Focus existing scratchpad pane if already open — never open duplicates.
-        if let Some((tile_id, pane_id)) = self.find_open_text_editor_tile(active, &path) {
-            log::info!("scratchpad: already open in pane {pane_id}, focusing");
+
+        // If an open editor still holds an untouched scratch note (body empty
+        // on disk), focus it instead of stacking another empty note.
+        if let Some((tile_id, pane_id)) = self.find_open_empty_inbox_editor(active) {
+            log::info!("scratchpad: empty scratch note already open in pane {pane_id}, focusing");
             self.set_window_focused_pane(active, tile_id);
             return;
         }
+
+        // Capture context like a quick note so triage shows where it came from.
+        let cwd = self.windows[active]
+            .focused_pane
+            .and_then(|tile_id| self.windows[active].get_focused_pane_cwd(tile_id))
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let ctx = crate::app::QuickNoteCtx {
+            cwd,
+            workspace_root: crate::config::active_workspace_root(),
+            context_root: self.router.active().root.clone(),
+        };
+        let dir = crate::config::config_dir().join("notes").join("inbox");
+        let Some(path) = Self::write_inbox_note("", "scratchpad", &dir, &ctx) else {
+            log::warn!("scratchpad: failed to create scratch note in {:?}", dir);
+            return;
+        };
+
         let path_str = path.display().to_string();
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
         if let Err(e) = self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None) {
             log::warn!("scratchpad: failed to launch text-editor pane: {e}");
         }
+    }
+
+    /// Find an open text-editor pane holding an inbox note whose on-disk body
+    /// is still empty (frontmatter only, or file not yet written).
+    fn find_open_empty_inbox_editor(
+        &self,
+        window_idx: usize,
+    ) -> Option<(TileId, PaneId)> {
+        let inbox_dir = crate::config::config_dir().join("notes").join("inbox");
+        let window = self.windows.get(window_idx)?;
+        window.tree.tiles.iter().find_map(|(tile_id, tile)| {
+            let Tile::Pane(pane_id) = tile else {
+                return None;
+            };
+            let app_pane = window.panes.get(pane_id)?.as_app()?;
+            if app_pane.runtime.type_id() != "text-editor" {
+                return None;
+            }
+            let path = app_pane
+                .runtime
+                .serialize_state()?
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)?;
+            if !path.starts_with(&inbox_dir) {
+                return None;
+            }
+            let body_empty = match std::fs::read_to_string(&path) {
+                Ok(content) => crate::notes::parse_note(&content).1.trim().is_empty(),
+                Err(_) => true, // not yet written → still empty
+            };
+            body_empty.then_some((*tile_id, *pane_id))
+        })
     }
 
     /// Open the quick note modal: capture context and push FocusLayer::QuickNote.
@@ -1218,15 +1273,17 @@ impl PlexiApp {
         let ctx = self.quick_note_ctx.clone();
         let dir = crate::config::config_dir().join("notes").join("inbox");
         log::info!("QuickNote: committing to notes/inbox/");
-        Self::write_inbox_note(text, "quick-note", &dir, &ctx)
+        Self::write_inbox_note(text, "quick-note", &dir, &ctx).is_some()
     }
 
+    /// Write a timestamped note with capture-context frontmatter into `dir`.
+    /// Returns the created path, or `None` when the write fails.
     fn write_inbox_note(
         text: &str,
         source: &str,
         dir: &PathBuf,
         ctx: &crate::app::QuickNoteCtx,
-    ) -> bool {
+    ) -> Option<PathBuf> {
         use chrono::Utc;
         let now = Utc::now();
         let captured_at = now.to_rfc3339();
@@ -1246,7 +1303,7 @@ impl PlexiApp {
             .unwrap_or_default();
 
         let frontmatter = format!(
-            "---\ncaptured_at: \"{captured_at}\"\nsource: \"{source}\"\ncwd: \"{cwd_str}\"\nworkspace: \"{workspace}\"\ncontext_root: \"{context_root_str}\"\n---\n\n"
+            "---\ntitle: \"\"\ncaptured_at: \"{captured_at}\"\nsource: \"{source}\"\ncwd: \"{cwd_str}\"\nworkspace: \"{workspace}\"\ncontext_root: \"{context_root_str}\"\n---\n\n"
         );
         let content = format!("{frontmatter}{}\n", text.trim());
 
@@ -1255,17 +1312,17 @@ impl PlexiApp {
                 "QuickNote: failed to create inbox dir {}: {e}",
                 dir.display()
             );
-            return false;
+            return None;
         }
         let path = dir.join(&filename);
         match std::fs::write(&path, &content) {
             Ok(()) => {
                 log::info!("QuickNote: saved to {}", path.display());
-                true
+                Some(path)
             }
             Err(e) => {
                 log::error!("QuickNote: save failed {}: {e}", path.display());
-                false
+                None
             }
         }
     }
@@ -1850,8 +1907,8 @@ mod quick_note_tests {
     fn write_inbox_note_creates_file_with_frontmatter() {
         let dir = tempfile::tempdir().expect("tempdir");
         let c = ctx("/tmp/myproject");
-        let ok = PlexiApp::write_inbox_note("hello inbox", "quick-note", &dir.path().to_path_buf(), &c);
-        assert!(ok, "write_inbox_note must return true on success");
+        let path = PlexiApp::write_inbox_note("hello inbox", "quick-note", &dir.path().to_path_buf(), &c);
+        assert!(path.is_some(), "write_inbox_note must return the path on success");
 
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -2031,10 +2088,14 @@ mod quick_note_tests {
     }
 }
 
-/// Build a timestamped note path under the workspace-scoped notes dir.
-fn scratchpad_file() -> PathBuf {
-    // Fixed path — not in inbox so it never appears as an item to triage.
-    let dir = crate::config::config_dir().join("notes");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("scratch.md")
+/// Build a fresh timestamped note path in `notes/inbox/`. Does not create the file.
+fn new_inbox_note_path() -> PathBuf {
+    let filename = format!(
+        "note-{}.md",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f")
+    );
+    crate::config::config_dir()
+        .join("notes")
+        .join("inbox")
+        .join(filename)
 }

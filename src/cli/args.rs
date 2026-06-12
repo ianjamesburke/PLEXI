@@ -174,7 +174,7 @@ pub enum Commands {
     /// Capture a quick note to the inbox.
     ///
     /// Writes a timestamped note to `<config_dir>/notes/inbox/` with frontmatter
-    /// capturing cwd, workspace, and context root. Triage later with Cmd+Shift+0.
+    /// capturing cwd, workspace, and context root. Triage later via Cmd+O, then t.
     ///
     /// Example: plexi note "remember to update the docs"
     Note {

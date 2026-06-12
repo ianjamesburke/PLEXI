@@ -1,11 +1,12 @@
-//! Notes inbox triage overlay.
+//! Notes inbox triage overlay — reached via `t` from the notes picker.
 //!
 //! Shows inbox notes one at a time. Key bindings:
-//!   k          — keep (move to workspace notes dir)
-//!   d / x      — trash (move to notes/trash/)
-//!   n / Enter / → — skip to next
-//!   1–9        — run configured action, then trash and advance
-//!   Esc        — close triage overlay
+//!   h / ←          — previous note
+//!   l / n / Enter / → — next note
+//!   s              — keep (move to workspace notes dir)
+//!   x / d          — trash (move to notes/trash/)
+//!   1–9            — run configured action, then trash and advance
+//!   Esc            — back to the notes picker
 
 use crate::app::{FocusLayer, PlexiApp};
 use crate::notes::{InboxNote, TriageAction};
@@ -16,6 +17,16 @@ use crate::ui::{
 };
 
 impl PlexiApp {
+    /// Leave triage and return to the notes picker (Esc, inbox emptied, or
+    /// advancing past the last note). The picker re-scans, so the inbox
+    /// section reflects what triage just moved.
+    fn notes_triage_back_to_picker(&mut self) {
+        self.pop_focus_layer(&FocusLayer::NotesTriage);
+        if !self.focus_stack.contains(&FocusLayer::NotesPicker) {
+            self.open_notes_picker();
+        }
+    }
+
     /// Open the notes triage overlay. Loads inbox + actions and pushes the focus layer.
     pub(crate) fn open_notes_triage(&mut self) {
         let notes = crate::notes::scan_inbox();
@@ -41,8 +52,8 @@ impl PlexiApp {
         });
 
         if self.notes_triage_notes.is_empty() {
-            log::info!("notes_triage: inbox empty — closing");
-            self.pop_focus_layer(&FocusLayer::NotesTriage);
+            log::info!("notes_triage: inbox empty — returning to picker");
+            self.notes_triage_back_to_picker();
             return;
         }
 
@@ -50,7 +61,8 @@ impl PlexiApp {
         enum TriageKey {
             Keep,
             Trash,
-            Skip,
+            Next,
+            Prev,
             Close,
             Action(u8),
         }
@@ -58,17 +70,22 @@ impl PlexiApp {
         let action = ctx.input_mut(|i| {
             if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 Some(TriageKey::Close)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::K) {
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::S) {
                 Some(TriageKey::Keep)
             } else if i.consume_key(egui::Modifiers::NONE, egui::Key::D)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::X)
             {
                 Some(TriageKey::Trash)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::N)
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::H)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
+            {
+                Some(TriageKey::Prev)
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::L)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::N)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
             {
-                Some(TriageKey::Skip)
+                Some(TriageKey::Next)
             } else {
                 // Check digit keys 1–9 for actions.
                 let digits = [
@@ -93,12 +110,12 @@ impl PlexiApp {
 
         match action {
             Some(TriageKey::Close) => {
-                log::info!("notes_triage: Esc — closing");
-                self.pop_focus_layer(&FocusLayer::NotesTriage);
+                log::info!("notes_triage: Esc — back to picker");
+                self.notes_triage_back_to_picker();
             }
             Some(TriageKey::Keep) => {
                 if let Some(note) = self.notes_triage_notes.get(self.notes_triage_index).cloned() {
-                    log::info!("notes_triage: k — keeping {:?}", note.path);
+                    log::info!("notes_triage: s — keeping {:?}", note.path);
                     self.notes_triage_keep(&note);
                     self.notes_triage_advance();
                 }
@@ -110,13 +127,17 @@ impl PlexiApp {
                     self.notes_triage_advance();
                 }
             }
-            Some(TriageKey::Skip) => {
-                log::info!("notes_triage: n/Enter/→ — skipping");
+            Some(TriageKey::Next) => {
+                log::info!("notes_triage: l/n/Enter/→ — next");
                 self.notes_triage_index += 1;
                 if self.notes_triage_index >= self.notes_triage_notes.len() {
-                    log::info!("notes_triage: end of inbox — closing");
-                    self.pop_focus_layer(&FocusLayer::NotesTriage);
+                    log::info!("notes_triage: end of inbox — back to picker");
+                    self.notes_triage_back_to_picker();
                 }
+            }
+            Some(TriageKey::Prev) => {
+                log::info!("notes_triage: h/← — previous");
+                self.notes_triage_index = self.notes_triage_index.saturating_sub(1);
             }
             Some(TriageKey::Action(digit)) => {
                 let action = self
@@ -165,7 +186,7 @@ impl PlexiApp {
                     );
                 });
             if modal_response.dismissed {
-                self.pop_focus_layer(&FocusLayer::NotesTriage);
+                self.notes_triage_back_to_picker();
             }
             return;
         }
@@ -174,7 +195,7 @@ impl PlexiApp {
         let total = self.notes_triage_notes.len();
 
         if idx >= total {
-            self.pop_focus_layer(&FocusLayer::NotesTriage);
+            self.notes_triage_back_to_picker();
             return;
         }
 
@@ -195,6 +216,16 @@ impl PlexiApp {
             .width(520.0)
             .escape(true)
             .show(ctx, &colors, |ui| {
+                // Note title (frontmatter), when set.
+                if let Some(ref title) = note.frontmatter.title {
+                    ui.label(
+                        egui::RichText::new(title.as_str())
+                            .size(style::TEXT_BODY)
+                            .strong()
+                            .color(colors.text_primary),
+                    );
+                    ui.add_space(style::SPACE_XS);
+                }
                 // Show frontmatter metadata.
                 if let Some(ref ts) = note.frontmatter.captured_at {
                     ui.label(
@@ -226,33 +257,47 @@ impl PlexiApp {
 
                 ui.add_space(style::SPACE_SM);
 
-                // Build hint bar from static hints + action hints.
-                let mut all_hints: Vec<HintGroup> = vec![
-                    HintGroup::new(&["k"], "keep"),
-                    HintGroup::new(&["d"], "trash"),
-                    HintGroup::new(&["n"], "skip"),
-                    HintGroup::new(&["esc"], "close"),
+                // Core navigation/decision hints.
+                let core_hints = [
+                    HintGroup::new(&["h", "l"], "prev/next"),
+                    HintGroup::new(&["s"], "keep"),
+                    HintGroup::new(&["x"], "trash"),
+                    HintGroup::new(&["esc"], "back to notes"),
                 ];
-                // Bind each key slice to a named local so the &str lives long enough for HintGroup.
-                let action_hints: Vec<([&str; 1], &str)> = action_key_labels
-                    .iter()
-                    .map(|(k, l)| ([k.as_str()], l.as_str()))
-                    .collect();
-                for (keys, label) in &action_hints {
-                    all_hints.push(HintGroup::new(keys.as_slice(), label));
+                HintBar::new(&core_hints).show(ui, &colors);
+
+                // Configured digit actions in their own section.
+                if !action_key_labels.is_empty() {
+                    ui.add_space(style::SPACE_XS);
+                    ui.label(
+                        egui::RichText::new("actions")
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_dim),
+                    );
+                    // Bind each key slice to a named local so the &str lives long
+                    // enough for HintGroup.
+                    let action_hints: Vec<([&str; 1], &str)> = action_key_labels
+                        .iter()
+                        .map(|(k, l)| ([k.as_str()], l.as_str()))
+                        .collect();
+                    let groups: Vec<HintGroup> = action_hints
+                        .iter()
+                        .map(|(keys, label)| HintGroup::new(keys.as_slice(), label))
+                        .collect();
+                    HintBar::new(&groups).show(ui, &colors);
                 }
-                HintBar::new(&all_hints).show(ui, &colors);
             });
 
         if modal_response.dismissed {
-            self.pop_focus_layer(&FocusLayer::NotesTriage);
+            self.notes_triage_back_to_picker();
         }
     }
 
-    /// Remove the current note from the triage list and close if empty.
+    /// Remove the current note from the triage list; return to the picker when
+    /// the inbox empties.
     pub(crate) fn notes_triage_advance(&mut self) {
         if self.notes_triage_notes.is_empty() {
-            self.pop_focus_layer(&FocusLayer::NotesTriage);
+            self.notes_triage_back_to_picker();
             return;
         }
         // Remove the note at the current index (don't advance index — next note
@@ -261,8 +306,8 @@ impl PlexiApp {
             self.notes_triage_notes.remove(self.notes_triage_index);
         }
         if self.notes_triage_notes.is_empty() {
-            log::info!("notes_triage: inbox cleared — closing");
-            self.pop_focus_layer(&FocusLayer::NotesTriage);
+            log::info!("notes_triage: inbox cleared — back to picker");
+            self.notes_triage_back_to_picker();
         } else if self.notes_triage_index >= self.notes_triage_notes.len() {
             self.notes_triage_index = self.notes_triage_notes.len() - 1;
         }

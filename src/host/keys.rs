@@ -125,7 +125,8 @@ pub enum Action {
     /// Focus stays at the vacated tile (on whatever pane fills that slot).
     /// Bound to Cmd+Ctrl+Opt+H/J/K/L.
     SendPane(Direction),
-    /// Open the scratchpad overlay. Bound to Cmd+Shift+Space.
+    /// Create a new scratch note in the inbox and open it in a text-editor pane.
+    /// Bound to Cmd+Shift+Space.
     OpenScratchpad,
     /// Push the focused pane into a new sub-context. The pane becomes a portal
     /// and its content moves into the child. Bound to Cmd+Option+N.
@@ -141,10 +142,8 @@ pub enum Action {
     HidePane,
     /// Park/unpark the focused context. Bound to Cmd+Shift+U.
     ParkContext,
-    /// Open the notes picker overlay (text-editor pane only). Bound to Cmd+O when AppActive.
+    /// Open the notes picker overlay from any pane type. Bound to Cmd+O.
     OpenNotesPicker,
-    /// Open the notes inbox triage overlay. Bound to Cmd+Shift+0 (Normal context).
-    OpenNotesTriage,
 }
 
 /// Resolved keybindings — one `(Modifiers, Key)` pair per named action.
@@ -205,7 +204,6 @@ pub struct KeyBindings {
     pub hide_pane: (egui::Modifiers, egui::Key),
     pub park_context: (egui::Modifiers, egui::Key),
     pub open_notes_picker: (egui::Modifiers, egui::Key),
-    pub open_notes_triage: (egui::Modifiers, egui::Key),
 }
 
 fn cmd() -> egui::Modifiers {
@@ -300,7 +298,6 @@ impl Default for KeyBindings {
             hide_pane: (cmd(), egui::Key::U),
             park_context: (cmd_shift(), egui::Key::U),
             open_notes_picker: (cmd(), egui::Key::O),
-            open_notes_triage: (cmd_shift(), egui::Key::Num0),
         }
     }
 }
@@ -481,7 +478,6 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(hide_pane, "hide_pane");
     apply_override!(park_context, "park_context");
     apply_override!(open_notes_picker, "open_notes_picker");
-    apply_override!(open_notes_triage, "open_notes_triage");
 
     // Conflict detection
     let named: &[(&str, (egui::Modifiers, egui::Key))] = &[
@@ -544,7 +540,6 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("hide_pane", bindings.hide_pane),
         ("park_context", bindings.park_context),
         ("open_notes_picker", bindings.open_notes_picker),
-        ("open_notes_triage", bindings.open_notes_triage),
     ];
 
     let mut seen: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
@@ -980,6 +975,14 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             context: BindingContext::Normal,
             action: Action::OpenScratchpad,
         },
+        // Notes picker opens from any pane type — terminal, app, text-editor.
+        BindingEntry {
+            modifiers: b.open_notes_picker.0,
+            key: b.open_notes_picker.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::OpenNotesPicker,
+        },
         // context_zoom_out is Cmd+Escape — not exact because plain Escape is AppActive only,
         // so there is no subset conflict on this key.
         BindingEntry {
@@ -1004,20 +1007,6 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             exact: false,
             context: BindingContext::AppActive,
             action: Action::ToggleAppFocus,
-        },
-        BindingEntry {
-            modifiers: b.open_notes_picker.0,
-            key: b.open_notes_picker.1,
-            exact: false,
-            context: BindingContext::AppActive,
-            action: Action::OpenNotesPicker,
-        },
-        BindingEntry {
-            modifiers: b.open_notes_triage.0,
-            key: b.open_notes_triage.1,
-            exact: false,
-            context: BindingContext::Normal,
-            action: Action::OpenNotesTriage,
         },
     ];
 

@@ -209,6 +209,8 @@ impl PlexiApp {
                                         (&["\u{2318}", "P"], "Command palette"),
                                         (&["\u{2318}", "E"], "File browser"),
                                         (&["\u{2318}", "0"], "Quick note"),
+                                        (&["\u{2318}", "O"], "Notes picker"),
+                                        (&["\u{2318}", "\u{21E7}", "\u{2423}"], "Scratch note"),
                                         (&["\u{2318}", "B"], "Toggle sidebar"),
                                         (&["\u{2318}", "\u{21E7}", "A"], "Notifications"),
                                         (&["\u{2318}", "\u{21E7}", "M"], "Toggle minimap"),

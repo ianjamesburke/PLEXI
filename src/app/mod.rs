@@ -215,10 +215,16 @@ pub struct PlexiApp {
     pub(crate) quick_note_text: String,
     /// Context captured at the time the quick note modal was opened.
     pub(crate) quick_note_ctx: QuickNoteCtx,
-    /// Notes picker: sorted list of (path, first-line-preview) for the current workspace.
-    pub(crate) notes_picker_entries: Vec<(std::path::PathBuf, String)>,
-    /// Notes picker: currently highlighted row index.
+    /// Notes picker: inbox notes first, then workspace notes sorted by mtime.
+    pub(crate) notes_picker_entries: Vec<crate::notes::NotePickerEntry>,
+    /// Notes picker: currently highlighted index into the filtered view.
     pub(crate) notes_picker_selected: usize,
+    /// Notes picker: fuzzy-filter query (active while `notes_picker_filtering`).
+    pub(crate) notes_picker_query: String,
+    /// Notes picker: true while the `/` search field has focus.
+    pub(crate) notes_picker_filtering: bool,
+    /// Notes picker: rename buffer — `Some` while the `r` rename field is open.
+    pub(crate) notes_picker_rename: Option<String>,
     /// Notes triage: inbox notes loaded when the triage overlay opens.
     pub(crate) notes_triage_notes: Vec<crate::notes::InboxNote>,
     /// Notes triage: configured actions loaded when the triage overlay opens.
@@ -756,6 +762,9 @@ impl PlexiApp {
                     quick_note_ctx: QuickNoteCtx::default(),
                     notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
+                    notes_picker_query: String::new(),
+                    notes_picker_filtering: false,
+                    notes_picker_rename: None,
                     notes_triage_notes: Vec::new(),
                     notes_triage_actions: Vec::new(),
                     notes_triage_index: 0,
@@ -941,6 +950,9 @@ impl PlexiApp {
             quick_note_ctx: QuickNoteCtx::default(),
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
+            notes_picker_query: String::new(),
+            notes_picker_filtering: false,
+            notes_picker_rename: None,
             notes_triage_notes: Vec::new(),
             notes_triage_actions: Vec::new(),
             notes_triage_index: 0,
@@ -1138,6 +1150,9 @@ impl PlexiApp {
                 quick_note_ctx: QuickNoteCtx::default(),
                 notes_picker_entries: Vec::new(),
                 notes_picker_selected: 0,
+                notes_picker_query: String::new(),
+                notes_picker_filtering: false,
+                notes_picker_rename: None,
                 notes_triage_notes: Vec::new(),
                 notes_triage_actions: Vec::new(),
                 notes_triage_index: 0,
@@ -2961,14 +2976,6 @@ impl eframe::App for PlexiApp {
                     log::info!("notes_picker: Cmd+O — opening picker");
                     self.open_notes_picker();
                 }
-                Action::OpenNotesTriage => {
-                    if !self.focus_stack.contains(&FocusLayer::NotesTriage) {
-                        log::info!("notes_triage: opening triage overlay");
-                        self.open_notes_triage();
-                    } else {
-                        self.pop_focus_layer(&FocusLayer::NotesTriage);
-                    }
-                }
                 Action::ContextZoomOut => {
                     log::info!(
                         "ContextZoomOut: popping depth stack (depth={})",
@@ -3106,6 +3113,31 @@ impl eframe::App for PlexiApp {
 impl PlexiApp {
     pub(crate) fn open_notes_picker(&mut self) {
         let notes_base = crate::config::config_dir().join("notes");
+
+        // Sorted .md paths (newest mtime first) from one directory.
+        let scan_dir = |dir: &std::path::Path| -> Vec<std::path::PathBuf> {
+            let mut with_mtime: Vec<(std::time::SystemTime, std::path::PathBuf)> =
+                std::fs::read_dir(dir)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
+                    .filter_map(|e| {
+                        let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
+                        Some((mtime, e.path()))
+                    })
+                    .collect();
+            with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
+            with_mtime.into_iter().map(|(_, p)| p).collect()
+        };
+
+        // Inbox notes first (scratch + quick-note captures), then kept workspace notes.
+        let mut entries: Vec<crate::notes::NotePickerEntry> = scan_dir(&notes_base.join("inbox"))
+            .iter()
+            .filter_map(|p| crate::notes::NotePickerEntry::load(p, true))
+            .collect();
+        let inbox_count = entries.len();
+
         let workspace_slug = crate::config::active_workspace_root()
             .and_then(|p| p.file_name().map(|n| n.to_os_string()))
             .map(|n| n.to_string_lossy().into_owned());
@@ -3113,34 +3145,23 @@ impl PlexiApp {
             Some(ref slug) => notes_base.join(slug),
             None => notes_base,
         };
-        let mut with_mtime: Vec<(std::time::SystemTime, std::path::PathBuf, String)> =
-            std::fs::read_dir(&notes_dir)
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
-                .filter_map(|e| {
-                    let path = e.path();
-                    let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
-                    let preview = std::fs::read_to_string(&path).unwrap_or_default();
-                    let first_line = preview
-                        .lines()
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or("")
-                        .to_string();
-                    Some((mtime, path, first_line))
-                })
-                .collect();
-        with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
-        let entries: Vec<(std::path::PathBuf, String)> =
-            with_mtime.into_iter().map(|(_, p, l)| (p, l)).collect();
+        entries.extend(
+            scan_dir(&notes_dir)
+                .iter()
+                .filter_map(|p| crate::notes::NotePickerEntry::load(p, false)),
+        );
+
         log::info!(
-            "notes_picker: {} notes found in {:?}",
-            entries.len(),
+            "notes_picker: {} inbox + {} kept notes ({:?})",
+            inbox_count,
+            entries.len() - inbox_count,
             notes_dir
         );
         self.notes_picker_entries = entries;
         self.notes_picker_selected = 0;
+        self.notes_picker_query.clear();
+        self.notes_picker_filtering = false;
+        self.notes_picker_rename = None;
         self.push_focus_layer(FocusLayer::NotesPicker);
         // Surrender egui keyboard focus from the active TextEdit so the picker
         // receives j/k and other navigation keys immediately on the first frame.
