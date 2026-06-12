@@ -69,11 +69,7 @@ pub enum PackageError {
         source: toml::de::Error,
     },
     #[error("manifest schema_version {found} is newer than supported (max {max}) in {path}")]
-    UnsupportedSchemaVersion {
-        found: u32,
-        max: u32,
-        path: PathBuf,
-    },
+    UnsupportedSchemaVersion { found: u32, max: u32, path: PathBuf },
     #[error("manifest field [app].{field} is missing or empty in {path}")]
     MissingField { field: &'static str, path: PathBuf },
     #[error("entry file '{entry}' declared in manifest.toml not found at {path}")]
@@ -89,7 +85,9 @@ pub enum PackageError {
         valid = Capability::all_str_values().join(", ")
     )]
     UnknownCapability { value: String, path: PathBuf },
-    #[error("sha256 mismatch for '{path}': PACKAGE.toml says {expected}, actual content is {actual}")]
+    #[error(
+        "sha256 mismatch for '{path}': PACKAGE.toml says {expected}, actual content is {actual}"
+    )]
     ChecksumMismatch {
         path: String,
         expected: String,
@@ -319,13 +317,11 @@ fn read_manifest(app_dir: &Path) -> Result<AppManifest, PackageError> {
     if !manifest_path.exists() {
         return Err(PackageError::ManifestMissing(app_dir.to_path_buf()));
     }
-    let raw =
-        fs::read_to_string(&manifest_path).map_err(|e| io_err("read", &manifest_path, e))?;
-    let manifest: AppManifest =
-        toml::from_str(&raw).map_err(|e| PackageError::ManifestParse {
-            path: manifest_path.clone(),
-            source: e,
-        })?;
+    let raw = fs::read_to_string(&manifest_path).map_err(|e| io_err("read", &manifest_path, e))?;
+    let manifest: AppManifest = toml::from_str(&raw).map_err(|e| PackageError::ManifestParse {
+        path: manifest_path.clone(),
+        source: e,
+    })?;
 
     if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
         return Err(PackageError::UnsupportedSchemaVersion {
@@ -443,17 +439,17 @@ pub fn build_package(app_dir: &Path, out: Option<&Path>) -> Result<PathBuf, Pack
             version: report.version.clone(),
             runtime: report.runtime.as_str().to_string(),
         },
-        capabilities: report.capabilities.iter().map(|c| c.as_str().to_string()).collect(),
+        capabilities: report
+            .capabilities
+            .iter()
+            .map(|c| c.as_str().to_string())
+            .collect(),
         files: package_files,
     };
     let descriptor_toml = toml::to_string_pretty(&descriptor).map_err(|e| {
         // Serialization of an in-memory struct failing is unexpected; surface
         // it as an io-class error on the output path.
-        io_err(
-            "serialize PACKAGE.toml",
-            app_dir,
-            std::io::Error::other(e),
-        )
+        io_err("serialize PACKAGE.toml", app_dir, std::io::Error::other(e))
     })?;
 
     let out_path = match out {
@@ -488,7 +484,8 @@ pub fn build_package(app_dir: &Path, out: Option<&Path>) -> Result<PathBuf, Pack
     let gz = builder
         .into_inner()
         .map_err(|e| io_err("finish tar", &out_path, e))?;
-    gz.finish().map_err(|e| io_err("finish gzip", &out_path, e))?;
+    gz.finish()
+        .map_err(|e| io_err("finish gzip", &out_path, e))?;
 
     log::info!(
         "package: built id={} version={} files={} → {}",
@@ -509,10 +506,12 @@ fn sha256_file(path: &Path) -> Result<String, PackageError> {
 
 fn hex_string(bytes: &[u8]) -> String {
     use std::fmt::Write;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 // ── Archive extraction (safe, streaming) ──────────────────────────────────────
@@ -550,7 +549,9 @@ pub fn extract_package(file: &Path, dest: &Path) -> Result<(), PackageError> {
 
     fs::create_dir_all(dest).map_err(|e| io_err("create_dir_all", dest, e))?;
 
-    let entries = archive.entries().map_err(|e| io_err("read archive", file, e))?;
+    let entries = archive
+        .entries()
+        .map_err(|e| io_err("read archive", file, e))?;
     for entry in entries {
         let mut entry = entry.map_err(|e| io_err("read archive entry", file, e))?;
         let raw_path = entry
@@ -642,7 +643,10 @@ pub fn validate_package(file: &Path) -> Result<PackageReport, PackageError> {
             report.file_count,
             file.display()
         ),
-        Err(e) => log::warn!("package: validate_package failed for {}: {e}", file.display()),
+        Err(e) => log::warn!(
+            "package: validate_package failed for {}: {e}",
+            file.display()
+        ),
     }
     result
 }
@@ -661,8 +665,8 @@ fn validate_package_inner(file: &Path) -> Result<PackageReport, PackageError> {
     if !descriptor_path.exists() {
         return Err(PackageError::PackageTomlMissing(file.to_path_buf()));
     }
-    let raw = fs::read_to_string(&descriptor_path)
-        .map_err(|e| io_err("read", &descriptor_path, e))?;
+    let raw =
+        fs::read_to_string(&descriptor_path).map_err(|e| io_err("read", &descriptor_path, e))?;
     let descriptor: PackageToml =
         toml::from_str(&raw).map_err(|e| PackageError::PackageTomlParse {
             path: file.to_path_buf(),
@@ -680,7 +684,8 @@ fn validate_package_inner(file: &Path) -> Result<PackageReport, PackageError> {
 
     // Verify every listed file's checksum + size, and that nothing extra is present.
     let on_disk = collect_files(&root)?; // also rejects symlinks defensively
-    let mut listed: std::collections::BTreeMap<&str, &PackageFile> = std::collections::BTreeMap::new();
+    let mut listed: std::collections::BTreeMap<&str, &PackageFile> =
+        std::collections::BTreeMap::new();
     for pf in &descriptor.files {
         // Listed paths must themselves be safe before we join them anywhere.
         safe_entry_path(Path::new(&pf.path))?;

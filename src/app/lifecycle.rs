@@ -943,8 +943,12 @@ impl PlexiApp {
                     } else {
                         (active, self.windows[active].focused_pane)
                     };
-                    launch_result =
-                        self.launch_app_by_path_with_layout(path_str, layout.clone(), ws_root, args);
+                    launch_result = self.launch_app_by_path_with_layout(
+                        path_str,
+                        layout.clone(),
+                        ws_root,
+                        args,
+                    );
                     if from_pane_id.is_some() {
                         self.active_window = active;
                         // Undo the temporary focus redirect when launch failed.

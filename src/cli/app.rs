@@ -436,16 +436,18 @@ pub fn print_trust_sheet(
     } else {
         println!("capabilities:");
         for cap in &report.capabilities {
-            let sensitive = if cap.is_sensitive() { " [sensitive]" } else { "" };
+            let sensitive = if cap.is_sensitive() {
+                " [sensitive]"
+            } else {
+                ""
+            };
             println!("  {:<18}{}{sensitive}", cap.as_str(), cap.description());
         }
     }
 }
 
 /// Resolve the trust label for a report against the bundled core pack ids.
-fn trust_label_for(
-    report: &crate::app::package::PackageReport,
-) -> crate::app::package::TrustLabel {
+fn trust_label_for(report: &crate::app::package::PackageReport) -> crate::app::package::TrustLabel {
     let core_ids = crate::cli::install_host::core_pack_ids();
     let core_refs: Vec<&str> = core_ids.iter().map(String::as_str).collect();
     crate::app::package::trust_label(report, &core_refs)
@@ -495,10 +497,7 @@ pub fn confirm_install(
 
 /// Run the full trust gate for an interactive install: print the trust sheet,
 /// then prompt. Returns an exit code on refusal/abort, `None` to proceed.
-fn run_install_gate(
-    report: &crate::app::package::PackageReport,
-    assume_yes: bool,
-) -> Option<i32> {
+fn run_install_gate(report: &crate::app::package::PackageReport, assume_yes: bool) -> Option<i32> {
     use std::io::IsTerminal;
     let label = trust_label_for(report);
     print_trust_sheet(report, label);

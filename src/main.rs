@@ -21,13 +21,13 @@ mod plexi_ai;
 mod process_app;
 mod protocol;
 mod render;
+#[cfg(test)]
+mod scenes;
 mod secrets;
 mod spatial;
 #[cfg(test)]
 mod testing;
 mod ui;
-#[cfg(test)]
-mod scenes;
 #[cfg(test)]
 mod ui_tests;
 mod workspace;
@@ -431,7 +431,9 @@ fn main() -> eframe::Result {
                                     Some(s) => {
                                         // .plexipkg artifact: validate fail-closed, then install (stint 0015).
                                         if s.ends_with(".plexipkg") {
-                                            log::info!("app_install:cli: package={s} version={version:?}");
+                                            log::info!(
+                                                "app_install:cli: package={s} version={version:?}"
+                                            );
                                             std::process::exit(cli::app_install_package(
                                                 &s,
                                                 version.as_deref(),

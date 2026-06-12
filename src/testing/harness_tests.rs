@@ -405,12 +405,10 @@ fn pane_slot_read_errors_use_sidecar_file() {
     let error_file = format!("{read_file}.err");
     let response = read_json_response(&error_file);
     assert_eq!(response["ok"].as_bool(), Some(false));
-    assert!(
-        response["error"]
-            .as_str()
-            .expect("error")
-            .contains("slot 'missing' not found")
-    );
+    assert!(response["error"]
+        .as_str()
+        .expect("error")
+        .contains("slot 'missing' not found"));
 }
 
 #[test]
@@ -519,7 +517,10 @@ fn pane_slot_append_rejects_final_file_over_10_mib() {
     let response = read_json_response(&append_file);
     assert_eq!(response["ok"].as_bool(), Some(false));
     let error = response["error"].as_str().expect("error");
-    assert!(error.contains("slot 'artifact'"), "unexpected error: {error}");
+    assert!(
+        error.contains("slot 'artifact'"),
+        "unexpected error: {error}"
+    );
     assert!(error.contains("10485761"), "unexpected error: {error}");
 }
 
@@ -528,7 +529,8 @@ fn pane_slot_append_uses_tracked_path_after_context_root_changes() {
     let first_root = tempfile::tempdir().expect("first root");
     let second_root = tempfile::tempdir().expect("second root");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(first_root.path().to_path_buf());
+    h.app
+        .set_active_context_root(first_root.path().to_path_buf());
     let pane = h.add_test_pane();
 
     let write_file = temp_response(first_root.path(), "slot-root-write");
@@ -1736,7 +1738,10 @@ fn set_permission_revokes_running_app() {
         "live permissions must have panes.read blocked"
     );
     assert!(
-        !proc.permissions.capabilities.contains(&Capability::PanesRead),
+        !proc
+            .permissions
+            .capabilities
+            .contains(&Capability::PanesRead),
         "live permissions must no longer grant panes.read"
     );
 
@@ -1871,8 +1876,7 @@ fn yellow_capability_deny_writes_denial() {
     h.key(egui::Key::Escape, egui::Modifiers::NONE);
     h.run_frames(1);
 
-    let content =
-        std::fs::read_to_string(&response_file).expect("deny must write the denial JSON");
+    let content = std::fs::read_to_string(&response_file).expect("deny must write the denial JSON");
     let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
     assert_eq!(
         v["capability"], "panes.read",

@@ -203,7 +203,8 @@ fn response_error(content: &[u8]) -> Option<String> {
     if value.get("ok").and_then(|v| v.as_bool()) != Some(false) {
         return None;
     }
-    value.get("error")
+    value
+        .get("error")
         .and_then(|v| v.as_str())
         .map(str::to_string)
 }

@@ -842,7 +842,10 @@ mod tests {
             Capability::try_from("permissions.manage").expect("permissions.manage must parse");
         assert_eq!(parsed, Capability::PermissionsManage);
         assert_eq!(parsed.as_str(), "permissions.manage");
-        assert!(parsed.is_sensitive(), "permissions.manage must be sensitive");
+        assert!(
+            parsed.is_sensitive(),
+            "permissions.manage must be sensitive"
+        );
         let perms = AppPermissions::from_capability_strings(&["permissions.manage".to_string()]);
         assert!(perms.capabilities.contains(&Capability::PermissionsManage));
         assert!(matches!(

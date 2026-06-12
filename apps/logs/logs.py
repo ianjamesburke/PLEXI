@@ -15,6 +15,8 @@ from plexi_sdk.ui import (
 
 POLL_MS  = 2_000
 TIMER_ID = "poll"
+MAX_LINES = 500
+TAIL_BYTES = 256 * 1024
 
 ROW_H    = 20.0
 BAR_H    = 34.0   # AppBar single-line band height
@@ -48,10 +50,24 @@ _LOG_RE = re.compile(
 
 # ── Log path detection ─────────────────────────────────────────────────────────
 
+SCROLL_ID = "logs-list"
+
+
+def _channel_log_path() -> "str | None":
+    channel = os.environ.get("PLEXI_CHANNEL", "").strip()
+    if not channel:
+        return None
+    profile = ".plexi" if channel in ("main", "default") else f".plexi-{channel}"
+    return os.path.expanduser(os.path.join("~", profile, "plexi.log"))
+
+
 def _detect_log_path() -> str:
     env = os.environ.get("PLEXI_CONFIG_DIR")
     if env:
         return os.path.join(env, "plexi.log")
+    channel_path = _channel_log_path()
+    if channel_path:
+        return channel_path
     candidates = [
         os.path.expanduser(p) for p in (
             "~/.plexi-alpha/plexi.log",
@@ -64,6 +80,14 @@ def _detect_log_path() -> str:
 
 
 LOG_PATH = _detect_log_path()
+
+
+def _log_signature() -> "tuple[int, int] | None":
+    try:
+        stat = os.stat(LOG_PATH)
+    except OSError:
+        return None
+    return stat.st_size, stat.st_mtime_ns
 
 # ── Data ───────────────────────────────────────────────────────────────────────
 
@@ -88,15 +112,19 @@ def _parse(raw: str) -> "LogLine | None":
     return LogLine(time, level, target, message)
 
 
-def _read_log(max_lines: int = 500) -> list[LogLine]:
+def _read_log(max_lines: int = MAX_LINES) -> list[LogLine]:
     try:
-        with open(LOG_PATH) as f:
+        size = os.path.getsize(LOG_PATH)
+        with open(LOG_PATH, "rb") as f:
+            if size > TAIL_BYTES:
+                f.seek(-TAIL_BYTES, os.SEEK_END)
+                f.readline()
             tail = f.readlines()[-max_lines:]
     except OSError:
         return []
     out: list[LogLine] = []
     for raw in reversed(tail):
-        ll = _parse(raw)
+        ll = _parse(raw.decode("utf-8", errors="replace"))
         if ll:
             out.append(ll)
     return out
@@ -124,6 +152,7 @@ class LogsApp(App):
         self._copy_row:    int            = 0    # active cursor / drag end
         self._copy_anchor: "int | None"   = None  # selection start; None = single row
         self._is_dragging: bool           = False
+        self._last_log_signature: "tuple[int, int] | None" = None
         self.emit.set_mouse_tracking(True)
         self.emit.status_summary("Logs")
         self.emit.set_timer(TIMER_ID, 50)
@@ -132,8 +161,12 @@ class LogsApp(App):
     def on_timer(self, timer_id: str) -> None:
         if timer_id != TIMER_ID:
             return
-        self._lines = _read_log()
-        self._refresh_targets()
+        signature = _log_signature()
+        if signature != self._last_log_signature:
+            self._last_log_signature = signature
+            self._lines = _read_log(MAX_LINES) if signature is not None else []
+            self._refresh_targets()
+            self._clamp()
         self.emit.set_timer(TIMER_ID, POLL_MS)
 
     def _refresh_targets(self) -> None:
@@ -296,11 +329,24 @@ class LogsApp(App):
             self._scroll = row_top
         elif row_bot > self._scroll + self._viewport_h:
             self._scroll = row_bot - self._viewport_h
+        self._clamp()
 
     def _clamp(self) -> None:
         filtered = self._filtered()
         max_s = max(0.0, len(filtered) * ROW_H - self._viewport_h)
-        self._scroll = min(self._scroll, max_s)
+        self._scroll = max(0.0, min(self._scroll, max_s))
+
+    def _scroll_by_delta(self, delta_y: float) -> None:
+        self._scroll = max(0.0, self._scroll - delta_y)
+        self._clamp()
+
+    def on_scroll(self, id: str, offset_y: float) -> None:
+        if id == SCROLL_ID:
+            self._scroll = offset_y
+            self._clamp()
+
+    def on_scroll_delta(self, delta_y: float) -> None:
+        self._scroll_by_delta(delta_y)
 
     def _filtered(self) -> list[LogLine]:
         level = FILTERS[self._filter_idx]
@@ -458,14 +504,15 @@ class LogsApp(App):
                      size=TEXT_CAPTION, color=ctx.theme.muted)
             return
 
-        ctx.push_clip(0, list_y, w, list_h)
-
         n        = len(filtered)
+        total_h  = n * ROW_H
         time_w   = 66.0
         target_w = 140.0
         first    = int(self._scroll / ROW_H)
         count    = int(list_h / ROW_H) + 2
         sel_lo, sel_hi = self._copy_range(n)
+
+        ctx.begin_scroll(SCROLL_ID, 0, list_y, w, list_h, total_h)
 
         for i in range(first, min(first + count, n)):
             ll    = filtered[i]
@@ -513,10 +560,9 @@ class LogsApp(App):
                      size=TEXT_HINT, color=msg_fg,
                      max_width=w - x - PAD, elide=True)
 
-        ctx.pop_clip()
+        ctx.end_scroll()
 
         # scrollbar
-        total_h = len(filtered) * ROW_H
         if total_h > list_h and list_h > 0:
             thumb_ratio = list_h / total_h
             thumb_h     = max(20.0, list_h * thumb_ratio)

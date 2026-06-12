@@ -33,6 +33,15 @@ use render_session::RenderSession;
 use runtime_state::{FrameDoneOutcome, PgapRuntime, RenderPoll};
 pub(crate) use transport::StdinItem;
 
+fn channel_from_config_dir(config_dir: &Path) -> Option<String> {
+    config_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix(".plexi-"))
+        .filter(|channel| !channel.is_empty())
+        .map(str::to_string)
+}
+
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
 use crate::app::permissions::{AppPermissions, Capability};
 use crate::app_protocol::{
@@ -48,7 +57,7 @@ use crate::media::midi::{MidiDevice, MidiInputSession, MidiOutputHandle};
 use crate::media::video::{VideoDecoder, VideoHandle};
 use crate::plexi_ai::broker::{AiBroker, LiveAiBroker};
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -462,6 +471,19 @@ impl ProcessApp {
                 cmd.env(k, v);
             }
         }
+        let active_config_dir = crate::config::config_dir();
+        let active_channel = channel_from_config_dir(&active_config_dir);
+        cmd.env("PLEXI_CONFIG_DIR", &active_config_dir);
+        if let Some(channel) = active_channel.as_deref() {
+            cmd.env("PLEXI_CHANNEL", channel);
+        } else {
+            cmd.env_remove("PLEXI_CHANNEL");
+        }
+        log::info!(
+            "ProcessApp[{type_id}]: environment profile dir={} channel={}",
+            active_config_dir.display(),
+            active_channel.as_deref().unwrap_or("main")
+        );
 
         // Start the MCP server when the manifest declares [app.mcp].
         let mcp_server_handle = mcp

@@ -478,7 +478,11 @@ impl PlexiApp {
     }
 
     fn restore_minimap_for_context(&mut self, ctx_id: u64) {
-        let page_count = self.windows.iter().filter(|w| w.context_id == ctx_id).count();
+        let page_count = self
+            .windows
+            .iter()
+            .filter(|w| w.context_id == ctx_id)
+            .count();
         self.minimap.visible = self
             .minimap_visible_per_context
             .get(&ctx_id)

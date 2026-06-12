@@ -233,7 +233,10 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
     match serde_json::to_string_pretty(&report) {
         Ok(json) => {
             if let Err(e) = std::fs::write(&report_path, json) {
-                log::warn!("scene {scene_name}: failed to write report {}: {e}", report_path.display());
+                log::warn!(
+                    "scene {scene_name}: failed to write report {}: {e}",
+                    report_path.display()
+                );
             }
         }
         Err(e) => log::warn!("scene {scene_name}: failed to serialize report: {e}"),
@@ -439,8 +442,7 @@ impl SceneRunner {
                         return Some(AppState {
                             pane_id,
                             lifecycle: format!("{:?}", p.lifecycle.state()).to_lowercase(),
-                            tree: serde_json::to_value(&p.frame)
-                                .unwrap_or(serde_json::Value::Null),
+                            tree: serde_json::to_value(&p.frame).unwrap_or(serde_json::Value::Null),
                         });
                     }
                 }
@@ -478,7 +480,10 @@ fn parse_key(combo: &str) -> Result<(egui::Modifiers, egui::Key), String> {
             }
         }
     }
-    Ok((modifiers, key.ok_or_else(|| format!("no key in combo \"{combo}\""))?))
+    Ok((
+        modifiers,
+        key.ok_or_else(|| format!("no key in combo \"{combo}\""))?,
+    ))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -488,7 +493,9 @@ mod tests {
     use super::*;
 
     fn scenes_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("scenes")
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("scenes")
     }
 
     fn out_dir() -> PathBuf {
@@ -515,8 +522,8 @@ mod tests {
         let mut failures = Vec::new();
         for path in entries {
             let raw = std::fs::read_to_string(&path).expect("read scene");
-            let scene: Scene = toml::from_str(&raw)
-                .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+            let scene: Scene =
+                toml::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
             if !scene.suite {
                 println!("scene_suite: skipping {} (suite = false)", path.display());
                 continue;
@@ -535,7 +542,11 @@ mod tests {
                 ));
             }
         }
-        assert!(failures.is_empty(), "scenes failed:\n{}", failures.join("\n"));
+        assert!(
+            failures.is_empty(),
+            "scenes failed:\n{}",
+            failures.join("\n")
+        );
     }
 
     /// Run one scene named by `PLEXI_SCENE`. Wrapped by `just scene <file>`.
