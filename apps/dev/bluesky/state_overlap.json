@@ -1,0 +1,59 @@
+{
+  "_loading": false,
+  "_sel": 0,
+  "_avatar_handles": {
+    "did:plc:overlap1": "avatar-overlap-1",
+    "did:plc:overlap2": "avatar-overlap-2",
+    "did:plc:overlap3": "avatar-overlap-3"
+  },
+  "_feed": [
+    {
+      "uri": "at://did:plc:overlap1/app.bsky.feed.post/1",
+      "author": {
+        "did": "did:plc:overlap1",
+        "handle": "leftylady.bsky.social",
+        "displayName": "We are pretty sure this is a male, as they usually hang around here",
+        "avatar": "fixture-avatar-1"
+      },
+      "record": {
+        "text": "She didn't get booed, stayed awake and the Knicks won in the end. wikipedia.org/wiki/Peregrine...",
+        "createdAt": "2026-06-11T10:00:00Z"
+      },
+      "likeCount": 7700,
+      "repostCount": 890,
+      "replyCount": 42
+    },
+    {
+      "uri": "at://did:plc:overlap2/app.bsky.feed.post/2",
+      "author": {
+        "did": "did:plc:overlap2",
+        "handle": "sommelierdevoto.bsky.social",
+        "displayName": "Sommelier da vida alheia",
+        "avatar": "fixture-avatar-2"
+      },
+      "record": {
+        "text": "E batendo perna e batendo mais um texto longo suficiente para reach the trailing stats column",
+        "createdAt": "2026-06-11T12:00:00Z"
+      },
+      "likeCount": 112,
+      "repostCount": 2,
+      "replyCount": 3
+    },
+    {
+      "uri": "at://did:plc:overlap3/app.bsky.feed.post/3",
+      "author": {
+        "did": "did:plc:overlap3",
+        "handle": "dp-in-the-sky.bsky.social",
+        "displayName": "DP In The Sky",
+        "avatar": "fixture-avatar-3"
+      },
+      "record": {
+        "text": "Another long post that should be clipped before the like and repost labels instead of painting under them.",
+        "createdAt": "2026-06-12T09:15:00Z"
+      },
+      "likeCount": 8,
+      "repostCount": 2,
+      "replyCount": 1
+    }
+  ]
+}

@@ -706,8 +706,11 @@ pub(crate) fn render_draw_commands(
                                     cx += chip_w + CHIP_GAP;
                                 }
 
-                                // Primary text — elide so the title never runs
-                                // under the right-aligned chips / trailing text.
+                                // Primary/secondary text is both elided and clipped to the
+                                // content column. The clip is the last line of defense when
+                                // runtime font fallback or image/avatar timing changes measured
+                                // width enough for a string to otherwise paint under trailing
+                                // stats.
                                 let primary_font = egui::FontId::proportional(FONT_CAPTION);
                                 let has_right = !row.chips.is_empty() || row.trailing.is_some();
                                 let text_right = if has_right {
@@ -720,6 +723,12 @@ pub(crate) fn render_draw_commands(
                                     list_rect.max.x - PAD_X
                                 };
                                 let avail_w = (text_right - text_start_x).max(0.0);
+                                let text_clip = egui::Rect::from_min_max(
+                                    egui::pos2(text_start_x, row_rect.min.y),
+                                    egui::pos2(text_right.max(text_start_x), row_rect.max.y),
+                                )
+                                .intersect(list_clip);
+                                let text_painter = painter.with_clip_rect(text_clip);
                                 let display_primary = elide_no_wrap(
                                     ui,
                                     row.primary.as_str(),
@@ -727,7 +736,7 @@ pub(crate) fn render_draw_commands(
                                     colors.text_primary,
                                     avail_w,
                                 );
-                                painter.text(
+                                text_painter.text(
                                     egui::pos2(text_start_x, primary_y),
                                     egui::Align2::LEFT_TOP,
                                     display_primary.as_str(),
@@ -745,7 +754,7 @@ pub(crate) fn render_draw_commands(
                                         colors.text_dim,
                                         avail_w,
                                     );
-                                    painter.text(
+                                    text_painter.text(
                                         egui::pos2(text_start_x, primary_y + FONT_CAPTION + 4.0),
                                         egui::Align2::LEFT_TOP,
                                         display_secondary.as_str(),

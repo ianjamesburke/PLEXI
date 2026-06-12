@@ -186,6 +186,7 @@ class BlueskyApp(App):
             self._loading = seeded.get("_loading", False)
             self._error   = seeded.get("_error")
             self._sel     = seeded.get("_sel", 0)
+            self._avatar_handles = dict(seeded.get("_avatar_handles") or {})
             if "_feed" in seeded:
                 self._feed = seeded["_feed"]
             if "_thread" in seeded:

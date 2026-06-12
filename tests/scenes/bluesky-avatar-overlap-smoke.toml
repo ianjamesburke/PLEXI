@@ -1,0 +1,20 @@
+# Bluesky feed regression for live-like loaded avatars plus long primary and
+# secondary text. This catches text painting under the trailing stats column.
+size = [958.0, 330.0]
+suite = false
+
+[[steps]]
+open_app = "apps/dev/bluesky"
+args = ["--fixture", "state_overlap.json"]
+
+[[steps]]
+wait_app_frame = { timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 5
+
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "leftylady.bsky.social" }
+
+[[steps]]
+shot = "bluesky-avatar-overlap-smoke.png"
