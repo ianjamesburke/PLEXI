@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 COMPACT_DEFAULT: float = 280.0
 REGULAR_DEFAULT: float = 480.0
 
+_VALID_ALIGN = frozenset({
+    "left_top", "center_top", "right_top",
+    "left_center", "center_center", "right_center",
+    "left_bottom", "center_bottom", "right_bottom",
+})
+
 # ── RenderContext ──────────────────────────────────────────────────────────────
 
 class RenderContext:
@@ -157,22 +163,27 @@ class RenderContext:
 
     def text(self, x: float, y: float, text: str, size: float, color: str,
              monospace: bool = False, bold: bool = False,
-             align: str = "top_left",
+             align: str = "left_top",
              max_width: "float | None" = None,
              elide: bool = True,
              selectable: bool = False,
              max_lines: "int | None" = None) -> None:
-        """Draw text. `align` controls how `(x, y)` maps to the text box:
+        """Draw text. `align` controls how `(x, y)` maps to the text box.
 
-          - "top_left" (default) — (x, y) is the top-left corner.
-          - "center"              — (x, y) is the visual center.
-          - "top_center"          — (x, y) is the top-center.
-          - "right"               — (x, y) is the top-right corner.
+        Valid values (horizontal_vertical):
+          - "left_top" (default)   — (x, y) is the top-left corner.
+          - "center_top"           — (x, y) is the top-center.
+          - "right_top"            — (x, y) is the top-right corner.
+          - "left_center"          — (x, y) is the left midline.
+          - "center_center"        — (x, y) is the visual center.
+          - "right_center"         — (x, y) is the right midline.
+          - "left_bottom"          — (x, y) is the bottom-left corner.
+          - "center_bottom"        — (x, y) is the bottom-center.
+          - "right_bottom"         — (x, y) is the bottom-right corner.
 
-        Use "center" when placing text inside a fixed-size container (a badge,
-        a button, a pie-chart label) — the host uses real font metrics, which
-        is noticeably more accurate than Python-side math with approximate
-        character-width ratios.
+        Use "center_center" when placing text inside a fixed-size container
+        (a badge, a button, a pie-chart label) — the host uses real font
+        metrics, which is noticeably more accurate than Python-side math.
 
         `max_width` — when set, the host clips the text at this pixel width.
         `elide`     — when True (default), a "…" is appended at the clip point;
@@ -200,6 +211,11 @@ class RenderContext:
                 f"ctx.text() size must be a number (e.g. 14.0), "
                 f"got {type(size).__name__}: {size!r}. "
                 f"Use a font constant: from plexi_sdk import BODY, CAPTION, HINT"
+            )
+        if align not in _VALID_ALIGN:
+            raise ValueError(
+                f"ctx.text() align={align!r} is not valid. "
+                f"Valid values: {sorted(_VALID_ALIGN)}"
             )
         d: dict = {"type": "text", "x": x, "y": y, "text": text, "size": size,
                    "color": color, "monospace": monospace, "bold": bold,
@@ -341,6 +357,11 @@ class RenderContext:
                 gap=12.0,
             )
         """
+        if align not in _VALID_ALIGN:
+            raise ValueError(
+                f"ctx.text_row() align={align!r} is not valid. "
+                f"Valid values: {sorted(_VALID_ALIGN)}"
+            )
         # Validate and normalize items: each dict must have 'text', other keys optional.
         wire_items = []
         for item in items:

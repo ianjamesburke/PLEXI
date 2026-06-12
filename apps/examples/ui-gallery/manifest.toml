@@ -1,0 +1,13 @@
+schema_version = 1
+
+[app]
+id = "ui-gallery"
+type = "app"
+name = "UI Gallery"
+entry = "main.py"
+version = "0.1.0"
+description = "Reference implementation of every SDK component."
+watch = true
+
+[app.capabilities]
+capabilities = []

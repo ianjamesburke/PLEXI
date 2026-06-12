@@ -36,6 +36,28 @@ impl schemars::JsonSchema for LayoutChild {
 
 // ── Commands sent FROM the app TO Plexi ──────────────────────────────────────
 
+/// Closed vocabulary for text anchor alignment.
+/// Values match egui's `Align2` naming convention: `{h}_{v}`.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAlign {
+    LeftTop,
+    CenterTop,
+    RightTop,
+    LeftCenter,
+    CenterCenter,
+    RightCenter,
+    LeftBottom,
+    CenterBottom,
+    RightBottom,
+}
+
+impl Default for TextAlign {
+    fn default() -> Self {
+        Self::LeftTop
+    }
+}
+
 /// Render primitives — go to `pending_frame` → drawn to screen.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -69,12 +91,13 @@ pub enum RenderCommand {
     },
     /// Draw text at a position.
     ///
-    /// `align` controls how the `(x, y)` point maps to the text box:
-    ///   - `"top_left"` (default) — `(x, y)` is the top-left corner.
-    ///   - `"center"`              — `(x, y)` is the visual center of the text.
+    /// `align` controls how the `(x, y)` point maps to the text box.
+    /// Valid values (horizontal_vertical): `left_top` (default), `center_top`,
+    /// `right_top`, `left_center`, `center_center`, `right_center`,
+    /// `left_bottom`, `center_bottom`, `right_bottom`.
     ///
     /// Centering uses the host's real font metrics, which matters for small
-    /// badges / buttons where a 0.1em difference is visible. Prefer `center`
+    /// badges / buttons where a 0.1em difference is visible. Prefer `center_center`
     /// for anything inside a fixed-size container.
     ///
     /// `max_width` — when `Some(w)`, the text is clipped at `w` pixels.
@@ -97,8 +120,8 @@ pub enum RenderCommand {
         monospace: bool,
         #[serde(default)]
         bold: bool,
-        #[serde(default = "default_text_align")]
-        align: String,
+        #[serde(default)]
+        align: TextAlign,
         max_width: Option<f32>,
         elide: bool,
         selectable: bool,
@@ -261,13 +284,14 @@ pub enum RenderCommand {
     /// `x`, `y`  — origin of the text row.
     /// `items`   — list of text segments, each with text, color, size, monospace.
     /// `gap`     — spacing between items in pixels.
-    /// `align`   — vertical alignment (e.g., "left_center").
+    /// `align`   — anchor alignment, e.g. `left_center` to center items on the y-axis.
     TextRow {
         x: f32,
         y: f32,
         items: Vec<TextRowItem>,
         gap: f32,
-        align: String,
+        #[serde(default)]
+        align: TextAlign,
     },
 
     /// Render markdown text using the host's `egui_commonmark` renderer.
@@ -1502,10 +1526,6 @@ fn default_stroke_width() -> f32 {
     1.0
 }
 
-fn default_text_align() -> String {
-    "top_left".to_string()
-}
-
 fn default_http_method() -> String {
     "GET".to_string()
 }
@@ -1624,7 +1644,7 @@ mod tests {
 
     #[test]
     fn text_drawcommand_with_selectable_round_trips() {
-        let json = r##"{"type":"text","x":1.0,"y":2.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"top_left","max_width":null,"elide":true,"selectable":true}"##;
+        let json = r##"{"type":"text","x":1.0,"y":2.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"left_top","max_width":null,"elide":true,"selectable":true}"##;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             DrawCommand::Render(RenderCommand::Text {
@@ -3037,7 +3057,7 @@ mod tests {
 
     #[test]
     fn layout_command_round_trips_serde() {
-        let json = r##"{"type":"layout","x":10.0,"y":20.0,"direction":"row","gap":6.0,"children":[{"type":"leaf","command":{"type":"badge","x":0.0,"y":0.0,"label":"4 files","fill":"#89b4fa","fg":"#1e1e2e","font_size":11.0,"radius":8.0}},{"type":"leaf","command":{"type":"text","x":0.0,"y":0.0,"text":"modified","size":12.0,"color":"#cdd6f4","monospace":false,"bold":false,"align":"top_left","elide":false,"selectable":false}}]}"##;
+        let json = r##"{"type":"layout","x":10.0,"y":20.0,"direction":"row","gap":6.0,"children":[{"type":"leaf","command":{"type":"badge","x":0.0,"y":0.0,"label":"4 files","fill":"#89b4fa","fg":"#1e1e2e","font_size":11.0,"radius":8.0}},{"type":"leaf","command":{"type":"text","x":0.0,"y":0.0,"text":"modified","size":12.0,"color":"#cdd6f4","monospace":false,"bold":false,"align":"left_top","elide":false,"selectable":false}}]}"##;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise layout command");
         match &cmd {
             DrawCommand::Render(RenderCommand::Layout {
@@ -3264,7 +3284,7 @@ mod tests {
 
     #[test]
     fn text_max_lines_present_round_trips_serde() {
-        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hello","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"top_left","max_width":null,"elide":false,"selectable":false,"max_lines":3}"##;
+        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hello","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"left_top","max_width":null,"elide":false,"selectable":false,"max_lines":3}"##;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             DrawCommand::Render(RenderCommand::Text {
@@ -3280,7 +3300,7 @@ mod tests {
     #[test]
     fn text_max_lines_absent_deserialises_to_none() {
         // max_lines is #[serde(default)] so absence → None, not an error.
-        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"top_left","max_width":null,"elide":false,"selectable":false}"##;
+        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"left_top","max_width":null,"elide":false,"selectable":false}"##;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             DrawCommand::Render(RenderCommand::Text { max_lines, .. }) => {

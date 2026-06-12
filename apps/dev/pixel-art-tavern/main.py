@@ -313,10 +313,10 @@ class TavernApp(App):
         py = floor_y - 100.0
         ctx.rect(px, py, pw, ph, fill="#000000aa", radius=8.0)
         ctx.text(ctx.w / 2, py + 14, "Press Space to start", size=BODY, color=W,
-                 align="top_center", monospace=True, bold=False, elide=False, selectable=False)
+                 align="center_top", monospace=True, bold=False, elide=False, selectable=False)
         ctx.text(ctx.w / 2, py + 14 + BODY + 8, "NPCs will converse via AI",
                  size=CAPTION, color=ctx.theme.muted,
-                 align="top_center", monospace=True, bold=False, elide=False, selectable=False)
+                 align="center_top", monospace=True, bold=False, elide=False, selectable=False)
 
     def _draw_scene(self, ctx: RenderContext, floor_y: float,
                     sprite_w: float, sprite_h: float) -> None:
@@ -364,7 +364,7 @@ class TavernApp(App):
         label = f"{npc.name}"
         tag_y = floor_y + sprite_h + 6.0
         ctx.text(npc.cx, tag_y, label, size=CAPTION, color=npc.color,
-                 align="top_center", bold=True, monospace=True, elide=False, selectable=False)
+                 align="center_top", bold=True, monospace=True, elide=False, selectable=False)
 
     def _draw_speech_bubble(self, ctx: RenderContext, npc: NPC, floor_y: float) -> None:
         max_w = 240.0
