@@ -2,7 +2,7 @@
 
 use super::{ClickFlash, FocusLayer, PlexiApp};
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
-use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
+use egui::{Color32, Vec2};
 use egui_tiles::Tile;
 use std::collections::HashMap;
 
@@ -575,20 +575,8 @@ impl PlexiApp {
                         ui.painter()
                             .rect_filled(panel_rect, 0.0, Color32::from_black_alpha(75));
 
-                        // Inset rect for the zoomed pane
-                        let inset = 10.0;
-                        let zoom_rect = panel_rect.shrink(inset);
-
-                        // Thicker accent border (2px)
-                        ui.painter().rect_stroke(
-                            zoom_rect,
-                            CornerRadius::same(4),
-                            Stroke::new(2.0, self.colors.accent),
-                            StrokeKind::Inside,
-                        );
-
-                        // Render zoomed terminal in the inset rect
-                        let inner_rect = zoom_rect.shrink(2.0); // inside the border
+                        // Zoomed pane fills the full panel — no inset, no border.
+                        let inner_rect = panel_rect;
                         let mut child_ui =
                             ui.new_child(egui::UiBuilder::new().max_rect(inner_rect));
                         // Files dropped onto a zoomed pane must go to the
