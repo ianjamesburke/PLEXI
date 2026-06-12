@@ -13,9 +13,57 @@
 //! noise; everything under `plexi::` logs at the caller-supplied level.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Live log level for plexi-namespace targets. The fern filter reads this on
+/// every record, so `[log] level` changes apply on config reload without a
+/// restart. Third-party targets stay clamped to Warn regardless.
+static PLEXI_LEVEL: AtomicUsize = AtomicUsize::new(log::LevelFilter::Info as usize);
+
+fn plexi_level() -> log::LevelFilter {
+    match PLEXI_LEVEL.load(Ordering::Relaxed) {
+        0 => log::LevelFilter::Off,
+        1 => log::LevelFilter::Error,
+        2 => log::LevelFilter::Warn,
+        3 => log::LevelFilter::Info,
+        4 => log::LevelFilter::Debug,
+        _ => log::LevelFilter::Trace,
+    }
+}
+
+/// Change the live log level for plexi-namespace targets. Returns `true` if
+/// the level actually changed. Safe to call from any thread after `init`.
+pub fn set_level(level: log::LevelFilter) -> bool {
+    let prev = PLEXI_LEVEL.swap(level as usize, Ordering::Relaxed);
+    // Keep the global gate at the cheapest level that still admits both the
+    // plexi level and the third-party Warn clamp.
+    log::set_max_level(level.max(log::LevelFilter::Warn));
+    prev != level as usize
+}
+
+/// Targets that follow the user-configured level: `plexi::*` (the crate is
+/// named `plexi` on every channel — channels only rename the binary) and
+/// `app::<id>` targets emitted by the SDK log bridge. Everything else is
+/// third-party.
+fn is_plexi_target(target: &str) -> bool {
+    ["plexi", "app"].iter().any(|prefix| {
+        target
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with("::"))
+    })
+}
+
+/// Pure record-admission policy: plexi-namespace targets follow
+/// `plexi_level`, third-party targets are clamped to Warn.
+fn log_allowed(target: &str, level: log::Level, plexi_level: log::LevelFilter) -> bool {
+    if is_plexi_target(target) {
+        level <= plexi_level
+    } else {
+        level <= log::Level::Warn
+    }
+}
 
 /// How often the watchdog samples the frame counter. Short enough to catch brief freezes.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
@@ -153,17 +201,15 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
     // Try to open the log file; if it fails, use stderr only.
     let file_result = fern::log_file(&log_file_path);
 
+    PLEXI_LEVEL.store(level as usize, Ordering::Relaxed);
+
     let dispatch = fern::Dispatch::new()
         .format(formatter)
-        // plexi::*, plexi_v3::*, plexi_alpha::* (renamed crate for alpha
-        // builds), and app::<id> targets emitted by the SDK log bridge
-        // all follow the user-configured level. Everything else stays at
-        // Warn so third-party crates don't flood the log.
-        .level(log::LevelFilter::Warn) // default for third-party
-        .level_for("plexi", level)
-        .level_for("plexi_v3", level)
-        .level_for("plexi_alpha", level)
-        .level_for("app", level);
+        // Record admission is dynamic (see `log_allowed`): plexi-namespace
+        // targets follow PLEXI_LEVEL, which `set_level` can change live on
+        // config reload; everything else stays clamped to Warn so
+        // third-party crates don't flood the log.
+        .filter(|meta| log_allowed(meta.target(), meta.level(), plexi_level()));
 
     let dispatch = match file_result {
         Ok(file) => {
@@ -184,6 +230,10 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
 
     if let Err(e) = dispatch.apply() {
         eprintln!("[plexi::logging] failed to install logger: {e}");
+    } else {
+        // With a filter-driven dispatch fern sets the global gate to Trace;
+        // tighten it to the cheapest level that still admits everything.
+        log::set_max_level(level.max(log::LevelFilter::Warn));
     }
 
     // Emit rotation/pruning messages now that the logger is running.
@@ -331,6 +381,80 @@ mod tests {
         assert!(!freeze_verdict(false, Some(true)));
         assert!(!freeze_verdict(false, Some(false)));
         assert!(!freeze_verdict(false, None));
+    }
+
+    /// plexi-namespace targets follow the dynamic level.
+    #[test]
+    fn log_allowed_plexi_targets_follow_dynamic_level() {
+        assert!(log_allowed(
+            "plexi::frame_diag",
+            log::Level::Debug,
+            log::LevelFilter::Debug
+        ));
+        assert!(!log_allowed(
+            "plexi::frame_diag",
+            log::Level::Debug,
+            log::LevelFilter::Info
+        ));
+        assert!(!log_allowed(
+            "plexi::frame_diag",
+            log::Level::Info,
+            log::LevelFilter::Warn
+        ));
+    }
+
+    /// SDK log-bridge targets (`app::<id>`) follow the dynamic level too.
+    #[test]
+    fn log_allowed_app_bridge_targets_follow_dynamic_level() {
+        assert!(log_allowed(
+            "app::logs",
+            log::Level::Info,
+            log::LevelFilter::Info
+        ));
+        assert!(!log_allowed(
+            "app::logs",
+            log::Level::Info,
+            log::LevelFilter::Warn
+        ));
+    }
+
+    /// Third-party targets are clamped to Warn even at debug plexi level.
+    #[test]
+    fn log_allowed_third_party_clamped_to_warn() {
+        assert!(!log_allowed(
+            "wgpu_core::device",
+            log::Level::Info,
+            log::LevelFilter::Debug
+        ));
+        assert!(log_allowed(
+            "wgpu_core::device",
+            log::Level::Warn,
+            log::LevelFilter::Error
+        ));
+    }
+
+    /// Prefix lookalikes (`plexiglass`) are third-party, not plexi-namespace.
+    #[test]
+    fn log_allowed_prefix_lookalike_is_third_party() {
+        assert!(!log_allowed(
+            "plexiglass::foo",
+            log::Level::Info,
+            log::LevelFilter::Debug
+        ));
+        assert!(!log_allowed("appkit", log::Level::Info, log::LevelFilter::Debug));
+    }
+
+    /// set_level reports whether the level actually changed and round-trips
+    /// through the atomic.
+    #[test]
+    fn set_level_round_trips_and_reports_change() {
+        let original = plexi_level();
+        assert!(set_level(log::LevelFilter::Debug) || original == log::LevelFilter::Debug);
+        assert_eq!(plexi_level(), log::LevelFilter::Debug);
+        assert!(!set_level(log::LevelFilter::Debug), "same level is a no-op");
+        assert!(set_level(log::LevelFilter::Error));
+        assert_eq!(plexi_level(), log::LevelFilter::Error);
+        set_level(original);
     }
 
     fn today_plus(days: i64) -> NaiveDate {

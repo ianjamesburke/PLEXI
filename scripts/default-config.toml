@@ -44,7 +44,7 @@ model_high   = "anthropic/claude-fable-5"
 # model_high   = "qwq:32b"
 
 # [log]
-# level = "info"               # error | warn | info | debug
+# level = "info"               # error | warn | info | debug — applies live on save, no restart
 # retention_days = 30
 
 # [keybindings]
