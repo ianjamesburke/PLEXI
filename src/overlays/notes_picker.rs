@@ -511,30 +511,39 @@ impl PlexiApp {
                     });
 
                 ui.add_space(style::SPACE_SM);
-                let hints: Vec<HintGroup> = if renaming {
-                    vec![
+                if renaming {
+                    HintBar::new(&[
                         HintGroup::new(&["\u{21b5}"], "save title"),
                         HintGroup::new(&["esc"], "cancel"),
-                    ]
+                    ])
+                    .show(ui, &colors);
                 } else if filtering {
-                    vec![
+                    HintBar::new(&[
                         HintGroup::new(&["\u{2191}", "\u{2193}"], "navigate"),
                         HintGroup::new(&["\u{21b5}"], "open"),
                         HintGroup::new(&["esc"], "clear search"),
-                    ]
+                    ])
+                    .show(ui, &colors);
                 } else {
-                    vec![
-                        HintGroup::alternatives(&[&["\u{2318}", "j"], &["\u{2318}", "k"]], "navigate"),
+                    // Two rows so the hint bar fits inside the modal width
+                    // instead of stretching it wider than the note rows.
+                    // `s` (open in new pane) still works but is omitted to
+                    // keep the bar scannable. Normal mode consumes bare j/k
+                    // (no text field is focused), so no ⌘ in the hint.
+                    HintBar::new(&[
+                        HintGroup::alternatives(&[&["j"], &["k"]], "navigate"),
                         HintGroup::new(&["\u{21b5}"], "open"),
-                        HintGroup::new(&["s"], "new pane"),
                         HintGroup::new(&["/"], "search"),
                         HintGroup::new(&["r"], "rename"),
+                    ])
+                    .show(ui, &colors);
+                    HintBar::new(&[
                         HintGroup::new(&["t"], "triage"),
                         HintGroup::new(&["x"], "delete"),
                         HintGroup::new(&["esc"], "dismiss"),
-                    ]
-                };
-                HintBar::new(&hints).show(ui, &colors);
+                    ])
+                    .show(ui, &colors);
+                }
             });
 
         // Write back text-field buffers edited inside the closure.
