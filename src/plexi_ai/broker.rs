@@ -55,6 +55,28 @@ pub fn get_pane_snapshot() -> Vec<PaneContext> {
     pane_snapshot().lock().unwrap().clone()
 }
 
+/// One live token delta forwarded through an `AiBrokerRequest::stream_sink`
+/// while the turn is running. Reasoning is carried separately from answer
+/// text so consumers can render a collapsed thinking section.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamDelta {
+    Answer(String),
+    Reasoning(String),
+}
+
+/// Live delta sink: send half of an mpsc channel the broker forwards each
+/// `StreamDelta` into as it arrives (used by the host Assistant for live
+/// streaming). Send failures are ignored — a dropped receiver just means the
+/// consumer stopped listening.
+#[derive(Clone)]
+pub struct StreamSink(pub std::sync::mpsc::Sender<StreamDelta>);
+
+impl std::fmt::Debug for StreamSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StreamSink")
+    }
+}
+
 /// One brokered request — what the routing layer hands to a broker. `app_id`
 /// is required so the ledger can attribute spend per-app.
 #[derive(Debug, Clone)]
@@ -72,6 +94,9 @@ pub struct AiBrokerRequest {
     /// Tool dispatcher snapshot. When `Some`, the broker runs a tool loop
     /// and dispatches any tool calls the model makes.
     pub tool_dispatcher: Option<std::sync::Arc<ToolDispatcher>>,
+    /// Live stream sink. When `Some`, every answer/reasoning delta is
+    /// forwarded as it arrives, before the final `AiBrokerResponse`.
+    pub stream_sink: Option<StreamSink>,
 }
 
 /// Broker outcome. Either `content` is `Some` (success) or `error` is `Some`
@@ -424,8 +449,18 @@ fn run_turn_and_respond(
         // Collect token deltas via on_token callback. We capture into a local
         // Vec per iteration and only keep the final (non-tool-call) turn's deltas.
         let mut turn_deltas: Vec<String> = Vec::new();
-        let turn = turn_loop::run_turn(backend, backend_req, |chunk| {
-            turn_deltas.push(chunk.to_string());
+        let turn = turn_loop::run_turn(backend, backend_req, |delta| match delta {
+            turn_loop::TokenDelta::Answer(chunk) => {
+                turn_deltas.push(chunk.to_string());
+                if let Some(sink) = &request.stream_sink {
+                    let _ = sink.0.send(StreamDelta::Answer(chunk.to_string()));
+                }
+            }
+            turn_loop::TokenDelta::Reasoning(chunk) => {
+                if let Some(sink) = &request.stream_sink {
+                    let _ = sink.0.send(StreamDelta::Reasoning(chunk.to_string()));
+                }
+            }
         });
 
         match turn {
@@ -878,6 +913,7 @@ mod tests {
             workspace_root: None,
             open_panes: vec![],
             tool_dispatcher: None,
+            stream_sink: None,
         });
         assert_eq!(resp.content.as_deref(), Some("response"));
         let seen = broker.seen.lock().unwrap();
@@ -914,6 +950,7 @@ mod tests {
             workspace_root: None,
             open_panes: vec![],
             tool_dispatcher: None,
+            stream_sink: None,
         });
 
         if let Some(v) = orig {
@@ -945,6 +982,7 @@ mod tests {
             workspace_root: None,
             open_panes: vec![],
             tool_dispatcher: None,
+            stream_sink: None,
         });
         assert!(resp.error.is_some());
         assert!(
@@ -976,6 +1014,7 @@ mod tests {
             workspace_root: None,
             open_panes: vec![],
             tool_dispatcher: None,
+            stream_sink: None,
         });
         assert!(resp.error.is_some());
         assert!(

@@ -601,6 +601,7 @@ impl AgentHost {
             workspace_root: Some(self.workspace_root.clone()),
             open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
             tool_dispatcher: Some(dispatcher),
+            stream_sink: None,
         };
         let agent_id = agent.def.id.clone();
         log::info!(

@@ -303,6 +303,18 @@ fn stream_openrouter(
             return;
         }
 
+        // Reasoning delta (models with reasoning enabled stream it separately).
+        if let Some(reasoning) = choice["delta"]["reasoning"].as_str() {
+            if !reasoning.is_empty()
+                && tx
+                    .send(StreamEvent::Reasoning(reasoning.to_string()))
+                    .is_err()
+            {
+                // Receiver dropped — caller cancelled.
+                return;
+            }
+        }
+
         // Text delta
         if let Some(text) = choice["delta"]["content"].as_str() {
             if !text.is_empty() {

@@ -2861,6 +2861,9 @@ impl eframe::App for PlexiApp {
                 Action::OpenSecretsManager => {
                     self.open_secrets_manager();
                 }
+                Action::OpenAssistant => {
+                    self.open_assistant_pane();
+                }
                 Action::RenameContext => {
                     let ctx_idx = self.router.active_idx();
                     self.rename_buffer = self.router.active().name.clone();

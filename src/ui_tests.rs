@@ -266,6 +266,29 @@ impl PlexiUiHarness {
     pub fn push_focused_pane_to_subcontext(&mut self, name: Option<String>) {
         self.with_app_mut(|app| app.push_pane_to_subcontext(name));
     }
+
+    /// Open the host Assistant pane rooted at `workspace_root` — same builtin
+    /// pane path as `open_assistant_pane`, but with an explicit (temp)
+    /// workspace root so test transcripts never land in a real workspace.
+    /// `LiveAiBroker::new(None)` fails fast if a turn is ever dispatched.
+    pub fn open_assistant(&mut self, workspace_root: std::path::PathBuf) {
+        self.with_app_mut(|app| {
+            let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+                std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
+            let assistant: Box<dyn crate::app::app_trait::App> = Box::new(
+                crate::assistant::AssistantApp::new(workspace_root.clone(), broker),
+            );
+            let perms = crate::app::permissions::AppPermissions::builtin();
+            app.open_builtin_app_pane(
+                assistant,
+                perms,
+                workspace_root,
+                None,
+                Some("split_v"),
+                None,
+            );
+        });
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -350,6 +373,32 @@ mod tests {
             "gallery should remain open for screenshot"
         );
         println!("Screenshot saved to /tmp/plexi_host_ui_gallery_trust.png");
+    }
+
+    /// Host Assistant pane smoke: open → step → assert visible (epic Phase D).
+    #[test]
+    fn assistant_pane_opens_and_renders() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
+        h.step();
+        h.open_assistant(ws.path().to_path_buf());
+        h.run_steps(2);
+
+        let assistant_panes = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values()
+                .filter(|p| {
+                    p.as_app()
+                        .map(|a| a.runtime.type_id() == "assistant")
+                        .unwrap_or(false)
+                })
+                .count()
+        });
+        assert_eq!(assistant_panes, 1, "assistant pane should be open");
+        h.save_screenshot("/tmp/plexi_assistant_pane.png")
+            .expect("render failed");
+        println!("Screenshot saved to /tmp/plexi_assistant_pane.png");
     }
 
     #[test]

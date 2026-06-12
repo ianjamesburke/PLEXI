@@ -389,6 +389,7 @@ pub(crate) fn show_prompt_modal(
                                         workspace_root: Some(ws_root_clone),
                                         open_panes,
                                         tool_dispatcher: Some(td),
+                                        stream_sink: None,
                                     });
                                     // Send incremental stream chunks before the final AiResponse.
                                     let n_chunks = resp.stream_deltas.len();

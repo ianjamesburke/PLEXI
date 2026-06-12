@@ -39,6 +39,15 @@ pub struct TurnResult {
     pub tool_calls: Vec<RawToolCall>,
 }
 
+/// One incremental token delta surfaced to the `run_turn` caller. Reasoning
+/// chunks are carried separately from answer text and never accumulate into
+/// `TurnResult::text`.
+#[derive(Debug, Clone, Copy)]
+pub enum TokenDelta<'a> {
+    Answer(&'a str),
+    Reasoning(&'a str),
+}
+
 /// Error variants for a failed turn.
 #[derive(Debug)]
 pub enum TurnError {
@@ -69,12 +78,12 @@ impl std::fmt::Display for TurnError {
 /// objects. Normal user/assistant turns, tool-call assistant turns, and tool
 /// result turns all flow as JSON values.
 ///
-/// `on_token` is called with each text chunk as it arrives. Pass a no-op
-/// closure if streaming is not needed (e.g. in tests).
+/// `on_token` is called with each answer/reasoning chunk as it arrives. Pass
+/// a no-op closure if streaming is not needed (e.g. in tests).
 pub fn run_turn(
     backend: &dyn AiBackend,
     request: AiBackendRequest,
-    mut on_token: impl FnMut(&str),
+    mut on_token: impl FnMut(TokenDelta<'_>),
 ) -> Result<TurnResult, TurnError> {
     let (tx, rx) = mpsc::channel::<StreamEvent>();
 
@@ -91,8 +100,11 @@ pub fn run_turn(
     loop {
         match rx.recv() {
             Ok(StreamEvent::Text(chunk)) => {
-                on_token(&chunk);
+                on_token(TokenDelta::Answer(&chunk));
                 text.push_str(&chunk);
+            }
+            Ok(StreamEvent::Reasoning(chunk)) => {
+                on_token(TokenDelta::Reasoning(&chunk));
             }
             Ok(StreamEvent::ToolCalls(calls)) => {
                 tool_calls = calls;

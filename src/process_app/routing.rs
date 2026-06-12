@@ -1147,6 +1147,7 @@ impl ProcessApp {
                             workspace_root: Some(workspace_root),
                             open_panes,
                             tool_dispatcher: Some(tool_dispatcher),
+                            stream_sink: None,
                         });
                         // Send incremental stream chunks before the final AiResponse
                         // so the app can display tokens as they arrive.

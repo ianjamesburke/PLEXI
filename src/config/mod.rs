@@ -154,6 +154,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "open_config",
     "reload_config",
     "open_secrets_manager",
+    "open_assistant",
     "force_reload_app",
     "toggle_notification_modal",
     "open_scratchpad",
@@ -321,6 +322,7 @@ pub struct KeybindingsConfig {
     pub open_config: Option<String>,
     pub reload_config: Option<String>,
     pub open_secrets_manager: Option<String>,
+    pub open_assistant: Option<String>,
     pub force_reload_app: Option<String>,
     pub toggle_notification_modal: Option<String>,
     pub open_scratchpad: Option<String>,
@@ -384,6 +386,7 @@ impl KeybindingsConfig {
         overlay_field!(open_config);
         overlay_field!(reload_config);
         overlay_field!(open_secrets_manager);
+        overlay_field!(open_assistant);
         overlay_field!(force_reload_app);
         overlay_field!(toggle_notification_modal);
         overlay_field!(open_scratchpad);

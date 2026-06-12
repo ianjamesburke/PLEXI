@@ -91,6 +91,8 @@ pub enum Action {
     OpenConfig,
     /// Open the secrets manager (read-only vault viewer).
     OpenSecretsManager,
+    /// Open (or focus) the host Assistant pane. Bound to Cmd+Ctrl+A.
+    OpenAssistant,
     /// Rename the active context. Bound to Cmd+Shift+R.
     RenameContext,
     /// Toggle the notification panel overlay (Cmd+Shift+A).
@@ -190,6 +192,7 @@ pub struct KeyBindings {
     pub open_config: (egui::Modifiers, egui::Key),
     pub reload_config: (egui::Modifiers, egui::Key),
     pub open_secrets_manager: (egui::Modifiers, egui::Key),
+    pub open_assistant: (egui::Modifiers, egui::Key),
     pub force_reload_app: (egui::Modifiers, egui::Key),
     pub toggle_notification_modal: (egui::Modifiers, egui::Key),
     pub open_scratchpad: (egui::Modifiers, egui::Key),
@@ -283,6 +286,7 @@ impl Default for KeyBindings {
             open_config: (cmd(), egui::Key::Comma),
             reload_config: (cmd_shift(), egui::Key::Comma),
             open_secrets_manager: (cmd_shift(), egui::Key::S),
+            open_assistant: (cmd_ctrl(), egui::Key::A),
             force_reload_app: (cmd_alt(), egui::Key::R),
             toggle_notification_modal: (cmd_shift(), egui::Key::A),
             open_scratchpad: (cmd_shift(), egui::Key::Space),
@@ -463,6 +467,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(open_config, "open_config");
     apply_override!(reload_config, "reload_config");
     apply_override!(open_secrets_manager, "open_secrets_manager");
+    apply_override!(open_assistant, "open_assistant");
     apply_override!(force_reload_app, "force_reload_app");
     apply_override!(toggle_notification_modal, "toggle_notification_modal");
     apply_override!(open_scratchpad, "open_scratchpad");
@@ -518,6 +523,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("open_config", bindings.open_config),
         ("reload_config", bindings.reload_config),
         ("open_secrets_manager", bindings.open_secrets_manager),
+        ("open_assistant", bindings.open_assistant),
         ("force_reload_app", bindings.force_reload_app),
         (
             "toggle_notification_modal",
@@ -925,6 +931,13 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             exact: false,
             context: BindingContext::Normal,
             action: Action::OpenSecretsManager,
+        },
+        BindingEntry {
+            modifiers: b.open_assistant.0,
+            key: b.open_assistant.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::OpenAssistant,
         },
         BindingEntry {
             modifiers: b.force_reload_app.0,
