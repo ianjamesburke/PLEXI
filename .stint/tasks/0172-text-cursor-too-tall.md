@@ -1,11 +1,11 @@
 ---
 id: "0172"
 title: "v1 cleanup: blinking cursor a few px too tall in scratch pad / quick note"
-status: backlog
+status: done
 estimate: "2h"
+completed_at: "2026-06-12T22:27:26Z"
 sprint: "s11"
 blocked_by: []
-blocked_by_gh: []
 gh_issue:
   - "2218"
 area:
@@ -13,6 +13,7 @@ area:
   - "ui/overlays"
 tags: []
 ---
+
 
 ## What
 
