@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from ._constants import BODY
 from ._theme import theme as _sdk_theme
 from ._emitter import _emit, _LOCK
+from ._types import VALID_TEXT_ALIGN as _VALID_ALIGN
 
 if TYPE_CHECKING:
     from ._app import App
@@ -16,12 +17,6 @@ if TYPE_CHECKING:
 
 COMPACT_DEFAULT: float = 280.0
 REGULAR_DEFAULT: float = 480.0
-
-_VALID_ALIGN = frozenset({
-    "left_top", "center_top", "right_top",
-    "left_center", "center_center", "right_center",
-    "left_bottom", "center_bottom", "right_bottom",
-})
 
 # ── RenderContext ──────────────────────────────────────────────────────────────
 

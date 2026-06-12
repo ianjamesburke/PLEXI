@@ -28,7 +28,13 @@ class VideoHandle:
 
 # ── Typed draw command dataclasses (#627) ─────────────────────────────────────
 
-_VALID_TEXT_ALIGN = {"top_left", "center", "top_center", "right"}
+# Canonical text-align vocabulary (#2198). Single source of truth — the host
+# deserializes these as a closed serde enum, so any other value fails the frame.
+VALID_TEXT_ALIGN = frozenset({
+    "left_top", "center_top", "right_top",
+    "left_center", "center_center", "right_center",
+    "left_bottom", "center_bottom", "right_bottom",
+})
 
 
 @dataclass
@@ -58,15 +64,15 @@ class TextCommand:
     color: str
     monospace: bool = False
     bold: bool = False
-    align: str = "top_left"
+    align: str = "left_top"
     max_width: Optional[float] = None
     elide: bool = True
     selectable: bool = False
 
     def __post_init__(self) -> None:
-        if self.align not in _VALID_TEXT_ALIGN:
+        if self.align not in VALID_TEXT_ALIGN:
             raise ValueError(
-                f"TextCommand: align must be one of {sorted(_VALID_TEXT_ALIGN)}, got {self.align!r}"
+                f"TextCommand: align must be one of {sorted(VALID_TEXT_ALIGN)}, got {self.align!r}"
             )
         if self.size <= 0:
             raise ValueError(f"TextCommand: size must be positive, got {self.size}")

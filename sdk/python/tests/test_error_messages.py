@@ -16,6 +16,7 @@ from plexi_sdk.ui import (
     RowChip, Tabs, Grid, render_tree,
 )
 from plexi_sdk._render_context import RenderContext
+from plexi_sdk._types import TextCommand, VALID_TEXT_ALIGN
 from plexi_sdk.widgets.list_view import ListView
 from plexi_sdk.ui import ListItem
 
@@ -107,6 +108,37 @@ def test_ctx_text_rejects_non_number_size():
     ctx = _make_ctx()
     with pytest.raises(TypeError, match="size must be a number"):
         ctx.text(0, 0, "hello", size="big", color="#cdd6f4")
+
+
+# ── Text align vocabulary (#2198) ─────────────────────────────────────────────
+
+
+def test_ctx_text_rejects_legacy_align():
+    ctx = _make_ctx()
+    with pytest.raises(ValueError, match="left_top"):
+        ctx.text(0, 0, "hello", size=14.0, color="#cdd6f4", align="top_left")
+
+
+def test_ctx_text_accepts_all_nine_aligns():
+    ctx = _make_ctx()
+    for align in VALID_TEXT_ALIGN:
+        ctx.text(0, 0, "hello", size=14.0, color="#cdd6f4", align=align)
+
+
+def test_text_command_default_align_is_canonical():
+    cmd = TextCommand(x=0, y=0, text="hi", size=14.0, color="#cdd6f4")
+    assert cmd.align in VALID_TEXT_ALIGN
+
+
+def test_text_command_rejects_legacy_align():
+    with pytest.raises(ValueError, match="align must be one of"):
+        TextCommand(x=0, y=0, text="hi", size=14.0, color="#cdd6f4", align="top_left")
+
+
+def test_text_command_accepts_center_center():
+    cmd = TextCommand(x=0, y=0, text="hi", size=14.0, color="#cdd6f4",
+                      align="center_center")
+    assert cmd.align == "center_center"
 
 
 # ── ctx.render_tree() validation ─────────────────────────────────────────────
