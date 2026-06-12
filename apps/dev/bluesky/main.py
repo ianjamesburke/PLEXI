@@ -398,8 +398,8 @@ class BlueskyApp(App):
             # primary: @handle  secondary: Name · text; stats stay visible in trailing.
             parts = [p for p in [name if name != hand else "", text] if p]
             secondary = "  ·  ".join(parts) if parts else None
-            trailing_parts = [f"like {_fmt_count(likes)}", f"repost {_fmt_count(reposts)}"]
-            if ts:
+            trailing_parts = [] if narrow else [f"like {_fmt_count(likes)}", f"repost {_fmt_count(reposts)}"]
+            if ts and not narrow:
                 trailing_parts.append(ts)
 
             leading = (
@@ -413,7 +413,7 @@ class BlueskyApp(App):
                 primary=f"@{hand}",
                 secondary=secondary,
                 chips=[],
-                trailing="  ".join(trailing_parts),
+                trailing="  ".join(trailing_parts) if trailing_parts else None,
             ).to_dict())
         return rows
 
