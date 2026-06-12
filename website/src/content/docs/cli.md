@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.711"
+verified_version: "0.0.738"
 order: 7
 ---
 
@@ -371,7 +371,9 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `check` | Check a local app with manifest, SDK, and render-size checks |
 | `info` | Show details about an installed app: id, name, version, and available tools |
 | `init` | Create a new app from a template |
-| `validate` | Check a Plexi app directory for errors before publishing or installing |
+| `validate` | Check a Plexi app directory or .plexipkg package for errors before publishing or installing |
+| `inspect` | Show the trust sheet for a local app directory or .plexipkg package |
+| `package` | Build a distributable .plexipkg package from an app directory |
 | `freeze` | Export your currently installed apps as a single TOML snapshot for sharing or backup |
 | `publish` | Publish an app to the Plexi marketplace |
 | `update` | Check installed apps for available updates |
@@ -407,6 +409,7 @@ Local path: `plexi app install ./my-app` — copies the app dir into Plexi's sto
 |---|---|---|---|
 | `<spec_or_path>` | string | no | Source to install: a local path, GitHub spec (github:owner/repo), or bare app id. Omit to install from the workspace pack (.plexi/apps.toml) |
 | `--pack` | string | no | Install from a pack file or 'core' |
+| `--yes` / `-y` | flag | no | Skip the trust-sheet confirmation prompt. Required for non-interactive (scripted) installs — without a terminal the install fails closed instead of proceeding silently |
 
 ### `plexi app uninstall`
 
@@ -459,27 +462,51 @@ Show details about an installed app: id, name, version, and available tools
 
 Create a new app from a template.
 
-Scaffolds the folder structure and files you need to build a Plexi app, then opens it in a split-right pane so you can edit code alongside the running app.
+Scaffolds the folder structure and files you need to build a Plexi app.
 
 By default, the app is placed in your workspace's app directory. If no workspace is detected, pass --global to scaffold into the global registry.
 
-Use --no-open to scaffold without opening.
+Use --open to launch it in a split-right pane after scaffolding.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes |  |
 | `--lang` | string | no | Default: `python`. |
 | `--global` | flag | no | Scaffold into the global app registry instead of the workspace |
-| `--no-open` | flag | no | Scaffold the app without opening it in a pane |
+| `--open` | flag | no | Open the app in a split-right pane after scaffolding |
+| `--no-open` | flag | no | Deprecated compatibility flag. App init no longer opens by default |
 | `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane. Defaults to PLEXI_PANE_ID if set in the environment |
 
 ### `plexi app validate`
 
-Check a Plexi app directory for errors before publishing or installing
+Check a Plexi app directory or .plexipkg package for errors before publishing or installing.
+
+A directory is validated in place. A `.plexipkg` file is extracted to a temp dir with path-safety checks and verified end-to-end: descriptor, content hashes, manifest, entry point, and capability strings.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | no | Path to check (default: current directory) Default: `.`. |
+| `<path>` | string | no | App directory or .plexipkg file to check (default: current directory) Default: `.`. |
+
+### `plexi app inspect`
+
+Show the trust sheet for a local app directory or .plexipkg package.
+
+Validates first (fail-closed), then prints what the app is, what runtime it uses with a blunt trust label, and every capability it declares — the same sheet shown before `plexi app install` proceeds.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | yes | App directory or .plexipkg file to inspect |
+
+### `plexi app package`
+
+Build a distributable .plexipkg package from an app directory.
+
+Validates the directory first (fail-closed), then writes `<id>-<version>.plexipkg` containing the app files plus a generated PACKAGE.toml with per-file sha256 checksums.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | yes | App directory to package |
+| `--out` | string | no | Output file path (default: ./<id>-<version>.plexipkg) |
 
 ### `plexi app freeze`
 
@@ -853,6 +880,8 @@ Each scratchpad session writes a timestamped file to `<config_dir>/notes/`. Use 
 |---|---|
 | `list` | Print paths of all scratchpad notes, newest first |
 | `open` | Open a note picker with fzf in the focused terminal pane |
+| `inbox` | List notes in the inbox with frontmatter context |
+| `process` | Print inbox notes in agent-legible format with configured triage actions |
 
 ### `plexi notes list`
 
@@ -863,6 +892,26 @@ Print paths of all scratchpad notes, newest first
 Open a note picker with fzf in the focused terminal pane.
 
 Requires fzf to be installed. Falls back to printing the notes directory when fzf is not available or PLEXI_SOCKET is not set.
+
+### `plexi notes inbox`
+
+List notes in the inbox with frontmatter context
+
+### `plexi notes process`
+
+Print inbox notes in agent-legible format with configured triage actions
+
+## `plexi note`
+
+Capture a quick note to the inbox.
+
+Writes a timestamped note to `<config_dir>/notes/inbox/` with frontmatter capturing cwd, workspace, and context root. Triage later via Cmd+O, then t.
+
+Example: plexi note "remember to update the docs"
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<text>` | string | yes | Note text to capture |
 
 ## `plexi doctor`
 
