@@ -89,7 +89,7 @@ pub(super) fn app_init_config_dir() -> String {
         .unwrap_or_else(crate::config::workspace_channel_dir)
 }
 
-/// `plexi app init [--lang python|rust] [--global] [--no-open] <name>`
+/// `plexi app init [--lang python|rust] [--global] [--open] <name>`
 ///
 /// Without `--global`: walks up from CWD looking for the nearest workspace
 /// (ancestor with `<channel_dir>/`). If none is found, exits with an error
@@ -98,16 +98,17 @@ pub(super) fn app_init_config_dir() -> String {
 /// With `--global`: scaffolds directly into the global registry
 /// (`~/.plexi-<channel>/apps/<name>/`).
 ///
-/// Auto-opens the app in a split-right pane unless `--no-open` is passed.
+/// Scaffolds without opening by default. `--open` opens the app in a
+/// split-right pane after creating it.
 pub fn app_init(
     name: &str,
     lang: &str,
     global: bool,
-    no_open: bool,
+    open: bool,
     from_pane_id: Option<u64>,
 ) -> i32 {
     if name.is_empty() {
-        eprintln!("Usage: plexi app init [--lang python|rust] [--global] [--no-open] <name>");
+        eprintln!("Usage: plexi app init [--lang python|rust] [--global] [--open] <name>");
         return 1;
     }
 
@@ -195,9 +196,9 @@ pub fn app_init(
                 println!("  plexi app open {}", app_dir.display());
             } else {
                 ensure_plexi_sdk();
-                if !no_open {
+                if open {
                     let path_str = app_dir.to_string_lossy().to_string();
-                    log::info!("app_init: auto-opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
+                    log::info!("app_init: opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
                     let exit_code =
                         super::open_cli(&path_str, &[], Some("split_h"), from_pane_id, None);
                     if exit_code != 0 {
@@ -207,6 +208,10 @@ pub fn app_init(
                         eprintln!("  Open with: plexi app open {}", app_dir.display());
                     }
                 } else {
+                    log::info!(
+                        "app_init: created '{name}' without opening path={}",
+                        app_dir.display()
+                    );
                     println!("  Open with: plexi app open {}", app_dir.display());
                 }
             }

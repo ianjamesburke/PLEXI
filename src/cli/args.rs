@@ -417,14 +417,12 @@ pub enum AppCmd {
     Info { id: String },
     /// Create a new app from a template.
     ///
-    /// Scaffolds the folder structure and files you need to build a Plexi app,
-    /// then opens it in a split-right pane so you can edit code alongside the
-    /// running app.
+    /// Scaffolds the folder structure and files you need to build a Plexi app.
     ///
     /// By default, the app is placed in your workspace's app directory. If no
     /// workspace is detected, pass --global to scaffold into the global registry.
     ///
-    /// Use --no-open to scaffold without opening.
+    /// Use --open to launch it in a split-right pane after scaffolding.
     #[command(after_long_help = r#"APP DEVELOPMENT GUIDE:
 
   Two rendering modes (pick one per app):
@@ -479,8 +477,12 @@ pub enum AppCmd {
         /// Scaffold into the global app registry instead of the workspace
         #[arg(long)]
         global: bool,
-        /// Scaffold the app without opening it in a pane
+        /// Open the app in a split-right pane after scaffolding
+        #[arg(long, conflicts_with = "no_open")]
+        open: bool,
+        /// Deprecated compatibility flag. App init no longer opens by default.
         #[arg(long)]
+        #[arg(hide = true)]
         no_open: bool,
         /// Open the new pane relative to this pane ID instead of the focused pane.
         /// Defaults to PLEXI_PANE_ID if set in the environment.
@@ -1060,7 +1062,7 @@ pub enum AiCmd {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Commands, SecretCmd};
+    use super::{AppCmd, Cli, Commands, SecretCmd};
     use clap::Parser;
 
     #[test]
@@ -1084,5 +1086,47 @@ mod tests {
             panic!("expected secret command");
         };
         assert!(matches!(cmd, SecretCmd::List { global: false }));
+    }
+
+    #[test]
+    fn app_init_does_not_open_by_default() {
+        let cli = Cli::try_parse_from(["plexi", "app", "init", "counter"]).unwrap();
+
+        let Some(Commands::App { cmd }) = cli.command else {
+            panic!("expected app command");
+        };
+        let AppCmd::Init { open, no_open, .. } = cmd else {
+            panic!("expected app init command");
+        };
+        assert!(!open);
+        assert!(!no_open);
+    }
+
+    #[test]
+    fn app_init_open_flag_opts_into_launch() {
+        let cli = Cli::try_parse_from(["plexi", "app", "init", "--open", "counter"]).unwrap();
+
+        let Some(Commands::App { cmd }) = cli.command else {
+            panic!("expected app command");
+        };
+        let AppCmd::Init { open, no_open, .. } = cmd else {
+            panic!("expected app init command");
+        };
+        assert!(open);
+        assert!(!no_open);
+    }
+
+    #[test]
+    fn app_init_accepts_legacy_no_open_flag() {
+        let cli = Cli::try_parse_from(["plexi", "app", "init", "--no-open", "counter"]).unwrap();
+
+        let Some(Commands::App { cmd }) = cli.command else {
+            panic!("expected app command");
+        };
+        let AppCmd::Init { open, no_open, .. } = cmd else {
+            panic!("expected app init command");
+        };
+        assert!(!open);
+        assert!(no_open);
     }
 }

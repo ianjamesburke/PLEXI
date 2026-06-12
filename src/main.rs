@@ -466,13 +466,14 @@ fn main() -> eframe::Result {
                                 name,
                                 lang,
                                 global,
+                                open,
                                 no_open,
                                 from_pane_id,
                             } => std::process::exit(cli::app_init(
                                 &name,
                                 &lang,
                                 global,
-                                no_open,
+                                open && !no_open,
                                 from_pane_id,
                             )),
                             AppCmd::Uninstall { id, yes } => {

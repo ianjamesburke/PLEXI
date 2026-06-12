@@ -195,7 +195,7 @@ plexi validate <path>         # validate a manifest before publishing
 plexi app init my-app
 ```
 
-Creates a Plexi app directory with `manifest.toml` and `main.py`. Inside a workspace it goes under that workspace's channel app directory; outside a workspace, pass `--global` to install into the global app registry. The host injects the SDK at launch.
+Creates a Plexi app directory with `manifest.toml` and `main.py` without opening it. Pass `--open` to launch it in a split-right pane after scaffolding. Inside a workspace it goes under that workspace's channel app directory; outside a workspace, pass `--global` to install into the global app registry. The host injects the SDK at launch.
 
 **Minimal `manifest.toml`:**
 
