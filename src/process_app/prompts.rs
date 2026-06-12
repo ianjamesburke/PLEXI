@@ -95,6 +95,7 @@ pub(crate) fn show_prompt_modal(
     secret_input_buf: &mut String,
     _config_dir: &Path,
     permission_store: &mut crate::app::permissions::PermissionStore,
+    grant_store: &mut crate::broker::GrantStore,
     colors: &crate::ui::theme::Colors,
     deferred_ai_queries: &mut VecDeque<DeferredAiQuery>,
     deferred_gated_requests: &mut Vec<(Capability, AppRequest)>,
@@ -280,6 +281,13 @@ pub(crate) fn show_prompt_modal(
                                     crate::app::permissions::PermissionState::Green,
                                 );
                                 permission_store.save();
+                                grant_store.record_app_capability(
+                                    type_id,
+                                    workspace_root,
+                                    cap,
+                                    crate::broker::Decision::Allow,
+                                );
+                                grant_store.save();
                                 log::info!(
                                     "prompts: granted {} for {} forever in {}",
                                     cap,
@@ -311,6 +319,13 @@ pub(crate) fn show_prompt_modal(
                             crate::app::permissions::PermissionState::Red,
                         );
                         permission_store.save();
+                        grant_store.record_app_capability(
+                            type_id,
+                            workspace_root,
+                            cap,
+                            crate::broker::Decision::Deny,
+                        );
+                        grant_store.save();
                         log::info!(
                             "prompts: denied {} for {} forever in {}",
                             cap,

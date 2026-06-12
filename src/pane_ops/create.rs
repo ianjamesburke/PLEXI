@@ -1123,6 +1123,53 @@ impl PlexiApp {
         self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
+    /// Open (or focus) the host Assistant pane (Phase 1 of
+    /// `docs/prm/assistant-host-app.md`, hidden behind Cmd+Ctrl+A — no menu
+    /// entry yet). One Assistant pane per window: if one already exists it is
+    /// focused and unhidden instead of spawning a duplicate. Conversation
+    /// state is workspace-scoped on disk, so close-then-reopen resumes the
+    /// same conversation.
+    pub(crate) fn open_assistant_pane(&mut self) {
+        let active = self.active_window;
+        // Focus an existing Assistant pane instead of opening a second one.
+        let existing = self.windows[active].panes.iter().find_map(|(id, pane)| {
+            pane.as_app()
+                .filter(|a| a.runtime.type_id() == "assistant")
+                .map(|_| *id)
+        });
+        if let Some(pane_id) = existing {
+            let win = &mut self.windows[active];
+            if let Some(pane) = win.panes.get_mut(&pane_id) {
+                pane.set_hidden(false);
+            }
+            let tile_id = win.tree.tiles.iter().find_map(|(tid, tile)| {
+                matches!(tile, egui_tiles::Tile::Pane(pid) if *pid == pane_id).then_some(*tid)
+            });
+            if let Some(tile_id) = tile_id {
+                win.focused_pane = Some(tile_id);
+            }
+            log::info!("assistant: focused existing pane {pane_id}");
+            return;
+        }
+
+        let workspace_root = crate::config::active_workspace_root()
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        log::info!(
+            "assistant: opening pane for workspace {}",
+            workspace_root.display()
+        );
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
+            crate::plexi_ai::broker::LiveAiBroker::new(self.config.ai.clone()),
+        );
+        let app = Box::new(crate::assistant::AssistantApp::new(
+            workspace_root.clone(),
+            broker,
+            &crate::config::config_dir(),
+        ));
+        let perms = crate::app::permissions::AppPermissions::builtin();
+        self.open_builtin_app_pane(app, perms, workspace_root, None, Some("split_h"), None);
+    }
+
     /// Open a native text-editor pane for scratchpad editing.
     ///
     /// Launches the built-in `text-editor` app pane with the scratchpad file path.

@@ -1934,3 +1934,1206 @@ fn red_capability_flat_denies_without_prompt() {
         "a blocked capability must not defer the request"
     );
 }
+
+// -- Unified permissions broker (docs/prm/permissions-broker.md, Phase A) ---
+
+/// A persisted broker allow record auto-grants a CapabilityRequest without
+/// showing the consent modal — the PGAP capability path resolves through the
+/// unified broker.
+#[test]
+fn capability_request_auto_granted_from_broker_record() {
+    use crate::app_protocol::PlexiEvent;
+    use crate::broker::{Decision, GrantRecord, GrantStore};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+
+    // Seed the pane's broker store with an allow grant for this app+workspace.
+    let ws = std::env::temp_dir();
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        let mut store = GrantStore::default();
+        store.record(GrantRecord::app_capability(
+            "test",
+            &ws,
+            crate::app::permissions::Capability::PanesRead,
+            Decision::Allow,
+        ));
+        proc.grant_store = store;
+    }
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::CapabilityRequest {
+            request_id: "cap-1".to_string(),
+            capability: "panes.read".to_string(),
+        }),
+    );
+    // Drive routing directly via background_tick — frames would flush the
+    // outbound events toward the (absent) subprocess before we can assert.
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        proc.background_tick();
+    }
+
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::CapabilityDecision { request_id, granted: true }
+                if request_id == "cap-1"
+        )),
+        "broker allow record must auto-grant without a modal: {events:?}"
+    );
+    let win = &h.app.windows[0];
+    let Some(Pane::App(app_pane)) = win.panes.get(&pane) else {
+        panic!("expected App pane");
+    };
+    let AppRuntime::Process(ref proc) = app_pane.runtime else {
+        panic!("expected Process runtime");
+    };
+    assert!(
+        proc.pending_prompts.is_empty(),
+        "no consent prompt must be queued for a broker-allowed capability"
+    );
+    assert!(
+        proc.permissions
+            .capabilities
+            .contains(&crate::app::permissions::Capability::PanesRead),
+        "broker allow must populate the in-memory capability set"
+    );
+}
+
+/// A persisted broker deny record auto-denies a CapabilityRequest without
+/// a modal — equivalent of the legacy Red state through the unified broker.
+#[test]
+fn capability_request_auto_denied_from_broker_record() {
+    use crate::app_protocol::PlexiEvent;
+    use crate::broker::{Decision, GrantRecord, GrantStore};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+
+    let ws = std::env::temp_dir();
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        let mut store = GrantStore::default();
+        store.record(GrantRecord::app_capability(
+            "test",
+            &ws,
+            crate::app::permissions::Capability::PanesControl,
+            Decision::Deny,
+        ));
+        proc.grant_store = store;
+    }
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::CapabilityRequest {
+            request_id: "cap-2".to_string(),
+            capability: "panes.control".to_string(),
+        }),
+    );
+    // Drive routing directly via background_tick — frames would flush the
+    // outbound events toward the (absent) subprocess before we can assert.
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        proc.background_tick();
+    }
+
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::CapabilityDecision { request_id, granted: false }
+                if request_id == "cap-2"
+        )),
+        "broker deny record must auto-deny without a modal: {events:?}"
+    );
+    let win = &h.app.windows[0];
+    let Some(Pane::App(app_pane)) = win.panes.get(&pane) else {
+        panic!("expected App pane");
+    };
+    let AppRuntime::Process(ref proc) = app_pane.runtime else {
+        panic!("expected Process runtime");
+    };
+    assert!(
+        proc.pending_prompts.is_empty(),
+        "no consent prompt must be queued for a broker-denied capability"
+    );
+}
+
+/// With no broker record and no legacy state, a CapabilityRequest still asks —
+/// the broker's default fallback is Ask, preserving the consent-modal flow.
+#[test]
+fn capability_request_without_grant_still_prompts() {
+    use crate::process_app::PendingPrompt;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::CapabilityRequest {
+            request_id: "cap-3".to_string(),
+            capability: "fs.write".to_string(),
+        }),
+    );
+    h.run_frames(2);
+
+    let win = &h.app.windows[0];
+    let Some(Pane::App(app_pane)) = win.panes.get(&pane) else {
+        panic!("expected App pane");
+    };
+    let AppRuntime::Process(ref proc) = app_pane.runtime else {
+        panic!("expected Process runtime");
+    };
+    assert!(
+        proc.pending_prompts.iter().any(|p| {
+            matches!(p, PendingPrompt::Capability { capability, .. } if capability == "fs.write")
+        }),
+        "broker Ask fallback must queue the consent modal"
+    );
+}
+
+/// A configured posture deny list auto-denies a CapabilityRequest with no
+/// persisted grant — settings provide actor defaults in the evaluation order.
+#[test]
+fn capability_request_denied_by_posture() {
+    use crate::app_protocol::PlexiEvent;
+    use crate::broker::{Decision, PermissionPosture};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        proc.posture = Some(PermissionPosture {
+            default_posture: Decision::Ask,
+            allow: vec![],
+            ask: vec![],
+            deny: vec!["net.http".to_string()],
+        });
+    }
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::CapabilityRequest {
+            request_id: "cap-4".to_string(),
+            capability: "net.http".to_string(),
+        }),
+    );
+    // Drive routing directly via background_tick — frames would flush the
+    // outbound events toward the (absent) subprocess before we can assert.
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        proc.background_tick();
+    }
+
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::CapabilityDecision { request_id, granted: false }
+                if request_id == "cap-4"
+        )),
+        "posture deny must auto-deny without a modal: {events:?}"
+    );
+}
+
+// -- App events + undo (docs/prm/undo-and-app-events.md, Phase B) -----------
+
+/// Build a minimal valid EmitEvent host command for the declared
+/// `move.played` stream, optionally carrying rollback metadata.
+fn emit_event_cmd(rollback_token: Option<&str>) -> DrawCommand {
+    DrawCommand::Host(AppRequest::EmitEvent {
+        event: "move.played".to_string(),
+        actor: crate::app_protocol::AppEventActor::User,
+        actor_id: None,
+        caused_by: None,
+        summary: "White played e4".to_string(),
+        resource_id: "game-abc".to_string(),
+        resource_scope: Some("game".to_string()),
+        revision_after: "rev-13".to_string(),
+        payload: Some(serde_json::json!({"san": "e4"})),
+        state_ref: Some("chess://game/abc/rev/13".to_string()),
+        revision_before: Some("rev-12".to_string()),
+        rollback_token: rollback_token.map(str::to_string),
+        changed_resources: vec![],
+        suggested_trigger: None,
+    })
+}
+
+fn declare_streams_cmd() -> DrawCommand {
+    DrawCommand::Host(AppRequest::DeclareEventStreams {
+        streams: vec![crate::app_protocol::EventStreamDecl {
+            name: "move.played".to_string(),
+            schema: serde_json::json!({"type": "object"}),
+            description: Some("a chess move".to_string()),
+        }],
+    })
+}
+
+/// A declared + emitted app event enters the host timeline; without rollback
+/// metadata no undo checkpoint is created.
+#[test]
+fn emit_event_enters_host_timeline() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(None));
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+
+    let timeline = proc.app_timeline.lock().unwrap();
+    assert_eq!(timeline.events().len(), 1, "accepted event must be recorded");
+    let rec = &timeline.events()[0];
+    assert_eq!(rec.app_id, "test");
+    assert_eq!(rec.event, "move.played");
+    assert_eq!(rec.summary, "White played e4");
+    assert_eq!(rec.resource_id, "game-abc");
+    assert_eq!(rec.revision_after, "rev-13");
+    assert!(timeline.checkpoints().is_empty(), "no rollback metadata = no checkpoint");
+}
+
+/// EmitEvent with a rollback token also creates an undo checkpoint carrying
+/// the spec's metadata fields.
+#[test]
+fn emit_event_with_rollback_token_creates_checkpoint() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(Some("undo-abc")));
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+
+    let timeline = proc.app_timeline.lock().unwrap();
+    assert_eq!(timeline.checkpoints().len(), 1);
+    let ckpt = &timeline.checkpoints()[0];
+    assert_eq!(ckpt.app_id, "test");
+    assert_eq!(ckpt.rollback_token, "undo-abc");
+    assert_eq!(ckpt.revision_before.as_deref(), Some("rev-12"));
+    assert_eq!(ckpt.revision_after, "rev-13");
+    assert_eq!(ckpt.resource_id, "game-abc");
+    assert_eq!(ckpt.summary, "White played e4");
+}
+
+/// Malformed events (undeclared stream, empty required field) are rejected
+/// and never enter the timeline.
+#[test]
+fn malformed_emit_event_is_rejected() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    // Undeclared stream — no DeclareEventStreams sent.
+    h.inject(pane, emit_event_cmd(None));
+    // Declared, but empty summary.
+    h.inject(pane, declare_streams_cmd());
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::EmitEvent {
+            event: "move.played".to_string(),
+            actor: crate::app_protocol::AppEventActor::App,
+            actor_id: None,
+            caused_by: None,
+            summary: "   ".to_string(),
+            resource_id: "game-abc".to_string(),
+            resource_scope: None,
+            revision_after: "rev-2".to_string(),
+            payload: None,
+            state_ref: None,
+            revision_before: None,
+            rollback_token: None,
+            changed_resources: vec![],
+            suggested_trigger: None,
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let timeline = proc.app_timeline.lock().unwrap();
+    assert!(
+        timeline.events().is_empty(),
+        "malformed events must never enter the timeline"
+    );
+}
+
+/// Full rollback round-trip: broker-allowed request → RollbackVerify to the
+/// app → matching RollbackVerifyResult → RollbackApply, checkpoint marked
+/// rolled back.
+#[test]
+fn rollback_round_trip_applies_on_revision_match() {
+    use crate::app_protocol::PlexiEvent;
+    use crate::broker::{
+        ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, ResourceScope,
+        TargetType,
+    };
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(Some("undo-abc")));
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let ckpt_id = proc.app_timeline.lock().unwrap().checkpoints()[0]
+        .checkpoint_id
+        .clone();
+
+    // Gate: allow grant for rollback on this app.
+    proc.grant_store.record(GrantRecord {
+        actor_type: ActorType::App,
+        actor_id: "test".to_string(),
+        actor_scope: ActorScope::User,
+        workspace_root: None,
+        target_type: TargetType::UndoCheckpoint,
+        target_id: "test".to_string(),
+        resource_scope: ResourceScope::Game,
+        resource_id: None,
+        decision: Decision::Allow,
+        duration: GrantDuration::Session,
+        source: GrantSource::User,
+        created_at: 0,
+        expires_at: None,
+    });
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::RequestRollback {
+            checkpoint_id: ckpt_id.clone(),
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::RollbackVerify { checkpoint_id, expected_revision, .. }
+                if *checkpoint_id == ckpt_id && expected_revision == "rev-13"
+        )),
+        "allowed rollback must dispatch a revision verification: {events:?}"
+    );
+
+    // App confirms it is still at rev-13 → host issues the apply.
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::RollbackVerifyResult {
+            checkpoint_id: ckpt_id.clone(),
+            current_revision: "rev-13".to_string(),
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::RollbackApply { checkpoint_id, rollback_token, .. }
+                if *checkpoint_id == ckpt_id && rollback_token == "undo-abc"
+        )),
+        "revision match must issue RollbackApply: {events:?}"
+    );
+    let proc = h.process_app_mut(pane);
+    assert_eq!(
+        proc.app_timeline.lock().unwrap().checkpoints()[0].status,
+        crate::host::app_timeline::CheckpointStatus::RolledBack
+    );
+}
+
+/// Revision mismatch blocks the rollback: no RollbackApply, checkpoint
+/// marked conflict, and further rollback attempts are refused.
+#[test]
+fn rollback_blocked_on_revision_mismatch() {
+    use crate::app_protocol::PlexiEvent;
+    use crate::broker::{
+        ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, ResourceScope,
+        TargetType,
+    };
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(Some("undo-abc")));
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let ckpt_id = proc.app_timeline.lock().unwrap().checkpoints()[0]
+        .checkpoint_id
+        .clone();
+    proc.grant_store.record(GrantRecord {
+        actor_type: ActorType::App,
+        actor_id: "test".to_string(),
+        actor_scope: ActorScope::User,
+        workspace_root: None,
+        target_type: TargetType::UndoCheckpoint,
+        target_id: "test".to_string(),
+        resource_scope: ResourceScope::Game,
+        resource_id: None,
+        decision: Decision::Allow,
+        duration: GrantDuration::Session,
+        source: GrantSource::User,
+        created_at: 0,
+        expires_at: None,
+    });
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::RequestRollback {
+            checkpoint_id: ckpt_id.clone(),
+        }),
+    );
+    // App has moved on to rev-99 — verification must fail.
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::RollbackVerifyResult {
+            checkpoint_id: ckpt_id.clone(),
+            current_revision: "rev-99".to_string(),
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, PlexiEvent::RollbackApply { .. })),
+        "revision mismatch must never apply: {events:?}"
+    );
+    let proc = h.process_app_mut(pane);
+    assert_eq!(
+        proc.app_timeline.lock().unwrap().checkpoints()[0].status,
+        crate::host::app_timeline::CheckpointStatus::Conflict
+    );
+}
+
+/// Without a broker allow grant, RequestRollback is blocked (default Ask)
+/// and no verification is dispatched.
+#[test]
+fn rollback_without_grant_is_blocked() {
+    use crate::app_protocol::PlexiEvent;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(Some("undo-abc")));
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let ckpt_id = proc.app_timeline.lock().unwrap().checkpoints()[0]
+        .checkpoint_id
+        .clone();
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::RequestRollback {
+            checkpoint_id: ckpt_id,
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, PlexiEvent::RollbackVerify { .. })),
+        "ungated rollback must not dispatch verification: {events:?}"
+    );
+    let proc = h.process_app_mut(pane);
+    assert_eq!(
+        proc.app_timeline.lock().unwrap().checkpoints()[0].status,
+        crate::host::app_timeline::CheckpointStatus::Active,
+        "blocked rollback must leave the checkpoint untouched"
+    );
+}
+
+/// ListUndoCheckpoints returns the app's checkpoints, newest first.
+#[test]
+fn list_undo_checkpoints_responds_with_serialized_records() {
+    use crate::app_protocol::PlexiEvent;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(Some("undo-abc")));
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::ListUndoCheckpoints {
+            request_id: "lc-1".to_string(),
+            app_id: None,
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    let listed = events.iter().find_map(|e| match e {
+        PlexiEvent::UndoCheckpoints { request_id, checkpoints } if request_id == "lc-1" => {
+            Some(checkpoints.clone())
+        }
+        _ => None,
+    });
+    let listed = listed.expect("ListUndoCheckpoints must answer with UndoCheckpoints");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["rollback_token"], "undo-abc");
+    assert_eq!(listed[0]["revision_after"], "rev-13");
+    assert_eq!(listed[0]["status"], "active");
+}
+
+/// Wire subscriptions are broker-gated: without an allow grant the request
+/// is refused; with one, events route to the subscriber pane as
+/// PlexiEvent::AppEvent shaped by the payload mode.
+#[test]
+fn subscribe_app_events_gated_and_delivers() {
+    use crate::app_protocol::{PayloadMode, PlexiEvent, TriggerMode};
+    use crate::broker::{
+        ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, ResourceScope,
+        TargetType,
+    };
+
+    let mut h = HostHarness::new();
+    let publisher = h.add_test_pane();
+    let subscriber = h.add_test_pane();
+
+    // Share one timeline between the two panes and give the subscriber its
+    // own identity.
+    let shared = h.process_app_mut(publisher).app_timeline.clone();
+    {
+        let proc = h.process_app_mut(subscriber);
+        proc.app_timeline = shared;
+        proc.type_id = "agent-app".to_string();
+    }
+
+    h.inject(publisher, declare_streams_cmd());
+    h.process_app_mut(publisher).background_tick();
+
+    let subscribe_cmd = |request_id: &str| {
+        DrawCommand::Host(AppRequest::SubscribeAppEvents {
+            request_id: request_id.to_string(),
+            app_id: "test".to_string(),
+            event_names: vec!["move.played".to_string()],
+            payload_mode: PayloadMode::Summary,
+            trigger_mode: TriggerMode::Conversation,
+            resource_id: None,
+        })
+    };
+
+    // No grant → broker default Ask → refused.
+    h.inject(subscriber, subscribe_cmd("sub-req-1"));
+    h.process_app_mut(subscriber).background_tick();
+    let events = h.effects_drain(subscriber);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::AppEventsSubscribed { request_id, subscription_id: None, error: Some(_) }
+                if request_id == "sub-req-1"
+        )),
+        "ungranted subscription must be refused: {events:?}"
+    );
+
+    // Allow grant for this subscriber on the publisher's stream.
+    h.process_app_mut(subscriber).grant_store.record(GrantRecord {
+        actor_type: ActorType::App,
+        actor_id: "agent-app".to_string(),
+        actor_scope: ActorScope::User,
+        workspace_root: None,
+        target_type: TargetType::AppEventStream,
+        target_id: "test::move.played".to_string(),
+        resource_scope: ResourceScope::Game,
+        resource_id: None,
+        decision: Decision::Allow,
+        duration: GrantDuration::Session,
+        source: GrantSource::User,
+        created_at: 0,
+        expires_at: None,
+    });
+    h.inject(subscriber, subscribe_cmd("sub-req-2"));
+    h.process_app_mut(subscriber).background_tick();
+    let events = h.effects_drain(subscriber);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::AppEventsSubscribed { request_id, subscription_id: Some(_), error: None }
+                if request_id == "sub-req-2"
+        )),
+        "granted subscription must succeed: {events:?}"
+    );
+
+    // Publisher emits — subscriber receives an AppEvent with summary only.
+    h.inject(publisher, emit_event_cmd(None));
+    h.process_app_mut(publisher).background_tick();
+    let proc = h.process_app_mut(subscriber);
+    proc.deliver_subscribed_events();
+    let events = h.effects_drain(subscriber);
+    let delivered = events.iter().find_map(|e| match e {
+        PlexiEvent::AppEvent {
+            app_id,
+            event,
+            trigger_mode,
+            summary,
+            payload,
+            state_ref,
+            ..
+        } => Some((
+            app_id.clone(),
+            event.clone(),
+            *trigger_mode,
+            summary.clone(),
+            payload.clone(),
+            state_ref.clone(),
+        )),
+        _ => None,
+    });
+    let (app_id, event, trigger, summary, payload, state_ref) =
+        delivered.expect("subscribed event must be delivered to the subscriber pane");
+    assert_eq!(app_id, "test");
+    assert_eq!(event, "move.played");
+    assert_eq!(trigger, TriggerMode::Conversation);
+    assert_eq!(summary.as_deref(), Some("White played e4"));
+    assert!(payload.is_none(), "summary mode must not deliver the payload");
+    assert!(state_ref.is_none(), "summary mode must not deliver the state ref");
+}
+
+/// Subscribing to an undeclared stream name is refused before the broker is
+/// even consulted.
+#[test]
+fn subscribe_undeclared_stream_is_refused() {
+    use crate::app_protocol::{PayloadMode, PlexiEvent, TriggerMode};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::SubscribeAppEvents {
+            request_id: "sub-req-x".to_string(),
+            app_id: "test".to_string(),
+            event_names: vec!["never.declared".to_string()],
+            payload_mode: PayloadMode::Full,
+            trigger_mode: TriggerMode::Ambient,
+            resource_id: None,
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::AppEventsSubscribed { request_id, subscription_id: None, error: Some(err) }
+                if request_id == "sub-req-x" && err.contains("never.declared")
+        )),
+        "undeclared stream subscription must be refused: {events:?}"
+    );
+}
+
+// -- Phase C: host agent runtime (docs/prm/chess-agent-poc.md) ---------------
+
+mod agent_runtime {
+    use super::*;
+    use crate::agent::{AgentDefinition, AgentHost};
+    use crate::app_protocol::{AiTool, PlexiEvent};
+    use crate::broker::{
+        ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, ResourceScope,
+        TargetType,
+    };
+    use crate::host::app_timeline::{AppTimeline, EmittedEvent};
+    use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
+    use crate::plexi_ai::tool_dispatch;
+    use std::sync::{Arc, Mutex};
+
+    const CHESS_PANE: u64 = 7001;
+
+    const AGENT_SETTINGS: &str = r#"
+[agent]
+id = "chess-opponent"
+display_name = "Chess Opponent"
+default_tier = "low"
+
+[permissions]
+default_posture = "review"
+allow = ["app.chess.current_state", "app.chess.legal_moves"]
+ask = ["app.chess.make_move", "app.chess.undo_move"]
+
+[[subscriptions]]
+app = "chess"
+events = ["turn.ready", "move.played"]
+payload = "full"
+trigger = "conversation"
+default = "ask"
+"#;
+
+    fn chess_def() -> AgentDefinition {
+        AgentDefinition::parse("You are a chess opponent.", AGENT_SETTINGS).unwrap()
+    }
+
+    fn chess_timeline() -> Arc<Mutex<AppTimeline>> {
+        let mut t = AppTimeline::default();
+        t.declare_streams(
+            "chess",
+            ["turn.ready", "move.played"]
+                .into_iter()
+                .map(|name| crate::app_protocol::EventStreamDecl {
+                    name: name.to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: None,
+                })
+                .collect(),
+        )
+        .unwrap();
+        Arc::new(Mutex::new(t))
+    }
+
+    fn turn_ready() -> EmittedEvent {
+        EmittedEvent {
+            event: "turn.ready".to_string(),
+            actor: crate::app_protocol::AppEventActor::App,
+            actor_id: None,
+            caused_by: None,
+            summary: "black to move in game-1".to_string(),
+            resource_id: "game-1".to_string(),
+            resource_scope: Some("game".to_string()),
+            revision_after: "rev-1".to_string(),
+            payload: Some(serde_json::json!({"legal_moves": ["Nf6", "e5"]})),
+            state_ref: None,
+            revision_before: None,
+            rollback_token: None,
+            changed_resources: vec![],
+            suggested_trigger: None,
+        }
+    }
+
+    fn subscription_grant(event: &str) -> GrantRecord {
+        GrantRecord {
+            actor_type: ActorType::Agent,
+            actor_id: "chess-opponent".to_string(),
+            actor_scope: ActorScope::Workspace,
+            workspace_root: None,
+            target_type: TargetType::AppEventStream,
+            target_id: format!("chess::{event}"),
+            resource_scope: ResourceScope::Game,
+            resource_id: None,
+            decision: Decision::Allow,
+            duration: GrantDuration::Session,
+            source: GrantSource::User,
+            created_at: 0,
+            expires_at: None,
+        }
+    }
+
+    fn make_move_grant() -> GrantRecord {
+        GrantRecord {
+            actor_type: ActorType::Agent,
+            actor_id: "chess-opponent".to_string(),
+            actor_scope: ActorScope::Workspace,
+            workspace_root: None,
+            target_type: TargetType::AppConnector,
+            target_id: "app.chess.make_move".to_string(),
+            resource_scope: ResourceScope::Game,
+            resource_id: Some("game-1".to_string()),
+            decision: Decision::Allow,
+            duration: GrantDuration::Session,
+            source: GrantSource::User,
+            created_at: 0,
+            expires_at: None,
+        }
+    }
+
+    fn chess_tools() -> Vec<AiTool> {
+        ["chess.current_state", "chess.legal_moves", "chess.make_move"]
+            .into_iter()
+            .map(|name| AiTool {
+                name: name.to_string(),
+                description: format!("test {name}"),
+                input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                timeout_ms: Some(2_000),
+            })
+            .collect()
+    }
+
+    /// Register the chess tools and spawn a thread acting as the chess app:
+    /// it answers `ToolCall`s for `chess.make_move` with the spec's output
+    /// shape and records the resulting reversible `move.played` event on the
+    /// shared timeline (what the real app's emit_event would do).
+    fn register_chess_app(timeline: Arc<Mutex<AppTimeline>>, workspace: std::path::PathBuf) {
+        let (tx, rx) = std::sync::mpsc::channel::<crate::process_app::StdinItem>();
+        tool_dispatch::register(
+            CHESS_PANE,
+            chess_tools(),
+            tool_dispatch::AppEventSender { tx },
+            workspace,
+        );
+        std::thread::spawn(move || {
+            while let Ok(item) = rx.recv() {
+                let crate::process_app::StdinItem::Event(json) = item else {
+                    continue;
+                };
+                let Ok(ev) = serde_json::from_str::<PlexiEvent>(&json) else {
+                    continue;
+                };
+                if let PlexiEvent::ToolCall { call_id, name, .. } = ev {
+                    assert_eq!(name, "chess.make_move");
+                    // The app validates and applies the move…
+                    let mut move_played = turn_ready();
+                    move_played.event = "move.played".to_string();
+                    move_played.actor = crate::app_protocol::AppEventActor::Agent;
+                    move_played.summary = "Black played Nf6".to_string();
+                    move_played.revision_before = Some("rev-1".to_string());
+                    move_played.revision_after = "rev-2".to_string();
+                    move_played.rollback_token = Some("move-2".to_string());
+                    timeline
+                        .lock()
+                        .unwrap()
+                        .record_event("chess", CHESS_PANE, move_played)
+                        .expect("app's move.played must be accepted");
+                    // …and answers the tool call with the spec output shape.
+                    tool_dispatch::resolve_pending(
+                        &call_id,
+                        tool_dispatch::ToolCallResult {
+                            output_json: Some(
+                                serde_json::json!({
+                                    "ok": true,
+                                    "summary": "Black played Nf6",
+                                    "revision_before": "rev-1",
+                                    "revision_after": "rev-2",
+                                    "rollback_token": "move-2",
+                                    "changed_resources": ["game-1"],
+                                })
+                                .to_string(),
+                            ),
+                            error: None,
+                        },
+                    );
+                }
+            }
+        });
+    }
+
+    /// Mock model: calls `chess.make_move` through the gated dispatcher when
+    /// it is visible, otherwise replies with commentary only.
+    struct MoveMakingBroker;
+
+    impl AiBroker for MoveMakingBroker {
+        fn dispatch(
+            &self,
+            request: AiBrokerRequest,
+            _on_delta: &mut dyn FnMut(crate::plexi_ai::turn_loop::TurnDelta<'_>),
+        ) -> AiBrokerResponse {
+            let dispatcher = request
+                .tool_dispatcher
+                .as_ref()
+                .expect("agent turns must carry a tool dispatcher");
+            let visible: Vec<String> =
+                dispatcher.all_tools().into_iter().map(|t| t.name).collect();
+            if visible.iter().any(|n| n == "chess.make_move") {
+                let result = dispatcher.dispatch_call(
+                    "call-1".to_string(),
+                    "chess.make_move",
+                    serde_json::json!({"game_id": "game-1", "move": "Nf6", "notation": "san"})
+                        .to_string(),
+                );
+                assert!(
+                    result.error.is_none(),
+                    "granted make_move must dispatch: {:?}",
+                    result.error
+                );
+                AiBrokerResponse::ok("I play Nf6.".to_string(), 1, 1)
+            } else {
+                // Denied: prove invocation is blocked too, not just hidden.
+                let result = dispatcher.dispatch_call(
+                    "call-x".to_string(),
+                    "chess.make_move",
+                    "{}".to_string(),
+                );
+                assert!(
+                    result
+                        .error
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("tool_not_found"),
+                    "denied tool must be uninvocable: {result:?}"
+                );
+                AiBrokerResponse::ok(
+                    "A fine position. I would play Nf6, but I am not allowed to move."
+                        .to_string(),
+                    1,
+                    1,
+                )
+            }
+        }
+    }
+
+    fn wait_for_agent_reply(host: &mut AgentHost) -> Vec<crate::agent::TranscriptEntry> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            host.tick();
+            let agent = &host.agents[0];
+            if agent.transcript.iter().any(|e| e.role == "agent" || e.role == "error") {
+                return agent.transcript.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for agent reply; transcript: {:?}",
+                agent.transcript
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// End-to-end happy path: turn.ready delivery → conversation turn →
+    /// mocked model calls chess.make_move → broker allows → app applies and
+    /// emits move.played → checkpoint exists → reply lands in the transcript.
+    #[test]
+    fn agent_turn_makes_granted_move_and_checkpoints() {
+        // Each test gets its own workspace dir — the tool registry is a
+        // process-global filtered by workspace, and tests run in parallel.
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        register_chess_app(Arc::clone(&timeline), ws.path().to_path_buf());
+        let mut host = AgentHost::new_for_test(
+            Arc::clone(&timeline),
+            Arc::new(MoveMakingBroker),
+            ws.path().to_path_buf(),
+        );
+        host.grant_store.record(subscription_grant("turn.ready"));
+        host.grant_store.record(subscription_grant("move.played"));
+        host.grant_store.record(make_move_grant());
+        host.attach(chess_def());
+        assert_eq!(
+            host.agents[0].subscription_ids.len(),
+            1,
+            "granted subscription must be created"
+        );
+
+        // The chess app emits turn.ready → queued for the agent.
+        let outcome = timeline
+            .lock()
+            .unwrap()
+            .record_event("chess", CHESS_PANE, turn_ready())
+            .unwrap();
+        assert_eq!(outcome.deliveries_queued, 1);
+
+        let transcript = wait_for_agent_reply(&mut host);
+        assert!(
+            transcript
+                .iter()
+                .any(|e| e.role == "event" && e.text.contains("turn.ready")),
+            "injected event must be in the transcript: {transcript:?}"
+        );
+        assert!(
+            transcript
+                .iter()
+                .any(|e| e.role == "agent" && e.text == "I play Nf6."),
+            "agent reply must land in the transcript: {transcript:?}"
+        );
+
+        let t = timeline.lock().unwrap();
+        assert!(
+            t.events().iter().any(|e| e.event == "move.played"),
+            "the app must have applied the move"
+        );
+        assert_eq!(t.checkpoints().len(), 1, "reversible move must checkpoint");
+        assert_eq!(t.checkpoints()[0].rollback_token, "move-2");
+
+        tool_dispatch::unregister(CHESS_PANE);
+    }
+
+    /// Denied `chess.make_move` (posture ask, no user grant): the agent can
+    /// comment but the tool is invisible and uninvocable — no move, no
+    /// checkpoint.
+    #[test]
+    fn denied_make_move_lets_agent_comment_but_not_move() {
+        const PANE: u64 = 7002;
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        // Register tools on a different pane id with no app thread — a
+        // dispatch attempt would time out, but the broker gate must prevent
+        // it from ever being sent.
+        let (tx, _rx) = std::sync::mpsc::channel::<crate::process_app::StdinItem>();
+        tool_dispatch::register(
+            PANE,
+            chess_tools(),
+            tool_dispatch::AppEventSender { tx },
+            ws.path().to_path_buf(),
+        );
+
+        let mut host = AgentHost::new_for_test(
+            Arc::clone(&timeline),
+            Arc::new(MoveMakingBroker),
+            ws.path().to_path_buf(),
+        );
+        host.grant_store.record(subscription_grant("turn.ready"));
+        host.grant_store.record(subscription_grant("move.played"));
+        // No make_move grant — the settings put it in `ask`.
+        host.attach(chess_def());
+
+        timeline
+            .lock()
+            .unwrap()
+            .record_event("chess", PANE, turn_ready())
+            .unwrap();
+
+        let transcript = wait_for_agent_reply(&mut host);
+        assert!(
+            transcript
+                .iter()
+                .any(|e| e.role == "agent" && e.text.contains("not allowed to move")),
+            "agent must still be able to comment: {transcript:?}"
+        );
+        let t = timeline.lock().unwrap();
+        assert!(
+            !t.events().iter().any(|e| e.event == "move.played"),
+            "denied make_move must not produce a move"
+        );
+        assert!(t.checkpoints().is_empty());
+
+        tool_dispatch::unregister(PANE);
+    }
+
+    /// Denied subscription: no grant records → attach creates no
+    /// subscription → emitted events are never delivered to the agent.
+    #[test]
+    fn denied_subscription_means_agent_sees_nothing() {
+        let timeline = chess_timeline();
+        let mut host = AgentHost::new_for_test(
+            Arc::clone(&timeline),
+            Arc::new(MoveMakingBroker),
+            std::env::temp_dir(),
+        );
+        host.attach(chess_def());
+        assert!(
+            host.agents[0].subscription_ids.is_empty(),
+            "ungranted subscription must not be created"
+        );
+
+        let outcome = timeline
+            .lock()
+            .unwrap()
+            .record_event("chess", CHESS_PANE, turn_ready())
+            .unwrap();
+        assert_eq!(outcome.deliveries_queued, 0, "no subscription = no delivery");
+
+        host.tick();
+        assert!(
+            host.agents[0].transcript.is_empty(),
+            "agent must see nothing without a subscription grant"
+        );
+        assert!(!host.turns_in_flight());
+    }
+
+    /// Cross-pane rollback (Phase B's deferred seam): another pane's
+    /// RequestRollback for a chess checkpoint routes RollbackVerify to the
+    /// chess pane through the tool registry sender.
+    #[test]
+    fn cross_pane_rollback_routes_verify_to_owning_pane() {
+        const PANE: u64 = 7003;
+        let mut h = HostHarness::new();
+        let requester = h.add_test_pane();
+        let timeline = h.process_app_mut(requester).app_timeline.clone();
+
+        // Chess app: declared stream + reversible event recorded from PANE,
+        // reachable through the registry.
+        timeline
+            .lock()
+            .unwrap()
+            .declare_streams(
+                "chess",
+                vec![crate::app_protocol::EventStreamDecl {
+                    name: "move.played".to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: None,
+                }],
+            )
+            .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<crate::process_app::StdinItem>();
+        tool_dispatch::register(
+            PANE,
+            chess_tools(),
+            tool_dispatch::AppEventSender { tx },
+            std::env::temp_dir(),
+        );
+        let mut reversible = turn_ready();
+        reversible.event = "move.played".to_string();
+        reversible.rollback_token = Some("move-1".to_string());
+        reversible.revision_before = Some("rev-0".to_string());
+        let ckpt_id = timeline
+            .lock()
+            .unwrap()
+            .record_event("chess", PANE, reversible)
+            .unwrap()
+            .checkpoint_id
+            .unwrap();
+
+        // Allow the requesting app to roll back chess checkpoints.
+        h.process_app_mut(requester).grant_store.record(GrantRecord {
+            actor_type: ActorType::App,
+            actor_id: "test".to_string(),
+            actor_scope: ActorScope::User,
+            workspace_root: None,
+            target_type: TargetType::UndoCheckpoint,
+            target_id: "chess".to_string(),
+            resource_scope: ResourceScope::Game,
+            resource_id: None,
+            decision: Decision::Allow,
+            duration: GrantDuration::Session,
+            source: GrantSource::User,
+            created_at: 0,
+            expires_at: None,
+        });
+
+        h.process_app_mut(requester)
+            .request_rollback(ActorType::App, "test", &ckpt_id)
+            .expect("cross-pane rollback must route through the registry");
+
+        // The verify event must arrive on the chess pane's channel.
+        let verify = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("RollbackVerify must be delivered to the owning pane");
+        let crate::process_app::StdinItem::Event(json) = verify else {
+            panic!("expected an Event item");
+        };
+        let ev: PlexiEvent = serde_json::from_str(&json).unwrap();
+        match ev {
+            PlexiEvent::RollbackVerify {
+                checkpoint_id,
+                expected_revision,
+                ..
+            } => {
+                assert_eq!(checkpoint_id, ckpt_id);
+                assert_eq!(expected_revision, "rev-1");
+            }
+            other => panic!("expected RollbackVerify, got {other:?}"),
+        }
+
+        tool_dispatch::unregister(PANE);
+    }
+}

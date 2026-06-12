@@ -155,6 +155,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "open_config",
     "reload_config",
     "open_secrets_manager",
+    "open_assistant",
     "force_reload_app",
     "toggle_notification_modal",
     "open_scratchpad",
@@ -322,6 +323,7 @@ pub struct KeybindingsConfig {
     pub open_config: Option<String>,
     pub reload_config: Option<String>,
     pub open_secrets_manager: Option<String>,
+    pub open_assistant: Option<String>,
     pub force_reload_app: Option<String>,
     pub toggle_notification_modal: Option<String>,
     pub open_scratchpad: Option<String>,
@@ -385,6 +387,7 @@ impl KeybindingsConfig {
         overlay_field!(open_config);
         overlay_field!(reload_config);
         overlay_field!(open_secrets_manager);
+        overlay_field!(open_assistant);
         overlay_field!(force_reload_app);
         overlay_field!(toggle_notification_modal);
         overlay_field!(open_scratchpad);
@@ -774,12 +777,49 @@ fn channel_suffix_from_basename(basename: &str) -> String {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Per-thread channel override for tests. Tests must use `set_test_channel`
+    /// instead of mutating PLEXI_CHANNEL — env mutation races with parallel
+    /// tests that read channel dirs.
+    static TEST_CHANNEL_OVERRIDE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn test_channel_override() -> Option<String> {
+    TEST_CHANNEL_OVERRIDE.with(|c| c.borrow().clone())
+}
+
+/// RAII guard that clears the per-thread test channel override on drop.
+#[cfg(test)]
+pub struct TestChannelGuard;
+
+#[cfg(test)]
+impl Drop for TestChannelGuard {
+    fn drop(&mut self) {
+        TEST_CHANNEL_OVERRIDE.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// Override the channel for the current test thread. Hold the returned guard
+/// for the duration of the test.
+#[cfg(test)]
+pub fn set_test_channel(channel: &str) -> TestChannelGuard {
+    TEST_CHANNEL_OVERRIDE.with(|c| *c.borrow_mut() = Some(channel.to_string()));
+    TestChannelGuard
+}
+
 /// Returns the workspace channel directory name for the current binary.
 /// This is the dot-prefixed dir used inside workspace roots to scope
 /// workspace state per channel: `.plexi` (main), `.plexi-alpha`, `.plexi-beta`,
 /// `.plexi-pr-N`, etc. This is the single source of truth for workspace
 /// channel dirs — never derive it independently elsewhere.
 pub fn workspace_channel_dir() -> String {
+    #[cfg(test)]
+    if let Some(channel) = test_channel_override() {
+        return format!(".plexi-{channel}");
+    }
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
@@ -804,6 +844,10 @@ pub fn workspace_channel_dir() -> String {
 
 /// Returns the config directory name based on the running binary basename.
 fn config_dir_name() -> String {
+    #[cfg(test)]
+    if let Some(channel) = test_channel_override() {
+        return format!(".plexi-{channel}");
+    }
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
@@ -1423,27 +1467,15 @@ mod tests {
     }
 
     #[test]
-    fn config_dir_name_respects_plexi_channel_env() {
-        let prev = std::env::var("PLEXI_CHANNEL").ok();
-        unsafe { std::env::set_var("PLEXI_CHANNEL", "pr-999") };
-        let result = config_dir_name();
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PLEXI_CHANNEL", v) },
-            None => unsafe { std::env::remove_var("PLEXI_CHANNEL") },
-        }
-        assert_eq!(result, ".plexi-pr-999");
+    fn config_dir_name_respects_test_channel_override() {
+        let _guard = set_test_channel("pr-999");
+        assert_eq!(config_dir_name(), ".plexi-pr-999");
     }
 
     #[test]
-    fn workspace_channel_dir_respects_plexi_channel_env() {
-        let prev = std::env::var("PLEXI_CHANNEL").ok();
-        unsafe { std::env::set_var("PLEXI_CHANNEL", "pr-999") };
-        let result = workspace_channel_dir();
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PLEXI_CHANNEL", v) },
-            None => unsafe { std::env::remove_var("PLEXI_CHANNEL") },
-        }
-        assert_eq!(result, ".plexi-pr-999");
+    fn workspace_channel_dir_respects_test_channel_override() {
+        let _guard = set_test_channel("pr-999");
+        assert_eq!(workspace_channel_dir(), ".plexi-pr-999");
     }
 
     fn write(path: &Path, contents: &str) {

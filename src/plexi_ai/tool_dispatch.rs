@@ -176,6 +176,31 @@ pub(crate) fn unregister(pane_id: u64) {
     global_registry().lock().unwrap().unregister(pane_id);
 }
 
+/// True when `pane_id` has a registry entry (it exposed tools and is still
+/// open) — i.e. host-routed events can reach it.
+pub(crate) fn pane_reachable(pane_id: u64) -> bool {
+    global_registry().lock().unwrap().sender_for(pane_id).is_some()
+}
+
+/// Send a `PlexiEvent` to a registered pane's stdin channel (Phase C: the
+/// host agent runtime delivers cross-pane `RollbackVerify` this way).
+/// Returns false when the pane has no registry entry (closed, or it never
+/// exposed tools).
+pub(crate) fn send_event_to_pane(pane_id: u64, event: &PlexiEvent) -> bool {
+    let registry = global_registry().lock().unwrap();
+    match registry.sender_for(pane_id) {
+        Some(sender) => {
+            log::info!("tool_dispatch: host-routed event to pane {pane_id}");
+            sender.send_event(event);
+            true
+        }
+        None => {
+            log::warn!("tool_dispatch: no registered sender for pane {pane_id} — event dropped");
+            false
+        }
+    }
+}
+
 // ── Pending calls ────────────────────────────────────────────────────────────
 
 /// Result returned to the broker by a completed tool call.
@@ -210,6 +235,24 @@ pub(crate) fn resolve_pending(call_id: &str, result: ToolCallResult) {
     }
 }
 
+// ── ToolCallHooks ────────────────────────────────────────────────────────────
+
+/// Per-call hooks the dispatching actor can install on its `ToolDispatcher`
+/// snapshot (Phase D: the host Assistant gates ask-tier tools through the
+/// permission sheet here). Hooks run on the broker worker thread;
+/// `before_call` may block while a decision is collected on the UI thread.
+/// Callers that install no hooks (PGAP apps, `AgentHost`) are unaffected.
+pub trait ToolCallHooks: Send + Sync {
+    /// Called after the registry lookup, before the call is sent to the
+    /// providing app. `Err(reason)` blocks the call; the reason is returned
+    /// to the model as the tool error.
+    fn before_call(&self, name: &str, input_json: &str) -> Result<(), String>;
+
+    /// Called with the call outcome (`None` = success). Not called when
+    /// `before_call` blocked the call or the tool was not found.
+    fn after_call(&self, name: &str, error: Option<&str>);
+}
+
 // ── ToolDispatcher ──────────────────────────────────────────────────────────
 
 /// Snapshot of the tool registry for one broker invocation. Created by the
@@ -219,15 +262,38 @@ pub(crate) fn resolve_pending(call_id: &str, result: ToolCallResult) {
 /// Only contains tools from panes in the same workspace as the caller — cross-
 /// workspace tools are excluded at construction time and never visible to the
 /// dispatching app or the model it drives.
-#[derive(Debug)]
 pub struct ToolDispatcher {
     /// Snapshot: tool_name → (provider_pane_id, AiTool).
     /// Already filtered to the caller's workspace.
     tools: HashMap<String, (u64, AiTool)>,
+    /// Caller-local host tools (Phase D3: the Assistant's
+    /// `host.events.subscribe`/`unsubscribe`). Dispatched through
+    /// `host_handler`, never sent to a pane. Unaffected by `retain_allowed`
+    /// — the registering caller owns their gating.
+    host_tools: HashMap<String, AiTool>,
+    /// Handler for `host_tools` calls. Runs on the broker worker thread.
+    host_handler: Option<HostToolHandler>,
     /// Caller identity for audit logging.
     caller_app_id: String,
     /// Caller pane id for audit logging.
     caller_pane_id: u64,
+    /// Optional per-call hooks (permission gating + call observation).
+    hooks: Option<Arc<dyn ToolCallHooks>>,
+}
+
+/// Handler for caller-local host tools: `(tool_name, input_json) → result`.
+pub type HostToolHandler = Arc<dyn Fn(&str, &str) -> ToolCallResult + Send + Sync>;
+
+impl std::fmt::Debug for ToolDispatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolDispatcher")
+            .field("tools", &self.tools.keys().collect::<Vec<_>>())
+            .field("host_tools", &self.host_tools.keys().collect::<Vec<_>>())
+            .field("caller_app_id", &self.caller_app_id)
+            .field("caller_pane_id", &self.caller_pane_id)
+            .field("hooks", &self.hooks.is_some())
+            .finish()
+    }
 }
 
 impl ToolDispatcher {
@@ -248,18 +314,123 @@ impl ToolDispatcher {
         );
         Self {
             tools,
+            host_tools: HashMap::new(),
+            host_handler: None,
             caller_app_id,
             caller_pane_id,
+            hooks: None,
         }
+    }
+
+    /// Register caller-local host tools (Phase D3). They are visible in
+    /// `all_tools()` and dispatched through `handler` on the broker worker
+    /// thread — never routed to a pane. Hooks still observe these calls.
+    pub fn add_host_tools(&mut self, tools: Vec<AiTool>, handler: HostToolHandler) {
+        for tool in tools {
+            log::info!(
+                "tool_dispatch: caller={} registered host tool '{}'",
+                self.caller_app_id,
+                tool.name
+            );
+            self.host_tools.insert(tool.name.clone(), tool);
+        }
+        self.host_handler = Some(handler);
+    }
+
+    /// Install per-call hooks (Phase D: the Assistant's ask-gate). Hooks see
+    /// every `dispatch_call` on this snapshot.
+    pub fn set_hooks(&mut self, hooks: Arc<dyn ToolCallHooks>) {
+        self.hooks = Some(hooks);
     }
 
     /// All tools visible at snapshot time, for injection into the LLM request.
     pub fn all_tools(&self) -> Vec<AiTool> {
-        self.tools.values().map(|(_, t)| t.clone()).collect()
+        self.tools
+            .values()
+            .map(|(_, t)| t.clone())
+            .chain(self.host_tools.values().cloned())
+            .collect()
     }
 
-    /// Dispatch a single tool call. Blocks until the app responds or times out.
+    /// Restrict the snapshot to `allowed` tool names (Phase C: the agent
+    /// runtime applies broker `app_connector` decisions here). Removed tools
+    /// are invisible to the model and `dispatch_call` returns
+    /// `tool_not_found` for them — gating both visibility and invocation.
+    pub fn retain_allowed(&mut self, allowed: &std::collections::HashSet<String>) {
+        let before: Vec<String> = self.tools.keys().cloned().collect();
+        self.tools.retain(|name, _| allowed.contains(name));
+        for name in before {
+            if !self.tools.contains_key(&name) {
+                log::info!(
+                    "tool_dispatch: caller={} pane={} — tool '{name}' removed by broker gate",
+                    self.caller_app_id,
+                    self.caller_pane_id
+                );
+            }
+        }
+    }
+
+    /// Dispatch a single tool call. Blocks until the app responds or times
+    /// out. When hooks are installed, `before_call` runs first (and may block
+    /// the call) and `after_call` observes the outcome.
     pub fn dispatch_call(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
+        // Host tools never reach a pane: hooks observe them, the caller's
+        // host handler resolves them in-process.
+        if self.host_tools.contains_key(name) {
+            let Some(handler) = &self.host_handler else {
+                return ToolCallResult {
+                    output_json: None,
+                    error: Some(format!("host_tool_unhandled: no handler for {name:?}")),
+                };
+            };
+            if let Some(hooks) = &self.hooks {
+                if let Err(reason) = hooks.before_call(name, &input_json) {
+                    log::info!(
+                        "tool_dispatch: caller={} — host tool '{name}' blocked by hook: {reason}",
+                        self.caller_app_id
+                    );
+                    return ToolCallResult {
+                        output_json: None,
+                        error: Some(reason),
+                    };
+                }
+            }
+            log::info!(
+                "tool_dispatch: caller={} → host tool {name:?} call_id={call_id:?}",
+                self.caller_app_id
+            );
+            let result = handler(name, &input_json);
+            if let Some(hooks) = &self.hooks {
+                hooks.after_call(name, result.error.as_deref());
+            }
+            return result;
+        }
+        if !self.tools.contains_key(name) {
+            // Fall through to dispatch_inner's tool_not_found path without
+            // invoking hooks for tools the snapshot does not contain.
+            return self.dispatch_inner(call_id, name, input_json);
+        }
+        if let Some(hooks) = &self.hooks {
+            if let Err(reason) = hooks.before_call(name, &input_json) {
+                log::info!(
+                    "tool_dispatch: caller={} pane={} — tool '{name}' blocked by hook: {reason}",
+                    self.caller_app_id,
+                    self.caller_pane_id
+                );
+                return ToolCallResult {
+                    output_json: None,
+                    error: Some(reason),
+                };
+            }
+        }
+        let result = self.dispatch_inner(call_id, name, input_json);
+        if let Some(hooks) = &self.hooks {
+            hooks.after_call(name, result.error.as_deref());
+        }
+        result
+    }
+
+    fn dispatch_inner(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
         let (pane_id, tool) = match self.tools.get(name) {
             Some(entry) => entry,
             None => {
@@ -298,6 +469,7 @@ impl ToolDispatcher {
                     call_id: call_id.clone(),
                     name: name.to_string(),
                     input_json,
+                    caller_id: self.caller_app_id.clone(),
                 });
                 true
             } else {
@@ -493,5 +665,50 @@ mod tests {
 
         // Clean up global registry.
         unregister(999);
+    }
+
+    /// A `before_call` error must block the call and skip `after_call`;
+    /// unknown tools must return `tool_not_found` without invoking hooks.
+    #[test]
+    fn hooks_block_calls_and_skip_unknown_tools() {
+        struct DenyHook;
+        impl ToolCallHooks for DenyHook {
+            fn before_call(&self, _name: &str, _input: &str) -> Result<(), String> {
+                Err("permission_denied: test gate".to_string())
+            }
+            fn after_call(&self, _name: &str, _error: Option<&str>) {
+                panic!("after_call must not run for blocked or unknown calls");
+            }
+        }
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        register(
+            998,
+            vec![make_tool("gated_tool")],
+            AppEventSender { tx },
+            PathBuf::from("/workspace/hooks-test"),
+        );
+        let mut dispatcher = ToolDispatcher::from_registry(
+            2,
+            "agent:assistant".to_string(),
+            PathBuf::from("/workspace/hooks-test"),
+        );
+        dispatcher.set_hooks(Arc::new(DenyHook));
+
+        let blocked = dispatcher.dispatch_call("c1".to_string(), "gated_tool", "{}".to_string());
+        assert!(
+            blocked.error.as_deref().unwrap_or("").contains("permission_denied"),
+            "hook denial must surface as the tool error: {:?}",
+            blocked.error
+        );
+
+        let unknown = dispatcher.dispatch_call("c2".to_string(), "nope", "{}".to_string());
+        assert!(
+            unknown.error.as_deref().unwrap_or("").contains("tool_not_found"),
+            "unknown tool must bypass hooks: {:?}",
+            unknown.error
+        );
+
+        unregister(998);
     }
 }

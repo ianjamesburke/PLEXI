@@ -1210,6 +1210,186 @@ pub enum AppRequest {
         filter: Vec<String>,
         multiple: bool,
     },
+
+    // ── App events + undo (docs/prm/undo-and-app-events.md, Phase B) ─────────
+    /// Declare the named event streams this app may emit on. Event names are
+    /// app-defined but MUST be declared (with a JSON-Schema object) before
+    /// any `EmitEvent` referencing them is accepted. Re-declaring a stream
+    /// replaces its previous declaration.
+    DeclareEventStreams { streams: Vec<EventStreamDecl> },
+
+    /// Emit a semantic app event into the host timeline.
+    ///
+    /// Required: `event` (a declared stream name), `actor`, `summary`,
+    /// `resource_id`, `revision_after`. The host validates these and rejects
+    /// (with a warn log) any event that is malformed or references an
+    /// undeclared stream — rejected events never enter the timeline.
+    ///
+    /// Supplying `rollback_token` marks the mutation reversible: the host
+    /// also creates an undo checkpoint from this event's metadata.
+    EmitEvent {
+        /// Declared stream name, e.g. `"move.played"`.
+        event: String,
+        /// Who caused the state change.
+        actor: AppEventActor,
+        /// Optional stable identity for the actor (e.g. an agent id).
+        /// Defaults to the emitting app's id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor_id: Option<String>,
+        /// Causal identity: the tool caller whose call produced this event
+        /// (e.g. `"agent:chess-opponent"`). The SDK stamps this automatically
+        /// for events emitted while servicing a `ToolCall`. The agent runtime
+        /// uses it to never trigger an agent from its own actions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caused_by: Option<String>,
+        /// One-line human-readable description, e.g. `"White played e4"`.
+        summary: String,
+        /// Document, game, pane, or app-instance id the event is about.
+        resource_id: String,
+        /// Scope class of `resource_id` (`"document"`, `"game"`, `"pane"`…).
+        /// Defaults to `"pane"` (the app instance) when omitted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resource_scope: Option<String>,
+        /// Revision identifier after the change.
+        revision_after: String,
+        /// Structured payload matching the declared stream schema.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<serde_json::Value>,
+        /// Stable reference an authorized subscriber can fetch state from,
+        /// e.g. `"chess://game/abc/rev/13"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_ref: Option<String>,
+        /// Revision identifier before the change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision_before: Option<String>,
+        /// Opaque app token the host returns in `PlexiEvent::RollbackApply`.
+        /// Presence makes this event checkpoint-creating (reversible).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rollback_token: Option<String>,
+        /// Other resource ids touched by this change.
+        #[serde(default)]
+        changed_resources: Vec<String>,
+        /// App's hint for how subscribers should be triggered. The
+        /// subscription's own trigger mode always takes precedence.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        suggested_trigger: Option<TriggerMode>,
+    },
+
+    /// App's answer to `PlexiEvent::RollbackVerify`: the current revision of
+    /// the queried resource. The host compares it against the checkpoint's
+    /// `revision_after` — match → `PlexiEvent::RollbackApply`; mismatch →
+    /// rollback blocked, checkpoint marked conflict.
+    RollbackVerifyResult {
+        checkpoint_id: String,
+        current_revision: String,
+    },
+
+    /// Subscribe this pane to another app's declared event streams. Gated
+    /// through the unified broker (`TargetType::AppEventStream`, one
+    /// evaluation per event name) — the host stamps the subscriber identity
+    /// from the requesting pane; apps cannot subscribe as someone else.
+    /// Phase B wire subscriptions are session-scoped.
+    ///
+    /// Host responds with `PlexiEvent::AppEventsSubscribed`. Matching events
+    /// are then delivered as `PlexiEvent::AppEvent`, shaped per
+    /// `payload_mode` and tagged with the subscription's `trigger_mode`.
+    SubscribeAppEvents {
+        request_id: String,
+        /// Publisher app package identity whose streams are subscribed.
+        app_id: String,
+        /// Declared stream names. Empty = all streams the app declares.
+        #[serde(default)]
+        event_names: Vec<String>,
+        payload_mode: PayloadMode,
+        trigger_mode: TriggerMode,
+        /// Restrict to one resource id; `None` = any resource.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resource_id: Option<String>,
+    },
+
+    /// Remove a subscription previously created by `SubscribeAppEvents`.
+    /// Only the subscriber that owns it may remove it. Fire-and-forget.
+    UnsubscribeAppEvents { subscription_id: String },
+
+    /// List undo checkpoints from the host undo timeline, newest first.
+    /// `app_id` filters to one app; `None` = this app's own checkpoints.
+    /// Host responds with `PlexiEvent::UndoCheckpoints`.
+    ListUndoCheckpoints {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app_id: Option<String>,
+    },
+
+    /// Request rollback of an undo checkpoint. Gated through the unified
+    /// broker (`TargetType::UndoCheckpoint`). On allow, the host starts the
+    /// revision-verification round-trip with the checkpoint's owning app
+    /// (`PlexiEvent::RollbackVerify` → `AppRequest::RollbackVerifyResult` →
+    /// `PlexiEvent::RollbackApply`). Denials and conflicts are logged.
+    RequestRollback { checkpoint_id: String },
+}
+
+/// Who caused an app state change (`AppRequest::EmitEvent`).
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppEventActor {
+    User,
+    Agent,
+    App,
+    System,
+}
+
+impl AppEventActor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Agent => "agent",
+            Self::App => "app",
+            Self::System => "system",
+        }
+    }
+}
+
+/// How an event subscription triggers its subscriber
+/// (docs/prm/undo-and-app-events.md). Also the vocabulary for an emitting
+/// app's `suggested_trigger` hint.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerMode {
+    /// Record the event in the timeline only.
+    Never,
+    /// Inject into the subscriber's context and trigger a visible turn.
+    Conversation,
+    /// Run a bounded tool workflow without a visible chat turn.
+    Ambient,
+    /// Prompt the user before triggering.
+    Ask,
+}
+
+/// How much of an event a subscription delivers
+/// (docs/prm/undo-and-app-events.md).
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PayloadMode {
+    /// Deliver nothing beyond the event name.
+    Off,
+    /// Deliver the summary line only.
+    Summary,
+    /// Deliver the structured payload.
+    Full,
+    /// Deliver the state ref only — the subscriber fetches state itself.
+    StateRef,
+}
+
+/// One declared app event stream (`AppRequest::DeclareEventStreams`).
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct EventStreamDecl {
+    /// Stream name, e.g. `"move.played"`. Must be non-empty.
+    pub name: String,
+    /// JSON Schema (object) describing the event payload.
+    pub schema: serde_json::Value,
+    /// Human-readable description of when this event fires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Inline-handled commands (processed directly in `ui()` or `background_tick()`).

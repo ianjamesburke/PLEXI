@@ -343,6 +343,10 @@ pub struct PlexiApp {
     /// Only overlay-unsafe side effects are held here; safe commands (ShowNotification,
     /// pipes, queries) are dispatched immediately even during overlay ownership.
     pub(crate) overlay_held_cmds: Vec<crate::app::app_trait::AppCommand>,
+    /// Host agent runtime (Phase C, docs/prm/agent-platform.md). Loaded from
+    /// the active workspace's `agents/` dir; ticked once per frame in
+    /// `update()` to consume agent event deliveries and finished turns.
+    pub(crate) agent_host: crate::agent::AgentHost,
 }
 
 #[cfg(test)]
@@ -800,6 +804,7 @@ impl PlexiApp {
                     focus_started_at: None,
                     last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
+                    agent_host: crate::agent::AgentHost::production(config.ai.clone()),
                 };
                 app.apply_context_transition_effects();
                 return app;
@@ -855,6 +860,7 @@ impl PlexiApp {
                 None => (None, None),
             };
 
+        let agent_host = crate::agent::AgentHost::production(config.ai.clone());
         let mut app = Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
@@ -984,6 +990,7 @@ impl PlexiApp {
             focus_started_at: None,
             last_system_theme: None,
             overlay_held_cmds: Vec::new(),
+            agent_host,
         };
         app.apply_context_transition_effects();
         app
@@ -1182,6 +1189,7 @@ impl PlexiApp {
                 focus_started_at: None,
                 last_system_theme: None,
                 overlay_held_cmds: Vec::new(),
+                agent_host: crate::agent::AgentHost::inert(),
             },
             pane_ipc_tx,
         )
@@ -1382,6 +1390,15 @@ impl eframe::App for PlexiApp {
             }
         }
         self.update_preamble(ctx);
+
+        // Host agent runtime (Phase C): consume queued event deliveries and
+        // finished agent turns. Cheap no-op when nothing is pending. While a
+        // turn runs on a worker thread, keep frames coming so its outcome is
+        // collected promptly even when the UI is otherwise idle.
+        self.agent_host.tick();
+        if self.agent_host.turns_in_flight() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
 
         // Unified overlay dispatch: each overlay owns its complete keyboard
         // contract via a `*_handle_key` method that returns `Consumed`, preventing
@@ -2881,6 +2898,9 @@ impl eframe::App for PlexiApp {
                 }
                 Action::OpenSecretsManager => {
                     self.open_secrets_manager();
+                }
+                Action::OpenAssistant => {
+                    self.open_assistant_pane();
                 }
                 Action::RenameContext => {
                     let ctx_idx = self.router.active_idx();

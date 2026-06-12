@@ -1,0 +1,14 @@
+schema_version = 1
+
+[app]
+id = "chess"
+type = "app"
+name = "Chess"
+version = "0.1.0"
+description = "Chess board with agent-playable tools — the agent-platform proof of concept (docs/prm/chess-agent-poc.md). Declares game/move event streams, exposes chess.* tools, and supports host undo checkpoints."
+entry = "chess.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
