@@ -3,10 +3,19 @@ use egui::{Align2, Color32, CornerRadius, Pos2, Response, Stroke, StrokeKind, Ve
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ListRowPips {
+    pub count: usize,
+    pub focused_idx: Option<usize>,
+    pub hidden_indices: Vec<usize>,
+}
+
 pub struct ListRow<'a> {
     body: &'a str,
     secondary: Option<&'a str>,
     chip: Option<&'a str>,
+    metadata_chips: &'a [&'a str],
+    pane_pips: Option<ListRowPips>,
     trailing: Option<&'a str>,
     selected: bool,
     danger_trailing: bool,
@@ -18,6 +27,8 @@ impl<'a> ListRow<'a> {
             body,
             secondary: None,
             chip: None,
+            metadata_chips: &[],
+            pane_pips: None,
             trailing: None,
             selected: false,
             danger_trailing: false,
@@ -31,6 +42,16 @@ impl<'a> ListRow<'a> {
 
     pub fn chip(mut self, label: &'a str) -> Self {
         self.chip = Some(label);
+        self
+    }
+
+    pub fn metadata_chips(mut self, labels: &'a [&'a str]) -> Self {
+        self.metadata_chips = labels;
+        self
+    }
+
+    pub fn pane_pips(mut self, pips: ListRowPips) -> Self {
+        self.pane_pips = Some(pips);
         self
     }
 
@@ -119,12 +140,7 @@ impl<'a> ListRow<'a> {
                 trailing_response
             });
 
-        let text_right = self
-            .trailing
-            .map(|label| {
-                rect.right() - TRAILING_PAD_H - trailing_size(ui, label).x - style::LIST_ROW_GAP
-            })
-            .unwrap_or_else(|| rect.right() - style::LIST_ROW_PAD_H);
+        let text_right = self.text_right(ui, rect);
         // The chip trails the title so every row's title starts at the same
         // x — variable-width leading chips made list starts ragged. Reserve
         // its width out of the primary line's budget only; secondary metadata
@@ -135,21 +151,89 @@ impl<'a> ListRow<'a> {
             .unwrap_or(0.0);
         let primary_max = (text_right - x - chip_reserved).max(0.0);
         let secondary_max = (text_right - x).max(0.0);
-        let (primary_end_x, primary_center_y) =
+        let text_metrics =
             draw_text_block(ui, &self, colors, x, center_y, primary_max, secondary_max);
         if let Some(label) = self.chip {
             draw_chip(
                 ui,
                 label,
                 colors,
-                primary_end_x + style::LIST_ROW_GAP,
-                primary_center_y,
+                text_metrics.primary_end_x + style::LIST_ROW_GAP,
+                text_metrics.primary_center_y,
             );
         }
+        self.draw_metadata(ui, colors, rect, trailing_rect, text_metrics);
 
         ListRowResponse {
             row: response,
             trailing: trailing_response,
+        }
+    }
+
+    fn action_left(&self, ui: &egui::Ui, rect: egui::Rect) -> f32 {
+        self.trailing
+            .map(|label| rect.right() - TRAILING_PAD_H - trailing_size(ui, label).x)
+            .unwrap_or_else(|| rect.right() - style::LIST_ROW_PAD_H)
+    }
+
+    fn text_right(&self, ui: &egui::Ui, rect: egui::Rect) -> f32 {
+        let action_left = self.action_left(ui, rect);
+        let has_trailing = self.trailing.is_some();
+        let metadata_width = self.metadata_lane_width(ui);
+        if metadata_width > 0.0 {
+            action_left - style::LIST_ROW_GAP - metadata_width - style::LIST_ROW_GAP
+        } else if has_trailing {
+            action_left - style::LIST_ROW_GAP
+        } else {
+            action_left
+        }
+    }
+
+    fn metadata_lane_width(&self, ui: &egui::Ui) -> f32 {
+        let chip_width = metadata_chip_row_width(ui, self.metadata_chips);
+        let pip_width = self
+            .pane_pips
+            .as_ref()
+            .map(|pips| pane_pips_width(pips.count))
+            .unwrap_or(0.0);
+        chip_width.max(pip_width)
+    }
+
+    fn draw_metadata(
+        &self,
+        ui: &egui::Ui,
+        colors: &Colors,
+        rect: egui::Rect,
+        trailing_rect: Option<egui::Rect>,
+        text_metrics: TextBlockMetrics,
+    ) {
+        let lane_width = self.metadata_lane_width(ui);
+        if lane_width <= 0.0 {
+            return;
+        }
+        let action_left = trailing_rect
+            .map(|r| r.left())
+            .unwrap_or_else(|| rect.right() - style::LIST_ROW_PAD_H);
+        let lane_right = action_left - style::LIST_ROW_GAP;
+        let lane_left = lane_right - lane_width;
+
+        let has_compact_pips =
+            self.pane_pips.is_some() && text_metrics.secondary_center_y.is_none();
+        let chip_center_y = if has_compact_pips {
+            text_metrics.primary_center_y - COMPACT_METADATA_CHIP_OFFSET_Y
+        } else {
+            text_metrics.primary_center_y
+        };
+
+        if !self.metadata_chips.is_empty() {
+            draw_chip_row(ui, self.metadata_chips, colors, lane_right, chip_center_y);
+        }
+
+        if let Some(pips) = &self.pane_pips {
+            let center_y = text_metrics
+                .secondary_center_y
+                .unwrap_or(text_metrics.primary_center_y + COMPACT_METADATA_PIP_OFFSET_Y);
+            draw_pips(ui, pips, colors, lane_left, lane_right, center_y);
         }
     }
 }
@@ -192,7 +276,7 @@ fn draw_text_block(
     center_y: f32,
     primary_max: f32,
     secondary_max: f32,
-) -> (f32, f32) {
+) -> TextBlockMetrics {
     // Primary is always full-strength — selection is conveyed by the accent
     // rail and tint, not by dimming unselected titles into the metadata.
     let primary_color = colors.text_primary;
@@ -211,21 +295,34 @@ fn draw_text_block(
             colors.text_dim,
             secondary_max,
         );
-        let total_h = primary_size.y + 2.0 + secondary_galley.size().y;
+        let secondary_h = secondary_galley.size().y;
+        let total_h = primary_size.y + 2.0 + secondary_h;
         let primary_pos = Pos2::new(x, center_y - total_h / 2.0);
         let secondary_pos = Pos2::new(x, primary_pos.y + primary_size.y + 2.0);
         ui.painter().galley(primary_pos, primary, primary_color);
         ui.painter()
             .galley(secondary_pos, secondary_galley, colors.text_dim);
-        (
-            primary_pos.x + primary_size.x,
-            primary_pos.y + primary_size.y / 2.0,
-        )
+        TextBlockMetrics {
+            primary_end_x: primary_pos.x + primary_size.x,
+            primary_center_y: primary_pos.y + primary_size.y / 2.0,
+            secondary_center_y: Some(secondary_pos.y + secondary_h / 2.0),
+        }
     } else {
         let pos = Pos2::new(x, center_y - primary_size.y / 2.0);
         ui.painter().galley(pos, primary, primary_color);
-        (pos.x + primary_size.x, center_y)
+        TextBlockMetrics {
+            primary_end_x: pos.x + primary_size.x,
+            primary_center_y: center_y,
+            secondary_center_y: None,
+        }
     }
+}
+
+#[derive(Clone, Copy)]
+struct TextBlockMetrics {
+    primary_end_x: f32,
+    primary_center_y: f32,
+    secondary_center_y: Option<f32>,
 }
 
 fn elided_galley(
@@ -368,6 +465,94 @@ fn draw_chip(ui: &egui::Ui, label: &str, colors: &Colors, x: f32, center_y: f32)
     );
 }
 
+fn metadata_chip_row_width(ui: &egui::Ui, labels: &[&str]) -> f32 {
+    if labels.is_empty() {
+        return 0.0;
+    }
+    labels
+        .iter()
+        .map(|label| chip_size(ui, label).x)
+        .sum::<f32>()
+        + style::SPACE_XS * labels.len().saturating_sub(1) as f32
+}
+
+fn draw_chip_row(ui: &egui::Ui, labels: &[&str], colors: &Colors, right: f32, center_y: f32) {
+    let total_w = metadata_chip_row_width(ui, labels);
+    let mut x = right - total_w;
+    for label in labels {
+        draw_chip(ui, label, colors, x, center_y);
+        x += chip_size(ui, label).x + style::SPACE_XS;
+    }
+}
+
+const PANE_PIP_RADIUS: f32 = 3.0;
+const PANE_PIP_SPACING: f32 = 9.0;
+const PANE_PIP_MAX: usize = 8;
+const COMPACT_METADATA_CHIP_OFFSET_Y: f32 = 10.0;
+const COMPACT_METADATA_PIP_OFFSET_Y: f32 = 10.0;
+
+fn pane_pips_width(count: usize) -> f32 {
+    if count == 0 {
+        return 0.0;
+    }
+    let capped = count.min(PANE_PIP_MAX);
+    let base = (capped.saturating_sub(1) as f32) * PANE_PIP_SPACING + PANE_PIP_RADIUS * 2.0;
+    if count > PANE_PIP_MAX {
+        base + style::SPACE_XS + 16.0
+    } else {
+        base
+    }
+}
+
+fn draw_pips(
+    ui: &egui::Ui,
+    pips: &ListRowPips,
+    colors: &Colors,
+    lane_left: f32,
+    lane_right: f32,
+    center_y: f32,
+) {
+    if pips.count == 0 {
+        return;
+    }
+    let width = pane_pips_width(pips.count);
+    let start_x = (lane_right - width).max(lane_left);
+    let capped = pips.count.min(PANE_PIP_MAX);
+    for dot_i in 0..capped {
+        let center = Pos2::new(
+            start_x + PANE_PIP_RADIUS + dot_i as f32 * PANE_PIP_SPACING,
+            center_y,
+        );
+        let hidden = pips.hidden_indices.contains(&dot_i);
+        let color = if pips.focused_idx == Some(dot_i) {
+            colors.accent
+        } else {
+            colors.text_dim.gamma_multiply(0.45)
+        };
+        if hidden {
+            ui.painter()
+                .circle_stroke(center, PANE_PIP_RADIUS, Stroke::new(1.0, color));
+        } else {
+            ui.painter().circle_filled(center, PANE_PIP_RADIUS, color);
+        }
+    }
+    if pips.count > PANE_PIP_MAX {
+        let overflow_x = start_x + PANE_PIP_RADIUS + capped as f32 * PANE_PIP_SPACING;
+        let overflow_color = if pips.focused_idx.is_some_and(|idx| idx >= PANE_PIP_MAX) {
+            colors.accent
+        } else {
+            colors.text_dim.gamma_multiply(0.55)
+        };
+        ui.painter().text(
+            Pos2::new(overflow_x, center_y),
+            Align2::LEFT_CENTER,
+            format!("+{}", pips.count - PANE_PIP_MAX),
+            egui::FontId::proportional(style::TEXT_HINT),
+            overflow_color,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,7 +563,65 @@ mod tests {
         assert_eq!(row.body, "note");
         assert!(row.secondary.is_none());
         assert_eq!(row.chip, Some("app"));
+        assert!(row.metadata_chips.is_empty());
         assert!(!row.selected);
+    }
+
+    #[test]
+    fn trailing_metadata_reserves_text_width() {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            let row_rect =
+                egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(240.0, style::LIST_ROW_H));
+            let plain = ListRow::new("Assistant").secondary("Long app description");
+            let metadata = ListRow::new("Assistant")
+                .secondary("Long app description")
+                .metadata_chips(&["app", "ws"]);
+
+            assert!(
+                metadata.text_right(ui, row_rect) < plain.text_right(ui, row_rect),
+                "metadata lane must reduce the text area so secondary text truncates before chips"
+            );
+        });
+        let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn pane_pips_reserve_the_metadata_lane() {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            let row_rect =
+                egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(240.0, style::LIST_ROW_H));
+            let row = ListRow::new("Workspace").pane_pips(ListRowPips {
+                count: 3,
+                focused_idx: Some(1),
+                hidden_indices: vec![2],
+            });
+
+            assert!(row.metadata_lane_width(ui) > 0.0);
+            assert!(row.text_right(ui, row_rect) < row_rect.right() - style::LIST_ROW_PAD_H);
+        });
+        let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn compact_metadata_keeps_pips_padded_below_chip() {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            let primary_center_y = style::LIST_ROW_H / 2.0;
+            let chip_bottom =
+                primary_center_y - COMPACT_METADATA_CHIP_OFFSET_Y + chip_size(ui, "ctx").y / 2.0;
+            let pip_top = primary_center_y + COMPACT_METADATA_PIP_OFFSET_Y - PANE_PIP_RADIUS;
+
+            assert!(
+                pip_top - chip_bottom >= style::SPACE_SM,
+                "compact metadata pips need visible padding below the chip"
+            );
+        });
+        let _ = ctx.end_pass();
     }
 
     #[test]
