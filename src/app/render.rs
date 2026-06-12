@@ -620,10 +620,18 @@ impl PlexiApp {
                                 inner_rect.min,
                                 egui::vec2(inner_rect.width(), NAME_BAR_HEIGHT),
                             );
-                            child_ui.painter().rect_filled(bar_rect, 0.0, self.colors.terminal_bg);
+                            // Paint via the parent `ui` painter at full opacity —
+                            // the explicit pane_header_bg() tone must match the
+                            // tiled name bar exactly, so it must not be dimmed by
+                            // the zoom overlay's 0.88-opacity child_ui.
+                            ui.painter().rect_filled(
+                                bar_rect,
+                                0.0,
+                                self.colors.pane_header_bg(),
+                            );
                             if let Some((active_idx, count)) = zoomed_tab_info {
                                 crate::spatial::tiling::paint_tab_dots(
-                                    child_ui.painter(),
+                                    ui.painter(),
                                     bar_rect.left(),
                                     bar_rect.center().y,
                                     active_idx,
@@ -633,7 +641,7 @@ impl PlexiApp {
                                 );
                             }
                             if let Some(ref name) = zoomed_pane_name {
-                                child_ui.painter().text(
+                                ui.painter().text(
                                     bar_rect.center(),
                                     egui::Align2::CENTER_CENTER,
                                     name,
