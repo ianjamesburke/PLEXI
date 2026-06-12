@@ -126,6 +126,8 @@ just promote main
 ```
 This pushes beta→main, creates and pushes the version tag, and triggers the GitHub Actions release workflow.
 
+**Worktree base is always local `HEAD`.** `wtp add` branches from the last local commit, not `origin/alpha`. This means unpushed commits are included in the base and dirty files are irrelevant (worktrees are commit-isolated). Never stop worktree creation due to a dirty working tree — only stop if a merge or rebase is in progress (`MERGE_HEAD` / `REBASE_HEAD` exists).
+
 Worktrees:
 - `.` (repo root) — alpha branch
 - `worktrees/beta` — beta branch
