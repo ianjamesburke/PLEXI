@@ -1,6 +1,16 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.749] — 2026-06-12
+
+### Changes
+- fix: cursor height + scratchpad dedup (#2218, #2221) (#2226)
+- refactor(dispatch, validate-pr): support arbitrary tasks and stint IDs in dispatch, migrate to Gemini review
+- refactor(ui): move notification modal buttons into centralized chrome
+- docs(readme): add --channel flag examples to install one-liner
+- fix(install): point plexiapp.com/install and README to install.sh at repo root
+- feat(install): add --channel flag to one-liner install script
+- Themeable status pips + SessionStart idle fix (#2219, #2220) (#2223)
 ## [0.0.748] — 2026-06-12
 
 ### Changes
