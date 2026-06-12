@@ -1104,7 +1104,7 @@ mod tests {
 
     #[test]
     fn app_init_open_flag_opts_into_launch() {
-        let cli = Cli::try_parse_from(["plexi", "app", "init", "--open", "counter"]).unwrap();
+        let cli = Cli::try_parse_from(["plexi", "app", "init", "counter", "--open"]).unwrap();
 
         let Some(Commands::App { cmd }) = cli.command else {
             panic!("expected app command");

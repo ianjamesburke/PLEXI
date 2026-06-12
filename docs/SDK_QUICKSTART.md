@@ -21,7 +21,7 @@ plexi app init --global counter
 ```
 
 The scaffold creates an app directory with `manifest.toml` and `main.py`. Do not hand-write the manifest for a new app. Start from the scaffold and edit only the fields you need.
-It does not open the app by default; run `plexi app init --open counter` if you want the new app launched immediately.
+It does not open the app by default; run `plexi app init counter --open` if you want the new app launched immediately.
 
 ## 2. The App Pattern
 

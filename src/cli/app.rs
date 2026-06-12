@@ -89,7 +89,7 @@ pub(super) fn app_init_config_dir() -> String {
         .unwrap_or_else(crate::config::workspace_channel_dir)
 }
 
-/// `plexi app init [--lang python|rust] [--global] [--open] <name>`
+/// `plexi app init [--lang python|rust] [--global] <name> [--open]`
 ///
 /// Without `--global`: walks up from CWD looking for the nearest workspace
 /// (ancestor with `<channel_dir>/`). If none is found, exits with an error
@@ -108,7 +108,7 @@ pub fn app_init(
     from_pane_id: Option<u64>,
 ) -> i32 {
     if name.is_empty() {
-        eprintln!("Usage: plexi app init [--lang python|rust] [--global] [--open] <name>");
+        eprintln!("Usage: plexi app init [--lang python|rust] [--global] <name> [--open]");
         return 1;
     }
 
