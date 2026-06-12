@@ -33,12 +33,26 @@ if ! command -v git &>/dev/null; then
   exit 1
 fi
 
-# Require cargo
+# Require cargo — offer to install rustup if missing
 if ! command -v cargo &>/dev/null; then
-  echo "Error: Rust / cargo is required but not found."
-  echo "  Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-  echo "  Then re-run this installer."
-  exit 1
+  echo "Rust is not installed. Plexi requires Rust to build."
+  echo ""
+  read -r -p "Install Rust now via rustup? [y/N] " _answer </dev/tty
+  case "$_answer" in
+    [yY][eE][sS]|[yY])
+      echo "Installing Rust..."
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      # Source the new cargo env so the rest of this script can use it
+      # shellcheck source=/dev/null
+      source "$HOME/.cargo/env"
+      ;;
+    *)
+      echo ""
+      echo "Skipping Rust install. Re-run this script after installing Rust:"
+      echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+      exit 1
+      ;;
+  esac
 fi
 
 # If we're not inside the repo, clone it to a temp dir and build from there
