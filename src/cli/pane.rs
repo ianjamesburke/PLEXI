@@ -1,13 +1,6 @@
 use super::send_to_socket;
 
 pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
-    let socket_path = match std::env::var("PLEXI_SOCKET") {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
-            return 1;
-        }
-    };
     let resolved_pane_id = match pane_id {
         Some(id) => id,
         None => {
@@ -28,26 +21,11 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
         }
     };
     log::info!("pane_set_title:cli: pane_id={resolved_pane_id} name={name:?}");
-    let payload = serde_json::json!({
+    send_to_socket(serde_json::json!({
         "type": "set_pane_title",
         "pane_id": resolved_pane_id,
         "name": name,
-    });
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
-            return 1;
-        }
-    };
-    let line = format!("{}\n", payload);
-    if let Err(e) = stream.write_all(line.as_bytes()) {
-        eprintln!("error: could not write to socket: {e}");
-        return 1;
-    }
-    0
+    }))
 }
 
 /// Prints JSON to stdout. If `jq` is in PATH, pipes through `jq .` for

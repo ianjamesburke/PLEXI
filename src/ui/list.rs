@@ -400,7 +400,7 @@ fn elide_to_width(ui: &egui::Ui, text: &str, font_id: egui::FontId, max_width: f
 /// The selection highlight spans the row's full width — flush with the
 /// text fields above it in palettes/pickers — and stops 1px short
 /// vertically so adjacent selected rows don't fuse into one slab.
-fn selection_inset(row_rect: egui::Rect) -> egui::Rect {
+pub(crate) fn selection_inset(row_rect: egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(
         Pos2::new(row_rect.min.x, row_rect.min.y + 1.0),
         Pos2::new(row_rect.max.x, row_rect.max.y - 1.0),

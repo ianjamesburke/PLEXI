@@ -173,7 +173,7 @@ impl ContextItem {
         let text_primary = colors.text_primary;
         let text_dim = colors.text_dim;
         let bg_active = colors.bg_active;
-        let bg_sidebar_hover = colors.bg_sidebar_hover;
+        let bg_hover = colors.bg_hover;
 
         let text_color = with_alpha(if is_active { text_primary } else { text_dim }, row_alpha);
 
@@ -323,13 +323,14 @@ impl ContextItem {
             }
         } else {
             let fill = if hovered && !is_dragging {
-                with_alpha(bg_sidebar_hover, row_alpha)
+                with_alpha(bg_hover, row_alpha)
             } else {
                 Color32::TRANSPARENT
             };
+            let hover_rect = crate::ui::list::selection_inset(row_rect);
             ui.painter().set(
                 bg_idx,
-                egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill),
+                egui::Shape::rect_filled(hover_rect, crate::ui::style::RADIUS_SM, fill),
             );
         }
 

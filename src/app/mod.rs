@@ -414,7 +414,13 @@ fn spawn_socket_listener(
     log::info!("pane_ipc: listening on {:?}", path);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            let Ok(stream) = stream else { break };
+            let stream = match stream {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!("pane_ipc: accept error: {e}");
+                    continue;
+                }
+            };
             let tx = tx.clone();
             let egui_ctx = egui_ctx.clone();
             std::thread::spawn(move || {

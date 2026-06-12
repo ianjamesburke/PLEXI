@@ -151,6 +151,11 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
     use std::os::unix::net::UnixStream;
     let mut stream = match UnixStream::connect(&socket_path) {
         Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+            let _ = std::fs::remove_file(&socket_path);
+            eprintln!("error: Plexi is not responding (stale socket removed). Is Plexi running?");
+            return 1;
+        }
         Err(e) => {
             eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
             return 1;
