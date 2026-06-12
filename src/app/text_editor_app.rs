@@ -12,7 +12,16 @@ const FONT_SIZE_MAX: f32 = 32.0;
 
 pub struct TextEditorApp {
     path: PathBuf,
+    /// Editable buffer. For notes this is the body only — the frontmatter
+    /// block is held in `note_header` and never shown in the editor.
     content: String,
+    /// Raw frontmatter block (both `---` fences, trailing newline) for files
+    /// under the notes dir. Recomposed in front of `content` on save.
+    note_header: Option<String>,
+    /// Display title parsed from `note_header` (empty when unset).
+    note_title: String,
+    /// True when `path` lives under `<config_dir>/notes/`.
+    is_note: bool,
     last_edit: Option<Instant>,
     wants_close: bool,
     load_error: Option<String>,
@@ -21,15 +30,21 @@ pub struct TextEditorApp {
 
 impl TextEditorApp {
     pub fn new(path: PathBuf) -> Self {
-        let (content, load_error) = match std::fs::read_to_string(&path) {
+        let (raw, load_error) = match std::fs::read_to_string(&path) {
             Ok(s) => (s, None),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
             Err(e) => (String::new(), Some(e.to_string())),
         };
-        log::info!("TextEditorApp: opened {:?} ({} bytes)", path, content.len());
+        log::info!("TextEditorApp: opened {:?} ({} bytes)", path, raw.len());
+        let notes_dir = crate::config::config_dir().join("notes");
+        let is_note = path.starts_with(&notes_dir);
+        let (note_header, content, note_title) = split_note(is_note, raw);
         Self {
             path,
             content,
+            note_header,
+            note_title,
+            is_note,
             last_edit: None,
             wants_close: false,
             load_error,
@@ -37,9 +52,51 @@ impl TextEditorApp {
         }
     }
 
+    /// Test constructor: treat `path` as a note regardless of the machine's
+    /// config dir, so note rendering is testable against temp files.
+    #[cfg(test)]
+    pub(crate) fn new_for_test_note(path: PathBuf) -> Self {
+        let mut app = Self::new(path);
+        let raw = app.composed();
+        let (note_header, content, note_title) = split_note(true, raw);
+        app.is_note = true;
+        app.note_header = note_header;
+        app.content = content;
+        app.note_title = note_title;
+        app
+    }
+
+    /// Full on-disk document: frontmatter (when held out) + editable body.
+    fn composed(&self) -> String {
+        match &self.note_header {
+            Some(header) => format!("{header}{}", self.content),
+            None => self.content.clone(),
+        }
+    }
+
+    /// Rewrite the frontmatter `title:` for this note and mark the buffer
+    /// dirty so the next flush persists it. No-op for non-note files —
+    /// renaming a pane must never inject YAML into arbitrary documents.
+    fn apply_note_title(&mut self, title: &str) {
+        if !self.is_note {
+            return;
+        }
+        let updated = crate::notes::set_title_in_content(&self.composed(), title);
+        let (note_header, content, note_title) = split_note(true, updated);
+        self.note_header = note_header;
+        self.content = content;
+        self.note_title = note_title;
+        self.last_edit = Some(Instant::now());
+        log::info!(
+            "TextEditorApp: note title set to {:?} for {:?}",
+            self.note_title,
+            self.path
+        );
+    }
+
     fn is_effectively_empty(&self) -> bool {
         let notes_dir = crate::config::config_dir().join("notes");
-        content_is_effectively_empty(&self.path, &notes_dir, &self.content)
+        content_is_effectively_empty(&self.path, &notes_dir, &self.composed())
     }
 
     fn flush(&mut self) {
@@ -61,13 +118,14 @@ impl TextEditorApp {
             }
             return;
         }
-        match write_note_atomically(&self.path, self.content.as_bytes()) {
+        let document = self.composed();
+        match write_note_atomically(&self.path, document.as_bytes()) {
             Ok(()) => {
                 self.last_edit = None;
                 log::info!(
                     "TextEditorApp: saved {:?} ({} bytes)",
                     self.path,
-                    self.content.len()
+                    document.len()
                 );
             }
             Err(e) => {
@@ -123,6 +181,44 @@ mod tests {
     }
 
     #[test]
+    fn split_note_hides_frontmatter_and_extracts_title() {
+        let raw = "---\ntitle: \"Groceries\"\nsource: \"scratchpad\"\n---\nmilk\neggs\n";
+        let (header, body, title) = split_note(true, raw.to_string());
+        assert_eq!(
+            header.as_deref(),
+            Some("---\ntitle: \"Groceries\"\nsource: \"scratchpad\"\n---\n")
+        );
+        assert_eq!(body, "milk\neggs\n");
+        assert_eq!(title, "Groceries");
+        // Recomposition is lossless.
+        assert_eq!(format!("{}{body}", header.unwrap()), raw);
+    }
+
+    #[test]
+    fn split_note_passes_through_non_notes_and_headerless_content() {
+        let raw = "---\ntitle: \"x\"\n---\nbody\n";
+        let (header, body, title) = split_note(false, raw.to_string());
+        assert!(header.is_none());
+        assert_eq!(body, raw);
+        assert!(title.is_empty());
+
+        let plain = "just text, no frontmatter\n";
+        let (header, body, _) = split_note(true, plain.to_string());
+        assert!(header.is_none());
+        assert_eq!(body, plain);
+    }
+
+    #[test]
+    fn title_rewrite_roundtrips_through_split() {
+        let raw = "---\ntitle: \"\"\nsource: \"scratchpad\"\n---\nbody line\n";
+        let updated = crate::notes::set_title_in_content(raw, "New Title");
+        let (header, body, title) = split_note(true, updated);
+        assert_eq!(title, "New Title");
+        assert_eq!(body, "body line\n");
+        assert!(header.unwrap().contains("source: \"scratchpad\""));
+    }
+
+    #[test]
     fn note_path_identity_matches_existing_file_aliases() {
         let dir = unique_temp_dir("plexi-note-identity");
         std::fs::create_dir_all(&dir).expect("create temp dir");
@@ -169,6 +265,24 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Split a note document into its raw frontmatter block (kept out of the
+/// editable buffer), the body, and the display title. Non-note files and
+/// notes without a frontmatter block pass through unchanged.
+fn split_note(is_note: bool, raw: String) -> (Option<String>, String, String) {
+    if !is_note {
+        return (None, raw, String::new());
+    }
+    if let Some(rest) = raw.strip_prefix("---\n") {
+        if let Some(end) = rest.find("\n---\n") {
+            let header = raw[..4 + end + 5].to_string(); // "---\n" + header + "\n---\n"
+            let body = rest[end + 5..].to_string();
+            let title = crate::notes::parse_note(&raw).0.title.unwrap_or_default();
+            return (Some(header), body, title);
+        }
+    }
+    (None, raw, String::new())
 }
 
 /// A note is empty when it has no content at all, or — for files under
@@ -295,6 +409,32 @@ impl App for TextEditorApp {
         ui.visuals_mut().extreme_bg_color = colors.bg_darkest;
         ui.visuals_mut().override_text_color = Some(colors.text_primary);
 
+        // Notes show their frontmatter title as a header row; the YAML block
+        // itself is held out of the buffer and never rendered.
+        if self.is_note {
+            let (text, color) = if self.note_title.is_empty() {
+                let placeholder = self
+                    .path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "untitled".to_string());
+                (placeholder, colors.text_dim)
+            } else {
+                (self.note_title.clone(), colors.text_primary)
+            };
+            ui.add_space(crate::ui::style::SPACE_SM);
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(text)
+                        .size(crate::ui::style::TEXT_BODY)
+                        .strong()
+                        .color(color),
+                );
+            });
+            ui.add_space(crate::ui::style::SPACE_SM);
+        }
+
         let te_id = egui::Id::new("text_editor_content").with(&self.path);
         let font_id = egui::FontId::monospace(self.font_size);
 
@@ -383,17 +523,30 @@ impl App for TextEditorApp {
                     new_path
                 );
                 self.flush();
-                let (content, load_error) = match std::fs::read_to_string(&new_path) {
+                let (raw, load_error) = match std::fs::read_to_string(&new_path) {
                     Ok(s) => (s, None),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
                     Err(e) => (String::new(), Some(e.to_string())),
                 };
+                let notes_dir = crate::config::config_dir().join("notes");
+                self.is_note = new_path.starts_with(&notes_dir);
+                let (note_header, content, note_title) = split_note(self.is_note, raw);
                 self.path = new_path;
                 self.content = content;
+                self.note_header = note_header;
+                self.note_title = note_title;
                 self.load_error = load_error;
                 self.last_edit = None;
             }
         }
+    }
+
+    fn rename_seed(&self) -> Option<String> {
+        self.is_note.then(|| self.note_title.clone())
+    }
+
+    fn on_pane_renamed(&mut self, name: &str) {
+        self.apply_note_title(name);
     }
 }
 

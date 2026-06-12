@@ -359,6 +359,61 @@ mod tests {
     // Visual smoke coverage lives in `tests/scenes/*.toml`, executed by
     // `scenes::tests::scene_suite`. Run one ad hoc with `just scene <file>`.
 
+    /// Note editor pane: frontmatter is hidden from the buffer and the
+    /// frontmatter title renders as a header row.
+    #[test]
+    fn text_editor_note_hides_frontmatter_and_shows_title() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+
+        let path = std::env::temp_dir().join(format!(
+            "plexi-ui-note-title-{}.md",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "---\ntitle: \"Groceries\"\nsource: \"scratchpad\"\n---\nmilk and eggs\n",
+        )
+        .expect("seed note");
+
+        h.with_app_mut(|app| {
+            let pane_id = app.host.alloc_pane_id();
+            let app_pane = AppPane {
+                id: pane_id,
+                runtime: AppRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
+                )),
+                workspace_root: std::env::temp_dir(),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "text-editor".to_string(),
+                name: "Text Editor".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+            };
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            let tile_id = win.tree.tiles.insert_pane(pane_id);
+            if win.tree.root.is_none() {
+                win.tree.root = Some(tile_id);
+            }
+            win.focused_pane = Some(tile_id);
+        });
+        h.run_steps(2);
+
+        // Title row is a real ui.label; the YAML block lives only in
+        // `note_header` and never reaches the TextEdit buffer (unit-tested
+        // via `split_note` in text_editor_app.rs).
+        h.harness().get_by_label("Groceries");
+        h.save_screenshot("/tmp/plexi_note_editor.png")
+            .expect("render failed");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// Notes picker overlay: open → step → still visible and renders.
     #[test]
     fn notes_picker_overlay_smoke() {

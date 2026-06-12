@@ -645,6 +645,16 @@ impl PlexiApp {
                         log::info!("rename_pane: pane {pane_id} name locked to {:?}", new_name);
                         Some(new_name)
                     };
+                } else if let Some(a) = pane.as_app_mut() {
+                    // Let the app react first — TextEditorApp persists the new
+                    // name into the note's frontmatter title.
+                    a.runtime.on_pane_renamed(&new_name);
+                    a.name = if new_name.is_empty() {
+                        a.runtime.display_name()
+                    } else {
+                        new_name.clone()
+                    };
+                    log::info!("rename_pane: app pane {pane_id} named {:?}", a.name);
                 }
             }
             self.renaming_pane = None;

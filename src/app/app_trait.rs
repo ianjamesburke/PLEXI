@@ -239,4 +239,15 @@ pub trait App: Send {
     /// Adjust the app's internal font size by `delta` points (positive = larger).
     /// Only implemented by apps with their own font size, e.g. TextEditorApp.
     fn adjust_font_size(&mut self, _delta: f32) {}
+
+    /// Seed text for the rename-pane overlay. `None` falls back to the pane's
+    /// current name. TextEditorApp returns the note's frontmatter title so
+    /// renaming edits the title rather than the timestamp filename.
+    fn rename_seed(&self) -> Option<String> {
+        None
+    }
+
+    /// Called when the user renames this app's pane. TextEditorApp persists
+    /// the new name into the note's frontmatter `title`.
+    fn on_pane_renamed(&mut self, _name: &str) {}
 }

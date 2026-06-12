@@ -59,15 +59,14 @@ pub(crate) fn parse_note(content: &str) -> (NoteFrontmatter, String) {
     (fm, body)
 }
 
-/// Rewrite the `title:` line of a note's frontmatter in place, preserving every
-/// other line verbatim. Creates a frontmatter block when the note has none.
+/// Rewrite the `title:` line of a note's frontmatter, preserving every other
+/// line verbatim. Creates a frontmatter block when the note has none.
 /// An empty `title` removes the line.
-pub(crate) fn set_note_title(path: &Path, title: &str) -> std::io::Result<()> {
-    let content = std::fs::read_to_string(path)?;
+pub(crate) fn set_title_in_content(content: &str, title: &str) -> String {
     let title = title.trim();
     let title_line = format!("title: \"{}\"", title.replace('"', "'"));
 
-    let new_content = if let Some(rest) = content.strip_prefix("---\n") {
+    if let Some(rest) = content.strip_prefix("---\n") {
         if let Some(end) = rest.find("\n---\n") {
             let header = &rest[..end];
             let tail = &rest[end..]; // includes `\n---\n` + body
@@ -84,12 +83,16 @@ pub(crate) fn set_note_title(path: &Path, title: &str) -> std::io::Result<()> {
             format!("---\n{title_line}\n---\n{content}")
         }
     } else if title.is_empty() {
-        content.clone()
+        content.to_string()
     } else {
         format!("---\n{title_line}\n---\n{content}")
-    };
+    }
+}
 
-    std::fs::write(path, new_content)
+/// Disk-backed wrapper around [`set_title_in_content`].
+pub(crate) fn set_note_title(path: &Path, title: &str) -> std::io::Result<()> {
+    let content = std::fs::read_to_string(path)?;
+    std::fs::write(path, set_title_in_content(&content, title))
 }
 
 // ─── Notes picker entries ────────────────────────────────────────────────────

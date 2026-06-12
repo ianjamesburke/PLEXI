@@ -2774,8 +2774,18 @@ impl eframe::App for PlexiApp {
                             self.rename_buffer = active_ctx
                                 .panes
                                 .get(&pane_id)
-                                .and_then(|p| p.as_terminal())
-                                .and_then(|t| t.name.clone())
+                                .map(|p| match p {
+                                    crate::host::pane::Pane::Terminal(t) => {
+                                        t.name.clone().unwrap_or_default()
+                                    }
+                                    // Note editors seed the frontmatter title so
+                                    // renaming edits the title, not the filename.
+                                    crate::host::pane::Pane::App(a) => a
+                                        .runtime
+                                        .rename_seed()
+                                        .unwrap_or_else(|| a.name.clone()),
+                                    crate::host::pane::Pane::Portal(_) => String::new(),
+                                })
                                 .unwrap_or_default();
                             self.renaming_pane = Some(pane_id);
                             self.rename_pane_focus_requested = false;

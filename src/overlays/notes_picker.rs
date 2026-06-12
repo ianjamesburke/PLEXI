@@ -132,6 +132,23 @@ impl PlexiApp {
             return;
         }
         log::info!("notes_picker: renamed {:?} to '{}'", path, title.trim());
+        // If the note is open in an editor pane, sync its in-memory copy and
+        // pane name — otherwise the editor's next flush clobbers the title.
+        let active = self.active_window;
+        if let Some((_, open_pane_id)) = self.find_open_text_editor_tile(active, &path) {
+            if let Some(app_pane) = self.windows[active]
+                .panes
+                .get_mut(&open_pane_id)
+                .and_then(|p| p.as_app_mut())
+            {
+                app_pane.runtime.on_pane_renamed(&title);
+                app_pane.name = if title.trim().is_empty() {
+                    app_pane.runtime.display_name()
+                } else {
+                    title.trim().to_string()
+                };
+            }
+        }
         if let Some(reloaded) = crate::notes::NotePickerEntry::load(&path, inbox) {
             self.notes_picker_entries[entry_idx] = reloaded;
         }
