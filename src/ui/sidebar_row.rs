@@ -130,7 +130,7 @@ impl ContextItem {
                     ui.set_max_width(text_max);
                     ui.add(
                         egui::Label::new(
-                            egui::RichText::new(&ctx_name).size(12.0).color(text_color),
+                            egui::RichText::new(&ctx_name).size(13.0).color(text_color),
                         )
                         .selectable(false)
                         .truncate(),
@@ -169,7 +169,7 @@ impl ContextItem {
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(shorten_path(path))
-                                    .size(10.0)
+                                    .size(11.0)
                                     .color(with_alpha(text_dim, row_alpha * 0.7)),
                             )
                             .selectable(false)
