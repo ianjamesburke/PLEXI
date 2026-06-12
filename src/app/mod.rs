@@ -1459,6 +1459,10 @@ impl eframe::App for PlexiApp {
                     crate::platform::frame_diag::RepaintCause::UserInput,
                 );
             }
+            // Ground truth (#2209): egui records the file:line of every
+            // request_repaint() from the previous pass — including sites the
+            // self-reported counters above never instrumented.
+            crate::platform::frame_diag::note_egui_causes(&ctx.repaint_causes());
             if elapsed >= std::time::Duration::from_secs(10) {
                 let counts = crate::platform::frame_diag::snapshot_and_reset();
                 log::info!(
@@ -1469,6 +1473,12 @@ impl eframe::App for PlexiApp {
                         elapsed.as_secs_f32(),
                         &counts
                     )
+                );
+                let egui_counts = crate::platform::frame_diag::egui_snapshot_and_reset();
+                log::info!(
+                    target: "plexi::frame_diag",
+                    "{}",
+                    crate::platform::frame_diag::egui_summary_line(&egui_counts, 8)
                 );
                 self.frame_diag_window = Some((std::time::Instant::now(), 0));
             }

@@ -703,6 +703,10 @@ impl<'a> TerminalView<'a> {
                     if elapsed >= blink_interval {
                         state.cursor_visible = !state.cursor_visible;
                         state.last_cursor_toggle = Instant::now();
+                        // Note only when the toggle actually fires — noting
+                        // every rendered frame falsely flagged the blink as
+                        // the repaint driver in idle-CPU audits (#2209).
+                        crate::diag::diag_note("terminal_cursor_blink");
                     }
                     if state.cursor_visible {
                         match content.cursor_shape {
@@ -738,7 +742,6 @@ impl<'a> TerminalView<'a> {
                     }
                     let remaining = blink_interval
                         .saturating_sub(state.last_cursor_toggle.elapsed());
-                    crate::diag::diag_note("terminal_cursor_blink");
                     painter.ctx().request_repaint_after(remaining);
                 } else {
                     // Unfocused: hollow outline, no blink

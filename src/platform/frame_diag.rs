@@ -8,7 +8,9 @@
 //! by [`RepaintCause::UserInput`], noted once per frame that carries raw input
 //! events.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 /// Why a repaint was requested. Every variant maps to a stable snake_case
 /// label via [`RepaintCause::label`] for grep-able log output.
@@ -99,6 +101,59 @@ impl RepaintCause {
 /// (image cache and PTY readers note from background threads).
 pub fn note(cause: RepaintCause) {
     COUNTERS[cause as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Ground-truth repaint causes from egui (#2209): per sample window, count of
+/// frames each `file:line` repaint-request site appeared in. Cross-checks the
+/// self-reported [`note`] counters above — egui sees every
+/// `request_repaint()` caller, including sites Plexi never instrumented.
+static EGUI_CAUSES: LazyLock<Mutex<HashMap<String, u32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Accumulate one frame's `ctx.repaint_causes()` (the PREVIOUS pass's
+/// requests). Causes are dedup'd by `file:line` within the pass — the same
+/// site can request a repaint several times per pass, but "how many frames
+/// did this site wake" is the useful idle-CPU signal, so we count per-frame
+/// presence, not raw request volume.
+pub fn note_egui_causes(causes: &[egui::RepaintCause]) {
+    if causes.is_empty() {
+        return;
+    }
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut map = EGUI_CAUSES.lock().unwrap();
+    for cause in causes {
+        let key = format!("{}:{}", cause.file, cause.line);
+        if seen.insert(key.clone()) {
+            *map.entry(key).or_insert(0) += 1;
+        }
+    }
+}
+
+/// Returns all egui cause counts sorted descending (ties alphabetical by
+/// `file:line` for stable output) and clears the accumulator.
+pub fn egui_snapshot_and_reset() -> Vec<(String, u32)> {
+    let mut map = EGUI_CAUSES.lock().unwrap();
+    let mut counts: Vec<(String, u32)> = map.drain().collect();
+    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    counts
+}
+
+/// Formats the egui ground-truth line logged under the same window as
+/// [`summary_line`], truncated to the top `top_n` sites, e.g.
+/// `egui_causes: crates/egui/src/context.rs:1234=601 src/app/mod.rs:99=12 (+3 more)`.
+pub fn egui_summary_line(counts: &[(String, u32)], top_n: usize) -> String {
+    let mut line = String::from("egui_causes:");
+    if counts.is_empty() {
+        line.push_str(" none");
+        return line;
+    }
+    for (site, n) in counts.iter().take(top_n) {
+        line.push_str(&format!(" {site}={n}"));
+    }
+    if counts.len() > top_n {
+        line.push_str(&format!(" (+{} more)", counts.len() - top_n));
+    }
+    line
 }
 
 /// Returns all nonzero counts sorted descending and zeroes every counter.
@@ -209,6 +264,101 @@ mod tests {
             summary_line(5, 0.0, &[]),
             "frames=5 window=0.0s fps=0.0 causes: none"
         );
+    }
+
+    fn egui_cause(file: &'static str, line: u32) -> egui::RepaintCause {
+        egui::RepaintCause {
+            file,
+            line,
+            reason: std::borrow::Cow::Borrowed("test"),
+        }
+    }
+
+    /// Harness tests run real frames in parallel and feed real sites into the
+    /// global egui accumulator; assertions only look at synthetic
+    /// `tests/fake_*.rs` keys no real frame can produce.
+    fn fake_only(counts: &[(String, u32)]) -> Vec<(String, u32)> {
+        counts
+            .iter()
+            .filter(|(k, _)| k.starts_with("tests/fake_"))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn egui_causes_dedup_within_pass_and_accumulate_across_passes() {
+        let _guard = SERIAL.lock().unwrap();
+        egui_snapshot_and_reset();
+
+        // Pass 1: the same site requests twice — counts once for the frame.
+        note_egui_causes(&[
+            egui_cause("tests/fake_a.rs", 10),
+            egui_cause("tests/fake_a.rs", 10),
+            egui_cause("tests/fake_b.rs", 20),
+        ]);
+        // Pass 2: only fake_a.rs wakes again.
+        note_egui_causes(&[egui_cause("tests/fake_a.rs", 10)]);
+        // Empty pass is a no-op.
+        note_egui_causes(&[]);
+
+        let counts = fake_only(&egui_snapshot_and_reset());
+        assert_eq!(
+            counts,
+            vec![
+                ("tests/fake_a.rs:10".to_string(), 2),
+                ("tests/fake_b.rs:20".to_string(), 1),
+            ]
+        );
+
+        // Snapshot cleared the accumulator.
+        assert!(fake_only(&egui_snapshot_and_reset()).is_empty());
+    }
+
+    #[test]
+    fn egui_snapshot_sorted_descending_then_alphabetical() {
+        let _guard = SERIAL.lock().unwrap();
+        egui_snapshot_and_reset();
+
+        for _ in 0..3 {
+            note_egui_causes(&[egui_cause("tests/fake_z.rs", 1)]);
+        }
+        note_egui_causes(&[
+            egui_cause("tests/fake_m.rs", 5),
+            egui_cause("tests/fake_a.rs", 9),
+        ]);
+
+        let counts = fake_only(&egui_snapshot_and_reset());
+        assert_eq!(
+            counts,
+            vec![
+                ("tests/fake_z.rs:1".to_string(), 3),
+                ("tests/fake_a.rs:9".to_string(), 1),
+                ("tests/fake_m.rs:5".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn egui_summary_line_format() {
+        assert_eq!(egui_summary_line(&[], 8), "egui_causes: none");
+
+        let counts = vec![
+            ("src/a.rs:10".to_string(), 95),
+            ("src/b.rs:20".to_string(), 12),
+        ];
+        assert_eq!(
+            egui_summary_line(&counts, 8),
+            "egui_causes: src/a.rs:10=95 src/b.rs:20=12"
+        );
+
+        // Truncation appends the overflow count.
+        let many: Vec<(String, u32)> = (0..10)
+            .map(|i| (format!("src/f.rs:{i}"), 10 - i))
+            .collect();
+        let line = egui_summary_line(&many, 8);
+        assert!(line.ends_with(" (+2 more)"), "got: {line}");
+        assert!(line.contains("src/f.rs:0=10"));
+        assert!(!line.contains("src/f.rs:8="));
     }
 
     #[test]
