@@ -86,6 +86,19 @@ impl Colors {
         }
     }
 
+    /// Background for terminal pane name bars: `terminal_bg` darkened ~12%.
+    /// Matches the zoom overlay, where the same bar is painted at 0.88
+    /// opacity over the dark scrim — keeps the header tone identical in
+    /// tiled and zoomed views across every theme.
+    pub fn pane_header_bg(&self) -> Color32 {
+        let [r, g, b, _] = self.terminal_bg.to_array();
+        Color32::from_rgb(
+            (r as f32 * 0.88) as u8,
+            (g as f32 * 0.88) as u8,
+            (b as f32 * 0.88) as u8,
+        )
+    }
+
     pub fn from_config(cfg: &ThemeConfig) -> Self {
         Self {
             bg_darkest: parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x11, 0x11, 0x1b)),

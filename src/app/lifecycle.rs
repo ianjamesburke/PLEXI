@@ -943,8 +943,12 @@ impl PlexiApp {
                     } else {
                         (active, self.windows[active].focused_pane)
                     };
-                    launch_result =
-                        self.launch_app_by_path_with_layout(path_str, layout.clone(), ws_root, args);
+                    launch_result = self.launch_app_by_path_with_layout(
+                        path_str,
+                        layout.clone(),
+                        ws_root,
+                        args,
+                    );
                     if from_pane_id.is_some() {
                         self.active_window = active;
                         // Undo the temporary focus redirect when launch failed.
@@ -2058,12 +2062,7 @@ impl PlexiApp {
                         }
                     } else {
                         let title_trimmed = title.trim();
-                        let osc_enabled = self
-                            .config
-                            .beta
-                            .as_ref()
-                            .and_then(|b| b.osc_pane_title)
-                            .unwrap_or(false);
+                        let osc_enabled = self.config.osc_pane_title_enabled();
                         for win in &mut self.windows {
                             if let Some(pane) = win.panes.get_mut(&id) {
                                 if let Some(t) = pane.as_terminal_mut() {

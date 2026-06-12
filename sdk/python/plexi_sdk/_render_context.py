@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from ._constants import BODY
 from ._theme import theme as _sdk_theme
 from ._emitter import _emit, _LOCK
+from ._types import VALID_TEXT_ALIGN as _VALID_ALIGN
 
 if TYPE_CHECKING:
     from ._app import App
@@ -157,22 +158,27 @@ class RenderContext:
 
     def text(self, x: float, y: float, text: str, size: float, color: str,
              monospace: bool = False, bold: bool = False,
-             align: str = "top_left",
+             align: str = "left_top",
              max_width: "float | None" = None,
              elide: bool = True,
              selectable: bool = False,
              max_lines: "int | None" = None) -> None:
-        """Draw text. `align` controls how `(x, y)` maps to the text box:
+        """Draw text. `align` controls how `(x, y)` maps to the text box.
 
-          - "top_left" (default) — (x, y) is the top-left corner.
-          - "center"              — (x, y) is the visual center.
-          - "top_center"          — (x, y) is the top-center.
-          - "right"               — (x, y) is the top-right corner.
+        Valid values (horizontal_vertical):
+          - "left_top" (default)   — (x, y) is the top-left corner.
+          - "center_top"           — (x, y) is the top-center.
+          - "right_top"            — (x, y) is the top-right corner.
+          - "left_center"          — (x, y) is the left midline.
+          - "center_center"        — (x, y) is the visual center.
+          - "right_center"         — (x, y) is the right midline.
+          - "left_bottom"          — (x, y) is the bottom-left corner.
+          - "center_bottom"        — (x, y) is the bottom-center.
+          - "right_bottom"         — (x, y) is the bottom-right corner.
 
-        Use "center" when placing text inside a fixed-size container (a badge,
-        a button, a pie-chart label) — the host uses real font metrics, which
-        is noticeably more accurate than Python-side math with approximate
-        character-width ratios.
+        Use "center_center" when placing text inside a fixed-size container
+        (a badge, a button, a pie-chart label) — the host uses real font
+        metrics, which is noticeably more accurate than Python-side math.
 
         `max_width` — when set, the host clips the text at this pixel width.
         `elide`     — when True (default), a "…" is appended at the clip point;
@@ -200,6 +206,11 @@ class RenderContext:
                 f"ctx.text() size must be a number (e.g. 14.0), "
                 f"got {type(size).__name__}: {size!r}. "
                 f"Use a font constant: from plexi_sdk import BODY, CAPTION, HINT"
+            )
+        if align not in _VALID_ALIGN:
+            raise ValueError(
+                f"ctx.text() align={align!r} is not valid. "
+                f"Valid values: {sorted(_VALID_ALIGN)}"
             )
         d: dict = {"type": "text", "x": x, "y": y, "text": text, "size": size,
                    "color": color, "monospace": monospace, "bold": bold,
@@ -290,7 +301,7 @@ class RenderContext:
         bg = active_fill if (clicked or active) else (hover_fill if hovered else fill)
         self.rect(x, y, w, h, fill=bg, radius=radius)
         self.text(x + w / 2, y + h / 2, label, size=font_size,
-                  color=text_color, align="center")
+                  color=text_color, align="center_center")
         return clicked
 
     def key_chip_row(self, x: float, y: float, keys: "list[str]",
@@ -341,6 +352,11 @@ class RenderContext:
                 gap=12.0,
             )
         """
+        if align not in _VALID_ALIGN:
+            raise ValueError(
+                f"ctx.text_row() align={align!r} is not valid. "
+                f"Valid values: {sorted(_VALID_ALIGN)}"
+            )
         # Validate and normalize items: each dict must have 'text', other keys optional.
         wire_items = []
         for item in items:
@@ -652,7 +668,8 @@ class RenderContext:
     def text_input(self, id: str, x: float, y: float, w: float,
                    placeholder: str = "",
                    multiline: bool = False,
-                   h: float = 24.0) -> "str | None":
+                   h: float = 24.0,
+                   value: "str | None" = None) -> "str | None":
         """Text input — host-owned buffer, submit-only.
 
         Emits a `DrawCommand::TextInput` and returns the most recently
@@ -676,11 +693,14 @@ class RenderContext:
             if submitted is not None:
                 save_note(submitted)
 
-        Real-time validation (per-keystroke access) is out of scope —
-        see issue #283.
+        If `value` is provided, the host applies it as a one-shot buffer
+        replacement for completions or controlled corrections.
         """
-        self._queue({"type": "text_input", "id": id, "x": x, "y": y, "w": w,
-                     "h": h, "placeholder": placeholder, "multiline": multiline})
+        cmd = {"type": "text_input", "id": id, "x": x, "y": y, "w": w,
+               "h": h, "placeholder": placeholder, "multiline": multiline}
+        if value is not None:
+            cmd["value"] = value
+        self._queue(cmd)
         return self._app._take_text_submission(id)
 
     # Logging helpers (in-frame, forwarded to host logger)
@@ -955,7 +975,7 @@ class RenderContext:
             "type": "text", "x": 0.0, "y": 0.0,
             "text": text, "size": size, "color": color,
             "monospace": monospace, "bold": bold,
-            "align": "top_left", "max_width": max_width,
+            "align": "left_top", "max_width": max_width,
             "elide": elide, "selectable": selectable,
         }}
 

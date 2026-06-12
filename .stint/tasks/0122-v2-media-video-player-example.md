@@ -7,8 +7,6 @@ estimate: 5h
 blocked_by:
   - 120
   - 121
-  - 30
-  - 31
 gh_issue: ["1566"]
 area: ["sdk/pgap", "apps/examples", "host/video"]
 tags: ["v2", "media", "example"]

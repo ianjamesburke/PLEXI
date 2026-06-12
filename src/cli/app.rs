@@ -89,7 +89,7 @@ pub(super) fn app_init_config_dir() -> String {
         .unwrap_or_else(crate::config::workspace_channel_dir)
 }
 
-/// `plexi app init [--lang python|rust] [--global] [--no-open] <name>`
+/// `plexi app init [--lang python|rust] [--global] <name> [--open]`
 ///
 /// Without `--global`: walks up from CWD looking for the nearest workspace
 /// (ancestor with `<channel_dir>/`). If none is found, exits with an error
@@ -98,16 +98,17 @@ pub(super) fn app_init_config_dir() -> String {
 /// With `--global`: scaffolds directly into the global registry
 /// (`~/.plexi-<channel>/apps/<name>/`).
 ///
-/// Auto-opens the app in a split-right pane unless `--no-open` is passed.
+/// Scaffolds without opening by default. `--open` opens the app in a
+/// split-right pane after creating it.
 pub fn app_init(
     name: &str,
     lang: &str,
     global: bool,
-    no_open: bool,
+    open: bool,
     from_pane_id: Option<u64>,
 ) -> i32 {
     if name.is_empty() {
-        eprintln!("Usage: plexi app init [--lang python|rust] [--global] [--no-open] <name>");
+        eprintln!("Usage: plexi app init [--lang python|rust] [--global] <name> [--open]");
         return 1;
     }
 
@@ -195,9 +196,9 @@ pub fn app_init(
                 println!("  plexi app open {}", app_dir.display());
             } else {
                 ensure_plexi_sdk();
-                if !no_open {
+                if open {
                     let path_str = app_dir.to_string_lossy().to_string();
-                    log::info!("app_init: auto-opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
+                    log::info!("app_init: opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
                     let exit_code =
                         super::open_cli(&path_str, &[], Some("split_h"), from_pane_id, None);
                     if exit_code != 0 {
@@ -207,6 +208,10 @@ pub fn app_init(
                         eprintln!("  Open with: plexi app open {}", app_dir.display());
                     }
                 } else {
+                    log::info!(
+                        "app_init: created '{name}' without opening path={}",
+                        app_dir.display()
+                    );
                     println!("  Open with: plexi app open {}", app_dir.display());
                 }
             }
@@ -436,16 +441,18 @@ pub fn print_trust_sheet(
     } else {
         println!("capabilities:");
         for cap in &report.capabilities {
-            let sensitive = if cap.is_sensitive() { " [sensitive]" } else { "" };
+            let sensitive = if cap.is_sensitive() {
+                " [sensitive]"
+            } else {
+                ""
+            };
             println!("  {:<18}{}{sensitive}", cap.as_str(), cap.description());
         }
     }
 }
 
 /// Resolve the trust label for a report against the bundled core pack ids.
-fn trust_label_for(
-    report: &crate::app::package::PackageReport,
-) -> crate::app::package::TrustLabel {
+fn trust_label_for(report: &crate::app::package::PackageReport) -> crate::app::package::TrustLabel {
     let core_ids = crate::cli::install_host::core_pack_ids();
     let core_refs: Vec<&str> = core_ids.iter().map(String::as_str).collect();
     crate::app::package::trust_label(report, &core_refs)
@@ -495,10 +502,7 @@ pub fn confirm_install(
 
 /// Run the full trust gate for an interactive install: print the trust sheet,
 /// then prompt. Returns an exit code on refusal/abort, `None` to proceed.
-fn run_install_gate(
-    report: &crate::app::package::PackageReport,
-    assume_yes: bool,
-) -> Option<i32> {
+fn run_install_gate(report: &crate::app::package::PackageReport, assume_yes: bool) -> Option<i32> {
     use std::io::IsTerminal;
     let label = trust_label_for(report);
     print_trust_sheet(report, label);

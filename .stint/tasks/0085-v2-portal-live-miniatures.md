@@ -6,8 +6,6 @@ sprint: "s20"
 estimate: 3h
 blocked_by:
   - 81
-  - 30
-  - 31
 gh_issue: ["1495"]
 area: ["ui/overlays", "ui/tile-tree", "agents"]
 tags: ["v2", "navigation", "portals", "agents"]

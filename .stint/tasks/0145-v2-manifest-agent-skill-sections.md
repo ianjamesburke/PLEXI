@@ -6,8 +6,6 @@ sprint: "s30"
 estimate: 6h
 blocked_by:
   - 143
-  - 30
-  - 31
 gh_issue: ["764"]
 area: ["agents"]
 tags: ["v2", "agents", "manifest"]

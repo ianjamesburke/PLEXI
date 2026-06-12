@@ -7,8 +7,6 @@ estimate: 8h
 blocked_by:
   - 41
   - 42
-  - 30
-  - 31
 gh_issue: ["674"]
 area: ["host/secrets"]
 tags: ["v2", "secrets", "sdk"]

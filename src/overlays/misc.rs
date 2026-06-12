@@ -839,7 +839,9 @@ mod tests {
     #[test]
     fn changelog_filter_hides_chore_entries() {
         assert!(!should_show_changelog_line("- chore: claim stint 0015"));
-        assert!(!should_show_changelog_line("- chore(stint): close task 0154"));
+        assert!(!should_show_changelog_line(
+            "- chore(stint): close task 0154"
+        ));
         assert!(!should_show_changelog_line(
             "* **chore(website): regenerate CLI reference docs"
         ));

@@ -25,7 +25,16 @@ use crate::broker::{
     PermissionRequest, ResourceScope, TargetType,
 };
 use crate::host::app_timeline::{AppTimeline, SubscriptionRecord};
-use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, StreamDelta, StreamSink};
+use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest};
+use crate::plexi_ai::turn_loop::TurnDelta;
+
+/// Owned streaming delta forwarded from the broker worker thread to the UI
+/// thread (`TurnDelta` borrows from the stream buffer and cannot cross the
+/// channel).
+enum StreamDelta {
+    Answer(String),
+    Reasoning(String),
+}
 use crate::plexi_ai::tool_dispatch::{
     HostToolHandler, ToolCallHooks, ToolCallResult, ToolDispatcher,
 };
@@ -650,7 +659,6 @@ impl AssistantApp {
             workspace_root: Some(self.workspace_root.clone()),
             open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
             tool_dispatcher: Some(Arc::new(dispatcher)),
-            stream_sink: Some(StreamSink(delta_tx)),
         };
         log::info!(
             "assistant[{conversation_id}]: dispatching turn ({} message(s))",
@@ -661,7 +669,13 @@ impl AssistantApp {
         let spawn = std::thread::Builder::new()
             .name("assistant-turn".to_string())
             .spawn(move || {
-                let resp = broker.dispatch(request);
+                let resp = broker.dispatch(request, &mut |delta| {
+                    let owned = match delta {
+                        TurnDelta::Text(chunk) => StreamDelta::Answer(chunk.to_string()),
+                        TurnDelta::Reasoning(chunk) => StreamDelta::Reasoning(chunk.to_string()),
+                    };
+                    let _ = delta_tx.send(owned);
+                });
                 let _ = outcome_tx.send(TurnOutcome {
                     conversation_id,
                     text: resp.content,
@@ -1176,22 +1190,19 @@ mod tests {
     use super::*;
     use crate::plexi_ai::broker::AiBrokerResponse;
 
-    /// Test broker: echoes a canned reply and streams deltas into the sink.
+    /// Test broker: echoes a canned reply and streams deltas via `on_delta`.
     struct EchoBroker;
 
     impl AiBroker for EchoBroker {
-        fn dispatch(&self, request: AiBrokerRequest) -> AiBrokerResponse {
-            if let Some(sink) = &request.stream_sink {
-                let _ = sink.0.send(StreamDelta::Reasoning("pondering".to_string()));
-                let _ = sink.0.send(StreamDelta::Answer("echo: ".to_string()));
-                let _ = sink.0.send(StreamDelta::Answer("ok".to_string()));
-            }
-            AiBrokerResponse::ok_with_deltas(
-                "echo: ok".to_string(),
-                1,
-                1,
-                vec!["echo: ".to_string(), "ok".to_string()],
-            )
+        fn dispatch(
+            &self,
+            _request: AiBrokerRequest,
+            on_delta: &mut dyn FnMut(TurnDelta<'_>),
+        ) -> AiBrokerResponse {
+            on_delta(TurnDelta::Reasoning("pondering"));
+            on_delta(TurnDelta::Text("echo: "));
+            on_delta(TurnDelta::Text("ok"));
+            AiBrokerResponse::ok("echo: ok".to_string(), 1, 1)
         }
     }
 

@@ -5,8 +5,6 @@ status: backlog
 sprint: "s24"
 estimate: 8h
 blocked_by:
-  - 30
-  - 31
 gh_issue: ["1171"]
 area: ["infra/docs"]
 tags: ["v2", "website", "design"]

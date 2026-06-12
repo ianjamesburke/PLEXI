@@ -6,8 +6,6 @@ sprint: "s8"
 estimate: 8h
 blocked_by:
   - 147
-  - 30
-  - 31
 gh_issue: ["2095"]
 area: ["infra/testing", "host/config", "cli/commands", "infra/build"]
 tags: ["testing", "v2"]

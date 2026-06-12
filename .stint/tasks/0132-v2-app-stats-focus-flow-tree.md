@@ -6,8 +6,6 @@ sprint: "s29"
 estimate: 6h
 blocked_by:
   - 48
-  - 30
-  - 31
 gh_issue: ["1294"]
 area: ["apps/examples"]
 tags: ["v2", "apps", "stats"]

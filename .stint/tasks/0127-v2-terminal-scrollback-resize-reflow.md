@@ -6,8 +6,6 @@ sprint: "s28"
 estimate: 8h
 blocked_by:
   - 124
-  - 30
-  - 31
 gh_issue: ["577"]
 area: ["host/terminal"]
 tags: ["v2", "terminal", "resize"]

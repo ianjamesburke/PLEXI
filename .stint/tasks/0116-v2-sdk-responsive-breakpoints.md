@@ -5,8 +5,6 @@ status: backlog
 sprint: "s26"
 estimate: 6h
 blocked_by:
-  - 30
-  - 31
 gh_issue: ["1336"]
 area: ["sdk/python", "sdk/pgap", "apps/github-issues"]
 tags: ["v2", "sdk", "responsive"]

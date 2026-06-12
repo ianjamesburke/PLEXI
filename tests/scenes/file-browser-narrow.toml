@@ -1,0 +1,14 @@
+# Narrow pane — compact list layout; path row and chip row must not collide.
+size = [520.0, 400.0]
+
+[[steps]]
+open_file_browser = "."
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 1 }
+
+[[steps]]
+shot = "file-browser-narrow.png"

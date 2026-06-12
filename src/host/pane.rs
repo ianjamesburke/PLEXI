@@ -276,12 +276,6 @@ impl AppRuntime {
         }
     }
 
-    pub fn current_cwd(&self) -> Option<std::path::PathBuf> {
-        match self {
-            AppRuntime::Process(app) => app.current_cwd(),
-            AppRuntime::Builtin(app) => app.current_cwd(),
-        }
-    }
 
     pub fn type_id(&self) -> &'static str {
         match self {

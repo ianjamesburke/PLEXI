@@ -495,16 +495,16 @@ class _StatsCanvas(Component):
         )
         ctx.text(x + quarter * 0.5, stats_text_y,
                  active_label,
-                 size=TEXT_CAPTION, color=ctx.theme.accent, bold=True, align="center")
+                 size=TEXT_CAPTION, color=ctx.theme.accent, bold=True, align="center_center")
         ctx.text(x + quarter * 1.5, stats_text_y,
                  idle_label,
-                 size=TEXT_CAPTION, color=ctx.theme.muted, bold=True, align="center")
+                 size=TEXT_CAPTION, color=ctx.theme.muted, bold=True, align="center_center")
         ctx.text(x + quarter * 2.5, stats_text_y,
                  clamped_label,
-                 size=TEXT_CAPTION, color=ctx.theme.warning, bold=True, align="center")
+                 size=TEXT_CAPTION, color=ctx.theme.warning, bold=True, align="center_center")
         ctx.text(x + quarter * 3.5, stats_text_y,
                  visits_label,
-                 size=TEXT_CAPTION, color=ctx.theme.success, bold=True, align="center")
+                 size=TEXT_CAPTION, color=ctx.theme.success, bold=True, align="center_center")
 
         # timeline strip
         tl_y = stats_y + STATS_BAR_H
@@ -546,7 +546,7 @@ class _StatsCanvas(Component):
         for frac, lbl in labels:
             mx = x + frac * w
             ctx.text(mx, marker_y, lbl, size=TEXT_HINT,
-                     color=dim(ctx.theme.muted, 120), align="center")
+                     color=dim(ctx.theme.muted, 120), align="center_center")
 
         app.highlight_path = None
 

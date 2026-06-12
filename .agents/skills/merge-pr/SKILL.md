@@ -48,6 +48,7 @@ Handles: rebase, squash-merge, alpha sync, artifact cleanup, version bump, issue
 | PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH && just merge-bump && just merge-close $ISSUE $PR` |
 | Dirty root worktree | Commit or restore changed files, re-run `just merge-pr $PR` |
 | `>1 unexpected commits` on local alpha | Investigate before proceeding; do not force-reset blindly |
+| `could not resolve GitHub issue or stint tasks` | Only if the PR genuinely has nothing to close (standalone follow-up): `just merge-pr $PR no-issue`. Otherwise fix the PR body's closing keyword first. |
 
 **Available sub-steps:**
 ```bash

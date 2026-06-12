@@ -10,7 +10,7 @@ blocked_by:
   - 41
 gh_issue: ["2071"]
 area: ["apps/examples", "host/permissions", "host/secrets", "sdk/python"]
-tags: ["v1", "app-refresh", "bluesky", "permissions", "secrets"]
+tags: ["v2", "app-refresh", "bluesky", "permissions", "secrets"]
 ---
 
 Add optional Bluesky login as the app-side proof for point-of-need capability prompts and persistent secret writes.

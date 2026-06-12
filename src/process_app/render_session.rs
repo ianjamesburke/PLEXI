@@ -159,6 +159,7 @@ impl RenderSession {
                 h,
                 placeholder,
                 multiline,
+                value,
             } = cmd
             else {
                 continue;
@@ -181,8 +182,22 @@ impl RenderSession {
 
             let widget_id = ui.id().with(("text_input", pane_id, id.as_str()));
 
-            let (resp, cursor_char_idx) = {
+            let (resp, cursor_char_idx, changed_value) = {
                 let buffer = self.text_input_buffers.entry(id.clone()).or_default();
+                if let Some(value) = value {
+                    if buffer != value {
+                        *buffer = value.clone();
+                    }
+                }
+                let prev_value = buffer.clone();
+
+                // Draw single pill background (fill only).
+                ui.painter().rect_filled(
+                    widget_rect,
+                    crate::ui::style::RADIUS_MD,
+                    colors.bg_active,
+                );
+
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(widget_rect)
@@ -190,11 +205,7 @@ impl RenderSession {
                 );
                 child.visuals_mut().text_cursor.stroke.width = 1.5;
                 child.visuals_mut().text_cursor.stroke.color = colors.accent;
-                child.visuals_mut().extreme_bg_color = colors.bg_active;
-                child.visuals_mut().widgets.active.bg_stroke =
-                    egui::Stroke::new(1.0, colors.accent);
-                child.visuals_mut().widgets.inactive.bg_stroke =
-                    egui::Stroke::new(1.0, colors.border);
+
                 // Placeholder at half strength — the theme's override_text_color
                 // makes egui's default hint color near-white otherwise.
                 let hint = egui::RichText::new(placeholder.as_str())
@@ -207,37 +218,69 @@ impl RenderSession {
                         .desired_width(actual_size.x)
                         .hint_text(hint)
                         .font(egui::TextStyle::Body)
-                        .frame(true);
+                        .frame(false);
                     egui::ScrollArea::vertical()
                         .max_height(actual_size.y)
                         .show(&mut child, |ui| edit.show(ui))
                         .inner
                 } else {
+                    let font_size = child.text_style_height(&egui::TextStyle::Body);
+                    let text_h = font_size * 1.4;
+                    let v_inset = ((actual_size.y - text_h) * 0.5).max(4.0);
+                    let inner_rect = widget_rect.shrink2(egui::vec2(8.0, v_inset));
+                    let mut inner_child = child.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(inner_rect)
+                            .id_salt(widget_id.with("c")),
+                    );
+                    inner_child.visuals_mut().text_cursor.stroke.width = 1.5;
+                    inner_child.visuals_mut().text_cursor.stroke.color = colors.accent;
                     let edit = egui::TextEdit::singleline(buffer)
                         .id(widget_id)
-                        .desired_width(actual_size.x)
+                        .desired_width(inner_rect.width())
                         .hint_text(hint)
                         .font(egui::TextStyle::Body)
-                        .frame(true);
-                    edit.show(&mut child)
+                        .frame(false);
+                    edit.show(&mut inner_child)
                 };
-                if output.response.has_focus() {
-                    // Soft accent glow outside the field — focus reads at a
-                    // glance without a harsh double border.
-                    ui.painter().rect_stroke(
-                        output.response.rect.expand(2.0),
-                        crate::ui::style::RADIUS_MD,
-                        egui::Stroke::new(3.0, colors.accent.gamma_multiply(0.25)),
-                        egui::StrokeKind::Outside,
-                    );
-                }
+
+                // Draw focus-aware border over the pill — one stroke, no glow ring.
+                let border_color = if output.response.has_focus() {
+                    colors.accent
+                } else {
+                    colors.border
+                };
+                ui.painter().rect_stroke(
+                    widget_rect,
+                    crate::ui::style::RADIUS_MD,
+                    egui::Stroke::new(1.0, border_color),
+                    egui::StrokeKind::Outside,
+                );
+
                 if (newly_visible || self.pane_just_focused) && !focus_granted {
                     output.response.request_focus();
                     focus_granted = true;
                 }
                 let cursor_idx = output.cursor_range.map(|cr| cr.primary.ccursor.index);
-                (output.response, cursor_idx)
+                let changed_value = if *buffer != prev_value {
+                    Some(buffer.clone())
+                } else {
+                    None
+                };
+                (output.response, cursor_idx, changed_value)
             };
+
+            if let Some(value) = changed_value {
+                log::info!(
+                    "render_session: TextInput changed id={} len={}",
+                    id,
+                    value.len()
+                );
+                self.outbound_events.push(PlexiEvent::TextChanged {
+                    id: id.clone(),
+                    value,
+                });
+            }
 
             let pointer_pressed_inside = ui
                 .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
@@ -252,6 +295,32 @@ impl RenderSession {
 
             if resp.has_focus() {
                 any_has_focus = true;
+                let control_key = ui.input(|i| {
+                    if i.key_pressed(egui::Key::Tab) {
+                        Some("tab")
+                    } else if i.key_pressed(egui::Key::ArrowDown) {
+                        Some("down")
+                    } else if i.key_pressed(egui::Key::ArrowUp) {
+                        Some("up")
+                    } else if i.key_pressed(egui::Key::Escape) {
+                        Some("escape")
+                    } else {
+                        None
+                    }
+                });
+                if let Some(key) = control_key {
+                    let modifiers = ui.input(|i| crate::app_protocol::Modifiers {
+                        shift: i.modifiers.shift,
+                        ctrl: i.modifiers.ctrl,
+                        alt: i.modifiers.alt,
+                        cmd: i.modifiers.command,
+                    });
+                    self.outbound_events.push(PlexiEvent::TextInputKey {
+                        id: id.clone(),
+                        key: key.to_string(),
+                        modifiers,
+                    });
+                }
             }
 
             if *multiline {

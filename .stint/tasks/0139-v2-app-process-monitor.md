@@ -5,8 +5,6 @@ status: backlog
 sprint: "s29"
 estimate: 5h
 blocked_by:
-  - 30
-  - 31
 gh_issue: ["124"]
 area: ["apps/examples"]
 tags: ["v2", "apps", "system"]

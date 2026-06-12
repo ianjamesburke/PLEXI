@@ -5,8 +5,6 @@ status: backlog
 sprint: "s25"
 estimate: 16h
 blocked_by:
-  - 30
-  - 31
 gh_issue: ["1715"]
 area: ["host/permissions", "cli/commands", "infra/server"]
 tags: ["future", "teams", "collaboration"]

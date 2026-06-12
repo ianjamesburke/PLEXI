@@ -496,7 +496,10 @@ fn focus_history_restores_context_minimap_visibility() {
     app.switch_workspace(ctx_b_idx);
 
     let pane_b_id = 424242;
-    let tile_b = app.windows[app.active_window].tree.tiles.insert_pane(pane_b_id);
+    let tile_b = app.windows[app.active_window]
+        .tree
+        .tiles
+        .insert_pane(pane_b_id);
     app.windows[app.active_window].tree.root = Some(tile_b);
     app.windows[app.active_window].focused_pane = Some(tile_b);
     app.minimap.visible = true;

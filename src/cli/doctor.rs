@@ -32,17 +32,19 @@ struct LlmServerReport {
     models: Vec<String>,
 }
 
-/// Check whether an `openrouter-api-key` global secret is stored and, if so,
+/// Check whether an `OPENROUTER_API_KEY` global secret is stored and, if so,
 /// validate it against the OpenRouter models endpoint.
 fn check_openrouter() -> OpenRouterReport {
     #[cfg(target_os = "macos")]
     {
         use crate::workspace::secrets::{keychain_user_name, MacKeychain, SecretStore};
         let store = MacKeychain::new();
-        let account = keychain_user_name("openrouter-api-key");
-        match store.get(&account) {
+        let key = ["OPENROUTER_API_KEY", "openrouter-api-key"]
+            .iter()
+            .find_map(|name| store.get(&keychain_user_name(name)));
+        match key {
             None => {
-                log::info!("cli:doctor: openrouter-api-key not found in keychain");
+                log::info!("cli:doctor: OPENROUTER_API_KEY not found in keychain");
                 return OpenRouterReport {
                     configured: false,
                     model_count: None,
@@ -50,7 +52,7 @@ fn check_openrouter() -> OpenRouterReport {
                 };
             }
             Some(key) => {
-                log::info!("cli:doctor: openrouter-api-key found -- validating via API");
+                log::info!("cli:doctor: OPENROUTER_API_KEY found -- validating via API");
                 match probe_openrouter_key(key.as_str()) {
                     Some(count) => {
                         log::info!("cli:doctor: openrouter key valid -- {count} models");
@@ -316,7 +318,7 @@ fn print_openrouter_section(report: &OpenRouterReport) {
     println!("\nOpenRouter:");
     println!("  {}", report.status);
     if !report.configured {
-        println!("  --> run: plexi secret set openrouter-api-key --global");
+        println!("  --> run: plexi secret set OPENROUTER_API_KEY --global");
     }
 }
 

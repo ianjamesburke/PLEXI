@@ -587,7 +587,6 @@ impl PlexiApp {
                             StrokeKind::Inside,
                         );
 
-                        // Render zoomed terminal in the inset rect
                         let inner_rect = zoom_rect.shrink(2.0); // inside the border
                         let mut child_ui =
                             ui.new_child(egui::UiBuilder::new().max_rect(inner_rect));
@@ -621,10 +620,18 @@ impl PlexiApp {
                                 inner_rect.min,
                                 egui::vec2(inner_rect.width(), NAME_BAR_HEIGHT),
                             );
-                            child_ui.painter().rect_filled(bar_rect, 0.0, self.colors.terminal_bg);
+                            // Paint via the parent `ui` painter at full opacity —
+                            // the explicit pane_header_bg() tone must match the
+                            // tiled name bar exactly, so it must not be dimmed by
+                            // the zoom overlay's 0.88-opacity child_ui.
+                            ui.painter().rect_filled(
+                                bar_rect,
+                                0.0,
+                                self.colors.pane_header_bg(),
+                            );
                             if let Some((active_idx, count)) = zoomed_tab_info {
                                 crate::spatial::tiling::paint_tab_dots(
-                                    child_ui.painter(),
+                                    ui.painter(),
                                     bar_rect.left(),
                                     bar_rect.center().y,
                                     active_idx,
@@ -634,7 +641,7 @@ impl PlexiApp {
                                 );
                             }
                             if let Some(ref name) = zoomed_pane_name {
-                                child_ui.painter().text(
+                                ui.painter().text(
                                     bar_rect.center(),
                                     egui::Align2::CENTER_CENTER,
                                     name,
@@ -650,104 +657,143 @@ impl PlexiApp {
                         } else {
                             inner_rect
                         };
-                        let mut frame_ui = ui.new_child(egui::UiBuilder::new().max_rect(frame_rect));
-                        frame_ui.set_opacity(0.88);
-                        egui::Frame::new()
-                            .fill(self.colors.terminal_bg)
-                            .inner_margin(egui::Margin::same(8))
-                            .show(&mut frame_ui, |ui| {
-                                if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-                                    if let Some(t) = pane.as_terminal_mut() {
-                                        if dropped_to_zoom {
-                                            crate::spatial::tiling::write_dropped_paths_to_terminal(ui, t);
-                                        }
-                                        if t.exited {
-                                            let rect = ui.max_rect();
-                                            ui.painter().rect_filled(
-                                                rect,
-                                                0.0,
-                                                self.colors.terminal_bg,
-                                            );
-                                            ui.allocate_new_ui(
-                                                egui::UiBuilder::new().max_rect(rect),
-                                                |ui| {
-                                                    ui.centered_and_justified(|ui| {
-                                                        ui.colored_label(
-                                                            self.colors.text_dim,
-                                                            "[process exited]",
-                                                        );
-                                                    });
-                                                },
-                                            );
-                                        } else if hovered_files {
-                                            // Skip TerminalView render while a file is being
-                                            // dragged over the zoomed pane. TerminalView::show()
-                                            // calls backend.sync() which clones the full grid
-                                            // under FairMutex contention — on a large terminal
-                                            // (e.g. a full-window Claude Code session) this
-                                            // blocked the main thread for several seconds.
-                                            // The drop itself is handled above (dropped_to_zoom
-                                            // guard), so we skip only the hover-frame renders.
-                                            log::debug!("[DRAG] zoom overlay: skipping TerminalView render during file hover");
-                                            let rect = ui.max_rect();
-                                            ui.allocate_new_ui(
-                                                egui::UiBuilder::new().max_rect(rect),
-                                                |ui| {
-                                                    ui.centered_and_justified(|ui| {
-                                                        ui.colored_label(
-                                                            self.colors.text_dim,
-                                                            "Drop to paste path",
-                                                        );
-                                                    });
-                                                },
-                                            );
-                                        } else {
-                                            // Reserve space for tab dots when no name bar
-                                            if !has_name && zoomed_tab_info.is_some() {
-                                                ui.add_space(
-                                                    crate::spatial::tiling::TAB_DOT_RESERVED_HEIGHT,
-                                                );
+                        // Branch on pane type BEFORE the Frame. PGAP app runtimes
+                        // paint via `ui.painter()` WITHOUT allocating UI space, so
+                        // wrapping them in an `egui::Frame` collapses it to ~16x16
+                        // at the top-left (see src/process_app/mod.rs docs). Mirror
+                        // the tiling path (tiling.rs pane_ui) for app panes instead:
+                        // full-rect background fill + child Ui + app_pane::render,
+                        // which also restores the overtake bar and nav-back chrome.
+                        let is_app_pane = ctx
+                            .panes
+                            .get(&pane_id)
+                            .is_some_and(|p| p.as_app().is_some());
+                        if is_app_pane {
+                            ui.painter()
+                                .rect_filled(frame_rect, 0.0, self.colors.bg_darkest);
+                            let mut app_ui =
+                                ui.new_child(egui::UiBuilder::new().max_rect(frame_rect));
+                            app_ui.set_opacity(0.88);
+                            if let Some(app_pane) =
+                                ctx.panes.get_mut(&pane_id).and_then(|p| p.as_app_mut())
+                            {
+                                crate::render::app_pane::render(
+                                    &mut app_ui,
+                                    app_pane,
+                                    &self.colors,
+                                    !modal_open,
+                                );
+                            }
+                            // Tab indicator dots for unnamed panes in a tab group —
+                            // painter-only, painted after the app render so they
+                            // sit on top of the app content.
+                            if !has_name {
+                                if let Some((active_idx, count)) = zoomed_tab_info {
+                                    crate::spatial::tiling::paint_tab_dots(
+                                        app_ui.painter(),
+                                        frame_rect.left(),
+                                        frame_rect.top() + 2.0 + 4.0, // 4.0 = dot radius
+                                        active_idx,
+                                        count,
+                                        self.colors.accent,
+                                        self.colors.bg_active,
+                                    );
+                                }
+                            }
+                        } else {
+                            let mut frame_ui = ui.new_child(egui::UiBuilder::new().max_rect(frame_rect));
+                            frame_ui.set_opacity(0.88);
+                            egui::Frame::new()
+                                .fill(self.colors.terminal_bg)
+                                .inner_margin(egui::Margin::ZERO)
+                                .show(&mut frame_ui, |ui| {
+                                    if let Some(pane) = ctx.panes.get_mut(&pane_id) {
+                                        if let Some(t) = pane.as_terminal_mut() {
+                                            if dropped_to_zoom {
+                                                crate::spatial::tiling::write_dropped_paths_to_terminal(ui, t);
                                             }
-                                            let font_size = t.font_size;
-                                            log::debug!("[DRAG] zoom overlay: TerminalView render start");
-                                            use egui_term::TerminalView;
-                                            use crate::ui::theme;
-                                            let terminal = TerminalView::new(ui, &mut t.backend)
-                                                .set_focus(!modal_open)
-                                                .set_theme(self.theme.clone())
-                                                .set_font(theme::terminal_font(font_size))
-                                                .set_size(Vec2::new(
-                                                    ui.available_width(),
-                                                    ui.available_height(),
-                                                ));
-                                            ui.add(terminal);
-                                            log::debug!("[DRAG] zoom overlay: TerminalView render done");
+                                            if t.exited {
+                                                let rect = ui.max_rect();
+                                                ui.painter().rect_filled(
+                                                    rect,
+                                                    0.0,
+                                                    self.colors.terminal_bg,
+                                                );
+                                                ui.allocate_new_ui(
+                                                    egui::UiBuilder::new().max_rect(rect),
+                                                    |ui| {
+                                                        ui.centered_and_justified(|ui| {
+                                                            ui.colored_label(
+                                                                self.colors.text_dim,
+                                                                "[process exited]",
+                                                            );
+                                                        });
+                                                    },
+                                                );
+                                            } else if hovered_files {
+                                                // Skip TerminalView render while a file is being
+                                                // dragged over the zoomed pane. TerminalView::show()
+                                                // calls backend.sync() which clones the full grid
+                                                // under FairMutex contention — on a large terminal
+                                                // (e.g. a full-window Claude Code session) this
+                                                // blocked the main thread for several seconds.
+                                                // The drop itself is handled above (dropped_to_zoom
+                                                // guard), so we skip only the hover-frame renders.
+                                                log::debug!("[DRAG] zoom overlay: skipping TerminalView render during file hover");
+                                                let rect = ui.max_rect();
+                                                ui.allocate_new_ui(
+                                                    egui::UiBuilder::new().max_rect(rect),
+                                                    |ui| {
+                                                        ui.centered_and_justified(|ui| {
+                                                            ui.colored_label(
+                                                                self.colors.text_dim,
+                                                                "Drop to paste path",
+                                                            );
+                                                        });
+                                                    },
+                                                );
+                                            } else {
+                                                // Reserve space for tab dots when no name bar
+                                                if !has_name && zoomed_tab_info.is_some() {
+                                                    ui.add_space(
+                                                        crate::spatial::tiling::TAB_DOT_RESERVED_HEIGHT,
+                                                    );
+                                                }
+                                                let font_size = t.font_size;
+                                                log::debug!("[DRAG] zoom overlay: TerminalView render start");
+                                                use egui_term::TerminalView;
+                                                use crate::ui::theme;
+                                                let terminal = TerminalView::new(ui, &mut t.backend)
+                                                    .set_focus(!modal_open)
+                                                    .set_theme(self.theme.clone())
+                                                    .set_font(theme::terminal_font(font_size))
+                                                    .set_size(Vec2::new(
+                                                        ui.available_width(),
+                                                        ui.available_height(),
+                                                    ));
+                                                ui.add(terminal);
+                                                log::debug!("[DRAG] zoom overlay: TerminalView render done");
+                                            }
                                         }
-                                    } else if let Some(a) = pane.as_app_mut() {
-                                        let app_ctx = crate::app::app_trait::AppRenderContext {
-                                            colors: &self.colors,
-                                            is_focused: !modal_open,
-                                        };
-                                        a.runtime.ui(ui, &app_ctx);
                                     }
-                                }
 
-                                // Draw tab indicator dots for unnamed panes in a tab group
-                                if !has_name {
-                                    if let Some((active_idx, count)) = zoomed_tab_info {
-                                        let rect = ui.max_rect();
-                                        crate::spatial::tiling::paint_tab_dots(
-                                            ui.painter(),
-                                            rect.left(),
-                                            rect.top() + 2.0 + 4.0, // 4.0 = dot radius
-                                            active_idx,
-                                            count,
-                                            self.colors.accent,
-                                            self.colors.bg_active,
-                                        );
+                                    // Draw tab indicator dots for unnamed panes in a tab group
+                                    if !has_name {
+                                        if let Some((active_idx, count)) = zoomed_tab_info {
+                                            let rect = ui.max_rect();
+                                            crate::spatial::tiling::paint_tab_dots(
+                                                ui.painter(),
+                                                rect.left(),
+                                                rect.top() + 2.0 + 4.0, // 4.0 = dot radius
+                                                active_idx,
+                                                count,
+                                                self.colors.accent,
+                                                self.colors.bg_active,
+                                            );
+                                        }
                                     }
-                                }
-                            });
+                                });
+                        }
                     } else {
                         drop(behavior);
                     }

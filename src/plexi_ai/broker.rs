@@ -55,28 +55,6 @@ pub fn get_pane_snapshot() -> Vec<PaneContext> {
     pane_snapshot().lock().unwrap().clone()
 }
 
-/// One live token delta forwarded through an `AiBrokerRequest::stream_sink`
-/// while the turn is running. Reasoning is carried separately from answer
-/// text so consumers can render a collapsed thinking section.
-#[derive(Debug, Clone, PartialEq)]
-pub enum StreamDelta {
-    Answer(String),
-    Reasoning(String),
-}
-
-/// Live delta sink: send half of an mpsc channel the broker forwards each
-/// `StreamDelta` into as it arrives (used by the host Assistant for live
-/// streaming). Send failures are ignored — a dropped receiver just means the
-/// consumer stopped listening.
-#[derive(Clone)]
-pub struct StreamSink(pub std::sync::mpsc::Sender<StreamDelta>);
-
-impl std::fmt::Debug for StreamSink {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("StreamSink")
-    }
-}
-
 /// One brokered request — what the routing layer hands to a broker. `app_id`
 /// is required so the ledger can attribute spend per-app.
 #[derive(Debug, Clone)]
@@ -94,42 +72,26 @@ pub struct AiBrokerRequest {
     /// Tool dispatcher snapshot. When `Some`, the broker runs a tool loop
     /// and dispatches any tool calls the model makes.
     pub tool_dispatcher: Option<std::sync::Arc<ToolDispatcher>>,
-    /// Live stream sink. When `Some`, every answer/reasoning delta is
-    /// forwarded as it arrives, before the final `AiBrokerResponse`.
-    pub stream_sink: Option<StreamSink>,
 }
 
 /// Broker outcome. Either `content` is `Some` (success) or `error` is `Some`
 /// (failure). Token counts default to `0` when the upstream backend doesn't
 /// report them (e.g. subscription billing).
-///
-/// `stream_deltas` carries ordered incremental text deltas accumulated during
-/// the final text turn. The routing layer uses these to emit
-/// `PlexiEvent::AiStreamChunk` events to the app before the final
-/// `PlexiEvent::AiResponse`. Empty on error or tool-only turns.
 #[derive(Debug, Clone)]
 pub struct AiBrokerResponse {
     pub content: Option<String>,
     pub tokens_in: u32,
     pub tokens_out: u32,
     pub error: Option<String>,
-    /// Ordered incremental text deltas from the final text turn.
-    pub stream_deltas: Vec<String>,
 }
 
 impl AiBrokerResponse {
-    pub fn ok_with_deltas(
-        content: String,
-        tokens_in: u32,
-        tokens_out: u32,
-        stream_deltas: Vec<String>,
-    ) -> Self {
+    pub fn ok(content: String, tokens_in: u32, tokens_out: u32) -> Self {
         Self {
             content: Some(content),
             tokens_in,
             tokens_out,
             error: None,
-            stream_deltas,
         }
     }
 
@@ -139,7 +101,6 @@ impl AiBrokerResponse {
             tokens_in: 0,
             tokens_out: 0,
             error: Some(message.into()),
-            stream_deltas: Vec::new(),
         }
     }
 }
@@ -151,7 +112,15 @@ pub trait AiBroker: Send + Sync {
     /// block the caller forever — the routing layer always invokes this from
     /// a dedicated worker thread, but slow networks and stalled backends can
     /// still tie that thread up. Implementations should bound their own waits.
-    fn dispatch(&self, request: AiBrokerRequest) -> AiBrokerResponse;
+    ///
+    /// `on_delta` receives every streamed text/reasoning increment as it
+    /// arrives, on the calling thread, so the routing layer can forward live
+    /// `PlexiEvent::AiStreamChunk` events while the turn is still running.
+    fn dispatch(
+        &self,
+        request: AiBrokerRequest,
+        on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
+    ) -> AiBrokerResponse;
 }
 
 /// Production broker: reads config from `AiConfig`, routes to the configured
@@ -175,7 +144,11 @@ impl LiveAiBroker {
 }
 
 impl AiBroker for LiveAiBroker {
-    fn dispatch(&self, request: AiBrokerRequest) -> AiBrokerResponse {
+    fn dispatch(
+        &self,
+        request: AiBrokerRequest,
+        on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
+    ) -> AiBrokerResponse {
         let ai_config = match &self.ai_config {
             Some(c) => c,
             None => {
@@ -197,14 +170,18 @@ impl AiBroker for LiveAiBroker {
         let backend_name = ai_config.backend.as_deref().unwrap_or("openrouter");
 
         match backend_name {
-            "ollama" => dispatch_ollama(request, ai_config),
-            _ => dispatch_openrouter(request, ai_config),
+            "ollama" => dispatch_ollama(request, ai_config, on_delta),
+            _ => dispatch_openrouter(request, ai_config, on_delta),
         }
     }
 }
 
 /// Dispatch through the OpenRouter backend.
-fn dispatch_openrouter(request: AiBrokerRequest, ai_config: &AiConfig) -> AiBrokerResponse {
+fn dispatch_openrouter(
+    request: AiBrokerRequest,
+    ai_config: &AiConfig,
+    on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
+) -> AiBrokerResponse {
     let or_config = match ai_config.openrouter.as_ref() {
         Some(c) => c,
         None => {
@@ -244,7 +221,14 @@ fn dispatch_openrouter(request: AiBrokerRequest, ai_config: &AiConfig) -> AiBrok
         model: model_id.clone(),
     };
 
-    run_turn_and_respond(request, &backend, BillingModel::Metered, model_id, api_key)
+    run_turn_and_respond(
+        request,
+        &backend,
+        BillingModel::Metered,
+        model_id,
+        api_key,
+        on_delta,
+    )
 }
 
 fn resolve_openrouter_api_key(api_key_env: &str) -> Result<String, String> {
@@ -256,13 +240,13 @@ fn resolve_openrouter_api_key(api_key_env: &str) -> Result<String, String> {
 
     if api_key_env == "OPENROUTER_API_KEY" {
         if let Some(key) = read_global_openrouter_secret() {
-            log::info!("ai_broker: using global Plexi secret openrouter-api-key");
+            log::info!("ai_broker: using global Plexi secret OPENROUTER_API_KEY");
             return Ok(key);
         }
     }
 
     Err(format!(
-        "api_key_missing: {api_key_env} not set — export it in your shell profile or run `plexi secret set openrouter-api-key --global`"
+        "api_key_missing: {api_key_env} not set — export it in your shell profile or run `plexi secret set OPENROUTER_API_KEY --global`"
     ))
 }
 
@@ -270,14 +254,16 @@ fn resolve_openrouter_api_key(api_key_env: &str) -> Result<String, String> {
 fn read_global_openrouter_secret() -> Option<String> {
     use crate::workspace::secrets::{keychain_user_name, MacKeychain, SecretStore};
     let store = MacKeychain::new();
-    let account = keychain_user_name("openrouter-api-key");
-    store.get(&account).and_then(|key| {
-        if key.is_empty() {
-            None
-        } else {
-            Some(key.to_string())
+    for name in ["OPENROUTER_API_KEY", "openrouter-api-key"] {
+        let account = keychain_user_name(name);
+        if let Some(key) = store.get(&account) {
+            if !key.is_empty() {
+                log::info!("ai_broker: resolved OpenRouter key from {name}");
+                return Some(key.to_string());
+            }
         }
-    })
+    }
+    None
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -286,7 +272,11 @@ fn read_global_openrouter_secret() -> Option<String> {
 }
 
 /// Dispatch through the Ollama backend.
-fn dispatch_ollama(request: AiBrokerRequest, ai_config: &AiConfig) -> AiBrokerResponse {
+fn dispatch_ollama(
+    request: AiBrokerRequest,
+    ai_config: &AiConfig,
+    on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
+) -> AiBrokerResponse {
     let ollama_config = match ai_config.ollama.as_ref() {
         Some(c) => c,
         None => {
@@ -326,6 +316,7 @@ fn dispatch_ollama(request: AiBrokerRequest, ai_config: &AiConfig) -> AiBrokerRe
         BillingModel::Subscription,
         model_id,
         String::new(),
+        on_delta,
     )
 }
 
@@ -389,6 +380,7 @@ fn run_turn_and_respond(
     billing: BillingModel,
     model_id: String,
     api_key: String,
+    on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
 ) -> AiBrokerResponse {
     // Build effective system prompt (optionally prepend host context).
     let system = if request.system.starts_with("# no-host-context") {
@@ -427,8 +419,6 @@ fn run_turn_and_respond(
     let mut total_tokens_out: u32 = 0;
     let mut last_generation_id: Option<String> = None;
     let mut final_text = String::new();
-    // Accumulated stream deltas from the final text turn.
-    let mut stream_deltas: Vec<String> = Vec::new();
 
     for iteration in 0..=MAX_TOOL_ITERATIONS {
         if iteration == MAX_TOOL_ITERATIONS {
@@ -446,22 +436,10 @@ fn run_turn_and_respond(
             model_tier: Some(request.model_tier),
         };
 
-        // Collect token deltas via on_token callback. We capture into a local
-        // Vec per iteration and only keep the final (non-tool-call) turn's deltas.
-        let mut turn_deltas: Vec<String> = Vec::new();
-        let turn = turn_loop::run_turn(backend, backend_req, |delta| match delta {
-            turn_loop::TokenDelta::Answer(chunk) => {
-                turn_deltas.push(chunk.to_string());
-                if let Some(sink) = &request.stream_sink {
-                    let _ = sink.0.send(StreamDelta::Answer(chunk.to_string()));
-                }
-            }
-            turn_loop::TokenDelta::Reasoning(chunk) => {
-                if let Some(sink) = &request.stream_sink {
-                    let _ = sink.0.send(StreamDelta::Reasoning(chunk.to_string()));
-                }
-            }
-        });
+        // Forward every streamed increment live so the app sees tokens as
+        // they arrive — including reasoning deltas and text from tool-call
+        // turns (assistant commentary between tool rounds).
+        let turn = turn_loop::run_turn(backend, backend_req, &mut *on_delta);
 
         match turn {
             Err(e) => {
@@ -481,8 +459,7 @@ fn run_turn_and_respond(
                 }
 
                 if result.tool_calls.is_empty() {
-                    // No tool calls — done. Keep this turn's deltas.
-                    stream_deltas = turn_deltas;
+                    // No tool calls — done.
                     final_text = result.text;
                     break;
                 }
@@ -633,12 +610,7 @@ fn run_turn_and_respond(
                         cost_cents,
                         timestamp: finish_ts,
                     });
-                    return AiBrokerResponse::ok_with_deltas(
-                        final_text,
-                        tokens_in,
-                        tokens_out,
-                        stream_deltas,
-                    );
+                    return AiBrokerResponse::ok(final_text, tokens_in, tokens_out);
                 }
                 Err(e) => {
                     // Thread spawn failed — fall through to synchronous path so
@@ -677,7 +649,7 @@ fn run_turn_and_respond(
         cost_cents: 0,
         timestamp: event_log::now_timestamp(),
     });
-    AiBrokerResponse::ok_with_deltas(final_text, total_tokens_in, total_tokens_out, stream_deltas)
+    AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out)
 }
 
 fn tier_name(tier: &ModelTier) -> &'static str {
@@ -840,13 +812,17 @@ mod tests {
         pub fn ok(content: &str) -> Self {
             Self {
                 seen: Arc::new(Mutex::new(Vec::new())),
-                response: AiBrokerResponse::ok_with_deltas(content.to_string(), 7, 3, Vec::new()),
+                response: AiBrokerResponse::ok(content.to_string(), 7, 3),
             }
         }
     }
 
     impl AiBroker for CannedBroker {
-        fn dispatch(&self, request: AiBrokerRequest) -> AiBrokerResponse {
+        fn dispatch(
+            &self,
+            request: AiBrokerRequest,
+            _on_delta: &mut dyn FnMut(crate::plexi_ai::turn_loop::TurnDelta<'_>),
+        ) -> AiBrokerResponse {
             self.seen.lock().unwrap().push(request);
             self.response.clone()
         }
@@ -870,10 +846,7 @@ mod tests {
     fn config_resolves_tiers_to_openrouter_model_ids() {
         let config = test_ai_config();
         let or_config = config.openrouter.as_ref().unwrap();
-        assert_eq!(
-            or_config.model_low.as_deref(),
-            Some("qwen/qwen3.6-flash")
-        );
+        assert_eq!(or_config.model_low.as_deref(), Some("qwen/qwen3.6-flash"));
         assert_eq!(
             or_config.model_medium.as_deref(),
             Some("xiaomi/mimo-v2.5-pro")
@@ -904,17 +877,19 @@ mod tests {
                 content: "second".to_string(),
             },
         ];
-        let resp = broker.dispatch(AiBrokerRequest {
-            app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
-            system: "be helpful".to_string(),
-            messages: messages.clone(),
-            tools: vec![],
-            workspace_root: None,
-            open_panes: vec![],
-            tool_dispatcher: None,
-            stream_sink: None,
-        });
+        let resp = broker.dispatch(
+            AiBrokerRequest {
+                app_id: "test".to_string(),
+                model_tier: ModelTier::Low,
+                system: "be helpful".to_string(),
+                messages: messages.clone(),
+                tools: vec![],
+                workspace_root: None,
+                open_panes: vec![],
+                tool_dispatcher: None,
+            },
+            &mut |_| {},
+        );
         assert_eq!(resp.content.as_deref(), Some("response"));
         let seen = broker.seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "broker should have seen exactly one request");
@@ -932,26 +907,24 @@ mod tests {
         unsafe { std::env::remove_var(missing_env) };
 
         let mut config = test_ai_config();
-        config
-            .openrouter
-            .as_mut()
-            .unwrap()
-            .api_key_env = Some(missing_env.to_string());
+        config.openrouter.as_mut().unwrap().api_key_env = Some(missing_env.to_string());
         let broker = LiveAiBroker::new(Some(config));
-        let resp = broker.dispatch(AiBrokerRequest {
-            app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
-            system: String::new(),
-            messages: vec![AiMessage {
-                role: "user".to_string(),
-                content: "hi".to_string(),
-            }],
-            tools: vec![],
-            workspace_root: None,
-            open_panes: vec![],
-            tool_dispatcher: None,
-            stream_sink: None,
-        });
+        let resp = broker.dispatch(
+            AiBrokerRequest {
+                app_id: "test".to_string(),
+                model_tier: ModelTier::Low,
+                system: String::new(),
+                messages: vec![AiMessage {
+                    role: "user".to_string(),
+                    content: "hi".to_string(),
+                }],
+                tools: vec![],
+                workspace_root: None,
+                open_panes: vec![],
+                tool_dispatcher: None,
+            },
+            &mut |_| {},
+        );
 
         if let Some(v) = orig {
             unsafe { std::env::set_var(missing_env, v) };
@@ -970,20 +943,22 @@ mod tests {
     #[test]
     fn live_broker_errors_when_ai_config_missing() {
         let broker = LiveAiBroker::new(None);
-        let resp = broker.dispatch(AiBrokerRequest {
-            app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
-            system: String::new(),
-            messages: vec![AiMessage {
-                role: "user".to_string(),
-                content: "hi".to_string(),
-            }],
-            tools: vec![],
-            workspace_root: None,
-            open_panes: vec![],
-            tool_dispatcher: None,
-            stream_sink: None,
-        });
+        let resp = broker.dispatch(
+            AiBrokerRequest {
+                app_id: "test".to_string(),
+                model_tier: ModelTier::Low,
+                system: String::new(),
+                messages: vec![AiMessage {
+                    role: "user".to_string(),
+                    content: "hi".to_string(),
+                }],
+                tools: vec![],
+                workspace_root: None,
+                open_panes: vec![],
+                tool_dispatcher: None,
+            },
+            &mut |_| {},
+        );
         assert!(resp.error.is_some());
         assert!(
             resp.error
@@ -1002,20 +977,22 @@ mod tests {
             ollama: None,
             ..Default::default()
         }));
-        let resp = broker.dispatch(AiBrokerRequest {
-            app_id: "test".to_string(),
-            model_tier: ModelTier::Low,
-            system: String::new(),
-            messages: vec![AiMessage {
-                role: "user".to_string(),
-                content: "hi".to_string(),
-            }],
-            tools: vec![],
-            workspace_root: None,
-            open_panes: vec![],
-            tool_dispatcher: None,
-            stream_sink: None,
-        });
+        let resp = broker.dispatch(
+            AiBrokerRequest {
+                app_id: "test".to_string(),
+                model_tier: ModelTier::Low,
+                system: String::new(),
+                messages: vec![AiMessage {
+                    role: "user".to_string(),
+                    content: "hi".to_string(),
+                }],
+                tools: vec![],
+                workspace_root: None,
+                open_panes: vec![],
+                tool_dispatcher: None,
+            },
+            &mut |_| {},
+        );
         assert!(resp.error.is_some());
         assert!(
             resp.error.as_deref().unwrap_or("").contains("[ai.ollama]"),

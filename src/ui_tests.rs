@@ -310,7 +310,8 @@ mod tests {
     use super::*;
     use crate::app::permissions::AppPermissions;
     use crate::app::FocusLayer;
-    use crate::host::pane::{AppPane, AppRuntime, Pane};
+    use crate::host::context::Window;
+    use crate::host::pane::{AppPane, AppRuntime, Pane, PortalPane};
     use crate::process_app::ProcessApp;
 
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
@@ -367,6 +368,47 @@ mod tests {
         h.save_screenshot("/tmp/plexi_with_pane.png")
             .expect("render failed");
         println!("Screenshot saved to /tmp/plexi_with_pane.png");
+    }
+
+    /// Regression: zoomed app panes must render through the shared
+    /// `render::app_pane::render` path (full-rect fill, no collapsing
+    /// `egui::Frame`) and exercise the overtake-bar chrome. Guards against
+    /// the black-square / missing-chrome zoom bugs (zoom overlay previously
+    /// duplicated pane rendering inline and called `runtime.ui()` directly).
+    #[test]
+    fn zoomed_app_pane_renders_via_shared_path() {
+        let mut h = PlexiUiHarness::new();
+        let pane_id = add_focused_pane(&mut h);
+        h.step();
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            // Set overlay_replaced so the zoom path renders the overtake bar
+            // ("← <replaced> / Esc return") via render::app_pane::render.
+            if let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) {
+                app_pane.overlay_replaced =
+                    Some(Box::new(Pane::Portal(Box::new(PortalPane {
+                        pane_id: pane_id + 1_000,
+                        target_context_id: 42,
+                        context_state: None,
+                        hidden: false,
+                    }))));
+            }
+            let tile_id = win
+                .tree
+                .tiles
+                .find_pane(&pane_id)
+                .expect("test pane tile missing");
+            win.zoom_to(tile_id);
+        });
+        h.run_steps(3);
+        h.render()
+            .expect("zoomed app pane frame should render without panic");
+        assert!(
+            h.with_app(|app| app.windows[app.active_window].zoomed_pane.is_some()),
+            "pane should remain zoomed after stepping frames"
+        );
+        h.save_screenshot("/tmp/plexi_zoomed_app_pane.png")
+            .expect("render failed");
     }
 
     #[test]
@@ -479,6 +521,98 @@ mod tests {
             "capability modal should own focus for screenshot"
         );
         println!("Screenshot saved to /tmp/plexi_permission_prompt_chrome.png");
+    }
+
+    #[test]
+    fn screenshot_command_palette_metadata_lane() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
+        let first_pane_id = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let second_pane_id = app.host.alloc_pane_id();
+            let (process_app, _draw_tx) =
+                ProcessApp::new_for_test(second_pane_id, AppPermissions::builtin());
+            let app_pane = AppPane {
+                id: second_pane_id,
+                runtime: AppRuntime::Process(Box::new(process_app)),
+                workspace_root: std::env::temp_dir(),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "hidden-test".to_string(),
+                name: "Hidden Test App".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: true,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+            };
+            let win = &mut app.windows[app.active_window];
+            win.panes
+                .insert(second_pane_id, Pane::App(Box::new(app_pane)));
+            let second_tile = win.tree.tiles.insert_pane(second_pane_id);
+            if let Some(first_tile) = win.tree.root {
+                let root = win
+                    .tree
+                    .tiles
+                    .insert_horizontal_tile(vec![first_tile, second_tile]);
+                win.tree.root = Some(root);
+                win.focused_pane = Some(first_tile);
+            }
+            let ctx_idx = app.router.active_idx();
+            app.router.get_mut(ctx_idx).name = "Command Palette Metadata".to_string();
+            let ctx_id = app.router.get(ctx_idx).context_id;
+            let extra_a = app.host.alloc_pane_id();
+            let extra_b = app.host.alloc_pane_id();
+            let mut extra_panes = std::collections::HashMap::new();
+            extra_panes.insert(
+                extra_a,
+                Pane::Portal(Box::new(PortalPane {
+                    pane_id: extra_a,
+                    target_context_id: extra_a + 10_000,
+                    context_state: None,
+                    hidden: false,
+                })),
+            );
+            extra_panes.insert(
+                extra_b,
+                Pane::Portal(Box::new(PortalPane {
+                    pane_id: extra_b,
+                    target_context_id: extra_b + 10_000,
+                    context_state: None,
+                    hidden: true,
+                })),
+            );
+            let mut extra_tiles = egui_tiles::Tiles::default();
+            let extra_tile_a = extra_tiles.insert_pane(extra_a);
+            let extra_tile_b = extra_tiles.insert_pane(extra_b);
+            let extra_root = extra_tiles.insert_horizontal_tile(vec![extra_tile_a, extra_tile_b]);
+            let extra_window_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(Window {
+                name: "palette metadata extra".to_string(),
+                path: std::env::temp_dir(),
+                tree: egui_tiles::Tree::new("palette metadata extra", extra_root, extra_tiles),
+                panes: extra_panes,
+                focused_pane: Some(extra_tile_a),
+                zoomed_pane: None,
+                grid_x: 1,
+                grid_y: 0,
+                window_id: extra_window_id,
+                context_id: ctx_id,
+            });
+            app.show_command_palette = true;
+            app.sync_command_palette_focus();
+        });
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_command_palette_metadata_lane.png")
+            .expect("render failed");
+        assert!(
+            h.with_app(|app| app.show_command_palette
+                && app.windows[app.active_window]
+                    .panes
+                    .contains_key(&first_pane_id)),
+            "command palette should remain open over the populated context"
+        );
+        println!("Screenshot saved to /tmp/plexi_command_palette_metadata_lane.png");
     }
 
     // ── Regression: layout flows ──────────────────────────────────────────────

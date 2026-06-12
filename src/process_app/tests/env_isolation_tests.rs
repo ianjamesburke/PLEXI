@@ -16,6 +16,24 @@ const CANARY_KEY: &str = "PLEXI_SECRET_CANARY";
 const CANARY_VAL: &str = "secret_must_not_leak";
 
 #[test]
+fn config_dir_channel_mapping_supports_pr_profiles() {
+    let home = std::path::Path::new("/tmp/home");
+
+    assert_eq!(
+        super::super::channel_from_config_dir(&home.join(".plexi")),
+        None
+    );
+    assert_eq!(
+        super::super::channel_from_config_dir(&home.join(".plexi-alpha")),
+        Some("alpha".to_string())
+    );
+    assert_eq!(
+        super::super::channel_from_config_dir(&home.join(".plexi-pr-817")),
+        Some("pr-817".to_string())
+    );
+}
+
+#[test]
 fn user_global_secrets_not_injected_into_subprocess_env() {
     let sh = ["/bin/sh", "/usr/bin/sh"]
         .iter()

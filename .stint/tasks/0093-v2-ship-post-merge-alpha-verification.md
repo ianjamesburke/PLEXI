@@ -6,8 +6,6 @@ sprint: "s21"
 estimate: 3h
 blocked_by:
   - 92
-  - 30
-  - 31
 gh_issue: ["1255"]
 area: ["cli/commands"]
 tags: ["v2", "ship", "verification"]

@@ -6,8 +6,6 @@ sprint: "s21"
 estimate: 8h
 blocked_by:
   - 39
-  - 30
-  - 31
 gh_issue: ["1558"]
 area: ["cli/commands"]
 tags: ["v2", "cli", "files"]

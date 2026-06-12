@@ -380,30 +380,56 @@ pub(crate) fn show_prompt_modal(
                             std::thread::Builder::new()
                                 .name(format!("ai-query-deferred-{app_id}-{}", q.request_id))
                                 .spawn(move || {
-                                    let resp = broker.dispatch(AiBrokerRequest {
-                                        app_id,
-                                        model_tier: q.model_tier,
-                                        system: q.system,
-                                        messages: q.messages,
-                                        tools: q.tools,
-                                        workspace_root: Some(ws_root_clone),
-                                        open_panes,
-                                        tool_dispatcher: Some(td),
-                                        stream_sink: None,
-                                    });
-                                    // Send incremental stream chunks before the final AiResponse.
-                                    let n_chunks = resp.stream_deltas.len();
-                                    for (i, delta) in resp.stream_deltas.into_iter().enumerate() {
-                                        let done = i + 1 == n_chunks;
-                                        let chunk = PlexiEvent::AiStreamChunk {
-                                            request_id: req_id.clone(),
-                                            delta,
-                                            done,
+                                    // Forward each streamed increment live so the
+                                    // app sees tokens (and thinking) as they arrive.
+                                    let chunk_tx = tx.clone();
+                                    let chunk_request_id = req_id.clone();
+                                    let mut on_delta =
+                                        move |d: crate::plexi_ai::turn_loop::TurnDelta<'_>| {
+                                            let chunk = match d {
+                                                crate::plexi_ai::turn_loop::TurnDelta::Text(t) => {
+                                                    PlexiEvent::AiStreamChunk {
+                                                        request_id: chunk_request_id.clone(),
+                                                        delta: t.to_string(),
+                                                        reasoning: None,
+                                                        done: false,
+                                                    }
+                                                }
+                                                crate::plexi_ai::turn_loop::TurnDelta::Reasoning(
+                                                    r,
+                                                ) => PlexiEvent::AiStreamChunk {
+                                                    request_id: chunk_request_id.clone(),
+                                                    delta: String::new(),
+                                                    reasoning: Some(r.to_string()),
+                                                    done: false,
+                                                },
+                                            };
+                                            if let Err(e) = chunk_tx.send(chunk) {
+                                                log::warn!("ai broker: deferred stream chunk receiver dropped: {e}");
+                                            }
                                         };
-                                        if let Err(e) = tx.send(chunk) {
-                                            log::warn!("ai broker: deferred stream chunk receiver dropped: {e}");
-                                            return;
-                                        }
+                                    let resp = broker.dispatch(
+                                        AiBrokerRequest {
+                                            app_id,
+                                            model_tier: q.model_tier,
+                                            system: q.system,
+                                            messages: q.messages,
+                                            tools: q.tools,
+                                            workspace_root: Some(ws_root_clone),
+                                            open_panes,
+                                            tool_dispatcher: Some(td),
+                                        },
+                                        &mut on_delta,
+                                    );
+                                    let final_chunk = PlexiEvent::AiStreamChunk {
+                                        request_id: req_id.clone(),
+                                        delta: String::new(),
+                                        reasoning: None,
+                                        done: true,
+                                    };
+                                    if let Err(e) = tx.send(final_chunk) {
+                                        log::warn!("ai broker: deferred stream chunk receiver dropped: {e}");
+                                        return;
                                     }
                                     let event = PlexiEvent::AiResponse {
                                         request_id: req_id,
@@ -454,7 +480,11 @@ pub(crate) fn show_prompt_modal(
                         log::info!(
                             "prompts: '{}' {} for {} — {} {} deferred gated request(s)",
                             cap,
-                            if actually_granted { "granted" } else { "denied" },
+                            if actually_granted {
+                                "granted"
+                            } else {
+                                "denied"
+                            },
                             type_id,
                             if actually_granted {
                                 "forwarding"
@@ -465,12 +495,9 @@ pub(crate) fn show_prompt_modal(
                         );
                         for request in drained {
                             if actually_granted {
-                                pending_commands
-                                    .push(AppCommand::ForwardPaneRequest { request });
+                                pending_commands.push(AppCommand::ForwardPaneRequest { request });
                             } else {
-                                super::routing::write_pane_request_denial(
-                                    type_id, &request, cap,
-                                );
+                                super::routing::write_pane_request_denial(type_id, &request, cap);
                             }
                         }
                     }

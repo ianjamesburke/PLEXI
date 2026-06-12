@@ -206,8 +206,9 @@ uninstall channel="all":
 # Squash-merge a validated PR to alpha: rebase, merge, sync, cleanup, bump, close issue.
 # Intended for the merge-pr skill — run from repo root.
 #   just merge-pr 2155
-merge-pr PR:
-    bash scripts/merge-pr.sh {{PR}}
+#   just merge-pr 2202 no-issue   — standalone follow-up PR, skips issue/stint close
+merge-pr PR *FLAGS:
+    bash scripts/merge-pr.sh {{PR}} {{FLAGS}}
 
 # Sub-steps for conflict recovery. Call individually to resume a failed merge-pr.
 #   just merge-rebase feature/2155-foo   — rebase + force-push feature branch

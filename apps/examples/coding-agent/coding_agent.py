@@ -8,7 +8,7 @@ Demonstrates:
   - Monospace rendering for code blocks via ChatBubble
   - Streaming via on_ai_stream_chunk + schedule_render
   - Session persistence via JSON in .plexi/coding_agent_sessions/
-  - Same patterns as apps/assistant/ with a focused persona
+  - Same patterns as apps/dev/assistant-pgap/ with a focused persona
 """
 
 import json

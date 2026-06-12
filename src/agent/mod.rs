@@ -601,7 +601,6 @@ impl AgentHost {
             workspace_root: Some(self.workspace_root.clone()),
             open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
             tool_dispatcher: Some(dispatcher),
-            stream_sink: None,
         };
         let agent_id = agent.def.id.clone();
         log::info!(
@@ -613,7 +612,7 @@ impl AgentHost {
         let spawn = std::thread::Builder::new()
             .name(format!("agent-turn-{agent_id}"))
             .spawn(move || {
-                let resp = broker.dispatch(request);
+                let resp = broker.dispatch(request, &mut |_| {});
                 let _ = outcome_tx.send(TurnOutcome {
                     agent_id,
                     text: resp.content,
@@ -685,7 +684,11 @@ struct InertAiBroker;
 
 #[cfg(test)]
 impl AiBroker for InertAiBroker {
-    fn dispatch(&self, request: AiBrokerRequest) -> crate::plexi_ai::broker::AiBrokerResponse {
+    fn dispatch(
+        &self,
+        request: AiBrokerRequest,
+        _on_delta: &mut dyn FnMut(crate::plexi_ai::turn_loop::TurnDelta<'_>),
+    ) -> crate::plexi_ai::broker::AiBrokerResponse {
         log::warn!(
             "agent: InertAiBroker dispatch for '{}' — no AI broker in this context",
             request.app_id

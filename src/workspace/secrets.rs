@@ -373,6 +373,20 @@ pub struct WorkspaceSecrets {
     pub apps: HashMap<String, HashMap<String, String>>,
     #[serde(default)]
     pub default: HashMap<String, String>,
+    #[serde(default)]
+    pub terminal: TerminalSecrets,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct TerminalSecrets {
+    #[serde(default)]
+    pub env: TerminalEnvSecrets,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct TerminalEnvSecrets {
+    #[serde(default)]
+    pub inject: Vec<String>,
 }
 
 impl WorkspaceSecrets {
@@ -424,6 +438,19 @@ pub enum ResolveOutcome {
     PromptUser,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedSecretSource {
+    WorkspaceRoute,
+    WorkspaceCanonical,
+    GlobalCanonical,
+}
+
+#[derive(Debug)]
+pub struct ResolvedSecret {
+    pub value: Zeroizing<String>,
+    pub source: ResolvedSecretSource,
+}
+
 /// 4-step runtime resolution. Pure function — no I/O beyond the `SecretStore`
 /// trait calls. Tests use `InMemoryKeychain`; production uses `MacKeychain`.
 pub fn resolve(
@@ -433,33 +460,104 @@ pub fn resolve(
     router: &WorkspaceSecrets,
     store: &dyn SecretStore,
 ) -> ResolveOutcome {
+    match resolve_with_source(workspace_id, app_id, canonical_name, router, store) {
+        ResolveWithSourceOutcome::Found(found) => ResolveOutcome::Found(found.value),
+        ResolveWithSourceOutcome::HardMissing { reason } => ResolveOutcome::HardMissing { reason },
+        ResolveWithSourceOutcome::PromptUser => ResolveOutcome::PromptUser,
+    }
+}
+
+#[derive(Debug)]
+pub enum ResolveWithSourceOutcome {
+    Found(ResolvedSecret),
+    HardMissing { reason: String },
+    PromptUser,
+}
+
+/// Canonical-name resolver used by PGAP, `plexi run`, PTY env injection, and
+/// host integrations. An explicit route remains an alias override; without a
+/// route, the canonical env var name is the workspace Keychain suffix.
+pub fn resolve_with_source(
+    workspace_id: &str,
+    app_id: &str,
+    canonical_name: &str,
+    router: &WorkspaceSecrets,
+    store: &dyn SecretStore,
+) -> ResolveWithSourceOutcome {
     // Step 1+2: workspace route (apps.<id> first, then [default]).
     if let Some(friendly) = router.route_for(app_id, canonical_name) {
         let account = keychain_workspace_name(workspace_id, friendly);
         if let Some(value) = store.get(&account) {
-            return ResolveOutcome::Found(value);
+            return ResolveWithSourceOutcome::Found(ResolvedSecret {
+                value,
+                source: ResolvedSecretSource::WorkspaceRoute,
+            });
         }
         // Route declared but Keychain is empty — prompt the user (don't
         // silently fall through to user-scope; the route was explicit).
-        return ResolveOutcome::PromptUser;
+        return ResolveWithSourceOutcome::PromptUser;
+    }
+
+    // Step 2.5: no alias route means the canonical name is the workspace key.
+    let workspace_account = keychain_workspace_name(workspace_id, canonical_name);
+    if let Some(value) = store.get(&workspace_account) {
+        return ResolveWithSourceOutcome::Found(ResolvedSecret {
+            value,
+            source: ResolvedSecretSource::WorkspaceCanonical,
+        });
     }
 
     // Step 3: user-scope fallback when allowed.
     if router.fallback {
         let user_account = keychain_user_name(canonical_name);
         if let Some(value) = store.get(&user_account) {
-            return ResolveOutcome::Found(value);
+            return ResolveWithSourceOutcome::Found(ResolvedSecret {
+                value,
+                source: ResolvedSecretSource::GlobalCanonical,
+            });
         }
-        return ResolveOutcome::PromptUser;
+        return ResolveWithSourceOutcome::PromptUser;
     }
 
     // Step 4: no route + fallback disabled → hard error.
-    ResolveOutcome::HardMissing {
+    ResolveWithSourceOutcome::HardMissing {
         reason: format!(
-            "no route in .plexi/secrets.toml for app '{app_id}' / secret '{canonical_name}', \
-             and fallback = false"
+            "no workspace or route value in .plexi/secrets.toml for app '{app_id}' / secret \
+             '{canonical_name}', and fallback = false"
         ),
     }
+}
+
+pub fn resolve_terminal_env(
+    workspace_root: &Path,
+    store: &dyn SecretStore,
+) -> Result<HashMap<String, Zeroizing<String>>, String> {
+    let cfg = WorkspaceConfig::load(workspace_root)?
+        .ok_or_else(|| format!("workspace.toml missing at {}", workspace_root.display()))?;
+    let router = WorkspaceSecrets::load(workspace_root)?
+        .ok_or_else(|| format!("secrets.toml missing at {}", workspace_root.display()))?;
+
+    let mut env = HashMap::new();
+    for canonical_name in &router.terminal.env.inject {
+        match resolve_with_source(&cfg.id, "terminal", canonical_name, &router, store) {
+            ResolveWithSourceOutcome::Found(found) => {
+                log::info!(
+                    "workspace_secrets: terminal env injecting {canonical_name} source={:?}",
+                    found.source
+                );
+                env.insert(canonical_name.clone(), found.value);
+            }
+            ResolveWithSourceOutcome::PromptUser => {
+                log::info!(
+                    "workspace_secrets: terminal env skipped missing allowlisted secret {canonical_name}"
+                );
+            }
+            ResolveWithSourceOutcome::HardMissing { reason } => {
+                log::warn!("workspace_secrets: terminal env skipped {canonical_name}: {reason}");
+            }
+        }
+    }
+    Ok(env)
 }
 
 // ── Workspace init helpers ───────────────────────────────────────────────────
@@ -504,7 +602,10 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
                         # OPENAI_API_KEY = \"openai_personal\"\n\
                         \n\
                         # [default]\n\
-                        # GITHUB_TOKEN = \"github_personal\"\n";
+                        # GITHUB_TOKEN = \"github_personal\"\n\
+                        \n\
+                        # [terminal.env]\n\
+                        # inject = [\"OPENAI_API_KEY\"]\n";
         std::fs::write(&secrets_path, template)
             .map_err(|e| format!("write {}: {e}", secrets_path.display()))?;
     }
@@ -619,6 +720,53 @@ pub fn write_default_route(
         .map_err(|e| format!("write {}: {e}", secrets_path.display()))
 }
 
+/// Update `[terminal.env] inject = [...]` in workspace `secrets.toml`.
+///
+/// Workspace-scoped secrets default to terminal injection on when created by
+/// the native Secrets app or CLI. This helper is also used by the native app
+/// toggle so the TOML file remains the durable source of policy.
+pub fn write_terminal_env_inject(
+    workspace_root: &Path,
+    canonical: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let secrets_path = workspace_root
+        .join(crate::config::workspace_channel_dir())
+        .join("secrets.toml");
+
+    if !secrets_path.exists() {
+        let dir = workspace_root.join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        let inject = if enabled {
+            format!("  \"{canonical}\",\n")
+        } else {
+            String::new()
+        };
+        let content = format!("fallback = true\n\n[terminal.env]\ninject = [\n{inject}]\n");
+        return std::fs::write(&secrets_path, content)
+            .map_err(|e| format!("write {}: {e}", secrets_path.display()));
+    }
+
+    let raw = std::fs::read_to_string(&secrets_path)
+        .map_err(|e| format!("read {}: {e}", secrets_path.display()))?;
+
+    let mut names = WorkspaceSecrets::parse(&raw)
+        .map(|router| router.terminal.env.inject)
+        .unwrap_or_default();
+    let already_present = names.iter().any(|name| name == canonical);
+    if enabled && !already_present {
+        names.push(canonical.to_string());
+    } else if !enabled && already_present {
+        names.retain(|name| name != canonical);
+    } else {
+        return Ok(());
+    }
+
+    let updated = upsert_terminal_env_inject_section(&raw, &names);
+    std::fs::write(&secrets_path, updated)
+        .map_err(|e| format!("write {}: {e}", secrets_path.display()))
+}
+
 /// Insert or update `canonical = "friendly"` in the `[default]` section of a
 /// raw `secrets.toml` string, creating the section if absent.
 /// If an existing `canonical = "..."` line is found, it is replaced in-place.
@@ -675,6 +823,61 @@ fn upsert_default_route_line(raw: &str, canonical: &str, friendly: &str) -> Stri
         let base = raw.trim_end_matches('\n');
         format!("{base}\n\n[default]\n{entry_line}\n")
     }
+}
+
+fn upsert_terminal_env_inject_section(raw: &str, names: &[String]) -> String {
+    let mut names = names.to_vec();
+    names.sort();
+    names.dedup();
+
+    let section = render_terminal_env_inject_section(&names);
+    let lines: Vec<&str> = raw.lines().collect();
+    let trailing_newline = raw.ends_with('\n');
+
+    if let Some(start) = lines.iter().position(|line| {
+        let trimmed = line.trim();
+        trimmed == "[terminal.env]"
+            || (trimmed.starts_with("[terminal.env]")
+                && trimmed[14..].trim_start().starts_with('#'))
+    }) {
+        let end = lines[start + 1..]
+            .iter()
+            .position(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with('[') && !trimmed.starts_with('#')
+            })
+            .map(|pos| start + 1 + pos)
+            .unwrap_or(lines.len());
+
+        let mut parts: Vec<&str> = Vec::with_capacity(lines.len() + section.lines().count());
+        parts.extend_from_slice(&lines[..start]);
+        parts.extend(section.trim_end_matches('\n').lines());
+        parts.extend_from_slice(&lines[end..]);
+        let joined = parts.join("\n");
+        if trailing_newline {
+            format!("{joined}\n")
+        } else {
+            joined
+        }
+    } else {
+        let base = raw.trim_end_matches('\n');
+        if base.is_empty() {
+            section
+        } else {
+            format!("{base}\n\n{section}")
+        }
+    }
+}
+
+fn render_terminal_env_inject_section(names: &[String]) -> String {
+    let mut out = String::from("[terminal.env]\ninject = [\n");
+    for name in names {
+        out.push_str("  \"");
+        out.push_str(name);
+        out.push_str("\",\n");
+    }
+    out.push_str("]\n");
+    out
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -754,6 +957,135 @@ mod tests {
             ResolveOutcome::Found(v) => assert_eq!(v.as_str(), "ghp-user"),
             other => panic!("expected Found, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn canonical_workspace_name_resolves_without_alias_route() {
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-1:OPENROUTER_API_KEY", "sk-workspace")
+            .unwrap();
+        let r = router("fallback = true\n");
+        match resolve("ws-1", "terminal", "OPENROUTER_API_KEY", &r, &store) {
+            ResolveOutcome::Found(v) => assert_eq!(v.as_str(), "sk-workspace"),
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workspace_canonical_value_overrides_global_fallback() {
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-1:OPENAI_API_KEY", "sk-workspace")
+            .unwrap();
+        store.set("plexi:user:OPENAI_API_KEY", "sk-global").unwrap();
+        let r = router("fallback = true\n");
+        match resolve("ws-1", "terminal", "OPENAI_API_KEY", &r, &store) {
+            ResolveOutcome::Found(v) => assert_eq!(v.as_str(), "sk-workspace"),
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_alias_route_takes_precedence_over_canonical_workspace_name() {
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-1:OPENAI_API_KEY", "sk-canonical")
+            .unwrap();
+        store.set("plexi:ws-1:openai_personal", "sk-alias").unwrap();
+        let r = router("fallback = true\n[default]\nOPENAI_API_KEY = \"openai_personal\"\n");
+        match resolve_with_source("ws-1", "terminal", "OPENAI_API_KEY", &r, &store) {
+            ResolveWithSourceOutcome::Found(found) => {
+                assert_eq!(found.value.as_str(), "sk-alias");
+                assert_eq!(found.source, ResolvedSecretSource::WorkspaceRoute);
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn terminal_env_injects_only_allowlisted_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("workspace.toml"),
+            "id = \"ws-1\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("secrets.toml"),
+            "fallback = true\n\n[terminal.env]\ninject = [\"OPENROUTER_API_KEY\"]\n",
+        )
+        .unwrap();
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-1:OPENROUTER_API_KEY", "sk-openrouter")
+            .unwrap();
+        store.set("plexi:ws-1:OPENAI_API_KEY", "sk-openai").unwrap();
+
+        let env = resolve_terminal_env(tmp.path(), &store).expect("terminal env resolves");
+
+        assert_eq!(
+            env.get("OPENROUTER_API_KEY").map(|v| v.as_str()),
+            Some("sk-openrouter")
+        );
+        assert!(
+            !env.contains_key("OPENAI_API_KEY"),
+            "non-allowlisted secret must not be injected"
+        );
+    }
+
+    #[test]
+    fn terminal_env_uses_global_fallback_when_allowed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("workspace.toml"),
+            "id = \"ws-1\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("secrets.toml"),
+            "fallback = true\n\n[terminal.env]\ninject = [\"OPENAI_API_KEY\"]\n",
+        )
+        .unwrap();
+        let store = InMemoryKeychain::new();
+        store.set("plexi:user:OPENAI_API_KEY", "sk-global").unwrap();
+
+        let env = resolve_terminal_env(tmp.path(), &store).expect("terminal env resolves");
+
+        assert_eq!(
+            env.get("OPENAI_API_KEY").map(|v| v.as_str()),
+            Some("sk-global")
+        );
+    }
+
+    #[test]
+    fn terminal_env_injects_nothing_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("workspace.toml"),
+            "id = \"ws-1\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("secrets.toml"),
+            "fallback = true\n",
+        )
+        .unwrap();
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-1:OPENROUTER_API_KEY", "sk-workspace")
+            .unwrap();
+        store.set("plexi:user:OPENAI_API_KEY", "sk-global").unwrap();
+
+        let env = resolve_terminal_env(tmp.path(), &store).expect("terminal env resolves");
+
+        assert!(env.is_empty(), "terminal injection must be opt-in");
     }
 
     #[test]
@@ -986,6 +1318,68 @@ mod tests {
         );
         assert!(!raw.contains("old_alias"), "stale entry not removed: {raw}");
         WorkspaceSecrets::parse(&raw).expect("must parse");
+    }
+
+    #[test]
+    fn write_terminal_env_inject_creates_file_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+
+        write_terminal_env_inject(tmp.path(), "OPENROUTER_API_KEY", true).expect("should succeed");
+
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        let parsed = WorkspaceSecrets::parse(&raw).expect("must parse");
+        assert!(parsed.fallback);
+        assert_eq!(
+            parsed.terminal.env.inject,
+            vec!["OPENROUTER_API_KEY".to_string()]
+        );
+    }
+
+    #[test]
+    fn write_terminal_env_inject_adds_and_removes_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+        let initial = "fallback = true\n\n[default]\nOPENAI_API_KEY = \"openai\"\n";
+        std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
+
+        write_terminal_env_inject(tmp.path(), "OPENAI_API_KEY", true).expect("enable");
+        write_terminal_env_inject(tmp.path(), "OPENROUTER_API_KEY", true).expect("enable");
+        write_terminal_env_inject(tmp.path(), "OPENAI_API_KEY", false).expect("disable");
+
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        let parsed = WorkspaceSecrets::parse(&raw).expect("must parse");
+        assert_eq!(
+            parsed.default.get("OPENAI_API_KEY").map(String::as_str),
+            Some("openai")
+        );
+        assert_eq!(
+            parsed.terminal.env.inject,
+            vec!["OPENROUTER_API_KEY".to_string()]
+        );
+    }
+
+    #[test]
+    fn write_terminal_env_inject_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+        let initial = "fallback = true\n\n[terminal.env]\ninject = [\n  \"OPENAI_API_KEY\",\n]\n";
+        std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
+
+        write_terminal_env_inject(tmp.path(), "OPENAI_API_KEY", true).expect("enable");
+
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        assert_eq!(
+            raw.matches("OPENAI_API_KEY").count(),
+            1,
+            "duplicate entry: {raw}"
+        );
     }
 
     #[test]

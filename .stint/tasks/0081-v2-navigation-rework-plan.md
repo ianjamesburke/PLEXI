@@ -5,8 +5,6 @@ status: backlog
 sprint: "s20"
 estimate: 6h
 blocked_by:
-  - 30
-  - 31
 gh_issue: ["1022"]
 area: ["host/navigation"]
 tags: ["v2", "navigation", "planning"]

@@ -5,8 +5,6 @@ status: backlog
 sprint: "s28"
 estimate: 6h
 blocked_by:
-  - 30
-  - 31
 gh_issue: ["1606"]
 area: ["host/terminal"]
 tags: ["v2", "terminal", "windows"]

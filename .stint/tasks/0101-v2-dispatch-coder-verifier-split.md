@@ -6,8 +6,6 @@ sprint: "s23"
 estimate: 6h
 blocked_by:
   - 147
-  - 30
-  - 31
 gh_issue: ["1446"]
 area: ["infra/skills", "infra/agents"]
 tags: ["v2", "dispatch", "agents"]

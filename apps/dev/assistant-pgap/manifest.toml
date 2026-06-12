@@ -1,11 +1,11 @@
 schema_version = 1
 
 [app]
-id = "assistant"
+id = "assistant-pgap"
 type = "app"
-name = "Assistant"
+name = "Assistant PGAP"
 version = "0.3.0"
-description = "AI chat assistant powered by Plexi's ai.query broker. Can see and drive workspace panes through capability-gated host requests, and exposes an ask_assistant tool so other workspace apps can invoke it programmatically."
+description = "Developer reference PGAP chat app powered by Plexi's ai.query broker. Demonstrates streaming chat, slash-skill completion, and capability-gated workspace tools."
 entry = "assistant.py"
 
 [app.capabilities]

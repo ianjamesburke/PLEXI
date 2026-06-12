@@ -249,7 +249,7 @@ class NodeCanvas(App):
             py = sy + NODE_HEADER_H + i * PORT_H + PORT_H / 2
             ctx.circle(sx + node.w, py, PORT_R, ctx.theme.accent)
             ctx.text(sx + node.w - PORT_R - 4, py - TEXT_HINT / 2, port.name,
-                     size=TEXT_HINT, color=ctx.theme.muted, align="right",
+                     size=TEXT_HINT, color=ctx.theme.muted, align="right_top",
                      max_width=node.w / 2 - PORT_R - 8, elide=True)
 
     def _draw_hint(self, ctx: RenderContext) -> None:

@@ -405,12 +405,10 @@ fn pane_slot_read_errors_use_sidecar_file() {
     let error_file = format!("{read_file}.err");
     let response = read_json_response(&error_file);
     assert_eq!(response["ok"].as_bool(), Some(false));
-    assert!(
-        response["error"]
-            .as_str()
-            .expect("error")
-            .contains("slot 'missing' not found")
-    );
+    assert!(response["error"]
+        .as_str()
+        .expect("error")
+        .contains("slot 'missing' not found"));
 }
 
 #[test]
@@ -519,7 +517,10 @@ fn pane_slot_append_rejects_final_file_over_10_mib() {
     let response = read_json_response(&append_file);
     assert_eq!(response["ok"].as_bool(), Some(false));
     let error = response["error"].as_str().expect("error");
-    assert!(error.contains("slot 'artifact'"), "unexpected error: {error}");
+    assert!(
+        error.contains("slot 'artifact'"),
+        "unexpected error: {error}"
+    );
     assert!(error.contains("10485761"), "unexpected error: {error}");
 }
 
@@ -528,7 +529,8 @@ fn pane_slot_append_uses_tracked_path_after_context_root_changes() {
     let first_root = tempfile::tempdir().expect("first root");
     let second_root = tempfile::tempdir().expect("second root");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(first_root.path().to_path_buf());
+    h.app
+        .set_active_context_root(first_root.path().to_path_buf());
     let pane = h.add_test_pane();
 
     let write_file = temp_response(first_root.path(), "slot-root-write");
@@ -817,6 +819,76 @@ fn set_pane_title_unknown_pane_id_does_not_panic() {
         })
         .unwrap();
     h.run_frames(1); // must not panic; logs warn "not found"
+}
+
+#[test]
+fn osc_title_updates_unlocked_terminal_pane_name_by_default() {
+    let mut h = HostHarness::new();
+    let app_pane = h.add_test_pane();
+    h.focus_pane(app_pane);
+    h.run_frames(1);
+
+    h.app.split_focused(true, None, false, false, None);
+    let terminal_pane_id = h.app.windows[0]
+        .panes
+        .iter()
+        .find_map(|(id, pane)| pane.as_terminal().map(|_| *id))
+        .expect("split should create a terminal pane");
+
+    h.app
+        .pty_event_tx
+        .send((
+            terminal_pane_id,
+            egui_term::PtyEvent::Title("/tmp/claude-work".to_string()),
+        ))
+        .unwrap();
+    h.run_frames(1);
+
+    let terminal = h.app.windows[0]
+        .panes
+        .get(&terminal_pane_id)
+        .and_then(|pane| pane.as_terminal())
+        .expect("terminal pane should still exist");
+    assert_eq!(terminal.pty_title.as_deref(), Some("/tmp/claude-work"));
+    assert_eq!(terminal.name.as_deref(), Some("/tmp/claude-work"));
+}
+
+#[test]
+fn osc_title_tracks_but_does_not_overwrite_locked_terminal_pane_name() {
+    let mut h = HostHarness::new();
+    let app_pane = h.add_test_pane();
+    h.focus_pane(app_pane);
+    h.run_frames(1);
+
+    h.app.split_focused(true, None, false, false, None);
+    let terminal_pane_id = h.app.windows[0]
+        .panes
+        .iter()
+        .find_map(|(id, pane)| pane.as_terminal().map(|_| *id))
+        .expect("split should create a terminal pane");
+
+    h.inject_ipc(AppRequest::SetPaneTitle {
+        pane_id: terminal_pane_id,
+        name: "Pinned".to_string(),
+    });
+    h.run_frames(1);
+
+    h.app
+        .pty_event_tx
+        .send((
+            terminal_pane_id,
+            egui_term::PtyEvent::Title("/tmp/claude-work".to_string()),
+        ))
+        .unwrap();
+    h.run_frames(1);
+
+    let terminal = h.app.windows[0]
+        .panes
+        .get(&terminal_pane_id)
+        .and_then(|pane| pane.as_terminal())
+        .expect("terminal pane should still exist");
+    assert_eq!(terminal.pty_title.as_deref(), Some("/tmp/claude-work"));
+    assert_eq!(terminal.name.as_deref(), Some("Pinned"));
 }
 
 /// Regression guard for issue #1018: dismissing the command palette must
@@ -1666,7 +1738,10 @@ fn set_permission_revokes_running_app() {
         "live permissions must have panes.read blocked"
     );
     assert!(
-        !proc.permissions.capabilities.contains(&Capability::PanesRead),
+        !proc
+            .permissions
+            .capabilities
+            .contains(&Capability::PanesRead),
         "live permissions must no longer grant panes.read"
     );
 
@@ -1801,8 +1876,7 @@ fn yellow_capability_deny_writes_denial() {
     h.key(egui::Key::Escape, egui::Modifiers::NONE);
     h.run_frames(1);
 
-    let content =
-        std::fs::read_to_string(&response_file).expect("deny must write the denial JSON");
+    let content = std::fs::read_to_string(&response_file).expect("deny must write the denial JSON");
     let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
     assert_eq!(
         v["capability"], "panes.read",
@@ -2769,7 +2843,11 @@ default = "ask"
     struct MoveMakingBroker;
 
     impl AiBroker for MoveMakingBroker {
-        fn dispatch(&self, request: AiBrokerRequest) -> AiBrokerResponse {
+        fn dispatch(
+            &self,
+            request: AiBrokerRequest,
+            _on_delta: &mut dyn FnMut(crate::plexi_ai::turn_loop::TurnDelta<'_>),
+        ) -> AiBrokerResponse {
             let dispatcher = request
                 .tool_dispatcher
                 .as_ref()
@@ -2788,7 +2866,7 @@ default = "ask"
                     "granted make_move must dispatch: {:?}",
                     result.error
                 );
-                AiBrokerResponse::ok_with_deltas("I play Nf6.".to_string(), 1, 1, Vec::new())
+                AiBrokerResponse::ok("I play Nf6.".to_string(), 1, 1)
             } else {
                 // Denied: prove invocation is blocked too, not just hidden.
                 let result = dispatcher.dispatch_call(
@@ -2804,12 +2882,11 @@ default = "ask"
                         .contains("tool_not_found"),
                     "denied tool must be uninvocable: {result:?}"
                 );
-                AiBrokerResponse::ok_with_deltas(
+                AiBrokerResponse::ok(
                     "A fine position. I would play Nf6, but I am not allowed to move."
                         .to_string(),
                     1,
                     1,
-                    Vec::new(),
                 )
             }
         }

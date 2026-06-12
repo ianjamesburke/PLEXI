@@ -5,8 +5,6 @@ status: backlog
 sprint: "s15"
 estimate: 12h
 blocked_by:
-  - 30
-  - 31
 gh_issue: ["2096"]
 area: ["ui/overlays", "host/pane-ops", "host/navigation"]
 tags: ["v2", "architecture"]

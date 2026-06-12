@@ -31,9 +31,8 @@ pub enum BillingModel {
 pub enum StreamEvent {
     /// Incremental text chunk — append to the pane's output buffer.
     Text(String),
-    /// Incremental reasoning/thinking chunk (OpenRouter `delta.reasoning`).
-    /// Carried separately from answer text so UIs can render a collapsed
-    /// thinking section. Never part of the final response text.
+    /// Incremental reasoning ("thinking") chunk from a reasoning model.
+    /// Displayed separately from the answer text; never part of `TurnResult::text`.
     Reasoning(String),
     /// Turn complete. Token counts are `Some` only for metered backends.
     /// `generation_id` carries the `X-Generation-Id` response header value

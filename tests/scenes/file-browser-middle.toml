@@ -1,0 +1,16 @@
+# Middle width — the range that previously broke: details layout is active
+# but the old toolbar chip strip didn't fit, and its right-to-left overflow
+# shoved the whole table past the pane's left edge.
+size = [680.0, 600.0]
+
+[[steps]]
+open_file_browser = "."
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 1 }
+
+[[steps]]
+shot = "file-browser-middle.png"

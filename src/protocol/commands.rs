@@ -36,6 +36,28 @@ impl schemars::JsonSchema for LayoutChild {
 
 // ── Commands sent FROM the app TO Plexi ──────────────────────────────────────
 
+/// Closed vocabulary for text anchor alignment.
+/// Values match egui's `Align2` naming convention: `{h}_{v}`.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAlign {
+    LeftTop,
+    CenterTop,
+    RightTop,
+    LeftCenter,
+    CenterCenter,
+    RightCenter,
+    LeftBottom,
+    CenterBottom,
+    RightBottom,
+}
+
+impl Default for TextAlign {
+    fn default() -> Self {
+        Self::LeftTop
+    }
+}
+
 /// Render primitives — go to `pending_frame` → drawn to screen.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -69,12 +91,13 @@ pub enum RenderCommand {
     },
     /// Draw text at a position.
     ///
-    /// `align` controls how the `(x, y)` point maps to the text box:
-    ///   - `"top_left"` (default) — `(x, y)` is the top-left corner.
-    ///   - `"center"`              — `(x, y)` is the visual center of the text.
+    /// `align` controls how the `(x, y)` point maps to the text box.
+    /// Valid values (horizontal_vertical): `left_top` (default), `center_top`,
+    /// `right_top`, `left_center`, `center_center`, `right_center`,
+    /// `left_bottom`, `center_bottom`, `right_bottom`.
     ///
     /// Centering uses the host's real font metrics, which matters for small
-    /// badges / buttons where a 0.1em difference is visible. Prefer `center`
+    /// badges / buttons where a 0.1em difference is visible. Prefer `center_center`
     /// for anything inside a fixed-size container.
     ///
     /// `max_width` — when `Some(w)`, the text is clipped at `w` pixels.
@@ -97,8 +120,8 @@ pub enum RenderCommand {
         monospace: bool,
         #[serde(default)]
         bold: bool,
-        #[serde(default = "default_text_align")]
-        align: String,
+        #[serde(default)]
+        align: TextAlign,
         max_width: Option<f32>,
         elide: bool,
         selectable: bool,
@@ -261,13 +284,14 @@ pub enum RenderCommand {
     /// `x`, `y`  — origin of the text row.
     /// `items`   — list of text segments, each with text, color, size, monospace.
     /// `gap`     — spacing between items in pixels.
-    /// `align`   — vertical alignment (e.g., "left_center").
+    /// `align`   — anchor alignment, e.g. `left_center` to center items on the y-axis.
     TextRow {
         x: f32,
         y: f32,
         items: Vec<TextRowItem>,
         gap: f32,
-        align: String,
+        #[serde(default)]
+        align: TextAlign,
     },
 
     /// Render markdown text using the host's `egui_commonmark` renderer.
@@ -332,10 +356,6 @@ pub enum RenderCommand {
     /// single-line `TextEdit` and Enter submits. When `multiline` is `true`,
     /// the host renders a multi-line `TextEdit`; Enter still submits but
     /// Shift+Enter inserts a newline.
-    ///
-    /// Real-time validation (per-keystroke value access) is intentionally
-    /// out of scope — see issue #283 option A. Apps that need it must
-    /// wait for a future protocol revision.
     TextInput {
         id: String,
         x: f32,
@@ -351,6 +371,10 @@ pub enum RenderCommand {
         /// draw commands without this field continue to work.
         #[serde(default)]
         multiline: bool,
+        /// Optional one-shot value override for host-owned buffers. SDK apps
+        /// use this for completions; ordinary text input leaves it unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
     },
 
     // ── Host-managed scroll regions (#446) ───────────────────────────────
@@ -1682,10 +1706,6 @@ fn default_stroke_width() -> f32 {
     1.0
 }
 
-fn default_text_align() -> String {
-    "top_left".to_string()
-}
-
 fn default_http_method() -> String {
     "GET".to_string()
 }
@@ -1714,6 +1734,57 @@ mod tests {
     //! over missing fields.
     use super::*;
     use crate::protocol::events::PlexiEvent;
+
+    #[test]
+    fn text_input_value_override_round_trips_serde() {
+        let json = r#"{"type":"text_input","id":"chat","x":1.0,"y":2.0,"w":320.0,"h":72.0,"placeholder":"Message","multiline":true,"value":"/hello-world "}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::TextInput {
+                id,
+                multiline,
+                value,
+                ..
+            }) => {
+                assert_eq!(id, "chat");
+                assert!(*multiline);
+                assert_eq!(value.as_deref(), Some("/hello-world "));
+            }
+            other => panic!("expected TextInput, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""value":"/hello-world ""#),
+            "value override must stay on the wire: {serialised}"
+        );
+    }
+
+    #[test]
+    fn text_input_live_events_round_trip_serde() {
+        let changed_json = r#"{"type":"text_changed","id":"chat","value":"/hel"}"#;
+        let changed: PlexiEvent = serde_json::from_str(changed_json).expect("deserialise");
+        match &changed {
+            PlexiEvent::TextChanged { id, value } => {
+                assert_eq!(id, "chat");
+                assert_eq!(value, "/hel");
+            }
+            other => panic!("expected TextChanged, got {other:?}"),
+        }
+
+        let key_json = r#"{"type":"text_input_key","id":"chat","key":"tab","modifiers":{"shift":false,"ctrl":false,"alt":false,"cmd":false}}"#;
+        let key: PlexiEvent = serde_json::from_str(key_json).expect("deserialise");
+        match &key {
+            PlexiEvent::TextInputKey { id, key, modifiers } => {
+                assert_eq!(id, "chat");
+                assert_eq!(key, "tab");
+                assert!(!modifiers.shift);
+                assert!(!modifiers.ctrl);
+                assert!(!modifiers.alt);
+                assert!(!modifiers.cmd);
+            }
+            other => panic!("expected TextInputKey, got {other:?}"),
+        }
+    }
 
     #[test]
     fn paste_event_round_trips_serde() {
@@ -1753,7 +1824,7 @@ mod tests {
 
     #[test]
     fn text_drawcommand_with_selectable_round_trips() {
-        let json = r##"{"type":"text","x":1.0,"y":2.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"top_left","max_width":null,"elide":true,"selectable":true}"##;
+        let json = r##"{"type":"text","x":1.0,"y":2.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"left_top","max_width":null,"elide":true,"selectable":true}"##;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             DrawCommand::Render(RenderCommand::Text {
@@ -3166,7 +3237,7 @@ mod tests {
 
     #[test]
     fn layout_command_round_trips_serde() {
-        let json = r##"{"type":"layout","x":10.0,"y":20.0,"direction":"row","gap":6.0,"children":[{"type":"leaf","command":{"type":"badge","x":0.0,"y":0.0,"label":"4 files","fill":"#89b4fa","fg":"#1e1e2e","font_size":11.0,"radius":8.0}},{"type":"leaf","command":{"type":"text","x":0.0,"y":0.0,"text":"modified","size":12.0,"color":"#cdd6f4","monospace":false,"bold":false,"align":"top_left","elide":false,"selectable":false}}]}"##;
+        let json = r##"{"type":"layout","x":10.0,"y":20.0,"direction":"row","gap":6.0,"children":[{"type":"leaf","command":{"type":"badge","x":0.0,"y":0.0,"label":"4 files","fill":"#89b4fa","fg":"#1e1e2e","font_size":11.0,"radius":8.0}},{"type":"leaf","command":{"type":"text","x":0.0,"y":0.0,"text":"modified","size":12.0,"color":"#cdd6f4","monospace":false,"bold":false,"align":"left_top","elide":false,"selectable":false}}]}"##;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise layout command");
         match &cmd {
             DrawCommand::Render(RenderCommand::Layout {
@@ -3393,7 +3464,7 @@ mod tests {
 
     #[test]
     fn text_max_lines_present_round_trips_serde() {
-        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hello","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"top_left","max_width":null,"elide":false,"selectable":false,"max_lines":3}"##;
+        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hello","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"left_top","max_width":null,"elide":false,"selectable":false,"max_lines":3}"##;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             DrawCommand::Render(RenderCommand::Text {
@@ -3409,7 +3480,7 @@ mod tests {
     #[test]
     fn text_max_lines_absent_deserialises_to_none() {
         // max_lines is #[serde(default)] so absence → None, not an error.
-        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"top_left","max_width":null,"elide":false,"selectable":false}"##;
+        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"left_top","max_width":null,"elide":false,"selectable":false}"##;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             DrawCommand::Render(RenderCommand::Text { max_lines, .. }) => {
@@ -3667,6 +3738,7 @@ mod ai_stream_chunk_tests {
         let event = PlexiEvent::AiStreamChunk {
             request_id: "req-123".to_string(),
             delta: "Hello, ".to_string(),
+            reasoning: None,
             done: false,
         };
         let json = serde_json::to_string(&event).expect("serialize");
@@ -3688,10 +3760,12 @@ mod ai_stream_chunk_tests {
             PlexiEvent::AiStreamChunk {
                 request_id,
                 delta,
+                reasoning,
                 done,
             } => {
                 assert_eq!(request_id, "req-123");
                 assert_eq!(delta, "Hello, ");
+                assert_eq!(reasoning, None);
                 assert!(!done);
             }
             other => panic!("expected AiStreamChunk, got {other:?}"),
@@ -3704,6 +3778,7 @@ mod ai_stream_chunk_tests {
         let event = PlexiEvent::AiStreamChunk {
             request_id: "req-456".to_string(),
             delta: String::new(),
+            reasoning: None,
             done: true,
         };
         let json = serde_json::to_string(&event).expect("serialize");
@@ -3720,12 +3795,51 @@ mod ai_stream_chunk_tests {
         let json = r#"{"type":"ai_stream_chunk","request_id":"r1","delta":"hi"}"#;
         let event: PlexiEvent = serde_json::from_str(json).expect("deserialize");
         match event {
-            PlexiEvent::AiStreamChunk { done, delta, .. } => {
+            PlexiEvent::AiStreamChunk {
+                done,
+                delta,
+                reasoning,
+                ..
+            } => {
                 assert!(!done, "done should default to false when absent");
                 assert_eq!(delta, "hi");
+                assert_eq!(reasoning, None, "reasoning should default to None");
             }
             other => panic!("expected AiStreamChunk, got {other:?}"),
         }
+    }
+
+    /// A reasoning-only chunk round-trips and omits the field when None.
+    #[test]
+    fn ai_stream_chunk_reasoning_round_trips() {
+        let event = PlexiEvent::AiStreamChunk {
+            request_id: "req-789".to_string(),
+            delta: String::new(),
+            reasoning: Some("considering options".to_string()),
+            done: false,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(
+            json.contains(r#""reasoning":"considering options""#),
+            "reasoning missing: {json}"
+        );
+        let round_tripped: PlexiEvent = serde_json::from_str(&json).expect("deserialize");
+        match round_tripped {
+            PlexiEvent::AiStreamChunk { reasoning, .. } => {
+                assert_eq!(reasoning.as_deref(), Some("considering options"));
+            }
+            other => panic!("expected AiStreamChunk, got {other:?}"),
+        }
+
+        // None is omitted from the wire entirely (skip_serializing_if).
+        let text_chunk = PlexiEvent::AiStreamChunk {
+            request_id: "r".to_string(),
+            delta: "hi".to_string(),
+            reasoning: None,
+            done: false,
+        };
+        let json = serde_json::to_string(&text_chunk).expect("serialize");
+        assert!(!json.contains("reasoning"), "None must be omitted: {json}");
     }
 
     #[test]

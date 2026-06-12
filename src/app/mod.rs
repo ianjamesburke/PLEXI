@@ -1113,8 +1113,8 @@ impl PlexiApp {
                 frame_tick,
                 frame_diag_window: None,
                 permission_store_dir: {
-                    let dir =
-                        std::env::temp_dir().join(format!("plexi-test-perms-{}", uuid::Uuid::new_v4()));
+                    let dir = std::env::temp_dir()
+                        .join(format!("plexi-test-perms-{}", uuid::Uuid::new_v4()));
                     std::fs::create_dir_all(&dir).expect("create test permission store dir");
                     dir
                 },
@@ -1260,7 +1260,7 @@ impl PlexiApp {
             "make_backend_settings: pane_id={pane_id} context_id={context_id} \
              context_name={context_name:?} context_root={context_root:?} context_depth={context_depth}"
         );
-        let mut env = shell::build_env();
+        let mut env = shell::build_env(working_directory.as_deref());
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
         let socket = crate::config::config_dir()
             .join("notify.sock")
@@ -1389,7 +1389,6 @@ impl eframe::App for PlexiApp {
                 self.frame_diag_window = Some((std::time::Instant::now(), 0));
             }
         }
-        let _frame_start = std::time::Instant::now();
         self.update_preamble(ctx);
 
         // Host agent runtime (Phase C): consume queued event deliveries and
@@ -1872,6 +1871,10 @@ impl eframe::App for PlexiApp {
                     cwd,
                     sender_pane_id,
                 } => {
+                    // Explicit, app-requested cd only (#2145). Two delivery
+                    // targets: a linked terminal pane, or — for overlay apps —
+                    // the hidden terminal stored in `overlay_replaced`, whose
+                    // PTY stays alive while the overlay covers it.
                     let active = self.active_window;
                     let escaped = cwd.replace('\'', "'\\''");
                     let cd_cmd = format!("\x15cd '{}'\n", escaped);
@@ -1880,6 +1883,7 @@ impl eframe::App for PlexiApp {
                         .get(&sender_pane_id)
                         .and_then(|p| p.as_app())
                         .and_then(|a| a.linked_pane_id);
+                    let mut delivered = false;
                     if let Some(tid) = linked_id {
                         if let Some(t) = self.windows[active]
                             .panes
@@ -1893,6 +1897,31 @@ impl eframe::App for PlexiApp {
                                 "file_browser: CdRequest synced cwd '{}' to terminal pane {}",
                                 cwd,
                                 tid
+                            );
+                            delivered = true;
+                        }
+                    }
+                    if !delivered {
+                        if let Some(t) = self.windows[active]
+                            .panes
+                            .get_mut(&sender_pane_id)
+                            .and_then(|p| p.as_app_mut())
+                            .and_then(|a| a.overlay_replaced.as_deref_mut())
+                            .and_then(|p| p.as_terminal_mut())
+                        {
+                            t.backend.process_command(egui_term::BackendCommand::Write(
+                                cd_cmd.as_bytes().to_vec(),
+                            ));
+                            log::info!(
+                                "file_browser: CdRequest synced cwd '{}' to overlay-hidden terminal under pane {}",
+                                cwd,
+                                sender_pane_id
+                            );
+                        } else {
+                            log::warn!(
+                                "file_browser: CdRequest from pane {} found no linked or overlay-hidden terminal; cwd '{}' dropped",
+                                sender_pane_id,
+                                cwd
                             );
                         }
                     }
@@ -2343,6 +2372,15 @@ impl eframe::App for PlexiApp {
                 })
                 .unwrap_or(false);
             if should_close {
+                // The keystroke that triggered the close (e.g. `t` in the file
+                // browser) is still in this frame's input queue. The restored
+                // terminal renders later this same frame and would forward it
+                // to its PTY — swallow all key/text events before closing.
+                ctx.input_mut(|i| {
+                    i.events.retain(|e| {
+                        !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_))
+                    });
+                });
                 self.close_focused_app();
             }
         }
@@ -3057,25 +3095,11 @@ impl eframe::App for PlexiApp {
             }
         }
 
-        // Temporary diagnostic: check if Key::A is still in events before render_panels.
-        ctx.input(|i| {
-            for event in &i.events {
-                if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. } = event {
-                    log::info!("[diag-pre-render] Key::A still alive before render_panels: cmd={} shift={}", m.command, m.shift);
-                }
-            }
-        });
-
         self.render_panels(ctx);
 
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.
         self.reconcile_focus_logging(FOCUS_HEARTBEAT_INTERVAL);
-
-        let frame_ms = _frame_start.elapsed().as_millis();
-        if frame_ms > 50 {
-            log::warn!("slow frame: {}ms", frame_ms);
-        }
     }
 
     fn on_exit(&mut self) {
