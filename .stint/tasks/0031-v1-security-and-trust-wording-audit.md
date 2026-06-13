@@ -1,15 +1,21 @@
 ---
 id: "0031"
 title: "v1: security and trust wording audit"
-status: backlog
+status: todo
+estimate: "8h"
 sprint: "s14"
-estimate: 8h
 blocked_by:
   - 28
 gh_issue: []
-area: ["host/permissions", "infra/docs"]
-tags: ["v1", "security", "trust"]
+area:
+  - "host/permissions"
+  - "infra/docs"
+tags:
+  - "v1"
+  - "security"
+  - "trust"
 ---
+
 
 Audit product, docs, install screens, trust labels, and marketplace wording so v1 accurately describes Python apps as reviewed native processes with capability-gated host APIs, not sandboxed code.
 

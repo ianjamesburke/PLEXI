@@ -10,9 +10,9 @@ area: ["infra/build", "cli/commands"]
 tags: ["v1", "release", "gate"]
 ---
 
-This is the terminal v1 release milestone, not a dispatchable implementation task. Do not send it to an agent. Completing it means "v1 is cut."
+This is the terminal v1 release milestone, not a dispatchable implementation task. Do not send it to an agent. Completing it means "v1 is cut." It is held in `backlog` status on purpose so it never surfaces in `stint next` or as a bottleneck.
 
-The entire v2 phase is parked in `v2-backlog/` (out of the active board) precisely so the live board stays v1-only. When v1 ships, follow `v2-backlog/README.md` to reintroduce v2; its `v2-after-v1` gate hangs on this task, so reintroduced v2 work becomes claimable the moment this is done.
+The entire v2 phase lives in the board as `status: backlog` (the icebox), which `stint next` and the bottleneck calc ignore by default — so the live ready pool stays v1-only without any gate or separate folder. When v1 ships, promote v2 into the ready pool with `stint ready --tag v2` (or per v2 sprint, `stint ready --sprint s15` … `s30`). There is no longer a `v2-after-v1` gate; the backlog/todo distinction replaces it.
 
 ## Acceptance
 
@@ -29,4 +29,4 @@ The release is not ready when features land; it is ready when a clean install/up
 ## Gotchas
 
 - Do not use a customized alpha config as evidence that defaults work.
-- Marking this done unblocks 83 v2 tasks — do not complete it early to clear the queue.
+- This task does not auto-unblock v2. After v1 ships, a human explicitly runs `stint ready --tag v2` to move the v2 phase out of the icebox. Do not promote v2 early to pad the queue.

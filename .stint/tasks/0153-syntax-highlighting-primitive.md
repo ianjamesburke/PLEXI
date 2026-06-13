@@ -1,7 +1,7 @@
 ---
 id: "0153"
 title: "Syntax highlighting primitive and ReadOnlyCodeViewer widget"
-status: backlog
+status: todo
 estimate: "12h"
 sprint: "s9"
 blocked_by: []
@@ -16,6 +16,7 @@ tags:
   - "text-editor"
   - "tree-sitter"
 ---
+
 
 Build the shared syntax highlighting foundation:
 

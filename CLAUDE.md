@@ -2,6 +2,8 @@
 
 `AGENTS.md` is a symlink to this file. Keep project-agent instructions here so both entry points stay identical.
 
+**Nested `AGENTS.md` files carry local contracts.** Some directories have their own `AGENTS.md` with rules local to that subtree (e.g. `apps/AGENTS.md`). Before editing any file, read the `AGENTS.md` in its directory if one exists — those rules add to, and never override, this root file.
+
 **CLAUDE.md does not track in-progress work or completion status.** It goes stale immediately and will mislead future sessions.
 
 - **What shipped and why** → `git log --oneline -20` and `GOTCHAS.md` for non-obvious discoveries
@@ -33,9 +35,9 @@ When a PRD has a `Progress` table, update the relevant row in the same change th
 
 GitHub issues are implementation tickets. To choose the next dispatch, match open issues against the first unfinished milestone in the PRM, skip anything blocked or in progress, then choose parallel lanes whose `area:*` labels do not overlap. If the PRM calls for work that has no issue yet, create or triage the issue before dispatching.
 
-Sprint sequencing and task blockers live in `.stint/`. Use the PRM for product direction, then use `stint next` for the next claimable task. Keep `gh_issue`, `blocked_by`, and `blocked_by_gh` frontmatter current when a task is linked to GitHub or blocked by another task.
+Sprint sequencing and task blockers live in `.stint/`. Use the PRM for product direction, then use `stint next` for the next claimable task. Keep `gh_issue` and `blocked_by` frontmatter current when a task is linked to GitHub or blocked by another task. (`blocked_by` is the single unified, polymorphic field — bare int = local task, `@N` = local issue, `owner/repo@N` = external issue, quoted = free-text note. The old `blocked_by_gh` split is retired.)
 
-**The active `.stint/` board is v1-only.** The entire v2 phase (83 tasks, sprints `s15`–`s30`, and the `v2-after-v1` gate) is parked in `v2-backlog/`, out of the board, so `stint next` cues v1 in order and the bottleneck signal points at real v1 chains instead of the "ship v1" tautology. Do not add v2 work to `.stint/`. When v1 ships (task `0030`), reintroduce v2 per `v2-backlog/README.md`. `blocked_by` is reserved for true artifact dependencies — express phase/ordering preference with sprint sequence, not blockers.
+**The active ready pool is v1-only, enforced by task status — not a folder or a gate.** Every v1 task is `status: todo` (or `in-progress`/`done`); the entire v2 phase (81 open tasks, sprints `s15`–`s30`) lives in the same board as `status: backlog` — the icebox. `stint next` and the bottleneck calc ignore `backlog` by default, so the ready pool cues v1 in order and the bottleneck points at real v1 chains instead of the "ship v1" tautology. There is no `v2-after-v1` gate and no `v2-backlog/` folder; the `backlog`↔`todo` distinction replaces both. New ideas land as `backlog` (the `stint add` default) and become claimable only when a human runs `stint ready <id>` / `stint ready --tag <tag>`. When v1 ships (task `0030`, itself held in `backlog` so it never shows as a bottleneck), promote v2 with `stint ready --tag v2`. `blocked_by` is reserved for true artifact dependencies — express phase/ordering preference with `backlog` status and sprint sequence, not blockers.
 
 ## Stint Time Tracking
 

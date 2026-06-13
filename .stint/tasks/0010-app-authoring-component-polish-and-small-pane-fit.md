@@ -1,14 +1,21 @@
 ---
 id: "0010"
 title: "App authoring: component polish and small-pane fit"
-status: backlog
+status: todo
+estimate: "8h"
 sprint: "s2"
-estimate: 8h
 blocked_by: []
-gh_issue: ["2111"]
-area: ["sdk/python", "ui/widgets"]
-tags: ["app-authoring", "components", "small-pane"]
+gh_issue:
+  - "2111"
+area:
+  - "sdk/python"
+  - "ui/widgets"
+tags:
+  - "app-authoring"
+  - "components"
+  - "small-pane"
 ---
+
 
 Tighten SDK component defaults so generated apps fit small panes without footer clipping, text overlap, or egui-looking shortcut rows.
 

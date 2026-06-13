@@ -1,15 +1,25 @@
 ---
 id: "0086"
 title: "v1 app-terminal: linked terminal contract"
-status: backlog
+status: todo
+estimate: "10h"
 sprint: "s3"
-estimate: 10h
 blocked_by:
   - 14
-gh_issue: ["599"]
-area: ["host/pane-ops", "host/terminal", "host/permissions", "sdk/pgap"]
-tags: ["v1", "app-terminal", "permissions", "terminal"]
+gh_issue:
+  - "599"
+area:
+  - "host/pane-ops"
+  - "host/terminal"
+  - "host/permissions"
+  - "sdk/pgap"
+tags:
+  - "v1"
+  - "app-terminal"
+  - "permissions"
+  - "terminal"
 ---
+
 
 Define the linked app-terminal contract before marketplace-style apps can drive terminals.
 

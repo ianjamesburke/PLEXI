@@ -1,15 +1,24 @@
 ---
 id: "0150"
 title: "File Explorer: settings modal for column and view controls"
-status: backlog
+status: todo
+estimate: "8h"
 sprint: "s1"
-estimate: 8h
 blocked_by:
   - 2
-gh_issue: ["2153"]
-area: ["apps/file-browser", "ui/overlays", "ui/widgets"]
-tags: ["file-explorer", "settings", "columns", "host-ui-kit"]
+gh_issue:
+  - "2153"
+area:
+  - "apps/file-browser"
+  - "ui/overlays"
+  - "ui/widgets"
+tags:
+  - "file-explorer"
+  - "settings"
+  - "columns"
+  - "host-ui-kit"
 ---
+
 
 Move File Explorer column and view controls into a dedicated settings modal instead of crowding the path toolbar.
 

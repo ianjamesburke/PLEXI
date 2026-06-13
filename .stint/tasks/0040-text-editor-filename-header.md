@@ -1,14 +1,21 @@
 ---
 id: "0040"
 title: "Text editor: note title header bar"
-status: backlog
+status: todo
+estimate: "2h"
 sprint: "s9"
-estimate: 2h
 blocked_by: []
-gh_issue: ["2205"]
-area: ["apps/text-editor", "ui/widgets"]
-tags: ["v1", "text-editor", "ui"]
+gh_issue:
+  - "2205"
+area:
+  - "apps/text-editor"
+  - "ui/widgets"
+tags:
+  - "v1"
+  - "text-editor"
+  - "ui"
 ---
+
 
 Restyle the note title row (added in PR #2197) as a centered pane-style header bar: full-width 20px strip flush with the top of the pane, `pane_header_bg()` fill, title (or filename-stem placeholder) painted centered in `text_dim` — matching the terminal pane name bar.
 

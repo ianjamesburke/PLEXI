@@ -1,14 +1,20 @@
 ---
 id: "0022"
 title: "Marketplace: Plexi AI subscription via ai.query"
-status: backlog
+status: todo
+estimate: "12h"
 sprint: "s4"
-estimate: 12h
 blocked_by: []
 gh_issue: []
-area: ["host/ai", "infra/server"]
-tags: ["marketplace", "ai", "subscription"]
+area:
+  - "host/ai"
+  - "infra/server"
+tags:
+  - "marketplace"
+  - "ai"
+  - "subscription"
 ---
+
 
 Define the Plexi AI subscription backend for `ai.query` as separate from app purchase and local app execution.
 

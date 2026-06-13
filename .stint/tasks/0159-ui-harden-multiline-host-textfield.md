@@ -1,13 +1,22 @@
 ---
 id: "0159"
 title: "UI hardening: multiline host TextField"
-status: backlog
+status: todo
+estimate: "12h"
 sprint: "s31"
-estimate: 12h
-gh_issue: ["2173"]
-area: ["ui/widgets", "ui/overlays"]
-tags: ["ui-hardening", "host-ui-kit", "text-field", "focus"]
+blocked_by: []
+gh_issue:
+  - "2173"
+area:
+  - "ui/widgets"
+  - "ui/overlays"
+tags:
+  - "ui-hardening"
+  - "host-ui-kit"
+  - "text-field"
+  - "focus"
 ---
+
 
 Add a multiline host TextField primitive and migrate text-owning overlays that still hand-style multiline `TextEdit`.
 

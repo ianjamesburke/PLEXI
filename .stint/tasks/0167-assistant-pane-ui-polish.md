@@ -1,9 +1,11 @@
 ---
 id: "0167"
 title: "Assistant native chat UI overhaul — visual parity, rename, multiline, picker, mocked broker tests"
-status: in-progress
+status: done
 estimate: "8h"
+actual: "460m"
 started_at: "2026-06-12T21:47:58Z"
+completed_at: "2026-06-13T05:27:46Z"
 sprint: "s12"
 blocked_by: []
 gh_issue:
@@ -13,6 +15,7 @@ area:
   - "host/ai"
 tags: []
 ---
+
 
 
 ## What

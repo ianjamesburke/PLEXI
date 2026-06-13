@@ -1,14 +1,21 @@
 ---
 id: "0038"
 title: "Text editor: visible pane separation"
-status: backlog
+status: todo
+estimate: "3h"
 sprint: "s9"
-estimate: 3h
 blocked_by: []
-gh_issue: ["2142"]
-area: ["apps/text-editor", "ui/widgets"]
-tags: ["v1", "text-editor", "ui"]
+gh_issue:
+  - "2142"
+area:
+  - "apps/text-editor"
+  - "ui/widgets"
+tags:
+  - "v1"
+  - "text-editor"
+  - "ui"
 ---
+
 
 Add a subtle boundary treatment so stacked text editor panes are visibly separate instead of colliding into one full-bleed surface.
 

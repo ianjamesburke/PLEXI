@@ -1,7 +1,7 @@
 ---
 id: "0168"
 title: "Assistant interrupt-and-fold turn policy + act-on-your-turn prompt"
-status: backlog
+status: todo
 estimate: "4h"
 sprint: "s5"
 blocked_by: []
@@ -12,6 +12,7 @@ area:
 tags:
   - "v1"
 ---
+
 
 ## What
 

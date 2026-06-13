@@ -1,13 +1,23 @@
 ---
 id: "0157"
 title: "UI hardening: host UI gallery visual smoke coverage"
-status: backlog
+status: todo
+estimate: "8h"
 sprint: "s31"
-estimate: 8h
-gh_issue: ["2175"]
-area: ["ui/widgets", "ui/overlays", "infra/testing"]
-tags: ["ui-hardening", "host-ui-kit", "gallery", "testing"]
+blocked_by: []
+gh_issue:
+  - "2175"
+area:
+  - "ui/widgets"
+  - "ui/overlays"
+  - "infra/testing"
+tags:
+  - "ui-hardening"
+  - "host-ui-kit"
+  - "gallery"
+  - "testing"
 ---
+
 
 Add a lightweight visual smoke path for Host UI Gallery and key host overlays.
 

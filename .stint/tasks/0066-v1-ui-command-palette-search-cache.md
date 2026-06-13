@@ -1,14 +1,21 @@
 ---
 id: "0066"
 title: "v1 UI: command palette search cache"
-status: backlog
+status: todo
+estimate: "3h"
 sprint: "s5"
-estimate: 3h
 blocked_by: []
-gh_issue: ["1734"]
-area: ["cli/commands"]
-tags: ["v1", "ui", "command-palette", "performance"]
+gh_issue:
+  - "1734"
+area:
+  - "cli/commands"
+tags:
+  - "v1"
+  - "ui"
+  - "command-palette"
+  - "performance"
 ---
+
 
 Remove avoidable per-keystroke command-palette allocations by precomputing searchable lowercase haystacks after aliases land.
 

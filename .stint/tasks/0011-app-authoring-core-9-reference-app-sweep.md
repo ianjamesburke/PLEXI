@@ -1,16 +1,23 @@
 ---
 id: "0011"
 title: "App authoring: Core 9 reference app sweep"
-status: backlog
+status: todo
+estimate: "16h"
 sprint: "s2"
-estimate: 16h
 blocked_by:
   - 9
   - 10
 gh_issue: []
-area: ["apps/examples", "sdk/python", "host/permissions"]
-tags: ["app-authoring", "core-9", "references"]
+area:
+  - "apps/examples"
+  - "sdk/python"
+  - "host/permissions"
+tags:
+  - "app-authoring"
+  - "core-9"
+  - "references"
 ---
+
 
 Make Core 9 apps clean references for common app patterns: list, form, table, network fetch, AI/chat, state persistence, and canvas fallback.
 

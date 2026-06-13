@@ -1,15 +1,21 @@
 ---
 id: "0067"
 title: "v1 UI: command palette aliases"
-status: backlog
+status: todo
+estimate: "3h"
 sprint: "s5"
-estimate: 3h
 blocked_by:
   - 147
-gh_issue: ["1733"]
-area: ["cli/commands"]
-tags: ["v1", "ui", "command-palette"]
+gh_issue:
+  - "1733"
+area:
+  - "cli/commands"
+tags:
+  - "v1"
+  - "ui"
+  - "command-palette"
 ---
+
 
 Add command-palette aliases so natural synonyms like `shell`, `console`, `hsplit`, and `config` resolve to the expected Plexi commands.
 

@@ -1,13 +1,23 @@
 ---
 id: "0160"
 title: "UI hardening: notification modal footer and action chrome"
-status: backlog
+status: todo
+estimate: "12h"
 sprint: "s31"
-estimate: 12h
-gh_issue: ["2174"]
-area: ["host/notifications", "ui/overlays", "ui/widgets"]
-tags: ["ui-hardening", "host-ui-kit", "notifications", "modal"]
+blocked_by: []
+gh_issue:
+  - "2174"
+area:
+  - "host/notifications"
+  - "ui/overlays"
+  - "ui/widgets"
+tags:
+  - "ui-hardening"
+  - "host-ui-kit"
+  - "notifications"
+  - "modal"
 ---
+
 
 Move notification modal footer and action-row chrome onto shared host UI primitives.
 

@@ -1,7 +1,7 @@
 ---
 id: "0177"
 title: "v1 cleanup: notes picker right-aligns type chips like the palette"
-status: backlog
+status: todo
 estimate: "1h"
 sprint: "s11"
 blocked_by: []
@@ -11,6 +11,7 @@ area:
   - "ui/overlays"
 tags: []
 ---
+
 
 ## What
 

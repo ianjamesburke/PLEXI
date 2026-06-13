@@ -1,9 +1,9 @@
 ---
 id: "0180"
 title: "Testing: cargo test + coverage gate in validate-pr — skip binary install on full coverage"
-status: backlog
+status: todo
+estimate: "8h"
 sprint: "s8"
-estimate: 8h
 blocked_by: []
 gh_issue:
   - "2162"
@@ -14,6 +14,7 @@ tags:
   - "v1"
   - "testing"
 ---
+
 
 Wire `cargo test --bin plexi` and `cargo llvm-cov` into the ship cycle so validate-pr runs the test suite as a pre-gate and can skip the manual binary install for PRs whose diff is fully covered by harness tests.
 

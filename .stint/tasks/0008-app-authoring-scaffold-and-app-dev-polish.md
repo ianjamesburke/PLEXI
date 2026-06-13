@@ -1,14 +1,21 @@
 ---
 id: "0008"
 title: "App authoring: scaffold and app dev polish"
-status: backlog
+status: todo
+estimate: "8h"
 sprint: "s2"
-estimate: 8h
 blocked_by: []
-gh_issue: ["1962"]
-area: ["sdk/python", "cli/commands"]
-tags: ["app-authoring", "scaffold", "sdk-v2"]
+gh_issue:
+  - "1962"
+area:
+  - "sdk/python"
+  - "cli/commands"
+tags:
+  - "app-authoring"
+  - "scaffold"
+  - "sdk-v2"
 ---
+
 
 Make the generated app and `app dev` path visually correct enough that agents start from a good default.
 

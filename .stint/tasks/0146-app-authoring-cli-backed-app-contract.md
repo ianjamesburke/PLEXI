@@ -1,14 +1,22 @@
 ---
 id: "0146"
 title: "App authoring: CLI-backed app contract"
-status: backlog
+status: todo
+estimate: "8h"
 sprint: "s2"
-estimate: 8h
 blocked_by: []
 gh_issue: []
-area: ["cli/commands", "host/terminal", "sdk/pgap"]
-tags: ["v1", "app-authoring", "cli-renderer", "terminal"]
+area:
+  - "cli/commands"
+  - "host/terminal"
+  - "sdk/pgap"
+tags:
+  - "v1"
+  - "app-authoring"
+  - "cli-renderer"
+  - "terminal"
 ---
+
 
 Finalize the contract for CLI-backed Plexi apps: apps opened through the Plexi Open CLI path where the CLI owns its own Plexi UI generation and backend process, and Plexi runs the command in a background terminal/process lane.
 

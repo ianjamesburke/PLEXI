@@ -1,15 +1,22 @@
 ---
 id: "0012"
 title: "App authoring: verification harness and docs"
-status: backlog
+status: todo
+estimate: "12h"
 sprint: "s2"
-estimate: 12h
 blocked_by:
   - 9
 gh_issue: []
-area: ["infra/docs", "sdk/python", "sdk/pgap"]
-tags: ["app-authoring", "docs", "verification"]
+area:
+  - "infra/docs"
+  - "sdk/python"
+  - "sdk/pgap"
+tags:
+  - "app-authoring"
+  - "docs"
+  - "verification"
 ---
+
 
 Add acceptance coverage and docs proving generated apps render, handle input, save state, and avoid layout overlap.
 

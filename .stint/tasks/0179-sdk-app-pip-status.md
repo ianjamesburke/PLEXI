@@ -1,7 +1,7 @@
 ---
 id: "0179"
 title: "feat(sdk): apps optionally report their own pip status (red/yellow/green)"
-status: backlog
+status: todo
 estimate: "3h"
 sprint: "s2"
 blocked_by: []
@@ -13,6 +13,7 @@ area:
   - "ui/overlays"
 tags: []
 ---
+
 
 ## What
 

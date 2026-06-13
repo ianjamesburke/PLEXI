@@ -1,15 +1,22 @@
 ---
 id: "0005"
 title: "File Explorer: recursive search and filters"
-status: backlog
+status: todo
+estimate: "12h"
 sprint: "s1"
-estimate: 12h
 blocked_by:
   - 2
-gh_issue: ["2139"]
-area: ["apps/file-browser", "ui/widgets"]
-tags: ["file-explorer", "search", "filters"]
+gh_issue:
+  - "2139"
+area:
+  - "apps/file-browser"
+  - "ui/widgets"
+tags:
+  - "file-explorer"
+  - "search"
+  - "filters"
 ---
+
 
 Expand current-directory fuzzy filtering into recursive scoped search with metadata filters.
 
