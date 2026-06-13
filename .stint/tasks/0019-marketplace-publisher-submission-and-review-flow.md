@@ -1,9 +1,11 @@
 ---
 id: "0019"
 title: "Marketplace: publisher submission and review flow"
-status: in-progress
+status: done
 estimate: "16h"
+actual: "319m"
 started_at: "2026-06-13T01:57:12Z"
+completed_at: "2026-06-13T07:16:09Z"
 sprint: "s4"
 blocked_by:
   - 18
@@ -17,6 +19,7 @@ tags:
   - "publisher"
   - "review"
 ---
+
 
 
 Add the publisher path for package validation, submission, automated checks, and human review for native-process apps.

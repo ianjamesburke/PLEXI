@@ -1,9 +1,11 @@
 ---
 id: "0020"
 title: "Marketplace: browse and install from registry"
-status: in-progress
+status: done
 estimate: "16h"
+actual: "319m"
 started_at: "2026-06-13T01:57:12Z"
+completed_at: "2026-06-13T07:16:09Z"
 sprint: "s4"
 blocked_by:
   - 18
@@ -18,6 +20,7 @@ tags:
   - "install"
   - "trust-labels"
 ---
+
 
 
 Let a user browse reviewed apps and install a free hosted app while seeing the same trust labels and capabilities as local package install.
