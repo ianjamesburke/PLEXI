@@ -9,6 +9,21 @@ Run this after implementation compiles, before pushing. Output is a `**Test evid
 
 All commands run from the feature worktree.
 
+## Flaky Test Policy
+
+**A failing test is never dismissed as "flaky" without proof.** The word "flaky" is a hypothesis, not a finding; treating it as a finding stops investigation prematurely.
+
+Before a test can be called flaky:
+1. It must pass twice in isolation: `cargo test --bin plexi <test_name> -- --exact`
+2. If it passes in isolation but fails in the full suite → **it has a concurrency bug**. Find and fix the shared state.
+3. Even after confirming flakiness, file a GitHub issue — don't shrug it off in the Ship Log.
+
+**Ship Log rule:** never write "test passed in isolation, likely flaky" as a conclusion. Write either:
+- `cargo test: N passed` (all green) — if the suite is clean
+- `binary install required — <test name> fails under parallelism, issue #N filed` — if there is a genuine intermittent
+
+**Concurrency interference was the root cause of issue #2229.** Tests shared `config_dir()` (a real $HOME subdir) across threads. The fix: HostHarness now auto-isolates every test into a per-test tempdir. Any new shared-state interference must be fixed the same way — not dismissed.
+
 ## Step 1 — Classify the Diff
 
 ```bash
@@ -60,9 +75,7 @@ assert = { pane_count = 1, lifecycle = "running", tree_contains = "balls" }
 shot = "balls.png"
 ```
 
-Verbs: `open_app` (+`args`), `open_file_browser`, `key`, `sidebar`, `switch_context`, `push_to_subcontext`, `wait_app_frame`, `run_steps`, `assert` (structured keys: `pane_count`, `window_count`, `context_count`, `portal_count`, `sidebar`, `lifecycle`, `tree_contains`), `shot`.
-
-The `SceneReport` JSON (`schema_version` field) contains per-step results, a host state snapshot, and the app's committed L1 render tree — assert on state, not pixels, whenever possible. If an app crashes before its first frame, the report carries its stderr — fix the app, don't screenshot a fallback state.
+For scene DSL reference (verbs, assertions, SceneReport format), see `docs/TESTING.md`.
 
 ## Step 4 — Inspect the Screenshots
 
