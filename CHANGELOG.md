@@ -1,6 +1,18 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.755] — 2026-06-13
+
+### Changes
+- fix: closing the last pane in a subcontext collapses it and zooms out (#2232)
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
 ## [0.0.754] — 2026-06-13
 
 ### Changes
