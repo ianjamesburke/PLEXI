@@ -2,7 +2,7 @@
 id: "0146"
 title: "App authoring: CLI-backed app contract"
 status: todo
-estimate: "8h"
+estimate: "4h"
 sprint: "s2"
 blocked_by: []
 gh_issue: []
@@ -18,22 +18,21 @@ tags:
 ---
 
 
-Finalize the contract for CLI-backed Plexi apps: apps opened through the Plexi Open CLI path where the CLI owns its own Plexi UI generation and backend process, and Plexi runs the command in a background terminal/process lane.
+Formalize and document the contract for CLI-backed Plexi apps. The renderer hardening (0062) already shipped, making de facto decisions about lifecycle, caching, and descriptor invalidation. This task captures those decisions as explicit documentation and fills remaining gaps.
 
 ## Why
 
-Generated CLI apps need one obvious path before marketplace packaging and renderer hardening. The host must know how to launch, supervise, route UI updates, expose logs, request permissions, and close/restart these apps without treating arbitrary terminal subprocesses as trusted PGAP apps.
+0062 shipped the working implementation but the lifecycle contract is implicit in code. Agents and third-party authors need an explicit reference for how `plexi app open --cli` apps launch, crash, restart, generate UI descriptors, and interact with permissions.
 
 ## Scope
 
-- Define the `plexi app open --cli` app lifecycle: launch, ready state, reload, close, crash, and restart.
-- Decide what runs in the background terminal/process lane and what is surfaced as the Plexi app pane.
-- Specify how CLI-backed apps generate UI descriptors or frames, how Plexi caches them, and how stale descriptors are invalidated.
-- Define permission prompts for command execution, filesystem access, network access, and app-to-terminal control.
-- Define logging and inspection behavior so `pane info`, `pane list`, and host logs identify the backing command.
-- Make the path channel-agnostic across alpha, beta, main, and PR builds.
+- Audit `src/render/cli_renderer_app.rs` and extract the de facto lifecycle contract (launch, ready, reload, close, crash, restart) into `docs/cli-app-contract.md`.
+- Document how CLI-backed apps generate UI descriptors, how the host caches them, and how stale descriptors are invalidated (already implemented in 0062).
+- Document permission prompts for command execution, filesystem access, network access.
+- Document logging and inspection behavior (`pane info`, `pane list`, host logs).
+- Identify any gaps between the 0062 implementation and the ideal contract; file issues for gaps, do not fix inline.
+- Verify channel-agnostic behavior across alpha, beta, main, and PR builds.
 
-## Blocks
+## Context
 
-- CLI renderer hardening (`0062`) should harden the implementation after this contract is settled.
-- Third-party apps that generate their own Plexi UI from a CLI should block on this task.
+0062 (CLI renderer hardening) shipped without this contract being finalized first. The original blocking relationship is now inverted: this task documents what 0062 built, rather than defining what 0062 should build. Estimate reduced from 8h to 4h since this is now documentation + gap analysis, not design.

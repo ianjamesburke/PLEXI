@@ -11,7 +11,9 @@ area:
   - "sdk/python"
   - "host/pane-ops"
   - "ui/overlays"
-tags: []
+tags:
+  - "v1"
+  - "app-authoring"
 ---
 
 
@@ -19,13 +21,20 @@ tags: []
 
 Add an optional SDK + host protocol surface so apps can declare their own pip
 state (green/yellow/red). Host falls back to today's derived activity when an
-app hasn't set a status — no behavior change for existing apps.
+app hasn't set a status. No behavior change for existing apps.
 
-## References
+## Scope
+
+- Add `SetPipStatus { status: PipStatus }` variant to `AppRequest` enum, modeled on the existing `SetAgentState` handler.
+- Add `PipStatus` enum (green/yellow/red) to `src/protocol/commands.rs`.
+- Store on `AppPane` struct. `effective_activity()` checks pip status first, falls back to derived activity.
+- Add `App.set_pip_status(status)` method to the Python SDK.
+- No overlay changes needed (command palette reads `effective_activity` which will pick up the new signal).
+
+## References (verified line numbers as of v0.0.768)
 
 - GitHub issue #2230
-- src/protocol/commands.rs:462 (AgentState enum, AppRequest enum ~483)
-- src/host/pane.rs:402 (AppPane struct), line ~114 (effective_activity)
-- src/app/lifecycle.rs:1290 (SetAgentState handler — model for new handler)
-- sdk/python/plexi_sdk/_app.py (App class, add set_pip_status method)
-- src/overlays/command_palette.rs:116 (no change needed — reads effective_activity)
+- `src/protocol/commands.rs:464` (AgentState enum), `:485` (AppRequest enum)
+- `src/host/pane.rs:408` (AppPane struct), `:114` (effective_activity)
+- `src/app/lifecycle.rs:1290` (SetAgentState handler, model for new handler)
+- `sdk/python/plexi_sdk/_app.py:139` (App class, add set_pip_status method)
