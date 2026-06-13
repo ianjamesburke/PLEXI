@@ -80,6 +80,10 @@ pub(crate) fn draw_text_caret(
         return;
     }
 
+    // Bare glyph height reads slightly short against the row; +1px splits
+    // the difference with egui's full-row caret.
+    let caret_height = caret_height + 1.0;
+
     let cursor_pos = output.galley.pos_from_cursor(&cursor_range.primary);
     let row_h = if cursor_pos.height() > 0.01 {
         cursor_pos.height()
