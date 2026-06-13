@@ -1,8 +1,9 @@
 ---
 id: "0177"
 title: "v1 cleanup: notes picker right-aligns type chips like the palette"
-status: todo
+status: in-progress
 estimate: "1h"
+started_at: "2026-06-13T21:40:48Z"
 sprint: "s11"
 blocked_by: []
 gh_issue:
@@ -11,6 +12,7 @@ area:
   - "ui/overlays"
 tags: []
 ---
+
 
 
 ## What
