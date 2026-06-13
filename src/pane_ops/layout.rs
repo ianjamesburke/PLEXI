@@ -646,12 +646,12 @@ impl PlexiApp {
         // Find which context and tile owns this pane_id.
         for ctx_idx in 0..self.windows.len() {
             if let Some(tile_id) = self.windows[ctx_idx].tree.tiles.find_pane(&pane_id) {
+                let ctx_id = self.windows[ctx_idx].context_id;
                 self.close_tile(ctx_idx, tile_id);
                 // Mirror the guard in execute_close_pane: if the window is now empty
                 // and there are other pages in the same context, delete the zombie window.
                 // Without this, the window stays in self.windows[] as a phantom grid cell.
                 if self.windows[ctx_idx].panes.is_empty() {
-                    let ctx_id = self.windows[ctx_idx].context_id;
                     let pages_in_context = self
                         .windows
                         .iter()
@@ -664,6 +664,9 @@ impl PlexiApp {
                         self.delete_window(ctx_idx);
                     }
                 }
+                // An emptied subcontext collapses entirely — delete it and,
+                // when it was active, zoom back out like Cmd+Escape.
+                self.collapse_subcontext_if_empty(ctx_id);
                 return;
             }
         }
@@ -1465,14 +1468,19 @@ impl PlexiApp {
             .and_then(|p| p.as_app())
             .is_some();
         if is_app {
+            let ctx_id = self.windows[active].context_id;
             self.close_tile(active, focused_tile);
             self.windows[active].clear_zoom();
+            // An emptied subcontext collapses entirely — delete it and zoom
+            // back out to the parent, as if Cmd+Escape had been pressed.
+            self.collapse_subcontext_if_empty(ctx_id);
         }
     }
 
     /// Execute the close-pane action (called directly when confirm_close is false,
     /// or from the confirm-close dialog when the user confirms).
     pub(crate) fn execute_close_pane(&mut self) -> bool {
+        let ctx_id = self.windows[self.active_window].context_id;
         self.windows[self.active_window].clear_zoom();
         if !self.windows[self.active_window].panes.is_empty() {
             self.close_focused();
@@ -1481,7 +1489,6 @@ impl PlexiApp {
         // in the same context (i.e. it's one of several pages). When it's the
         // sole page, keep it alive so the welcome screen renders.
         if self.windows[self.active_window].panes.is_empty() {
-            let ctx_id = self.windows[self.active_window].context_id;
             let pages_in_context = self
                 .windows
                 .iter()
@@ -1491,6 +1498,9 @@ impl PlexiApp {
                 self.delete_window(self.active_window);
             }
         }
+        // An emptied subcontext collapses entirely — delete it and zoom back
+        // out to the parent, as if Cmd+Escape had been pressed.
+        self.collapse_subcontext_if_empty(ctx_id);
         false
     }
 }
