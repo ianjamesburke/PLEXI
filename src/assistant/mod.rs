@@ -410,17 +410,9 @@ impl AssistantApp {
                 // unblock worker threads parked on a permission reply so they
                 // can finish and have their stale outcome dropped.
                 AssistantEffect::CancelTurn => {
-                    if let Some(tx) = self.pending_reply.take() {
-                        let _ = tx.send(PermissionReply::Deny);
-                    }
-                    if let Some(pending) = self.pending_subscribe.take() {
-                        let _ = pending.reply.send(ToolCallResult {
-                            output_json: None,
-                            error: Some(
-                                "cancelled: the conversation was cleared mid-turn".to_string(),
-                            ),
-                        });
-                    }
+                    self.unblock_pending_workers(
+                        "cancelled: the conversation was cleared mid-turn",
+                    );
                     log::info!("assistant: in-flight turn cancelled by conversation switch");
                 }
                 // Phase 3 stub: correctly shaped, logged, never panics.
@@ -919,20 +911,28 @@ impl AssistantApp {
         self.turn_cancel.cancel();
         // Unblock a worker parked on a permission sheet so it observes the
         // cancel at the next tool-loop boundary instead of hanging.
+        self.unblock_pending_workers("cancelled: interrupted by user (ESC)");
+        log::info!(
+            "assistant: ESC interrupt — cancelling in-flight turn ({} queued user message(s), {} queued event line(s))",
+            self.model.queued_user_turns,
+            self.queued_event_lines.len()
+        );
+    }
+
+    /// Unblock any worker thread parked on a permission sheet or pending
+    /// subscribe so it observes the cancel token at the next tool-loop
+    /// boundary instead of hanging. Shared by conversation-switch cancel and
+    /// ESC interrupt. `reason` is surfaced to the blocked subscribe caller.
+    fn unblock_pending_workers(&mut self, reason: &str) {
         if let Some(tx) = self.pending_reply.take() {
             let _ = tx.send(PermissionReply::Deny);
         }
         if let Some(pending) = self.pending_subscribe.take() {
             let _ = pending.reply.send(ToolCallResult {
                 output_json: None,
-                error: Some("cancelled: interrupted by user (ESC)".to_string()),
+                error: Some(reason.to_string()),
             });
         }
-        log::info!(
-            "assistant: ESC interrupt — cancelling in-flight turn ({} queued user message(s), {} queued event line(s))",
-            self.model.queued_user_turns,
-            self.queued_event_lines.len()
-        );
     }
 
     /// Apply the user's permission-sheet decision: record the grant per its
