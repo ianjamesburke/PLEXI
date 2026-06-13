@@ -199,7 +199,7 @@ fn inject_zsh_run_completions(script: &str, binary_name: &str) -> String {
     for line in script.lines() {
         if line.contains("::command") && line.contains("Command name to run") {
             result.push_str(&format!(
-                "':command -- Command name (from commands.toml):__{binary_name}_run_completions' \\",
+                "'::command -- Command name (from commands.toml):__{binary_name}_run_completions' \\",
             ));
             result.push('\n');
             if !injected_helper {
