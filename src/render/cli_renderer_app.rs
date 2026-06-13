@@ -73,6 +73,9 @@ pub struct CliRendererApp {
     binary_name: String,
     /// Which text field has focus (flag name), if any.
     focused_field: Option<String>,
+    /// Set when a leaf form opens so the first text field grabs keyboard
+    /// focus on the next frame; cleared once focus is requested.
+    pending_focus: bool,
 }
 
 impl CliRendererApp {
@@ -119,7 +122,40 @@ impl CliRendererApp {
             terminal_request_id: format!("cli-term-{}", uuid::Uuid::new_v4()),
             binary_name,
             focused_field: None,
+            pending_focus: false,
         }
+    }
+
+    // ── Shared widgets ────────────────────────────────────────────────────────
+
+    /// Full-width clickable "← Back" row, used by both the list and form views
+    /// so the back affordance is identical everywhere. The highlight is inset
+    /// off the pane edge; the hit target spans the full width. Returns true on
+    /// click.
+    fn back_button(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) -> bool {
+        let (outer, resp) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), egui::Sense::click());
+        let hovered = resp.hovered();
+        if hovered {
+            ui.painter().rect_filled(
+                outer.shrink2(Vec2::new(style::SPACE_SM, 0.0)),
+                style::RADIUS_MD,
+                colors.bg_hover,
+            );
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        ui.painter().text(
+            outer.left_center() + Vec2::new(style::SPACE_MD, 0.0),
+            egui::Align2::LEFT_CENTER,
+            "← Back",
+            egui::FontId::proportional(style::TEXT_BODY),
+            if hovered {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
+        );
+        resp.clicked()
     }
 
     // ── Descriptor navigation ────────────────────────────────────────────────
@@ -190,6 +226,7 @@ impl CliRendererApp {
             for (k, v) in defaults {
                 self.field_values.insert(k, v);
             }
+            self.pending_focus = true;
             self.view = View::Form;
         }
     }
@@ -366,31 +403,9 @@ impl CliRendererApp {
         });
 
         // Back button if navigated deep
-        if has_path {
-            let (rect, resp) = ui.allocate_exact_size(
-                Vec2::new(ui.available_width(), 32.0),
-                egui::Sense::click(),
-            );
-            if resp.hovered() {
-                ui.painter().rect_filled(rect, style::RADIUS_MD, colors.bg_hover);
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            let text_pos = rect.left_center() + Vec2::new(style::SPACE_MD, 0.0);
-            ui.painter().text(
-                text_pos,
-                egui::Align2::LEFT_CENTER,
-                "← Back",
-                egui::FontId::proportional(style::TEXT_BODY),
-                if resp.hovered() {
-                    colors.text_primary
-                } else {
-                    colors.text_dim
-                },
-            );
-            if resp.clicked() {
-                self.navigate_back();
-                return;
-            }
+        if has_path && Self::back_button(ui, colors) {
+            self.navigate_back();
+            return;
         }
 
         // Command list
@@ -427,7 +442,13 @@ impl CliRendererApp {
                 } else {
                     Color32::TRANSPARENT
                 };
-                ui.painter().rect_filled(rect, style::RADIUS_MD, bg);
+                // Inset the highlight off the pane edge; the click target stays
+                // full-width while the fill reads as a padded row.
+                ui.painter().rect_filled(
+                    rect.shrink2(Vec2::new(style::SPACE_SM, 0.0)),
+                    style::RADIUS_MD,
+                    bg,
+                );
 
                 let name_color = if active {
                     colors.accent
@@ -537,21 +558,11 @@ impl CliRendererApp {
 
         ui.add_space(style::SPACE_SM);
 
-        // Back button
-        ui.horizontal(|ui| {
-            ui.add_space(style::SPACE_MD);
-            if button::toolbar_button(
-                ui,
-                RichText::new("← Back")
-                    .size(style::TEXT_CAPTION)
-                    .color(colors.text_dim),
-                "Back",
-            )
-            .clicked()
-            {
-                self.navigate_back();
-            }
-        });
+        // Back button (same full-width affordance as the list view)
+        if Self::back_button(ui, colors) {
+            self.navigate_back();
+            return;
+        }
 
         ui.add_space(style::SPACE_SM);
         ui.horizontal(|ui| {
@@ -560,15 +571,20 @@ impl CliRendererApp {
         });
         ui.add_space(style::SPACE_SM);
 
-        // Arg fields
+        // Arg fields. On a freshly opened form, the first text field grabs
+        // keyboard focus so the user can type immediately.
         if has_fields {
+            let mut want_focus = self.pending_focus;
             egui::ScrollArea::vertical()
                 .max_height(ui.available_height() - 80.0)
                 .show(ui, |ui| {
                     for arg in args.iter().chain(flags.iter()) {
-                        self.render_field(ui, colors, arg);
+                        if self.render_field(ui, colors, arg, want_focus) {
+                            want_focus = false;
+                        }
                     }
                 });
+            self.pending_focus = false;
 
             ui.add_space(style::SPACE_SM);
         }
@@ -628,12 +644,17 @@ impl CliRendererApp {
         });
     }
 
+    /// Renders one arg/flag field. When `want_focus` is true and this field is
+    /// a text input, it requests keyboard focus and returns true so the caller
+    /// stops offering focus to later fields.
     fn render_field(
         &mut self,
         ui: &mut egui::Ui,
         colors: &crate::ui::theme::Colors,
         arg: &ArgSpec,
-    ) {
+        want_focus: bool,
+    ) -> bool {
+        let mut took_focus = false;
         ui.horizontal(|ui| {
             ui.add_space(style::SPACE_MD);
             ui.vertical(|ui| {
@@ -692,19 +713,28 @@ impl CliRendererApp {
                     _ => {
                         let placeholder = arg.placeholder.as_deref().unwrap_or("");
                         ui.set_max_width(ui.available_width() - style::SPACE_MD);
-                        crate::ui::text_field::styled_text_input(
+                        let resp = crate::ui::text_field::styled_text_input(
                             ui,
                             val,
                             placeholder,
                             egui::Id::new(("cli_renderer_field", arg.name.as_str())),
                             colors,
                         );
+                        if want_focus && !resp.has_focus() {
+                            resp.request_focus();
+                            took_focus = true;
+                            log::info!(
+                                "CliRendererApp: auto-focused field '{}'",
+                                arg.name
+                            );
+                        }
                     }
                 }
 
                 ui.add_space(style::SPACE_SM);
             });
         });
+        took_focus
     }
 }
 
@@ -744,7 +774,9 @@ impl App for CliRendererApp {
                     self.selected = self.selected.saturating_sub(1);
                     return KeyDisposition::Consumed;
                 }
-                if input.key_pressed(egui::Key::Enter) {
+                // Cmd+Enter is the host pane-zoom toggle (src/host/keys.rs) — let
+                // it pass through; plain Enter opens the selected command.
+                if input.key_pressed(egui::Key::Enter) && !input.modifiers.command {
                     self.navigate_into(self.selected);
                     return KeyDisposition::Consumed;
                 }
@@ -759,10 +791,11 @@ impl App for CliRendererApp {
                     self.navigate_back();
                     return KeyDisposition::Consumed;
                 }
-                // Enter runs the assembled command. The form's fields are all
-                // single-line, so Enter has no in-field meaning to compete with;
-                // Cmd+Enter works too for muscle-memory.
-                if input.key_pressed(egui::Key::Enter) {
+                // Plain Enter runs the assembled command (single-line fields, so
+                // Enter has no in-field meaning to compete with). Cmd+Enter is
+                // reserved for the host pane-zoom toggle (src/host/keys.rs), so
+                // let it pass through instead of running.
+                if input.key_pressed(egui::Key::Enter) && !input.modifiers.command {
                     self.execute();
                     return KeyDisposition::Consumed;
                 }
@@ -984,6 +1017,9 @@ mod tests {
         let mut disposition = KeyDisposition::Passthrough;
         let _ = ctx.run(
             egui::RawInput {
+                // `input.modifiers` reads from the top-level snapshot, not the
+                // per-event field — set both so the guard sees the modifier.
+                modifiers,
                 events: vec![egui::Event::Key {
                     key,
                     physical_key: None,
@@ -1018,6 +1054,40 @@ mod tests {
                 AppCommand::RunInLinkedTerminal { command, .. } if command.contains("greet")
             )),
             "plain Enter should queue a RunInLinkedTerminal for the greet command"
+        );
+    }
+
+    #[test]
+    fn cmd_enter_passes_through_for_pane_zoom() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(0); // greet — a leaf form
+        app.terminal_pane_id = 5;
+        app.field_values.insert("name".into(), "Ada".into());
+
+        // Cmd+Enter is the host pane-zoom toggle — the renderer must not eat it.
+        let disp = press_key(
+            &mut app,
+            egui::Key::Enter,
+            egui::Modifiers {
+                command: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(disp, KeyDisposition::Passthrough);
+        assert!(
+            app.take_pending_commands().is_empty(),
+            "Cmd+Enter must not run the command — it belongs to the host zoom toggle"
+        );
+    }
+
+    #[test]
+    fn opening_a_leaf_form_arms_field_focus() {
+        let (mut app, _dir) = app_from_fixture();
+        assert!(!app.pending_focus);
+        app.navigate_into(0); // greet — a leaf form with a text field
+        assert!(
+            app.pending_focus,
+            "opening a leaf form must arm auto-focus for the first text field"
         );
     }
 
