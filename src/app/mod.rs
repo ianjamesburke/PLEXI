@@ -3165,6 +3165,24 @@ impl eframe::App for PlexiApp {
                     log::info!("notes_picker: Cmd+O — opening picker");
                     self.open_notes_picker();
                 }
+                Action::CloseContext => {
+                    let ctx_id = self.router.active().context_id;
+                    if self.router.len() <= 1 {
+                        log::info!("close_context: only one context remains, ignoring");
+                    } else {
+                        let state = self.build_context_close_state(ctx_id);
+                        let confirm = self.config.confirm_context_close.unwrap_or(true);
+                        if state.items.is_empty() || !confirm {
+                            let idx = self.router.active_idx();
+                            log::info!("close_context: closing ctx={ctx_id} idx={idx} (empty={}, confirm={confirm})", state.items.is_empty());
+                            self.delete_context(idx);
+                            self.save_workspace();
+                        } else {
+                            log::info!("close_context: ctx={ctx_id} has {} panes, showing confirm dialog", state.items.len());
+                            self.pending_context_close = Some(state);
+                        }
+                    }
+                }
                 Action::ContextZoomOut => {
                     log::info!(
                         "ContextZoomOut: popping depth stack (depth={})",

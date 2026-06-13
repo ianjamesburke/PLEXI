@@ -31,6 +31,7 @@ use crate::config::KeybindingsConfig;
 // Cmd+F                       — terminal search (handled inside egui_term, not host)
 // Cmd+U                       — toggle pane hidden state
 // Cmd+E                       — file browser
+// Cmd+Shift+W                 — close context (with confirm dialog)
 // Cmd+Shift+I                 — set context root from focused pane CWD
 // Cmd+Shift+U                 — park/unpark context
 // Cmd+Option+N                — extract focused pane into a new sub-context (portal)
@@ -148,6 +149,8 @@ pub enum Action {
     ParkContext,
     /// Open the notes picker overlay from any pane type. Bound to Cmd+O.
     OpenNotesPicker,
+    /// Close the active context with a confirm dialog. Bound to Cmd+Shift+W.
+    CloseContext,
 }
 
 /// Resolved keybindings — one `(Modifiers, Key)` pair per named action.
@@ -210,6 +213,7 @@ pub struct KeyBindings {
     pub hide_pane: (egui::Modifiers, egui::Key),
     pub park_context: (egui::Modifiers, egui::Key),
     pub open_notes_picker: (egui::Modifiers, egui::Key),
+    pub close_context: (egui::Modifiers, egui::Key),
 }
 
 fn cmd() -> egui::Modifiers {
@@ -313,6 +317,7 @@ impl Default for KeyBindings {
             hide_pane: (cmd(), egui::Key::U),
             park_context: (cmd_shift(), egui::Key::U),
             open_notes_picker: (cmd(), egui::Key::O),
+            close_context: (cmd_shift(), egui::Key::W),
         }
     }
 }
@@ -495,6 +500,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(hide_pane, "hide_pane");
     apply_override!(park_context, "park_context");
     apply_override!(open_notes_picker, "open_notes_picker");
+    apply_override!(close_context, "close_context");
 
     // Conflict detection
     let named: &[(&str, (egui::Modifiers, egui::Key))] = &[
@@ -559,6 +565,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("hide_pane", bindings.hide_pane),
         ("park_context", bindings.park_context),
         ("open_notes_picker", bindings.open_notes_picker),
+        ("close_context", bindings.close_context),
     ];
 
     let mut seen: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
@@ -663,6 +670,13 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             exact: true,
             context: BindingContext::Global,
             action: Action::ToggleNotificationModal,
+        },
+        BindingEntry {
+            modifiers: b.close_context.0,
+            key: b.close_context.1,
+            exact: true,
+            context: BindingContext::Global,
+            action: Action::CloseContext,
         },
         // ── Normal bindings (suppressed when overlay/capture active) ─────────
         BindingEntry {

@@ -58,6 +58,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "\\"], "Split right (mirror)"),
                                         (&["\u{2318}", "\u{21E7}", "\\"], "Split below (mirror)"),
                                         (&["\u{2318}", "W"], "Close pane"),
+                                        (&["\u{2318}", "\u{21E7}", "W"], "Close context"),
                                         (&["\u{2318}", "T"], "New tab"),
                                     ];
                                     for (keys, desc) in rows {
