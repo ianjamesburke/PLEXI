@@ -945,6 +945,11 @@ pub(crate) fn render_draw_commands(
                 // app-specified colour. Header/code styling is handled internally
                 // by egui_commonmark but inherits the base visuals.
                 child.style_mut().visuals.override_text_color = Some(text_color);
+                // Inject PlexiColors so egui_commonmark picks up themed code block
+                // backgrounds, link colors, and blockquote tints instead of egui defaults.
+                child.visuals_mut().extreme_bg_color = colors.bg_active;
+                child.visuals_mut().hyperlink_color = colors.accent;
+                child.visuals_mut().faint_bg_color = colors.bg_hover;
                 // Scale body font size to match the app's base_size.
                 child.style_mut().text_styles.insert(
                     egui::TextStyle::Body,
