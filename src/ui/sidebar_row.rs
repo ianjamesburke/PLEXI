@@ -76,6 +76,9 @@ pub struct ContextItem {
     pub pane_dots: Option<PaneDots>,
     /// Nesting depth for subcontexts (0 = top-level).
     pub indent: u32,
+    /// Whether this row supports drag reordering. When false, hover shows
+    /// PointingHand instead of Grab and drag actions are suppressed.
+    pub draggable: bool,
 }
 
 /// Render pane-indicator dots into the current horizontal layout position.
@@ -400,19 +403,23 @@ impl ContextItem {
                 egui::pos2(content_max_x, row_rect.max.y),
             ));
             if in_content || is_dragging {
-                ui.ctx().set_cursor_icon(if any_dragging {
-                    CursorIcon::Grabbing
+                ui.ctx().set_cursor_icon(if self.draggable {
+                    if any_dragging {
+                        CursorIcon::Grabbing
+                    } else {
+                        CursorIcon::Grab
+                    }
                 } else {
-                    CursorIcon::Grab
+                    CursorIcon::PointingHand
                 });
             }
         }
 
-        let action = if response.double_clicked() {
+        let action = if self.draggable && response.double_clicked() {
             SidebarAction::Rename
-        } else if response.drag_started() {
+        } else if self.draggable && response.drag_started() {
             SidebarAction::DragStart
-        } else if response.drag_stopped() {
+        } else if self.draggable && response.drag_stopped() {
             SidebarAction::DragEnd
         } else if response.clicked() && in_action && hovered {
             SidebarAction::Delete

@@ -1171,6 +1171,27 @@ impl PlexiApp {
         self.save_workspace();
     }
 
+    /// Park a specific context by index, moving focus to the nearest unparked neighbor.
+    pub(crate) fn park_context(&mut self, idx: usize) {
+        if self.router.get(idx).parked {
+            return;
+        }
+        let name = self.router.get(idx).name.clone();
+        self.router.get_mut(idx).parked = true;
+        log::info!("context: parked '{name}' (idx={idx})");
+
+        if self.router.active_idx() == idx {
+            let len = self.router.len();
+            let next_unparked = (1..len)
+                .map(|offset| (idx + offset) % len)
+                .find(|&i| !self.router.get(i).parked);
+            if let Some(new_idx) = next_unparked {
+                self.switch_workspace(new_idx);
+            }
+        }
+        self.save_workspace();
+    }
+
     /// Unpark a specific context by index and switch focus to it.
     pub(crate) fn unpark_context(&mut self, idx: usize) {
         self.router.get_mut(idx).parked = false;

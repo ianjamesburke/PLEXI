@@ -259,6 +259,7 @@ impl PlexiApp {
                 subtitle,
                 pane_dots,
                 indent,
+                draggable: true,
             }
             .draw(ui, egui::Id::new(("ctx", i)), &self.colors);
 
@@ -334,6 +335,10 @@ impl PlexiApp {
                     }
                     if num_ctxs > 1 {
                         ui.separator();
+                        if ui.button("Park").clicked() {
+                            menu_action = Some((i, WindowMenuAction::Park));
+                            ui.close_menu();
+                        }
                         if ui.button("Delete").clicked() {
                             menu_action = Some((i, WindowMenuAction::Delete));
                             ui.close_menu();
@@ -365,61 +370,130 @@ impl PlexiApp {
         if parked_count > 0 {
             ui.add_space(8.0);
 
-            // Divider row: "Parked (N)" -- clickable to expand/collapse
+            // Section header: matches "Contexts" header style, clickable chevron
             let divider_id = egui::Id::new("parked_divider");
             let expanded = self.parked_section_expanded;
-            let chevron = if expanded { "\u{25BE}" } else { "\u{25B8}" }; // ▾ or ▸
-            let divider_text = format!("{chevron} Parked ({parked_count})");
+            let chevron = if expanded { "\u{25BE}" } else { "\u{25B8}" };
 
-            let divider_response = ui
+            let header_response = ui
                 .horizontal(|ui| {
                     ui.add_space(16.0);
                     ui.add(
                         egui::Label::new(
-                            RichText::new(divider_text)
+                            RichText::new(chevron)
                                 .size(10.0)
-                                .color(self.colors.text_dim),
+                                .color(self.colors.text_section),
                         )
-                        .selectable(false)
-                        .sense(egui::Sense::click()),
-                    )
+                        .selectable(false),
+                    );
+                    ui.add_space(2.0);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("Parked ({parked_count})"))
+                                .size(10.0)
+                                .color(self.colors.text_section),
+                        )
+                        .selectable(false),
+                    );
                 })
-                .inner;
+                .response;
 
-            let response = ui.interact(divider_response.rect, divider_id, egui::Sense::click());
-            if response.clicked() || divider_response.clicked() {
+            let interact =
+                ui.interact(header_response.rect, divider_id, egui::Sense::click());
+            if interact.clicked() {
                 self.parked_section_expanded = !self.parked_section_expanded;
             }
-            if response.hovered() || divider_response.hovered() {
+            if interact.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
+            ui.add_space(4.0);
 
-            // Expanded: show parked context names
             if self.parked_section_expanded {
                 for &i in &parked_order {
-                    let ctx_name = self.router.get(i).name.clone();
-                    let text_color = self.colors.text_dim;
+                    let ctx = self.router.get(i);
+                    let ctx_name = ctx.name.clone();
+                    let ctx_id = ctx.context_id;
+                    let subtitle = ctx.root.as_ref().map(|p| p.display().to_string());
+                    let indent = ctx.depth;
 
-                    let row_response = ui
-                        .horizontal(|ui| {
-                            ui.add_space(24.0);
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&ctx_name).size(11.0).color(text_color),
-                                )
-                                .selectable(false)
-                                .sense(egui::Sense::click()),
-                            )
-                        })
-                        .inner;
-
-                    let row_id = egui::Id::new(("parked_ctx", i));
-                    let interact = ui.interact(row_response.rect, row_id, egui::Sense::click());
-                    if interact.clicked() || row_response.clicked() {
-                        unpark_context = Some(i);
+                    // Build pane dots for parked row (same logic as active rows).
+                    let mut ctx_windows: Vec<usize> = self
+                        .windows
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, w)| w.context_id == ctx_id)
+                        .map(|(idx, _)| idx)
+                        .collect();
+                    ctx_windows.sort_by_key(|&idx| {
+                        let w = &self.windows[idx];
+                        (w.grid_y, w.grid_x)
+                    });
+                    let mut pane_ids: Vec<u64> = Vec::new();
+                    for &win_idx in &ctx_windows {
+                        let w = &self.windows[win_idx];
+                        if let Some(root) = w.tree.root() {
+                            pane_ids.extend(
+                                crate::spatial::tiling::collect_pane_ids_spatial(
+                                    &w.tree.tiles,
+                                    root,
+                                ),
+                            );
+                        }
                     }
-                    if interact.hovered() || row_response.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    let pane_count = pane_ids.len();
+                    let pane_dots = if pane_count > 0 {
+                        let mut hidden_set = std::collections::HashSet::new();
+                        let mut activities = Vec::with_capacity(pane_count);
+                        for (dot_idx, &pid) in pane_ids.iter().enumerate() {
+                            let pane_opt = self
+                                .windows
+                                .iter()
+                                .filter(|w| w.context_id == ctx_id)
+                                .find_map(|w| w.panes.get(&pid));
+                            let is_hidden = pane_opt.map_or(false, |p| p.is_hidden());
+                            if is_hidden {
+                                hidden_set.insert(dot_idx);
+                            }
+                            activities.push(
+                                pane_opt
+                                    .and_then(|p| p.effective_activity())
+                                    .cloned(),
+                            );
+                        }
+                        Some(PaneDots {
+                            count: pane_count,
+                            focused_idx: None,
+                            hidden_set,
+                            activities,
+                        })
+                    } else {
+                        None
+                    };
+
+                    let (action, response) = ContextItem {
+                        is_active: false,
+                        is_dragging: false,
+                        any_dragging: false,
+                        action_enabled: false,
+                        ctx_name,
+                        ctx_index: None,
+                        badge_count: 0,
+                        subtitle,
+                        pane_dots,
+                        indent,
+                        draggable: false,
+                    }
+                    .draw(ui, egui::Id::new(("parked_ctx", i)), &self.colors);
+
+                    response.context_menu(|ui| {
+                        if ui.button("Unpark").clicked() {
+                            unpark_context = Some(i);
+                            ui.close_menu();
+                        }
+                    });
+
+                    if matches!(action, SidebarAction::Activate) {
+                        unpark_context = Some(i);
                     }
                 }
             }
@@ -527,6 +601,9 @@ impl PlexiApp {
                         },
                         crate::app::OverlayTarget::ContextRoot(i),
                     ));
+                }
+                WindowMenuAction::Park => {
+                    self.park_context(i);
                 }
                 WindowMenuAction::Delete => {
                     self.delete_context(i);
