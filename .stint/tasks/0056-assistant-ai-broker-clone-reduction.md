@@ -1,8 +1,9 @@
 ---
 id: "0056"
 title: "Assistant refactor: AI broker clone reduction"
-status: todo
+status: in-progress
 estimate: "6h"
+started_at: "2026-06-13T19:38:40Z"
 sprint: "s12"
 blocked_by: []
 gh_issue:
@@ -15,6 +16,7 @@ tags:
   - "ai"
   - "performance"
 ---
+
 
 
 Reduce AI broker pane snapshot and tool-loop cloning as part of the broader Assistant app refactor lane.
