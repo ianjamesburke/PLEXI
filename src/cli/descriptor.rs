@@ -1,5 +1,9 @@
 use crate::app::plexi_descriptor::{self, PlexiDescriptor};
-use std::process::Command;
+use std::time::Duration;
+
+/// Timeout for a native `--plexi` probe. A CLI that supports the flag answers
+/// instantly; this only bounds misbehaving binaries that hang on the flag.
+const NATIVE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Indirection so the probe path can be tested without spawning real
 /// processes. The `&[&str] -> Output` shape is the smallest contract that
@@ -17,10 +21,10 @@ pub struct RealRunner;
 
 impl DescriptorRunner for RealRunner {
     fn run(&self, command: &str, args: &[&str]) -> std::io::Result<RunOutput> {
-        let out = Command::new(command).args(args).output()?;
+        let captured = crate::cli::subprocess::run_capture(command, args, NATIVE_PROBE_TIMEOUT)?;
         Ok(RunOutput {
-            status_success: out.status.success(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            status_success: captured.success,
+            stdout: captured.stdout,
         })
     }
 }
@@ -62,67 +66,142 @@ pub fn probe_with_options<R: DescriptorRunner>(
     args: &[&str],
     options: &ProbeOptions,
 ) -> i32 {
-    let mut full_args: Vec<&str> = args.to_vec();
-    full_args.push("--plexi");
-
-    // Tier 1 — ask the CLI itself.
-    let tier1: Option<PlexiDescriptor> = match runner.run(command, &full_args) {
-        Ok(o) if o.status_success => match plexi_descriptor::parse(&o.stdout) {
-            Ok(d) => Some(d),
-            Err(_) => None, // Fall through to Tier 2 — bad/empty stdout.
-        },
-        Ok(_) => None,  // Non-zero exit — `--plexi` not implemented.
-        Err(_) => None, // Spawn failed (e.g. command not on PATH).
-    };
-
-    if let Some(descriptor) = tier1 {
-        print_summary(&descriptor, SummarySource::Native);
-        return 0;
+    // Subcommand invocation (`probe gh pr create`): only Tier 1 native
+    // `--plexi` applies — registry/crawl describe the bare CLI, not an
+    // arbitrary subcommand path.
+    if !args.is_empty() {
+        let mut full_args: Vec<&str> = args.to_vec();
+        full_args.push("--plexi");
+        match runner.run(command, &full_args) {
+            Ok(o) if o.status_success => {
+                if let Ok(d) = plexi_descriptor::parse(&o.stdout) {
+                    print_summary(&d, SummarySource::Native);
+                    return 0;
+                }
+            }
+            _ => {}
+        }
+        eprintln!("error: no descriptor available for `{command} {}` — native --plexi failed.", args.join(" "));
+        return 1;
     }
 
-    // Tier 2 — registry. Only consulted when caller passes args=[],
-    // because registry descriptors describe the bare CLI, not arbitrary
-    // subcommand invocations.
-    if options.use_registry && args.is_empty() {
-        match crate::cli::registry::lookup(command, None) {
-            Ok(descriptor) => {
-                print_summary(&descriptor, SummarySource::Registry);
-                return 0;
-            }
-            Err(crate::cli::registry::RegistryError::NotFound { .. }) => {
-                // Fall through to the no-descriptor message below.
-            }
-            Err(e) => {
-                eprintln!("error: registry lookup for `{command}` failed:\n  {e}");
-                return 1;
+    // Bare CLI: the full Tier 1 → 2 → 3 chain, gated by the probe flags.
+    match resolve_cli_with(runner, command, options.use_registry, options.use_crawl) {
+        Ok(resolved) => {
+            print_summary(&resolved.descriptor, resolved.source);
+            0
+        }
+        Err(ResolveError::Registry { cli, source }) => {
+            eprintln!("error: registry lookup for `{cli}` failed:\n  {source}");
+            1
+        }
+        Err(ResolveError::Unresolved { cli }) => {
+            eprintln!("error: no descriptor available for `{cli}` — --plexi, registry, and --help crawl all failed.");
+            1
+        }
+    }
+}
+
+// ── unified resolver ───────────────────────────────────────────────────────
+
+/// A descriptor resolved through the tier chain, plus where it came from.
+#[derive(Debug)]
+pub struct Resolved {
+    pub descriptor: PlexiDescriptor,
+    pub source: SummarySource,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ResolveError {
+    #[error("no descriptor available for `{cli}`")]
+    Unresolved { cli: String },
+    #[error("registry descriptor for `{cli}` is malformed")]
+    Registry {
+        cli: String,
+        #[source]
+        source: crate::cli::registry::RegistryError,
+    },
+}
+
+/// Resolve a renderable descriptor for a bare CLI through the full tier chain:
+/// Tier 1 native `--plexi` → Tier 2 registry → Tier 3 recursive `--help` crawl.
+/// This is the single entry point both `plexi app open --cli` and the
+/// `cli:<name>` prefix route share, so every open path gets native detection,
+/// registry curation, recursive crawl, and disk cache identically.
+pub fn resolve_cli(cli_name: &str) -> Result<Resolved, ResolveError> {
+    resolve_cli_with(&RealRunner, cli_name, true, true)
+}
+
+/// Tier-chain resolution with an injectable runner (for the native probe) and
+/// gating flags (for `descriptor probe --no-registry/--no-crawl`).
+pub fn resolve_cli_with<R: DescriptorRunner>(
+    runner: &R,
+    cli_name: &str,
+    use_registry: bool,
+    use_crawl: bool,
+) -> Result<Resolved, ResolveError> {
+    // Tier 1 — the CLI emits its own descriptor for `--plexi`.
+    if let Ok(o) = runner.run(cli_name, &["--plexi"]) {
+        if o.status_success {
+            if let Ok(descriptor) = plexi_descriptor::parse(&o.stdout) {
+                log::info!("cli_resolve: `{cli_name}` resolved via native --plexi");
+                return Ok(Resolved {
+                    descriptor,
+                    source: SummarySource::Native,
+                });
             }
         }
     }
 
-    // Tier 3 — --help crawl.
-    if options.use_crawl && args.is_empty() {
-        match crate::cli::crawl::crawl(command) {
+    // Tier 2 — hand-authored registry descriptor.
+    if use_registry {
+        match crate::cli::registry::lookup(cli_name, None) {
+            Ok(descriptor) => {
+                log::info!("cli_resolve: `{cli_name}` resolved via registry");
+                return Ok(Resolved {
+                    descriptor,
+                    source: SummarySource::Registry,
+                });
+            }
+            Err(crate::cli::registry::RegistryError::NotFound { .. }) => {}
+            Err(source) => {
+                return Err(ResolveError::Registry {
+                    cli: cli_name.to_string(),
+                    source,
+                });
+            }
+        }
+    }
+
+    // Tier 3 — recursive `--help` crawl (cached on disk).
+    if use_crawl {
+        match crate::cli::crawl::crawl(cli_name) {
             Ok(result) => {
-                print_summary(
-                    &result.descriptor,
-                    SummarySource::Crawled {
+                log::info!(
+                    "cli_resolve: `{cli_name}` resolved via --help crawl (cached={})",
+                    result.from_cache
+                );
+                return Ok(Resolved {
+                    descriptor: result.descriptor,
+                    source: SummarySource::Crawled {
                         from_cache: result.from_cache,
                     },
-                );
-                return 0;
+                });
             }
             Err(e) => {
-                log::warn!("cli_crawl: Tier 3 failed for `{command}`: {e}");
+                log::warn!("cli_resolve: crawl failed for `{cli_name}`: {e}");
             }
         }
     }
 
-    eprintln!("error: no descriptor available for `{command}` — --plexi, registry, and --help crawl all failed.");
-    1
+    Err(ResolveError::Unresolved {
+        cli: cli_name.to_string(),
+    })
 }
 
 /// Where the descriptor printed in the summary came from. Used to surface
 /// a `(via registry)` / `(inferred from --help)` indicator.
+#[derive(Debug)]
 pub enum SummarySource {
     Native,
     Registry,
@@ -301,5 +380,38 @@ mod descriptor_tests {
             code, 1,
             "registry fallback only applies when no user args are passed"
         );
+    }
+
+    // ── unified resolver ────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_prefers_native_plexi() {
+        let mock = ok_descriptor_runner();
+        let resolved = resolve_cli_with(&mock, "fake-cli", true, true)
+            .expect("native descriptor resolves");
+        assert!(matches!(resolved.source, SummarySource::Native));
+        assert_eq!(resolved.descriptor.name, "fake");
+        // The native probe must invoke `<cli> --plexi`.
+        let captured = mock.captured.borrow();
+        let (_, args) = captured.as_ref().expect("runner invoked");
+        assert_eq!(args.as_slice(), &["--plexi"]);
+    }
+
+    #[test]
+    fn resolve_falls_back_to_registry() {
+        // `gh` ships in the embedded registry; native --plexi fails.
+        let mock = no_plexi_runner();
+        let resolved =
+            resolve_cli_with(&mock, "gh", true, true).expect("registry fallback resolves");
+        assert!(matches!(resolved.source, SummarySource::Registry));
+        assert_eq!(resolved.descriptor.name, "gh");
+    }
+
+    #[test]
+    fn resolve_unresolved_when_all_tiers_gated_off() {
+        let mock = no_plexi_runner();
+        let err = resolve_cli_with(&mock, "gh", false, false)
+            .expect_err("no tiers available → Unresolved");
+        assert!(matches!(err, ResolveError::Unresolved { .. }));
     }
 }

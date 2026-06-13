@@ -1,8 +1,9 @@
-//! Built-in CLI renderer: native egui replacement for the Python cli-renderer.
+//! Built-in CLI renderer: a native host app that turns any CLI into a GUI.
 //!
-//! Parses a PlexiDescriptor JSON file (or a raw `--help`-derived descriptor),
-//! renders a navigable command list and per-command form, and executes commands
-//! in a linked terminal pane.
+//! Parses a `PlexiDescriptor` JSON file (resolved by the Tier 1/2/3 chain in
+//! `cli::descriptor` — native `--plexi`, registry, or recursive `--help`
+//! crawl), renders a navigable command list and per-command form, and executes
+//! the assembled command in a linked terminal pane.
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
 use crate::app::plexi_descriptor::{ArgSpec, ArgType, Command, PlexiDescriptor};
@@ -843,4 +844,132 @@ impl App for CliRendererApp {
     }
 
     fn restore_state(&mut self, _state: &serde_json::Value) {}
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::theme::Colors;
+
+    const FIXTURE: &str = r#"{
+        "plexi_version": "0.1",
+        "name": "demo",
+        "version": "1.2.3",
+        "description": "A demo CLI",
+        "default_view": "list",
+        "commands": [
+            {
+                "name": "greet",
+                "description": "Greet someone",
+                "args": [
+                    {"name": "name", "type": "string", "required": true, "placeholder": "world"}
+                ],
+                "flags": [
+                    {"name": "--loud", "type": "bool"},
+                    {"name": "--lang", "type": "enum", "enum_values": ["en", "fr"]},
+                    {"name": "--output", "type": "path", "placeholder": "FILE"}
+                ]
+            },
+            {
+                "name": "remote",
+                "description": "Manage remotes",
+                "commands": [
+                    {"name": "add", "args": [{"name": "url", "type": "string", "required": true}]}
+                ]
+            }
+        ]
+    }"#;
+
+    fn app_from_fixture() -> (CliRendererApp, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("descriptor.json");
+        std::fs::write(&path, FIXTURE).expect("write fixture");
+        let app = CliRendererApp::new(path.to_string_lossy().into_owned());
+        (app, dir)
+    }
+
+    #[test]
+    fn loads_descriptor_and_lists_top_level_commands() {
+        let (app, _dir) = app_from_fixture();
+        let d = app.descriptor.as_ref().expect("descriptor loaded");
+        assert_eq!(d.name, "demo");
+        let names: Vec<&str> = app.commands_at_path().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["greet", "remote"]);
+    }
+
+    #[test]
+    fn navigate_into_leaf_opens_form_with_defaults() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(0); // greet — a leaf with fields
+        assert_eq!(app.view, View::Form);
+        assert_eq!(app.cmd_path, vec!["greet".to_string()]);
+        assert!(app.current_command().is_some());
+    }
+
+    #[test]
+    fn navigate_into_parent_opens_list() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(1); // remote — has children
+        assert_eq!(app.view, View::List);
+        let names: Vec<&str> = app.commands_at_path().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["add"]);
+    }
+
+    #[test]
+    fn build_command_string_assembles_flags_and_args() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(0); // greet
+        app.field_values.insert("name".into(), "Ada Lovelace".into());
+        app.field_values.insert("--loud".into(), "true".into());
+        app.field_values.insert("--lang".into(), "fr".into());
+        let cmd = app.build_command_string();
+        // Binary + subcommand present.
+        assert!(cmd.starts_with("demo greet"), "got: {cmd}");
+        // Bool flag rendered as bare flag.
+        assert!(cmd.contains("--loud"), "got: {cmd}");
+        // Value flag rendered as flag + value.
+        assert!(cmd.contains("--lang fr"), "got: {cmd}");
+        // Positional value with spaces is quoted.
+        assert!(cmd.contains("'Ada Lovelace'"), "got: {cmd}");
+        // Unset path flag is omitted.
+        assert!(!cmd.contains("--output"), "got: {cmd}");
+    }
+
+    #[test]
+    fn renders_without_panicking() {
+        // Smoke test: drive a real egui frame through the renderer in List and
+        // Form views to catch layout panics on the host UI thread.
+        let (mut app, _dir) = app_from_fixture();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let ctx = egui::Context::default();
+
+        let render_once = |app: &mut CliRendererApp| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let rctx = AppRenderContext {
+                        colors: &colors,
+                        is_focused: true,
+                    };
+                    app.ui(ui, &rctx);
+                });
+            });
+        };
+
+        // First frame transitions Loading → List and requests a terminal.
+        render_once(&mut app);
+        assert_eq!(app.view, View::List);
+        // Drill into the form view and render again.
+        app.navigate_into(0);
+        render_once(&mut app);
+        assert_eq!(app.view, View::Form);
+    }
+
+    #[test]
+    fn bad_descriptor_path_yields_error_view() {
+        let app = CliRendererApp::new("/nonexistent/descriptor/path.json".into());
+        assert!(matches!(app.view, View::Error(_)));
+        assert!(app.descriptor.is_none());
+    }
 }

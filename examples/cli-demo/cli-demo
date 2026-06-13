@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# cli-demo — a proof-of-concept CLI that exercises the Plexi native CLI renderer.
+#
+# It demonstrates BOTH descriptor-resolution paths the host hardened in #1947:
+#
+#   • Tier 1 (native): `cli-demo --plexi` emits a rich PlexiDescriptor with
+#     typed args, enums, paths, bools, defaults, placeholders, and nested
+#     subcommands — the fullest, most beautiful auto-generated form.
+#   • Tier 3 (crawl):  `cli-demo --help` (and per-command `--help`) prints
+#     conventional help text the host can recursively crawl into a descriptor
+#     when a CLI has no `--plexi` support.
+#
+# Open it in Plexi:   plexi app open --cli ./examples/cli-demo/cli-demo
+set -euo pipefail
+
+VERSION="1.4.2"
+
+emit_plexi_descriptor() {
+  cat <<'JSON'
+{
+  "plexi_version": "0.1",
+  "name": "cli-demo",
+  "version": "1.4.2",
+  "icon": "🧪",
+  "description": "A demo CLI showcasing the Plexi native renderer.",
+  "default_view": "list",
+  "commands": [
+    {
+      "name": "greet",
+      "icon": "👋",
+      "description": "Print a friendly greeting",
+      "ui_hint": "form",
+      "args": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "Who to greet",
+          "placeholder": "Ada Lovelace"
+        }
+      ],
+      "flags": [
+        {"name": "--loud", "type": "bool", "description": "SHOUT the greeting"},
+        {
+          "name": "--lang",
+          "type": "enum",
+          "enum_values": ["en", "fr", "es", "de"],
+          "default": "en",
+          "description": "Language for the greeting"
+        },
+        {
+          "name": "--repeat",
+          "type": "int",
+          "default": 1,
+          "min": 1,
+          "max": 10,
+          "description": "How many times to greet"
+        }
+      ]
+    },
+    {
+      "name": "build",
+      "icon": "🔨",
+      "description": "Build a target",
+      "ui_hint": "form",
+      "args": [
+        {
+          "name": "target",
+          "type": "string",
+          "required": true,
+          "description": "Target to build",
+          "placeholder": "app"
+        }
+      ],
+      "flags": [
+        {"name": "--release", "type": "bool", "description": "Optimized release build"},
+        {
+          "name": "--jobs",
+          "type": "int",
+          "default": 4,
+          "description": "Parallel jobs"
+        },
+        {
+          "name": "--out",
+          "type": "path",
+          "description": "Output directory",
+          "placeholder": "dist/"
+        }
+      ]
+    },
+    {
+      "name": "config",
+      "icon": "⚙️",
+      "description": "Manage configuration",
+      "ui_hint": "list",
+      "commands": [
+        {
+          "name": "set",
+          "description": "Set a config value",
+          "ui_hint": "form",
+          "args": [
+            {"name": "key", "type": "string", "required": true, "placeholder": "editor"},
+            {"name": "value", "type": "string", "required": true, "placeholder": "vim"}
+          ]
+        },
+        {
+          "name": "get",
+          "description": "Read a config value",
+          "ui_hint": "form",
+          "args": [
+            {"name": "key", "type": "string", "required": true, "placeholder": "editor"}
+          ]
+        },
+        {"name": "list", "description": "List all config values", "ui_hint": "output"}
+      ]
+    }
+  ]
+}
+JSON
+}
+
+top_help() {
+  cat <<'HELP'
+cli-demo — a demo CLI showcasing the Plexi native renderer.
+
+USAGE:
+    cli-demo <COMMAND> [OPTIONS]
+
+COMMANDS:
+    greet     Print a friendly greeting
+    build     Build a target
+    config    Manage configuration
+
+OPTIONS:
+    -h, --help       Print help
+    -V, --version    Print version
+HELP
+}
+
+greet_help() {
+  cat <<'HELP'
+Print a friendly greeting
+
+USAGE:
+    cli-demo greet [OPTIONS] <NAME>
+
+ARGUMENTS:
+    <NAME>    Who to greet
+
+OPTIONS:
+    -l, --loud           SHOUT the greeting
+        --lang <LANG>    Language for the greeting (en, fr, es, de)
+        --repeat <N>     How many times to greet
+    -h, --help           Print help
+HELP
+}
+
+config_help() {
+  cat <<'HELP'
+Manage configuration
+
+USAGE:
+    cli-demo config <COMMAND>
+
+COMMANDS:
+    set     Set a config value
+    get     Read a config value
+    list    List all config values
+HELP
+}
+
+case "${1:-}" in
+  --plexi)
+    emit_plexi_descriptor
+    ;;
+  -V|--version)
+    echo "cli-demo $VERSION"
+    ;;
+  -h|--help|"")
+    top_help
+    ;;
+  greet)
+    if [[ "${2:-}" == "--help" || "${2:-}" == "-h" ]]; then
+      greet_help
+    else
+      shift
+      echo "Hello, ${1:-world}!"
+    fi
+    ;;
+  config)
+    if [[ "${2:-}" == "--help" || "${2:-}" == "-h" || -z "${2:-}" ]]; then
+      config_help
+    else
+      echo "config: ${*:2}"
+    fi
+    ;;
+  build)
+    shift
+    echo "Building ${1:-app}…"
+    ;;
+  *)
+    echo "cli-demo: unknown command '${1}'" >&2
+    top_help >&2
+    exit 1
+    ;;
+esac
