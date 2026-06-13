@@ -75,6 +75,43 @@ pub fn complete_open_cli(prefix: &str) -> i32 {
     0
 }
 
+/// Output completion candidates for `plexi run <TAB>`.
+///
+/// Called by the hidden `_complete-run` subcommand. Emits one name per line.
+/// Sources (in order):
+///  1. Commands from the workspace's channel-scoped `commands.toml` when the current
+///     directory contains one.
+///  2. Global scripts from `config_dir()/scripts/` as a fallback.
+pub fn complete_run_cli() -> i32 {
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(_) => return 1,
+    };
+    let commands_file = super::commands_file();
+    let config_path = cwd.join(&commands_file);
+    if let Ok(contents) = std::fs::read_to_string(&config_path) {
+        if let Ok(config) = toml::from_str::<super::PlexiCommands>(&contents) {
+            let mut names: Vec<&String> = config.commands.keys().collect();
+            names.sort();
+            for name in names {
+                let entry = &config.commands[name];
+                if let Some(desc) = entry.description() {
+                    println!("{name}:{desc}");
+                } else {
+                    println!("{name}");
+                }
+            }
+            return 0;
+        }
+    }
+    // Fallback: global scripts
+    let scripts_dir = crate::config::config_dir().join("scripts");
+    for name in super::list_global_scripts(&scripts_dir) {
+        println!("{name}");
+    }
+    0
+}
+
 pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
     use clap::CommandFactory;
     use clap_complete::{generate, Shell};
@@ -95,6 +132,7 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
         let script = String::from_utf8(buf).unwrap_or_default();
         let script = fix_zsh_workspace_path_conflict(&script);
         let script = inject_zsh_open_completions(&script, binary_name);
+        let script = inject_zsh_run_completions(&script, binary_name);
         print!("{script}");
     } else {
         generate(shell_variant, &mut cmd, binary_name, &mut std::io::stdout());
@@ -145,6 +183,47 @@ __{binary_name}_open_completions() {{
             result.insert_str(pos, &helper);
         } else {
             // No compdef found, append at end
+            result.push_str(&helper);
+        }
+    }
+
+    result
+}
+
+/// Inject a dynamic completion function for `plexi run <TAB>` into the zsh completion script.
+/// Replaces the static `command` positional spec in the `run` subcommand with a call to
+/// the hidden `_complete-run` subcommand, which reads `commands.toml` at runtime.
+fn inject_zsh_run_completions(script: &str, binary_name: &str) -> String {
+    let mut result = String::with_capacity(script.len() + 512);
+    let mut injected_helper = false;
+    for line in script.lines() {
+        if line.contains("::command") && line.contains("Command name to run") {
+            result.push_str(&format!(
+                "'::command -- Command name (from commands.toml):__{binary_name}_run_completions' \\",
+            ));
+            result.push('\n');
+            if !injected_helper {
+                injected_helper = true;
+            }
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+
+    if injected_helper {
+        let helper = format!(
+            r#"
+__{binary_name}_run_completions() {{
+    local -a completions
+    completions=(${{(f)"$({binary_name} _complete-run 2>/dev/null)"}})
+    _describe 'command' completions
+}}
+"#,
+        );
+        if let Some(pos) = result.rfind("\ncompdef ") {
+            result.insert_str(pos, &helper);
+        } else {
             result.push_str(&helper);
         }
     }
@@ -231,5 +310,35 @@ mod completions_tests {
         let once = fix_zsh_workspace_path_conflict(&raw);
         let twice = fix_zsh_workspace_path_conflict(&once);
         assert_eq!(once, twice, "fix must be idempotent");
+    }
+
+    #[test]
+    fn zsh_run_completions_injected() {
+        use super::{fix_zsh_workspace_path_conflict, inject_zsh_run_completions};
+        let raw = generated_zsh();
+        let fixed = fix_zsh_workspace_path_conflict(&raw);
+        let patched = inject_zsh_run_completions(&fixed, "plexi");
+        assert!(
+            patched.contains("__plexi_run_completions"),
+            "run helper function must be injected"
+        );
+        assert!(
+            patched.contains("_complete-run"),
+            "helper must invoke _complete-run subcommand"
+        );
+        assert!(
+            !patched.contains("Command name to run"),
+            "static spec must be replaced by dynamic completion"
+        );
+    }
+
+    #[test]
+    fn zsh_run_completions_injection_is_idempotent() {
+        use super::{fix_zsh_workspace_path_conflict, inject_zsh_run_completions};
+        let raw = generated_zsh();
+        let fixed = fix_zsh_workspace_path_conflict(&raw);
+        let once = inject_zsh_run_completions(&fixed, "plexi");
+        let twice = inject_zsh_run_completions(&once, "plexi");
+        assert_eq!(once, twice, "run injection must be idempotent");
     }
 }

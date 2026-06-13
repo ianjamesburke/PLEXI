@@ -48,6 +48,9 @@ pub enum Commands {
     Run {
         /// Command name to run (omit to list available commands)
         command: Option<String>,
+        /// Extra arguments forwarded to the command as $1, $2, … positional params
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        extra_args: Vec<String>,
     },
     /// Set up a .plexi/ workspace in your project folder.
     ///
@@ -242,6 +245,9 @@ pub enum Commands {
         /// Prefix to complete: "cli:", "mcp:", "app:", or empty for all
         prefix: String,
     },
+    /// List run completions (hidden, used by shell completions)
+    #[command(hide = true, name = "_complete-run")]
+    CompleteRun,
 }
 
 #[derive(Subcommand)]

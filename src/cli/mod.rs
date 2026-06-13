@@ -219,7 +219,7 @@ pub use marketplace::{
     app_browse_cli, app_license_list_cli, app_license_show_cli, app_publish_cli, app_search_cli,
 };
 pub use app_check::app_check_cli;
-pub use completions::{complete_open_cli, completions_cli};
+pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
 pub use config_cli::{config_check, config_edit, config_get, config_reset};
 pub use context_cli::{
     context_current_cli, context_describe_cli, context_list_cli, context_new_cli, context_open_cli,

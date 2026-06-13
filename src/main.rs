@@ -206,8 +206,8 @@ fn main() -> eframe::Result {
         Ok(cli) => {
             if let Some(cmd) = cli.command {
                 match cmd {
-                    Commands::Run { command } => match command {
-                        Some(cmd) => std::process::exit(cli::run_command(&cmd)),
+                    Commands::Run { command, extra_args } => match command {
+                        Some(cmd) => std::process::exit(cli::run_command(&cmd, &extra_args)),
                         None => std::process::exit(cli::run_list_commands()),
                     },
                     Commands::Workspace { cmd } => match cmd {
@@ -808,6 +808,9 @@ fn main() -> eframe::Result {
                     }
                     Commands::CompleteOpen { prefix } => {
                         std::process::exit(cli::complete_open_cli(&prefix));
+                    }
+                    Commands::CompleteRun => {
+                        std::process::exit(cli::complete_run_cli());
                     }
                     Commands::Descriptor { cmd } => match cmd {
                         DescriptorCmd::Probe {

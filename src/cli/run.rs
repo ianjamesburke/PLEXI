@@ -77,7 +77,7 @@ pub fn run_list_commands() -> i32 {
     0
 }
 
-pub fn run_command(command_name: &str) -> i32 {
+pub fn run_command(command_name: &str, extra_args: &[String]) -> i32 {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -98,6 +98,9 @@ pub fn run_command(command_name: &str) -> i32 {
             if script_path.is_file() && is_executable(&script_path) {
                 log::info!("cli: running global script {:?}", script_path);
                 let mut child_cmd = Command::new(&script_path);
+                for arg in extra_args {
+                    child_cmd.arg(arg);
+                }
                 child_cmd.env("PLEXI_CONFIG_DIR", crate::config::config_dir());
                 return match child_cmd.status() {
                     Ok(status) => status.code().unwrap_or(1),
@@ -249,8 +252,13 @@ pub fn run_command(command_name: &str) -> i32 {
 
     // Spawn the command via sh -c with secrets injected as env vars.
     // PLEXI_CONFIG_DIR lets scripts reference channel-correct paths without hardcoding ~/.plexi/.
+    // Extra positional args from `plexi run <cmd> -- arg1 arg2` are passed via `sh -c '...' -- arg1 arg2`,
+    // making them available as $1, $2, … inside the shell snippet.
     let mut child_cmd = Command::new("sh");
-    child_cmd.arg("-c").arg(cmd_entry.run());
+    child_cmd.arg("-c").arg(cmd_entry.run()).arg("--");
+    for arg in extra_args {
+        child_cmd.arg(arg);
+    }
     child_cmd.env("PLEXI_CONFIG_DIR", crate::config::config_dir());
     for (key, value) in &resolved {
         child_cmd.env(key, value);
