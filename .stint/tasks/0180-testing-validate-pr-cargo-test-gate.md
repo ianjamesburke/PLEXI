@@ -1,9 +1,11 @@
 ---
 id: "0180"
 title: "Testing: cargo test + coverage gate in validate-pr — skip binary install on full coverage"
-status: in-progress
+status: done
 estimate: "8h"
+actual: "11m"
 started_at: "2026-06-13T19:50:44Z"
+completed_at: "2026-06-13T20:01:33Z"
 sprint: "s8"
 blocked_by: []
 gh_issue:
@@ -15,6 +17,7 @@ tags:
   - "v1"
   - "testing"
 ---
+
 
 
 
