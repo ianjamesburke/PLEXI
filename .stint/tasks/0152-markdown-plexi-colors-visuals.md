@@ -1,8 +1,9 @@
 ---
 id: "0152"
 title: "Markdown: inject PlexiColors into CommonMarkViewer visuals"
-status: todo
+status: in-progress
 estimate: "3h"
+started_at: "2026-06-13T20:04:07Z"
 sprint: "s7"
 blocked_by: []
 gh_issue:
@@ -14,6 +15,7 @@ tags:
   - "markdown"
   - "theming"
 ---
+
 
 
 Override `extreme_bg_color`, `hyperlink_color`, and `faint_bg_color` on the child `Ui` visuals inside `RenderCommand::Markdown` (`src/process_app/render.rs:935`) so code block backgrounds use `colors.bg_active`, links use `colors.accent`, and blockquotes are tinted with `colors.bg_hover`. Also set the same three fields in `src/ui/theme.rs:setup_style` globally.
