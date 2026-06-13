@@ -127,6 +127,13 @@ impl<'a> ModalShell<'a> {
             .order(self.order)
             .fade_in(false)
             .show(ctx, |ui| {
+                // A brand-new Area spends its first frame in an invisible
+                // sizing pass, so the scrim would appear one frame before the
+                // modal. Discard this pass and re-run the frame so both paint
+                // together. Only fires the frame a modal opens.
+                if ui.is_sizing_pass() {
+                    ctx.request_discard("modal first-frame sizing pass");
+                }
                 egui::Frame::new()
                     .fill(colors.bg_sidebar)
                     .stroke(egui::Stroke::new(1.0, colors.border))
