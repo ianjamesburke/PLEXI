@@ -1,9 +1,10 @@
 ---
 id: "0165"
 title: "PGAP SDK shortcut helper and harness parity"
-status: backlog
+status: in-progress
+estimate: "6h"
+started_at: "2026-06-13T02:25:24Z"
 sprint: "s2"
-estimate: 6h
 blocked_by: []
 gh_issue:
   - "2196"
@@ -17,6 +18,7 @@ tags:
   - "shortcuts"
   - "testing"
 ---
+
 
 Add a first-class Python SDK shortcut helper so PGAP apps can bind command shortcuts without handwritten raw key/modifier branching, and make the scene harness mirror live printable-key delivery.
 
