@@ -208,8 +208,10 @@ impl RenderSession {
                         .max_rect(widget_rect)
                         .id_salt(widget_id),
                 );
-                child.visuals_mut().text_cursor.stroke.width = 1.5;
-                child.visuals_mut().text_cursor.stroke.color = colors.accent;
+                // egui's caret is hidden (transparent, non-blinking);
+                // draw_text_caret paints a glyph-height replacement on top.
+                child.visuals_mut().text_cursor.blink = false;
+                child.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
 
                 // Placeholder at half strength — the theme's override_text_color
                 // makes egui's default hint color near-white otherwise.
@@ -226,7 +228,19 @@ impl RenderSession {
                         .frame(false);
                     egui::ScrollArea::vertical()
                         .max_height(actual_size.y)
-                        .show(&mut child, |ui| edit.show(ui))
+                        .show(&mut child, |ui| {
+                            let font_id = egui::TextStyle::Body.resolve(ui.style());
+                            let row_height = ui.fonts(|f| f.row_height(&font_id));
+                            let output = edit.show(ui);
+                            crate::ui::text_field::draw_text_caret(
+                                ui,
+                                &output,
+                                font_id.size,
+                                row_height,
+                                egui::Stroke::new(1.5, colors.accent),
+                            );
+                            output
+                        })
                         .inner
                 } else {
                     let font_size = child.text_style_height(&egui::TextStyle::Body);
@@ -238,15 +252,28 @@ impl RenderSession {
                             .max_rect(inner_rect)
                             .id_salt(widget_id.with("c")),
                     );
-                    inner_child.visuals_mut().text_cursor.stroke.width = 1.5;
-                    inner_child.visuals_mut().text_cursor.stroke.color = colors.accent;
+                    // egui's caret is hidden (transparent, non-blinking);
+                    // draw_text_caret paints a glyph-height replacement on top.
+                    inner_child.visuals_mut().text_cursor.blink = false;
+                    inner_child.visuals_mut().text_cursor.stroke.color =
+                        egui::Color32::TRANSPARENT;
                     let edit = egui::TextEdit::singleline(buffer)
                         .id(widget_id)
                         .desired_width(inner_rect.width())
                         .hint_text(hint)
                         .font(egui::TextStyle::Body)
                         .frame(false);
-                    edit.show(&mut inner_child)
+                    let font_id = egui::TextStyle::Body.resolve(inner_child.style());
+                    let row_height = inner_child.fonts(|f| f.row_height(&font_id));
+                    let output = edit.show(&mut inner_child);
+                    crate::ui::text_field::draw_text_caret(
+                        &inner_child,
+                        &output,
+                        font_id.size,
+                        row_height,
+                        egui::Stroke::new(1.5, colors.accent),
+                    );
+                    output
                 };
 
                 // Draw focus-aware border over the pill — one stroke, no glow ring.

@@ -1768,10 +1768,27 @@ impl FileBrowserApp {
             .title("Rename")
             .escape(true)
             .show(ctx, colors, |ui| {
-                let text_response = ui.add(
-                    egui::TextEdit::singleline(&mut self.rename_buffer)
-                        .desired_width(f32::INFINITY),
-                );
+                let text_response = ui
+                    .scope(|ui| {
+                        // egui's caret is hidden (transparent, non-blinking);
+                        // draw_text_caret paints a glyph-height replacement on top.
+                        ui.visuals_mut().text_cursor.blink = false;
+                        ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
+                        let font_id = egui::TextStyle::Body.resolve(ui.style());
+                        let row_height = ui.fonts(|f| f.row_height(&font_id));
+                        let output = egui::TextEdit::singleline(&mut self.rename_buffer)
+                            .desired_width(f32::INFINITY)
+                            .show(ui);
+                        crate::ui::text_field::draw_text_caret(
+                            ui,
+                            &output,
+                            font_id.size,
+                            row_height,
+                            egui::Stroke::new(1.5, colors.accent),
+                        );
+                        output.response
+                    })
+                    .inner;
                 text_response.request_focus();
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {

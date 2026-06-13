@@ -21,11 +21,15 @@ fn styled_text_input_inner(
     let hint: egui::WidgetText = hint.into();
     let hint = hint.color(colors.text_primary.gamma_multiply(0.5));
     ui.scope(|ui| {
-        ui.visuals_mut().text_cursor.stroke.width = 1.5;
-        ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+        // egui's caret is hidden (transparent, non-blinking); draw_text_caret
+        // paints a glyph-height replacement on top.
+        ui.visuals_mut().text_cursor.blink = false;
+        ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
         ui.visuals_mut().extreme_bg_color = colors.bg_active;
         ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
         ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+        let font_id = egui::TextStyle::Body.resolve(ui.style());
+        let row_height = ui.fonts(|f| f.row_height(&font_id));
         let edit = egui::TextEdit::singleline(buf)
             .id(id)
             .desired_width(f32::INFINITY)
@@ -33,7 +37,15 @@ fn styled_text_input_inner(
             .font(egui::TextStyle::Body)
             .margin(egui::Margin::symmetric(8, 5))
             .password(password);
-        ui.add(edit)
+        let output = edit.show(ui);
+        draw_text_caret(
+            ui,
+            &output,
+            font_id.size,
+            row_height,
+            egui::Stroke::new(1.5, colors.accent),
+        );
+        output.response
     })
     .inner
 }

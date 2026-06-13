@@ -440,20 +440,24 @@ pub(crate) fn render_component_tree(
             let prev_value = buffer.clone();
             let widget_id = egui::Id::new(("text_edit_node", node_id.as_str()));
 
-            // Styling matches QuickNote overlay: frameless, monospace, accent cursor,
+            // Styling matches QuickNote overlay: frameless, monospace, accent caret,
             // dim hint text. See src/overlays/quick_note.rs lines 138-154.
             let response = ui
                 .scope(|ui| {
-                    ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                    ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+                    // egui's caret is hidden (transparent, non-blinking);
+                    // draw_text_caret paints a glyph-height replacement on top.
+                    ui.visuals_mut().text_cursor.blink = false;
+                    ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
+                    let font_id = egui::FontId::monospace(style::TEXT_BODY);
+                    let row_height = ui.fonts(|f| f.row_height(&font_id));
 
-                    if *multiline {
+                    let output = if *multiline {
                         let hint = egui::RichText::new(placeholder.as_str())
                             .color(colors.text_dim.linear_multiply(0.3))
                             .size(style::TEXT_BODY);
                         let mut edit = egui::TextEdit::multiline(buffer)
                             .id(widget_id)
-                            .font(egui::FontId::monospace(style::TEXT_BODY))
+                            .font(font_id.clone())
                             .text_color(colors.text_primary)
                             .desired_width(f32::INFINITY)
                             .frame(false)
@@ -461,14 +465,14 @@ pub(crate) fn render_component_tree(
                         if *max_length > 0 {
                             edit = edit.char_limit(*max_length);
                         }
-                        ui.add(edit)
+                        edit.show(ui)
                     } else {
                         let hint = egui::RichText::new(placeholder.as_str())
                             .color(colors.text_dim.linear_multiply(0.3))
                             .size(style::TEXT_BODY);
                         let mut edit = egui::TextEdit::singleline(buffer)
                             .id(widget_id)
-                            .font(egui::FontId::monospace(style::TEXT_BODY))
+                            .font(font_id.clone())
                             .text_color(colors.text_primary)
                             .desired_width(f32::INFINITY)
                             .frame(false)
@@ -476,8 +480,16 @@ pub(crate) fn render_component_tree(
                         if *max_length > 0 {
                             edit = edit.char_limit(*max_length);
                         }
-                        ui.add(edit)
-                    }
+                        edit.show(ui)
+                    };
+                    crate::ui::text_field::draw_text_caret(
+                        ui,
+                        &output,
+                        style::TEXT_BODY,
+                        row_height,
+                        egui::Stroke::new(1.5, colors.accent),
+                    );
+                    output.response
                 })
                 .inner;
 

@@ -345,18 +345,35 @@ impl AssistantRenderer {
     ) -> Option<ComposerEvent> {
         let picker_open = model.picker_active();
         ui.add_space(style::SPACE_XS);
-        let response = ui.add(
-            egui::TextEdit::multiline(&mut model.composer)
-                .id_salt("assistant_composer")
-                .desired_rows(2)
-                .desired_width(f32::INFINITY)
-                .hint_text(
-                    RichText::new("Message the assistant — / for commands")
-                        .size(style::TEXT_CAPTION)
-                        .color(colors.text_dim),
-                )
-                .font(egui::FontId::proportional(style::TEXT_BODY)),
-        );
+        let response = ui
+            .scope(|ui| {
+                // egui's caret is hidden (transparent, non-blinking);
+                // draw_text_caret paints a glyph-height replacement on top.
+                ui.visuals_mut().text_cursor.blink = false;
+                ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
+                let font_id = egui::FontId::proportional(style::TEXT_BODY);
+                let row_height = ui.fonts(|f| f.row_height(&font_id));
+                let output = egui::TextEdit::multiline(&mut model.composer)
+                    .id_salt("assistant_composer")
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY)
+                    .hint_text(
+                        RichText::new("Message the assistant — / for commands")
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_dim),
+                    )
+                    .font(font_id)
+                    .show(ui);
+                crate::ui::text_field::draw_text_caret(
+                    ui,
+                    &output,
+                    style::TEXT_BODY,
+                    row_height,
+                    egui::Stroke::new(1.5, colors.accent),
+                );
+                output.response
+            })
+            .inner;
         if is_focused && !response.has_focus() && model.composer.is_empty() {
             response.request_focus();
         }

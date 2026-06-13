@@ -748,22 +748,33 @@ impl PlexiApp {
                 let te_id = egui::Id::new("edit_description_input");
                 let te = ui
                     .scope(|ui| {
-                        ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                        ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                        // egui's caret is hidden (transparent, non-blinking);
+                        // draw_text_caret paints a glyph-height replacement on top.
+                        ui.visuals_mut().text_cursor.blink = false;
+                        ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
                         ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
                         ui.visuals_mut().widgets.active.bg_stroke =
                             egui::Stroke::new(1.0, self.colors.accent);
                         ui.visuals_mut().widgets.inactive.bg_stroke =
                             egui::Stroke::new(1.0, self.colors.border);
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.description_buffer)
-                                .id(te_id)
-                                .desired_width(MODAL_WIDTH)
-                                .desired_rows(3)
-                                .hint_text("What are you working on in this context?")
-                                .font(egui::TextStyle::Body)
-                                .margin(egui::Margin::symmetric(8, 5)),
-                        )
+                        let font_id = egui::TextStyle::Body.resolve(ui.style());
+                        let row_height = ui.fonts(|f| f.row_height(&font_id));
+                        let output = egui::TextEdit::multiline(&mut self.description_buffer)
+                            .id(te_id)
+                            .desired_width(MODAL_WIDTH)
+                            .desired_rows(3)
+                            .hint_text("What are you working on in this context?")
+                            .font(egui::TextStyle::Body)
+                            .margin(egui::Margin::symmetric(8, 5))
+                            .show(ui);
+                        crate::ui::text_field::draw_text_caret(
+                            ui,
+                            &output,
+                            font_id.size,
+                            row_height,
+                            egui::Stroke::new(1.5, self.colors.accent),
+                        );
+                        output.response
                     })
                     .inner;
 
