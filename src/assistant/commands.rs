@@ -52,6 +52,7 @@ pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
     ("rewind", "Restore the conversation to an earlier checkpoint."),
     ("new", "Create a new named conversation without deleting the current one."),
     ("history", "Open conversation history and checkpoint browser."),
+    ("thoughts", "Show or hide the model's reasoning for every turn."),
 ];
 
 /// Commands with a real implementation (Phase 1: help/clear/new; Phase 2:
@@ -65,6 +66,7 @@ pub const IMPLEMENTED_COMMANDS: &[&str] = &[
     "permissions",
     "revoke",
     "audit",
+    "thoughts",
 ];
 
 /// Parse `input` as a slash command. Returns `None` when the input is not a
@@ -112,16 +114,17 @@ pub fn is_builtin(name: &str) -> bool {
     BUILT_IN_COMMANDS.iter().any(|(n, _)| *n == name)
 }
 
-/// Render the `/help` listing.
+/// Render the `/help` listing as markdown (the transcript renders assistant
+/// rows through CommonMark).
 pub fn help_text() -> String {
-    let mut out = String::from("Built-in commands:\n");
+    let mut out = String::from("**Built-in commands:**\n\n");
     for (name, purpose) in BUILT_IN_COMMANDS {
         let status = if IMPLEMENTED_COMMANDS.contains(name) {
             ""
         } else {
             " (not yet implemented)"
         };
-        out.push_str(&format!("/{name} — {purpose}{status}\n"));
+        out.push_str(&format!("- `/{name}` — {purpose}{status}\n"));
     }
     out
 }

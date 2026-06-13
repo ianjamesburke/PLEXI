@@ -1,10 +1,20 @@
-//! egui rendering for the host Assistant pane: transcript, streaming row,
-//! slash-command picker, and multiline composer. Pure view over
-//! `AssistantModel` — all state transitions go back through the model.
+//! egui rendering for the host Assistant pane: header bar, transcript,
+//! streaming row, slash-command picker, and multiline composer. Pure view
+//! over `AssistantModel` — all state transitions go back through the model.
+//!
+//! Layout: the composer (plus permission sheet and hint bar) lives in a
+//! content-sized bottom panel so it stays glued to the pane's bottom edge.
+//! The slash-command picker is a floating `Area` popup anchored to the top
+//! edge of the composer — it grows and shrinks upward without resizing the
+//! panel or the transcript, so filtering never shifts surrounding layout.
+//! Enter/Tab/arrow keys are consumed *before* the composer TextEdit renders,
+//! so completion and submit never flash an intermediate buffer state.
 
 use egui::RichText;
 
 use crate::ui::button::{chrome_button, ButtonKind};
+use crate::ui::hints::{HintBar, HintGroup};
+use crate::ui::list::ListRow;
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
@@ -23,157 +33,351 @@ pub enum ComposerEvent {
 pub struct AssistantRenderer;
 
 impl AssistantRenderer {
-    /// Height reserved for the composer + picker at the bottom of the pane.
-    const COMPOSER_H: f32 = 72.0;
-    /// Height reserved for the permission sheet when one is pending.
-    const SHEET_H: f32 = 110.0;
+    /// Header bar height — mirrors the terminal pane name bar and the
+    /// text-editor note header so the assistant reads as the same chrome.
+    const HEADER_BAR_H: f32 = 20.0;
+    const HEADER_FONT_SIZE: f32 = 11.0;
+    /// Composer grows until it reaches this fraction of the pane height, then
+    /// scrolls — generous on purpose so long drafts get room to breathe.
+    const COMPOSER_MAX_FRACTION: f32 = 0.75;
+    /// Chat bubbles cap at this fraction of the transcript width.
+    const BUBBLE_MAX_FRACTION: f32 = 0.72;
 
     pub fn draw(
         ui: &mut egui::Ui,
         model: &mut AssistantModel,
+        md_cache: &mut egui_commonmark::CommonMarkCache,
         colors: &Colors,
         is_focused: bool,
     ) -> Option<ComposerEvent> {
-        let total = ui.available_rect_before_wrap();
-        let mut event = None;
+        // Match the terminal/editor surface, not the darker app-pane base
+        // fill — the assistant is host chrome, same as the scratchpad.
+        ui.painter()
+            .rect_filled(ui.available_rect_before_wrap(), 0.0, colors.terminal_bg);
+        ui.visuals_mut().extreme_bg_color = colors.terminal_bg;
 
-        ui.vertical(|ui| {
-            let sheet_h = if model.pending_permission.is_some() {
-                Self::SHEET_H
-            } else {
-                0.0
-            };
-            let transcript_h = (total.height() - Self::COMPOSER_H - sheet_h).max(0.0);
-            ui.allocate_ui(egui::vec2(total.width(), transcript_h), |ui| {
-                Self::draw_transcript(ui, model, colors);
+        Self::draw_header(ui, model, colors);
+
+        // Egui ids are salted by the pane's own ui id — NOT the conversation
+        // id. A conversation-salted id would reset the bottom panel's stored
+        // height on /new and /clear, making the composer visibly re-converge
+        // (flash) the moment the conversation switches.
+        let pane_id = ui.id();
+        let te_id = pane_id.with("assistant_composer");
+
+        // Picker shows up to 10 command rows, clamped so it never overruns
+        // the transcript area in a short pane (but always fits at least 3).
+        let total_h = ui.available_rect_before_wrap().height();
+        let picker_max_h = (style::LIST_ROW_H * 10.0)
+            .min((total_h * 0.8).max(style::LIST_ROW_H * 3.0));
+        let mut event = None;
+        let mut composer_rect = None;
+
+        // Bottom-anchored, content-sized: composer pinned to the pane bottom.
+        // Stable height (composer + hints only) — the picker floats above it.
+        egui::TopBottomPanel::bottom(pane_id.with("assistant_bottom"))
+            .show_separator_line(false)
+            .frame(egui::Frame::new().inner_margin(egui::Margin {
+                left: style::SPACE_MD as i8,
+                right: style::SPACE_MD as i8,
+                top: style::SPACE_XS as i8,
+                bottom: style::SPACE_SM as i8,
+            }))
+            .show_inside(ui, |ui| {
+                if let Some(choice) = Self::draw_permission_sheet(ui, model, colors) {
+                    event = Some(ComposerEvent::Permission(choice));
+                }
+                // Keys first: Enter/Tab/arrows must be consumed before the
+                // TextEdit processes input, or completion renders a one-frame
+                // stale buffer (the autocomplete "glitch").
+                if let Some(key_event) = Self::handle_composer_keys(ui, model, te_id) {
+                    event = Some(key_event);
+                }
+                composer_rect = Some(Self::draw_composer(
+                    ui,
+                    model,
+                    te_id,
+                    colors,
+                    is_focused,
+                    total_h * Self::COMPOSER_MAX_FRACTION,
+                ));
+                let hints = [
+                    HintGroup::new(&["\u{21b5}"], "send"),
+                    HintGroup::new(&["\u{21e7}", "\u{21b5}"], "newline"),
+                    HintGroup::new(&["/"], "commands"),
+                ];
+                HintBar::new(&hints).show(ui, colors);
             });
-            if let Some(choice) = Self::draw_permission_sheet(ui, model, colors) {
-                event = Some(ComposerEvent::Permission(choice));
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(
+                style::SPACE_MD as i8,
+                0,
+            )))
+            .show_inside(ui, |ui| {
+                Self::draw_transcript(ui, model, md_cache, colors);
+            });
+
+        if model.picker_active() {
+            if let Some(rect) = composer_rect {
+                Self::draw_picker_popup(ui, model, te_id, pane_id, colors, rect, picker_max_h);
             }
-            if model.picker_active() {
-                Self::draw_picker(ui, model, colors);
-            }
-            if let Some(composer_event) = Self::draw_composer(ui, model, colors, is_focused) {
-                event = Some(composer_event);
-            }
-        });
+        }
+
         event
     }
 
-    fn draw_transcript(ui: &mut egui::Ui, model: &AssistantModel, colors: &Colors) {
+    /// Title bar styled like the terminal pane name bar: session name (or
+    /// "Assistant"), with a status pip — pulsing accent while a turn streams,
+    /// danger when the last turn errored, dim when idle.
+    fn draw_header(ui: &mut egui::Ui, model: &AssistantModel, colors: &Colors) {
+        let bar_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), Self::HEADER_BAR_H),
+        );
+        ui.advance_cursor_after_rect(bar_rect);
+        ui.painter()
+            .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
+
+        let pip_color = if model.streaming.in_flight {
+            let t = ui.input(|i| i.time);
+            let phase = ((t * 2.5).sin() * 0.5 + 0.5) as f32;
+            colors.accent.gamma_multiply(0.45 + 0.55 * phase)
+        } else if matches!(
+            model.turns.last().map(|t| t.role),
+            Some(TurnRole::Error)
+        ) {
+            colors.danger
+        } else {
+            colors.text_dim
+        };
+        ui.painter().circle_filled(
+            egui::pos2(bar_rect.left() + style::SPACE_SM + 3.0, bar_rect.center().y),
+            3.0,
+            pip_color,
+        );
+
+        let title = model
+            .session_name
+            .clone()
+            .unwrap_or_else(|| "Assistant".to_string());
+        // A real label (not painter text) so the title stays in the
+        // accessibility tree for UI-harness queries.
+        let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
+        bar_ui.centered_and_justified(|ui| {
+            ui.label(
+                RichText::new(title)
+                    .size(Self::HEADER_FONT_SIZE)
+                    .color(colors.text_dim),
+            );
+        });
+    }
+
+    fn draw_transcript(
+        ui: &mut egui::Ui,
+        model: &AssistantModel,
+        md_cache: &mut egui_commonmark::CommonMarkCache,
+        colors: &Colors,
+    ) {
+        // Native cross-widget text selection: a drag started in one bubble must
+        // extend through the gaps into the next, so the user can copy a span
+        // across several messages. egui's multi-widget selection is already on
+        // by default; the only thing that breaks it here is the scroll area
+        // stealing the drag in the inter-bubble margins — `drag_to_scroll(false)`
+        // hands those drags to the selection instead. Wheel and the scrollbar
+        // still scroll.
+        ui.style_mut().interaction.selectable_labels = true;
+        ui.style_mut().interaction.multi_widget_text_select = true;
         egui::ScrollArea::vertical()
             .id_salt("assistant_transcript")
             .auto_shrink([false, false])
-            // Pin to bottom only while a turn is streaming in.
-            .stick_to_bottom(model.streaming.in_flight)
+            .drag_to_scroll(false)
+            // Follow new content (streamed chunks, command output) whenever
+            // the view is already at the bottom; egui releases the stick as
+            // soon as the user scrolls up to read history.
+            .stick_to_bottom(true)
             .show(ui, |ui| {
                 ui.add_space(style::SPACE_SM);
-                for turn in &model.turns {
-                    Self::draw_turn_row(ui, colors, turn.role, &turn.text, turn.status);
+                // The in-flight turn renders at its anchor — right after the
+                // message that started it — so rows appended mid-turn
+                // (slash-view output, queued messages) appear below it, in
+                // the position the committed reply will land in.
+                let anchor = model
+                    .turn_anchor
+                    .unwrap_or(model.turns.len())
+                    .min(model.turns.len());
+                for (i, turn) in model.turns[..anchor].iter().enumerate() {
+                    ui.push_id(i, |ui| {
+                        Self::draw_turn_row(ui, md_cache, colors, turn, model.show_thoughts);
+                    });
                 }
                 for active in &model.active_tools {
                     Self::draw_active_tool_row(ui, colors, &active.tool);
                 }
                 if model.streaming.in_flight {
-                    Self::draw_streaming_row(ui, model, colors);
+                    ui.push_id("streaming", |ui| {
+                        Self::draw_streaming_row(ui, model, md_cache, colors);
+                    });
+                }
+                for (i, turn) in model.turns[anchor..].iter().enumerate() {
+                    ui.push_id(anchor + i, |ui| {
+                        Self::draw_turn_row(ui, md_cache, colors, turn, model.show_thoughts);
+                    });
                 }
                 ui.add_space(style::SPACE_SM);
             });
     }
 
-    fn role_label(role: TurnRole) -> &'static str {
-        match role {
-            TurnRole::User => "you",
-            TurnRole::Assistant => "assistant",
-            TurnRole::Tool => "tool",
-            TurnRole::Error => "error",
-            TurnRole::Event => "event",
+    /// Convert markdown soft breaks to hard breaks: every newline outside a
+    /// fenced code block gets a trailing two-space hard break, so single
+    /// newlines stay visible line breaks (the chat-client convention) instead
+    /// of collapsing into one paragraph. Block structure — lists, headings,
+    /// fences — is decided per line before inline rendering, so the trailing
+    /// spaces never change it.
+    fn soften_newlines(text: &str) -> String {
+        let mut out = String::with_capacity(text.len() + text.lines().count() * 2);
+        let mut in_fence = false;
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+            }
+            out.push_str(line);
+            if !in_fence && !line.trim().is_empty() {
+                out.push_str("  ");
+            }
+            out.push('\n');
         }
+        out
     }
 
-    fn role_color(role: TurnRole, colors: &Colors) -> egui::Color32 {
-        match role {
-            TurnRole::User => colors.accent,
-            TurnRole::Assistant => colors.text_dim,
-            TurnRole::Tool => colors.text_dim,
-            TurnRole::Error => colors.danger,
-            TurnRole::Event => colors.accent,
-        }
+    /// Render `text` as markdown (links, emphasis, inline code, fenced
+    /// blocks) sized to the chat body scale. Hyperlinks open through egui's
+    /// native `open_url`. Raw inline HTML is not interpreted — it renders as
+    /// literal text, which is the honest behavior for an immediate-mode UI.
+    fn markdown_body(
+        ui: &mut egui::Ui,
+        md_cache: &mut egui_commonmark::CommonMarkCache,
+        colors: &Colors,
+        text: &str,
+    ) {
+        let s = ui.style_mut();
+        s.visuals.override_text_color = Some(colors.text_primary);
+        s.visuals.hyperlink_color = colors.accent;
+        s.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::proportional(style::TEXT_BODY),
+        );
+        s.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::proportional(style::TEXT_BODY * 1.3),
+        );
+        s.text_styles.insert(
+            egui::TextStyle::Monospace,
+            egui::FontId::monospace(style::TEXT_BODY * 0.9),
+        );
+        s.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::proportional(style::TEXT_HINT),
+        );
+        egui_commonmark::CommonMarkViewer::new().show(ui, md_cache, &Self::soften_newlines(text));
     }
 
     fn draw_turn_row(
         ui: &mut egui::Ui,
+        md_cache: &mut egui_commonmark::CommonMarkCache,
         colors: &Colors,
-        role: TurnRole,
-        text: &str,
-        status: Option<ToolStatus>,
+        turn: &super::model::Turn,
+        show_thoughts: bool,
     ) {
-        // Delivered app events are compact single-line rows.
-        if role == TurnRole::Event {
-            ui.horizontal(|ui| {
-                ui.add_space(style::SPACE_SM);
+        let text = turn.text.as_str();
+        let status = turn.status;
+        match turn.role {
+            // Delivered app events are compact single-line rows.
+            TurnRole::Event => {
                 ui.label(
                     RichText::new(text)
                         .size(style::TEXT_CAPTION)
                         .monospace()
                         .color(colors.accent),
                 );
-            });
-            ui.add_space(style::SPACE_SM);
-            return;
-        }
-        // Completed tool calls are compact single-line rows.
-        if role == TurnRole::Tool {
-            let (icon, color) = match status {
-                Some(ToolStatus::Succeeded) | None => ("✓", colors.text_dim),
-                Some(ToolStatus::Failed) => ("✗", colors.danger),
-            };
-            ui.horizontal(|ui| {
                 ui.add_space(style::SPACE_SM);
+            }
+            // Completed tool calls are compact single-line rows.
+            TurnRole::Tool => {
+                let (icon, color) = match status {
+                    Some(ToolStatus::Succeeded) | None => ("✓", colors.text_dim),
+                    Some(ToolStatus::Failed) => ("✗", colors.danger),
+                };
                 ui.label(
                     RichText::new(format!("{icon} {text}"))
                         .size(style::TEXT_CAPTION)
                         .monospace()
                         .color(color),
                 );
-            });
-            ui.add_space(style::SPACE_SM);
-            return;
-        }
-        ui.horizontal(|ui| {
-            ui.add_space(style::SPACE_SM);
-            ui.vertical(|ui| {
+                ui.add_space(style::SPACE_SM);
+            }
+            // User turns sit right-aligned in an outlined bubble, like every
+            // mainstream chat client.
+            TurnRole::User => {
+                let bubble_max = ui.available_width() * Self::BUBBLE_MAX_FRACTION;
+                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                    egui::Frame::new()
+                        .fill(colors.bg_active)
+                        .stroke(egui::Stroke::new(1.0, colors.border))
+                        .corner_radius(style::RADIUS_MD)
+                        .inner_margin(egui::Margin::symmetric(
+                            style::SPACE_SM as i8,
+                            style::SPACE_XS as i8,
+                        ))
+                        .show(ui, |ui| {
+                            ui.set_max_width(bubble_max);
+                            ui.label(
+                                RichText::new(text)
+                                    .size(style::TEXT_BODY)
+                                    .color(colors.text_primary),
+                            );
+                        });
+                });
+                ui.add_space(style::SPACE_MD);
+            }
+            // Assistant replies sit left-aligned in a soft unstroked bubble —
+            // visible against the terminal surface — and render as markdown.
+            TurnRole::Assistant => {
+                if show_thoughts {
+                    if let Some(thoughts) = &turn.thoughts {
+                        Self::draw_thoughts_section(ui, colors, thoughts);
+                    }
+                }
+                Self::assistant_bubble(ui, colors, |ui| {
+                    Self::markdown_body(ui, md_cache, colors, text);
+                });
+                ui.add_space(style::SPACE_MD);
+            }
+            TurnRole::Error => {
                 ui.label(
-                    RichText::new(Self::role_label(role))
+                    RichText::new("error")
                         .size(style::TEXT_HINT)
-                        .color(Self::role_color(role, colors)),
+                        .color(colors.danger),
                 );
-                let body_color = if role == TurnRole::Error {
-                    colors.danger
-                } else {
-                    colors.text_primary
-                };
                 ui.label(
                     RichText::new(text)
                         .size(style::TEXT_BODY)
-                        .color(body_color),
+                        .color(colors.danger),
                 );
-            });
-        });
-        ui.add_space(style::SPACE_MD);
+                ui.add_space(style::SPACE_MD);
+            }
+        }
     }
 
     /// A tool call currently running inside the in-flight turn.
     fn draw_active_tool_row(ui: &mut egui::Ui, colors: &Colors, tool: &str) {
-        ui.horizontal(|ui| {
-            ui.add_space(style::SPACE_SM);
-            ui.label(
-                RichText::new(format!("⟳ {tool} — running…"))
-                    .size(style::TEXT_CAPTION)
-                    .monospace()
-                    .color(colors.accent),
-            );
-        });
+        ui.label(
+            RichText::new(format!("⟳ {tool} — running…"))
+                .size(style::TEXT_CAPTION)
+                .monospace()
+                .color(colors.accent),
+        );
         ui.add_space(style::SPACE_SM);
     }
 
@@ -235,50 +439,207 @@ impl AssistantRenderer {
         choice
     }
 
-    fn draw_streaming_row(ui: &mut egui::Ui, model: &AssistantModel, colors: &Colors) {
-        ui.horizontal(|ui| {
-            ui.add_space(style::SPACE_SM);
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new("assistant")
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_dim),
-                );
-                if !model.streaming.partial_reasoning.is_empty() {
-                    egui::CollapsingHeader::new(
-                        RichText::new("thinking…")
-                            .size(style::TEXT_CAPTION)
-                            .color(colors.text_dim),
-                    )
-                    .id_salt("assistant_thinking")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(&model.streaming.partial_reasoning)
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim),
-                        );
-                    });
-                }
-                if model.streaming.partial_answer.is_empty() {
-                    ui.label(
-                        RichText::new("…")
-                            .size(style::TEXT_BODY)
-                            .color(colors.text_dim),
-                    );
-                } else {
-                    ui.label(
-                        RichText::new(&model.streaming.partial_answer)
-                            .size(style::TEXT_BODY)
-                            .color(colors.text_primary),
-                    );
-                }
+    /// "thoughts" section: the model's reasoning tokens, rendered open and
+    /// dim above the answer. `/thoughts` is the visibility switch — when the
+    /// user opted in, the thoughts just show; no per-turn disclosure
+    /// triangle to click. Used both for the in-flight turn and for persisted
+    /// assistant turns.
+    fn draw_thoughts_section(ui: &mut egui::Ui, colors: &Colors, thoughts: &str) {
+        ui.label(
+            RichText::new("thoughts")
+                .size(style::TEXT_HINT)
+                .color(colors.text_dim),
+        );
+        ui.label(
+            RichText::new(thoughts)
+                .size(style::TEXT_CAPTION)
+                .italics()
+                .color(colors.text_dim),
+        );
+        ui.add_space(style::SPACE_XS);
+    }
+
+    /// The soft, left-aligned assistant reply bubble. Shared by committed turns
+    /// (`draw_turn_row`) and the in-flight streaming row so the background is
+    /// identical from the first frame of a turn — it must not pop in only once
+    /// the turn commits.
+    fn assistant_bubble(
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        add_contents: impl FnOnce(&mut egui::Ui),
+    ) {
+        let bubble_max = ui.available_width() * 0.85;
+        egui::Frame::new()
+            .fill(colors.bg_active)
+            .corner_radius(style::RADIUS_MD)
+            .inner_margin(egui::Margin::symmetric(
+                style::SPACE_SM as i8,
+                style::SPACE_XS as i8,
+            ))
+            .show(ui, |ui| {
+                ui.set_max_width(bubble_max);
+                add_contents(ui);
             });
+    }
+
+    fn draw_streaming_row(
+        ui: &mut egui::Ui,
+        model: &AssistantModel,
+        md_cache: &mut egui_commonmark::CommonMarkCache,
+        colors: &Colors,
+    ) {
+        if model.show_thoughts && !model.streaming.partial_reasoning.is_empty() {
+            Self::draw_thoughts_section(ui, colors, &model.streaming.partial_reasoning);
+        }
+        // Same bubble as a committed reply, present from the first frame —
+        // the thinking-dots beat and every streamed token sit on the
+        // background, so it never appears only after streaming ends.
+        Self::assistant_bubble(ui, colors, |ui| {
+            if model.streaming.partial_answer.is_empty() {
+                Self::draw_thinking_dots(ui, colors);
+            } else {
+                Self::markdown_body(ui, md_cache, colors, &model.streaming.partial_answer);
+            }
         });
         ui.add_space(style::SPACE_MD);
     }
 
-    fn draw_picker(ui: &mut egui::Ui, model: &mut AssistantModel, colors: &Colors) {
+    /// Three dots pulsing in sequence — the "assistant is thinking" beat
+    /// shown before the first answer token arrives. The pane already
+    /// requests repaints every 50ms while a turn is in flight.
+    fn draw_thinking_dots(ui: &mut egui::Ui, colors: &Colors) {
+        let t = ui.input(|i| i.time);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(40.0, 18.0), egui::Sense::hover());
+        for k in 0..3 {
+            let phase = (((t * 2.2 - k as f64 * 0.45).sin() * 0.5 + 0.5)) as f32;
+            let color = colors.text_dim.gamma_multiply(0.35 + 0.65 * phase);
+            ui.painter().circle_filled(
+                egui::pos2(rect.left() + 6.0 + k as f32 * 11.0, rect.center().y),
+                2.5,
+                color,
+            );
+        }
+    }
+
+    /// Move the composer caret to the end of `text` — used after picker
+    /// completion replaces the buffer, so typing continues after the
+    /// inserted trailing space instead of mid-command.
+    fn set_caret_to_end(ctx: &egui::Context, te_id: egui::Id, text: &str) {
+        let mut state = egui::TextEdit::load_state(ctx, te_id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::one(
+                egui::text::CCursor::new(text.chars().count()),
+            )));
+        state.store(ctx, te_id);
+    }
+
+    /// Replace the composer with the completed slash command plus a trailing
+    /// space, caret at the end ready for arguments.
+    fn complete_command(
+        ctx: &egui::Context,
+        model: &mut AssistantModel,
+        te_id: egui::Id,
+        name: &str,
+        via: &str,
+    ) {
+        model.composer = format!("/{name} ");
+        Self::set_caret_to_end(ctx, te_id, &model.composer);
+        model.picker_selected = 0;
+        log::info!("assistant: picker completed '/{name}' via {via}");
+    }
+
+    /// Consume composer keyboard input ahead of the TextEdit: picker
+    /// navigation (arrows), Tab-complete and Enter-send while picking, and
+    /// plain Enter submit otherwise. Shift+Enter is left for the TextEdit to
+    /// insert a newline natively.
+    fn handle_composer_keys(
+        ui: &mut egui::Ui,
+        model: &mut AssistantModel,
+        te_id: egui::Id,
+    ) -> Option<ComposerEvent> {
+        if !ui.memory(|m| m.has_focus(te_id)) {
+            return None;
+        }
+        if model.picker_active() {
+            let matches = commands::filter_commands(&model.picker_query());
+            if !matches.is_empty() {
+                if model.picker_selected >= matches.len() {
+                    model.picker_selected = matches.len() - 1;
+                }
+                // Tab completes the selection into the composer for further
+                // editing; Enter completes it AND sends it in the same frame.
+                let mut complete = false;
+                let mut send = false;
+                ui.input_mut(|input| {
+                    if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                        && model.picker_selected + 1 < matches.len()
+                    {
+                        model.picker_selected += 1;
+                    }
+                    if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                        && model.picker_selected > 0
+                    {
+                        model.picker_selected -= 1;
+                    }
+                    if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
+                        complete = true;
+                    }
+                    // Plain Enter completes + sends; Shift+Enter is left for the
+                    // TextEdit to insert a newline. `consume_key` matches
+                    // logically (ignores extra Shift), so guard on `!shift`
+                    // first — otherwise Shift+Enter would be eaten here.
+                    if !input.modifiers.shift
+                        && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                    {
+                        complete = true;
+                        send = true;
+                    }
+                });
+                if complete {
+                    let (name, _) = matches[model.picker_selected];
+                    Self::complete_command(
+                        ui.ctx(),
+                        model,
+                        te_id,
+                        name,
+                        if send { "enter" } else { "tab" },
+                    );
+                    if send {
+                        return Some(ComposerEvent::Submit);
+                    }
+                }
+                return None;
+            }
+            // No matches: fall through so Enter submits the raw text.
+        }
+        let mut submit = false;
+        ui.input_mut(|input| {
+            // Shift+Enter inserts a newline (handled natively by the TextEdit's
+            // `return_key`); only plain Enter submits. `consume_key` ignores
+            // extra Shift, so guard on `!shift` before consuming.
+            if !input.modifiers.shift
+                && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+            {
+                submit = true;
+            }
+        });
+        submit.then_some(ComposerEvent::Submit)
+    }
+
+    /// Slash-command picker as a floating popup anchored to the composer's
+    /// top edge, growing upward over the transcript. Floating keeps the
+    /// bottom panel's height fixed, so opening/filtering the picker never
+    /// resizes the transcript or moves the composer.
+    fn draw_picker_popup(
+        ui: &egui::Ui,
+        model: &mut AssistantModel,
+        te_id: egui::Id,
+        pane_id: egui::Id,
+        colors: &Colors,
+        composer_rect: egui::Rect,
+        max_h: f32,
+    ) {
         let matches = commands::filter_commands(&model.picker_query());
         if matches.is_empty() {
             return;
@@ -286,116 +647,204 @@ impl AssistantRenderer {
         if model.picker_selected >= matches.len() {
             model.picker_selected = matches.len() - 1;
         }
+        let selected_idx = model.picker_selected;
+        let mut clicked: Option<&'static str> = None;
+        let mut hover_select: Option<usize> = None;
 
-        // Picker keyboard nav — consumed here so the composer never sees it.
-        let mut complete = false;
-        ui.input_mut(|input| {
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                && model.picker_selected + 1 < matches.len()
-            {
-                model.picker_selected += 1;
-            }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-                && model.picker_selected > 0
-            {
-                model.picker_selected -= 1;
-            }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
-                complete = true;
-            }
-        });
-        if complete {
-            let (name, _) = matches[model.picker_selected];
-            model.composer = format!("/{name} ");
-        }
+        // Command-palette scroll/hover discipline: scroll-to-selected only
+        // when the selection actually changed (a per-frame scroll_to_me
+        // fights the user's wheel and snaps the list back), and hover moves
+        // the selection only when the mouse itself moved (so rows sliding
+        // under a stationary cursor during scroll don't steal selection).
+        let prev_selected_id = pane_id.with("assistant_picker_prev_selected");
+        let prev_selected = ui
+            .ctx()
+            .data(|d| d.get_temp::<usize>(prev_selected_id))
+            .unwrap_or(selected_idx);
+        let should_scroll = selected_idx != prev_selected;
+        let mouse_moved = ui.ctx().input(|i| i.pointer.delta().length_sq() > 0.5);
 
-        egui::Frame::new()
-            .fill(colors.bg_active)
-            .stroke(egui::Stroke::new(1.0, colors.border))
-            .corner_radius(style::RADIUS_MD)
-            .inner_margin(egui::Margin::same(style::SPACE_SM as i8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let visible = matches.len().min(8);
-                for (i, (name, purpose)) in matches.iter().take(visible).enumerate() {
-                    let selected = i == model.picker_selected;
-                    let name_color = if selected { colors.accent } else { colors.text_primary };
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!("/{name}"))
-                                .size(style::TEXT_CAPTION)
-                                .monospace()
-                                .color(name_color),
-                        );
-                        ui.add_space(style::SPACE_SM);
-                        ui.scope(|ui| {
-                            ui.set_max_width(ui.available_width());
-                            crate::ui::labels::description_label(ui, purpose, colors);
-                        });
+        // The popup rect is computed here, not by egui: a bottom-pivoted Area
+        // positions itself from its own last-frame size, and the ScrollArea
+        // clamps to the space below that position — a feedback loop with a
+        // stable collapsed state (the "one visible row" bug). Deriving the
+        // height from the row count breaks the loop.
+        let row_gap = ui.spacing().item_spacing.y;
+        let content_h = matches.len() as f32 * style::LIST_ROW_H
+            + matches.len().saturating_sub(1) as f32 * row_gap;
+        let list_h = content_h.min(max_h.max(0.0));
+        let margin = style::SPACE_XS;
+        let popup_h = list_h + 2.0 * margin + 2.0;
+        let pos = composer_rect.left_top() - egui::vec2(0.0, style::SPACE_XS + popup_h);
+
+        egui::Area::new(pane_id.with("assistant_picker"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(composer_rect.width());
+                egui::Frame::new()
+                    .fill(colors.bg_active)
+                    .stroke(egui::Stroke::new(1.0, colors.border))
+                    .corner_radius(style::RADIUS_MD)
+                    .inner_margin(egui::Margin::same(margin as i8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        egui::ScrollArea::vertical()
+                            .id_salt("assistant_picker_scroll")
+                            .max_height(list_h)
+                            .min_scrolled_height(list_h)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                for (i, (name, purpose)) in matches.iter().enumerate() {
+                                    let row = ListRow::new(&format!("/{name}"))
+                                        .secondary(purpose)
+                                        .selected(i == selected_idx)
+                                        .show(ui, colors);
+                                    if i == selected_idx {
+                                        row.scroll_into_view(ui, should_scroll);
+                                    }
+                                    if row.row_clicked() {
+                                        clicked = Some(*name);
+                                    }
+                                    if row.row_hovered() {
+                                        hover_select = Some(i);
+                                    }
+                                }
+                            });
                     });
-                }
             });
+
+        if let Some(i) = hover_select {
+            if mouse_moved {
+                model.picker_selected = i;
+            }
+        }
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(prev_selected_id, model.picker_selected));
+        if let Some(name) = clicked {
+            Self::complete_command(ui.ctx(), model, te_id, name, "click");
+        }
     }
 
+    /// The growable composer; returns its outer rect so the picker popup can
+    /// anchor to it. Key handling happens in `handle_composer_keys` before
+    /// this runs.
     fn draw_composer(
         ui: &mut egui::Ui,
         model: &mut AssistantModel,
+        te_id: egui::Id,
         colors: &Colors,
         is_focused: bool,
-    ) -> Option<ComposerEvent> {
-        let picker_open = model.picker_active();
-        ui.add_space(style::SPACE_XS);
-        let response = ui
-            .scope(|ui| {
-                // egui's caret is hidden (transparent, non-blinking);
-                // draw_text_caret paints a glyph-height replacement on top.
+        max_h: f32,
+    ) -> egui::Rect {
+        let font_id = egui::FontId::proportional(style::TEXT_BODY);
+        let row_height = ui.fonts(|f| f.row_height(&font_id));
+        // Grow up to `max_h` (75% of the pane) before scrolling, never below a
+        // single row even in a very short pane.
+        let max_text_h = max_h.max(row_height);
+
+        // Accent outline while the composer holds keyboard focus — same
+        // affordance as the host text fields.
+        let has_kb_focus = ui.memory(|m| m.has_focus(te_id));
+        let stroke_color = if has_kb_focus { colors.accent } else { colors.border };
+
+        let mut response = None;
+        let frame_response = egui::Frame::new()
+            .fill(colors.bg_active)
+            .stroke(egui::Stroke::new(1.0, stroke_color))
+            .corner_radius(style::RADIUS_MD)
+            .inner_margin(egui::Margin::symmetric(
+                style::SPACE_SM as i8,
+                style::SPACE_XS as i8,
+            ))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                // Glyph-height caret, unified with every other host text input
+                // (see `text_field::draw_text_caret`): hide egui's full-row
+                // caret (transparent + no blink) and paint a replacement that
+                // matches the glyph height on top.
                 ui.visuals_mut().text_cursor.blink = false;
                 ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
-                let font_id = egui::FontId::proportional(style::TEXT_BODY);
-                let row_height = ui.fonts(|f| f.row_height(&font_id));
-                let output = egui::TextEdit::multiline(&mut model.composer)
-                    .id_salt("assistant_composer")
-                    .desired_rows(2)
-                    .desired_width(f32::INFINITY)
-                    .hint_text(
-                        RichText::new("Message the assistant — / for commands")
-                            .size(style::TEXT_CAPTION)
-                            .color(colors.text_dim),
-                    )
-                    .font(font_id)
-                    .show(ui);
-                crate::ui::text_field::draw_text_caret(
-                    ui,
-                    &output,
-                    style::TEXT_BODY,
-                    row_height,
-                    egui::Stroke::new(1.5, colors.accent),
-                );
-                output.response
-            })
-            .inner;
-        if is_focused && !response.has_focus() && model.composer.is_empty() {
-            response.request_focus();
-        }
-
-        // Enter submits; Shift+Enter inserts a newline. TextEdit has already
-        // inserted the newline by the time we see the key, so strip it.
-        let enter = response.has_focus()
-            && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
-        if !enter {
-            return None;
-        }
-        if let Some(idx) = model.composer.rfind('\n') {
-            model.composer.remove(idx);
-        }
-        if picker_open {
-            // Enter while picking completes the selected command.
-            let matches = commands::filter_commands(&model.picker_query());
-            if let Some((name, _)) = matches.get(model.picker_selected) {
-                model.composer = format!("/{name} ");
-                return None;
+                // The TextEdit reports its own height; the ScrollArea caps it at
+                // `max_text_h` and scrolls past that. No hand-rolled galley
+                // measurement — same shape as the quick-note composer. Measuring
+                // the height ourselves fought the TextEdit's real layout (it
+                // wraps against a width already reduced by the floating
+                // scrollbar's reserved gutter), which flashed a stray scrollbar
+                // mid-growth.
+                egui::ScrollArea::vertical()
+                    .id_salt("assistant_composer_scroll")
+                    .max_height(max_text_h)
+                    .show(ui, |ui| {
+                        let output = egui::TextEdit::multiline(&mut model.composer)
+                            .id(te_id)
+                            .desired_rows(1)
+                            .desired_width(f32::INFINITY)
+                            .frame(false)
+                            // Keep Tab in the composer: without the focus
+                            // lock, egui's frame-start focus traversal
+                            // moves focus away before the picker's Tab
+                            // handler ever sees the key.
+                            .lock_focus(true)
+                            // Plain Enter is consumed for submit before
+                            // the TextEdit runs; Shift+Enter is the
+                            // newline key (the default return_key is
+                            // unmodified Enter, so Shift+Enter would
+                            // otherwise insert nothing).
+                            .return_key(Some(egui::KeyboardShortcut::new(
+                                egui::Modifiers::SHIFT,
+                                egui::Key::Enter,
+                            )))
+                            .hint_text(
+                                RichText::new("Message the assistant — / for commands")
+                                    .size(style::TEXT_CAPTION)
+                                    .color(colors.text_dim),
+                            )
+                            .font(font_id.clone())
+                            .show(ui);
+                        crate::ui::text_field::draw_text_caret(
+                            ui,
+                            &output,
+                            style::TEXT_BODY,
+                            row_height,
+                            egui::Stroke::new(1.5, colors.accent),
+                        );
+                        response = Some(output.response);
+                    });
+            });
+        // Keep the composer focused whenever the pane is active but the
+        // TextEdit has lost focus — covers initial open, pane switches, and
+        // window zoom/fullscreen toggles (which silently drop egui keyboard
+        // focus, even with a draft in the box). This is the same unconditional
+        // rule the text-editor pane uses (`text_editor_app.rs`): a one-shot
+        // edge guard breaks after the very focus changes it needs to react to.
+        // It does not fight transcript selection — selecting a label takes
+        // pointer interaction, not keyboard focus, and an empty composer never
+        // consumes the copy event, so cross-bubble copy still works.
+        if let Some(response) = response {
+            if is_focused && !response.has_focus() {
+                response.request_focus();
             }
         }
-        Some(ComposerEvent::Submit)
+        frame_response.response.rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AssistantRenderer;
+
+    #[test]
+    fn soften_newlines_makes_single_breaks_hard_outside_fences() {
+        let out = AssistantRenderer::soften_newlines("line one\nline two\n\nline three");
+        assert_eq!(out, "line one  \nline two  \n\nline three  \n");
+    }
+
+    #[test]
+    fn soften_newlines_leaves_fenced_code_untouched() {
+        let out = AssistantRenderer::soften_newlines("before\n```\nlet x = 1;\nlet y = 2;\n```\nafter");
+        assert!(out.contains("before  \n"));
+        assert!(out.contains("let x = 1;\nlet y = 2;\n"), "code lines must stay byte-identical");
+        assert!(out.contains("after  \n"));
     }
 }

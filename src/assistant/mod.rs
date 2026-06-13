@@ -181,10 +181,6 @@ pub struct AssistantApp {
     /// Session grants are recorded in memory only; "always" grants are saved.
     grant_store: GrantStore,
     audit: AuditLog,
-    /// How many of `model.turns` are already on disk for the active
-    /// conversation. Reset when the conversation id changes.
-    persisted_turns: usize,
-    persisted_conversation: String,
     outcome_tx: Sender<TurnOutcome>,
     outcome_rx: Receiver<TurnOutcome>,
     /// Live deltas from the in-flight turn's worker thread.
@@ -204,6 +200,9 @@ pub struct AssistantApp {
     /// Trigger lines for non-self-caused deliveries that arrived while a
     /// turn was in flight — folded into the next dispatched turn.
     queued_event_lines: Vec<String>,
+    /// Cached layout state for `egui_commonmark` markdown rendering of
+    /// assistant replies. Persists across frames for performance.
+    commonmark_cache: egui_commonmark::CommonMarkCache,
 }
 
 /// An ask-gated subscribe waiting on the permission sheet.
@@ -236,7 +235,7 @@ impl AssistantApp {
         timeline: Arc<Mutex<AppTimeline>>,
     ) -> Self {
         let store = AssistantStore::new(&workspace_root);
-        let model = match store.active_conversation() {
+        let mut model = match store.active_conversation() {
             Some(id) => {
                 let turns = store.load_turns(&id);
                 log::info!(
@@ -256,8 +255,9 @@ impl AssistantApp {
                 model
             }
         };
-        let persisted_turns = model.turns.len();
-        let persisted_conversation = model.conversation_id.clone();
+        // Load persisted session name (if any) so it survives restarts.
+        model.session_name = store.active_session_name();
+        model.show_thoughts = store.show_thoughts();
         let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
         let (flow_tx, flow_rx) = std::sync::mpsc::channel();
         let mut app = Self {
@@ -267,8 +267,6 @@ impl AssistantApp {
             workspace_root,
             grant_store: GrantStore::load_or_default(profile_dir),
             audit: AuditLog::new(profile_dir.join("audit.jsonl")),
-            persisted_turns,
-            persisted_conversation,
             outcome_tx,
             outcome_rx,
             delta_rx: None,
@@ -279,6 +277,7 @@ impl AssistantApp {
             live_subs: Vec::new(),
             pending_subscribe: None,
             queued_event_lines: Vec::new(),
+            commonmark_cache: egui_commonmark::CommonMarkCache::default(),
         };
         // Persist the active id immediately so close-then-reopen resumes
         // this conversation even before the first turn.
@@ -389,6 +388,28 @@ impl AssistantApp {
                 AssistantEffect::ListPermissions => self.cmd_list_permissions(),
                 AssistantEffect::RevokeGrant { target_id } => self.cmd_revoke(&target_id),
                 AssistantEffect::ShowAudit => self.cmd_show_audit(),
+                AssistantEffect::PersistShowThoughts(show) => {
+                    if let Err(e) = self.store.set_show_thoughts(show) {
+                        log::error!("assistant: failed to persist show_thoughts={show}: {e}");
+                    }
+                }
+                // The model already reset its streaming state; here we only
+                // unblock worker threads parked on a permission reply so they
+                // can finish and have their stale outcome dropped.
+                AssistantEffect::CancelTurn => {
+                    if let Some(tx) = self.pending_reply.take() {
+                        let _ = tx.send(PermissionReply::Deny);
+                    }
+                    if let Some(pending) = self.pending_subscribe.take() {
+                        let _ = pending.reply.send(ToolCallResult {
+                            output_json: None,
+                            error: Some(
+                                "cancelled: the conversation was cleared mid-turn".to_string(),
+                            ),
+                        });
+                    }
+                    log::info!("assistant: in-flight turn cancelled by conversation switch");
+                }
                 // Phase 3 stub: correctly shaped, logged, never panics.
                 AssistantEffect::PaneAction { action } => {
                     log::info!("assistant: PaneAction '{action}' not yet implemented (Phase 3)");
@@ -508,27 +529,23 @@ impl AssistantApp {
         ]
     }
 
-    /// Persist the active conversation id and any turns not yet on disk.
+    /// Persist the active conversation id and the full transcript.
     fn session_write(&mut self) {
-        if self.persisted_conversation != self.model.conversation_id {
-            self.persisted_conversation = self.model.conversation_id.clone();
-            self.persisted_turns = 0;
-        }
         if let Err(e) = self
             .store
-            .set_active_conversation(&self.model.conversation_id)
+            .set_active_conversation(&self.model.conversation_id, self.model.session_name.as_deref())
         {
             log::error!("assistant: failed to persist active conversation: {e}");
         }
-        for turn in &self.model.turns[self.persisted_turns.min(self.model.turns.len())..] {
-            if let Err(e) = self.store.append_turn(&self.model.conversation_id, turn) {
-                log::error!(
-                    "assistant[{}]: failed to persist turn: {e}",
-                    self.model.conversation_id
-                );
-            }
+        if let Err(e) = self
+            .store
+            .write_turns(&self.model.conversation_id, &self.model.turns)
+        {
+            log::error!(
+                "assistant[{}]: failed to persist transcript: {e}",
+                self.model.conversation_id
+            );
         }
-        self.persisted_turns = self.model.turns.len();
     }
 
     /// Conversation history for the broker: user/assistant turns plus
@@ -853,6 +870,9 @@ impl AssistantApp {
             in_flight: true,
             ..Default::default()
         };
+        // Anchor this turn's rows after the queued messages/events that
+        // triggered it, same as a `submit()`-dispatched turn.
+        self.model.turn_anchor = Some(self.model.turns.len());
         let conversation_id = self.model.conversation_id.clone();
         self.start_turn(conversation_id, String::new());
     }
@@ -1167,13 +1187,36 @@ impl App for AssistantApp {
         "Assistant".to_string()
     }
 
+    /// Tab completes the highlighted slash command in the composer. The
+    /// Assistant has no linked terminal, so the host's Tab→ToggleAppFocus
+    /// binding is meaningless here — claim Tab so the composer keeps it.
+    fn captures_tab(&self) -> bool {
+        true
+    }
+
+    fn rename_seed(&self) -> Option<String> {
+        self.model.session_name.clone()
+    }
+
+    fn on_pane_renamed(&mut self, name: &str) {
+        log::info!("assistant[{}]: pane renamed to '{name}'", self.model.conversation_id);
+        self.model.set_session_name(name);
+        self.session_write();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         self.pump_turn_io();
         if self.model.streaming.in_flight {
             // Keep frames coming while a worker thread streams a turn.
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
         }
-        let event = AssistantRenderer::draw(ui, &mut self.model, ctx.colors, ctx.is_focused);
+        let event = AssistantRenderer::draw(
+            ui,
+            &mut self.model,
+            &mut self.commonmark_cache,
+            ctx.colors,
+            ctx.is_focused,
+        );
         match event {
             Some(ComposerEvent::Submit) => {
                 let effects = self.model.submit();
@@ -1190,25 +1233,48 @@ mod tests {
     use super::*;
     use crate::plexi_ai::broker::AiBrokerResponse;
 
-    /// Test broker: echoes a canned reply and streams deltas via `on_delta`.
-    struct EchoBroker;
+    /// Scripted test broker.
+    struct MockBroker {
+        /// Canned reply text. If None, simulates an error turn.
+        reply: Option<String>,
+    }
 
-    impl AiBroker for EchoBroker {
+    impl MockBroker {
+        fn ok(reply: impl Into<String>) -> Arc<Self> {
+            Arc::new(Self { reply: Some(reply.into()) })
+        }
+        fn error() -> Arc<Self> {
+            Arc::new(Self { reply: None })
+        }
+    }
+
+    impl AiBroker for MockBroker {
         fn dispatch(
             &self,
             _request: AiBrokerRequest,
             on_delta: &mut dyn FnMut(TurnDelta<'_>),
         ) -> AiBrokerResponse {
-            on_delta(TurnDelta::Reasoning("pondering"));
-            on_delta(TurnDelta::Text("echo: "));
-            on_delta(TurnDelta::Text("ok"));
-            AiBrokerResponse::ok("echo: ok".to_string(), 1, 1)
+            match &self.reply {
+                Some(text) => {
+                    on_delta(TurnDelta::Reasoning("pondering"));
+                    for chunk in text.split_inclusive(' ') {
+                        on_delta(TurnDelta::Text(chunk));
+                    }
+                    AiBrokerResponse::ok(text.clone(), 1, 1)
+                }
+                None => AiBrokerResponse {
+                    content: None,
+                    error: Some("mock_error: simulated broker failure".to_string()),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                },
+            }
         }
     }
 
     /// Assistant whose grants + audit live in the (temp) workspace dir.
     fn test_app(ws: &Path) -> AssistantApp {
-        AssistantApp::new(ws.to_path_buf(), Arc::new(EchoBroker), ws)
+        AssistantApp::new(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws)
     }
 
     fn wait_for_turn(app: &mut AssistantApp) {
@@ -1606,7 +1672,7 @@ mod tests {
     }
 
     fn test_app_with_timeline(ws: &Path, timeline: Arc<Mutex<AppTimeline>>) -> AssistantApp {
-        AssistantApp::new_with_timeline(ws.to_path_buf(), Arc::new(EchoBroker), ws, timeline)
+        AssistantApp::new_with_timeline(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, timeline)
     }
 
     fn emit_move(
@@ -1930,5 +1996,29 @@ mod tests {
         );
         let result = rx.try_recv().unwrap();
         assert!(result.error.as_deref().unwrap_or("").contains("not_subscribed"));
+    }
+
+    #[test]
+    fn rename_persists_session_name() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path());
+        assert_eq!(app.model.session_name, None);
+        app.on_pane_renamed("My Session");
+        assert_eq!(app.model.session_name.as_deref(), Some("My Session"));
+        // Reopen: name persists.
+        drop(app);
+        let reopened = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path());
+        assert_eq!(reopened.model.session_name.as_deref(), Some("My Session"));
+    }
+
+    #[test]
+    fn error_turn_appends_error_row() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), MockBroker::error(), ws.path());
+        app.model.composer = "trigger error".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        wait_for_turn(&mut app);
+        assert_eq!(app.model.turns.last().unwrap().role, TurnRole::Error);
     }
 }

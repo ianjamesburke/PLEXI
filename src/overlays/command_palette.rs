@@ -28,12 +28,25 @@ enum PaletteEntry {
         running_in_background: bool,
         is_workspace_local: bool,
     },
+    /// Host-native builtin app (no registry manifest), launched by id.
+    Builtin {
+        id: &'static str,
+        name: &'static str,
+        description: &'static str,
+    },
     Note {
         path: std::path::PathBuf,
         title: String,
         preview: String,
     },
 }
+
+/// Builtin host apps surfaced in the palette alongside registry apps.
+const BUILTIN_APPS: &[(&str, &str, &str)] = &[(
+    "assistant",
+    "Assistant",
+    "Host-native AI chat for this workspace",
+)];
 
 pub(crate) fn app_metadata_chips(
     running_in_background: bool,
@@ -461,6 +474,20 @@ impl PlexiApp {
             })
             .collect();
 
+        for &(id, name, description) in BUILTIN_APPS {
+            if query.is_empty()
+                || name.to_lowercase().contains(&query)
+                || id.to_lowercase().contains(&query)
+                || description.to_lowercase().contains(&query)
+            {
+                entries.push(PaletteEntry::Builtin {
+                    id,
+                    name,
+                    description,
+                });
+            }
+        }
+
         for (id, name, description, is_workspace_local) in app_entries {
             let running_in_background = self.background_apps.contains_key(&id);
             entries.push(PaletteEntry::App {
@@ -497,6 +524,7 @@ impl PlexiApp {
         enum Action {
             JumpContext(usize, u64, Option<u64>),
             LaunchApp(String),
+            LaunchBuiltin(&'static str),
             OpenNote(std::path::PathBuf),
         }
         let mut action: Option<Action> = None;
@@ -535,6 +563,9 @@ impl PlexiApp {
                     Some(PaletteEntry::App { id, .. }) => {
                         action = Some(Action::LaunchApp(id.clone()));
                     }
+                    Some(PaletteEntry::Builtin { id, .. }) => {
+                        action = Some(Action::LaunchBuiltin(id));
+                    }
                     Some(PaletteEntry::Note { path, .. }) => {
                         action = Some(Action::OpenNote(path.clone()));
                     }
@@ -554,6 +585,12 @@ impl PlexiApp {
                 self.show_command_palette = false;
                 self.palette_query.clear();
                 self.launch_app_by_id(&id);
+                return;
+            }
+            Some(Action::LaunchBuiltin(id)) => {
+                self.show_command_palette = false;
+                self.palette_query.clear();
+                self.launch_builtin_by_id(id);
                 return;
             }
             Some(Action::OpenNote(path)) => {
@@ -705,6 +742,38 @@ impl PlexiApp {
                                         hover_select = Some(i);
                                     }
                                 }
+                                PaletteEntry::Builtin {
+                                    id,
+                                    name,
+                                    description,
+                                } => {
+                                    if !shown_apps_header {
+                                        shown_apps_header = true;
+                                        ui.add_space(style::SPACE_XS);
+                                        ui.label(
+                                            RichText::new("APPS")
+                                                .size(style::TEXT_HINT)
+                                                .color(colors.text_dim),
+                                        );
+                                        ui.add_space(style::SPACE_XS);
+                                    }
+
+                                    let row_response = ListRow::new(name)
+                                        .metadata_chips(&["app", "host"])
+                                        .secondary(description)
+                                        .selected(is_selected)
+                                        .show(ui, &colors);
+
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
+                                    }
+                                    if row_response.row_clicked() {
+                                        click_action = Some(Action::LaunchBuiltin(id));
+                                    }
+                                    if row_response.row_hovered() {
+                                        hover_select = Some(i);
+                                    }
+                                }
                                 PaletteEntry::Note { path, title, preview } => {
                                     if !shown_notes_header {
                                         shown_notes_header = true;
@@ -762,6 +831,11 @@ impl PlexiApp {
                             self.palette_query.clear();
                             self.launch_app_by_id(&id);
                         }
+                        Action::LaunchBuiltin(id) => {
+                            self.show_command_palette = false;
+                            self.palette_query.clear();
+                            self.launch_builtin_by_id(id);
+                        }
                         Action::OpenNote(path) => {
                             self.show_command_palette = false;
                             self.palette_query.clear();
@@ -795,6 +869,15 @@ impl PlexiApp {
             self.show_command_palette = false;
             self.palette_query.clear();
             self.palette_selected = 0;
+        }
+    }
+
+    /// Launch a host-native builtin palette entry by its id.
+    fn launch_builtin_by_id(&mut self, id: &str) {
+        log::info!("palette: launching builtin app '{id}'");
+        match id {
+            "assistant" => self.open_assistant_pane(),
+            other => log::warn!("palette: unknown builtin app id '{other}'"),
         }
     }
 
