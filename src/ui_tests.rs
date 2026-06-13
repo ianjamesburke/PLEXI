@@ -320,6 +320,7 @@ mod tests {
             let (process_app, _draw_tx) =
                 ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
             let app_pane = AppPane {
+                pip_status: None,
                 id: pane_id,
                 runtime: AppRuntime::Process(Box::new(process_app)),
                 workspace_root: std::env::temp_dir(),
@@ -376,6 +377,7 @@ mod tests {
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
             let app_pane = AppPane {
+                pip_status: None,
                 id: pane_id,
                 runtime: AppRuntime::Builtin(Box::new(
                     crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
@@ -747,6 +749,7 @@ mod tests {
             let (process_app, _draw_tx) =
                 ProcessApp::new_for_test(second_pane_id, AppPermissions::builtin());
             let app_pane = AppPane {
+                pip_status: None,
                 id: second_pane_id,
                 runtime: AppRuntime::Process(Box::new(process_app)),
                 workspace_root: std::env::temp_dir(),

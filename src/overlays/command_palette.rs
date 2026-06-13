@@ -1070,6 +1070,7 @@ mod tests {
         let make_app = |manifest_id: &str, name: &str| {
             let (process_app, _draw_tx) = ProcessApp::new_for_test(99, AppPermissions::builtin());
             Pane::App(Box::new(AppPane {
+                pip_status: None,
                 id: 99,
                 runtime: AppRuntime::Process(Box::new(process_app)),
                 workspace_root: std::env::temp_dir(),

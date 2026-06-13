@@ -92,6 +92,7 @@ pub(crate) fn restore_builtin_app_pane(
         cwd.display()
     );
     Some(Pane::App(Box::new(crate::host::pane::AppPane {
+        pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::AppRuntime::Builtin(app),
         workspace_root: cwd,
@@ -131,6 +132,7 @@ pub(crate) fn restore_assistant_pane(
         workspace_root.display()
     );
     Pane::App(Box::new(crate::host::pane::AppPane {
+        pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::AppRuntime::Builtin(app),
         workspace_root,
@@ -250,6 +252,7 @@ impl PlexiApp {
                             linked_pane_id: Option<PaneId>,
                             overlay_replaced: Option<Box<Pane>>| {
             Pane::App(Box::new(crate::host::pane::AppPane {
+                pip_status: None,
                 id,
                 permissions: process.permissions.clone(),
                 runtime: crate::host::pane::AppRuntime::Process(Box::new(process)),
@@ -373,6 +376,7 @@ impl PlexiApp {
         self.windows[active].panes.insert(
             new_id,
             crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+                pip_status: None,
                 id: new_id,
                 runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
                     crate::host::launch_failed::LaunchFailedApp {
@@ -615,6 +619,7 @@ impl PlexiApp {
                             linked_pane_id: Option<PaneId>,
                             overlay_replaced: Option<Box<Pane>>| {
             Pane::App(Box::new(crate::host::pane::AppPane {
+                pip_status: None,
                 id,
                 runtime: crate::host::pane::AppRuntime::Builtin(app),
                 workspace_root,

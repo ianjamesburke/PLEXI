@@ -874,6 +874,22 @@ class Emitter:
             "name": name,
         })
 
+    def set_pip_status(self, status: str) -> None:
+        """Report this app's own pip status (the pane activity dot).
+
+        ``status`` is one of ``"green"``, ``"yellow"``, or ``"red"``. The host
+        stamps the app's own pane id, so an app can only ever set its own pip.
+        No capability required — fire-and-forget. An unknown status is dropped
+        with a warning rather than raising.
+        """
+        if status not in ("green", "yellow", "red"):
+            self.warn(
+                f"set_pip_status: ignoring unknown status {status!r} "
+                f"(expected 'green' | 'yellow' | 'red')"
+            )
+            return
+        _emit({"type": "set_pip_status", "status": status})
+
     def send_app_action(self, pane_id: int, action: str,
                         args: "list[str] | None" = None) -> None:
         """Dispatch a semantic action to an app pane. Requires the

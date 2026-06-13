@@ -1772,6 +1772,22 @@ impl ProcessApp {
             | AppRequest::CapturePane { .. }) => {
                 self.gate_and_forward_pane_request(request, Capability::PanesRead);
             }
+            // App reporting its own pip status — ungated, fire-and-forget. The
+            // status dot is self-status (not control of another pane), so no
+            // capability is required; this matches the SDK's no-capability
+            // surface (`App.set_pip_status`) and "works for every app" intent.
+            // Stamp the app's real pane id (the app does not know it) so an app
+            // can only ever set its own pip, never another pane's.
+            AppRequest::SetPipStatus { status, .. } => {
+                let pane_id = self.pane_id;
+                log::info!(
+                    "ProcessApp[{}]: forwarding SetPipStatus pane_id={pane_id} status={status:?} (ungated)",
+                    self.type_id
+                );
+                self.pending_commands.push(AppCommand::ForwardPaneRequest {
+                    request: AppRequest::SetPipStatus { pane_id, status },
+                });
+            }
             request @ (AppRequest::SetPaneTitle { .. }
             | AppRequest::FocusPane { .. }
             | AppRequest::ClosePane { .. }

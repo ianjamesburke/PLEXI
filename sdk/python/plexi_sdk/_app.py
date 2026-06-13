@@ -295,6 +295,15 @@ class App:
         """Host-persisted state. Use self.state.get/save instead of ctx.load_state/save_state."""
         return _AppStateProxy(self)
 
+    def set_pip_status(self, status: str) -> None:
+        """Report this app's pip status — the pane's activity dot.
+
+        ``status`` is ``"green"``, ``"yellow"``, or ``"red"``. Fire-and-forget;
+        overrides the host's derived activity for this pane until you set it
+        again. No capability required; an unknown value is dropped with a warning.
+        """
+        self.emit.set_pip_status(status)
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
 

@@ -467,6 +467,33 @@ pub enum AgentState {
     Idle,
 }
 
+/// App-reported "pip" status — a traffic-light health indicator an app sets for
+/// itself via the SDK (`App.set_pip_status`). Optional: when unset the host
+/// falls back to derived activity. Distinct from `AgentState` (the hook-script
+/// vocabulary) so the SDK surface reads as red/yellow/green.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PipStatus {
+    Green,
+    Yellow,
+    Red,
+}
+
+impl PipStatus {
+    /// Map the app-reported status onto the host activity-dot vocabulary so the
+    /// dot renders the app's intended color. The pip palette (`src/ui/theme.rs`)
+    /// is green=Working, yellow=Idle, red=Blocked, so the color-faithful mapping
+    /// is green→Working, yellow→Idle, red→Blocked. (Green maps to Working, which
+    /// pulses — a "healthy + active" dot.)
+    pub fn as_agent_state(self) -> &'static AgentState {
+        match self {
+            PipStatus::Green => &AgentState::Working,
+            PipStatus::Yellow => &AgentState::Idle,
+            PipStatus::Red => &AgentState::Blocked,
+        }
+    }
+}
+
 /// Per-pane agent state stored on the pane struct.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PaneAgentState {
@@ -577,6 +604,18 @@ pub enum AppRequest {
         detail: Option<String>,
         #[serde(default)]
         session_id: Option<String>,
+    },
+    /// Report an app's own pip status (red/yellow/green) for its activity dot.
+    /// Fire-and-forget; set by the app process via `App.set_pip_status`. Takes
+    /// priority over derived activity until the app reports a new status.
+    ///
+    /// `pane_id` is stamped by the host with the sending app's own pane (the app
+    /// does not know its pane id), so it defaults to 0 on the wire and an app
+    /// can only ever set its own pip — never another pane's.
+    SetPipStatus {
+        #[serde(default)]
+        pane_id: u64,
+        status: PipStatus,
     },
     /// Get all tracked pane agent states. Writes JSON array to response_file.
     GetAgentStates { response_file: String },
@@ -4065,5 +4104,33 @@ mod ai_stream_chunk_tests {
             !serialised.contains("detail"),
             "empty detail should not add wire noise: {serialised}"
         );
+    }
+}
+
+#[cfg(test)]
+mod pip_status_tests {
+    use super::*;
+
+    #[test]
+    fn pip_status_maps_color_faithfully_to_agent_state() {
+        // The pip palette (src/ui/theme.rs) is green=Working, yellow=Idle,
+        // red=Blocked, so the dot renders the app's intended color.
+        assert_eq!(PipStatus::Green.as_agent_state(), &AgentState::Working);
+        assert_eq!(PipStatus::Yellow.as_agent_state(), &AgentState::Idle);
+        assert_eq!(PipStatus::Red.as_agent_state(), &AgentState::Blocked);
+    }
+
+    #[test]
+    fn pip_status_wire_format_is_snake_case_and_pane_id_defaults() {
+        // The SDK omits pane_id (host stamps it); it must default to 0.
+        let req: AppRequest =
+            serde_json::from_str(r#"{"type":"set_pip_status","status":"red"}"#).unwrap();
+        match req {
+            AppRequest::SetPipStatus { pane_id, status } => {
+                assert_eq!(pane_id, 0, "omitted pane_id must default to 0 for host stamping");
+                assert_eq!(status, PipStatus::Red);
+            }
+            other => panic!("expected SetPipStatus, got {other:?}"),
+        }
     }
 }

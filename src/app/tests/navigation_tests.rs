@@ -147,6 +147,7 @@ fn send_to_pane_searches_all_windows() {
         let (process_app, _draw_tx) =
             ProcessApp::new_for_test(cross_window_pane_id, AppPermissions::builtin());
         AppPane {
+            pip_status: None,
             id: cross_window_pane_id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),
@@ -221,6 +222,7 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
         crate::app::permissions::AppPermissions::builtin(),
     );
     let orphan_pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+        pip_status: None,
         id: orphan_id,
         runtime: crate::host::pane::AppRuntime::Process(Box::new(orphan_process)),
         workspace_root: std::env::temp_dir(),
@@ -382,6 +384,7 @@ fn overlay_panes_preserve_replaced_pane_agent_state() {
     h.app.windows[0].panes.insert(
         pane_id,
         crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+            pip_status: None,
             id: pane_id,
             runtime: crate::host::pane::AppRuntime::Process(Box::new(overlay_app)),
             workspace_root: std::env::temp_dir(),

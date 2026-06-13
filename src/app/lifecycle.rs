@@ -1322,6 +1322,23 @@ impl PlexiApp {
                     );
                 }
             }
+            crate::app_protocol::AppRequest::SetPipStatus { pane_id, status } => {
+                log::info!("pane_ipc: kind=set_pip_status pane_id={pane_id} status={status:?}");
+                let mut found = false;
+                for win in &mut self.windows {
+                    if let Some(pane) = win.panes.get_mut(pane_id) {
+                        found = pane.set_pip_status(Some(*status));
+                        break;
+                    }
+                }
+                if found {
+                    log::info!("pane_ipc: set_pip_status: pane_id={pane_id} stored on pane");
+                } else {
+                    log::warn!(
+                        "pane_ipc: set_pip_status: pane_id={pane_id} not found or not an app pane"
+                    );
+                }
+            }
             crate::app_protocol::AppRequest::GetAgentStates { response_file } => {
                 log::info!("pane_ipc: kind=get_agent_states response_file={response_file:?}");
                 let states: Vec<&crate::app_protocol::PaneAgentState> = self
