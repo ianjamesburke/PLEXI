@@ -314,8 +314,24 @@ impl SceneRunner {
                 Ok(None)
             }
             Step::Key { key } => {
-                let (modifiers, k) = parse_key(key)?;
-                self.h.harness().press_key_modifiers(modifiers, k);
+                let trimmed = key.trim();
+                // Bare printable character — not a named key or modifier chord.
+                // Live Plexi delivers these via egui::Event::Text, not Event::Key
+                // (the host suppresses Event::Key for printable chars to avoid
+                // double-dispatch, relying on Event::Text for OS-resolved chars).
+                // Mirror that path here so scene injection reaches the app the
+                // same way a real keypress does.
+                let chars: Vec<char> = trimmed.chars().collect();
+                if !trimmed.contains('+') && chars.len() == 1 && !chars[0].is_control() {
+                    self.h
+                        .harness()
+                        .input_mut()
+                        .events
+                        .push(egui::Event::Text(trimmed.to_string()));
+                } else {
+                    let (modifiers, k) = parse_key(key)?;
+                    self.h.harness().press_key_modifiers(modifiers, k);
+                }
                 self.h.step();
                 Ok(None)
             }
