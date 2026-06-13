@@ -64,8 +64,11 @@ impl AssistantRenderer {
         let pane_id = ui.id();
         let te_id = pane_id.with("assistant_composer");
 
+        // Picker shows up to 10 command rows, clamped so it never overruns
+        // the transcript area in a short pane (but always fits at least 3).
         let total_h = ui.available_rect_before_wrap().height();
-        let picker_max_h = (total_h * 0.4).max(0.0);
+        let picker_max_h = (style::LIST_ROW_H * 10.0)
+            .min((total_h * 0.8).max(style::LIST_ROW_H * 3.0));
         let mut event = None;
         let mut composer_rect = None;
 

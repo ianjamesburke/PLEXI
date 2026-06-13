@@ -117,6 +117,10 @@ pub enum AssistantEffect {
     ShowAudit,
     /// `/thoughts`: persist the flipped show-thoughts preference.
     PersistShowThoughts(bool),
+    /// `/clear` or `/new` ran while a turn was in flight: unblock any worker
+    /// thread waiting on a permission reply. The late outcome is dropped by
+    /// the stale-conversation guard in `finish_turn`.
+    CancelTurn,
     /// Phase 3: host pane control (open/focus/read).
     PaneAction { action: String },
 }
@@ -196,17 +200,22 @@ impl AssistantModel {
     }
 
     /// Submit the composer. Returns the effects to execute. Blank input is a
-    /// no-op. While a turn is in flight, plain messages are appended to the
-    /// transcript and queued for one follow-up turn; slash commands stay
-    /// no-ops until the turn finishes.
+    /// no-op. Slash commands execute immediately — even mid-turn (`/clear`
+    /// and `/new` interrupt the in-flight turn). Plain messages submitted
+    /// while a turn is in flight are appended to the transcript and queued
+    /// for one follow-up turn.
     pub fn submit(&mut self) -> Vec<AssistantEffect> {
-        if self.streaming.in_flight {
-            let input = self.composer.trim().to_string();
-            if input.is_empty() || commands::parse_slash_command(&input).is_some() {
-                return Vec::new();
-            }
+        let input = self.composer.trim().to_string();
+        if input.is_empty() {
             self.composer.clear();
-            self.picker_selected = 0;
+            return Vec::new();
+        }
+        self.composer.clear();
+        self.picker_selected = 0;
+        if let Some(cmd) = commands::parse_slash_command(&input) {
+            return self.execute_command(&cmd);
+        }
+        if self.streaming.in_flight {
             log::info!(
                 "assistant[{}]: message queued — turn in flight ({} chars)",
                 self.conversation_id,
@@ -217,16 +226,6 @@ impl AssistantModel {
             return vec![AssistantEffect::SessionWrite {
                 conversation_id: self.conversation_id.clone(),
             }];
-        }
-        let input = self.composer.trim().to_string();
-        if input.is_empty() {
-            self.composer.clear();
-            return Vec::new();
-        }
-        self.composer.clear();
-        self.picker_selected = 0;
-        if let Some(cmd) = commands::parse_slash_command(&input) {
-            return self.execute_command(&cmd);
         }
         log::info!(
             "assistant[{}]: turn start ({} chars)",
@@ -249,6 +248,25 @@ impl AssistantModel {
         ]
     }
 
+    /// Abandon the in-flight turn for a conversation switch: reset all
+    /// streaming state and return the `CancelTurn` effect so the pane shell
+    /// unblocks any worker waiting on a permission reply. The worker's late
+    /// outcome is dropped by the stale-conversation guard in `finish_turn`.
+    fn interrupt_turn(&mut self) -> Vec<AssistantEffect> {
+        if !self.streaming.in_flight {
+            return Vec::new();
+        }
+        log::info!(
+            "assistant[{}]: in-flight turn interrupted by conversation switch",
+            self.conversation_id
+        );
+        self.streaming = StreamingState::default();
+        self.active_tools.clear();
+        self.pending_permission = None;
+        self.queued_user_turns = 0;
+        vec![AssistantEffect::CancelTurn]
+    }
+
     /// Execute a parsed slash command. `/clear`, `/new`, and `/help` are
     /// real; other built-ins answer with a stub row; unknown names error.
     fn execute_command(&mut self, cmd: &ParsedCommand) -> Vec<AssistantEffect> {
@@ -262,6 +280,7 @@ impl AssistantModel {
             // Fresh context in a new conversation; the prior transcript
             // stays on disk and is resumable.
             "clear" => {
+                let mut effects = self.interrupt_turn();
                 let prior = self.conversation_id.clone();
                 self.conversation_id = new_conversation_id();
                 self.turns.clear();
@@ -269,12 +288,14 @@ impl AssistantModel {
                     "assistant: /clear — new conversation {} (prior {prior} resumable)",
                     self.conversation_id
                 );
-                vec![AssistantEffect::SessionWrite {
+                effects.push(AssistantEffect::SessionWrite {
                     conversation_id: self.conversation_id.clone(),
-                }]
+                });
+                effects
             }
             // New named conversation; current one is kept.
             "new" => {
+                let mut effects = self.interrupt_turn();
                 self.conversation_id = new_conversation_id();
                 self.turns.clear();
                 if !cmd.args.is_empty() {
@@ -288,9 +309,10 @@ impl AssistantModel {
                     self.conversation_id,
                     cmd.args
                 );
-                vec![AssistantEffect::SessionWrite {
+                effects.push(AssistantEffect::SessionWrite {
                     conversation_id: self.conversation_id.clone(),
-                }]
+                });
+                effects
             }
             "help" => {
                 self.turns
@@ -299,8 +321,6 @@ impl AssistantModel {
                     conversation_id: self.conversation_id.clone(),
                 }]
             }
-            // Real Phase 2 views: the pane shell reads the broker/audit state
-            // and answers with an info row.
             // Toggle reasoning visibility for every turn, past and future.
             "thoughts" => {
                 self.show_thoughts = !self.show_thoughts;
@@ -320,6 +340,8 @@ impl AssistantModel {
                     },
                 ]
             }
+            // Real Phase 2 views: the pane shell reads the broker/audit state
+            // and answers with an info row.
             "tools" => vec![AssistantEffect::ListTools],
             "permissions" => vec![AssistantEffect::ListPermissions],
             "audit" => vec![AssistantEffect::ShowAudit],
@@ -540,10 +562,37 @@ mod tests {
         assert!(m.composer.is_empty());
         assert!(m.streaming.in_flight, "in-flight turn unaffected");
 
-        // Slash commands stay no-ops mid-turn.
-        assert!(submitted(&mut m, "/clear").is_empty());
-        assert_eq!(m.turns.len(), 2);
-        assert_eq!(m.queued_user_turns, 1);
+        // View commands execute immediately mid-turn without touching the
+        // in-flight stream.
+        let effects = submitted(&mut m, "/help");
+        assert!(m.composer.is_empty());
+        assert!(m.streaming.in_flight, "in-flight turn unaffected by /help");
+        assert_eq!(m.turns.last().unwrap().role, TurnRole::Assistant);
+        assert!(m.turns.last().unwrap().text.contains("/clear"));
+        assert!(matches!(effects[0], AssistantEffect::SessionWrite { .. }));
+    }
+
+    #[test]
+    fn clear_mid_turn_interrupts_and_cancels() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "question");
+        let old_id = m.conversation_id.clone();
+        assert!(m.streaming.in_flight);
+        m.tool_call_started("csv.read_range");
+        m.permission_requested("csv.write_range", "{}");
+
+        let effects = submitted(&mut m, "/clear");
+        assert!(effects.contains(&AssistantEffect::CancelTurn));
+        assert!(!m.streaming.in_flight);
+        assert!(m.active_tools.is_empty());
+        assert!(m.pending_permission.is_none());
+        assert_eq!(m.queued_user_turns, 0);
+        assert_ne!(m.conversation_id, old_id);
+        assert!(m.turns.is_empty());
+
+        // The interrupted worker's late outcome lands stale and is dropped.
+        assert!(m.finish_turn(&old_id, Ok("late".to_string())).is_empty());
+        assert!(m.turns.is_empty());
     }
 
     #[test]

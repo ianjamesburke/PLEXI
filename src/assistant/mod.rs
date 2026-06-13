@@ -401,6 +401,23 @@ impl AssistantApp {
                         log::error!("assistant: failed to persist show_thoughts={show}: {e}");
                     }
                 }
+                // The model already reset its streaming state; here we only
+                // unblock worker threads parked on a permission reply so they
+                // can finish and have their stale outcome dropped.
+                AssistantEffect::CancelTurn => {
+                    if let Some(tx) = self.pending_reply.take() {
+                        let _ = tx.send(PermissionReply::Deny);
+                    }
+                    if let Some(pending) = self.pending_subscribe.take() {
+                        let _ = pending.reply.send(ToolCallResult {
+                            output_json: None,
+                            error: Some(
+                                "cancelled: the conversation was cleared mid-turn".to_string(),
+                            ),
+                        });
+                    }
+                    log::info!("assistant: in-flight turn cancelled by conversation switch");
+                }
                 // Phase 3 stub: correctly shaped, logged, never panics.
                 AssistantEffect::PaneAction { action } => {
                     log::info!("assistant: PaneAction '{action}' not yet implemented (Phase 3)");
