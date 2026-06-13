@@ -1,0 +1,31 @@
+# Proves that key = "z" in a scene step reaches a PGAP app's KeyMap handler
+# the same way live Plexi does (via egui::Event::Text delivery, not Event::Key).
+# Without the Event::Text parity fix in src/scenes.rs, the bare-z binding would
+# never fire and the final assert would fail.
+# suite = false — spawns a real Python process.
+size = [640.0, 480.0]
+suite = false
+
+[[steps]]
+open_app = "apps/dev/keymap-probe"
+
+[[steps]]
+wait_app_frame = { timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 5
+
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "last_action=none" }
+
+[[steps]]
+key = "z"
+
+[[steps]]
+run_steps = 30
+
+[[steps]]
+assert = { tree_contains = "bare-z" }
+
+[[steps]]
+shot = "keymap-probe.png"
