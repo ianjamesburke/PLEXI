@@ -18,30 +18,41 @@ pub struct TabGroupInfo {
     pub active_idx: usize,
     /// Primary pane ID for each tab, in display order.
     pub members: Vec<PaneId>,
+    /// The TileId of the `Container::Tabs` that owns this group.
+    pub container_tile: TileId,
 }
 
-/// Render a full-width tab bar using the painter API (no Ui allocation).
+/// Render a full-width tab bar and return the index of a clicked tab (if any).
 /// The caller must pre-allocate `bar_rect` (typically `TAB_BAR_HEIGHT` px tall)
-/// and advance the cursor past it. `tab_labels` maps each PaneId to its display
-/// label (pre-computed from name or pane type).
+/// and advance the cursor past it.
 pub(crate) fn paint_tab_bar(
+    ctx: &egui::Context,
     painter: &egui::Painter,
     bar_rect: egui::Rect,
     group: &TabGroupInfo,
     tab_labels: &HashMap<PaneId, String>,
     colors: &Colors,
     font_size: f32,
-) {
+) -> Option<usize> {
     painter.rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
     let tab_count = group.members.len();
     if tab_count == 0 {
-        return;
+        return None;
     }
 
     let tab_width = bar_rect.width() / tab_count as f32;
     let accent_bar_height = 2.0;
     let font = egui::FontId::proportional(font_size);
+
+    let clicked = ctx.input(|i| {
+        if i.pointer.any_pressed() {
+            i.pointer.interact_pos()
+        } else {
+            None
+        }
+    });
+    let mut clicked_idx = None;
 
     for (i, &pane_id) in group.members.iter().enumerate() {
         let is_active = i == group.active_idx;
@@ -52,6 +63,25 @@ pub(crate) fn paint_tab_bar(
 
         if is_active {
             painter.rect_filled(tab_rect, 0.0, colors.bg_active);
+        }
+
+        if let Some(pos) = clicked {
+            if tab_rect.contains(pos) && !is_active {
+                clicked_idx = Some(i);
+            }
+        }
+
+        // Vertical divider between tabs (skip before first)
+        if i > 0 {
+            let divider_x = tab_rect.left();
+            let inset = 4.0;
+            painter.line_segment(
+                [
+                    egui::pos2(divider_x, bar_rect.top() + inset),
+                    egui::pos2(divider_x, bar_rect.bottom() - inset),
+                ],
+                egui::Stroke::new(1.0, colors.border),
+            );
         }
 
         let label = tab_labels
@@ -83,6 +113,8 @@ pub(crate) fn paint_tab_bar(
             painter.rect_filled(accent_rect, 0.0, colors.accent);
         }
     }
+
+    clicked_idx
 }
 
 /// What kind of pane occupies a minimap slot.
@@ -148,6 +180,8 @@ pub struct PlexiBehavior<'a> {
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
     pub close_exited: Option<TileId>,
+    /// Set when a tab bar click selects a different tab: (container_tile, child_index).
+    pub tab_click: Option<(TileId, usize)>,
     pub tab_info: HashMap<TileId, TabGroupInfo>,
     /// Pre-computed display label for each pane: user-set name, then app name, then type string.
     pub tab_labels: HashMap<PaneId, String>,
@@ -241,7 +275,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-            let close_exited = render::terminal_pane::render(
+            let (close_exited, tab_click) = render::terminal_pane::render(
                 &mut terminal_ui,
                 terminal,
                 tile_id,
@@ -257,6 +291,9 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             );
             if close_exited {
                 self.close_exited = Some(tile_id);
+            }
+            if tab_click.is_some() {
+                self.tab_click = tab_click;
             }
         } else if pane.as_portal().is_some() {
             // Portal tile — direct egui rendering.

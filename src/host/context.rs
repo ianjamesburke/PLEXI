@@ -220,7 +220,7 @@ impl Window {
 
     pub(crate) fn compute_tab_info(&self) -> HashMap<TileId, TabGroupInfo> {
         let mut info = HashMap::new();
-        for (_tile_id, tile) in self.tree.tiles.iter() {
+        for (container_id, tile) in self.tree.tiles.iter() {
             if let Tile::Container(Container::Tabs(tabs)) = tile {
                 let children = &tabs.children;
                 if children.len() < 2 {
@@ -237,6 +237,7 @@ impl Window {
                 let group = TabGroupInfo {
                     active_idx,
                     members,
+                    container_tile: *container_id,
                 };
                 for child in children {
                     self.collect_panes(*child, &mut |pane_tile| {

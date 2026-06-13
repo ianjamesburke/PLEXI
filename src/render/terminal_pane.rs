@@ -27,6 +27,7 @@ static LOG_TERMINAL_GLYPH_PADDING: Once = Once::new();
 
 /// Render one frame of a terminal pane. Returns `true` if the process has
 /// exited and the user pressed a key (the caller should close the tile).
+/// Returns (close_exited, tab_click).
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     ui: &mut egui::Ui,
@@ -41,7 +42,7 @@ pub fn render(
     tab_labels: &HashMap<PaneId, String>,
     workspace_root: Option<&Path>,
     pane_title_font_size: f32,
-) -> bool {
+) -> (bool, Option<(TileId, usize)>) {
     if terminal.exited {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
@@ -50,16 +51,17 @@ pub fn render(
                 ui.colored_label(colors.text_dim, "[process exited]");
             });
         });
-        return is_focused
+        let close = is_focused
             && ui.input(|i| {
                 i.events
                     .iter()
                     .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))
             });
+        return (close, None);
     }
 
     let outside_workspace = is_terminal_outside_workspace(terminal, workspace_root);
-    render_name_bar_and_tabs(
+    let tab_click = render_name_bar_and_tabs(
         ui,
         tile_id,
         pane_id,
@@ -91,11 +93,7 @@ pub fn render(
         .set_size(Vec2::new(ui.available_width(), ui.available_height()));
     ui.add(view);
 
-    // The tab bar for unnamed panes is rendered by render_name_bar_and_tabs
-    // above (it now always shows the full bar when tabs exist), so no
-    // additional dot overlay is needed here.
-
-    false
+    (false, tab_click)
 }
 
 fn render_name_bar_and_tabs(
@@ -109,9 +107,10 @@ fn render_name_bar_and_tabs(
     outside_workspace: bool,
     name_font_size: f32,
     agent_state: Option<&AgentState>,
-) {
+) -> Option<(TileId, usize)> {
     let has_name = pane_names.contains_key(pane_id);
     let tab_group = tab_info.get(&tile_id);
+    let mut tab_click = None;
 
     if let Some(group) = tab_group {
         let bar_rect = egui::Rect::from_min_size(
@@ -119,7 +118,9 @@ fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         ui.advance_cursor_after_rect(bar_rect);
-        paint_tab_bar(ui.painter(), bar_rect, group, tab_labels, colors, name_font_size);
+        if let Some(idx) = paint_tab_bar(ui.ctx(), ui.painter(), bar_rect, group, tab_labels, colors, name_font_size) {
+            tab_click = Some((group.container_tile, idx));
+        }
 
         if outside_workspace {
             paint_outside_workspace_badge(ui.painter(), bar_rect);
@@ -155,6 +156,8 @@ fn render_name_bar_and_tabs(
             paint_outside_workspace_badge(ui.painter(), bar_rect);
         }
     }
+
+    tab_click
 }
 
 fn paint_activity_dot(
