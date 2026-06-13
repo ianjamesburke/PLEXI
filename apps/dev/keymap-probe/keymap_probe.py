@@ -22,4 +22,5 @@ class KeyMapProbe(App):
             self.emit.schedule_render()
 
 
-KeyMapProbe().run()
+if __name__ == "__main__":
+    KeyMapProbe().run()
