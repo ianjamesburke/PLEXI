@@ -345,6 +345,7 @@ impl PlexiApp {
                 }
             }
             crate::app_protocol::AppRequest::GetPreviousPaneInfo { response_file, steps } => {
+                let steps = (*steps).max(1);
                 log::info!(
                     "pane_ipc: kind=get_previous_pane_info steps={steps} response_file={:?}",
                     response_file
@@ -357,7 +358,7 @@ impl PlexiApp {
                         {
                             if let Some(pane) = win.panes.get(pane_id) {
                                 hits += 1;
-                                if hits < *steps {
+                                if hits < steps {
                                     continue 'prev_outer;
                                 }
                                 let info = match pane {
@@ -407,19 +408,15 @@ impl PlexiApp {
                         }
                     }
                 }
-                let (json_str, is_error) = match result_json {
-                    Some(j) => (j, false),
+                let json_str = match result_json {
+                    Some(j) => j,
                     None => {
                         log::warn!(
                             "pane_ipc: get_previous_pane_info: fewer than {steps} valid panes in history (found {hits})"
                         );
-                        (
-                            format!("{{\"error\":\"not enough pane history (requested step {steps}, found {hits} valid entries)\"}}"),
-                            true,
-                        )
+                        format!("{{\"error\":\"not enough pane history (requested step {steps}, found {hits} valid entries)\"}}")
                     }
                 };
-                let _ = is_error;
                 let temp_file = format!("{}.tmp", response_file);
                 if let Err(e) = std::fs::write(&temp_file, &json_str) {
                     log::error!("pane_ipc: get_previous_pane_info: could not write temp response file {temp_file:?}: {e}");
