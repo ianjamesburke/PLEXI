@@ -27,6 +27,7 @@ use crate::broker::{
 use crate::host::app_timeline::{AppTimeline, SubscriptionRecord};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest};
 use crate::plexi_ai::turn_loop::TurnDelta;
+use crate::plexi_ai::CancelToken;
 
 /// Owned streaming delta forwarded from the broker worker thread to the UI
 /// thread (`TurnDelta` borrows from the stream buffer and cannot cross the
@@ -57,6 +58,10 @@ you to react when something happens, your FIRST action must be to call \
 host.events.subscribe for that app's relevant events — without a subscription you \
 will never see the user's actions, so do not assume you will be notified. After \
 subscribing, tell the user you are now watching those events. \
+When a delivered event hands you the turn, ACT: if the situation calls for a \
+tool call, make it immediately rather than only describing what you would do. \
+Do not narrate intentions you can carry out — take the action, then report the \
+result. \
 Pane and terminal control arrives in a later phase — when \
 asked to act on panes, explain that those tools are not wired up yet.";
 
@@ -200,6 +205,10 @@ pub struct AssistantApp {
     /// Trigger lines for non-self-caused deliveries that arrived while a
     /// turn was in flight — folded into the next dispatched turn.
     queued_event_lines: Vec<String>,
+    /// Cancellation handle for the in-flight turn. A fresh token is installed
+    /// at each `start_turn`; ESC and event-preempt trip it to abort the
+    /// streaming turn and fold queued context into an immediate follow-up.
+    turn_cancel: CancelToken,
     /// Cached layout state for `egui_commonmark` markdown rendering of
     /// assistant replies. Persists across frames for performance.
     commonmark_cache: egui_commonmark::CommonMarkCache,
@@ -279,6 +288,7 @@ impl AssistantApp {
             live_subs: Vec::new(),
             pending_subscribe: None,
             queued_event_lines: Vec::new(),
+            turn_cancel: CancelToken::new(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             markdown_text_cache: MarkdownTextCache::default(),
         };
@@ -669,6 +679,10 @@ impl AssistantApp {
     fn start_turn(&mut self, conversation_id: String, _prompt: String) {
         let (delta_tx, delta_rx) = std::sync::mpsc::channel();
         self.delta_rx = Some(delta_rx);
+        // Fresh cancel token per turn — a clone goes to the worker/broker, the
+        // original stays here so ESC and event-preempt can trip this turn only.
+        let cancel = CancelToken::new();
+        self.turn_cancel = cancel.clone();
         let dispatcher = self.gated_dispatcher();
         let request = AiBrokerRequest {
             app_id: "assistant".to_string(),
@@ -679,6 +693,7 @@ impl AssistantApp {
             workspace_root: Some(self.workspace_root.clone()),
             open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
             tool_dispatcher: Some(Arc::new(dispatcher)),
+            cancel,
         };
         log::info!(
             "assistant[{conversation_id}]: dispatching turn ({} message(s))",
@@ -849,11 +864,17 @@ impl AssistantApp {
             return;
         }
         if self.model.streaming.in_flight {
+            // Preempt: the world changed under the in-flight turn (e.g. the
+            // game board moved). Queue the new lines and trip the cancel token
+            // so the current turn ends fast and the pump folds these into an
+            // immediate follow-up that reacts to the latest state — instead of
+            // finishing a now-stale comment (the 6-26s queue-behind lag).
             log::info!(
-                "assistant: {} event line(s) queued — turn in flight",
+                "assistant: {} event line(s) queued, preempting in-flight turn",
                 trigger_lines.len()
             );
             self.queued_event_lines.extend(trigger_lines);
+            self.turn_cancel.cancel();
         } else {
             self.start_event_turn(trigger_lines.len());
         }
@@ -878,6 +899,40 @@ impl AssistantApp {
         self.model.turn_anchor = Some(self.model.turns.len());
         let conversation_id = self.model.conversation_id.clone();
         self.start_turn(conversation_id, String::new());
+    }
+
+    /// User pressed ESC during an in-flight turn. Stop generating, and if the
+    /// composer holds a draft, queue it so the pump folds it into an immediate
+    /// follow-up turn (stop-and-send). With an empty composer this is a plain
+    /// stop. Default typing-while-streaming still queues silently (see
+    /// `AssistantModel::submit`); ESC is the explicit interrupt.
+    fn interrupt_in_flight_turn(&mut self) {
+        if !self.model.streaming.in_flight {
+            return;
+        }
+        // A pending draft becomes a queued user turn first, so the folded
+        // follow-up dispatched after cancel includes it.
+        if !self.model.composer.trim().is_empty() {
+            let effects = self.model.submit();
+            self.execute_effects(effects);
+        }
+        self.turn_cancel.cancel();
+        // Unblock a worker parked on a permission sheet so it observes the
+        // cancel at the next tool-loop boundary instead of hanging.
+        if let Some(tx) = self.pending_reply.take() {
+            let _ = tx.send(PermissionReply::Deny);
+        }
+        if let Some(pending) = self.pending_subscribe.take() {
+            let _ = pending.reply.send(ToolCallResult {
+                output_json: None,
+                error: Some("cancelled: interrupted by user (ESC)".to_string()),
+            });
+        }
+        log::info!(
+            "assistant: ESC interrupt — cancelling in-flight turn ({} queued user message(s), {} queued event line(s))",
+            self.model.queued_user_turns,
+            self.queued_event_lines.len()
+        );
     }
 
     /// Apply the user's permission-sheet decision: record the grant per its
@@ -1226,6 +1281,7 @@ impl App for AssistantApp {
                 let effects = self.model.submit();
                 self.execute_effects(effects);
             }
+            Some(ComposerEvent::Interrupt) => self.interrupt_in_flight_turn(),
             Some(ComposerEvent::Permission(choice)) => self.resolve_permission(choice),
             None => {}
         }
@@ -1849,6 +1905,10 @@ mod tests {
         app.pump_turn_io();
         assert_eq!(event_rows(&app), 1, "row appended even while in flight");
         assert_eq!(app.queued_event_lines.len(), 1);
+        assert!(
+            app.turn_cancel.is_cancelled(),
+            "a mid-turn event must preempt the in-flight turn, not just queue behind it"
+        );
 
         // The turn ends: the queued event triggers the follow-up turn.
         app.model.streaming = model::StreamingState::default();
@@ -1865,6 +1925,104 @@ mod tests {
         );
         wait_for_turn(&mut app);
         assert_eq!(app.model.turns.last().unwrap().text, "echo: ok");
+    }
+
+    /// ESC mid-turn with a pending draft: the in-flight turn is cancelled and
+    /// the draft is folded into an immediate follow-up turn. The cancelled
+    /// turn commits no empty bubble.
+    #[test]
+    fn esc_interrupt_folds_queued_draft_into_followup() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Turn 1 blocks until the cancel token trips (simulating a long
+        /// stream the user ESCs); the folded follow-up replies immediately.
+        struct InterruptibleBroker {
+            dispatched: AtomicUsize,
+        }
+        impl AiBroker for InterruptibleBroker {
+            fn dispatch(
+                &self,
+                request: AiBrokerRequest,
+                on_delta: &mut dyn FnMut(TurnDelta<'_>),
+            ) -> AiBrokerResponse {
+                let n = self.dispatched.fetch_add(1, Ordering::SeqCst) + 1;
+                if n == 1 {
+                    let start = std::time::Instant::now();
+                    while !request.cancel.is_cancelled() {
+                        if start.elapsed() > std::time::Duration::from_secs(5) {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    // Cancelled before any text streamed: empty partial.
+                    return AiBrokerResponse::ok(String::new(), 0, 0);
+                }
+                on_delta(TurnDelta::Text("folded reply"));
+                AiBrokerResponse::ok("folded reply".to_string(), 1, 1)
+            }
+        }
+
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = AssistantApp::new(
+            ws.path().to_path_buf(),
+            Arc::new(InterruptibleBroker {
+                dispatched: AtomicUsize::new(0),
+            }),
+            ws.path(),
+        );
+
+        // Turn 1 starts and parks in the broker.
+        app.model.composer = "start".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert!(app.model.streaming.in_flight, "turn 1 must be in flight");
+
+        // User types a follow-up and hits ESC.
+        app.model.composer = "actually do X".to_string();
+        app.interrupt_in_flight_turn();
+        assert!(app.turn_cancel.is_cancelled(), "ESC must trip the cancel token");
+        assert_eq!(
+            app.model.queued_user_turns, 1,
+            "the draft must be queued for the fold"
+        );
+
+        // Drive to idle: turn 1 unblocks (cancelled), the fold dispatches turn 2.
+        let start = std::time::Instant::now();
+        loop {
+            app.pump_turn_io();
+            let idle = !app.model.streaming.in_flight
+                && app.queued_event_lines.is_empty()
+                && app.model.queued_user_turns == 0;
+            if idle {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(8),
+                "assistant never reached idle after interrupt"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        // The folded follow-up replied; the draft is in the transcript.
+        assert_eq!(app.model.turns.last().unwrap().text, "folded reply");
+        assert!(
+            app.model
+                .turns
+                .iter()
+                .any(|t| t.role == TurnRole::User && t.text == "actually do X"),
+            "the interrupted-and-folded draft must be in the transcript"
+        );
+        // The cancelled turn left no empty assistant bubble.
+        let empty_assistant = app
+            .model
+            .turns
+            .iter()
+            .filter(|t| t.role == TurnRole::Assistant && t.text.is_empty())
+            .count();
+        assert_eq!(
+            empty_assistant, 0,
+            "a cancelled turn must not commit an empty assistant bubble"
+        );
     }
 
     #[test]

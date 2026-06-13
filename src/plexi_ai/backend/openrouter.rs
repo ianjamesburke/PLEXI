@@ -202,6 +202,13 @@ fn stream_openrouter(
     let mut partial_tool_calls: HashMap<usize, PartialToolCall> = HashMap::new();
 
     for line_result in reader.lines() {
+        // Cooperative cancel: the caller (e.g. ESC or an event preempt) tripped
+        // the token. Stop reading and drop `tx` — the turn loop returns the
+        // partial text accumulated so far rather than draining the full stream.
+        if request.cancel.is_cancelled() {
+            log::info!("openrouter: stream cancelled by caller — aborting read mid-stream");
+            return;
+        }
         let line = match line_result {
             Ok(l) => l,
             Err(e) => {

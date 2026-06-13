@@ -520,11 +520,18 @@ impl AssistantModel {
                     text.len(),
                     self.streaming.partial_reasoning.len()
                 );
-                let mut turn = Turn::now(TurnRole::Assistant, text);
-                if !self.streaming.partial_reasoning.is_empty() {
-                    turn.thoughts = Some(std::mem::take(&mut self.streaming.partial_reasoning));
+                // An empty reply with no reasoning means nothing was produced —
+                // e.g. a turn cancelled before any text streamed. Don't commit
+                // an empty assistant bubble; just reset and let any folded
+                // follow-up turn do the talking.
+                if !text.is_empty() || !self.streaming.partial_reasoning.is_empty() {
+                    let mut turn = Turn::now(TurnRole::Assistant, text);
+                    if !self.streaming.partial_reasoning.is_empty() {
+                        turn.thoughts =
+                            Some(std::mem::take(&mut self.streaming.partial_reasoning));
+                    }
+                    self.push_flight_turn(turn);
                 }
-                self.push_flight_turn(turn);
             }
             Err(e) => {
                 log::warn!("assistant[{}]: turn failed: {e}", self.conversation_id);

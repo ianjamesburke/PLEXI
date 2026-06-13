@@ -28,6 +28,9 @@ use super::model::{AssistantModel, PermissionChoice, ToolStatus, TurnRole};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerEvent {
     Submit,
+    /// ESC pressed during an in-flight turn: stop generating (and send any
+    /// pending draft as an immediate folded follow-up).
+    Interrupt,
     /// The user decided the pending permission sheet.
     Permission(PermissionChoice),
 }
@@ -642,6 +645,15 @@ impl AssistantRenderer {
     ) -> Option<ComposerEvent> {
         if !ui.memory(|m| m.has_focus(te_id)) {
             return None;
+        }
+        // ESC during an in-flight turn interrupts it (stop, or stop-and-send a
+        // queued draft). Consume the key so it does not also propagate to
+        // host-level ESC handling. When no turn is in flight, ESC falls through
+        // untouched, preserving existing behavior.
+        if model.streaming.in_flight
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            return Some(ComposerEvent::Interrupt);
         }
         if model.picker_active() {
             let matches = commands::filter_commands(&model.picker_query());

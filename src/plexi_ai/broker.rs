@@ -26,6 +26,7 @@ use crate::plexi_ai::backend::{AiBackend, AiBackendRequest, BillingModel};
 use crate::plexi_ai::ledger::{self, LedgerRow};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::plexi_ai::turn_loop::{self, TurnError};
+use crate::plexi_ai::CancelToken;
 
 /// Lightweight context for a single open pane (injected into system prompt).
 #[derive(Debug, Clone)]
@@ -81,6 +82,11 @@ pub struct AiBrokerRequest {
     /// Tool dispatcher snapshot. When `Some`, the broker runs a tool loop
     /// and dispatches any tool calls the model makes.
     pub tool_dispatcher: Option<std::sync::Arc<ToolDispatcher>>,
+    /// Cooperative cancellation handle for this turn. The broker checks it at
+    /// each tool-loop boundary and threads a clone into the backend so a
+    /// tripped token aborts both the network stream and any further tool
+    /// rounds. Callers with no interrupt UI pass `CancelToken::new()`.
+    pub cancel: CancelToken,
 }
 
 /// Broker outcome. Either `content` is `Some` (success) or `error` is `Some`
@@ -434,6 +440,17 @@ fn run_turn_and_respond(
     let mut final_text = String::new();
 
     for iteration in 0..=MAX_TOOL_ITERATIONS {
+        // Cancelled between rounds (ESC / event preempt): stop before starting
+        // another turn. `final_text` holds whatever the last completed round
+        // produced — committed as the (possibly empty) partial reply.
+        if request.cancel.is_cancelled() {
+            log::info!(
+                "ai_broker[{}]: turn cancelled before iteration {iteration} — folding partial ({} chars)",
+                request.app_id,
+                final_text.len()
+            );
+            break;
+        }
         if iteration == MAX_TOOL_ITERATIONS {
             log::warn!(
                 "ai_broker[{}]: tool loop hit max iterations ({MAX_TOOL_ITERATIONS}), forcing stop",
@@ -447,6 +464,7 @@ fn run_turn_and_respond(
             system: Arc::clone(&system),
             tools: Arc::clone(&all_tools),
             model_tier: Some(request.model_tier),
+            cancel: request.cancel.clone(),
         };
 
         // Forward every streamed increment live so the app sees tokens as
@@ -456,6 +474,17 @@ fn run_turn_and_respond(
 
         match turn {
             Err(e) => {
+                // A cancel that races the stream surfaces as ChannelClosed
+                // (backend dropped `tx` mid-read). That is a clean interrupt,
+                // not a failure — fold the partial instead of an error row.
+                if request.cancel.is_cancelled() {
+                    log::info!(
+                        "ai_broker[{}]: stream cancelled mid-turn — folding partial ({} chars)",
+                        request.app_id,
+                        final_text.len()
+                    );
+                    break;
+                }
                 log::warn!("ai_broker[{}]: turn failed: {e}", request.app_id);
                 let message = match e {
                     TurnError::BackendError(be) => format!("backend error: {be}"),
@@ -469,6 +498,18 @@ fn run_turn_and_respond(
                 total_tokens_out += result.output_tokens.unwrap_or(0);
                 if result.generation_id.is_some() {
                     last_generation_id = result.generation_id.clone();
+                }
+
+                // Cancelled while this round streamed: commit whatever text the
+                // model produced and stop — do not dispatch tools or loop again.
+                if request.cancel.is_cancelled() {
+                    final_text = result.text;
+                    log::info!(
+                        "ai_broker[{}]: turn cancelled after stream — folding partial ({} chars)",
+                        request.app_id,
+                        final_text.len()
+                    );
+                    break;
                 }
 
                 if result.tool_calls.is_empty() {
@@ -895,6 +936,7 @@ mod tests {
                 workspace_root: None,
                 open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
+                cancel: CancelToken::new(),
             },
             &mut |_| {},
         );
@@ -930,6 +972,7 @@ mod tests {
                 workspace_root: None,
                 open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
+                cancel: CancelToken::new(),
             },
             &mut |_| {},
         );
@@ -964,6 +1007,7 @@ mod tests {
                 workspace_root: None,
                 open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
+                cancel: CancelToken::new(),
             },
             &mut |_| {},
         );
@@ -998,6 +1042,7 @@ mod tests {
                 workspace_root: None,
                 open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
+                cancel: CancelToken::new(),
             },
             &mut |_| {},
         );
@@ -1101,6 +1146,7 @@ mod tests {
             workspace_root: None,
             open_panes: Arc::new(Vec::new()),
             tool_dispatcher: None,
+            cancel: CancelToken::new(),
         };
 
         let billing = crate::plexi_ai::backend::BillingModel::Subscription;
@@ -1118,6 +1164,165 @@ mod tests {
         assert!(Arc::ptr_eq(&ss[0], &ss[1]), "system Arc must be the same allocation on both iterations");
         let st = seen_tools.lock().unwrap();
         assert!(Arc::ptr_eq(&st[0], &st[1]), "tools Arc must be the same allocation on both iterations");
+    }
+
+    /// A pre-tripped cancel token must short-circuit the tool loop before the
+    /// backend is ever called — the turn ends as a clean empty reply, not an
+    /// error, and no network round-trip happens.
+    #[test]
+    fn pretripped_cancel_skips_all_backend_calls() {
+        use crate::plexi_ai::backend::{
+            AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
+        };
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex};
+
+        /// Always asks for a tool call, so an un-cancelled loop would spin.
+        struct CountingBackend {
+            calls: Arc<Mutex<u32>>,
+        }
+        impl AiBackend for CountingBackend {
+            fn name(&self) -> &str {
+                "counting"
+            }
+            fn stream_to_channel(
+                &self,
+                _req: AiBackendRequest,
+                tx: mpsc::Sender<StreamEvent>,
+            ) -> Result<(), AiBackendError> {
+                *self.calls.lock().unwrap() += 1;
+                let _ = tx.send(StreamEvent::ToolCalls(vec![RawToolCall {
+                    id: "c1".to_string(),
+                    name: "x".to_string(),
+                    arguments: "{}".to_string(),
+                }]));
+                let _ = tx.send(StreamEvent::Done {
+                    input_tokens: None,
+                    output_tokens: None,
+                    generation_id: None,
+                });
+                Ok(())
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(0u32));
+        let backend = CountingBackend {
+            calls: Arc::clone(&calls),
+        };
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let request = AiBrokerRequest {
+            app_id: "test".to_string(),
+            model_tier: ModelTier::Low,
+            system: "sys".to_string(),
+            messages: vec![AiMessage {
+                role: "user".to_string(),
+                content: "go".to_string(),
+            }],
+            tools: vec![],
+            workspace_root: None,
+            open_panes: Arc::new(Vec::new()),
+            tool_dispatcher: None,
+            cancel,
+        };
+        let resp = run_turn_and_respond(
+            request,
+            &backend,
+            BillingModel::Subscription,
+            "m".to_string(),
+            String::new(),
+            &mut |_| {},
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            0,
+            "pre-tripped cancel must skip the backend entirely"
+        );
+        assert!(resp.error.is_none(), "cancel is a clean stop, not an error");
+        assert_eq!(resp.content.as_deref(), Some(""));
+    }
+
+    /// A cancel tripped mid-stream (e.g. ESC after some text arrived) must
+    /// commit the partial text and stop — it must NOT dispatch the tool call
+    /// emitted in that same round or start a second iteration.
+    #[test]
+    fn cancel_during_stream_commits_partial_and_stops() {
+        use crate::plexi_ai::backend::{
+            AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
+        };
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex};
+
+        struct CancelMidStreamBackend {
+            calls: Arc<Mutex<u32>>,
+            cancel: CancelToken,
+        }
+        impl AiBackend for CancelMidStreamBackend {
+            fn name(&self) -> &str {
+                "cancel-mid-stream"
+            }
+            fn stream_to_channel(
+                &self,
+                _req: AiBackendRequest,
+                tx: mpsc::Sender<StreamEvent>,
+            ) -> Result<(), AiBackendError> {
+                *self.calls.lock().unwrap() += 1;
+                let _ = tx.send(StreamEvent::Text("partial answer".to_string()));
+                // The user hits ESC: trip the token before finishing the round.
+                self.cancel.cancel();
+                let _ = tx.send(StreamEvent::ToolCalls(vec![RawToolCall {
+                    id: "c1".to_string(),
+                    name: "should_not_dispatch".to_string(),
+                    arguments: "{}".to_string(),
+                }]));
+                let _ = tx.send(StreamEvent::Done {
+                    input_tokens: Some(3),
+                    output_tokens: Some(2),
+                    generation_id: None,
+                });
+                Ok(())
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(0u32));
+        let cancel = CancelToken::new();
+        let backend = CancelMidStreamBackend {
+            calls: Arc::clone(&calls),
+            cancel: cancel.clone(),
+        };
+        let request = AiBrokerRequest {
+            app_id: "test".to_string(),
+            model_tier: ModelTier::Low,
+            system: "sys".to_string(),
+            messages: vec![AiMessage {
+                role: "user".to_string(),
+                content: "go".to_string(),
+            }],
+            tools: vec![],
+            workspace_root: None,
+            open_panes: Arc::new(Vec::new()),
+            tool_dispatcher: None,
+            cancel,
+        };
+        let resp = run_turn_and_respond(
+            request,
+            &backend,
+            BillingModel::Subscription,
+            "m".to_string(),
+            String::new(),
+            &mut |_| {},
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            1,
+            "cancel must stop the loop after one round — no second iteration"
+        );
+        assert!(resp.error.is_none(), "mid-stream cancel is a clean stop");
+        assert_eq!(
+            resp.content.as_deref(),
+            Some("partial answer"),
+            "the partial text streamed before cancel must be committed"
+        );
     }
 
     /// Verify `fetch_generation_cost` parses total_cost as string or float.
