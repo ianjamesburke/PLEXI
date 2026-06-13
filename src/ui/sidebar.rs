@@ -1,7 +1,7 @@
 use crate::host::context::WindowMenuAction;
 use crate::ui::button;
 use crate::ui::sidebar_row::{ContextItem, PaneDots, SidebarAction};
-use egui::{Align, Layout, Rect, RichText, Stroke};
+use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
@@ -219,22 +219,15 @@ impl PlexiApp {
                 });
                 let row_rect = scope.response.rect;
                 row_rects.push(row_rect);
-                let pill_rect = Rect::from_min_max(
-                    egui::pos2(row_rect.min.x + 4.0, row_rect.min.y),
-                    egui::pos2(row_rect.max.x - 4.0, row_rect.max.y),
+                ui.painter().set(
+                    bg_idx,
+                    egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill),
                 );
                 if is_active {
-                    ui.painter().set(bg_idx, egui::Shape::Noop);
-                    crate::ui::list::paint_selection(ui.painter(), pill_rect, &self.colors);
-                } else {
-                    let inset = crate::ui::list::selection_inset(pill_rect);
-                    ui.painter().set(
-                        bg_idx,
-                        egui::Shape::rect_filled(
-                            inset,
-                            crate::ui::style::RADIUS_SM,
-                            fill,
-                        ),
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(row_rect.min, Vec2::new(3.0, row_rect.height())),
+                        CornerRadius::ZERO,
+                        self.colors.accent,
                     );
                 }
                 continue;
