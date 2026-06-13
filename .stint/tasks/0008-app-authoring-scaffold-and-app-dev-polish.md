@@ -3,8 +3,9 @@ id: "0008"
 title: "App authoring: scaffold and app dev polish"
 status: done
 estimate: "8h"
-actual: "0m"
-completed_at: "2026-06-13T16:45:46Z"
+actual: "3m"
+started_at: "2026-06-13T07:52:38Z"
+completed_at: "2026-06-13T07:55:07Z"
 sprint: "s2"
 blocked_by: []
 gh_issue:
@@ -17,6 +18,7 @@ tags:
   - "scaffold"
   - "sdk-v2"
 ---
+
 
 
 
@@ -44,3 +46,12 @@ The marketplace depends on generated apps looking intentional without hand-place
 - `docs/prm/app-framework-marketplace.md`
 - `src/cli/app.rs` (scaffold functions)
 - `src/app/marketplace.rs` (publisher submission validation)
+
+## Variance
+
+Estimate 8h, actual 3m. The template was already polished and the validator
+already existed, so the real work was a 6-line commented placeholder on three
+manifests plus a docstring line. Correction: the host validator reads a
+top-level `[marketplace]` section, not `[app.marketplace]` as this task's
+Gotchas said — verified against `read_marketplace_manifest`. Estimate assumed
+visual app-design work that 0166/0010 already cover.

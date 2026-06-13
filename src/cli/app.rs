@@ -255,14 +255,21 @@ pub fn app_dev(path: &str) -> i32 {
     }
 }
 
+/// Commented-out `[marketplace]` section appended to every scaffolded manifest so
+/// authors know publishing is one uncomment away. The host validator reads a
+/// top-level `[marketplace]` section (see `read_marketplace_manifest` in
+/// `src/cli/marketplace.rs`); `publisher` is the field required to publish.
+const MARKETPLACE_PLACEHOLDER: &str = "\n# Uncomment and fill in to publish with `plexi app publish`:\n# [marketplace]\n# visibility = \"public\"   # public | unlisted | private\n# price = \"free\"          # \"free\", or a price like \"4.99\"\n# publisher = \"your-org\"  # required: your publisher / org slug\n";
+
 fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"timer\"]\n\n[launch]\n",
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"timer\"]\n\n[launch]\n{mp}",
         name = name,
         display = to_title_case(name),
+        mp = MARKETPLACE_PLACEHOLDER,
     ))?;
 
     // main.py — plexi_sdk is injected via PYTHONPATH by the host at launch;
@@ -295,9 +302,10 @@ fn scaffold_agent_python_app(app_dir: &std::path::Path, name: &str) -> io::Resul
 
     // manifest.toml — ai.query capability pre-configured.
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"An agent app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"ai.query\"]\n\n[launch]\n",
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"An agent app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"ai.query\"]\n\n[launch]\n{mp}",
         name = name,
         display = to_title_case(name),
+        mp = MARKETPLACE_PLACEHOLDER,
     ))?;
 
     let template = include_str!("../../sdk/python/plexi_sdk/templates/agent_init.py");
@@ -327,9 +335,10 @@ fn scaffold_agent_python_app(app_dir: &std::path::Path, name: &str) -> io::Resul
 fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = []\n\n[launch]\n",
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = []\n\n[launch]\n{mp}",
         name = name,
         display = to_title_case(name),
+        mp = MARKETPLACE_PLACEHOLDER,
     ))?;
 
     // Cargo.toml
@@ -1643,5 +1652,54 @@ mod dev_loop_tests {
         let dir = TempDir::new().unwrap();
         let code = app_dev(dir.path().to_str().unwrap());
         assert_eq!(code, 1, "app_dev must fail cleanly when no justfile exists");
+    }
+}
+
+#[cfg(test)]
+mod scaffold_marketplace_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Every scaffold must emit a commented top-level `[marketplace]` placeholder
+    /// naming `publisher`, and the comment must neither break parsing nor produce
+    /// a live `[marketplace]` section.
+    fn assert_placeholder(manifest: &str) {
+        assert!(
+            manifest.contains("# [marketplace]"),
+            "manifest should carry a commented [marketplace] placeholder"
+        );
+        assert!(
+            manifest.contains("# publisher"),
+            "placeholder should name the required publisher field"
+        );
+        let parsed: crate::app::registry::AppManifest =
+            toml::from_str(manifest).expect("scaffolded manifest must parse");
+        assert!(
+            parsed.marketplace.is_none(),
+            "commented placeholder must not produce a live [marketplace] section"
+        );
+    }
+
+    fn manifest_for(scaffold: fn(&std::path::Path, &str) -> io::Result<()>) -> String {
+        let dir = TempDir::new().unwrap();
+        let app_dir = dir.path().join("myapp");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        scaffold(&app_dir, "myapp").unwrap();
+        std::fs::read_to_string(app_dir.join("manifest.toml")).unwrap()
+    }
+
+    #[test]
+    fn python_scaffold_has_marketplace_placeholder() {
+        assert_placeholder(&manifest_for(scaffold_python_app));
+    }
+
+    #[test]
+    fn agent_scaffold_has_marketplace_placeholder() {
+        assert_placeholder(&manifest_for(scaffold_agent_python_app));
+    }
+
+    #[test]
+    fn rust_scaffold_has_marketplace_placeholder() {
+        assert_placeholder(&manifest_for(scaffold_rust_app));
     }
 }
