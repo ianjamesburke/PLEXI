@@ -28,7 +28,9 @@ pub fn pip_color(
 
 /// Returns the color for a given agent state given an explicit `time` value.
 /// Working state pulses between 0.45–1.0 opacity on a ~2s sine cycle.
-/// Call `ui.ctx().request_repaint()` at the call site when Working.
+/// When Working, call `request_repaint_after(Duration::from_millis(100))` at
+/// the call site — never an unconditional `request_repaint()`, which is
+/// self-perpetuating and pins the whole window at display refresh.
 pub fn dot_color_from_time(state: &AgentState, colors: &Colors, time: f64) -> egui::Color32 {
     match state {
         AgentState::Working => {

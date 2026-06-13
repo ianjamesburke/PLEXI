@@ -176,7 +176,10 @@ fn render_name_bar_and_dots(
                 color,
             );
             if matches!(state, AgentState::Working) {
-                ui.ctx().request_repaint();
+                // Pulse only needs ~10fps; an unconditional request_repaint
+                // pins the window at display refresh while agents work.
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
 
