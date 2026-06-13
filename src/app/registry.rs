@@ -68,6 +68,23 @@ pub struct AppManifest {
     /// until the author adds this section.
     #[serde(default)]
     pub marketplace: Option<crate::app::marketplace::MarketplaceManifest>,
+    /// Optional `[requires]` section — host version compatibility. Absent means
+    /// the app declares no version requirement and runs on any build.
+    #[serde(default)]
+    pub requires: Option<RequiresSection>,
+}
+
+/// `[requires]` manifest section — host version compatibility.
+///
+/// `plexi_min` is a hard floor (host below it refuses to install/run);
+/// `plexi_max` is a soft ceiling (host above it warns the app may be
+/// superseded, but still runs). See `crate::app::host_version`.
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct RequiresSection {
+    #[serde(default)]
+    pub plexi_min: Option<String>,
+    #[serde(default)]
+    pub plexi_max: Option<String>,
 }
 
 /// A `[secrets]` table entry from manifest.toml. `required` is **required**

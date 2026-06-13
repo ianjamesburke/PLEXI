@@ -131,6 +131,24 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
         }
     };
 
+    // Host-version pre-check: reject an incompatible app before downloading it.
+    // A too-old host (or malformed requirement) blocks; a too-new host warns.
+    {
+        use crate::app::host_version::{check, current};
+        let verdict = check(
+            entry.requires_plexi_min.as_deref(),
+            entry.requires_plexi_max.as_deref(),
+            current(),
+        );
+        if let Some(msg) = verdict.message() {
+            if verdict.is_blocking() {
+                eprintln!("error: {msg}");
+                return InstallPlan::Blocked;
+            }
+            eprintln!("warning: {msg}");
+        }
+    }
+
     // License gate before any download or source resolution.
     let store = LicenseStore::open();
     if license_gate(&entry, &store) == LicenseDecision::NeedsPurchase
@@ -314,6 +332,11 @@ pub fn app_publish_cli(path: &str) -> i32 {
     println!("  publisher:  {}", entry.publisher);
     println!("  visibility: {}", entry.visibility.as_str());
     println!("  price:      {}", entry.price.display());
+    if entry.requires_plexi_min.is_some() || entry.requires_plexi_max.is_some() {
+        let min = entry.requires_plexi_min.as_deref().unwrap_or("any");
+        let max = entry.requires_plexi_max.as_deref().unwrap_or("any");
+        println!("  requires:   Plexi {min} .. {max}");
+    }
     println!("  trust:      {}", entry.trust_label);
     println!("  artifact:   {}", artifact.display());
     println!("  checksum:   {}", entry.checksum);

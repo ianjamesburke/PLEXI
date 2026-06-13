@@ -207,6 +207,13 @@ pub struct RegistryEntry {
     /// from the configured CDN base + checksum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_url: Option<String>,
+    /// Declared minimum host version (`[requires].plexi_min`). Lets the catalog
+    /// and install gate reject an incompatible app before download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_plexi_min: Option<String>,
+    /// Declared soft host-version ceiling (`[requires].plexi_max`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_plexi_max: Option<String>,
 }
 
 impl RegistryEntry {
@@ -234,6 +241,8 @@ impl RegistryEntry {
             checksum,
             source: None,
             package_url: None,
+            requires_plexi_min: report.requires_plexi_min.clone(),
+            requires_plexi_max: report.requires_plexi_max.clone(),
         }
     }
 }
@@ -728,6 +737,8 @@ mod tests {
             checksum: "abc123".to_string(),
             source: None,
             package_url: None,
+            requires_plexi_min: None,
+            requires_plexi_max: None,
         }
     }
 
@@ -903,6 +914,8 @@ mod tests {
             capabilities: vec![],
             file_count: 3,
             total_size: 1024,
+            requires_plexi_min: None,
+            requires_plexi_max: None,
         };
         let mkt = MarketplaceManifest {
             visibility: Visibility::Public,

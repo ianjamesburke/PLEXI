@@ -449,6 +449,36 @@ pub fn print_trust_sheet(
             println!("  {:<18}{}{sensitive}", cap.as_str(), cap.description());
         }
     }
+    if report.requires_plexi_min.is_some() || report.requires_plexi_max.is_some() {
+        let min = report.requires_plexi_min.as_deref().unwrap_or("any");
+        let max = report.requires_plexi_max.as_deref().unwrap_or("any");
+        println!("requires:     Plexi {min} .. {max}");
+    }
+}
+
+/// Host-version gate: block install when the host is too old for the app (or a
+/// declared requirement is malformed); warn when the host is newer than the
+/// app's declared ceiling. Returns an exit code to abort, or `None` to proceed.
+pub fn host_version_gate(report: &crate::app::package::PackageReport) -> Option<i32> {
+    use crate::app::host_version::{check, current};
+    let verdict = check(
+        report.requires_plexi_min.as_deref(),
+        report.requires_plexi_max.as_deref(),
+        current(),
+    );
+    match verdict.message() {
+        None => None,
+        Some(msg) if verdict.is_blocking() => {
+            eprintln!("error: {msg}");
+            log::warn!("install: host-version gate blocked '{}': {msg}", report.id);
+            Some(1)
+        }
+        Some(msg) => {
+            eprintln!("warning: {msg}");
+            log::info!("install: host-version warning for '{}': {msg}", report.id);
+            None
+        }
+    }
 }
 
 /// Resolve the trust label for a report against the bundled core pack ids.
@@ -506,6 +536,11 @@ fn run_install_gate(report: &crate::app::package::PackageReport, assume_yes: boo
     use std::io::IsTerminal;
     let label = trust_label_for(report);
     print_trust_sheet(report, label);
+    // Host-version compatibility: a too-old host (or malformed requirement)
+    // aborts before the confirm prompt; a too-new host only warns.
+    if let Some(code) = host_version_gate(report) {
+        return Some(code);
+    }
     let is_tty = io::stdin().is_terminal();
     let mut stdin = io::stdin().lock();
     match confirm_install(
@@ -1336,6 +1371,8 @@ mod install_confirm_tests {
             capabilities: Vec::new(),
             file_count: 2,
             total_size: 64,
+            requires_plexi_min: None,
+            requires_plexi_max: None,
         }
     }
 

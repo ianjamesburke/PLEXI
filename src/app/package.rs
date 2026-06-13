@@ -206,6 +206,10 @@ pub struct PackageReport {
     pub capabilities: Vec<Capability>,
     pub file_count: usize,
     pub total_size: u64,
+    /// Declared `[requires].plexi_min` — minimum host version, if any.
+    pub requires_plexi_min: Option<String>,
+    /// Declared `[requires].plexi_max` — soft ceiling host version, if any.
+    pub requires_plexi_max: Option<String>,
 }
 
 // ── Trust label ───────────────────────────────────────────────────────────────
@@ -299,6 +303,11 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
     let files = collect_files(app_dir)?;
     let total_size = files.iter().map(|(_, size)| size).sum();
 
+    let (requires_plexi_min, requires_plexi_max) = manifest
+        .requires
+        .map(|r| (r.plexi_min, r.plexi_max))
+        .unwrap_or((None, None));
+
     Ok(PackageReport {
         id: manifest.app.id,
         name: manifest.app.name,
@@ -308,6 +317,8 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
         capabilities,
         file_count: files.len(),
         total_size,
+        requires_plexi_min,
+        requires_plexi_max,
     })
 }
 
@@ -1029,6 +1040,8 @@ mod tests {
             capabilities: Vec::new(),
             file_count: 2,
             total_size: 100,
+            requires_plexi_min: None,
+            requires_plexi_max: None,
         }
     }
 
