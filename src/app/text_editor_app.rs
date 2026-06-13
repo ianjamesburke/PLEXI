@@ -30,6 +30,10 @@ pub struct TextEditorApp {
     wants_close: bool,
     load_error: Option<String>,
     font_size: f32,
+    /// Whether the text cursor sat at the end of the buffer on the previous
+    /// rendered frame. Gates the down-arrow-appends-newline behavior: the
+    /// press that *moves* the cursor to the end must not also append.
+    cursor_was_at_end: bool,
 }
 
 impl TextEditorApp {
@@ -53,6 +57,7 @@ impl TextEditorApp {
             wants_close: false,
             load_error,
             font_size: FONT_SIZE_DEFAULT,
+            cursor_was_at_end: false,
         }
     }
 
@@ -519,17 +524,29 @@ impl App for TextEditorApp {
 
                 // Down arrow at end of content → append a newline so the cursor
                 // can move past the last line without requiring an explicit Enter.
+                //
+                // Two constraints:
+                // * Gate on the cursor having been at the end on the PREVIOUS
+                //   frame. TextEdit has already processed this frame's presses
+                //   (egui reads but does not consume them), so the press that
+                //   moved the cursor TO the end must not also append.
+                // * Append one newline per queued press, not per frame —
+                //   key-repeat can deliver several presses in one frame and
+                //   consume_key would silently swallow the extras, making Down
+                //   feel slower than Enter.
                 if output.response.has_focus() {
                     let at_end = output
                         .cursor_range
                         .map(|r| r.primary.ccursor.index >= self.content.len())
                         .unwrap_or(false);
-                    if at_end {
-                        let down_pressed = ui.input_mut(|i| {
-                            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                    if at_end && self.cursor_was_at_end {
+                        let presses = ui.input_mut(|i| {
+                            i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
                         });
-                        if down_pressed {
-                            self.content.push('\n');
+                        if presses > 0 {
+                            for _ in 0..presses {
+                                self.content.push('\n');
+                            }
                             self.last_edit = Some(Instant::now());
                             // Reposition cursor to the new end.
                             let mut state =
@@ -541,6 +558,7 @@ impl App for TextEditorApp {
                             egui::TextEdit::store_state(ui.ctx(), te_id, state);
                         }
                     }
+                    self.cursor_was_at_end = at_end;
                 }
 
                 // Request focus whenever this pane is active but the TextEdit doesn't
