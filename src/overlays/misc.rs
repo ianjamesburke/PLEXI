@@ -539,6 +539,9 @@ impl PlexiApp {
                     if raw.is_empty() {
                         log::info!("TextInputOverlay: clear context root idx={idx}");
                         self.router.get_mut(idx).root = None;
+                        if idx == self.router.active_idx() {
+                            self.apply_context_transition_effects();
+                        }
                     } else {
                         // Tilde expansion.
                         let expanded = if raw.starts_with("~/") {
@@ -566,7 +569,8 @@ impl PlexiApp {
                             "TextInputOverlay: set context root idx={idx} path={}",
                             resolved.display()
                         );
-                        self.router.get_mut(idx).root = Some(resolved);
+                        let ctx_id = self.router.get(idx).context_id;
+                        self.set_context_root(resolved, Some(ctx_id));
                     }
                     self.save_workspace();
                 }
