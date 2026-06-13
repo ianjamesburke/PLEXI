@@ -1,0 +1,39 @@
+# Plexi app dev tasks. Run `just <target>` from this app directory.
+# Requires the `just` command runner: https://github.com/casey/just
+#
+# This is the standard app-author drive loop:
+#   just dev      open the app in a pane with hot reload, edit, watch it reload
+#   just health   validate the manifest + SDK shape + render-size matrix
+#   just test     run app-level tests under tests/ (graceful no-op if absent)
+#   just lint     type-check and lint the app source
+
+# Default target lists available recipes.
+default:
+    @just --list
+
+# Open the app in a Plexi pane with hot reload (manifest has `watch = true`),
+# then edit main.py and watch the pane reload on save.
+dev:
+    plexi app open .
+
+# Validate the manifest, SDK shape, and render-size matrix without opening a pane.
+# This is the non-interactive render-inspect check an agent runs each cycle.
+health:
+    plexi app check .
+
+# Run app-level tests if a tests/ directory exists; otherwise no-op cleanly.
+# Test failures propagate (non-zero exit) so `just test` is CI-safe.
+test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d tests ]; then
+        python3 -m pytest tests/
+    else
+        echo "no tests/ directory — nothing to run"
+    fi
+
+# Type-check and lint the app source. Uses uvx so no dev dependencies are
+# required in the app environment.
+lint:
+    uvx pyright .
+    uvx ruff check .

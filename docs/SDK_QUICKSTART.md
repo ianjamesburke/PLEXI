@@ -153,7 +153,37 @@ Edit `main.py`, save, and `watch = true` reloads the pane; re-run
 `plexi app render` (or `just health`) to verify the change before moving on.
 Each cycle is one observable diff — keep changes small.
 
-## 6. Next Steps
+## 6. Verify And Publish
+
+The full authoring flow is **init → dev → verify → publish**. Each step has one
+command (all available as `just` recipes too):
+
+```bash
+plexi app check ./counter      # render-inspect: validates the manifest, inspects
+                               # SDK usage without importing app code, and renders
+                               # the app across the small/normal pane size matrix.
+                               # This is the non-interactive verification an agent
+                               # runs each cycle — green means it renders.
+plexi app validate ./counter   # fail-closed package check: descriptor, content
+                               # hashes, manifest, entry point, capability strings.
+                               # Run before packaging or publishing.
+plexi app package ./counter    # build a distributable <id>-<version>.plexipkg
+plexi app publish ./counter    # submit to the marketplace (needs the [marketplace]
+                               # section — uncomment it in manifest.toml first)
+```
+
+`plexi app check` is the verification harness an agent loops on while building;
+`plexi app validate` / `package` / `publish` are the release path. The scaffolded
+`manifest.toml` already includes a commented `[marketplace]` block, so publishing
+is one uncomment (and a `publisher` value) away.
+
+> **This doc vs. [`docs/sdk-v2.md`](sdk-v2.md):** this Quickstart is the
+> end-to-end *tutorial* (the path from empty dir to published app).
+> `sdk-v2.md` is the *reference* (component tables, the canvas API, the full
+> protocol surface). Start here; reach for `sdk-v2.md` when you need a specific
+> API.
+
+## 7. Next Steps
 
 - SDK v2 reference: [`docs/sdk-v2.md`](sdk-v2.md)
 - PGAP wire reference: [`docs/PGAP_REFERENCE.md`](PGAP_REFERENCE.md)
