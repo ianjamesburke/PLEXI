@@ -158,8 +158,11 @@ Wait for completion. The binary is now installed. Move immediately to Step 2b.
 
 **Skip gate — assess before running.** Read the diff and changed file list, then classify the PR:
 
-- **Run checks** if any changed file contains: new logic, new branches, new error paths, behavioral changes, new API surface, bug fixes, or anything systemic that could break silently.
-- **Skip checks** if ALL changes are exclusively: color/spacing/font-size constants, help/doc strings, markdown files, config TOML values, label/copy text, or UI layout values that require human eyes to verify anyway. When skipping, set `AI_FINDINGS="skipped — cosmetic/style change, user verifies visually"`.
+- **Run checks** if any changed file contains: new logic, new branches, new error paths, behavioral changes, new API surface, bug fixes, or anything systemic that could break silently. Always run for `sdk/` changes.
+- **Skip checks** if ANY of these conditions holds:
+  - ALL changes are exclusively: color/spacing/font-size constants, help/doc strings, markdown files, config TOML values, label/copy text, or UI layout values that require human eyes to verify anyway. Set `AI_FINDINGS="skipped — cosmetic/style change, user verifies visually"`.
+  - The diff is **fewer than 5 lines changed** (additions + deletions combined, excluding blank lines and comments). Set `AI_FINDINGS="skipped — diff under 5 lines, low infrastructural risk"`.
+  - ALL changed files are under `apps/` (app code, not SDK). Set `AI_FINDINGS="skipped — apps-only change, no host/SDK risk"`.
 
 When in doubt, run Gemini review. Do not expand to broad cargo tests or binary install from doubt alone.
 
@@ -467,7 +470,8 @@ pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the d
 ## Rules
 
 - Diff-review validation is the default. `just pr-install` is an exception, not the normal Rust-file path.
-- Step 2b quality checks (Gemini diff review) run unless the PR is exclusively cosmetic/style — assess the diff, then decide
+- Step 2b quality checks (Gemini diff review) run unless skipped by the skip gate — assess the diff, then decide
+- Skip conditions: cosmetic/style-only changes; diff under 5 lines; apps/-only changes. Always run for sdk/ changes.
 - Do not run Gemini review more than twice in one validation attempt without checking with Ian
 - Cosmetic = colors, spacing, font sizes, help strings, markdown, config values, UI copy — anything where human visual verification is the only meaningful check
 - Do not run cargo tests during validation unless Gemini review names a specific risk that needs a specific test command
