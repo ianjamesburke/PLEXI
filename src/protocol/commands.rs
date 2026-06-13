@@ -869,6 +869,11 @@ pub enum AppRequest {
         /// Direction the portal tile splits in the parent window: "right" | "down" | "left" | "up".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         portal_direction: Option<String>,
+        /// Pane in the parent context to anchor the portal split at. The CLI sends
+        /// the caller's pane (--pane or PLEXI_PANE_ID); absent or unknown ids fall
+        /// back to the parent's focused pane.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor_pane: Option<u64>,
         /// If set, the host writes a JSON response (context_id, windows) to this path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,

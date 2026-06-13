@@ -19,6 +19,7 @@ fn new_child_context_does_not_adopt_focused_pane() {
         std::path::PathBuf::from("/tmp/no_adopt"),
         true,
         false,
+        None,
     )
     .expect("child create should succeed");
 
@@ -65,7 +66,13 @@ fn new_child_context_no_focused_pane_inserts_sub_ctx() {
     let parent_id = app.router.active().context_id;
 
     let result =
-        app.new_child_context("Test", std::path::PathBuf::from("/tmp/child2"), true, false);
+        app.new_child_context(
+            "Test",
+            std::path::PathBuf::from("/tmp/child2"),
+            true,
+            false,
+            None,
+        );
 
     // Whether success or failure, the parent's focused_pane must remain None.
     assert_eq!(
@@ -100,6 +107,118 @@ fn new_child_context_no_focused_pane_inserts_sub_ctx() {
     }
 }
 
+/// `plexi context new --pane <id>`: the portal split must anchor at the given
+/// pane, not the parent context's focused pane. Two panes exist; A is focused;
+/// the anchor names B — the portal must land as B's sibling.
+#[test]
+fn new_child_context_anchor_pane_overrides_focused() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let (tile_a, _pane_a) = app.add_test_pane();
+    let (tile_b, pane_b) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_a);
+    let parent_id = app.router.active().context_id;
+    let parent_name = app.router.active().name.clone();
+
+    app.new_child_context(
+        &parent_name,
+        std::path::PathBuf::from("/tmp/anchor_pane"),
+        true,
+        false,
+        Some(pane_b),
+    )
+    .expect("child create should succeed");
+
+    let parent_win = app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent_id)
+        .expect("parent window must still exist");
+    let portal_pane_id = parent_win
+        .panes
+        .iter()
+        .find(|(_, p)| p.portal_target().is_some())
+        .map(|(id, _)| *id)
+        .expect("parent must contain a Portal tile");
+    let portal_tile = parent_win
+        .tree
+        .tiles
+        .find_pane(&portal_pane_id)
+        .expect("portal tile in tree");
+    let container = parent_win
+        .tree
+        .tiles
+        .parent_of(portal_tile)
+        .expect("portal tile has a parent container");
+    let children: Vec<_> = match parent_win.tree.tiles.get(container) {
+        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
+        other => panic!("portal parent is not a container: {other:?}"),
+    };
+    assert!(
+        children.contains(&tile_b),
+        "portal must split against the anchor pane's tile"
+    );
+    assert!(
+        !children.contains(&tile_a),
+        "portal must NOT split against the focused pane when an anchor is given"
+    );
+}
+
+/// An anchor pane id that doesn't exist in the parent context falls back to the
+/// focused pane — creation must still succeed.
+#[test]
+fn new_child_context_unknown_anchor_falls_back_to_focused() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let (tile_a, _pane_a) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_a);
+    let parent_id = app.router.active().context_id;
+    let parent_name = app.router.active().name.clone();
+
+    app.new_child_context(
+        &parent_name,
+        std::path::PathBuf::from("/tmp/anchor_missing"),
+        true,
+        false,
+        Some(999_999),
+    )
+    .expect("child create should succeed despite unknown anchor");
+
+    let parent_win = app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent_id)
+        .expect("parent window must still exist");
+    let portal_pane_id = parent_win
+        .panes
+        .iter()
+        .find(|(_, p)| p.portal_target().is_some())
+        .map(|(id, _)| *id)
+        .expect("parent must contain a Portal tile");
+    let portal_tile = parent_win
+        .tree
+        .tiles
+        .find_pane(&portal_pane_id)
+        .expect("portal tile in tree");
+    let container = parent_win
+        .tree
+        .tiles
+        .parent_of(portal_tile)
+        .expect("portal tile has a parent container");
+    let children: Vec<_> = match parent_win.tree.tiles.get(container) {
+        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
+        other => panic!("portal parent is not a container: {other:?}"),
+    };
+    assert!(
+        children.contains(&tile_a),
+        "unknown anchor must fall back to the focused pane"
+    );
+}
+
 /// Issue #1409: parent name lookup must be case-insensitive.
 #[test]
 fn new_child_context_case_insensitive_parent() {
@@ -115,6 +234,7 @@ fn new_child_context_case_insensitive_parent() {
         std::path::PathBuf::from("/tmp/child_ci"),
         true,
         false,
+        None,
     );
     match result {
         Ok(_) => {}
@@ -148,6 +268,7 @@ fn create_child_context_auto_zooms() {
         std::path::PathBuf::from("/tmp/child_zoom"),
         true,
         false,
+        None,
     );
 
     if result.is_err() {
@@ -254,7 +375,7 @@ fn depth_four_chain_has_portal_tiles() {
 
     for &child in &names {
         let path = std::path::PathBuf::from(format!("/tmp/depth_test_{child}"));
-        let result = app.new_child_context(&parent_name, path, true, false);
+        let result = app.new_child_context(&parent_name, path, true, false, None);
         if result.is_err() {
             // PTY unavailable — can't build the full chain in test env. Stop here.
             break;

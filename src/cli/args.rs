@@ -858,6 +858,11 @@ pub enum ContextCmd {
         /// Focus (zoom into) the new sub-context after creation. Default: stay in current pane.
         #[arg(long)]
         focus: bool,
+        /// Pane to anchor the portal split at (requires --parent).
+        /// Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the
+        /// parent context's focused pane.
+        #[arg(long, value_name = "PANE_ID")]
+        pane: Option<u64>,
         /// Split portal below instead of right (requires --parent).
         #[arg(long, short = 'd', conflicts_with_all = ["left", "up", "right"])]
         down: bool,

@@ -8,6 +8,7 @@ pub fn context_new_cli(
     windows: &[String],
     focus: bool,
     direction: &str,
+    pane: Option<u64>,
 ) -> i32 {
     let explicit_root = match path {
         Some(_) => match resolve_path(path) {
@@ -57,8 +58,15 @@ pub fn context_new_cli(
     } else {
         None
     };
+    // Portal split anchor: explicit --pane wins; otherwise the caller's own pane
+    // (PLEXI_PANE_ID, set in every Plexi terminal). Only meaningful with --parent.
+    let anchor_pane = pane.or_else(|| {
+        std::env::var("PLEXI_PANE_ID")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+    });
     log::info!(
-        "context_new_cli: name={:?} root={:?} parent={:?} windows={} focus={focus} direction={direction}",
+        "context_new_cli: name={:?} root={:?} parent={:?} windows={} focus={focus} direction={direction} anchor_pane={anchor_pane:?}",
         name,
         explicit_root
             .as_ref()
@@ -84,6 +92,11 @@ pub fn context_new_cli(
     }
     if direction != "right" {
         payload["portal_direction"] = serde_json::Value::String(direction.to_string());
+    }
+    if explicit_parent.is_some() {
+        if let Some(ap) = anchor_pane {
+            payload["anchor_pane"] = serde_json::Value::from(ap);
+        }
     }
     if let Some(ref rf) = response_file {
         payload["response_file"] = serde_json::Value::String(rf.clone());

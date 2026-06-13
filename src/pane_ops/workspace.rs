@@ -202,6 +202,7 @@ impl PlexiApp {
         path: PathBuf,
         vertical: bool,
         new_pane_first: bool,
+        anchor_pane: Option<u64>,
     ) -> Result<(), String> {
         let parent_idx = self
             .router
@@ -252,7 +253,22 @@ impl PlexiApp {
         };
 
         // 2. Insert Portal tile into the parent window via the standard split path.
-        let parent_win_idx = {
+        // An explicit anchor pane (the CLI caller's pane, from --pane or
+        // PLEXI_PANE_ID) selects both the parent window and the split target;
+        // otherwise fall back to the parent's active window and its focused pane.
+        let portal_anchor = anchor_pane.and_then(|pid| {
+            self.windows
+                .iter()
+                .position(|w| w.context_id == parent_id && w.tree.tiles.find_pane(&pid).is_some())
+                .map(|idx| (idx, pid))
+        });
+        if anchor_pane.is_some() && portal_anchor.is_none() {
+            log::warn!(
+                "new_child_context: anchor pane {anchor_pane:?} not found in parent \
+                 ctx_id={parent_id} — falling back to focused pane"
+            );
+        }
+        let parent_win_idx = portal_anchor.map(|(idx, _)| idx).or_else(|| {
             let preferred = self.context_active_window.get(&parent_id).copied();
             preferred
                 .and_then(|wid| {
@@ -261,10 +277,12 @@ impl PlexiApp {
                         .position(|w| w.window_id == wid && w.context_id == parent_id)
                 })
                 .or_else(|| self.windows.iter().position(|w| w.context_id == parent_id))
-        };
+        });
         let sub_ctx_pane_id = self.host.alloc_pane_id();
         if let Some(parent_win_idx) = parent_win_idx {
-            let split_target = self.windows[parent_win_idx].focused_pane;
+            let split_target = portal_anchor
+                .and_then(|(_, pid)| self.windows[parent_win_idx].tree.tiles.find_pane(&pid))
+                .or(self.windows[parent_win_idx].focused_pane);
             crate::pane_ops::layout::insert_split_tile(
                 &mut self.windows[parent_win_idx].tree,
                 split_target,
@@ -333,7 +351,7 @@ impl PlexiApp {
             parent_path.display()
         );
 
-        match self.new_child_context(&parent_name, parent_path, true, false) {
+        match self.new_child_context(&parent_name, parent_path, true, false, None) {
             Ok(()) => {
                 let new_ctx_idx = self.router.len() - 1;
                 self.router

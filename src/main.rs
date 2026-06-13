@@ -872,6 +872,7 @@ fn main() -> eframe::Result {
                             parent,
                             window,
                             focus,
+                            pane,
                             down,
                             left,
                             up,
@@ -893,6 +894,7 @@ fn main() -> eframe::Result {
                                 &window,
                                 focus,
                                 dir,
+                                pane,
                             ))
                         }
                         ContextCmd::Open { path } => {

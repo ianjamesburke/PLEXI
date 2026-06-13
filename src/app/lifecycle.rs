@@ -1411,6 +1411,7 @@ impl PlexiApp {
                 windows,
                 focus,
                 portal_direction,
+                anchor_pane,
                 response_file,
             } => {
                 // Map direction string to insert_split_tile params.
@@ -1426,12 +1427,13 @@ impl PlexiApp {
                     };
                 log::info!(
                     "pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?} \
-                     windows={} focus={focus} direction={:?}",
+                     windows={} focus={focus} direction={:?} anchor_pane={:?}",
                     root,
                     name,
                     parent_name,
                     windows.len(),
-                    portal_direction
+                    portal_direction,
+                    anchor_pane
                 );
                 let mut ctx_ok = true;
                 // Track which context was active before and which context was just created.
@@ -1451,7 +1453,13 @@ impl PlexiApp {
                     let current_win_id = self.windows[self.active_window].window_id;
                     let current_focused = self.windows[self.active_window].focused_pane;
                     if let Err(e) =
-                        self.new_child_context(pname.as_str(), path, portal_vertical, portal_first)
+                        self.new_child_context(
+                            pname.as_str(),
+                            path,
+                            portal_vertical,
+                            portal_first,
+                            *anchor_pane,
+                        )
                     {
                         log::warn!("pane_ipc: create_context with parent failed: {e}");
                         ctx_ok = false;
