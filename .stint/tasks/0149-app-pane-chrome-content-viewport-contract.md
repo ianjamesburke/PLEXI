@@ -1,9 +1,11 @@
 ---
 id: "0149"
 title: "App pane chrome: host-owned content viewport contract"
-status: in-progress
+status: done
 estimate: "16h"
+actual: "20m"
 started_at: "2026-06-13T22:08:31Z"
+completed_at: "2026-06-13T22:27:47Z"
 sprint: "s5"
 blocked_by:
   - 23
@@ -23,7 +25,12 @@ tags:
 
 
 
+
 Give every app pane a host-owned chrome shell so apps render only inside the post-chrome content viewport.
+
+## Variance Note
+
+Estimated 16h, actual 20m (~48x under). The egui cursor-advance math was already correct; the task reduced to a structural refactor (removing the ui.vertical() branch, extracting chrome_height() for testability) plus 4 unit tests. The 16h estimate reflected architectural uncertainty that didn't materialise.
 
 ## Why
 
