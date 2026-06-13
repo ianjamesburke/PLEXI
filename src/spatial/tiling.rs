@@ -2,7 +2,6 @@ use crate::host::pane::{Pane, TerminalPane};
 use crate::render;
 use crate::ui::style;
 use crate::ui::theme::Colors;
-use egui::Color32;
 use egui_term::{BackendCommand, TerminalTheme};
 use egui_tiles::{
     Behavior, ResizeState, SimplificationOptions, TabState, TileId, Tiles, UiResponse,
@@ -12,30 +11,136 @@ use std::path::PathBuf;
 
 pub type PaneId = u64;
 
-pub(crate) const DOT_RADIUS: f32 = 4.0;
-const DOT_SPACING: f32 = 12.0;
-const DOT_LEFT_MARGIN: f32 = 6.0;
-pub(crate) const TAB_DOT_RESERVED_HEIGHT: f32 = 14.0;
+pub(crate) const TAB_BAR_HEIGHT: f32 = 20.0;
 
-pub(crate) fn paint_tab_dots(
+#[derive(Clone)]
+pub struct TabGroupInfo {
+    pub active_idx: usize,
+    /// Primary pane ID for each tab, in display order.
+    pub members: Vec<PaneId>,
+    /// The TileId of the `Container::Tabs` that owns this group.
+    pub container_tile: TileId,
+}
+
+/// Render a full-width tab bar and return the index of a clicked tab (if any).
+/// The caller must pre-allocate `bar_rect` (typically `TAB_BAR_HEIGHT` px tall)
+/// and advance the cursor past it.
+pub(crate) fn paint_tab_bar(
+    ctx: &egui::Context,
     painter: &egui::Painter,
-    left_x: f32,
-    center_y: f32,
-    active_idx: usize,
-    count: usize,
-    active_color: Color32,
-    inactive_color: Color32,
-) {
-    let start_x = left_x + DOT_LEFT_MARGIN;
-    for i in 0..count {
-        let cx = start_x + (i as f32) * DOT_SPACING + DOT_RADIUS;
-        let color = if i == active_idx {
-            active_color
-        } else {
-            inactive_color
-        };
-        painter.circle_filled(egui::pos2(cx, center_y), DOT_RADIUS, color);
+    bar_rect: egui::Rect,
+    group: &TabGroupInfo,
+    tab_labels: &HashMap<PaneId, String>,
+    colors: &Colors,
+    font_size: f32,
+    overtake_hint: bool,
+) -> Option<usize> {
+    painter.rect_filled(bar_rect, 0.0, colors.pane_header_bg());
+
+    let tab_count = group.members.len();
+    if tab_count == 0 {
+        return None;
     }
+
+    let tab_width = bar_rect.width() / tab_count as f32;
+    let accent_bar_height = 2.0;
+    let font = egui::FontId::proportional(font_size);
+
+    let clicked = ctx.input(|i| {
+        if i.pointer.any_pressed() {
+            i.pointer.interact_pos()
+        } else {
+            None
+        }
+    });
+    let mut clicked_idx = None;
+
+    for (i, &pane_id) in group.members.iter().enumerate() {
+        let is_active = i == group.active_idx;
+        let tab_rect = egui::Rect::from_min_size(
+            egui::pos2(bar_rect.left() + i as f32 * tab_width, bar_rect.top()),
+            egui::vec2(tab_width, TAB_BAR_HEIGHT),
+        );
+
+        if is_active {
+            painter.rect_filled(tab_rect, 0.0, colors.bg_active);
+        }
+
+        if let Some(pos) = clicked {
+            if tab_rect.contains(pos) && !is_active {
+                clicked_idx = Some(i);
+            }
+        }
+
+        // Vertical divider between tabs (skip before first)
+        if i > 0 {
+            let divider_x = tab_rect.left();
+            let inset = 4.0;
+            painter.line_segment(
+                [
+                    egui::pos2(divider_x, bar_rect.top() + inset),
+                    egui::pos2(divider_x, bar_rect.bottom() - inset),
+                ],
+                egui::Stroke::new(1.5, colors.border),
+            );
+        }
+
+        let label = tab_labels
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_else(|| "Tab".to_string());
+
+        let text_color = if is_active {
+            colors.text_primary
+        } else {
+            colors.text_dim
+        };
+        let text_pad = 8.0;
+        let max_text_width = (tab_width - text_pad * 2.0).max(0.0);
+
+        let galley = painter.layout(label, font.clone(), text_color, max_text_width);
+
+        let text_pos = egui::pos2(
+            tab_rect.center().x - galley.size().x / 2.0,
+            tab_rect.center().y - galley.size().y / 2.0,
+        );
+        painter.galley(text_pos, galley, text_color);
+
+        if is_active {
+            let accent_rect = egui::Rect::from_min_size(
+                egui::pos2(tab_rect.left(), tab_rect.bottom() - accent_bar_height),
+                egui::vec2(tab_width, accent_bar_height),
+            );
+            painter.rect_filled(accent_rect, 0.0, colors.accent);
+        }
+    }
+
+    if overtake_hint {
+        let hint_font = egui::FontId::monospace(font_size - 1.0);
+        let hint_text = "Esc";
+        let hint_galley = painter.layout_no_wrap(hint_text.to_string(), hint_font, colors.text_dim);
+        let chip_pad = 4.0;
+        let chip_w = hint_galley.size().x + chip_pad * 2.0;
+        let chip_h = (TAB_BAR_HEIGHT - 6.0).max(10.0);
+        let chip_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                bar_rect.right() - chip_w - 4.0,
+                bar_rect.center().y - chip_h / 2.0,
+            ),
+            egui::vec2(chip_w, chip_h),
+        );
+        painter.rect_filled(chip_rect, egui::CornerRadius::same(3), colors.bg_active);
+        painter.rect_stroke(chip_rect, egui::CornerRadius::same(3), egui::Stroke::new(1.0, colors.border), egui::StrokeKind::Inside);
+        painter.text(
+            chip_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            hint_text,
+            egui::FontId::monospace(font_size - 1.0),
+            colors.text_dim,
+        );
+    }
+
+    clicked_idx
 }
 
 /// What kind of pane occupies a minimap slot.
@@ -101,7 +206,11 @@ pub struct PlexiBehavior<'a> {
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
     pub close_exited: Option<TileId>,
-    pub tab_info: HashMap<TileId, (usize, usize)>, // tile_id -> (index, count)
+    /// Set when a tab bar click selects a different tab: (container_tile, child_index).
+    pub tab_click: Option<(TileId, usize)>,
+    pub tab_info: HashMap<TileId, TabGroupInfo>,
+    /// Pre-computed display label for each pane: user-set name, then app name, then type string.
+    pub tab_labels: HashMap<PaneId, String>,
     pub zoomed_pane: Option<TileId>,
     pub colors: Colors,
     pub pane_names: HashMap<PaneId, String>,
@@ -187,12 +296,30 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
             let mut app_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-            render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused);
+
+            let tab_group = self.tab_info.get(&tile_id);
+            let has_tabs = tab_group.is_some();
+            if let Some(group) = tab_group {
+                let bar_rect = egui::Rect::from_min_size(
+                    app_ui.cursor().min,
+                    egui::vec2(app_ui.available_width(), TAB_BAR_HEIGHT),
+                );
+                app_ui.advance_cursor_after_rect(bar_rect);
+                let is_overtaken = app_pane.overlay_replaced.is_some();
+                if let Some(idx) = paint_tab_bar(
+                    app_ui.ctx(), app_ui.painter(), bar_rect, group,
+                    &self.tab_labels, &self.colors, self.pane_title_font_size, is_overtaken,
+                ) {
+                    self.tab_click = Some((group.container_tile, idx));
+                }
+            }
+
+            render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused, has_tabs);
         } else if let Some(terminal) = pane.as_terminal_mut() {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-            let close_exited = render::terminal_pane::render(
+            let (close_exited, tab_click) = render::terminal_pane::render(
                 &mut terminal_ui,
                 terminal,
                 tile_id,
@@ -202,11 +329,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 &self.colors,
                 &self.pane_names,
                 &self.tab_info,
+                &self.tab_labels,
                 self.workspace_root.as_deref(),
                 self.pane_title_font_size,
             );
             if close_exited {
                 self.close_exited = Some(tile_id);
+            }
+            if tab_click.is_some() {
+                self.tab_click = tab_click;
             }
         } else if pane.as_portal().is_some() {
             // Portal tile — direct egui rendering.

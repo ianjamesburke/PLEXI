@@ -3,7 +3,7 @@
 use super::{ClickFlash, FocusLayer, PlexiApp};
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
 use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
-use egui_tiles::Tile;
+use egui_tiles::{Tile, TileId};
 use std::collections::HashMap;
 
 const FLASH_DUR: f32 = 0.4;
@@ -400,6 +400,22 @@ impl PlexiApp {
                     .iter()
                     .filter_map(|(&id, p)| p.as_terminal()?.name.as_ref().map(|n| (id, n.clone())))
                     .collect();
+                let tab_labels: HashMap<PaneId, String> = ctx
+                    .panes
+                    .iter()
+                    .map(|(&id, p)| {
+                        let label = if let Some(name) = p.as_terminal().and_then(|t| t.name.as_ref()) {
+                            name.clone()
+                        } else {
+                            match p {
+                                crate::host::pane::Pane::Terminal(_) => "Terminal".to_string(),
+                                crate::host::pane::Pane::App(a) => a.name.clone(),
+                                crate::host::pane::Pane::Portal(_) => "Portal".to_string(),
+                            }
+                        };
+                        (id, label)
+                    })
+                    .collect();
                 let suppress_focus = self.show_command_palette
                     || self.renaming_pane.is_some()
                     || self.renaming_window.is_some();
@@ -517,7 +533,9 @@ impl PlexiApp {
                     theme: self.theme.clone(),
                     new_focused: None,
                     close_exited: None,
+                    tab_click: None,
                     tab_info,
+                    tab_labels,
                     zoomed_pane,
                     colors: self.colors,
                     pane_names,
@@ -591,15 +609,18 @@ impl PlexiApp {
                 // needs &mut ctx but behavior holds &mut ctx.panes).
                 let new_focused = behavior.new_focused;
                 let should_close_exited = behavior.close_exited.is_some();
+                let tab_click = behavior.tab_click.take();
                 let portal_zoom = behavior.portal_zoom_request.take();
 
                 // Draw zoom overlay if a pane is zoomed
+                let mut zoomed_tab_click: Option<(TileId, usize)> = None;
                 if let Some(zoomed_tile) = zoomed_pane {
                     if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(zoomed_tile) {
                         let pane_id = *pane_id;
                         let panel_rect = ui.max_rect();
-                        let zoomed_tab_info = behavior.tab_info.get(&zoomed_tile).copied();
+                        let zoomed_tab_info = behavior.tab_info.get(&zoomed_tile).cloned();
                         let zoomed_pane_name = behavior.pane_names.get(&pane_id).cloned();
+                        let zoomed_tab_labels = behavior.tab_labels.clone();
 
                         // Drop behavior to release the mutable borrow on ctx.panes
                         drop(behavior);
@@ -647,33 +668,38 @@ impl PlexiApp {
                         // own child_ui scoped to the area below the name bar, so there
                         // is no cursor/spacing gap between them.
                         let has_name = zoomed_pane_name.is_some();
+                        let has_tabs = zoomed_tab_info.is_some();
+                        let is_overtaken_app = ctx
+                            .panes
+                            .get(&pane_id)
+                            .and_then(|p| p.as_app())
+                            .is_some_and(|a| a.overlay_replaced.is_some());
+                        let has_top_bar = has_name || has_tabs;
                         const NAME_BAR_HEIGHT: f32 = 20.0;
-                        if has_name {
+                        if has_top_bar {
                             let bar_rect = egui::Rect::from_min_size(
                                 inner_rect.min,
                                 egui::vec2(inner_rect.width(), NAME_BAR_HEIGHT),
                             );
-                            // Paint via the parent `ui` painter at full opacity —
-                            // the explicit pane_header_bg() tone must match the
-                            // tiled name bar exactly, so it must not be dimmed by
-                            // the zoom overlay's 0.88-opacity child_ui.
                             ui.painter().rect_filled(
                                 bar_rect,
                                 0.0,
                                 self.colors.pane_header_bg(),
                             );
-                            if let Some((active_idx, count)) = zoomed_tab_info {
-                                crate::spatial::tiling::paint_tab_dots(
+                            if let Some(ref group) = zoomed_tab_info {
+                                if let Some(idx) = crate::spatial::tiling::paint_tab_bar(
+                                    ui.ctx(),
                                     ui.painter(),
-                                    bar_rect.left(),
-                                    bar_rect.center().y,
-                                    active_idx,
-                                    count,
-                                    self.colors.accent,
-                                    self.colors.bg_active,
-                                );
-                            }
-                            if let Some(ref name) = zoomed_pane_name {
+                                    bar_rect,
+                                    group,
+                                    &zoomed_tab_labels,
+                                    &self.colors,
+                                    self.config.pane_title_font_size.unwrap_or(11.0),
+                                    is_overtaken_app,
+                                ) {
+                                    zoomed_tab_click = Some((group.container_tile, idx));
+                                }
+                            } else if let Some(ref name) = zoomed_pane_name {
                                 ui.painter().text(
                                     bar_rect.center(),
                                     egui::Align2::CENTER_CENTER,
@@ -683,9 +709,7 @@ impl PlexiApp {
                                 );
                             }
                         }
-                        // Frame rect starts exactly where the name bar ends (or at the
-                        // top of inner_rect when there is no name bar), so no gap appears.
-                        let frame_rect = if has_name {
+                        let frame_rect = if has_top_bar {
                             inner_rect.with_min_y(inner_rect.min.y + NAME_BAR_HEIGHT)
                         } else {
                             inner_rect
@@ -715,23 +739,8 @@ impl PlexiApp {
                                     app_pane,
                                     &self.colors,
                                     !modal_open,
+                                    has_tabs,
                                 );
-                            }
-                            // Tab indicator dots for unnamed panes in a tab group —
-                            // painter-only, painted after the app render so they
-                            // sit on top of the app content.
-                            if !has_name {
-                                if let Some((active_idx, count)) = zoomed_tab_info {
-                                    crate::spatial::tiling::paint_tab_dots(
-                                        app_ui.painter(),
-                                        frame_rect.left(),
-                                        frame_rect.top() + 2.0 + 4.0, // 4.0 = dot radius
-                                        active_idx,
-                                        count,
-                                        self.colors.accent,
-                                        self.colors.bg_active,
-                                    );
-                                }
                             }
                         } else {
                             let mut frame_ui = ui.new_child(egui::UiBuilder::new().max_rect(frame_rect));
@@ -786,12 +795,6 @@ impl PlexiApp {
                                                     },
                                                 );
                                             } else {
-                                                // Reserve space for tab dots when no name bar
-                                                if !has_name && zoomed_tab_info.is_some() {
-                                                    ui.add_space(
-                                                        crate::spatial::tiling::TAB_DOT_RESERVED_HEIGHT,
-                                                    );
-                                                }
                                                 let font_size = t.font_size;
                                                 log::debug!("[DRAG] zoom overlay: TerminalView render start");
                                                 use egui_term::TerminalView;
@@ -807,22 +810,6 @@ impl PlexiApp {
                                                 ui.add(terminal);
                                                 log::debug!("[DRAG] zoom overlay: TerminalView render done");
                                             }
-                                        }
-                                    }
-
-                                    // Draw tab indicator dots for unnamed panes in a tab group
-                                    if !has_name {
-                                        if let Some((active_idx, count)) = zoomed_tab_info {
-                                            let rect = ui.max_rect();
-                                            crate::spatial::tiling::paint_tab_dots(
-                                                ui.painter(),
-                                                rect.left(),
-                                                rect.top() + 2.0 + 4.0, // 4.0 = dot radius
-                                                active_idx,
-                                                count,
-                                                self.colors.accent,
-                                                self.colors.bg_active,
-                                            );
                                         }
                                     }
                                 });
@@ -914,6 +901,11 @@ impl PlexiApp {
                             self.ctx.request_repaint();
                         }
                     }
+                }
+
+                let effective_tab_click = tab_click.or(zoomed_tab_click);
+                if let Some((container_tile, clicked_idx)) = effective_tab_click {
+                    self.switch_to_tab(container_tile, clicked_idx);
                 }
 
                 if should_close_exited {

@@ -1,7 +1,7 @@
 use crate::host::keys::Direction;
 use crate::host::pane::Pane;
 use crate::host::shell;
-use crate::spatial::tiling::PaneId;
+use crate::spatial::tiling::{PaneId, TabGroupInfo};
 use egui_tiles::{Container, Tile, TileId, Tree};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -218,27 +218,50 @@ impl Window {
         find_in_direction_geometric(from_rect, candidates, dir)
     }
 
-    pub(crate) fn compute_tab_info(&self) -> HashMap<TileId, (usize, usize)> {
+    pub(crate) fn compute_tab_info(&self) -> HashMap<TileId, TabGroupInfo> {
         let mut info = HashMap::new();
-        for (_tile_id, tile) in self.tree.tiles.iter() {
+        for (container_id, tile) in self.tree.tiles.iter() {
             if let Tile::Container(Container::Tabs(tabs)) = tile {
                 let children = &tabs.children;
                 if children.len() < 2 {
                     continue;
                 }
-                let count = children.len();
                 let active_idx = tabs
                     .active
                     .and_then(|a| children.iter().position(|&c| c == a))
                     .unwrap_or(0);
+                let members: Vec<PaneId> = children
+                    .iter()
+                    .filter_map(|&child| self.find_first_pane_id(child))
+                    .collect();
+                let group = TabGroupInfo {
+                    active_idx,
+                    members,
+                    container_tile: *container_id,
+                };
                 for child in children {
                     self.collect_panes(*child, &mut |pane_tile| {
-                        info.insert(pane_tile, (active_idx, count));
+                        info.insert(pane_tile, group.clone());
                     });
                 }
             }
         }
         info
+    }
+
+    fn find_first_pane_id(&self, tile_id: TileId) -> Option<PaneId> {
+        match self.tree.tiles.get(tile_id) {
+            Some(Tile::Pane(id)) => Some(*id),
+            Some(Tile::Container(container)) => {
+                for &child in container.children() {
+                    if let Some(id) = self.find_first_pane_id(child) {
+                        return Some(id);
+                    }
+                }
+                None
+            }
+            None => None,
+        }
     }
 
     fn collect_panes(&self, tile_id: TileId, f: &mut dyn FnMut(TileId)) {

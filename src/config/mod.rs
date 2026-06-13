@@ -70,6 +70,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "ai",
     "confirm_quit",
     "confirm_close",
+    "confirm_context_close",
     "keybindings",
     "focus_history_depth",
     "agents",
@@ -149,8 +150,10 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "new_tab",
     "next_tab",
     "prev_tab",
-    "first_tab",
-    "last_tab",
+    "next_context",
+    "prev_context",
+    "move_context_up",
+    "move_context_down",
     "nav_back",
     "focus_history_forward",
     "toggle_sidebar",
@@ -180,6 +183,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "hide_pane",
     "park_context",
     "open_notes_picker",
+    "close_context",
 ];
 
 pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
@@ -333,8 +337,10 @@ pub struct KeybindingsConfig {
     pub new_tab: Option<String>,
     pub next_tab: Option<String>,
     pub prev_tab: Option<String>,
-    pub first_tab: Option<String>,
-    pub last_tab: Option<String>,
+    pub next_context: Option<String>,
+    pub prev_context: Option<String>,
+    pub move_context_up: Option<String>,
+    pub move_context_down: Option<String>,
     pub nav_back: Option<String>,
     pub focus_history_forward: Option<String>,
     pub toggle_sidebar: Option<String>,
@@ -364,6 +370,7 @@ pub struct KeybindingsConfig {
     pub hide_pane: Option<String>,
     pub park_context: Option<String>,
     pub open_notes_picker: Option<String>,
+    pub close_context: Option<String>,
 }
 
 impl KeybindingsConfig {
@@ -397,8 +404,10 @@ impl KeybindingsConfig {
         overlay_field!(new_tab);
         overlay_field!(next_tab);
         overlay_field!(prev_tab);
-        overlay_field!(first_tab);
-        overlay_field!(last_tab);
+        overlay_field!(next_context);
+        overlay_field!(prev_context);
+        overlay_field!(move_context_up);
+        overlay_field!(move_context_down);
         overlay_field!(nav_back);
         overlay_field!(focus_history_forward);
         overlay_field!(toggle_sidebar);
@@ -428,6 +437,7 @@ impl KeybindingsConfig {
         overlay_field!(hide_pane);
         overlay_field!(park_context);
         overlay_field!(open_notes_picker);
+        overlay_field!(close_context);
     }
 }
 
@@ -452,6 +462,8 @@ pub struct PlexiConfig {
     pub confirm_quit: Option<bool>,
     /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
     pub confirm_close: Option<bool>,
+    /// Set to false to close contexts immediately on Cmd+Shift+W without a confirmation dialog (default: true).
+    pub confirm_context_close: Option<bool>,
     pub keybindings: Option<KeybindingsConfig>,
     pub focus_history_depth: Option<usize>,
     pub agents: Option<AgentsConfig>,
@@ -1224,6 +1236,9 @@ impl PlexiConfig {
         }
         if other.confirm_close.is_some() {
             self.confirm_close = other.confirm_close;
+        }
+        if other.confirm_context_close.is_some() {
+            self.confirm_context_close = other.confirm_context_close;
         }
         if other.pane_gap.is_some() {
             self.pane_gap = other.pane_gap;
