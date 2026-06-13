@@ -5,7 +5,7 @@ status: done
 estimate: "8h"
 actual: "11m"
 started_at: "2026-06-13T19:50:44Z"
-completed_at: "2026-06-13T20:01:33Z"
+completed_at: "2026-06-13T20:01:11Z"
 sprint: "s8"
 blocked_by: []
 gh_issue:
@@ -30,3 +30,7 @@ Epic #2162: the test infrastructure (egui_kittest, PlexiUiHarness, HostHarness, 
 ## Done When
 
 validate-pr runs `cargo test --bin plexi` as a pre-gate, reads the Test Evidence block from the /testing skill, and skips binary install when coverage criteria are met (gh #2162 acceptance criteria).
+
+## Variance Note
+
+Estimate 8h vs actual 11m. The work was skills-only — no Rust code, no new tests. The 8h estimate assumed wiring into Rust build tooling (CI, llvm-cov) but the actual gap was just enforcing /testing invocation in skill files and promoting the existing test evidence gate in validate-pr to Step 1a.
