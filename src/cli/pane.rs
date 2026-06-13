@@ -426,12 +426,13 @@ pub fn pane_self_cli() -> i32 {
     }
 }
 
-/// `plexi pane info [--previous]`
+/// `plexi pane info [--previous [N]]`
 ///
 /// Sends a `get_pane_info` or `get_previous_pane_info` command to PLEXI_SOCKET.
+/// When `steps` is `Some(n)`, walks back N steps in focus history.
 /// Merges in client-side fields (socket, channel) and pretty-prints the result
 /// as JSON. Returns 0 on success, 1 on error.
-pub fn pane_info_cli(previous: bool) -> i32 {
+pub fn pane_info_cli(previous: Option<u64>) -> i32 {
     let socket_path = match std::env::var("PLEXI_SOCKET") {
         Ok(v) => v,
         Err(_) => {
@@ -446,14 +447,15 @@ pub fn pane_info_cli(previous: bool) -> i32 {
         .to_string_lossy()
         .into_owned();
 
-    let payload = if previous {
+    let payload = if let Some(steps) = previous {
         log::info!(
-            "pane_info:cli: previous=true response_file={:?}",
+            "pane_info:cli: previous steps={steps} response_file={:?}",
             response_file
         );
         serde_json::json!({
             "type": "get_previous_pane_info",
             "response_file": response_file,
+            "steps": steps,
         })
     } else {
         let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
