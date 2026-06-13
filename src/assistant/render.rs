@@ -430,24 +430,24 @@ impl AssistantRenderer {
         choice
     }
 
-    /// Collapsed "thoughts" section: the model's reasoning tokens, visible
-    /// only while the `/thoughts` toggle is on. Used both for the in-flight
-    /// turn and for persisted assistant turns.
+    /// "thoughts" section: the model's reasoning tokens, rendered open and
+    /// dim above the answer. `/thoughts` is the visibility switch — when the
+    /// user opted in, the thoughts just show; no per-turn disclosure
+    /// triangle to click. Used both for the in-flight turn and for persisted
+    /// assistant turns.
     fn draw_thoughts_section(ui: &mut egui::Ui, colors: &Colors, thoughts: &str) {
-        egui::CollapsingHeader::new(
+        ui.label(
             RichText::new("thoughts")
-                .size(style::TEXT_CAPTION)
+                .size(style::TEXT_HINT)
                 .color(colors.text_dim),
-        )
-        .id_salt("assistant_thoughts")
-        .default_open(false)
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new(thoughts)
-                    .size(style::TEXT_CAPTION)
-                    .color(colors.text_dim),
-            );
-        });
+        );
+        ui.label(
+            RichText::new(thoughts)
+                .size(style::TEXT_CAPTION)
+                .italics()
+                .color(colors.text_dim),
+        );
+        ui.add_space(style::SPACE_XS);
     }
 
     fn draw_streaming_row(
@@ -725,6 +725,20 @@ impl AssistantRenderer {
                                 .desired_rows(1)
                                 .desired_width(f32::INFINITY)
                                 .frame(false)
+                                // Keep Tab in the composer: without the focus
+                                // lock, egui's frame-start focus traversal
+                                // moves focus away before the picker's Tab
+                                // handler ever sees the key.
+                                .lock_focus(true)
+                                // Plain Enter is consumed for submit before
+                                // the TextEdit runs; Shift+Enter is the
+                                // newline key (the default return_key is
+                                // unmodified Enter, so Shift+Enter would
+                                // otherwise insert nothing).
+                                .return_key(Some(egui::KeyboardShortcut::new(
+                                    egui::Modifiers::SHIFT,
+                                    egui::Key::Enter,
+                                )))
                                 .hint_text(
                                     RichText::new("Message the assistant — / for commands")
                                         .size(style::TEXT_CAPTION)
