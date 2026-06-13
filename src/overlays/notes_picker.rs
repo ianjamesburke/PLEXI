@@ -483,7 +483,7 @@ impl PlexiApp {
                                 entry.preview.chars().take(50).collect()
                             };
                             let row_response = ListRow::new(&entry.title)
-                                .chip(if entry.inbox { "inbox" } else { "note" })
+                                .metadata_chips(if entry.inbox { &["inbox"] } else { &["note"] })
                                 .secondary(&secondary)
                                 .trailing_action("×")
                                 .danger_trailing(true)
