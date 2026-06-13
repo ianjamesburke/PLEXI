@@ -1,6 +1,27 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.760] — 2026-06-13
+
+### Changes
+- feat(cli): caller-targeted CLI — portal anchor, context push/set-root/describe, unified --from flag (#2233)
+- perf: throttle remaining Working-pulse repaint loops to 10fps
+- chore(stint): make blocker graph self-contained — drop satisfied @2194, convert @1239 refs to task 0072
+- perf: event-driven frames while typing — kill the 60fps agent-pip loop
+- fix: down-arrow newline append — no double input, no dropped repeats
+- feat: unify glyph-height caret across every text input
+- chore(stint): cut sequencing blockers — blocked_by now means true dependency only
+- tweak: caret height +1px over glyph height
+- chore(stint): v1 handoff audit — reconcile issues, gates, and queue
+- fix: closing the last pane in a subcontext collapses it and zooms out (#2232)
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
 ## [0.0.759] — 2026-06-13
 
 ### Changes
