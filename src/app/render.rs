@@ -400,6 +400,22 @@ impl PlexiApp {
                     .iter()
                     .filter_map(|(&id, p)| p.as_terminal()?.name.as_ref().map(|n| (id, n.clone())))
                     .collect();
+                let tab_labels: HashMap<PaneId, String> = ctx
+                    .panes
+                    .iter()
+                    .map(|(&id, p)| {
+                        let label = if let Some(name) = p.as_terminal().and_then(|t| t.name.as_ref()) {
+                            name.clone()
+                        } else {
+                            match p {
+                                crate::host::pane::Pane::Terminal(_) => "Terminal".to_string(),
+                                crate::host::pane::Pane::App(a) => a.name.clone(),
+                                crate::host::pane::Pane::Portal(_) => "Portal".to_string(),
+                            }
+                        };
+                        (id, label)
+                    })
+                    .collect();
                 let suppress_focus = self.show_command_palette
                     || self.renaming_pane.is_some()
                     || self.renaming_window.is_some();
@@ -518,6 +534,7 @@ impl PlexiApp {
                     new_focused: None,
                     close_exited: None,
                     tab_info,
+                    tab_labels,
                     zoomed_pane,
                     colors: self.colors,
                     pane_names,
@@ -598,8 +615,9 @@ impl PlexiApp {
                     if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(zoomed_tile) {
                         let pane_id = *pane_id;
                         let panel_rect = ui.max_rect();
-                        let zoomed_tab_info = behavior.tab_info.get(&zoomed_tile).copied();
+                        let zoomed_tab_info = behavior.tab_info.get(&zoomed_tile).cloned();
                         let zoomed_pane_name = behavior.pane_names.get(&pane_id).cloned();
+                        let zoomed_tab_labels = behavior.tab_labels.clone();
 
                         // Drop behavior to release the mutable borrow on ctx.panes
                         drop(behavior);
@@ -662,25 +680,26 @@ impl PlexiApp {
                                 0.0,
                                 self.colors.pane_header_bg(),
                             );
-                            if let Some((active_idx, count)) = zoomed_tab_info {
-                                crate::spatial::tiling::paint_tab_dots(
+                            if let Some(ref group) = zoomed_tab_info {
+                                crate::spatial::tiling::paint_tab_bar(
                                     ui.painter(),
-                                    bar_rect.left(),
-                                    bar_rect.center().y,
-                                    active_idx,
-                                    count,
-                                    self.colors.accent,
-                                    self.colors.bg_active,
+                                    bar_rect,
+                                    group,
+                                    &zoomed_tab_labels,
+                                    &self.colors,
+                                    self.config.pane_title_font_size.unwrap_or(11.0),
                                 );
                             }
-                            if let Some(ref name) = zoomed_pane_name {
-                                ui.painter().text(
-                                    bar_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    name,
-                                    egui::FontId::proportional(11.0),
-                                    self.colors.text_dim,
-                                );
+                            if zoomed_tab_info.is_none() {
+                                if let Some(ref name) = zoomed_pane_name {
+                                    ui.painter().text(
+                                        bar_rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        name,
+                                        egui::FontId::proportional(11.0),
+                                        self.colors.text_dim,
+                                    );
+                                }
                             }
                         }
                         // Frame rect starts exactly where the name bar ends (or at the
@@ -717,19 +736,19 @@ impl PlexiApp {
                                     !modal_open,
                                 );
                             }
-                            // Tab indicator dots for unnamed panes in a tab group —
-                            // painter-only, painted after the app render so they
-                            // sit on top of the app content.
                             if !has_name {
-                                if let Some((active_idx, count)) = zoomed_tab_info {
-                                    crate::spatial::tiling::paint_tab_dots(
+                                if let Some(ref group) = zoomed_tab_info {
+                                    let tab_bar_rect = egui::Rect::from_min_size(
+                                        frame_rect.min,
+                                        egui::vec2(frame_rect.width(), crate::spatial::tiling::TAB_BAR_HEIGHT),
+                                    );
+                                    crate::spatial::tiling::paint_tab_bar(
                                         app_ui.painter(),
-                                        frame_rect.left(),
-                                        frame_rect.top() + 2.0 + 4.0, // 4.0 = dot radius
-                                        active_idx,
-                                        count,
-                                        self.colors.accent,
-                                        self.colors.bg_active,
+                                        tab_bar_rect,
+                                        group,
+                                        &zoomed_tab_labels,
+                                        &self.colors,
+                                        self.config.pane_title_font_size.unwrap_or(11.0),
                                     );
                                 }
                             }
@@ -786,10 +805,9 @@ impl PlexiApp {
                                                     },
                                                 );
                                             } else {
-                                                // Reserve space for tab dots when no name bar
                                                 if !has_name && zoomed_tab_info.is_some() {
                                                     ui.add_space(
-                                                        crate::spatial::tiling::TAB_DOT_RESERVED_HEIGHT,
+                                                        crate::spatial::tiling::TAB_BAR_HEIGHT,
                                                     );
                                                 }
                                                 let font_size = t.font_size;
@@ -810,18 +828,20 @@ impl PlexiApp {
                                         }
                                     }
 
-                                    // Draw tab indicator dots for unnamed panes in a tab group
                                     if !has_name {
-                                        if let Some((active_idx, count)) = zoomed_tab_info {
+                                        if let Some(ref group) = zoomed_tab_info {
                                             let rect = ui.max_rect();
-                                            crate::spatial::tiling::paint_tab_dots(
+                                            let tab_bar_rect = egui::Rect::from_min_size(
+                                                rect.min,
+                                                egui::vec2(rect.width(), crate::spatial::tiling::TAB_BAR_HEIGHT),
+                                            );
+                                            crate::spatial::tiling::paint_tab_bar(
                                                 ui.painter(),
-                                                rect.left(),
-                                                rect.top() + 2.0 + 4.0, // 4.0 = dot radius
-                                                active_idx,
-                                                count,
-                                                self.colors.accent,
-                                                self.colors.bg_active,
+                                                tab_bar_rect,
+                                                group,
+                                                &zoomed_tab_labels,
+                                                &self.colors,
+                                                self.config.pane_title_font_size.unwrap_or(11.0),
                                             );
                                         }
                                     }

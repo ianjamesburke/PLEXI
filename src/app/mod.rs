@@ -3023,13 +3023,45 @@ impl eframe::App for PlexiApp {
                     self.cycle_tab(false);
                     log::info!("tab: prev — window={}", self.active_window);
                 }
-                Action::FirstTab => {
-                    self.jump_to_tab(0);
-                    log::info!("tab: first — window={}", self.active_window);
+                Action::NextContext => {
+                    let active = self.router.active_idx();
+                    let num = self.router.len();
+                    for offset in 1..num {
+                        let idx = (active + offset) % num;
+                        if !self.router.get(idx).parked {
+                            log::info!("context: next — idx={}", idx);
+                            self.switch_workspace(idx);
+                            break;
+                        }
+                    }
                 }
-                Action::LastTab => {
-                    self.jump_to_tab(usize::MAX);
-                    log::info!("tab: last — window={}", self.active_window);
+                Action::PrevContext => {
+                    let active = self.router.active_idx();
+                    let num = self.router.len();
+                    for offset in 1..num {
+                        let idx = (active + num - offset) % num;
+                        if !self.router.get(idx).parked {
+                            log::info!("context: prev — idx={}", idx);
+                            self.switch_workspace(idx);
+                            break;
+                        }
+                    }
+                }
+                Action::MoveContextUp => {
+                    let active = self.router.active_idx();
+                    if active > 0 {
+                        self.router.swap_tracking_active(active, active - 1);
+                        log::info!("context: moved up — {} to {}", active, active - 1);
+                        self.save_workspace();
+                    }
+                }
+                Action::MoveContextDown => {
+                    let active = self.router.active_idx();
+                    if active + 1 < self.router.len() {
+                        self.router.swap_tracking_active(active, active + 1);
+                        log::info!("context: moved down — {} to {}", active, active + 1);
+                        self.save_workspace();
+                    }
                 }
                 Action::IncreasePaneFontSize => {
                     self.adjust_focused_pane_font_size(1.0);

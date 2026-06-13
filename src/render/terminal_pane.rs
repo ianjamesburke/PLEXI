@@ -11,7 +11,7 @@
 
 use crate::app_protocol::AgentState;
 use crate::host::pane::TerminalPane;
-use crate::spatial::tiling::{paint_tab_dots, PaneId, DOT_RADIUS, TAB_DOT_RESERVED_HEIGHT};
+use crate::spatial::tiling::{paint_tab_bar, PaneId, TabGroupInfo, TAB_BAR_HEIGHT};
 use crate::ui::theme::{self, Colors};
 use egui::Vec2;
 use egui_term::{TerminalTheme, TerminalView};
@@ -37,7 +37,8 @@ pub fn render(
     theme: &TerminalTheme,
     colors: &Colors,
     pane_names: &HashMap<PaneId, String>,
-    tab_info: &HashMap<TileId, (usize, usize)>,
+    tab_info: &HashMap<TileId, TabGroupInfo>,
+    tab_labels: &HashMap<PaneId, String>,
     workspace_root: Option<&Path>,
     pane_title_font_size: f32,
 ) -> bool {
@@ -58,11 +59,12 @@ pub fn render(
     }
 
     let outside_workspace = is_terminal_outside_workspace(terminal, workspace_root);
-    render_name_bar_and_dots(
+    render_name_bar_and_tabs(
         ui,
         tile_id,
         pane_id,
         tab_info,
+        tab_labels,
         pane_names,
         colors,
         outside_workspace,
@@ -89,68 +91,50 @@ pub fn render(
         .set_size(Vec2::new(ui.available_width(), ui.available_height()));
     ui.add(view);
 
-    // Draw tab indicator dots (top-left) when 2+ tabs and NO name bar.
-    if !pane_names.contains_key(pane_id) {
-        if let Some(&(active_idx, count)) = tab_info.get(&tile_id) {
-            let rect = ui.max_rect();
-            paint_tab_dots(
-                ui.painter(),
-                rect.left(),
-                rect.top() + 2.0 + DOT_RADIUS,
-                active_idx,
-                count,
-                colors.accent,
-                colors.bg_active,
-            );
-        }
-    }
+    // The tab bar for unnamed panes is rendered by render_name_bar_and_tabs
+    // above (it now always shows the full bar when tabs exist), so no
+    // additional dot overlay is needed here.
 
     false
 }
 
-/// Render the pane name bar (if named) and reserve tab-dot space for a
-/// terminal in full-pane mode. When `outside_workspace` is true, paint a
-/// small right-aligned "↗ outside workspace" badge so the user can see the
-/// scope drift without it being intrusive.
-fn render_name_bar_and_dots(
+fn render_name_bar_and_tabs(
     ui: &mut egui::Ui,
     tile_id: TileId,
     pane_id: &PaneId,
-    tab_info: &HashMap<TileId, (usize, usize)>,
+    tab_info: &HashMap<TileId, TabGroupInfo>,
+    tab_labels: &HashMap<PaneId, String>,
     pane_names: &HashMap<PaneId, String>,
     colors: &Colors,
     outside_workspace: bool,
     name_font_size: f32,
     agent_state: Option<&AgentState>,
 ) {
-    let name_bar_height = 20.0;
     let has_name = pane_names.contains_key(pane_id);
-    let has_tabs = tab_info.contains_key(&tile_id);
+    let tab_group = tab_info.get(&tile_id);
 
-    // The full name-bar strip is allocated when there's a name to print or
-    // an outside-workspace badge to draw. Without one, the slim tab-dot
-    // reservation (or no reservation at all) is enough.
-    let needs_full_bar = has_name || outside_workspace;
-
-    if needs_full_bar {
+    if let Some(group) = tab_group {
         let bar_rect = egui::Rect::from_min_size(
             ui.cursor().min,
-            egui::vec2(ui.available_width(), name_bar_height),
+            egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
+        );
+        ui.advance_cursor_after_rect(bar_rect);
+        paint_tab_bar(ui.painter(), bar_rect, group, tab_labels, colors, name_font_size);
+
+        if outside_workspace {
+            paint_outside_workspace_badge(ui.painter(), bar_rect);
+        }
+
+        if let Some(state) = agent_state {
+            paint_activity_dot(ui, bar_rect, state, colors);
+        }
+    } else if has_name || outside_workspace {
+        let bar_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         ui.advance_cursor_after_rect(bar_rect);
         ui.painter().rect_filled(bar_rect, 0.0, colors.pane_header_bg());
-
-        if let Some(&(active_idx, count)) = tab_info.get(&tile_id) {
-            paint_tab_dots(
-                ui.painter(),
-                bar_rect.left(),
-                bar_rect.center().y,
-                active_idx,
-                count,
-                colors.accent,
-                colors.bg_active,
-            );
-        }
 
         if has_name {
             let name = &pane_names[pane_id];
@@ -163,61 +147,65 @@ fn render_name_bar_and_dots(
             );
         }
 
-        // Activity dot — rendered left of center when there's a named bar.
         if let Some(state) = agent_state {
-            const ACTIVITY_DOT_RADIUS: f32 = 3.0;
-            const ACTIVITY_DOT_MARGIN: f32 = 6.0;
-            let t = ui.input(|i| i.time);
-            let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
-            let cx = bar_rect.left() + ACTIVITY_DOT_MARGIN + ACTIVITY_DOT_RADIUS;
-            ui.painter().circle_filled(
-                egui::pos2(cx, bar_rect.center().y),
-                ACTIVITY_DOT_RADIUS,
-                color,
-            );
-            if matches!(state, AgentState::Working) {
-                // Pulse only needs ~10fps; an unconditional request_repaint
-                // pins the window at display refresh while agents work.
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(100));
-            }
+            paint_activity_dot(ui, bar_rect, state, colors);
         }
 
         if outside_workspace {
-            // Right-aligned amber badge. Mirrors the lifecycle-pill pattern
-            // — minimal, glanceable, never intrusive.
-            let label = "↗ outside workspace";
-            let amber = egui::Color32::from_rgb(0xff, 0xb8, 0x6b);
-            let font = egui::FontId::proportional(10.0);
-            let galley = ui
-                .painter()
-                .layout_no_wrap(label.to_string(), font.clone(), amber);
-            let pad_x = 6.0;
-            let badge_w = galley.size().x + pad_x * 2.0;
-            let badge_h = 14.0;
-            let badge_rect = egui::Rect::from_min_size(
-                egui::pos2(
-                    bar_rect.right() - badge_w - 4.0,
-                    bar_rect.center().y - badge_h / 2.0,
-                ),
-                egui::vec2(badge_w, badge_h),
-            );
-            ui.painter().rect_filled(
-                badge_rect,
-                egui::CornerRadius::same(3),
-                egui::Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x6b, 28),
-            );
-            ui.painter().text(
-                badge_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                label,
-                font,
-                amber,
-            );
+            paint_outside_workspace_badge(ui.painter(), bar_rect);
         }
-    } else if has_tabs {
-        ui.add_space(TAB_DOT_RESERVED_HEIGHT);
     }
+}
+
+fn paint_activity_dot(
+    ui: &mut egui::Ui,
+    bar_rect: egui::Rect,
+    state: &AgentState,
+    colors: &Colors,
+) {
+    const ACTIVITY_DOT_RADIUS: f32 = 3.0;
+    const ACTIVITY_DOT_MARGIN: f32 = 6.0;
+    let t = ui.input(|i| i.time);
+    let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
+    let cx = bar_rect.left() + ACTIVITY_DOT_MARGIN + ACTIVITY_DOT_RADIUS;
+    ui.painter().circle_filled(
+        egui::pos2(cx, bar_rect.center().y),
+        ACTIVITY_DOT_RADIUS,
+        color,
+    );
+    if matches!(state, AgentState::Working) {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+    }
+}
+
+fn paint_outside_workspace_badge(painter: &egui::Painter, bar_rect: egui::Rect) {
+    let label = "↗ outside workspace";
+    let amber = egui::Color32::from_rgb(0xff, 0xb8, 0x6b);
+    let font = egui::FontId::proportional(10.0);
+    let galley = painter.layout_no_wrap(label.to_string(), font.clone(), amber);
+    let pad_x = 6.0;
+    let badge_w = galley.size().x + pad_x * 2.0;
+    let badge_h = 14.0;
+    let badge_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            bar_rect.right() - badge_w - 4.0,
+            bar_rect.center().y - badge_h / 2.0,
+        ),
+        egui::vec2(badge_w, badge_h),
+    );
+    painter.rect_filled(
+        badge_rect,
+        egui::CornerRadius::same(3),
+        egui::Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x6b, 28),
+    );
+    painter.text(
+        badge_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        font,
+        amber,
+    );
 }
 
 /// True when the terminal's child PID has a CWD that is not an ancestor of

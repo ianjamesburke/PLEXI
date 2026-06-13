@@ -2,7 +2,6 @@ use crate::host::pane::{Pane, TerminalPane};
 use crate::render;
 use crate::ui::style;
 use crate::ui::theme::Colors;
-use egui::Color32;
 use egui_term::{BackendCommand, TerminalTheme};
 use egui_tiles::{
     Behavior, ResizeState, SimplificationOptions, TabState, TileId, Tiles, UiResponse,
@@ -12,29 +11,77 @@ use std::path::PathBuf;
 
 pub type PaneId = u64;
 
-pub(crate) const DOT_RADIUS: f32 = 4.0;
-const DOT_SPACING: f32 = 12.0;
-const DOT_LEFT_MARGIN: f32 = 6.0;
-pub(crate) const TAB_DOT_RESERVED_HEIGHT: f32 = 14.0;
+pub(crate) const TAB_BAR_HEIGHT: f32 = 20.0;
 
-pub(crate) fn paint_tab_dots(
+#[derive(Clone)]
+pub struct TabGroupInfo {
+    pub active_idx: usize,
+    /// Primary pane ID for each tab, in display order.
+    pub members: Vec<PaneId>,
+}
+
+/// Render a full-width tab bar using the painter API (no Ui allocation).
+/// The caller must pre-allocate `bar_rect` (typically `TAB_BAR_HEIGHT` px tall)
+/// and advance the cursor past it. `tab_labels` maps each PaneId to its display
+/// label (pre-computed from name or pane type).
+pub(crate) fn paint_tab_bar(
     painter: &egui::Painter,
-    left_x: f32,
-    center_y: f32,
-    active_idx: usize,
-    count: usize,
-    active_color: Color32,
-    inactive_color: Color32,
+    bar_rect: egui::Rect,
+    group: &TabGroupInfo,
+    tab_labels: &HashMap<PaneId, String>,
+    colors: &Colors,
+    font_size: f32,
 ) {
-    let start_x = left_x + DOT_LEFT_MARGIN;
-    for i in 0..count {
-        let cx = start_x + (i as f32) * DOT_SPACING + DOT_RADIUS;
-        let color = if i == active_idx {
-            active_color
+    painter.rect_filled(bar_rect, 0.0, colors.pane_header_bg());
+
+    let tab_count = group.members.len();
+    if tab_count == 0 {
+        return;
+    }
+
+    let tab_width = bar_rect.width() / tab_count as f32;
+    let accent_bar_height = 2.0;
+    let font = egui::FontId::proportional(font_size);
+
+    for (i, &pane_id) in group.members.iter().enumerate() {
+        let is_active = i == group.active_idx;
+        let tab_rect = egui::Rect::from_min_size(
+            egui::pos2(bar_rect.left() + i as f32 * tab_width, bar_rect.top()),
+            egui::vec2(tab_width, TAB_BAR_HEIGHT),
+        );
+
+        if is_active {
+            painter.rect_filled(tab_rect, 0.0, colors.bg_active);
+        }
+
+        let label = tab_labels
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_else(|| "Tab".to_string());
+
+        let text_color = if is_active {
+            colors.text_primary
         } else {
-            inactive_color
+            colors.text_dim
         };
-        painter.circle_filled(egui::pos2(cx, center_y), DOT_RADIUS, color);
+        let text_pad = 8.0;
+        let max_text_width = (tab_width - text_pad * 2.0).max(0.0);
+
+        let galley = painter.layout(label, font.clone(), text_color, max_text_width);
+
+        let text_pos = egui::pos2(
+            tab_rect.center().x - galley.size().x / 2.0,
+            tab_rect.center().y - galley.size().y / 2.0,
+        );
+        painter.galley(text_pos, galley, text_color);
+
+        if is_active {
+            let accent_rect = egui::Rect::from_min_size(
+                egui::pos2(tab_rect.left(), tab_rect.bottom() - accent_bar_height),
+                egui::vec2(tab_width, accent_bar_height),
+            );
+            painter.rect_filled(accent_rect, 0.0, colors.accent);
+        }
     }
 }
 
@@ -101,7 +148,9 @@ pub struct PlexiBehavior<'a> {
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
     pub close_exited: Option<TileId>,
-    pub tab_info: HashMap<TileId, (usize, usize)>, // tile_id -> (index, count)
+    pub tab_info: HashMap<TileId, TabGroupInfo>,
+    /// Pre-computed display label for each pane: user-set name, then app name, then type string.
+    pub tab_labels: HashMap<PaneId, String>,
     pub zoomed_pane: Option<TileId>,
     pub colors: Colors,
     pub pane_names: HashMap<PaneId, String>,
@@ -202,6 +251,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 &self.colors,
                 &self.pane_names,
                 &self.tab_info,
+                &self.tab_labels,
                 self.workspace_root.as_deref(),
                 self.pane_title_font_size,
             );

@@ -149,8 +149,10 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "new_tab",
     "next_tab",
     "prev_tab",
-    "first_tab",
-    "last_tab",
+    "next_context",
+    "prev_context",
+    "move_context_up",
+    "move_context_down",
     "nav_back",
     "focus_history_forward",
     "toggle_sidebar",
@@ -333,8 +335,10 @@ pub struct KeybindingsConfig {
     pub new_tab: Option<String>,
     pub next_tab: Option<String>,
     pub prev_tab: Option<String>,
-    pub first_tab: Option<String>,
-    pub last_tab: Option<String>,
+    pub next_context: Option<String>,
+    pub prev_context: Option<String>,
+    pub move_context_up: Option<String>,
+    pub move_context_down: Option<String>,
     pub nav_back: Option<String>,
     pub focus_history_forward: Option<String>,
     pub toggle_sidebar: Option<String>,
@@ -397,8 +401,10 @@ impl KeybindingsConfig {
         overlay_field!(new_tab);
         overlay_field!(next_tab);
         overlay_field!(prev_tab);
-        overlay_field!(first_tab);
-        overlay_field!(last_tab);
+        overlay_field!(next_context);
+        overlay_field!(prev_context);
+        overlay_field!(move_context_up);
+        overlay_field!(move_context_down);
         overlay_field!(nav_back);
         overlay_field!(focus_history_forward);
         overlay_field!(toggle_sidebar);

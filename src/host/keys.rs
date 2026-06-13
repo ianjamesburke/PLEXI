@@ -14,7 +14,8 @@ use crate::config::KeybindingsConfig;
 // Cmd+Shift+M                 — toggle minimap overlay
 // Cmd+T                       — new tab
 // Cmd+Shift+L/H               — next/prev tab
-// Cmd+Shift+K/J               — first/last tab
+// Cmd+Shift+J/K               — next/prev context
+// Cmd+Shift+Ctrl+J/K           — move context down/up
 // Cmd+Q                       — quit
 // Cmd+B                       — toggle sidebar
 // Cmd+Enter                   — zoom into sub-context (Portal focus) or toggle pane zoom
@@ -68,8 +69,10 @@ pub enum Action {
     SwitchContext(usize),
     NextTab,
     PrevTab,
-    FirstTab,
-    LastTab,
+    NextContext,
+    PrevContext,
+    MoveContextUp,
+    MoveContextDown,
     Quit,
     ToggleSidebar,
     ToggleShortcuts,
@@ -173,8 +176,10 @@ pub struct KeyBindings {
     pub new_tab: (egui::Modifiers, egui::Key),
     pub next_tab: (egui::Modifiers, egui::Key),
     pub prev_tab: (egui::Modifiers, egui::Key),
-    pub first_tab: (egui::Modifiers, egui::Key),
-    pub last_tab: (egui::Modifiers, egui::Key),
+    pub next_context: (egui::Modifiers, egui::Key),
+    pub prev_context: (egui::Modifiers, egui::Key),
+    pub move_context_up: (egui::Modifiers, egui::Key),
+    pub move_context_down: (egui::Modifiers, egui::Key),
     pub nav_back: (egui::Modifiers, egui::Key),
     pub focus_history_forward: (egui::Modifiers, egui::Key),
     pub toggle_sidebar: (egui::Modifiers, egui::Key),
@@ -242,6 +247,13 @@ fn cmd_ctrl_alt() -> egui::Modifiers {
         ..egui::Modifiers::COMMAND
     }
 }
+fn cmd_shift_ctrl() -> egui::Modifiers {
+    egui::Modifiers {
+        shift: true,
+        ctrl: true,
+        ..egui::Modifiers::COMMAND
+    }
+}
 impl Default for KeyBindings {
     fn default() -> Self {
         Self {
@@ -267,8 +279,10 @@ impl Default for KeyBindings {
             new_tab: (cmd(), egui::Key::T),
             next_tab: (cmd_shift(), egui::Key::L),
             prev_tab: (cmd_shift(), egui::Key::H),
-            first_tab: (cmd_shift(), egui::Key::K),
-            last_tab: (cmd_shift(), egui::Key::J),
+            next_context: (cmd_shift(), egui::Key::J),
+            prev_context: (cmd_shift(), egui::Key::K),
+            move_context_up: (cmd_shift_ctrl(), egui::Key::K),
+            move_context_down: (cmd_shift_ctrl(), egui::Key::J),
             nav_back: (cmd(), egui::Key::OpenBracket),
             focus_history_forward: (cmd(), egui::Key::CloseBracket),
             toggle_sidebar: (cmd(), egui::Key::B),
@@ -448,8 +462,10 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(new_tab, "new_tab");
     apply_override!(next_tab, "next_tab");
     apply_override!(prev_tab, "prev_tab");
-    apply_override!(first_tab, "first_tab");
-    apply_override!(last_tab, "last_tab");
+    apply_override!(next_context, "next_context");
+    apply_override!(prev_context, "prev_context");
+    apply_override!(move_context_up, "move_context_up");
+    apply_override!(move_context_down, "move_context_down");
     apply_override!(nav_back, "nav_back");
     apply_override!(focus_history_forward, "focus_history_forward");
     apply_override!(toggle_sidebar, "toggle_sidebar");
@@ -504,8 +520,10 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("new_tab", bindings.new_tab),
         ("next_tab", bindings.next_tab),
         ("prev_tab", bindings.prev_tab),
-        ("first_tab", bindings.first_tab),
-        ("last_tab", bindings.last_tab),
+        ("next_context", bindings.next_context),
+        ("prev_context", bindings.prev_context),
+        ("move_context_up", bindings.move_context_up),
+        ("move_context_down", bindings.move_context_down),
         ("nav_back", bindings.nav_back),
         ("focus_history_forward", bindings.focus_history_forward),
         ("toggle_sidebar", bindings.toggle_sidebar),
@@ -739,18 +757,32 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             action: Action::PrevTab,
         },
         BindingEntry {
-            modifiers: b.first_tab.0,
-            key: b.first_tab.1,
+            modifiers: b.next_context.0,
+            key: b.next_context.1,
             exact: false,
             context: BindingContext::Normal,
-            action: Action::FirstTab,
+            action: Action::NextContext,
         },
         BindingEntry {
-            modifiers: b.last_tab.0,
-            key: b.last_tab.1,
+            modifiers: b.prev_context.0,
+            key: b.prev_context.1,
             exact: false,
             context: BindingContext::Normal,
-            action: Action::LastTab,
+            action: Action::PrevContext,
+        },
+        BindingEntry {
+            modifiers: b.move_context_up.0,
+            key: b.move_context_up.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::MoveContextUp,
+        },
+        BindingEntry {
+            modifiers: b.move_context_down.0,
+            key: b.move_context_down.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::MoveContextDown,
         },
         BindingEntry {
             modifiers: b.navigate_left.0,
