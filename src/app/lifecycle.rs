@@ -1586,20 +1586,7 @@ impl PlexiApp {
                     "pane_ipc: kind=zoom_out_of_context depth={}",
                     self.router.current_depth()
                 );
-                if let Some((parent_ctx_id, parent_win_id, focused_tile)) = self.router.pop_depth()
-                {
-                    if let Some(ctx_idx) = self.router.position(|c| c.context_id == parent_ctx_id) {
-                        self.switch_workspace(ctx_idx);
-                        if let Some(win_idx) = self
-                            .windows
-                            .iter()
-                            .position(|w| w.window_id == parent_win_id)
-                        {
-                            self.active_window = win_idx;
-                            self.windows[win_idx].focused_pane = focused_tile;
-                        }
-                    }
-                }
+                self.zoom_out_of_context();
             }
             crate::app_protocol::AppRequest::PushPaneToSubcontext { name } => {
                 log::info!("pane_ipc: kind=push_pane_to_subcontext name={:?}", name);

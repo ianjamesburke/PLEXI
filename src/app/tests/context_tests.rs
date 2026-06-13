@@ -1494,3 +1494,161 @@ fn rename_on_focused_pane_opens_pane_rename() {
     assert_eq!(app.renaming_pane, Some(pane_id));
     assert_eq!(app.renaming_window, None);
 }
+
+/// Closing the last pane in a subcontext must delete the subcontext and zoom
+/// back out to the parent — the exact landing Cmd+Escape (ContextZoomOut)
+/// would produce: parent context, parent window, previously focused tile.
+#[test]
+fn closing_last_pane_in_subcontext_collapses_and_zooms_out() {
+    use std::collections::HashMap;
+
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_id = app.router.active().context_id;
+    let root_win_id = app.windows[0].window_id;
+    let (root_tile, _root_pane) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(root_tile);
+
+    // Child subcontext with a single pane.
+    let child_id = 9101u64;
+    let child_win_id = 9102u64;
+    let child_pane = 88991u64;
+    app.router
+        .push(test_context(child_id, root_id, "collapse_child"));
+    app.context_active_window.insert(child_id, child_win_id);
+
+    let mut child_tiles = egui_tiles::Tiles::default();
+    let child_tile = child_tiles.insert_pane(child_pane);
+    let mut child_panes = HashMap::new();
+    child_panes.insert(child_pane, test_app_pane(child_pane));
+    app.windows.push(Window {
+        name: "collapse_child".to_string(),
+        path: std::path::PathBuf::from("/tmp/collapse_child"),
+        tree: egui_tiles::Tree::new("collapse_child", child_tile, child_tiles),
+        panes: child_panes,
+        focused_pane: Some(child_tile),
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: child_win_id,
+        context_id: child_id,
+    });
+
+    // Zoom Root → child, as sidebar/portal zoom does.
+    app.router
+        .push_depth(root_id, root_win_id, Some(root_tile));
+    let child_idx = app.router.position(|c| c.context_id == child_id).unwrap();
+    app.switch_workspace(child_idx);
+    assert_eq!(app.router.active().context_id, child_id);
+
+    // Close the only pane in the subcontext (Cmd+W path).
+    app.execute_close_pane();
+
+    assert!(
+        app.router.iter().all(|c| c.context_id != child_id),
+        "emptied subcontext must be removed from the router"
+    );
+    assert!(
+        app.windows.iter().all(|w| w.context_id != child_id),
+        "emptied subcontext must have no remaining windows"
+    );
+    assert_eq!(
+        app.router.active().context_id,
+        root_id,
+        "closing the last subcontext pane must land on the parent context"
+    );
+    assert_eq!(
+        app.windows[app.active_window].window_id, root_win_id,
+        "must land on the same parent window Cmd+Escape would restore"
+    );
+    assert_eq!(
+        app.windows[app.active_window].focused_pane,
+        Some(root_tile),
+        "must restore the parent's previously focused tile"
+    );
+    assert_eq!(
+        app.router.current_depth(),
+        0,
+        "the depth-stack entry for the zoom-in must be consumed"
+    );
+}
+
+/// Closing the last pane in a ROOT context must NOT delete the context —
+/// the sole window stays alive so the welcome screen renders.
+#[test]
+fn closing_last_pane_in_root_context_keeps_context() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_id = app.router.active().context_id;
+    let (root_tile, _pane) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(root_tile);
+
+    app.execute_close_pane();
+
+    assert_eq!(
+        app.router.active().context_id,
+        root_id,
+        "root context must survive closing its last pane"
+    );
+    assert!(
+        app.windows.iter().any(|w| w.context_id == root_id),
+        "root context must keep its welcome-screen window"
+    );
+}
+
+/// Closing the last pane of a NON-active subcontext (e.g. via CLI
+/// `plexi pane close`) removes the subcontext without switching the
+/// user's active context.
+#[test]
+fn closing_last_pane_in_background_subcontext_removes_it_without_switching() {
+    use std::collections::HashMap;
+
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_id = app.router.active().context_id;
+    let (root_tile, _root_pane) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(root_tile);
+
+    let child_id = 9201u64;
+    let child_win_id = 9202u64;
+    let child_pane = 88992u64;
+    app.router
+        .push(test_context(child_id, root_id, "bg_collapse_child"));
+    app.context_active_window.insert(child_id, child_win_id);
+
+    let mut child_tiles = egui_tiles::Tiles::default();
+    let child_tile = child_tiles.insert_pane(child_pane);
+    let mut child_panes = HashMap::new();
+    child_panes.insert(child_pane, test_app_pane(child_pane));
+    app.windows.push(Window {
+        name: "bg_collapse_child".to_string(),
+        path: std::path::PathBuf::from("/tmp/bg_collapse_child"),
+        tree: egui_tiles::Tree::new("bg_collapse_child", child_tile, child_tiles),
+        panes: child_panes,
+        focused_pane: Some(child_tile),
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: child_win_id,
+        context_id: child_id,
+    });
+
+    // Root stays active; close the subcontext's only pane by id.
+    app.close_pane_by_id(child_pane);
+
+    assert!(
+        app.router.iter().all(|c| c.context_id != child_id),
+        "emptied background subcontext must be removed from the router"
+    );
+    assert_eq!(
+        app.router.active().context_id,
+        root_id,
+        "active context must not change when a background subcontext collapses"
+    );
+}

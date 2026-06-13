@@ -842,6 +842,69 @@ impl PlexiApp {
             .unwrap_or(page_count > 1);
     }
 
+    /// Pop the depth stack and return to the parent context/window/focus.
+    /// Shared body of Cmd+Escape (`Action::ContextZoomOut`) and the
+    /// `ZoomOutOfContext` IPC request. Returns true when a switch happened.
+    pub(crate) fn zoom_out_of_context(&mut self) -> bool {
+        if let Some((parent_ctx_id, parent_win_id, focused_tile)) = self.router.pop_depth() {
+            if let Some(ctx_idx) = self.router.position(|c| c.context_id == parent_ctx_id) {
+                self.switch_workspace(ctx_idx);
+                if let Some(win_idx) = self
+                    .windows
+                    .iter()
+                    .position(|w| w.window_id == parent_win_id)
+                {
+                    self.active_window = win_idx;
+                    self.windows[win_idx].focused_pane = focused_tile;
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// If `ctx_id` names a subcontext whose windows are now all empty, delete
+    /// it. When it was the active context, first zoom back out to the parent
+    /// exactly as if Cmd+Escape had been pressed. Root contexts are never
+    /// collapsed — their sole window stays alive as the welcome screen.
+    pub(crate) fn collapse_subcontext_if_empty(&mut self, ctx_id: u64) {
+        if self.router.len() <= 1 {
+            return;
+        }
+        let Some(ctx_idx) = self.router.position(|c| c.context_id == ctx_id) else {
+            return;
+        };
+        let Some(parent_ctx_id) = self.router.get(ctx_idx).parent_id else {
+            return;
+        };
+        if self
+            .windows
+            .iter()
+            .any(|w| w.context_id == ctx_id && !w.panes.is_empty())
+        {
+            return;
+        }
+        let was_active = self.router.active().context_id == ctx_id;
+        log::info!(
+            "collapse_subcontext_if_empty: subcontext {ctx_id} emptied — deleting \
+             (was_active={was_active}, parent={parent_ctx_id})"
+        );
+        if was_active {
+            let zoomed_out = self.zoom_out_of_context();
+            if !zoomed_out || self.router.active().context_id == ctx_id {
+                // No usable depth-stack entry — land on the parent directly.
+                if let Some(parent_idx) =
+                    self.router.position(|c| c.context_id == parent_ctx_id)
+                {
+                    self.switch_workspace(parent_idx);
+                }
+            }
+        }
+        if let Some(idx) = self.router.position(|c| c.context_id == ctx_id) {
+            self.delete_context(idx);
+        }
+    }
+
     pub(crate) fn delete_window(&mut self, index: usize) {
         if self.windows.len() <= 1 {
             return;
