@@ -110,6 +110,8 @@ pub fn code_block<'t>(
     // still fits the available width instead of overflowing.
     let code_margin = egui::Margin::symmetric(16, 12);
     let inner_width = (max_width - code_margin.sum().x).max(0.0);
+    let original_override_text_color = ui.visuals().override_text_color;
+    ui.visuals_mut().override_text_color = None;
     let output = egui::TextEdit::multiline(&mut text)
         .layouter(layouter)
         .margin(code_margin)
@@ -117,9 +119,10 @@ pub fn code_block<'t>(
         // prevent trailing lines
         .desired_rows(1)
         .show(ui);
+    ui.visuals_mut().override_text_color = original_override_text_color;
 
     // Background color + frame (This is lost when TextEdit it not editable)
-    let frame_rect = output.response.rect;
+    let frame_rect = output.text_clip_rect + code_margin;
     ui.painter().set(
         where_to_put_background,
         epaint::RectShape::new(

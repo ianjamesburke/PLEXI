@@ -942,8 +942,9 @@ pub(crate) fn render_draw_commands(
                 );
                 child.set_clip_rect(md_rect);
                 // Override default text colour so markdown body text matches the
-                // app-specified colour. Header/code styling is handled internally
-                // by egui_commonmark but inherits the base visuals.
+                // app-specified colour. The vendored fenced-code renderer
+                // clears this override while laying out code so syntax token
+                // colours are not flattened by egui's TextEdit fallback.
                 child.style_mut().visuals.override_text_color = Some(text_color);
                 // Inject PlexiColors so egui_commonmark picks up themed code
                 // surfaces, link colors, and blockquote tints instead of egui
