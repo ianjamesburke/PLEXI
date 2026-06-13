@@ -590,6 +590,7 @@ fn draw_pips(
             pips.focused_idx == Some(dot_i),
             colors,
             time,
+            dot_i,
         );
         if hidden {
             ui.painter()

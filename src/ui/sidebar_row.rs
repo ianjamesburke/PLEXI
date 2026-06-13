@@ -118,7 +118,7 @@ fn draw_pips(
         let agent_state = dots.activities.get(dot_i).and_then(|s| s.as_ref());
         let focused = dots.focused_idx == Some(dot_i);
         let mut color =
-            crate::ui::activity::pip_color(agent_state, focused, colors, t).gamma_multiply(row_alpha);
+            crate::ui::activity::pip_color(agent_state, focused, colors, t, dot_i).gamma_multiply(row_alpha);
         if is_dragging && agent_state.is_none() && !focused {
             color = color.gamma_multiply(0.4);
         }

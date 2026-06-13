@@ -168,7 +168,7 @@ fn render_name_bar_and_dots(
             const ACTIVITY_DOT_RADIUS: f32 = 3.0;
             const ACTIVITY_DOT_MARGIN: f32 = 6.0;
             let t = ui.input(|i| i.time);
-            let color = crate::ui::activity::dot_color_from_time(state, colors, t);
+            let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
             let cx = bar_rect.left() + ACTIVITY_DOT_MARGIN + ACTIVITY_DOT_RADIUS;
             ui.painter().circle_filled(
                 egui::pos2(cx, bar_rect.center().y),
