@@ -1,9 +1,11 @@
 ---
 id: "0165"
 title: "PGAP SDK shortcut helper and harness parity"
-status: in-progress
+status: done
 estimate: "6h"
+actual: "32m"
 started_at: "2026-06-13T02:25:24Z"
+completed_at: "2026-06-13T02:56:27Z"
 sprint: "s2"
 blocked_by: []
 gh_issue:
@@ -19,6 +21,7 @@ tags:
   - "testing"
 ---
 
+Variance: issue description precisely identified the root cause and the file locations, so discovery was near-zero. The fix was 10 lines of Rust + fixture app + tests. The 6h estimate assumed root-cause archaeology.
 
 Add a first-class Python SDK shortcut helper so PGAP apps can bind command shortcuts without handwritten raw key/modifier branching, and make the scene harness mirror live printable-key delivery.
 
