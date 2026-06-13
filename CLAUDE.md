@@ -35,6 +35,8 @@ GitHub issues are implementation tickets. To choose the next dispatch, match ope
 
 Sprint sequencing and task blockers live in `.stint/`. Use the PRM for product direction, then use `stint next` for the next claimable task. Keep `gh_issue`, `blocked_by`, and `blocked_by_gh` frontmatter current when a task is linked to GitHub or blocked by another task.
 
+**The active `.stint/` board is v1-only.** The entire v2 phase (83 tasks, sprints `s15`–`s30`, and the `v2-after-v1` gate) is parked in `v2-backlog/`, out of the board, so `stint next` cues v1 in order and the bottleneck signal points at real v1 chains instead of the "ship v1" tautology. Do not add v2 work to `.stint/`. When v1 ships (task `0030`), reintroduce v2 per `v2-backlog/README.md`. `blocked_by` is reserved for true artifact dependencies — express phase/ordering preference with sprint sequence, not blockers.
+
 ## Stint Time Tracking
 
 Every stint task must record actual timing when work starts and when it completes. This is required so estimates can be compared against real elapsed implementation time.

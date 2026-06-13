@@ -10,7 +10,9 @@ area: ["infra/build", "cli/commands"]
 tags: ["v1", "release", "gate"]
 ---
 
-This is the terminal v1 release milestone, not a dispatchable implementation task. Do not send it to an agent. It is the explicit gate the `v2-after-v1` stint gate hangs on: completing this task means "v1 is cut" and unblocks the entire v2 lane.
+This is the terminal v1 release milestone, not a dispatchable implementation task. Do not send it to an agent. Completing it means "v1 is cut."
+
+The entire v2 phase is parked in `v2-backlog/` (out of the active board) precisely so the live board stays v1-only. When v1 ships, follow `v2-backlog/README.md` to reintroduce v2; its `v2-after-v1` gate hangs on this task, so reintroduced v2 work becomes claimable the moment this is done.
 
 ## Acceptance
 
