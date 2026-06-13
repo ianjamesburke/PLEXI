@@ -5,7 +5,6 @@ status: backlog
 estimate: "3h"
 sprint: "s2"
 blocked_by: []
-blocked_by_gh: []
 gh_issue:
   - "2230"
 area:

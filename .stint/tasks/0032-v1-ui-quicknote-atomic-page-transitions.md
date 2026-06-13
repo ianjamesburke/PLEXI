@@ -1,15 +1,23 @@
 ---
 id: "0032"
 title: "v1 UI: QuickNote atomic page transitions"
-status: backlog
+status: archived
+estimate: "6h"
 sprint: "s5"
-estimate: 6h
 blocked_by:
   - 24
-gh_issue: ["2133"]
-area: ["ui/overlays", "ui/widgets"]
-tags: ["v1", "ui", "quick-note", "host-ui-kit"]
+gh_issue:
+  - "2133"
+area:
+  - "ui/overlays"
+  - "ui/widgets"
+tags:
+  - "v1"
+  - "ui"
+  - "quick-note"
+  - "host-ui-kit"
 ---
+
 
 Make QuickNote compose, destination, and submenu transitions feel atomic by keeping shell, content, and size changes under one stable overlay owner.
 

@@ -1,11 +1,11 @@
 ---
 id: "0178"
 title: "cargo test runs mutate a shared real profile dir in $HOME — per-test tempdir isolation"
-status: backlog
+status: done
 estimate: "4h"
+completed_at: "2026-06-13T00:26:47Z"
 sprint: "s8"
 blocked_by: []
-blocked_by_gh: []
 gh_issue:
   - "2229"
 area:
@@ -13,6 +13,7 @@ area:
   - "host/config"
 tags: []
 ---
+
 
 ## What
 

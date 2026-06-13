@@ -1,11 +1,11 @@
 ---
 id: "0173"
 title: "v1 cleanup: themeable status pips — optional color overrides + dim factor"
-status: backlog
+status: done
 estimate: "2h"
+completed_at: "2026-06-12T21:48:59Z"
 sprint: "s11"
 blocked_by: []
-blocked_by_gh: []
 gh_issue:
   - "2219"
 area:
@@ -13,6 +13,7 @@ area:
   - "host/config"
 tags: []
 ---
+
 
 ## What
 
