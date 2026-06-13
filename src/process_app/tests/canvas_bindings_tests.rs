@@ -143,6 +143,7 @@ fn granted_app_dispatches_request_linked_terminal() {
                 request_id,
                 cwd,
                 label,
+                ..
             } = c
             {
                 Some((

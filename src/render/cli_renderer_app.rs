@@ -280,6 +280,8 @@ impl CliRendererApp {
                 request_id: self.terminal_request_id.clone(),
                 cwd: None,
                 label: Some(format!("{} terminal", self.binary_name)),
+                // Stack the output terminal under the form, not beside it.
+                place_below: true,
             });
         log::info!("CliRendererApp: requested linked terminal");
     }
@@ -365,22 +367,27 @@ impl CliRendererApp {
 
         // Back button if navigated deep
         if has_path {
-            let resp = ui.allocate_ui(Vec2::new(ui.available_width(), 32.0), |ui| {
-                let (rect, _) = ui.allocate_exact_size(
-                    Vec2::new(ui.available_width(), 32.0),
-                    egui::Sense::click(),
-                );
-                ui.painter().rect_filled(rect, 0.0, Color32::TRANSPARENT);
-                let text_pos = rect.left_center() + Vec2::new(style::SPACE_MD, 0.0);
-                ui.painter().text(
-                    text_pos,
-                    egui::Align2::LEFT_CENTER,
-                    "← Back",
-                    egui::FontId::proportional(style::TEXT_BODY),
-                    colors.text_dim,
-                );
-            });
-            if resp.response.clicked() {
+            let (rect, resp) = ui.allocate_exact_size(
+                Vec2::new(ui.available_width(), 32.0),
+                egui::Sense::click(),
+            );
+            if resp.hovered() {
+                ui.painter().rect_filled(rect, style::RADIUS_MD, colors.bg_hover);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let text_pos = rect.left_center() + Vec2::new(style::SPACE_MD, 0.0);
+            ui.painter().text(
+                text_pos,
+                egui::Align2::LEFT_CENTER,
+                "← Back",
+                egui::FontId::proportional(style::TEXT_BODY),
+                if resp.hovered() {
+                    colors.text_primary
+                } else {
+                    colors.text_dim
+                },
+            );
+            if resp.clicked() {
                 self.navigate_back();
                 return;
             }
@@ -391,11 +398,6 @@ impl CliRendererApp {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (i, row) in rows.iter().enumerate() {
                 let is_selected = i == self.selected;
-                let bg = if is_selected {
-                    colors.bg_active
-                } else {
-                    Color32::TRANSPARENT
-                };
                 let label = if row.has_children {
                     format!("{}  ›", row.name)
                 } else {
@@ -408,53 +410,60 @@ impl CliRendererApp {
                     32.0
                 };
 
-                let resp = ui.allocate_ui(Vec2::new(ui.available_width(), row_height), |ui| {
-                    let (rect, _) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), row_height),
-                        egui::Sense::click(),
+                let (rect, resp) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), row_height),
+                    egui::Sense::click(),
+                );
+                // Pointer hover tracks the mouse so click affordance matches the
+                // keyboard selection highlight.
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                let active = is_selected || resp.hovered();
+                let bg = if is_selected {
+                    colors.bg_active
+                } else if resp.hovered() {
+                    colors.bg_hover
+                } else {
+                    Color32::TRANSPARENT
+                };
+                ui.painter().rect_filled(rect, style::RADIUS_MD, bg);
+
+                let name_color = if active {
+                    colors.accent
+                } else {
+                    colors.text_primary
+                };
+                if row.description.is_some() {
+                    let name_pos = rect.left_top() + Vec2::new(style::SPACE_MD, 8.0);
+                    ui.painter().text(
+                        name_pos,
+                        egui::Align2::LEFT_TOP,
+                        &label,
+                        egui::FontId::proportional(style::TEXT_BODY),
+                        name_color,
                     );
-                    ui.painter().rect_filled(rect, 0.0, bg);
-
-                    if row.description.is_some() {
-                        let name_pos = rect.left_top() + Vec2::new(style::SPACE_MD, 8.0);
+                    if let Some(desc) = &row.description {
+                        let desc_pos = rect.left_top() + Vec2::new(style::SPACE_MD, 26.0);
                         ui.painter().text(
-                            name_pos,
+                            desc_pos,
                             egui::Align2::LEFT_TOP,
-                            &label,
-                            egui::FontId::proportional(style::TEXT_BODY),
-                            if is_selected {
-                                colors.accent
-                            } else {
-                                colors.text_primary
-                            },
-                        );
-
-                        if let Some(desc) = &row.description {
-                            let desc_pos = rect.left_top() + Vec2::new(style::SPACE_MD, 26.0);
-                            ui.painter().text(
-                                desc_pos,
-                                egui::Align2::LEFT_TOP,
-                                desc,
-                                egui::FontId::proportional(style::TEXT_HINT),
-                                colors.text_dim,
-                            );
-                        }
-                    } else {
-                        let name_pos = rect.left_center() + Vec2::new(style::SPACE_MD, 0.0);
-                        ui.painter().text(
-                            name_pos,
-                            egui::Align2::LEFT_CENTER,
-                            &label,
-                            egui::FontId::proportional(style::TEXT_BODY),
-                            if is_selected {
-                                colors.accent
-                            } else {
-                                colors.text_primary
-                            },
+                            desc,
+                            egui::FontId::proportional(style::TEXT_HINT),
+                            colors.text_dim,
                         );
                     }
-                });
-                if resp.response.clicked() {
+                } else {
+                    let name_pos = rect.left_center() + Vec2::new(style::SPACE_MD, 0.0);
+                    ui.painter().text(
+                        name_pos,
+                        egui::Align2::LEFT_CENTER,
+                        &label,
+                        egui::FontId::proportional(style::TEXT_BODY),
+                        name_color,
+                    );
+                }
+                if resp.clicked() {
                     clicked_idx = Some(i);
                 }
             }
@@ -750,7 +759,10 @@ impl App for CliRendererApp {
                     self.navigate_back();
                     return KeyDisposition::Consumed;
                 }
-                if input.key_pressed(egui::Key::Enter) && input.modifiers.command {
+                // Enter runs the assembled command. The form's fields are all
+                // single-line, so Enter has no in-field meaning to compete with;
+                // Cmd+Enter works too for muscle-memory.
+                if input.key_pressed(egui::Key::Enter) {
                     self.execute();
                     return KeyDisposition::Consumed;
                 }
@@ -964,6 +976,66 @@ mod tests {
         app.navigate_into(0);
         render_once(&mut app);
         assert_eq!(app.view, View::Form);
+    }
+
+    /// Drive `handle_key` with a single key event through a real egui frame.
+    fn press_key(app: &mut CliRendererApp, key: egui::Key, modifiers: egui::Modifiers) -> KeyDisposition {
+        let ctx = egui::Context::default();
+        let mut disposition = KeyDisposition::Passthrough;
+        let _ = ctx.run(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            },
+            |ctx| {
+                ctx.input(|i| disposition = app.handle_key(i));
+            },
+        );
+        disposition
+    }
+
+    #[test]
+    fn plain_enter_runs_the_form() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(0); // greet — a leaf form
+        app.terminal_pane_id = 5; // pretend the linked terminal is ready
+        app.field_values.insert("name".into(), "Ada".into());
+
+        // Plain Enter (no Cmd) must execute — the prior contract required Cmd+Enter.
+        let disp = press_key(&mut app, egui::Key::Enter, egui::Modifiers::default());
+        assert_eq!(disp, KeyDisposition::Consumed);
+
+        let cmds = app.take_pending_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(
+                c,
+                AppCommand::RunInLinkedTerminal { command, .. } if command.contains("greet")
+            )),
+            "plain Enter should queue a RunInLinkedTerminal for the greet command"
+        );
+    }
+
+    #[test]
+    fn requests_linked_terminal_below() {
+        let (mut app, _dir) = app_from_fixture();
+        app.request_terminal();
+        let cmds = app.take_pending_commands();
+        let placed_below = cmds.iter().any(|c| {
+            matches!(
+                c,
+                AppCommand::RequestLinkedTerminal { place_below, .. } if *place_below
+            )
+        });
+        assert!(
+            placed_below,
+            "CLI renderer must request its terminal stacked below the form"
+        );
     }
 
     #[test]

@@ -515,6 +515,7 @@ impl PlexiApp {
                         request_id,
                         cwd,
                         label,
+                        place_below,
                         ..
                     } => {
                         deferred.push(AppCommand::RequestLinkedTerminal {
@@ -522,6 +523,7 @@ impl PlexiApp {
                             request_id,
                             cwd,
                             label,
+                            place_below,
                         });
                     }
                     AppCommand::RunInLinkedTerminal {
