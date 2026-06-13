@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.752"
+verified_version: "0.0.768"
 order: 7
 ---
 
@@ -379,7 +379,10 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `inspect` | Show the trust sheet for a local app directory or .plexipkg package |
 | `package` | Build a distributable .plexipkg package from an app directory |
 | `freeze` | Export your currently installed apps as a single TOML snapshot for sharing or backup |
-| `publish` | Publish an app to the Plexi marketplace |
+| `publish` | Validate, package, and submit an app to the Plexi marketplace |
+| `browse` | Browse every public app in the hosted marketplace |
+| `search` | Search the public marketplace catalog |
+| `license` | Inspect paid-app licenses stored on this machine |
 | `update` | Check installed apps for available updates |
 | `action` | Send a semantic action to a running app pane |
 
@@ -524,9 +527,46 @@ Like `pip freeze` — captures exactly what's installed so you can replay it lat
 
 ### `plexi app publish`
 
-Publish an app to the Plexi marketplace.
+Validate, package, and submit an app to the Plexi marketplace.
 
-Publishing is on the v1 marketplace roadmap. Use app validate and local package install flows until the hosted publisher path ships.
+Reads the `[marketplace]` manifest section (publisher, visibility, price), validates the directory, builds a `.plexipkg`, and submits it. Without a configured `[marketplace].submit_url` the package is prepared locally but not uploaded — the artifact path is printed.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | no | App directory to publish (default: current directory) Default: `.`. |
+
+### `plexi app browse`
+
+Browse every public app in the hosted marketplace
+
+### `plexi app search`
+
+Search the public marketplace catalog
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<query>` | string | yes | Substring matched against app id, name, description, and tags |
+
+### `plexi app license`
+
+Inspect paid-app licenses stored on this machine
+
+| Subcommand | Description |
+|---|---|
+| `list` | List every stored paid-app license |
+| `show` | Show one license in full |
+
+#### `plexi app license list`
+
+List every stored paid-app license
+
+#### `plexi app license show`
+
+Show one license in full
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | yes | App id whose license to show |
 
 ### `plexi app update`
 
@@ -551,6 +591,43 @@ Example: plexi app action 42 refresh Example: plexi app action 42 navigate-to /s
 | `<pane_id>` | string | yes | Pane id of the target app pane (from `plexi pane list`) |
 | `<action>` | string | yes | Action name to invoke (e.g. "refresh", "navigate-to", "add-item") |
 | `<args>` | string (repeatable) | no | Optional arguments forwarded to the action handler |
+
+## `plexi account`
+
+Manage your Plexi marketplace account (only needed to publish or buy paid apps).
+
+Free apps install without an account. Login/signup require a configured auth backend; until then they fail closed with a clear message.
+
+| Subcommand | Description |
+|---|---|
+| `status` | Show whether you are logged in |
+| `login` | Log in to an existing marketplace account |
+| `signup` | Create a new marketplace account |
+| `logout` | Log out and clear the local session |
+
+### `plexi account status`
+
+Show whether you are logged in
+
+### `plexi account login`
+
+Log in to an existing marketplace account
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--email` | string | no | Account email (falls back to [marketplace].account_email in config) |
+
+### `plexi account signup`
+
+Create a new marketplace account
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--email` | string | no | Account email (falls back to [marketplace].account_email in config) |
+
+### `plexi account logout`
+
+Log out and clear the local session
 
 ## `plexi registry`
 
