@@ -119,12 +119,15 @@ gh pr diff $PR_NUMBER
 ```bash
 gh issue view $ISSUE_NUMBER --json body --jq '.body' | grep -A5 "Test evidence"
 ```
-- `Conclusion: install skippable — full coverage` → stay in diff-review mode. Do not install, even if a Rust file changed. Skip to Step 2b.
-- `Conclusion: binary install required — <reason>` → proceed to install triggers below.
-- `Conclusion: docs-only — no test evidence required` → diff-review mode. Skip to Step 2b.
-- Block absent → no test evidence was written during implementation; proceed to install triggers below.
 
-**Apps/ and explicit Done When install requirements always install regardless of test evidence conclusion.**
+Evaluate the conclusion, **then apply overrides**:
+
+| Conclusion | Default decision | Override |
+|---|---|---|
+| `install skippable — full coverage` | diff-review mode | Install anyway if `apps/` files changed or Done When requires binary |
+| `binary install required — <reason>` | install | — |
+| `docs-only — no test evidence required` | diff-review mode | — |
+| block absent | fall through to install-trigger list below | — |
 
 **Do not re-run `cargo test` in validation.** The suite ran during implementation; the Test Evidence block is the authoritative record. Validation owns diff review and user acceptance, not test execution. Never re-run a suite that the Ship Log already reports as green.
 
@@ -133,14 +136,14 @@ gh issue view $ISSUE_NUMBER --json body --jq '.body' | grep -A5 "Test evidence"
 2. Testing block whose pass/fail criteria map to the issue checklist
 3. User manual exercise if the issue is visual or interactive
 
-**Install only when the diff requires a runnable PR build** (and test evidence did not conclude `install skippable`):
+**Install triggers** (apply when test evidence concludes `binary install required`, is absent, or an override fires):
 - Changed files under `apps/` or `apps/dev/` — Python apps are copied to the profile dir on install, not served from source
 - Packaging, bundle, channel, profile-dir, app-copy, or runtime asset changes
 - Behavior cannot be judged from diff and needs the user to launch `plexi-pr-$PR_NUMBER`
 - The issue's Done When explicitly requires validating the installed PR binary
 - Gemini review or a targeted implementation check reports a blocker that requires a rebuilt binary to verify
 
-If install is not required → skip Step 2 and use the diff-review testing block.
+If install is not required → skip Step 2 and proceed to Step 2b (automated quality checks).
 
 ---
 
