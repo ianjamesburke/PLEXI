@@ -669,6 +669,11 @@ impl PlexiApp {
                         // is no cursor/spacing gap between them.
                         let has_name = zoomed_pane_name.is_some();
                         let has_tabs = zoomed_tab_info.is_some();
+                        let is_overtaken_app = ctx
+                            .panes
+                            .get(&pane_id)
+                            .and_then(|p| p.as_app())
+                            .is_some_and(|a| a.overlay_replaced.is_some());
                         let has_top_bar = has_name || has_tabs;
                         const NAME_BAR_HEIGHT: f32 = 20.0;
                         if has_top_bar {
@@ -690,6 +695,7 @@ impl PlexiApp {
                                     &zoomed_tab_labels,
                                     &self.colors,
                                     self.config.pane_title_font_size.unwrap_or(11.0),
+                                    is_overtaken_app,
                                 ) {
                                     zoomed_tab_click = Some((group.container_tile, idx));
                                 }
@@ -733,6 +739,7 @@ impl PlexiApp {
                                     app_pane,
                                     &self.colors,
                                     !modal_open,
+                                    has_tabs,
                                 );
                             }
                         } else {

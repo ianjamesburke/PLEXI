@@ -33,6 +33,7 @@ pub(crate) fn paint_tab_bar(
     tab_labels: &HashMap<PaneId, String>,
     colors: &Colors,
     font_size: f32,
+    overtake_hint: bool,
 ) -> Option<usize> {
     painter.rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
@@ -80,7 +81,7 @@ pub(crate) fn paint_tab_bar(
                     egui::pos2(divider_x, bar_rect.top() + inset),
                     egui::pos2(divider_x, bar_rect.bottom() - inset),
                 ],
-                egui::Stroke::new(1.0, colors.border),
+                egui::Stroke::new(1.5, colors.border),
             );
         }
 
@@ -112,6 +113,31 @@ pub(crate) fn paint_tab_bar(
             );
             painter.rect_filled(accent_rect, 0.0, colors.accent);
         }
+    }
+
+    if overtake_hint {
+        let hint_font = egui::FontId::monospace(font_size - 1.0);
+        let hint_text = "Esc";
+        let hint_galley = painter.layout_no_wrap(hint_text.to_string(), hint_font, colors.text_dim);
+        let chip_pad = 4.0;
+        let chip_w = hint_galley.size().x + chip_pad * 2.0;
+        let chip_h = (TAB_BAR_HEIGHT - 6.0).max(10.0);
+        let chip_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                bar_rect.right() - chip_w - 4.0,
+                bar_rect.center().y - chip_h / 2.0,
+            ),
+            egui::vec2(chip_w, chip_h),
+        );
+        painter.rect_filled(chip_rect, egui::CornerRadius::same(3), colors.bg_active);
+        painter.rect_stroke(chip_rect, egui::CornerRadius::same(3), egui::Stroke::new(1.0, colors.border), egui::StrokeKind::Inside);
+        painter.text(
+            chip_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            hint_text,
+            egui::FontId::monospace(font_size - 1.0),
+            colors.text_dim,
+        );
     }
 
     clicked_idx
@@ -270,7 +296,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
             let mut app_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-            render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused);
+            let suppress_overtake = self.tab_info.contains_key(&tile_id);
+            render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused, suppress_overtake);
         } else if let Some(terminal) = pane.as_terminal_mut() {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);

@@ -118,7 +118,7 @@ fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         ui.advance_cursor_after_rect(bar_rect);
-        if let Some(idx) = paint_tab_bar(ui.ctx(), ui.painter(), bar_rect, group, tab_labels, colors, name_font_size) {
+        if let Some(idx) = paint_tab_bar(ui.ctx(), ui.painter(), bar_rect, group, tab_labels, colors, name_font_size, false) {
             tab_click = Some((group.container_tile, idx));
         }
 

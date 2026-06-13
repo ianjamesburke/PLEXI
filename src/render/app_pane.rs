@@ -19,9 +19,8 @@ const NAV_BAR_PAD: f32 = style::SPACE_SM;
 /// Height of the overtake indicator bar shown when this app replaced another pane.
 const OVERTAKE_BAR_HEIGHT: f32 = 24.0;
 
-pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_focused: bool) {
-    // Viewport overtake indicator — shows when this app has replaced another pane's content.
-    if app_pane.overlay_replaced.is_some() {
+pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_focused: bool, suppress_overtake: bool) {
+    if app_pane.overlay_replaced.is_some() && !suppress_overtake {
         let (bar_rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), OVERTAKE_BAR_HEIGHT),
             egui::Sense::hover(),
