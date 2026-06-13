@@ -15,7 +15,7 @@
 //! thread with a blocking call. The broker's `dispatch` method is therefore
 //! expected to be invoked from a worker thread spawned by the routing layer.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::app_protocol::{AiMessage, AiTool, ModelTier};
 use crate::config::{AiConfig, OllamaBackendConfig, OpenRouterBackendConfig};
@@ -41,25 +41,25 @@ pub struct PaneContext {
 /// dispatching `AiQuery` so the broker receives the full workspace context.
 ///
 /// The inner `Arc<Vec<PaneContext>>` is swapped atomically on each update.
-/// Readers clone only the `Arc` pointer (not the vector contents), so the
-/// lock is held for a single pointer-width store rather than for the duration
-/// of a full vector copy.
-static PANE_SNAPSHOT: OnceLock<Mutex<Arc<Vec<PaneContext>>>> = OnceLock::new();
+/// Readers hold only a read-lock long enough to clone the Arc pointer
+/// (not the vector contents); the RwLock allows concurrent snapshot reads
+/// while the single per-frame writer holds an exclusive write-lock briefly.
+static PANE_SNAPSHOT: OnceLock<RwLock<Arc<Vec<PaneContext>>>> = OnceLock::new();
 
-fn pane_snapshot() -> &'static Mutex<Arc<Vec<PaneContext>>> {
-    PANE_SNAPSHOT.get_or_init(|| Mutex::new(Arc::new(Vec::new())))
+fn pane_snapshot() -> &'static RwLock<Arc<Vec<PaneContext>>> {
+    PANE_SNAPSHOT.get_or_init(|| RwLock::new(Arc::new(Vec::new())))
 }
 
 /// Replace the global pane context snapshot. Called once per frame by the host.
 pub fn update_pane_snapshot(panes: Vec<PaneContext>) {
-    *pane_snapshot().lock().unwrap() = Arc::new(panes);
+    *pane_snapshot().write().unwrap() = Arc::new(panes);
 }
 
 /// Read the current pane context snapshot. Called by routing on `AiQuery`.
 /// Returns an `Arc` pointer — callers pay only for a reference-count increment,
-/// not a full vector copy.
+/// not a full vector copy. Concurrent reads do not block each other.
 pub fn get_pane_snapshot() -> Arc<Vec<PaneContext>> {
-    pane_snapshot().lock().unwrap().clone()
+    pane_snapshot().read().unwrap().clone()
 }
 
 /// One brokered request — what the routing layer hands to a broker. `app_id`
@@ -1021,18 +1021,13 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         /// Backend that returns a tool call on turn 1, final text on turn 2.
-        /// Records which Arc addresses it sees for system/tools so the test can
-        /// verify pointer-sharing (no per-iteration deep copies).
+        /// Clones the Arc itself (not raw pointers) from each invocation so the
+        /// test can compare allocations with `Arc::ptr_eq` after the call.
         struct ToolThenTextBackend {
             calls: Arc<Mutex<u32>>,
-            system_ptrs: Arc<Mutex<Vec<*const u8>>>,
-            tools_ptrs: Arc<Mutex<Vec<*const AiTool>>>,
+            seen_systems: Arc<Mutex<Vec<Arc<str>>>>,
+            seen_tools: Arc<Mutex<Vec<Arc<[AiTool]>>>>,
         }
-
-        // SAFETY: raw pointers are only read in the main thread assertions after
-        // the backend drops. No aliasing writes occur after the pointer is stored.
-        unsafe impl Send for ToolThenTextBackend {}
-        unsafe impl Sync for ToolThenTextBackend {}
 
         impl AiBackend for ToolThenTextBackend {
             fn name(&self) -> &str { "tool-then-text" }
@@ -1047,9 +1042,9 @@ mod tests {
                     *c += 1;
                     *c
                 };
-                // Record Arc data pointers to verify sharing across iterations.
-                self.system_ptrs.lock().unwrap().push(req.system.as_ptr());
-                self.tools_ptrs.lock().unwrap().push(req.tools.as_ptr());
+                // Clone the Arc itself so we can check pointer identity later.
+                self.seen_systems.lock().unwrap().push(Arc::clone(&req.system));
+                self.seen_tools.lock().unwrap().push(Arc::clone(&req.tools));
 
                 assert_eq!(&*req.system, "sys");
                 assert_eq!(req.tools.len(), 1);
@@ -1078,12 +1073,12 @@ mod tests {
             }
         }
 
-        let system_ptrs: Arc<Mutex<Vec<*const u8>>> = Arc::new(Mutex::new(Vec::new()));
-        let tools_ptrs: Arc<Mutex<Vec<*const AiTool>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_systems: Arc<Mutex<Vec<Arc<str>>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_tools: Arc<Mutex<Vec<Arc<[AiTool]>>>> = Arc::new(Mutex::new(Vec::new()));
         let backend = ToolThenTextBackend {
             calls: Arc::new(Mutex::new(0)),
-            system_ptrs: Arc::clone(&system_ptrs),
-            tools_ptrs: Arc::clone(&tools_ptrs),
+            seen_systems: Arc::clone(&seen_systems),
+            seen_tools: Arc::clone(&seen_tools),
         };
 
         let tool = AiTool {
@@ -1117,12 +1112,12 @@ mod tests {
         assert_eq!(resp.tokens_in, 30, "token counts must accumulate across iterations");
         assert_eq!(resp.tokens_out, 13);
 
-        // Both iterations must have seen the same Arc data pointer — no deep copy.
-        let sp = system_ptrs.lock().unwrap();
-        assert_eq!(sp.len(), 2, "backend must be called exactly twice");
-        assert_eq!(sp[0], sp[1], "system Arc must point to the same allocation on both iterations");
-        let tp = tools_ptrs.lock().unwrap();
-        assert_eq!(tp[0], tp[1], "tools Arc must point to the same allocation on both iterations");
+        // Both iterations must have received the same Arc allocation — no deep copy.
+        let ss = seen_systems.lock().unwrap();
+        assert_eq!(ss.len(), 2, "backend must be called exactly twice");
+        assert!(Arc::ptr_eq(&ss[0], &ss[1]), "system Arc must be the same allocation on both iterations");
+        let st = seen_tools.lock().unwrap();
+        assert!(Arc::ptr_eq(&st[0], &st[1]), "tools Arc must be the same allocation on both iterations");
     }
 
     /// Verify `fetch_generation_cost` parses total_cost as string or float.
