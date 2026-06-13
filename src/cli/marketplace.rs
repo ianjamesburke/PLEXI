@@ -9,8 +9,9 @@
 //! errors for free/local apps (registry down never blocks a local install) and
 //! fails *closed* only for confirmed paid apps with no license.
 
+use crate::app::account::AccountStore;
 use crate::app::marketplace::{
-    license_gate, payment_provider, Account, LicenseDecision, LicenseStore, MarketplaceManifest,
+    license_gate, payment_provider, LicenseDecision, LicenseStore, MarketplaceManifest,
     PaymentError, PublishClient, RegistryClient, RegistryEntry, RegistryError, Submission, Visibility,
 };
 use crate::app::package;
@@ -92,7 +93,8 @@ fn print_entry_table(entries: &[&RegistryEntry]) {
 }
 
 /// What `install_cli` should do with a bare marketplace id after consulting the
-/// hosted catalog and the license store.
+/// hosted catalog and the license store. There is no legacy fallback — the
+/// catalog is the only source for a bare id.
 pub enum InstallPlan {
     /// Catalog app, free or licensed, artifact downloaded + checksum-verified.
     /// Install this `.plexipkg` directly.
@@ -100,33 +102,32 @@ pub enum InstallPlan {
     /// Catalog app that resolves to a source spec (e.g. `github:owner/repo`).
     /// Install via the existing source-clone path.
     Source(String),
-    /// Not a catalog app, or the registry is unreachable. Use the legacy
-    /// id→source resolver. Registry outages must never block a local install.
-    Legacy,
+    /// No app with this id in the catalog. Abort with a not-found message.
+    NotFound,
+    /// The marketplace could not be reached. Abort — a bare id can only be
+    /// resolved through the catalog. (Already-installed apps are unaffected;
+    /// only *new* installs need the catalog.)
+    Unreachable,
     /// Paid app with no license, and purchase is unavailable or failed. Abort.
     /// A message was already printed.
     Blocked,
 }
 
 /// Plan a bare-id install by consulting the hosted catalog. Called by
-/// `install_cli` *before* the legacy resolver.
+/// `install_cli`. The catalog is the sole source of truth for a bare id —
+/// there is no legacy resolver and no backwards-compatibility path.
 ///
-/// Fail-open: a registry outage or an id absent from the catalog returns
-/// [`InstallPlan::Legacy`], so free / github-sourced apps install normally even
-/// when the marketplace is down. Fails *closed* ([`InstallPlan::Blocked`]) only
-/// for a confirmed paid app the user does not own and cannot purchase.
+/// A paid app the user does not own is taken through purchase (which fails
+/// closed with the stub provider). Free / licensed apps install from the CDN
+/// artifact, or from a declared source spec for github-hosted catalog entries.
 pub fn plan_install(app_id: &str) -> InstallPlan {
     let cli = client();
     let entry = match cli.fetch_entry(app_id) {
         Ok(e) => e,
-        Err(RegistryError::NotFound(_)) => {
-            log::info!("marketplace: '{app_id}' not in catalog; using legacy resolver");
-            return InstallPlan::Legacy;
-        }
+        Err(RegistryError::NotFound(_)) => return InstallPlan::NotFound,
         Err(e) => {
-            // Registry unreachable / malformed — never block a local install.
-            log::info!("marketplace: catalog unavailable for '{app_id}' ({e}); using legacy resolver");
-            return InstallPlan::Legacy;
+            log::warn!("marketplace: catalog unreachable for '{app_id}': {e}");
+            return InstallPlan::Unreachable;
         }
     };
 
@@ -139,7 +140,7 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
     }
 
     // Prefer a CDN artifact; fall back to a declared source spec.
-    if !entry.checksum.is_empty() && (entry.package_url.is_some() || has_cdn()) {
+    if !entry.checksum.is_empty() {
         let dest = std::env::temp_dir()
             .join(format!("plexi-mkt-{}-{}.plexipkg", entry.id, uuid::Uuid::new_v4()));
         match cli.download_package(&entry, &dest) {
@@ -153,27 +154,26 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
     if let Some(source) = entry.source.clone() {
         return InstallPlan::Source(source);
     }
-    // Catalog entry with neither artifact nor source — fall back to legacy.
-    log::warn!("marketplace: '{app_id}' has no artifact or source; using legacy resolver");
-    InstallPlan::Legacy
-}
-
-/// Whether a CDN base is configured (or the in-code default is in play). Used to
-/// decide if a checksum-only entry is downloadable.
-fn has_cdn() -> bool {
-    true
-}
-
-/// Attempt to buy a paid app the user does not yet own. Today the stub provider
-/// always fails closed; the message tells the user exactly why. When a real
-/// provider is wired into `payment_provider()`, this issues + persists a license
-/// and returns `true` with no other change here.
-fn attempt_purchase(entry: &RegistryEntry, store: &LicenseStore) -> bool {
-    println!(
-        "'{}' is a paid app ({}).",
-        entry.id,
-        entry.price.display()
+    eprintln!(
+        "error: catalog entry '{app_id}' has neither a package artifact nor a source — \
+         the registry entry is malformed"
     );
+    InstallPlan::Blocked
+}
+
+/// Attempt to buy a paid app the user does not yet own. Requires a logged-in
+/// account; today the stub payment provider always fails closed, telling the
+/// user exactly why. When a real provider is wired into `payment_provider()`,
+/// this issues + persists a license and returns `true` with no other change.
+fn attempt_purchase(entry: &RegistryEntry, store: &LicenseStore) -> bool {
+    println!("'{}' is a paid app ({}).", entry.id, entry.price.display());
+
+    let Some(session) = AccountStore::open().current() else {
+        eprintln!("error: {}", PaymentError::NoAccount);
+        eprintln!("  Log in first: `plexi account login`.");
+        return false;
+    };
+
     let provider = payment_provider();
     log::info!(
         "marketplace: payment provider '{}' configured={}",
@@ -184,14 +184,8 @@ fn attempt_purchase(entry: &RegistryEntry, store: &LicenseStore) -> bool {
         eprintln!("error: {}", PaymentError::NotConfigured);
         return false;
     }
-    let Some(email) = crate::config::marketplace_account_email() else {
-        eprintln!("error: {}", PaymentError::NoAccount);
-        eprintln!("  Set [marketplace].account_email in your config to purchase paid apps.");
-        return false;
-    };
-    let account = Account { email };
-    log::info!("marketplace: purchasing '{}' as {}", entry.id, account.email);
-    match provider.purchase(entry, &account) {
+    log::info!("marketplace: purchasing '{}' as {}", entry.id, session.email);
+    match provider.purchase(entry, &session) {
         Ok(license) => {
             if let Err(e) = store.save(&license) {
                 eprintln!("error: purchased but could not save license: {e}");

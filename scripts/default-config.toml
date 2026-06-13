@@ -59,6 +59,23 @@ high   = "claude --dangerously-skip-permissions '{cmd}'"
 [cli]
 tips = true
 
+# [marketplace]
+# Hosted app catalog + CDN. Defaults point at the official plexiapp.com registry,
+# so leave these unset to use it. Override only to point at a private registry.
+# registry_url    = "https://plexiapp.com/registry/v1/index.json"
+# cdn_url         = "https://plexiapp.com/registry/v1/packages"
+# Publisher submission endpoint. Unset = `plexi app publish` prepares the package
+# locally but does not upload it.
+# submit_url      = "https://plexiapp.com/registry/v1/submit"
+# Paid-app payment backend. Unset / "none" = paid installs fail closed (no charge
+# possible). A real provider is wired in a future release.
+# payment_backend = "none"
+# Account/auth backend. Unset / "none" = login/signup fail closed. Accounts are
+# only ever needed to publish or buy paid apps — free apps install without one.
+# account_backend = "none"
+# Default email pre-filled by `plexi account login`.
+# account_email   = "you@example.com"
+
 [beta]
 # crt           = false
 # ghost         = false

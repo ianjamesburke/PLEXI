@@ -485,7 +485,11 @@ pub struct MarketplaceConfig {
     /// closed). A real provider (e.g. `"stripe"`) slots into
     /// `crate::app::marketplace::payment_provider()` keyed on this value.
     pub payment_backend: Option<String>,
-    /// Marketplace account email used for paid purchases. Unset = no account.
+    /// Account/auth backend selector. Unset / `"none"` = stub (login/signup
+    /// fail closed). A real provider slots into
+    /// `crate::app::account::account_provider()` keyed on this value.
+    pub account_backend: Option<String>,
+    /// Default email pre-filled by `plexi account login`. Unset = prompt.
     pub account_email: Option<String>,
 }
 
@@ -1314,6 +1318,7 @@ impl MarketplaceConfig {
         overlay_field!(cdn_url);
         overlay_field!(submit_url);
         overlay_field!(payment_backend);
+        overlay_field!(account_backend);
         overlay_field!(account_email);
     }
 }
@@ -1347,7 +1352,12 @@ pub fn marketplace_payment_backend() -> Option<String> {
     marketplace_config().payment_backend
 }
 
-/// Marketplace account email for paid purchases, if set.
+/// Account/auth backend selector (e.g. `"none"`, `"plexi"`). `None` = stub.
+pub fn marketplace_account_backend() -> Option<String> {
+    marketplace_config().account_backend
+}
+
+/// Default email pre-filled by `plexi account login`, if set.
 pub fn marketplace_account_email() -> Option<String> {
     marketplace_config().account_email
 }

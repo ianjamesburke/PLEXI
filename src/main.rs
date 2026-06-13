@@ -196,9 +196,9 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd, HookAction,
-        LicenseCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd, SecretCmd, UpdateCmd,
-        WorkspaceCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd,
+        HookAction, LicenseCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd, SecretCmd,
+        UpdateCmd, WorkspaceCmd,
     };
     use clap::Parser;
 
@@ -867,6 +867,16 @@ fn main() -> eframe::Result {
                                 &runner, &command, &extra, &opts,
                             ));
                         }
+                    },
+                    Commands::Account { cmd } => match cmd {
+                        AccountCmd::Status => std::process::exit(cli::account_status_cli()),
+                        AccountCmd::Login { email } => {
+                            std::process::exit(cli::account_login_cli(email.as_deref()))
+                        }
+                        AccountCmd::Signup { email } => {
+                            std::process::exit(cli::account_signup_cli(email.as_deref()))
+                        }
+                        AccountCmd::Logout => std::process::exit(cli::account_logout_cli()),
                     },
                     Commands::Registry { cmd } => match cmd {
                         RegistryCmd::Watch { cli: only } => {

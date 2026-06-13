@@ -526,13 +526,6 @@ pub enum PaymentError {
     NoAccount,
 }
 
-/// A marketplace account identity passed to a provider at purchase time. v1
-/// carries only an email; a real provider extends this without touching callers.
-#[derive(Debug, Clone)]
-pub struct Account {
-    pub email: String,
-}
-
 /// The payment boundary. A purchase turns an account + a paid catalog entry into
 /// a [`License`]. This is the single seam a real processor implements; nothing
 /// else in the codebase references a concrete provider.
@@ -547,10 +540,14 @@ pub trait PaymentProvider: Send + Sync {
     /// callers can give a clear "paid apps unavailable" message before prompting.
     fn is_configured(&self) -> bool;
 
-    /// Attempt to purchase `entry` for `account`, returning a [`License`] on
-    /// success. The stub always fails with [`PaymentError::NotConfigured`].
-    fn purchase(&self, entry: &RegistryEntry, account: &Account)
-        -> Result<License, PaymentError>;
+    /// Attempt to purchase `entry` for the logged-in `session`, returning a
+    /// [`License`] on success. The stub always fails with
+    /// [`PaymentError::NotConfigured`].
+    fn purchase(
+        &self,
+        entry: &RegistryEntry,
+        session: &crate::app::account::AccountSession,
+    ) -> Result<License, PaymentError>;
 }
 
 /// The fail-closed default provider. Charges nothing, issues nothing, and never
@@ -569,7 +566,7 @@ impl PaymentProvider for StubPaymentProvider {
     fn purchase(
         &self,
         entry: &RegistryEntry,
-        _account: &Account,
+        _session: &crate::app::account::AccountSession,
     ) -> Result<License, PaymentError> {
         log::warn!(
             "marketplace: purchase of paid app '{}' attempted with stub provider — not configured",
@@ -862,10 +859,15 @@ mod tests {
         assert_eq!(provider.name(), "stub");
         assert!(!provider.is_configured());
         let e = entry("pro-app", paid(), Visibility::Public);
-        let account = Account {
+        let session = crate::app::account::AccountSession {
+            schema_version: 1,
+            account_id: "acct_1".to_string(),
             email: "user@example.com".to_string(),
+            token: "tok".to_string(),
+            provider: "stub".to_string(),
+            issued_at: "2026-06-12T00:00:00Z".to_string(),
         };
-        match provider.purchase(&e, &account) {
+        match provider.purchase(&e, &session) {
             Err(PaymentError::NotConfigured) => {}
             other => panic!("stub must fail closed, got {other:?}"),
         }

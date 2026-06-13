@@ -97,6 +97,15 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AppCmd,
     },
+    /// Manage your Plexi marketplace account (only needed to publish or buy paid apps).
+    ///
+    /// Free apps install without an account. Login/signup require a configured
+    /// auth backend; until then they fail closed with a clear message.
+    #[command(next_help_heading = "Apps")]
+    Account {
+        #[command(subcommand)]
+        cmd: AccountCmd,
+    },
     /// Watch installed CLI tools for changes to their available commands and options.
     Registry {
         #[command(subcommand)]
@@ -601,6 +610,27 @@ pub enum UpdateCmd {
         /// App id to update (omit to update all installed apps)
         id: Option<String>,
     },
+}
+
+/// `plexi account <cmd>` — marketplace account management.
+#[derive(Subcommand)]
+pub enum AccountCmd {
+    /// Show whether you are logged in.
+    Status,
+    /// Log in to an existing marketplace account.
+    Login {
+        /// Account email (falls back to [marketplace].account_email in config)
+        #[arg(long)]
+        email: Option<String>,
+    },
+    /// Create a new marketplace account.
+    Signup {
+        /// Account email (falls back to [marketplace].account_email in config)
+        #[arg(long)]
+        email: Option<String>,
+    },
+    /// Log out and clear the local session.
+    Logout,
 }
 
 /// `plexi app license <cmd>` — inspect paid-app licenses on this machine.

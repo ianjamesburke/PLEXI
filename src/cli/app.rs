@@ -1079,65 +1079,6 @@ pub(super) fn is_github_shorthand(s: &str) -> bool {
     !owner.is_empty() && !repo.is_empty() && !repo.contains('/')
 }
 
-/// Fetch the plexi app registry and resolve a bare app ID to a source spec string.
-///
-/// Registry entries in `ianjamesburke/PLEXI` with a `path` field resolve to `local:<dir>`
-/// so the bundled copy is used without a network clone. Third-party repos resolve to
-/// `github:owner/repo`.
-pub(super) fn resolve_registry_id(id: &str) -> Result<String, String> {
-    const REGISTRY_URL: &str =
-        "https://raw.githubusercontent.com/ianjamesburke/plexi-app-registry/main/registry.json";
-
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(30))
-        .build();
-
-    let body = match agent.get(REGISTRY_URL).call() {
-        Ok(r) => match r.into_string() {
-            Ok(s) => s,
-            Err(e) => return Err(format!("failed to read registry response: {e}")),
-        },
-        Err(e) => return Err(format!("failed to fetch registry: {e}")),
-    };
-
-    let entries: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("failed to parse registry: {e}"))?;
-
-    let arr = entries
-        .as_array()
-        .ok_or_else(|| "registry response is not a JSON array".to_string())?;
-
-    for entry in arr {
-        if entry["id"].as_str() != Some(id) {
-            continue;
-        }
-        let repo = entry["repo"]
-            .as_str()
-            .ok_or_else(|| format!("registry entry '{id}' has no 'repo' field"))?;
-        let path = entry["path"].as_str();
-
-        let spec = if repo == "ianjamesburke/PLEXI" {
-            if let Some(p) = path {
-                // Use the bundled copy — no network clone needed.
-                let dir = p.split('/').next_back().unwrap_or(p);
-                format!("local:{dir}")
-            } else {
-                format!("github:{repo}")
-            }
-        } else {
-            format!("github:{repo}")
-        };
-
-        log::info!("registry: resolved '{id}' → {spec}");
-        return Ok(spec);
-    }
-
-    Err(format!(
-        "unknown app id '{id}' — run `plexi app list` or visit plexiapp.com/apps"
-    ))
-}
-
 /// channel apps dir. Source spec follows `packs::parse_source_spec`.
 fn to_title_case(s: &str) -> String {
     s.split(['-', '_'])

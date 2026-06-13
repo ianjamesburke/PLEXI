@@ -1,3 +1,4 @@
+pub mod account;
 pub mod app_trait;
 mod canvas_bindings;
 mod dispatch;
