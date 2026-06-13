@@ -2718,7 +2718,7 @@ pub(crate) fn pane_request_response_file(request: &AppRequest) -> Option<&str> {
         AppRequest::ListPanes { response_file, .. }
         | AppRequest::ListContexts { response_file }
         | AppRequest::GetPaneInfo { response_file, .. }
-        | AppRequest::GetPreviousPaneInfo { response_file }
+        | AppRequest::GetPreviousPaneInfo { response_file, .. }
         | AppRequest::GetPaneState { response_file, .. }
         | AppRequest::CapturePane { response_file, .. }
         | AppRequest::ListPermissions { response_file }

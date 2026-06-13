@@ -1,8 +1,9 @@
 ---
 id: "0043"
 title: "v1 cleanup: pane info previous steps"
-status: todo
+status: in-progress
 estimate: "3h"
+started_at: "2026-06-13T22:07:05Z"
 sprint: "s11"
 blocked_by:
   - 147
@@ -16,6 +17,7 @@ tags:
   - "cleanup"
   - "cli"
 ---
+
 
 
 Let `plexi pane info --previous` accept an optional step count so callers can inspect deeper focus history.

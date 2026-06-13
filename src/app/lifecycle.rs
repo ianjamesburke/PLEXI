@@ -344,17 +344,23 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::app_protocol::AppRequest::GetPreviousPaneInfo { response_file } => {
+            crate::app_protocol::AppRequest::GetPreviousPaneInfo { response_file, steps } => {
+                let steps = (*steps).max(1);
                 log::info!(
-                    "pane_ipc: kind=get_previous_pane_info response_file={:?}",
+                    "pane_ipc: kind=get_previous_pane_info steps={steps} response_file={:?}",
                     response_file
                 );
-                let mut found = false;
+                let mut hits: u64 = 0;
+                let mut result_json: Option<String> = None;
                 'prev_outer: for (window_id, tile_id) in self.pane_focus_history.iter().rev() {
                     if let Some(win) = self.windows.iter().find(|w| w.window_id == *window_id) {
                         if let Some(egui_tiles::Tile::Pane(pane_id)) = win.tree.tiles.get(*tile_id)
                         {
                             if let Some(pane) = win.panes.get(pane_id) {
+                                hits += 1;
+                                if hits < steps {
+                                    continue 'prev_outer;
+                                }
                                 let info = match pane {
                                     crate::host::pane::Pane::Terminal(t) => {
                                         let cwd =
@@ -393,33 +399,30 @@ impl PlexiApp {
                                         })
                                     }
                                 };
-                                let json_str = serde_json::to_string(&info)
-                                    .unwrap_or_else(|_| "{}".to_string());
-                                let temp_file = format!("{}.tmp", response_file);
-                                if let Err(e) = std::fs::write(&temp_file, &json_str) {
-                                    log::error!("pane_ipc: get_previous_pane_info: could not write temp response file {temp_file:?}: {e}");
-                                } else if let Err(e) = std::fs::rename(&temp_file, response_file) {
-                                    log::error!("pane_ipc: get_previous_pane_info: could not rename temp response file to {:?}: {e}", response_file);
-                                    let _ = std::fs::remove_file(&temp_file);
-                                }
-                                found = true;
+                                result_json = Some(
+                                    serde_json::to_string(&info)
+                                        .unwrap_or_else(|_| "{}".to_string()),
+                                );
                                 break 'prev_outer;
                             }
                         }
                     }
                 }
-                if !found {
-                    log::warn!(
-                        "pane_ipc: get_previous_pane_info: no previous pane found in history"
-                    );
-                    let json_str = "{\"error\":\"no previous pane in history\"}";
-                    let temp_file = format!("{}.tmp", response_file);
-                    if let Err(e) = std::fs::write(&temp_file, json_str) {
-                        log::error!("pane_ipc: get_previous_pane_info: could not write temp error response {temp_file:?}: {e}");
-                    } else if let Err(e) = std::fs::rename(&temp_file, response_file) {
-                        log::error!("pane_ipc: get_previous_pane_info: could not rename temp error response to {:?}: {e}", response_file);
-                        let _ = std::fs::remove_file(&temp_file);
+                let json_str = match result_json {
+                    Some(j) => j,
+                    None => {
+                        log::warn!(
+                            "pane_ipc: get_previous_pane_info: fewer than {steps} valid panes in history (found {hits})"
+                        );
+                        format!("{{\"error\":\"not enough pane history (requested step {steps}, found {hits} valid entries)\"}}")
                     }
+                };
+                let temp_file = format!("{}.tmp", response_file);
+                if let Err(e) = std::fs::write(&temp_file, &json_str) {
+                    log::error!("pane_ipc: get_previous_pane_info: could not write temp response file {temp_file:?}: {e}");
+                } else if let Err(e) = std::fs::rename(&temp_file, &response_file) {
+                    log::error!("pane_ipc: get_previous_pane_info: could not rename temp response file to {:?}: {e}", response_file);
+                    let _ = std::fs::remove_file(&temp_file);
                 }
             }
             crate::app_protocol::AppRequest::SlotWrite {

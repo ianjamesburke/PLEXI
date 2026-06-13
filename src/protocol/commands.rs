@@ -706,11 +706,15 @@ pub enum AppRequest {
     GetPaneInfo { pane_id: u64, response_file: String },
 
     /// Query info for the previously focused pane. Host walks `pane_focus_history`
-    /// from the end, finds the last entry whose tile resolves to a live pane, and
-    /// writes the same JSON shape as `GetPaneInfo` to `response_file`.
-    /// Returns `{"error":"..."}` if history is empty or no valid pane found.
-    /// Sent by `plexi pane info --previous`.
-    GetPreviousPaneInfo { response_file: String },
+    /// from the end, finds the Nth live entry, and writes the same JSON shape as
+    /// `GetPaneInfo` to `response_file`. `steps` defaults to 1 (immediate previous).
+    /// Returns `{"error":"..."}` if history has fewer than N valid panes.
+    /// Sent by `plexi pane info --previous [N]`.
+    GetPreviousPaneInfo {
+        response_file: String,
+        #[serde(default = "one")]
+        steps: u64,
+    },
 
     /// List permission state across apps (stint 0017). Gated on
     /// `permissions.manage` when arriving over PGAP. Host writes a JSON object
@@ -1726,6 +1730,10 @@ impl ListViewItem {
             ListViewItem::CustomCell { height_hint, .. } => *height_hint,
         }
     }
+}
+
+fn one() -> u64 {
+    1
 }
 
 fn default_custom_cell_height() -> f32 {
@@ -3952,11 +3960,13 @@ mod ai_stream_chunk_tests {
     /// Wire-format round-trip for GetPreviousPaneInfo.
     #[test]
     fn get_previous_pane_info_round_trips_serde() {
+        // Without steps — default should be 1.
         let json = r#"{"type":"get_previous_pane_info","response_file":"/tmp/prev.json"}"#;
         let req: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &req {
-            AppRequest::GetPreviousPaneInfo { response_file } => {
+            AppRequest::GetPreviousPaneInfo { response_file, steps } => {
                 assert_eq!(response_file, "/tmp/prev.json");
+                assert_eq!(*steps, 1, "default steps must be 1");
             }
             other => panic!("expected GetPreviousPaneInfo, got {other:?}"),
         }
@@ -3969,6 +3979,17 @@ mod ai_stream_chunk_tests {
             serialised.contains(r#""response_file":"/tmp/prev.json""#),
             "response_file missing: {serialised}"
         );
+
+        // With explicit steps=3.
+        let json3 =
+            r#"{"type":"get_previous_pane_info","response_file":"/tmp/prev.json","steps":3}"#;
+        let req3: AppRequest = serde_json::from_str(json3).expect("deserialise steps=3");
+        match &req3 {
+            AppRequest::GetPreviousPaneInfo { steps, .. } => {
+                assert_eq!(*steps, 3);
+            }
+            other => panic!("expected GetPreviousPaneInfo with steps=3, got {other:?}"),
+        }
     }
 
     /// Wire-format round-trip for the no-op Wake nudge sent by the CLI

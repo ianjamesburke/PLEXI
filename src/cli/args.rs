@@ -761,9 +761,14 @@ pub enum PaneCmd {
     Self_,
     /// Print details about the current pane (or the previously focused pane) as JSON.
     Info {
-        /// Return info for the previously focused pane instead of the current one.
-        #[arg(long)]
-        previous: bool,
+        /// Return info for a previously focused pane. With no value, returns the immediately
+        /// previous pane (step 1). Provide an integer N to walk back N steps in focus history.
+        ///
+        /// Examples:
+        ///   plexi pane info --previous      # pane focused 1 step ago
+        ///   plexi pane info --previous 3    # pane focused 3 steps ago
+        #[arg(long, num_args(0..=1), default_missing_value = "1", value_name = "N")]
+        previous: Option<u64>,
     },
     /// Capture the last N lines of a pane's output as a JSON array.
     ///

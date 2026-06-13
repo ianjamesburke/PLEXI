@@ -527,6 +527,7 @@ fn get_previous_pane_info_returns_previous_pane() {
 
     h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
+        steps: 1,
     });
     h.app.drain_pane_cmd_channel();
 
@@ -565,6 +566,7 @@ fn get_previous_pane_info_skips_stale_tile() {
 
     h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
+        steps: 1,
     });
     h.app.drain_pane_cmd_channel();
 
@@ -597,6 +599,7 @@ fn get_previous_pane_info_empty_history_returns_error() {
 
     h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
+        steps: 1,
     });
     h.app.drain_pane_cmd_channel();
 
@@ -606,6 +609,85 @@ fn get_previous_pane_info_empty_history_returns_error() {
     assert!(
         v.get("error").is_some(),
         "expected error field in response; got: {json}"
+    );
+    let _ = std::fs::remove_file(&resp_file);
+}
+
+/// GetPreviousPaneInfo with steps=2 skips the immediately previous pane and
+/// returns the one two hops back.
+#[test]
+fn get_previous_pane_info_steps_two_returns_second_pane() {
+    let mut h = HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_test_pane();
+    let window_id = h.app.windows[0].window_id;
+
+    let tile_a = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&pane_a)
+        .expect("tile_a must exist");
+    let tile_b = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&pane_b)
+        .expect("tile_b must exist");
+
+    // History order (oldest first): pane_a, pane_b.
+    // Reversed: pane_b is step 1, pane_a is step 2.
+    h.app.pane_focus_history.push((window_id, tile_a));
+    h.app.pane_focus_history.push((window_id, tile_b));
+
+    let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_steps2.json");
+    let _ = std::fs::remove_file(&resp_file);
+
+    h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
+        response_file: resp_file.to_string_lossy().to_string(),
+        steps: 2,
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let json = std::fs::read_to_string(&resp_file).expect("response file must be written");
+    let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert!(v.get("error").is_none(), "unexpected error: {json}");
+    assert_eq!(
+        v["id"].as_u64(),
+        Some(pane_a),
+        "step 2 must return pane_a (2 hops back); got: {json}"
+    );
+    let _ = std::fs::remove_file(&resp_file);
+}
+
+/// GetPreviousPaneInfo returns an error when steps exceeds available valid history.
+#[test]
+fn get_previous_pane_info_steps_exceeds_history_returns_error() {
+    let mut h = HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let window_id = h.app.windows[0].window_id;
+
+    let tile_a = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&pane_a)
+        .expect("tile_a must exist");
+    h.app.pane_focus_history.push((window_id, tile_a));
+
+    let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_steps_overflow.json");
+    let _ = std::fs::remove_file(&resp_file);
+
+    // Only 1 valid entry in history; requesting step 5 should error.
+    h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
+        response_file: resp_file.to_string_lossy().to_string(),
+        steps: 5,
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let json =
+        std::fs::read_to_string(&resp_file).expect("response file must be written even on error");
+    let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert!(
+        v.get("error").is_some(),
+        "expected error when steps exceeds history; got: {json}"
     );
     let _ = std::fs::remove_file(&resp_file);
 }
