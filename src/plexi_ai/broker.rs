@@ -15,7 +15,7 @@
 //! thread with a blocking call. The broker's `dispatch` method is therefore
 //! expected to be invoked from a worker thread spawned by the routing layer.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::app_protocol::{AiMessage, AiTool, ModelTier};
 use crate::config::{AiConfig, OllamaBackendConfig, OpenRouterBackendConfig};
@@ -39,20 +39,27 @@ pub struct PaneContext {
 /// Singleton holding a snapshot of all open panes across all windows.
 /// Written by `PlexiApp::update()` each frame; read by `route_command` when
 /// dispatching `AiQuery` so the broker receives the full workspace context.
-static PANE_SNAPSHOT: OnceLock<Arc<Mutex<Vec<PaneContext>>>> = OnceLock::new();
+///
+/// The inner `Arc<Vec<PaneContext>>` is swapped atomically on each update.
+/// Readers hold only a read-lock long enough to clone the Arc pointer
+/// (not the vector contents); the RwLock allows concurrent snapshot reads
+/// while the single per-frame writer holds an exclusive write-lock briefly.
+static PANE_SNAPSHOT: OnceLock<RwLock<Arc<Vec<PaneContext>>>> = OnceLock::new();
 
-fn pane_snapshot() -> &'static Arc<Mutex<Vec<PaneContext>>> {
-    PANE_SNAPSHOT.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
+fn pane_snapshot() -> &'static RwLock<Arc<Vec<PaneContext>>> {
+    PANE_SNAPSHOT.get_or_init(|| RwLock::new(Arc::new(Vec::new())))
 }
 
 /// Replace the global pane context snapshot. Called once per frame by the host.
 pub fn update_pane_snapshot(panes: Vec<PaneContext>) {
-    *pane_snapshot().lock().unwrap() = panes;
+    *pane_snapshot().write().unwrap() = Arc::new(panes);
 }
 
 /// Read the current pane context snapshot. Called by routing on `AiQuery`.
-pub fn get_pane_snapshot() -> Vec<PaneContext> {
-    pane_snapshot().lock().unwrap().clone()
+/// Returns an `Arc` pointer — callers pay only for a reference-count increment,
+/// not a full vector copy. Concurrent reads do not block each other.
+pub fn get_pane_snapshot() -> Arc<Vec<PaneContext>> {
+    pane_snapshot().read().unwrap().clone()
 }
 
 /// One brokered request — what the routing layer hands to a broker. `app_id`
@@ -68,7 +75,9 @@ pub struct AiBrokerRequest {
     /// prepends a compact workspace context block to the system prompt.
     pub workspace_root: Option<std::path::PathBuf>,
     /// Currently open panes — listed in the host context block.
-    pub open_panes: Vec<PaneContext>,
+    /// `Arc`-wrapped so callers share the snapshot pointer rather than copying
+    /// the full vector on every dispatch.
+    pub open_panes: Arc<Vec<PaneContext>>,
     /// Tool dispatcher snapshot. When `Some`, the broker runs a tool loop
     /// and dispatches any tool calls the model makes.
     pub tool_dispatcher: Option<std::sync::Arc<ToolDispatcher>>,
@@ -383,33 +392,37 @@ fn run_turn_and_respond(
     on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
 ) -> AiBrokerResponse {
     // Build effective system prompt (optionally prepend host context).
-    let system = if request.system.starts_with("# no-host-context") {
-        request.system.clone()
+    // Wrap in `Arc<str>` immediately so each tool-loop iteration clones only
+    // the pointer rather than the full string.
+    let system: Arc<str> = if request.system.starts_with("# no-host-context") {
+        Arc::from(request.system)
     } else if let Some(root) = &request.workspace_root {
         let prefix = build_context_prefix(root, &request.open_panes);
-        format!("{prefix}{}", request.system)
+        Arc::from(format!("{prefix}{}", request.system))
     } else {
-        request.system.clone()
+        Arc::from(request.system)
     };
 
     // Collect tools: from request AND from global registry via dispatcher.
+    // Move request.tools (no clone) then extend with registry tools, then
+    // freeze into an Arc<[_]> so each tool-loop iteration clones only the pointer.
     let registry_tools = request
         .tool_dispatcher
         .as_ref()
         .map(|d| d.all_tools())
         .unwrap_or_default();
-    let mut all_tools: Vec<AiTool> = request.tools.clone();
+    let mut all_tools_vec: Vec<AiTool> = request.tools;
     for t in registry_tools {
-        if !all_tools.iter().any(|existing| existing.name == t.name) {
-            all_tools.push(t);
+        if !all_tools_vec.iter().any(|existing| existing.name == t.name) {
+            all_tools_vec.push(t);
         }
     }
-
-    let tool_names: Vec<&str> = all_tools.iter().map(|t| t.name.as_str()).collect();
+    let tool_names: Vec<&str> = all_tools_vec.iter().map(|t| t.name.as_str()).collect();
     log::info!(
         "ai_broker[{}]: model={model_id}, tools={tool_names:?}",
         request.app_id,
     );
+    let all_tools: Arc<[AiTool]> = all_tools_vec.into();
 
     // Convert messages to JSON values for the backend.
     let mut conv: Vec<serde_json::Value> = messages_to_json(&request.messages);
@@ -431,8 +444,8 @@ fn run_turn_and_respond(
 
         let backend_req = AiBackendRequest {
             messages: conv.clone(),
-            system: system.clone(),
-            tools: all_tools.clone(),
+            system: Arc::clone(&system),
+            tools: Arc::clone(&all_tools),
             model_tier: Some(request.model_tier),
         };
 
@@ -464,9 +477,10 @@ fn run_turn_and_respond(
                     break;
                 }
 
-                // Append assistant tool-call message.
-                let tc_json: Vec<serde_json::Value> = result
-                    .tool_calls
+                // Append assistant tool-call message. Build tc_json while the
+                // tool_calls vec is still intact, then consume it below.
+                let tool_calls = result.tool_calls;
+                let tc_json: Vec<serde_json::Value> = tool_calls
                     .iter()
                     .map(|tc| {
                         serde_json::json!({
@@ -494,7 +508,7 @@ fn run_turn_and_respond(
                             request.app_id
                         );
                         // Append error result for each call so the model can recover.
-                        for tc in &result.tool_calls {
+                        for tc in &tool_calls {
                             conv.push(serde_json::json!({
                                 "role": "tool",
                                 "tool_call_id": tc.id,
@@ -505,20 +519,18 @@ fn run_turn_and_respond(
                     }
                 };
 
-                // Dispatch all tool calls (sequentially for now — parallel
-                // dispatch would require spawning threads and joining, adding
-                // complexity for marginal gain on typical 1-2 tool call batches).
-                let mut call_counter: u64 = 0;
-                for tc in &result.tool_calls {
-                    call_counter += 1;
-                    let call_id = format!("{}-{call_counter}", tc.id);
+                // Consume tool_calls so we can move tc.arguments directly into
+                // dispatch_call without cloning (sequential dispatch — parallel
+                // would need threads + join, adding complexity for marginal gain
+                // on typical 1-2 call batches).
+                for (i, tc) in tool_calls.into_iter().enumerate() {
+                    let call_id = format!("{}-{}", tc.id, i + 1);
                     log::debug!(
                         "ai_broker[{}]: dispatching tool '{}' call_id={call_id}",
                         request.app_id,
                         tc.name,
                     );
-                    let tool_result =
-                        dispatcher.dispatch_call(call_id.clone(), &tc.name, tc.arguments.clone());
+                    let tool_result = dispatcher.dispatch_call(call_id, &tc.name, tc.arguments);
                     let content = if let Some(out) = tool_result.output_json {
                         out
                     } else {
@@ -881,7 +893,7 @@ mod tests {
                 messages: messages.clone(),
                 tools: vec![],
                 workspace_root: None,
-                open_panes: vec![],
+                open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
             },
             &mut |_| {},
@@ -916,7 +928,7 @@ mod tests {
                 }],
                 tools: vec![],
                 workspace_root: None,
-                open_panes: vec![],
+                open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
             },
             &mut |_| {},
@@ -950,7 +962,7 @@ mod tests {
                 }],
                 tools: vec![],
                 workspace_root: None,
-                open_panes: vec![],
+                open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
             },
             &mut |_| {},
@@ -984,7 +996,7 @@ mod tests {
                 }],
                 tools: vec![],
                 workspace_root: None,
-                open_panes: vec![],
+                open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
             },
             &mut |_| {},
@@ -994,6 +1006,118 @@ mod tests {
             resp.error.as_deref().unwrap_or("").contains("[ai.ollama]"),
             "error must mention missing [ai.ollama] section"
         );
+    }
+
+    /// Verify the tool loop: a backend that returns one tool call on the first
+    /// turn and a text reply on the second. Confirms that `system` and `tools`
+    /// are consistent across iterations (pointer-equality for Arc fields) and
+    /// that the broker accumulates token counts and conversation history
+    /// correctly across both turns.
+    #[test]
+    fn tool_loop_builds_conversation_correctly() {
+        use crate::plexi_ai::backend::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
+        use crate::app_protocol::AiTool;
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex};
+
+        /// Backend that returns a tool call on turn 1, final text on turn 2.
+        /// Clones the Arc itself (not raw pointers) from each invocation so the
+        /// test can compare allocations with `Arc::ptr_eq` after the call.
+        struct ToolThenTextBackend {
+            calls: Arc<Mutex<u32>>,
+            seen_systems: Arc<Mutex<Vec<Arc<str>>>>,
+            seen_tools: Arc<Mutex<Vec<Arc<[AiTool]>>>>,
+        }
+
+        impl AiBackend for ToolThenTextBackend {
+            fn name(&self) -> &str { "tool-then-text" }
+
+            fn stream_to_channel(
+                &self,
+                req: AiBackendRequest,
+                tx: mpsc::Sender<StreamEvent>,
+            ) -> Result<(), AiBackendError> {
+                let call_num = {
+                    let mut c = self.calls.lock().unwrap();
+                    *c += 1;
+                    *c
+                };
+                // Clone the Arc itself so we can check pointer identity later.
+                self.seen_systems.lock().unwrap().push(Arc::clone(&req.system));
+                self.seen_tools.lock().unwrap().push(Arc::clone(&req.tools));
+
+                assert_eq!(&*req.system, "sys");
+                assert_eq!(req.tools.len(), 1);
+                assert_eq!(req.tools[0].name, "echo");
+
+                if call_num == 1 {
+                    let _ = tx.send(StreamEvent::ToolCalls(vec![RawToolCall {
+                        id: "c1".to_string(),
+                        name: "echo".to_string(),
+                        arguments: "{\"msg\":\"hello\"}".to_string(),
+                    }]));
+                    let _ = tx.send(StreamEvent::Done {
+                        input_tokens: Some(10),
+                        output_tokens: Some(5),
+                        generation_id: None,
+                    });
+                } else {
+                    let _ = tx.send(StreamEvent::Text("final answer".to_string()));
+                    let _ = tx.send(StreamEvent::Done {
+                        input_tokens: Some(20),
+                        output_tokens: Some(8),
+                        generation_id: None,
+                    });
+                }
+                Ok(())
+            }
+        }
+
+        let seen_systems: Arc<Mutex<Vec<Arc<str>>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_tools: Arc<Mutex<Vec<Arc<[AiTool]>>>> = Arc::new(Mutex::new(Vec::new()));
+        let backend = ToolThenTextBackend {
+            calls: Arc::new(Mutex::new(0)),
+            seen_systems: Arc::clone(&seen_systems),
+            seen_tools: Arc::clone(&seen_tools),
+        };
+
+        let tool = AiTool {
+            name: "echo".to_string(),
+            description: "echoes back".to_string(),
+            input_schema: serde_json::json!({"type":"object"}),
+            timeout_ms: None,
+        };
+        // No dispatcher: the broker appends an error tool result and continues to
+        // the next iteration, where the backend returns the final text.
+        let request = AiBrokerRequest {
+            app_id: "test".to_string(),
+            model_tier: crate::app_protocol::ModelTier::Low,
+            system: "sys".to_string(),
+            messages: vec![crate::app_protocol::AiMessage {
+                role: "user".to_string(),
+                content: "go".to_string(),
+            }],
+            tools: vec![tool],
+            workspace_root: None,
+            open_panes: Arc::new(Vec::new()),
+            tool_dispatcher: None,
+        };
+
+        let billing = crate::plexi_ai::backend::BillingModel::Subscription;
+        let resp = run_turn_and_respond(
+            request, &backend, billing, "test-model".to_string(), String::new(), &mut |_| {},
+        );
+        assert!(resp.content.is_some(), "broker must return final text after tool round-trip");
+        assert_eq!(resp.content.as_deref(), Some("final answer"));
+        assert_eq!(resp.tokens_in, 30, "token counts must accumulate across iterations");
+        assert_eq!(resp.tokens_out, 13);
+
+        // Both iterations must have received the same Arc allocation — no deep copy.
+        let ss = seen_systems.lock().unwrap();
+        assert_eq!(ss.len(), 2, "backend must be called exactly twice");
+        assert!(Arc::ptr_eq(&ss[0], &ss[1]), "system Arc must be the same allocation on both iterations");
+        let st = seen_tools.lock().unwrap();
+        assert!(Arc::ptr_eq(&st[0], &st[1]), "tools Arc must be the same allocation on both iterations");
     }
 
     /// Verify `fetch_generation_cost` parses total_cost as string or float.

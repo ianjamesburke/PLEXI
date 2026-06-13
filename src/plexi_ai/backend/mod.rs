@@ -10,7 +10,7 @@
 pub mod ollama;
 pub mod openrouter;
 
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use crate::app_protocol::ModelTier;
 
@@ -81,10 +81,12 @@ pub struct AiBackendRequest {
     /// Tool-call turns: `{"role": "assistant", "content": null, "tool_calls": […]}`.
     /// Tool-result turns: `{"role": "tool", "content": "…", "tool_call_id": "…"}`.
     pub messages: Vec<serde_json::Value>,
-    /// System prompt (injected on every call for the native API).
-    pub system: String,
-    /// Tools to inject into the request when non-empty.
-    pub tools: Vec<crate::app_protocol::AiTool>,
+    /// System prompt (injected on every call for the native API). Shared via
+    /// `Arc<str>` so repeated tool-loop iterations clone only the pointer.
+    pub system: Arc<str>,
+    /// Tools to inject into the request when non-empty. Shared via `Arc<[_]>`
+    /// so tool-loop iterations clone only the pointer.
+    pub tools: Arc<[crate::app_protocol::AiTool]>,
     /// Model tier from the broker request. Used by backends to apply
     /// tier-specific request parameters (e.g. disabling reasoning for Low).
     pub model_tier: Option<ModelTier>,
