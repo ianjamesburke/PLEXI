@@ -1,8 +1,9 @@
 ---
 id: "0149"
 title: "App pane chrome: host-owned content viewport contract"
-status: todo
+status: in-progress
 estimate: "16h"
+started_at: "2026-06-13T22:08:31Z"
 sprint: "s5"
 blocked_by:
   - 23
@@ -19,6 +20,7 @@ tags:
   - "layout"
   - "app-pane"
 ---
+
 
 
 Give every app pane a host-owned chrome shell so apps render only inside the post-chrome content viewport.
