@@ -848,6 +848,34 @@ pub fn set_test_channel(channel: &str) -> TestChannelGuard {
     TestChannelGuard
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_PROFILE_DIR_OVERRIDE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// RAII guard that clears the per-thread test profile dir override on drop.
+#[cfg(test)]
+pub struct TestProfileDirGuard;
+
+#[cfg(test)]
+impl Drop for TestProfileDirGuard {
+    fn drop(&mut self) {
+        TEST_PROFILE_DIR_OVERRIDE.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+/// Override the full profile directory for the current test thread. The returned
+/// guard must be held for the duration of the test; dropping it clears the override.
+///
+/// Prefer this over `set_test_channel` for new tests — it redirects `config_dir()`
+/// and `config_path()` to a fully isolated tempdir rather than a subdir of $HOME.
+#[cfg(test)]
+pub fn set_test_profile_dir(path: std::path::PathBuf) -> TestProfileDirGuard {
+    TEST_PROFILE_DIR_OVERRIDE.with(|c| *c.borrow_mut() = Some(path));
+    TestProfileDirGuard
+}
+
 /// Returns the workspace channel directory name for the current binary.
 /// This is the dot-prefixed dir used inside workspace roots to scope
 /// workspace state per channel: `.plexi` (main), `.plexi-alpha`, `.plexi-beta`,
@@ -904,6 +932,13 @@ fn config_dir_name() -> String {
 }
 
 pub fn config_path() -> PathBuf {
+    #[cfg(test)]
+    {
+        let override_dir = TEST_PROFILE_DIR_OVERRIDE.with(|c| c.borrow().clone());
+        if let Some(dir) = override_dir {
+            return dir.join("config.toml");
+        }
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(config_dir_name())
@@ -911,6 +946,13 @@ pub fn config_path() -> PathBuf {
 }
 
 pub fn config_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        let override_dir = TEST_PROFILE_DIR_OVERRIDE.with(|c| c.borrow().clone());
+        if let Some(dir) = override_dir {
+            return dir;
+        }
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(config_dir_name())

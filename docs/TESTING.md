@@ -88,3 +88,13 @@ The `/testing` skill (`.agents/skills/testing/SKILL.md`) is the agent workflow: 
 - Test-first for host logic: a new `AppRequest`/`HostEffect` gets a failing `HostHarness` test before implementation.
 - New host UI component or overlay → a scene in `tests/scenes/` (open → act → assert → shot).
 - Coverage: `cargo llvm-cov --bin plexi` (cargo-llvm-cov installed at `~/.cargo/bin/`).
+
+## Per-Test Profile Isolation
+
+Every `HostHarness::new()` call creates a fresh `tempfile::TempDir` and installs a thread-local override so `config_dir()` and `config_path()` resolve inside that tempdir for the lifetime of the harness. The tempdir is deleted when the harness drops.
+
+**What this means for test authors:**
+- Tests that go through `HostHarness` never touch `$HOME` — no stray `~/.plexi-<hash>/` dirs.
+- The override is thread-local, so worker threads spawned by the host (e.g. IPC handlers) won't see it. This is acceptable for dispatch tests; note it when writing tests that assert on paths written by background threads.
+- For unit tests that call `config_dir()` directly (without HostHarness), use `set_test_profile_dir(tempdir.path().to_path_buf())` and hold the returned `TestProfileDirGuard` for the test duration.
+- `set_test_channel()` remains for tests that specifically exercise channel-name derivation logic. Prefer `set_test_profile_dir` for everything else.
