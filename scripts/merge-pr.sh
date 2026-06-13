@@ -64,6 +64,8 @@ do_cleanup() {
     just channel-clean "pr-${PR}" 2>/dev/null || true
     wtp remove "$BRANCH" --force --with-branch 2>/dev/null || true
     git push origin --delete "$BRANCH" 2>/dev/null || true
+    echo "==> Reaping finished merged worktrees (clean + fully pushed only)"
+    just reap-merged-worktrees 2>/dev/null || true
     echo "==> Sweeping stale worktree build artifacts"
     just clean-stale-targets 2>/dev/null || true
 }

@@ -169,6 +169,14 @@ channel-clean-merged:
 clean-stale-targets:
     bash scripts/clean-stale-targets.sh
 
+# Remove whole worktrees whose PR is MERGED — only when clean and fully pushed.
+# Destructive (deletes worktree + local branch); keeps open-PR, pre-PR, dirty,
+# and unpushed worktrees. Pass `dry-run` to preview without deleting.
+#   just reap-merged-worktrees           — remove safe merged worktrees
+#   just reap-merged-worktrees dry-run   — preview verdicts only
+reap-merged-worktrees mode="":
+    bash scripts/reap-merged-worktrees.sh {{mode}}
+
 # Run `cargo clean` in every worktree to reclaim incremental/debug artifacts.
 # Deps cache is preserved (only removes target/debug and incremental/).
 # Use when disk is low and you don't want to full-clean.
