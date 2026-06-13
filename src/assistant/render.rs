@@ -764,28 +764,16 @@ impl AssistantRenderer {
                 // composer, but its visual conventions carry over).
                 ui.visuals_mut().text_cursor.stroke.width = 1.5;
                 ui.visuals_mut().text_cursor.stroke.color = colors.accent;
-                // Deterministic height: lay out the composer text *this frame*
-                // so the content-sized bottom panel never trails a frame behind
-                // the growing text — that lag was what made the hint bar below
-                // jump as the box grew. Cap at `max_text_h`, where the scroll
-                // takes over. The small pad absorbs the TextEdit's own caret
-                // margin so a stray scrollbar never flickers in mid-growth.
-                let wrap_w = ui.available_width();
-                let measure = if model.composer.is_empty() {
-                    " ".to_owned()
-                } else {
-                    model.composer.clone()
-                };
-                let galley_h = ui.fonts(|f| {
-                    f.layout(measure, font_id.clone(), colors.text_primary, wrap_w)
-                        .size()
-                        .y
-                });
-                let text_h = (galley_h + 4.0).clamp(row_height, max_text_h);
+                // The TextEdit reports its own height; the ScrollArea caps it at
+                // `max_text_h` and scrolls past that. No hand-rolled galley
+                // measurement — same shape as the quick-note composer. Measuring
+                // the height ourselves fought the TextEdit's real layout (it
+                // wraps against a width already reduced by the floating
+                // scrollbar's reserved gutter), which flashed a stray scrollbar
+                // mid-growth.
                 egui::ScrollArea::vertical()
                     .id_salt("assistant_composer_scroll")
-                    .max_height(text_h)
-                    .min_scrolled_height(text_h)
+                    .max_height(max_text_h)
                     .show(ui, |ui| {
                         response = Some(ui.add(
                             egui::TextEdit::multiline(&mut model.composer)
@@ -816,20 +804,17 @@ impl AssistantRenderer {
                         ));
                     });
             });
-        // Focus the composer the instant the pane gains focus — every time,
-        // even when it already holds a draft. Edge-triggered on the focus
-        // transition (false→true) so it fires once on entry and never fights the
-        // user afterward: while they click into the transcript to select text
-        // the pane stays focused, so there is no re-grab.
-        let focus_key = te_id.with("pane_was_focused");
-        let was_focused = ui
-            .ctx()
-            .data(|d| d.get_temp::<bool>(focus_key))
-            .unwrap_or(false);
-        ui.ctx().data_mut(|d| d.insert_temp(focus_key, is_focused));
+        // Keep the composer focused whenever the pane is active but the
+        // TextEdit has lost focus — covers initial open, pane switches, and
+        // window zoom/fullscreen toggles (which silently drop egui keyboard
+        // focus, even with a draft in the box). This is the same unconditional
+        // rule the text-editor pane uses (`text_editor_app.rs`): a one-shot
+        // edge guard breaks after the very focus changes it needs to react to.
+        // It does not fight transcript selection — selecting a label takes
+        // pointer interaction, not keyboard focus, and an empty composer never
+        // consumes the copy event, so cross-bubble copy still works.
         if let Some(response) = response {
-            if is_focused && !was_focused && !response.has_focus() {
-                log::info!("assistant: composer auto-focused on pane focus");
+            if is_focused && !response.has_focus() {
                 response.request_focus();
             }
         }
