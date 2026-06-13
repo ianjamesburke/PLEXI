@@ -377,44 +377,17 @@ fn main() -> eframe::Result {
                                         false,
                                         Some("mcp-renderer"),
                                         &mcp,
-                                        None,
                                         &[],
                                     ));
                                 } else {
                                     let binary = cli_flag.unwrap();
-                                    log::info!("app_open:cli: running --help parser for `{binary}`, auto-title={binary:?}");
-                                    match crate::cli::help_parser::parse_help_to_descriptor(&binary)
-                                    {
-                                        Ok(json) => {
-                                            let id = uuid::Uuid::new_v4();
-                                            let tmp = std::env::temp_dir()
-                                                .join(format!("plexi-descriptor-{id}.json"));
-                                            if let Err(e) = std::fs::write(&tmp, &json) {
-                                                eprintln!("error: could not write descriptor temp file: {e}");
-                                                std::process::exit(1);
-                                            }
-                                            let path = tmp.to_string_lossy().into_owned();
-                                            let layout_str = layout.as_deref().unwrap_or("split_h");
-                                            log::info!("app_open:cli: launching cli-renderer with descriptor at {path}");
-                                            std::process::exit(cli::pane_new_cli(
-                                                None,
-                                                Some(binary.as_str()),
-                                                layout_str,
-                                                from_pane_id,
-                                                None,
-                                                false,
-                                                false,
-                                                Some("cli-renderer"),
-                                                &[],
-                                                None,
-                                                &[path],
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            eprintln!("error: could not parse --help output: {e}");
-                                            std::process::exit(1);
-                                        }
-                                    }
+                                    log::info!("app_open:cli: --cli routing `{binary}` through unified resolver");
+                                    std::process::exit(cli::open_cli_by_name(
+                                        &binary,
+                                        layout.as_deref(),
+                                        from_pane_id,
+                                        None,
+                                    ));
                                 }
                             }
                             AppCmd::Install {
@@ -816,7 +789,6 @@ fn main() -> eframe::Result {
                                     no_focus,
                                     None,
                                     &[],
-                                    None,
                                     &[],
                                 ));
                             }
@@ -834,10 +806,21 @@ fn main() -> eframe::Result {
                             extra_args,
                         } => {
                             if json {
-                                match crate::cli::help_parser::parse_help_to_descriptor(&command) {
-                                    Ok(j) => {
-                                        println!("{j}");
-                                        std::process::exit(0);
+                                let runner = cli::descriptor::RealRunner;
+                                match cli::descriptor::resolve_cli_with(
+                                    &runner, &command, !no_registry, !no_crawl,
+                                ) {
+                                    Ok(resolved) => {
+                                        match serde_json::to_string_pretty(&resolved.descriptor) {
+                                            Ok(j) => {
+                                                println!("{j}");
+                                                std::process::exit(0);
+                                            }
+                                            Err(e) => {
+                                                eprintln!("error: could not serialize descriptor: {e}");
+                                                std::process::exit(1);
+                                            }
+                                        }
                                     }
                                     Err(e) => {
                                         eprintln!("error: {e}");

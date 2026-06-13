@@ -128,6 +128,12 @@ pub enum AppCommand {
         request_id: String,
         cwd: Option<String>,
         label: Option<String>,
+        /// Where to place the new terminal relative to the requesting app
+        /// pane. `false` (default) splits side-by-side with the terminal on
+        /// the right; `true` stacks it underneath. Process apps use the
+        /// side-by-side default; the CLI renderer requests `true` so its form
+        /// sits above its output terminal.
+        place_below: bool,
     },
     /// Canvas Terminal Binding Primitives (#78). Inject `command` into the
     /// referenced terminal's PTY. With `echo: true`, the command is

@@ -50,43 +50,8 @@ pub fn pane_new_cli(
     no_focus: bool,
     app: Option<&str>,
     mcp: &[String],
-    cli_tool: Option<&str>,
     extra_args: &[String],
 ) -> i32 {
-    // --cli mode: run help parser, then open as cli-renderer app
-    if let Some(binary) = cli_tool {
-        log::info!("pane_new:cli: running --help parser for `{binary}`");
-        match crate::cli::help_parser::parse_help_to_descriptor(binary) {
-            Ok(json) => {
-                let id = uuid::Uuid::new_v4();
-                let tmp = std::env::temp_dir().join(format!("plexi-descriptor-{id}.json"));
-                if let Err(e) = std::fs::write(&tmp, &json) {
-                    eprintln!("error: could not write descriptor temp file: {e}");
-                    return 1;
-                }
-                let path = tmp.to_string_lossy().to_string();
-                // Recurse as an app open with cli-renderer
-                return pane_new_cli(
-                    None,
-                    name,
-                    layout,
-                    from_pane_id,
-                    cwd,
-                    ephemeral,
-                    no_focus,
-                    Some("cli-renderer"),
-                    &[],
-                    None,
-                    &[path],
-                );
-            }
-            Err(e) => {
-                eprintln!("error: could not parse --help output for `{binary}`: {e}");
-                return 1;
-            }
-        }
-    }
-
     // Determine mode: app or terminal
     let is_app = app.is_some() || !mcp.is_empty();
     let type_id = if let Some(a) = app {
@@ -259,98 +224,57 @@ pub fn parse_prefix(type_id: &str) -> OpenPrefix {
     }
 }
 
-/// Open a named CLI tool via the Tier 1/2/3 resolution chain (registry then crawl).
-///
-/// Writes a descriptor to a temp file and opens it with `cli-renderer`.
+/// Serialize a resolved descriptor to a temp file and open it in the native
+/// `cli-renderer`. Shared by every CLI resolution path so the temp-file +
+/// pane-spawn handshake lives in exactly one place.
+fn open_descriptor_in_renderer(
+    descriptor: &crate::app::plexi_descriptor::PlexiDescriptor,
+    name: &str,
+    layout: Option<&str>,
+    from_pane_id: Option<u64>,
+    cwd: Option<&str>,
+) -> i32 {
+    let json = match serde_json::to_string_pretty(descriptor) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("error: could not serialize descriptor for `{name}`: {e}");
+            return 1;
+        }
+    };
+    let id = uuid::Uuid::new_v4();
+    let tmp = std::env::temp_dir().join(format!("plexi-descriptor-{id}.json"));
+    if let Err(e) = std::fs::write(&tmp, &json) {
+        eprintln!("error: could not write descriptor temp file: {e}");
+        return 1;
+    }
+    let path = tmp.to_string_lossy().to_string();
+    let layout_str = layout.unwrap_or("split_h");
+    log::info!("open:cli: launching cli-renderer for `{name}` with descriptor at {path}");
+    pane_new_cli(
+        None,
+        Some(name),
+        layout_str,
+        from_pane_id,
+        cwd,
+        false,
+        false,
+        Some("cli-renderer"),
+        &[],
+        &[path],
+    )
+}
+
+/// Open a named CLI tool via the full Tier 1/2/3 resolution chain (native
+/// `--plexi` → registry → recursive `--help` crawl), then render it.
 pub fn open_cli_by_name(
     name: &str,
     layout: Option<&str>,
     from_pane_id: Option<u64>,
     cwd: Option<&str>,
 ) -> i32 {
-    log::info!("open:prefix: resolving cli:{name}");
-
-    // Tier 2: registry lookup
-    match crate::cli::registry::lookup(name, None) {
-        Ok(descriptor) => {
-            log::info!("open:prefix: cli:{name} resolved from registry");
-            let json = match serde_json::to_string_pretty(&descriptor) {
-                Ok(j) => j,
-                Err(e) => {
-                    eprintln!("error: could not serialize descriptor for `{name}`: {e}");
-                    return 1;
-                }
-            };
-            let id = uuid::Uuid::new_v4();
-            let tmp = std::env::temp_dir().join(format!("plexi-descriptor-{id}.json"));
-            if let Err(e) = std::fs::write(&tmp, &json) {
-                eprintln!("error: could not write descriptor temp file: {e}");
-                return 1;
-            }
-            let path = tmp.to_string_lossy().to_string();
-            let layout_str = layout.unwrap_or("split_h");
-            return pane_new_cli(
-                None,
-                Some(name),
-                layout_str,
-                from_pane_id,
-                cwd,
-                false,
-                false,
-                Some("cli-renderer"),
-                &[],
-                None,
-                &[path],
-            );
-        }
-        Err(crate::cli::registry::RegistryError::NotFound { .. }) => {
-            // Fall through to Tier 3
-        }
-        Err(e) => {
-            eprintln!("error: registry lookup for `{name}` failed: {e}");
-            return 1;
-        }
-    }
-
-    // Tier 3: crawl --help and cache
-    log::info!("open:prefix: cli:{name} not in registry, falling back to crawl");
-    match crate::cli::crawl::crawl(name) {
-        Ok(result) => {
-            let tag = if result.from_cache {
-                "cached"
-            } else {
-                "fresh crawl"
-            };
-            log::info!("open:prefix: cli:{name} resolved via {tag}");
-            let json = match serde_json::to_string_pretty(&result.descriptor) {
-                Ok(j) => j,
-                Err(e) => {
-                    eprintln!("error: could not serialize descriptor for `{name}`: {e}");
-                    return 1;
-                }
-            };
-            let id = uuid::Uuid::new_v4();
-            let tmp = std::env::temp_dir().join(format!("plexi-descriptor-{id}.json"));
-            if let Err(e) = std::fs::write(&tmp, &json) {
-                eprintln!("error: could not write descriptor temp file: {e}");
-                return 1;
-            }
-            let path = tmp.to_string_lossy().to_string();
-            let layout_str = layout.unwrap_or("split_h");
-            pane_new_cli(
-                None,
-                Some(name),
-                layout_str,
-                from_pane_id,
-                cwd,
-                false,
-                false,
-                Some("cli-renderer"),
-                &[],
-                None,
-                &[path],
-            )
-        }
+    log::info!("open:cli: resolving `{name}`");
+    match crate::cli::descriptor::resolve_cli(name) {
+        Ok(resolved) => open_descriptor_in_renderer(&resolved.descriptor, name, layout, from_pane_id, cwd),
         Err(e) => {
             eprintln!("error: could not resolve CLI `{name}`: {e}");
             1
@@ -390,7 +314,6 @@ pub fn open_mcp_by_name(
                 false,
                 Some("mcp-renderer"),
                 &entry.command,
-                None,
                 &[],
             )
         }
@@ -446,7 +369,6 @@ pub fn open_cli(
         false,
         Some(type_id),
         &[],
-        None,
         args,
     )
 }

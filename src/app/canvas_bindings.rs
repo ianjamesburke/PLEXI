@@ -28,6 +28,7 @@ impl PlexiApp {
         sender_pane_id: PaneId,
         request_id: String,
         cwd: Option<String>,
+        place_below: bool,
     ) {
         let active = self.active_window;
 
@@ -100,7 +101,9 @@ impl PlexiApp {
             .insert(new_id, Pane::Terminal(Box::new(term)));
 
         // Split the tree directly, adjacent to sender_tile, without touching focused_pane.
-        // Side-by-side (vertical=true) on the right: Canvas app left, terminal right.
+        // place_below=false → side-by-side (vertical=true), Canvas app left, terminal right.
+        // place_below=true  → stacked (vertical=false), app on top, terminal underneath —
+        // the CLI renderer uses this so its form sits above its output.
         // focused_pane is deliberately NOT updated — the Canvas app retains keyboard focus
         // so the user doesn't lose input mid-flow.
         let share =
@@ -109,9 +112,9 @@ impl PlexiApp {
             &mut self.windows[active].tree,
             Some(sender_tile),
             new_id,
-            true, // vertical = side-by-side on right
+            !place_below, // vertical=true → right; vertical=false → below
             share,
-            false, // new_pane_first = false
+            false, // new_pane_first = false → new terminal is the second (right/bottom) child
         );
 
         // Update the sender's linked_pane_id so legacy CdRequest also

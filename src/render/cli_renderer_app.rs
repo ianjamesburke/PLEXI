@@ -1,8 +1,9 @@
-//! Built-in CLI renderer: native egui replacement for the Python cli-renderer.
+//! Built-in CLI renderer: a native host app that turns any CLI into a GUI.
 //!
-//! Parses a PlexiDescriptor JSON file (or a raw `--help`-derived descriptor),
-//! renders a navigable command list and per-command form, and executes commands
-//! in a linked terminal pane.
+//! Parses a `PlexiDescriptor` JSON file (resolved by the Tier 1/2/3 chain in
+//! `cli::descriptor` — native `--plexi`, registry, or recursive `--help`
+//! crawl), renders a navigable command list and per-command form, and executes
+//! the assembled command in a linked terminal pane.
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
 use crate::app::plexi_descriptor::{ArgSpec, ArgType, Command, PlexiDescriptor};
@@ -10,7 +11,7 @@ use crate::ui::{
     button::{self, ButtonKind},
     style,
 };
-use egui::{self, Color32, RichText, Vec2};
+use egui::{self, RichText};
 use std::collections::HashMap;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -56,6 +57,9 @@ pub struct CliRendererApp {
     cmd_path: Vec<String>,
     /// Selected index in the current command list.
     selected: usize,
+    /// Previous frame's selection, so keyboard nav can scroll the newly
+    /// selected row into view exactly once when it changes.
+    last_selected: usize,
     /// Per-flag form values, keyed by flag name.
     field_values: HashMap<String, String>,
     /// Linked terminal pane id (0 = not yet linked).
@@ -72,6 +76,9 @@ pub struct CliRendererApp {
     binary_name: String,
     /// Which text field has focus (flag name), if any.
     focused_field: Option<String>,
+    /// Set when a leaf form opens so the first text field grabs keyboard
+    /// focus on the next frame; cleared once focus is requested.
+    pending_focus: bool,
 }
 
 impl CliRendererApp {
@@ -110,6 +117,7 @@ impl CliRendererApp {
             view,
             cmd_path: vec![],
             selected: 0,
+            last_selected: 0,
             field_values: HashMap::new(),
             terminal_pane_id: 0,
             pending_commands: vec![],
@@ -118,7 +126,19 @@ impl CliRendererApp {
             terminal_request_id: format!("cli-term-{}", uuid::Uuid::new_v4()),
             binary_name,
             focused_field: None,
+            pending_focus: false,
         }
+    }
+
+    // ── Shared widgets ────────────────────────────────────────────────────────
+
+    /// A "← Back" row rendered with the shared host `ListRow` so it is
+    /// pixel-identical to the command rows above it. Returns true on click.
+    fn back_row(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) -> bool {
+        crate::ui::list::ListRow::new("← Back")
+            .dense()
+            .show(ui, colors)
+            .row_clicked()
     }
 
     // ── Descriptor navigation ────────────────────────────────────────────────
@@ -189,6 +209,7 @@ impl CliRendererApp {
             for (k, v) in defaults {
                 self.field_values.insert(k, v);
             }
+            self.pending_focus = true;
             self.view = View::Form;
         }
     }
@@ -279,6 +300,8 @@ impl CliRendererApp {
                 request_id: self.terminal_request_id.clone(),
                 cwd: None,
                 label: Some(format!("{} terminal", self.binary_name)),
+                // Stack the output terminal under the form, not beside it.
+                place_below: true,
             });
         log::info!("CliRendererApp: requested linked terminal");
     }
@@ -363,101 +386,40 @@ impl CliRendererApp {
         });
 
         // Back button if navigated deep
-        if has_path {
-            let resp = ui.allocate_ui(Vec2::new(ui.available_width(), 32.0), |ui| {
-                let (rect, _) = ui.allocate_exact_size(
-                    Vec2::new(ui.available_width(), 32.0),
-                    egui::Sense::click(),
-                );
-                ui.painter().rect_filled(rect, 0.0, Color32::TRANSPARENT);
-                let text_pos = rect.left_center() + Vec2::new(style::SPACE_MD, 0.0);
-                ui.painter().text(
-                    text_pos,
-                    egui::Align2::LEFT_CENTER,
-                    "← Back",
-                    egui::FontId::proportional(style::TEXT_BODY),
-                    colors.text_dim,
-                );
-            });
-            if resp.response.clicked() {
-                self.navigate_back();
-                return;
-            }
+        if has_path && Self::back_row(ui, colors) {
+            self.navigate_back();
+            return;
         }
 
-        // Command list
+        // Command list — rendered with the shared host ListRow so it matches
+        // the command palette, sidebar, and PGAP list views exactly.
         let mut clicked_idx: Option<usize> = None;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (i, row) in rows.iter().enumerate() {
-                let is_selected = i == self.selected;
-                let bg = if is_selected {
-                    colors.bg_active
-                } else {
-                    Color32::TRANSPARENT
-                };
-                let label = if row.has_children {
-                    format!("{}  ›", row.name)
-                } else {
-                    row.name.clone()
-                };
-
-                let row_height = if row.description.is_some() {
-                    44.0
-                } else {
-                    32.0
-                };
-
-                let resp = ui.allocate_ui(Vec2::new(ui.available_width(), row_height), |ui| {
-                    let (rect, _) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), row_height),
-                        egui::Sense::click(),
-                    );
-                    ui.painter().rect_filled(rect, 0.0, bg);
-
-                    if row.description.is_some() {
-                        let name_pos = rect.left_top() + Vec2::new(style::SPACE_MD, 8.0);
-                        ui.painter().text(
-                            name_pos,
-                            egui::Align2::LEFT_TOP,
-                            &label,
-                            egui::FontId::proportional(style::TEXT_BODY),
-                            if is_selected {
-                                colors.accent
-                            } else {
-                                colors.text_primary
-                            },
-                        );
-
-                        if let Some(desc) = &row.description {
-                            let desc_pos = rect.left_top() + Vec2::new(style::SPACE_MD, 26.0);
-                            ui.painter().text(
-                                desc_pos,
-                                egui::Align2::LEFT_TOP,
-                                desc,
-                                egui::FontId::proportional(style::TEXT_HINT),
-                                colors.text_dim,
-                            );
-                        }
-                    } else {
-                        let name_pos = rect.left_center() + Vec2::new(style::SPACE_MD, 0.0);
-                        ui.painter().text(
-                            name_pos,
-                            egui::Align2::LEFT_CENTER,
-                            &label,
-                            egui::FontId::proportional(style::TEXT_BODY),
-                            if is_selected {
-                                colors.accent
-                            } else {
-                                colors.text_primary
-                            },
-                        );
+        let selection_changed = self.selected != self.last_selected;
+        egui::ScrollArea::vertical()
+            .animated(false)
+            .show(ui, |ui| {
+                for (i, row) in rows.iter().enumerate() {
+                    let is_selected = i == self.selected;
+                    // A trailing "›" marks command groups (rows that drill into
+                    // a sub-list rather than open a form).
+                    let mut list_row = crate::ui::list::ListRow::new(&row.name)
+                        .selected(is_selected);
+                    if let Some(desc) = &row.description {
+                        list_row = list_row.secondary(desc);
                     }
-                });
-                if resp.response.clicked() {
-                    clicked_idx = Some(i);
+                    if row.has_children {
+                        list_row = list_row.chip("›");
+                    }
+                    let resp = list_row.show(ui, colors);
+                    if is_selected {
+                        resp.scroll_into_view(ui, selection_changed);
+                    }
+                    if resp.row_clicked() {
+                        clicked_idx = Some(i);
+                    }
                 }
-            }
-        });
+            });
+        self.last_selected = self.selected;
 
         if let Some(i) = clicked_idx {
             self.selected = i;
@@ -527,21 +489,11 @@ impl CliRendererApp {
 
         ui.add_space(style::SPACE_SM);
 
-        // Back button
-        ui.horizontal(|ui| {
-            ui.add_space(style::SPACE_MD);
-            if button::toolbar_button(
-                ui,
-                RichText::new("← Back")
-                    .size(style::TEXT_CAPTION)
-                    .color(colors.text_dim),
-                "Back",
-            )
-            .clicked()
-            {
-                self.navigate_back();
-            }
-        });
+        // Back button (same ListRow affordance as the list view)
+        if Self::back_row(ui, colors) {
+            self.navigate_back();
+            return;
+        }
 
         ui.add_space(style::SPACE_SM);
         ui.horizontal(|ui| {
@@ -550,15 +502,20 @@ impl CliRendererApp {
         });
         ui.add_space(style::SPACE_SM);
 
-        // Arg fields
+        // Arg fields. On a freshly opened form, the first text field grabs
+        // keyboard focus so the user can type immediately.
         if has_fields {
+            let mut want_focus = self.pending_focus;
             egui::ScrollArea::vertical()
                 .max_height(ui.available_height() - 80.0)
                 .show(ui, |ui| {
                     for arg in args.iter().chain(flags.iter()) {
-                        self.render_field(ui, colors, arg);
+                        if self.render_field(ui, colors, arg, want_focus) {
+                            want_focus = false;
+                        }
                     }
                 });
+            self.pending_focus = false;
 
             ui.add_space(style::SPACE_SM);
         }
@@ -618,12 +575,17 @@ impl CliRendererApp {
         });
     }
 
+    /// Renders one arg/flag field. When `want_focus` is true and this field is
+    /// a text input, it requests keyboard focus and returns true so the caller
+    /// stops offering focus to later fields.
     fn render_field(
         &mut self,
         ui: &mut egui::Ui,
         colors: &crate::ui::theme::Colors,
         arg: &ArgSpec,
-    ) {
+        want_focus: bool,
+    ) -> bool {
+        let mut took_focus = false;
         ui.horizontal(|ui| {
             ui.add_space(style::SPACE_MD);
             ui.vertical(|ui| {
@@ -682,19 +644,28 @@ impl CliRendererApp {
                     _ => {
                         let placeholder = arg.placeholder.as_deref().unwrap_or("");
                         ui.set_max_width(ui.available_width() - style::SPACE_MD);
-                        crate::ui::text_field::styled_text_input(
+                        let resp = crate::ui::text_field::styled_text_input(
                             ui,
                             val,
                             placeholder,
                             egui::Id::new(("cli_renderer_field", arg.name.as_str())),
                             colors,
                         );
+                        if want_focus && !resp.has_focus() {
+                            resp.request_focus();
+                            took_focus = true;
+                            log::info!(
+                                "CliRendererApp: auto-focused field '{}'",
+                                arg.name
+                            );
+                        }
                     }
                 }
 
                 ui.add_space(style::SPACE_SM);
             });
         });
+        took_focus
     }
 }
 
@@ -734,7 +705,9 @@ impl App for CliRendererApp {
                     self.selected = self.selected.saturating_sub(1);
                     return KeyDisposition::Consumed;
                 }
-                if input.key_pressed(egui::Key::Enter) {
+                // Cmd+Enter is the host pane-zoom toggle (src/host/keys.rs) — let
+                // it pass through; plain Enter opens the selected command.
+                if input.key_pressed(egui::Key::Enter) && !input.modifiers.command {
                     self.navigate_into(self.selected);
                     return KeyDisposition::Consumed;
                 }
@@ -749,7 +722,11 @@ impl App for CliRendererApp {
                     self.navigate_back();
                     return KeyDisposition::Consumed;
                 }
-                if input.key_pressed(egui::Key::Enter) && input.modifiers.command {
+                // Plain Enter runs the assembled command (single-line fields, so
+                // Enter has no in-field meaning to compete with). Cmd+Enter is
+                // reserved for the host pane-zoom toggle (src/host/keys.rs), so
+                // let it pass through instead of running.
+                if input.key_pressed(egui::Key::Enter) && !input.modifiers.command {
                     self.execute();
                     return KeyDisposition::Consumed;
                 }
@@ -843,4 +820,232 @@ impl App for CliRendererApp {
     }
 
     fn restore_state(&mut self, _state: &serde_json::Value) {}
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::theme::Colors;
+
+    const FIXTURE: &str = r#"{
+        "plexi_version": "0.1",
+        "name": "demo",
+        "version": "1.2.3",
+        "description": "A demo CLI",
+        "default_view": "list",
+        "commands": [
+            {
+                "name": "greet",
+                "description": "Greet someone",
+                "args": [
+                    {"name": "name", "type": "string", "required": true, "placeholder": "world"}
+                ],
+                "flags": [
+                    {"name": "--loud", "type": "bool"},
+                    {"name": "--lang", "type": "enum", "enum_values": ["en", "fr"]},
+                    {"name": "--output", "type": "path", "placeholder": "FILE"}
+                ]
+            },
+            {
+                "name": "remote",
+                "description": "Manage remotes",
+                "commands": [
+                    {"name": "add", "args": [{"name": "url", "type": "string", "required": true}]}
+                ]
+            }
+        ]
+    }"#;
+
+    fn app_from_fixture() -> (CliRendererApp, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("descriptor.json");
+        std::fs::write(&path, FIXTURE).expect("write fixture");
+        let app = CliRendererApp::new(path.to_string_lossy().into_owned());
+        (app, dir)
+    }
+
+    #[test]
+    fn loads_descriptor_and_lists_top_level_commands() {
+        let (app, _dir) = app_from_fixture();
+        let d = app.descriptor.as_ref().expect("descriptor loaded");
+        assert_eq!(d.name, "demo");
+        let names: Vec<&str> = app.commands_at_path().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["greet", "remote"]);
+    }
+
+    #[test]
+    fn navigate_into_leaf_opens_form_with_defaults() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(0); // greet — a leaf with fields
+        assert_eq!(app.view, View::Form);
+        assert_eq!(app.cmd_path, vec!["greet".to_string()]);
+        assert!(app.current_command().is_some());
+    }
+
+    #[test]
+    fn navigate_into_parent_opens_list() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(1); // remote — has children
+        assert_eq!(app.view, View::List);
+        let names: Vec<&str> = app.commands_at_path().iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["add"]);
+    }
+
+    #[test]
+    fn build_command_string_assembles_flags_and_args() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(0); // greet
+        app.field_values.insert("name".into(), "Ada Lovelace".into());
+        app.field_values.insert("--loud".into(), "true".into());
+        app.field_values.insert("--lang".into(), "fr".into());
+        let cmd = app.build_command_string();
+        // Binary + subcommand present.
+        assert!(cmd.starts_with("demo greet"), "got: {cmd}");
+        // Bool flag rendered as bare flag.
+        assert!(cmd.contains("--loud"), "got: {cmd}");
+        // Value flag rendered as flag + value.
+        assert!(cmd.contains("--lang fr"), "got: {cmd}");
+        // Positional value with spaces is quoted.
+        assert!(cmd.contains("'Ada Lovelace'"), "got: {cmd}");
+        // Unset path flag is omitted.
+        assert!(!cmd.contains("--output"), "got: {cmd}");
+    }
+
+    #[test]
+    fn renders_without_panicking() {
+        // Smoke test: drive a real egui frame through the renderer in List and
+        // Form views to catch layout panics on the host UI thread.
+        let (mut app, _dir) = app_from_fixture();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let ctx = egui::Context::default();
+        // ListRow renders with the custom "ui-medium" font family, which only
+        // exists once the app's fonts are installed.
+        crate::ui::theme::setup_fonts(&ctx);
+
+        let render_once = |app: &mut CliRendererApp| {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let rctx = AppRenderContext {
+                        colors: &colors,
+                        is_focused: true,
+                    };
+                    app.ui(ui, &rctx);
+                });
+            });
+        };
+
+        // First frame transitions Loading → List and requests a terminal.
+        render_once(&mut app);
+        assert_eq!(app.view, View::List);
+        // Drill into the form view and render again.
+        app.navigate_into(0);
+        render_once(&mut app);
+        assert_eq!(app.view, View::Form);
+    }
+
+    /// Drive `handle_key` with a single key event through a real egui frame.
+    fn press_key(app: &mut CliRendererApp, key: egui::Key, modifiers: egui::Modifiers) -> KeyDisposition {
+        let ctx = egui::Context::default();
+        let mut disposition = KeyDisposition::Passthrough;
+        let _ = ctx.run(
+            egui::RawInput {
+                // `input.modifiers` reads from the top-level snapshot, not the
+                // per-event field — set both so the guard sees the modifier.
+                modifiers,
+                events: vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            },
+            |ctx| {
+                ctx.input(|i| disposition = app.handle_key(i));
+            },
+        );
+        disposition
+    }
+
+    #[test]
+    fn plain_enter_runs_the_form() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(0); // greet — a leaf form
+        app.terminal_pane_id = 5; // pretend the linked terminal is ready
+        app.field_values.insert("name".into(), "Ada".into());
+
+        // Plain Enter (no Cmd) must execute — the prior contract required Cmd+Enter.
+        let disp = press_key(&mut app, egui::Key::Enter, egui::Modifiers::default());
+        assert_eq!(disp, KeyDisposition::Consumed);
+
+        let cmds = app.take_pending_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(
+                c,
+                AppCommand::RunInLinkedTerminal { command, .. } if command.contains("greet")
+            )),
+            "plain Enter should queue a RunInLinkedTerminal for the greet command"
+        );
+    }
+
+    #[test]
+    fn cmd_enter_passes_through_for_pane_zoom() {
+        let (mut app, _dir) = app_from_fixture();
+        app.navigate_into(0); // greet — a leaf form
+        app.terminal_pane_id = 5;
+        app.field_values.insert("name".into(), "Ada".into());
+
+        // Cmd+Enter is the host pane-zoom toggle — the renderer must not eat it.
+        let disp = press_key(
+            &mut app,
+            egui::Key::Enter,
+            egui::Modifiers {
+                command: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(disp, KeyDisposition::Passthrough);
+        assert!(
+            app.take_pending_commands().is_empty(),
+            "Cmd+Enter must not run the command — it belongs to the host zoom toggle"
+        );
+    }
+
+    #[test]
+    fn opening_a_leaf_form_arms_field_focus() {
+        let (mut app, _dir) = app_from_fixture();
+        assert!(!app.pending_focus);
+        app.navigate_into(0); // greet — a leaf form with a text field
+        assert!(
+            app.pending_focus,
+            "opening a leaf form must arm auto-focus for the first text field"
+        );
+    }
+
+    #[test]
+    fn requests_linked_terminal_below() {
+        let (mut app, _dir) = app_from_fixture();
+        app.request_terminal();
+        let cmds = app.take_pending_commands();
+        let placed_below = cmds.iter().any(|c| {
+            matches!(
+                c,
+                AppCommand::RequestLinkedTerminal { place_below, .. } if *place_below
+            )
+        });
+        assert!(
+            placed_below,
+            "CLI renderer must request its terminal stacked below the form"
+        );
+    }
+
+    #[test]
+    fn bad_descriptor_path_yields_error_view() {
+        let app = CliRendererApp::new("/nonexistent/descriptor/path.json".into());
+        assert!(matches!(app.view, View::Error(_)));
+        assert!(app.descriptor.is_none());
+    }
 }

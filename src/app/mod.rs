@@ -2375,8 +2375,14 @@ impl eframe::App for PlexiApp {
                     request_id,
                     cwd,
                     label: _label,
+                    place_below,
                 } => {
-                    self.dispatch_request_linked_terminal(sender_pane_id, request_id, cwd);
+                    self.dispatch_request_linked_terminal(
+                        sender_pane_id,
+                        request_id,
+                        cwd,
+                        place_below,
+                    );
                 }
                 AppCommand::RunInLinkedTerminal {
                     sender_pane_id,

@@ -1601,6 +1601,8 @@ impl ProcessApp {
                         request_id,
                         cwd,
                         label,
+                        // Process apps keep the historical side-by-side placement.
+                        place_below: false,
                     });
             }
             AppRequest::RunInLinkedTerminal {
