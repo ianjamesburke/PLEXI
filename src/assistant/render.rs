@@ -37,8 +37,9 @@ impl AssistantRenderer {
     /// text-editor note header so the assistant reads as the same chrome.
     const HEADER_BAR_H: f32 = 20.0;
     const HEADER_FONT_SIZE: f32 = 11.0;
-    /// Composer stops growing past this many text rows and scrolls instead.
-    const COMPOSER_MAX_ROWS: f32 = 8.0;
+    /// Composer grows until it reaches this fraction of the pane height, then
+    /// scrolls — generous on purpose so long drafts get room to breathe.
+    const COMPOSER_MAX_FRACTION: f32 = 0.75;
     /// Chat bubbles cap at this fraction of the transcript width.
     const BUBBLE_MAX_FRACTION: f32 = 0.72;
 
@@ -92,7 +93,14 @@ impl AssistantRenderer {
                 if let Some(key_event) = Self::handle_composer_keys(ui, model, te_id) {
                     event = Some(key_event);
                 }
-                composer_rect = Some(Self::draw_composer(ui, model, te_id, colors, is_focused));
+                composer_rect = Some(Self::draw_composer(
+                    ui,
+                    model,
+                    te_id,
+                    colors,
+                    is_focused,
+                    total_h * Self::COMPOSER_MAX_FRACTION,
+                ));
                 let hints = [
                     HintGroup::new(&["\u{21b5}"], "send"),
                     HintGroup::new(&["\u{21e7}", "\u{21b5}"], "newline"),
@@ -171,9 +179,19 @@ impl AssistantRenderer {
         md_cache: &mut egui_commonmark::CommonMarkCache,
         colors: &Colors,
     ) {
+        // Native cross-widget text selection: a drag started in one bubble must
+        // extend through the gaps into the next, so the user can copy a span
+        // across several messages. egui's multi-widget selection is already on
+        // by default; the only thing that breaks it here is the scroll area
+        // stealing the drag in the inter-bubble margins — `drag_to_scroll(false)`
+        // hands those drags to the selection instead. Wheel and the scrollbar
+        // still scroll.
+        ui.style_mut().interaction.selectable_labels = true;
+        ui.style_mut().interaction.multi_widget_text_select = true;
         egui::ScrollArea::vertical()
             .id_salt("assistant_transcript")
             .auto_shrink([false, false])
+            .drag_to_scroll(false)
             // Follow new content (streamed chunks, command output) whenever
             // the view is already at the bottom; egui releases the stick as
             // soon as the user scrolls up to read history.
@@ -717,10 +735,13 @@ impl AssistantRenderer {
         te_id: egui::Id,
         colors: &Colors,
         is_focused: bool,
+        max_h: f32,
     ) -> egui::Rect {
         let font_id = egui::FontId::proportional(style::TEXT_BODY);
         let row_height = ui.fonts(|f| f.row_height(&font_id));
-        let max_text_h = row_height * Self::COMPOSER_MAX_ROWS;
+        // Grow up to `max_h` (75% of the pane) before scrolling, never below a
+        // single row even in a very short pane.
+        let max_text_h = max_h.max(row_height);
 
         // Accent outline while the composer holds keyboard focus — same
         // affordance as the host text fields.
@@ -743,11 +764,28 @@ impl AssistantRenderer {
                 // composer, but its visual conventions carry over).
                 ui.visuals_mut().text_cursor.stroke.width = 1.5;
                 ui.visuals_mut().text_cursor.stroke.color = colors.accent;
-                // Grows with content up to COMPOSER_MAX_ROWS, then scrolls —
-                // same shape as the quick-note entry.
+                // Deterministic height: lay out the composer text *this frame*
+                // so the content-sized bottom panel never trails a frame behind
+                // the growing text — that lag was what made the hint bar below
+                // jump as the box grew. Cap at `max_text_h`, where the scroll
+                // takes over. The small pad absorbs the TextEdit's own caret
+                // margin so a stray scrollbar never flickers in mid-growth.
+                let wrap_w = ui.available_width();
+                let measure = if model.composer.is_empty() {
+                    " ".to_owned()
+                } else {
+                    model.composer.clone()
+                };
+                let galley_h = ui.fonts(|f| {
+                    f.layout(measure, font_id.clone(), colors.text_primary, wrap_w)
+                        .size()
+                        .y
+                });
+                let text_h = (galley_h + 4.0).clamp(row_height, max_text_h);
                 egui::ScrollArea::vertical()
                     .id_salt("assistant_composer_scroll")
-                    .max_height(max_text_h)
+                    .max_height(text_h)
+                    .min_scrolled_height(text_h)
                     .show(ui, |ui| {
                         response = Some(ui.add(
                             egui::TextEdit::multiline(&mut model.composer)
@@ -778,8 +816,20 @@ impl AssistantRenderer {
                         ));
                     });
             });
+        // Focus the composer the instant the pane gains focus — every time,
+        // even when it already holds a draft. Edge-triggered on the focus
+        // transition (false→true) so it fires once on entry and never fights the
+        // user afterward: while they click into the transcript to select text
+        // the pane stays focused, so there is no re-grab.
+        let focus_key = te_id.with("pane_was_focused");
+        let was_focused = ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(focus_key))
+            .unwrap_or(false);
+        ui.ctx().data_mut(|d| d.insert_temp(focus_key, is_focused));
         if let Some(response) = response {
-            if is_focused && !response.has_focus() && model.composer.is_empty() {
+            if is_focused && !was_focused && !response.has_focus() {
+                log::info!("assistant: composer auto-focused on pane focus");
                 response.request_focus();
             }
         }
