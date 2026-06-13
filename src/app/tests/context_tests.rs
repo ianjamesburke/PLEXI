@@ -166,6 +166,64 @@ fn new_child_context_anchor_pane_overrides_focused() {
     );
 }
 
+/// End-to-end over the real IPC path: the exact JSON `plexi context new --parent`
+/// sends (including `anchor_pane`) deserializes into `AppRequest::CreateContext`
+/// and the handler anchors the portal at that pane, not the focused one.
+#[test]
+fn create_context_ipc_anchor_pane_places_portal() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_test_pane();
+    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).unwrap();
+    let tile_b = h.app.windows[0].tree.tiles.find_pane(&pane_b).unwrap();
+    h.app.windows[0].focused_pane = Some(tile_a);
+    let parent_id = h.app.router.active().context_id;
+    let parent_name = h.app.router.active().name.clone();
+
+    let payload = serde_json::json!({
+        "type": "create_context",
+        "name": "anchored",
+        "parent_name": parent_name,
+        "anchor_pane": pane_b,
+        "portal_direction": "down",
+    });
+    let req: crate::app_protocol::AppRequest =
+        serde_json::from_value(payload).expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let parent_win = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent_id)
+        .expect("parent window must still exist");
+    let portal_pane_id = parent_win
+        .panes
+        .iter()
+        .find(|(_, p)| p.portal_target().is_some())
+        .map(|(id, _)| *id)
+        .expect("handler must insert a Portal tile");
+    let portal_tile = parent_win.tree.tiles.find_pane(&portal_pane_id).unwrap();
+    let container = parent_win
+        .tree
+        .tiles
+        .parent_of(portal_tile)
+        .expect("portal tile has a parent container");
+    let children: Vec<_> = match parent_win.tree.tiles.get(container) {
+        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
+        other => panic!("portal parent is not a container: {other:?}"),
+    };
+    assert!(
+        children.contains(&tile_b),
+        "portal must split against the anchor pane sent over IPC"
+    );
+    assert!(
+        !children.contains(&tile_a),
+        "portal must NOT split against the focused pane"
+    );
+}
+
 /// An anchor pane id that doesn't exist in the parent context falls back to the
 /// focused pane — creation must still succeed.
 #[test]
