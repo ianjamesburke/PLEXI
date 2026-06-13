@@ -260,6 +260,11 @@ If a linked GitHub issue exists, append or update its Ship Log with:
 **Stint:** started <task-id> from worktree
 **Files changed:** <key files>
 **Spec summary:** <one-line approach>
+
+**Test evidence (attempt <N>):**
+- cargo test: <passed> passed, <failed> failed — filters: <module list or "full bin suite">
+- PlexiUiHarness render: /tmp/plexi-render-<task>-<name>.png — <what it shows> (omit if no UI layer touched)
+- Conclusion: install skippable — full coverage | binary install required — <why> | docs-only — no test evidence required
 ```
 
 Set labels:

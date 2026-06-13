@@ -324,6 +324,7 @@ pipeline_slots_set implement <n> "" pushed "" ""
 - No `todo!()` or `unimplemented!()` outside `#[cfg(test)]`
 - No `#[allow(dead_code)]` or `#[allow(unused)]`
 - `cargo build` must pass after all changes
+- `/testing` is mandatory before pushing when any `src/` host or app code was touched. The `**Test evidence:**` block must be in the Ship Log before `/open-pr` is invoked. For docs-only, skills-only, or config-only changes, write `"docs-only — no test evidence required"` in place of the block.
 - Subagents stage only — orchestrator owns the commit
 - Never dispatch subagent without the Phase 3 spec
 - Every implementation needs a logging plan
