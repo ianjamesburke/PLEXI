@@ -1,9 +1,11 @@
 ---
 id: "0185"
 title: "plexi run: dynamic shell completions from workspace commands.toml"
-status: in-progress
+status: done
 estimate: "2h"
+actual: "103m"
 started_at: "2026-06-13T20:03:39Z"
+completed_at: "2026-06-13T21:45:49Z"
 sprint: "s11"
 blocked_by: []
 gh_issue: []
@@ -14,6 +16,7 @@ tags:
   - "cleanup"
   - "cli"
 ---
+
 
 
 Add dynamic zsh (and bash) completions for `plexi run <TAB>` that list available command names from the active channel's workspace `commands.toml`.
