@@ -3,8 +3,9 @@ id: "0146"
 title: "App authoring: CLI-backed app contract"
 status: done
 estimate: "4h"
-actual: "0m"
-completed_at: "2026-06-13T16:45:46Z"
+actual: "6m"
+started_at: "2026-06-13T08:41:12Z"
+completed_at: "2026-06-13T08:46:29Z"
 sprint: "s2"
 blocked_by: []
 gh_issue: []
@@ -18,6 +19,7 @@ tags:
   - "cli-renderer"
   - "terminal"
 ---
+
 
 
 
@@ -39,3 +41,23 @@ Formalize and document the contract for CLI-backed Plexi apps. The renderer hard
 ## Context
 
 0062 (CLI renderer hardening) shipped without this contract being finalized first. The original blocking relationship is now inverted: this task documents what 0062 built, rather than defining what 0062 should build. Estimate reduced from 8h to 4h since this is now documentation + gap analysis, not design.
+
+## Outcome
+
+Wrote `docs/cli-app-contract.md`: the runtime contract for `plexi app open --cli`
+apps — launch sequence, ready/run/(no-)reload lifecycle, the two-layer descriptor
+cache + version-keyed invalidation, the trust boundary (native builtin, no
+permission prompts; the app is as trusted as the wrapped binary), channel-agnostic
+behavior, and logging/inspection. Cross-links to `cli-descriptor-guide.md` for the
+schema rather than duplicating it. Every claim anchored to verified
+`cli_renderer_app.rs` / `open.rs` / `crawl.rs` / `canvas_bindings.rs` line refs.
+
+Seven gaps found and filed (grouped): **#2244** descriptor cache invalidation,
+**#2245** command-execution trust gating (writes/reads fields inert), **#2246**
+silent degraded-ready + temp-file cleanup.
+
+## Variance
+
+Estimate 4h. Docs-only; the work was reading `cli_renderer_app.rs` end-to-end,
+verifying the de-facto contract against the code, and the gap analysis. Delegated
+the draft to a subagent and reviewed/verified the anchors before committing.
