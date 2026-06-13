@@ -107,15 +107,12 @@ Opened with Space.
 
 ### View Modes
 
-Not all modes need to ship at once, but the model should allow them:
+The File Explorer ships two list-style views only:
 
-- List.
-- Details.
-- Icon grid.
-- Column browser.
-- Gallery.
+- List (Compact List).
+- Details (Details Table).
 
-The first implementation should ship Compact List plus Details Table. Column, icon, and gallery views can follow.
+**Descoped:** Icon grid, column browser, and gallery views are explicitly out of scope. Finder-style grid/column/gallery browsing is not a Plexi goal; the file surface stays list-based. Do not reintroduce these modes.
 
 ## Functional Scope
 
@@ -225,9 +222,7 @@ These are the implementation issues this PRD points to. The local sprint tasks l
 
    Expand current fuzzy filtering into scoped recursive search with criteria for name, kind, extension, date, size, hidden files, and tags.
 
-6. [#2140](https://github.com/ianjamesburke/PLEXI/issues/2140) / stint `0006`: File Explorer: icon, column, and gallery views
-
-   Add richer view modes after compact list and details table are stable.
+6. ~~#2140 / stint `0006`: File Explorer: icon, column, and gallery views~~ — **descoped 2026-06-12.** Plexi maintains list-style views only; no Finder-style grid/column/gallery browsing.
 
 7. [#2141](https://github.com/ianjamesburke/PLEXI/issues/2141) / stint `0007`: File Explorer: Plexi-native actions and agent selection state
 

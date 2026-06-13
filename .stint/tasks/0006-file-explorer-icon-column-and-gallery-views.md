@@ -1,16 +1,22 @@
 ---
 id: "0006"
 title: "File Explorer: icon column and gallery views"
-status: backlog
+status: archived
+estimate: "16h"
 sprint: "s1"
-estimate: 16h
 blocked_by:
   - 2
   - 3
-gh_issue: ["2140"]
-area: ["apps/file-browser", "ui/widgets"]
-tags: ["file-explorer", "view-modes"]
+gh_issue:
+  - "2140"
+area:
+  - "apps/file-browser"
+  - "ui/widgets"
+tags:
+  - "file-explorer"
+  - "view-modes"
 ---
+
 
 Add icon grid, column browser, and gallery views once list, details, and preview foundations are stable.
 
@@ -28,3 +34,7 @@ Richer view modes should reuse the same selection, metadata, preview, and activa
 - GitHub issue #2140
 - Blocks: #2140 is blocked by #2136 and #2137
 - `docs/prm/file-explorer-overhaul.md`
+
+## Descoped
+
+Descoped 2026-06-12 (gh #2140 closed). Plexi maintains list-style views (Compact List + Details Table) only; icon grid, column browser, and gallery views are explicitly out of scope. Finder-style grid/column/gallery browsing is not a product goal.
