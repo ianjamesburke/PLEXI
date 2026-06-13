@@ -546,6 +546,24 @@ mod tests {
             .expect("render failed");
     }
 
+    /// Renders the markdown-demo POC app through the real process + render
+    /// path and screenshots it. Visual regression for themed markdown chrome:
+    /// fenced code-block cards, inline-code tint, blockquote tint, link color.
+    /// Inspect /tmp/plexi_markdown_demo.png after running.
+    #[test]
+    fn markdown_demo_styling() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 900.0);
+        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/dev/markdown-demo");
+        let pane_id = h
+            .open_app_at(&app_dir, &[])
+            .expect("markdown-demo should launch");
+        h.wait_for_app_frame(pane_id, Duration::from_secs(20))
+            .expect("markdown-demo should render its first frame");
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_markdown_demo.png")
+            .expect("render failed");
+    }
+
     #[test]
     fn screenshot_host_ui_gallery_trust_states() {
         let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);

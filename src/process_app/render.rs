@@ -945,11 +945,33 @@ pub(crate) fn render_draw_commands(
                 // app-specified colour. Header/code styling is handled internally
                 // by egui_commonmark but inherits the base visuals.
                 child.style_mut().visuals.override_text_color = Some(text_color);
-                // Inject PlexiColors so egui_commonmark picks up themed code block
-                // backgrounds, link colors, and blockquote tints instead of egui defaults.
-                child.visuals_mut().extreme_bg_color = colors.bg_active;
-                child.visuals_mut().hyperlink_color = colors.accent;
-                child.visuals_mut().faint_bg_color = colors.bg_hover;
+                // Inject PlexiColors so egui_commonmark picks up themed code
+                // surfaces, link colors, and blockquote tints instead of egui
+                // defaults:
+                //   extreme_bg_color -> fenced code block fill
+                //   code_bg_color    -> inline `code` span fill. Left at the
+                //                       default near-black it renders as a harsh
+                //                       box; tint it to the same code surface as
+                //                       blocks for a soft, consistent highlight.
+                //   hyperlink_color  -> inline link color
+                //   faint_bg_color   -> blockquote tint
+                {
+                    let v = child.visuals_mut();
+                    v.extreme_bg_color = colors.bg_active;
+                    v.code_bg_color = colors.bg_active;
+                    v.hyperlink_color = colors.accent;
+                    v.faint_bg_color = colors.bg_hover;
+                    // Render fenced code blocks as defined cards: rounded
+                    // corners and a subtle border instead of an almost-invisible
+                    // flush fill. egui_commonmark reads the block's corner radius
+                    // and stroke from the noninteractive widget visuals.
+                    v.widgets.noninteractive.corner_radius = style::RADIUS_MD;
+                    v.widgets.noninteractive.bg_stroke =
+                        egui::Stroke::new(1.0, colors.border);
+                }
+                // Give block elements vertical breathing room so code blocks and
+                // quotes don't crowd the surrounding prose.
+                child.style_mut().spacing.item_spacing.y = style::SPACE_SM;
                 // Scale body font size to match the app's base_size.
                 child.style_mut().text_styles.insert(
                     egui::TextStyle::Body,

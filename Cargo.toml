@@ -120,3 +120,6 @@ egui_kittest = { version = "0.31", features = ["wgpu", "eframe"] }
 
 [patch.crates-io]
 accesskit_consumer = { path = "deps/accesskit_consumer-0.26.0" }
+# Vendored to add comfortable internal padding to fenced code blocks; upstream
+# 0.20 hardcodes egui's default 4x2 TextEdit margin with no public override.
+egui_commonmark_backend = { path = "deps/egui_commonmark_backend-0.20.0" }
