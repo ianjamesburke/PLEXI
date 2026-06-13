@@ -4,8 +4,7 @@ title: "v2 terminal: wide glyph cell width"
 status: backlog
 sprint: "s28"
 estimate: 4h
-blocked_by:
-  - 124
+blocked_by: []
 gh_issue: ["802"]
 area: ["host/terminal"]
 tags: ["v2", "terminal", "glyphs"]

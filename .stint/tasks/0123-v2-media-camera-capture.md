@@ -4,8 +4,7 @@ title: "v2 media: camera capture capability"
 status: backlog
 sprint: "s27"
 estimate: 12h
-blocked_by:
-  - 120
+blocked_by: []
 gh_issue: ["1505"]
 area: ["sdk/pgap", "apps/examples", "host/video"]
 tags: ["v2", "media", "camera", "blocked"]

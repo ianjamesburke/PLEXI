@@ -4,8 +4,7 @@ title: "v2 media: video playback DrawCommand and scrubbing"
 status: backlog
 sprint: "s27"
 estimate: 10h
-blocked_by:
-  - 120
+blocked_by: []
 gh_issue: ["513"]
 area: ["host/video"]
 tags: ["v2", "media", "video"]

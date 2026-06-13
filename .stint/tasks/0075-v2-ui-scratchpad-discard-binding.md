@@ -4,8 +4,7 @@ title: "v2 UI: scratchpad discard binding"
 status: backlog
 sprint: "s19"
 estimate: 2h
-blocked_by:
-  - 74
+blocked_by: []
 gh_issue: ["1244"]
 area: ["ui/overlays"]
 tags: ["v2", "ui", "scratchpad", "input"]

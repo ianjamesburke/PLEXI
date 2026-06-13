@@ -4,8 +4,7 @@ title: "v2 agents: PGAP skill distribution"
 status: backlog
 sprint: "s30"
 estimate: 8h
-blocked_by:
-  - 104
+blocked_by: []
 gh_issue: ["1514"]
 area: ["agents"]
 tags: ["v2", "agents", "skills"]

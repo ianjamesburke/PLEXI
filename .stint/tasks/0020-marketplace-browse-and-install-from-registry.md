@@ -5,7 +5,7 @@ status: backlog
 sprint: "s4"
 estimate: 16h
 blocked_by:
-  - 19
+  - 18
   - 16
 gh_issue: []
 area: ["cli/commands", "host/permissions", "infra/server"]

@@ -4,8 +4,7 @@ title: "App authoring: scaffold and app dev polish"
 status: backlog
 sprint: "s2"
 estimate: 8h
-blocked_by:
-  - 7
+blocked_by: []
 gh_issue: ["1962"]
 area: ["sdk/python", "cli/commands"]
 tags: ["app-authoring", "scaffold", "sdk-v2"]

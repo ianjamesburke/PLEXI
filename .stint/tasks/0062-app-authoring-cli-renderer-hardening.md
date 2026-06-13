@@ -4,8 +4,7 @@ title: "App authoring: CLI renderer hardening"
 status: backlog
 sprint: "s2"
 estimate: 8h
-blocked_by:
-  - 146
+blocked_by: []
 gh_issue: ["1947"]
 area: ["cli/commands"]
 tags: ["v1", "app-authoring", "cli-renderer"]

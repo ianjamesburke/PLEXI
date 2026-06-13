@@ -4,8 +4,7 @@ title: "v2 CLI: tab-completion bridge"
 status: backlog
 sprint: "s22"
 estimate: 6h
-blocked_by:
-  - 97
+blocked_by: []
 gh_issue: ["359"]
 area: ["cli/commands"]
 tags: ["v2", "cli", "completions"]

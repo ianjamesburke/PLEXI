@@ -4,8 +4,7 @@ title: "App authoring: CLI-backed app contract"
 status: backlog
 sprint: "s2"
 estimate: 8h
-blocked_by:
-  - 8
+blocked_by: []
 gh_issue: []
 area: ["cli/commands", "host/terminal", "sdk/pgap"]
 tags: ["v1", "app-authoring", "cli-renderer", "terminal"]

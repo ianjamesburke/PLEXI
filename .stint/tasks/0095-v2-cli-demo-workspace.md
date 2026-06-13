@@ -4,9 +4,7 @@ title: "v2 CLI: demo workspace"
 status: backlog
 sprint: "s21"
 estimate: 6h
-blocked_by:
-  - 87
-  - 90
+blocked_by: []
 gh_issue: ["1445"]
 area: ["cli/commands", "infra/docs"]
 tags: ["v2", "cli", "onboarding"]

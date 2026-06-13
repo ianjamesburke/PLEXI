@@ -4,8 +4,7 @@ title: "PGAP SDK shortcut helper and harness parity"
 status: backlog
 sprint: "s2"
 estimate: 6h
-blocked_by:
-  - 9
+blocked_by: []
 gh_issue:
   - "2196"
 area:

@@ -5,7 +5,6 @@ status: backlog
 sprint: "s27"
 estimate: 5h
 blocked_by:
-  - 120
   - 121
 gh_issue: ["1566"]
 area: ["sdk/pgap", "apps/examples", "host/video"]

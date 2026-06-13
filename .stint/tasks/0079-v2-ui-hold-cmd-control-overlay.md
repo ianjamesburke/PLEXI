@@ -6,7 +6,6 @@ sprint: "s19"
 estimate: 8h
 blocked_by:
   - 72
-  - 74
 gh_issue: ["141"]
 area: ["ui/overlays"]
 tags: ["v2", "ui", "shortcuts"]

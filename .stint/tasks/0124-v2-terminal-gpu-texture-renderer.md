@@ -4,9 +4,7 @@ title: "v2 terminal: offscreen wgpu texture renderer"
 status: backlog
 sprint: "s28"
 estimate: 12h
-blocked_by:
-  - 54
-  - 55
+blocked_by: []
 gh_issue: ["2068"]
 area: ["egui_term"]
 tags: ["v2", "terminal", "renderer"]

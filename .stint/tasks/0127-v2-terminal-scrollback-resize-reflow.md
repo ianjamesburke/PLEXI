@@ -4,8 +4,7 @@ title: "v2 terminal: scrollback resize reflow"
 status: backlog
 sprint: "s28"
 estimate: 8h
-blocked_by:
-  - 124
+blocked_by: []
 gh_issue: ["577"]
 area: ["host/terminal"]
 tags: ["v2", "terminal", "resize"]

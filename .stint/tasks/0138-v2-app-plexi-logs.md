@@ -4,8 +4,7 @@ title: "v2 app: Plexi logs viewer"
 status: backlog
 sprint: "s29"
 estimate: 6h
-blocked_by:
-  - 131
+blocked_by: []
 gh_issue: ["422"]
 area: ["apps/examples"]
 tags: ["v2", "apps", "logs"]
