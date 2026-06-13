@@ -12,3 +12,9 @@ entry = "csv_viewer.py"
 capabilities = []
 
 [launch]
+
+# Uncomment to publish this app to the marketplace:
+# [marketplace]
+# visibility = "public"   # public | unlisted | private
+# price = "free"          # "free", or a price like "4.99"
+# publisher = "plexi"     # first-party Plexi app

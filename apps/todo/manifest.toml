@@ -15,3 +15,9 @@ capabilities = ["fs.read", "fs.write"]
 # Opt into the "cwd" pane group: receives PathChanged when any linked terminal
 # in the same group moves directories. Lets the todo list track the focused cwd.
 join_group = "cwd"
+
+# Uncomment to publish this app to the marketplace:
+# [marketplace]
+# visibility = "public"   # public | unlisted | private
+# price = "free"          # "free", or a price like "4.99"
+# publisher = "plexi"     # first-party Plexi app
