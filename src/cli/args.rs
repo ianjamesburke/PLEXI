@@ -541,11 +541,29 @@ pub enum AppCmd {
         #[arg(value_hint = ValueHint::FilePath)]
         path: String,
     },
-    /// Publish an app to the Plexi marketplace.
+    /// Validate, package, and submit an app to the Plexi marketplace.
     ///
-    /// Publishing is on the v1 marketplace roadmap. Use app validate and local package
-    /// install flows until the hosted publisher path ships.
-    Publish,
+    /// Reads the `[marketplace]` manifest section (publisher, visibility, price),
+    /// validates the directory, builds a `.plexipkg`, and submits it. Without a
+    /// configured `[marketplace].submit_url` the package is prepared locally but
+    /// not uploaded — the artifact path is printed.
+    Publish {
+        /// App directory to publish (default: current directory)
+        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
+        path: String,
+    },
+    /// Browse every public app in the hosted marketplace.
+    Browse,
+    /// Search the public marketplace catalog.
+    Search {
+        /// Substring matched against app id, name, description, and tags
+        query: String,
+    },
+    /// Inspect paid-app licenses stored on this machine.
+    License {
+        #[command(subcommand)]
+        cmd: LicenseCmd,
+    },
     /// Check installed apps for available updates.
     ///
     /// Compares each app's recorded installed version against the version in its manifest.
@@ -582,6 +600,18 @@ pub enum UpdateCmd {
     Apps {
         /// App id to update (omit to update all installed apps)
         id: Option<String>,
+    },
+}
+
+/// `plexi app license <cmd>` — inspect paid-app licenses on this machine.
+#[derive(Subcommand)]
+pub enum LicenseCmd {
+    /// List every stored paid-app license.
+    List,
+    /// Show one license in full.
+    Show {
+        /// App id whose license to show
+        id: String,
     },
 }
 

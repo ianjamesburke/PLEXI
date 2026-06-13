@@ -456,6 +456,7 @@ pub struct PlexiConfig {
     pub focus_history_depth: Option<usize>,
     pub agents: Option<AgentsConfig>,
     pub cli: Option<CliConfig>,
+    pub marketplace: Option<MarketplaceConfig>,
 }
 
 /// CLI behavior configuration.
@@ -463,6 +464,29 @@ pub struct PlexiConfig {
 pub struct CliConfig {
     /// Print contextual tips after CLI commands. Default: `true`. Set to `false` to suppress.
     pub tips: Option<bool>,
+}
+
+/// Hosted marketplace configuration (`[marketplace]`). All fields optional —
+/// the hosted catalog/CDN default to `plexiapp.com` in code (see
+/// `crate::app::marketplace::DEFAULT_REGISTRY_URL`), so an empty section uses
+/// the official registry. `submit_url` and `payment_backend` are intentionally
+/// unset by default: publishing and paid purchases fail closed until a real
+/// endpoint / provider is wired up.
+#[derive(Deserialize, Default, Clone)]
+pub struct MarketplaceConfig {
+    /// Override the catalog index URL. Default: official `plexiapp.com` index.
+    pub registry_url: Option<String>,
+    /// Override the package CDN base. Default: official `plexiapp.com` CDN.
+    pub cdn_url: Option<String>,
+    /// Publisher submission endpoint. Unset = publishing prepared locally but
+    /// not uploaded (fails closed with a clear message).
+    pub submit_url: Option<String>,
+    /// Payment backend selector. Unset / `"none"` = stub (paid installs fail
+    /// closed). A real provider (e.g. `"stripe"`) slots into
+    /// `crate::app::marketplace::payment_provider()` keyed on this value.
+    pub payment_backend: Option<String>,
+    /// Marketplace account email used for paid purchases. Unset = no account.
+    pub account_email: Option<String>,
 }
 
 /// Plexi AI broker configuration (`ai.query` capability).
@@ -1269,7 +1293,63 @@ impl PlexiConfig {
             (None, Some(incoming)) => self.agents = Some(incoming),
             _ => {}
         }
+        match (self.marketplace.as_mut(), other.marketplace) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.marketplace = Some(incoming),
+            _ => {}
+        }
     }
+}
+
+impl MarketplaceConfig {
+    fn overlay(&mut self, other: Self) {
+        macro_rules! overlay_field {
+            ($field:ident) => {
+                if other.$field.is_some() {
+                    self.$field = other.$field;
+                }
+            };
+        }
+        overlay_field!(registry_url);
+        overlay_field!(cdn_url);
+        overlay_field!(submit_url);
+        overlay_field!(payment_backend);
+        overlay_field!(account_email);
+    }
+}
+
+/// Resolved marketplace settings for the active channel. Loads the global
+/// config (workspace overlay does not apply to marketplace endpoints — they are
+/// machine-level, not project-level). Returns the configured values, falling
+/// back to in-code defaults at the call site.
+fn marketplace_config() -> MarketplaceConfig {
+    PlexiConfig::load().marketplace.unwrap_or_default()
+}
+
+/// Catalog index URL override, if the user set one.
+pub fn marketplace_registry_url() -> Option<String> {
+    marketplace_config().registry_url
+}
+
+/// Package CDN base override, if set.
+pub fn marketplace_cdn_url() -> Option<String> {
+    marketplace_config().cdn_url
+}
+
+/// Publisher submission endpoint, if configured. `None` = publishing fails
+/// closed (prepared but not uploaded).
+pub fn marketplace_submit_url() -> Option<String> {
+    marketplace_config().submit_url
+}
+
+/// Payment backend selector (e.g. `"none"`, `"stripe"`). `None` = stub.
+pub fn marketplace_payment_backend() -> Option<String> {
+    marketplace_config().payment_backend
+}
+
+/// Marketplace account email for paid purchases, if set.
+pub fn marketplace_account_email() -> Option<String> {
+    marketplace_config().account_email
 }
 
 impl ThemeConfig {

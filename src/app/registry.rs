@@ -62,6 +62,12 @@ pub struct AppManifest {
     /// missing-secret modal proactively. Empty when omitted.
     #[serde(default)]
     pub secrets: HashMap<String, SecretDecl>,
+    /// Optional `[marketplace]` section — visibility, price, and publisher used
+    /// by `plexi app publish` and the hosted catalog. Absent for a local-only
+    /// app, which is then treated as free + private and cannot be published
+    /// until the author adds this section.
+    #[serde(default)]
+    pub marketplace: Option<crate::app::marketplace::MarketplaceManifest>,
 }
 
 /// A `[secrets]` table entry from manifest.toml. `required` is **required**

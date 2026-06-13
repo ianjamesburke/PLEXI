@@ -1164,15 +1164,6 @@ fn to_struct_name(s: &str) -> String {
         .collect::<String>()
 }
 
-/// `plexi app publish` — stub for the v1 marketplace publisher path.
-pub fn app_publish() -> i32 {
-    log::info!("app_publish: stub invoked");
-    println!(
-        "Publishing is on the v1 marketplace roadmap. Use `plexi app validate` before local install flows for now."
-    );
-    println!("Follow progress at https://plexiapp.com");
-    0
-}
 
 /// `plexi app update [<id>]` — local version check for installed apps.
 ///
@@ -1522,15 +1513,6 @@ mod app_inspect_tests {
         // No manifest — must fail validation, exit non-zero.
         let code = super::app_inspect_cli(&dir.path().to_string_lossy());
         assert_eq!(code, 1, "dir without manifest must fail inspect");
-    }
-}
-
-#[cfg(test)]
-mod app_publish_tests {
-    #[test]
-    fn publish_stub_returns_0() {
-        let code = super::app_publish();
-        assert_eq!(code, 0, "publish stub should always succeed");
     }
 }
 

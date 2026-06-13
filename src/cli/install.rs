@@ -7,12 +7,28 @@ use std::io::{self, Write};
 pub fn install_cli(spec: &str) -> i32 {
     let (source_str, git_ref) = crate::cli::install_host::split_source_and_ref(spec);
     let resolved = if is_bare_id(&source_str) {
-        match resolve_registry_id(&source_str) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return 1;
+        // Consult the hosted catalog first: a free/licensed catalog app installs
+        // from the CDN artifact; a paid app with no license is blocked; anything
+        // not in the catalog (or a registry outage) falls back to the legacy
+        // id→source resolver below.
+        match crate::cli::marketplace::plan_install(&source_str) {
+            crate::cli::marketplace::InstallPlan::Package(pkg) => {
+                return crate::cli::app::app_install_package(
+                    &pkg.to_string_lossy(),
+                    None,
+                    crate::cli::InstallConfirm::Interactive,
+                    false,
+                );
             }
+            crate::cli::marketplace::InstallPlan::Source(spec) => spec,
+            crate::cli::marketplace::InstallPlan::Blocked => return 1,
+            crate::cli::marketplace::InstallPlan::Legacy => match resolve_registry_id(&source_str) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return 1;
+                }
+            },
         }
     } else if is_github_shorthand(&source_str) {
         let prefixed = format!("github:{source_str}");

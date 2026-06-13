@@ -497,7 +497,9 @@ pub fn build_package(app_dir: &Path, out: Option<&Path>) -> Result<PathBuf, Pack
     Ok(out_path)
 }
 
-fn sha256_file(path: &Path) -> Result<String, PackageError> {
+/// sha256 of a file's contents, hex-encoded. Reused by the marketplace
+/// publisher path to checksum a built `.plexipkg` artifact.
+pub(crate) fn sha256_file(path: &Path) -> Result<String, PackageError> {
     let mut file = fs::File::open(path).map_err(|e| io_err("open", path, e))?;
     let mut hasher = Sha256::new();
     std::io::copy(&mut file, &mut hasher).map_err(|e| io_err("hash", path, e))?;
