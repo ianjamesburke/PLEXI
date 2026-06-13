@@ -4,8 +4,7 @@ title: "v1 cleanup: notes picker right-aligns type chips like the palette"
 status: backlog
 estimate: "1h"
 sprint: "s11"
-blocked_by:
-  - "@2194"
+blocked_by: []
 gh_issue:
   - "2227"
 area:

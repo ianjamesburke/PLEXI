@@ -5,7 +5,7 @@ status: backlog
 sprint: "s17"
 estimate: 4h
 blocked_by:
-  - "ianjamesburke/PLEXI@1239"
+  - 72
 gh_issue: ["1735"]
 area: ["host/terminal"]
 tags: ["v2", "terminal", "windows", "input"]
