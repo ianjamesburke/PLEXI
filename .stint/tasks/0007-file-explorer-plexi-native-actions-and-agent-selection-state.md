@@ -1,7 +1,7 @@
 ---
 id: "0007"
 title: "File Explorer: Plexi-native actions and agent selection state"
-status: todo
+status: backlog
 estimate: "12h"
 sprint: "s1"
 blocked_by:
@@ -17,6 +17,7 @@ tags:
   - "agents"
   - "selection"
 ---
+
 
 
 Expose selected paths to linked terminals, host commands, Plexi apps, and agents through explicit host contracts.

@@ -1,7 +1,7 @@
 ---
 id: "0005"
 title: "File Explorer: recursive search and filters"
-status: todo
+status: backlog
 estimate: "12h"
 sprint: "s1"
 blocked_by:
@@ -16,6 +16,7 @@ tags:
   - "search"
   - "filters"
 ---
+
 
 
 Expand current-directory fuzzy filtering into recursive scoped search with metadata filters.
