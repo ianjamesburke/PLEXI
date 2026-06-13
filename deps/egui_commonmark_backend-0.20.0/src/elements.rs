@@ -108,7 +108,7 @@ pub fn code_block<'t>(
     // themed code-block card has comfortable breathing room. Shrink the
     // desired text width by the horizontal margin so the padded outer box
     // still fits the available width instead of overflowing.
-    let code_margin = egui::Margin::symmetric(14, 10);
+    let code_margin = egui::Margin::symmetric(16, 12);
     let inner_width = (max_width - code_margin.sum().x).max(0.0);
     let output = egui::TextEdit::multiline(&mut text)
         .layouter(layouter)
@@ -148,8 +148,8 @@ pub fn code_block<'t>(
     // ✔ confirmation shows even as the pointer leaves.)
     let block_hovered = ui.rect_contains_pointer(frame_rect);
     if block_hovered || copied_icon {
-        const COPY_INSET: f32 = 6.0;
-        let copy_icon_size = egui::vec2(20.0, 20.0);
+        const COPY_INSET: f32 = 8.0;
+        let copy_icon_size = egui::vec2(26.0, 24.0);
         let button_rect = egui::Rect::from_min_size(
             egui::pos2(
                 frame_rect.right() - COPY_INSET - copy_icon_size.x,
@@ -158,13 +158,19 @@ pub fn code_block<'t>(
             copy_icon_size,
         );
 
+        // PLEXI PATCH: give the copy control a solid chip background (the code
+        // block's own fill + border) instead of a transparent frame. On wide
+        // blocks the button overlaps the end of the first code line; a
+        // transparent icon then sits messily on top of the text. A solid chip
+        // cleanly occludes whatever is beneath it, matching GitHub / VS Code.
         let copy_button = ui
             .put(
                 button_rect,
                 egui::Button::new(if copied_icon { "✔" } else { "🗐" })
                     .small()
-                    .frame(false)
-                    .fill(egui::Color32::TRANSPARENT),
+                    .fill(ui.visuals().extreme_bg_color)
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .corner_radius(ui.style().noninteractive().corner_radius),
             )
             // workaround for a regression after egui 0.27 where the edit cursor was shown even when
             // hovering over the button. We try interact_cursor first to allow the cursor to be
