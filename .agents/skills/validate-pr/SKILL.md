@@ -115,23 +115,35 @@ gh pr diff $PR_NUMBER --name-only
 gh pr diff $PR_NUMBER
 ```
 
+**Step 1a — Test evidence gate (check this first).** Read the issue Ship Log for a `**Test evidence:**` block written by the `/testing` skill during implementation:
+```bash
+gh issue view $ISSUE_NUMBER --json body --jq '.body' | grep -A5 "Test evidence"
+```
+
+Evaluate the conclusion, **then apply overrides**:
+
+| Conclusion | Default decision | Override |
+|---|---|---|
+| `install skippable — full coverage` | diff-review mode | Install anyway if `apps/` files changed or Done When requires binary |
+| `binary install required — <reason>` | install | — |
+| `docs-only — no test evidence required` | diff-review mode | — |
+| block absent | fall through to install-trigger list below | — |
+
+**Do not re-run `cargo test` in validation.** The suite ran during implementation; the Test Evidence block is the authoritative record. Validation owns diff review and user acceptance, not test execution. Never re-run a suite that the Ship Log already reports as green.
+
 **Default mode: diff review only.** Do not install the PR build just because a Rust file changed. For small or obvious diffs, especially one-file edits, validation is:
 1. Gemini review against `alpha`
 2. Testing block whose pass/fail criteria map to the issue checklist
 3. User manual exercise if the issue is visual or interactive
 
-**Install only when the diff requires a runnable PR build**, such as:
+**Install triggers** (apply when test evidence concludes `binary install required`, is absent, or an override fires):
 - Changed files under `apps/` or `apps/dev/` — Python apps are copied to the profile dir on install, not served from source
 - Packaging, bundle, channel, profile-dir, app-copy, or runtime asset changes
 - Behavior cannot be judged from diff and needs the user to launch `plexi-pr-$PR_NUMBER`
 - The issue's Done When explicitly requires validating the installed PR binary
 - Gemini review or a targeted implementation check reports a blocker that requires a rebuilt binary to verify
 
-**Test evidence gate:** Read the issue Ship Log (or PR body) for a `**Test evidence:**` block from the `/testing` skill. If present and it concludes `install skippable — full coverage`, stay in diff-review mode even when an install trigger above would otherwise fire — unless the trigger is `apps/` file changes or an explicit Done When install requirement, which always install. Evidence concluding `binary install required` means install.
-
-**Do not run cargo tests in validation unless Gemini review finds a specific testable risk.** Implementation already owns the cheapest relevant build/test check before commit — and when a `**Test evidence:**` block reports a green run, never re-run the same suite. Validation owns diff review and user acceptance.
-
-If install is not required → skip Step 2 and use the diff-review testing block.
+If install is not required → skip Step 2 and proceed to Step 2b (automated quality checks).
 
 ---
 
