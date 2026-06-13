@@ -515,16 +515,6 @@ pub enum AppCmd {
         #[arg(long, value_name = "PANE_ID")]
         from: Option<u64>,
     },
-    /// Run a local app in hot-reload development mode (alias for `just dev`).
-    ///
-    /// Convenience wrapper that runs the `dev` recipe from the app's scaffolded
-    /// justfile, opening the app in a pane with hot reload so you can edit the
-    /// source and watch it reload. Requires the `just` command runner.
-    Dev {
-        /// App directory to develop (default: current directory)
-        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
-        path: String,
-    },
     /// Check a Plexi app directory or .plexipkg package for errors before publishing or installing.
     ///
     /// A directory is validated in place. A `.plexipkg` file is extracted to a

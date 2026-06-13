@@ -462,10 +462,6 @@ fn main() -> eframe::Result {
                                 open && !no_open,
                                 from_pane_id,
                             )),
-                            AppCmd::Dev { path } => {
-                                log::info!("app_dev:cli: path={path}");
-                                std::process::exit(cli::app_dev(&path));
-                            }
                             AppCmd::Uninstall { id, yes } => {
                                 std::process::exit(cli::app_uninstall(&id, yes))
                             }

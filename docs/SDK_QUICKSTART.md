@@ -114,18 +114,14 @@ The loop is: render, inspect the UiNode tree, send an action or key, inspect aga
 
 ## 5. The Dev Loop
 
-`plexi app init` scaffolds a `justfile` with the four commands every app author
-(human or agent) needs:
+The two commands every app author (human or agent) needs:
 
 ```bash
-just dev      # open the app in a pane with hot reload, then edit main.py
-just health   # validate manifest + SDK shape + render-size matrix (no pane)
-just test     # run tests/ if present (graceful no-op otherwise)
-just lint     # uvx pyright + ruff over the source
+plexi app open .       # open the app in a pane with hot reload, then edit main.py
+plexi app check .      # validate manifest + SDK shape + render-size matrix (no pane)
 ```
 
-`just dev` is also available as `plexi app dev .` — both run the same `dev`
-recipe. The app's manifest sets `watch = true`, so saving `main.py` reloads the
+The app's manifest sets `watch = true`, so saving `main.py` reloads the
 pane automatically.
 
 ### The agent drive loop (render → inspect → act)
@@ -141,7 +137,7 @@ plexi app render ./counter
 # 2. INSPECT — confirm the Label shows "0", decide the next action is "+"
 
 # 3. ACT — open a live pane, then send the key
-plexi app open ./counter            # or: just dev
+plexi app open ./counter
 plexi pane key <pane_id> plus
 
 # 4. RE-INSPECT — read the pane state and confirm the count advanced
@@ -150,13 +146,13 @@ plexi pane state <pane_id>
 ```
 
 Edit `main.py`, save, and `watch = true` reloads the pane; re-run
-`plexi app render` (or `just health`) to verify the change before moving on.
+`plexi app render` (or `plexi app check .`) to verify the change before moving on.
 Each cycle is one observable diff — keep changes small.
 
 ## 6. Verify And Publish
 
 The full authoring flow is **init → dev → verify → publish**. Each step has one
-command (all available as `just` recipes too):
+command:
 
 ```bash
 plexi app check ./counter      # render-inspect: validates the manifest, inspects
