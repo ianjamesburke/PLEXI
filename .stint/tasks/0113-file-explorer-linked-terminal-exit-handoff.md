@@ -5,8 +5,7 @@ status: done
 estimate: "5h"
 completed_at: "2026-06-12T01:45:22Z"
 sprint: "s1"
-blocked_by:
-  - 86
+blocked_by: []
 gh_issue:
   - "2145"
 area:

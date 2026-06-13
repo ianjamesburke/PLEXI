@@ -36,4 +36,4 @@ The first-party Assistant should model the same trust contract that marketplace 
 ## References
 
 - `docs/prm/app-framework-marketplace.md`
-- `apps/assistant/manifest.toml`
+- `apps/dev/assistant-pgap/manifest.toml`
