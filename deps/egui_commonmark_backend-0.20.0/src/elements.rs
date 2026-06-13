@@ -131,59 +131,73 @@ pub fn code_block<'t>(
         ),
     );
 
-    // Copy icon
-    let spacing = &ui.style().spacing;
-    let position = egui::pos2(
-        frame_rect.right_top().x - spacing.icon_width * 0.5 - spacing.button_padding.x,
-        frame_rect.right_top().y + spacing.button_padding.y * 2.0,
-    );
-
     // Check if we should show ✔ instead of 🗐 if the text was copied and the mouse is hovered
     let persistent_id = ui.make_persistent_id(output.response.id);
     let copied_icon = ui.memory_mut(|m| *m.data.get_temp_mut_or_default::<bool>(persistent_id));
 
-    let copy_button = ui
-        .put(
-            egui::Rect {
-                min: position,
-                max: position,
-            },
-            egui::Button::new(if copied_icon { "✔" } else { "🗐" })
-                .small()
-                .frame(false)
-                .fill(egui::Color32::TRANSPARENT),
-        )
-        // workaround for a regression after egui 0.27 where the edit cursor was shown even when
-        // hovering over the button. We try interact_cursor first to allow the cursor to be
-        // overriden
-        .on_hover_cursor(
-            ui.visuals()
-                .interact_cursor
-                .unwrap_or(egui::CursorIcon::Default),
+    // Copy icon.
+    //
+    // PLEXI PATCH: two changes over upstream.
+    //   1. Reveal the button only while the block is hovered (like GitHub /
+    //      VS Code). Always-on, it overlapped the code text on narrow blocks.
+    //   2. Pin it to the block's top-right corner with a fixed inset and an
+    //      explicit, icon-sized rect. Upstream used a zero-size rect with
+    //      padding-derived offsets, so it drifted vertically with block height
+    //      and read as off-center.
+    // (`copied_icon` keeps the button alive for one frame after a copy so the
+    // ✔ confirmation shows even as the pointer leaves.)
+    let block_hovered = ui.rect_contains_pointer(frame_rect);
+    if block_hovered || copied_icon {
+        const COPY_INSET: f32 = 6.0;
+        let copy_icon_size = egui::vec2(20.0, 20.0);
+        let button_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                frame_rect.right() - COPY_INSET - copy_icon_size.x,
+                frame_rect.top() + COPY_INSET,
+            ),
+            copy_icon_size,
         );
 
-    // Update icon state in persistent memory
-    if copied_icon && !copy_button.hovered() {
-        ui.memory_mut(|m| *m.data.get_temp_mut_or_default(persistent_id) = false);
-    }
-    if !copied_icon && copy_button.clicked() {
-        ui.memory_mut(|m| *m.data.get_temp_mut_or_default(persistent_id) = true);
-    }
+        let copy_button = ui
+            .put(
+                button_rect,
+                egui::Button::new(if copied_icon { "✔" } else { "🗐" })
+                    .small()
+                    .frame(false)
+                    .fill(egui::Color32::TRANSPARENT),
+            )
+            // workaround for a regression after egui 0.27 where the edit cursor was shown even when
+            // hovering over the button. We try interact_cursor first to allow the cursor to be
+            // overriden
+            .on_hover_cursor(
+                ui.visuals()
+                    .interact_cursor
+                    .unwrap_or(egui::CursorIcon::Default),
+            );
 
-    if copy_button.clicked() {
-        use egui::TextBuffer as _;
-        let copy_text = if let Some(cursor) = output.cursor_range {
-            let selected_chars = cursor.as_sorted_char_range();
-            let selected_text = text.char_range(selected_chars);
-            if selected_text.is_empty() {
-                text.to_owned()
+        // Update icon state in persistent memory
+        if copied_icon && !copy_button.hovered() {
+            ui.memory_mut(|m| *m.data.get_temp_mut_or_default(persistent_id) = false);
+        }
+        if !copied_icon && copy_button.clicked() {
+            ui.memory_mut(|m| *m.data.get_temp_mut_or_default(persistent_id) = true);
+        }
+
+        if copy_button.clicked() {
+            use egui::TextBuffer as _;
+            let copy_text = if let Some(cursor) = output.cursor_range {
+                let selected_chars = cursor.as_sorted_char_range();
+                let selected_text = text.char_range(selected_chars);
+                if selected_text.is_empty() {
+                    text.to_owned()
+                } else {
+                    selected_text.to_owned()
+                }
             } else {
-                selected_text.to_owned()
-            }
-        } else {
-            text.to_owned()
-        };
-        ui.ctx().copy_text(copy_text);
+                text.to_owned()
+            };
+            ui.ctx().copy_text(copy_text);
+        }
     }
 }
 
