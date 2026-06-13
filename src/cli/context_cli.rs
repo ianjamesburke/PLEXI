@@ -200,6 +200,9 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
         print_tip(
             "you can also press \u{21E7}\u{2318}I to set the context root from the focused pane",
         );
+        print_tip(
+            "PLEXI_CONTEXT_ROOT is set when a pane opens — open a new pane to pick up the change",
+        );
     }
     rc
 }

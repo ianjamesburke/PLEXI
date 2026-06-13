@@ -574,12 +574,16 @@ impl PlexiApp {
                         "sidebar: set context root ctx_idx={i} root={}",
                         path.display()
                     );
-                    self.router.get_mut(i).root = Some(path);
+                    let ctx_id = self.router.get(i).context_id;
+                    self.set_context_root(path, Some(ctx_id));
                     self.save_workspace();
                 }
                 WindowMenuAction::ClearRoot => {
                     log::info!("sidebar: clear context root ctx_idx={i}");
                     self.router.get_mut(i).root = None;
+                    if i == self.router.active_idx() {
+                        self.apply_context_transition_effects();
+                    }
                     self.save_workspace();
                 }
                 WindowMenuAction::OpenRootOverlay => {
