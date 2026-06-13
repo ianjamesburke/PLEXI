@@ -537,13 +537,15 @@ fn run_turn_and_respond(
         }
     }
 
-    // If we have a generation ID and an API key, fetch metrics on a background
-    // thread and block until they arrive so AiBrokerResponse carries accurate
-    // token counts. Gemini models via OpenRouter report 0/0 in the stream but
-    // the authoritative generation record appears ~7s after stream completion.
-    // Blocking here is safe because dispatch() runs on a dedicated worker thread,
-    // never on the UI thread. The SDK timeout (35s) comfortably covers the
-    // background fetch window (<=15s of retries).
+    // If we have a generation ID and an API key, fetch authoritative metrics
+    // on a detached background thread and return immediately. The generation
+    // record appears ~7-15s after stream completion (Gemini via OpenRouter
+    // reports 0/0 in the stream), and blocking dispatch() on it holds the
+    // caller's whole turn open — the assistant pane sat "in flight" for
+    // 10-15s after every visible reply doing exactly that. The thread writes
+    // the ledger row and AgentTurn event with the exact counts; the response
+    // carries stream counts, which are advisory (apps see them in
+    // AiResponse — billing always reads the ledger).
     if let Some(gen_id) = last_generation_id {
         if !api_key.is_empty() {
             let app_id = request.app_id.clone();
@@ -559,33 +561,24 @@ fn run_turn_and_respond(
                 request.app_id,
                 gen_id
             );
-            let (metrics_tx, metrics_rx) = std::sync::mpsc::channel::<Option<GenerationMetrics>>();
             let spawn_result = std::thread::Builder::new()
                 .name("plexi-ai-metrics".to_string())
                 .spawn(move || {
-                    let _ = metrics_tx.send(fetch_generation_metrics(&gen_id, &api_key));
-                });
-            match spawn_result {
-                Ok(_) => {
-                    // Block until the metrics thread reports back (<=15s in practice).
-                    let metrics = metrics_rx
-                        .recv_timeout(std::time::Duration::from_secs(35))
-                        .ok()
-                        .flatten();
+                    let metrics = fetch_generation_metrics(&gen_id, &api_key);
                     let (tokens_in, tokens_out, cost_usd) = match metrics {
                         Some(m) => {
                             let ti = m.prompt_tokens.unwrap_or(total_tokens_in);
                             let to = m.completion_tokens.unwrap_or(total_tokens_out);
                             log::info!(
-                                "ai_broker[{}]: background usage prompt={} completion={} cached={:?} reasoning={:?} cost_usd={:?}",
-                                app_id, ti, to, m.cached_tokens, m.reasoning_tokens, m.cost_usd,
+                                "ai_broker[{app_id}]: background usage prompt={} completion={} cached={:?} reasoning={:?} cost_usd={:?}",
+                                ti, to, m.cached_tokens, m.reasoning_tokens, m.cost_usd,
                             );
                             (ti, to, m.cost_usd)
                         }
                         None => {
                             log::warn!(
-                                "ai_broker[{}]: background metrics unavailable; using stream counts prompt={} completion={}",
-                                app_id, total_tokens_in, total_tokens_out,
+                                "ai_broker[{app_id}]: background metrics unavailable; using stream counts prompt={} completion={}",
+                                total_tokens_in, total_tokens_out,
                             );
                             (total_tokens_in, total_tokens_out, None)
                         }
@@ -610,7 +603,10 @@ fn run_turn_and_respond(
                         cost_cents,
                         timestamp: finish_ts,
                     });
-                    return AiBrokerResponse::ok(final_text, tokens_in, tokens_out);
+                });
+            match spawn_result {
+                Ok(_) => {
+                    return AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out);
                 }
                 Err(e) => {
                     // Thread spawn failed — fall through to synchronous path so

@@ -513,8 +513,8 @@ impl AssistantRenderer {
     }
 
     /// Consume composer keyboard input ahead of the TextEdit: picker
-    /// navigation (arrows), completion (Tab/Enter) while picking, and plain
-    /// Enter submit otherwise. Shift+Enter is left for the TextEdit to
+    /// navigation (arrows), Tab-complete and Enter-send while picking, and
+    /// plain Enter submit otherwise. Shift+Enter is left for the TextEdit to
     /// insert a newline natively.
     fn handle_composer_keys(
         ui: &mut egui::Ui,
@@ -530,7 +530,10 @@ impl AssistantRenderer {
                 if model.picker_selected >= matches.len() {
                     model.picker_selected = matches.len() - 1;
                 }
+                // Tab completes the selection into the composer for further
+                // editing; Enter completes it AND sends it in the same frame.
                 let mut complete = false;
+                let mut send = false;
                 ui.input_mut(|input| {
                     if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
                         && model.picker_selected + 1 < matches.len()
@@ -542,15 +545,26 @@ impl AssistantRenderer {
                     {
                         model.picker_selected -= 1;
                     }
-                    if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
-                        || input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                    {
+                    if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
                         complete = true;
+                    }
+                    if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                        complete = true;
+                        send = true;
                     }
                 });
                 if complete {
                     let (name, _) = matches[model.picker_selected];
-                    Self::complete_command(ui.ctx(), model, te_id, name, "key");
+                    Self::complete_command(
+                        ui.ctx(),
+                        model,
+                        te_id,
+                        name,
+                        if send { "enter" } else { "tab" },
+                    );
+                    if send {
+                        return Some(ComposerEvent::Submit);
+                    }
                 }
                 return None;
             }
