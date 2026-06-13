@@ -44,6 +44,15 @@ fn main() -> eframe::Result {
     // Parse --profile <name> early so config_dir() resolves correctly for
     // both logging and all downstream I/O.
     let raw_args: Vec<String> = std::env::args().collect();
+
+    // Top-level --help/-h: print grouped subcommand sections before any
+    // logging or config init, so no noise appears alongside help output.
+    // Subcommand help (e.g. `plexi app --help`) is handled by clap below.
+    if top_level_help_flag(&raw_args) {
+        cli::help::print_grouped_help();
+        std::process::exit(0);
+    }
+
     let profile = parse_profile_flag(&raw_args);
     crate::config::set_profile(profile);
     let is_first_launch = crate::config::ensure_profile_initialized();
@@ -1095,6 +1104,28 @@ fn known_subcommands() -> &'static std::collections::HashSet<String> {
 }
 
 /// Scan argv for `--profile <name>`. Returns the name if present.
+/// Returns true when the only meaningful argument (ignoring `--profile <value>`) is `--help`/`-h`.
+fn top_level_help_flag(args: &[String]) -> bool {
+    let mut skip_next = false;
+    let filtered: Vec<&str> = args.iter().skip(1)
+        .filter(|a| {
+            if skip_next {
+                skip_next = false;
+                return false;
+            }
+            if a.as_str() == "--profile" || a.starts_with("--profile=") {
+                if a.as_str() == "--profile" {
+                    skip_next = true;
+                }
+                return false;
+            }
+            true
+        })
+        .map(|s| s.as_str())
+        .collect();
+    matches!(filtered.first().copied(), Some("--help") | Some("-h")) && filtered.len() == 1
+}
+
 fn parse_profile_flag(args: &[String]) -> Option<String> {
     let mut iter = args.iter();
     while let Some(a) = iter.next() {

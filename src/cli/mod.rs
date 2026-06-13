@@ -96,6 +96,7 @@ pub(super) fn is_executable(path: &std::path::Path) -> bool {
 
 pub mod args;
 pub mod crawl;
+pub mod help;
 pub mod registry;
 pub mod setup;
 pub mod subprocess;
