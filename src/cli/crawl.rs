@@ -204,12 +204,18 @@ pub(crate) fn crawl_with_runner(
     let count = descriptor.commands.len();
     let flag_total: usize = count_flags(&descriptor.commands);
 
-    // Write cache.
+    // Write cache. A failure here is non-fatal (we still return the freshly
+    // crawled descriptor) but must be logged — a silently failing cache means
+    // every open re-runs the expensive crawl with no visible reason.
     if let Ok(json) = serde_json::to_string_pretty(&descriptor) {
         if let Some(parent) = cache_file.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("cli_crawl: could not create cache dir {parent:?}: {e}");
+            }
         }
-        let _ = std::fs::write(&cache_file, json);
+        if let Err(e) = std::fs::write(&cache_file, json) {
+            log::warn!("cli_crawl: could not write cache {cache_file:?}: {e}");
+        }
     }
 
     log::info!(
@@ -590,15 +596,14 @@ fn looks_like_metavar(tok: &str) -> bool {
         return true;
     }
     // An ALL-CAPS bare word like FILE / PATH / VALUE.
-    let inner = tok.trim_matches(|c| c == '<' || c == '>' || c == '[' || c == ']' || c == '.');
+    let inner = tok.trim_matches(['<', '>', '[', ']', '.']);
     !inner.is_empty()
         && inner.len() >= 2
         && inner.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c == '-')
 }
 
 fn metavar_clean(tok: &str) -> String {
-    tok.trim_matches(|c| c == '<' || c == '>' || c == '[' || c == ']' || c == '.')
-        .to_string()
+    tok.trim_matches(['<', '>', '[', ']', '.']).to_string()
 }
 
 fn looks_like_path(metavar: &str) -> bool {
@@ -731,7 +736,7 @@ fn parse_arg_line(line: &str) -> Option<ArgSpec> {
     let token = spec_part.split_whitespace().next()?;
 
     let required = token.starts_with('<');
-    let name = token.trim_matches(|c| c == '<' || c == '>' || c == '[' || c == ']' || c == '.');
+    let name = token.trim_matches(['<', '>', '[', ']', '.']);
     // Drop ellipsis/variadic markers and empties.
     let name = name.trim_end_matches('.').trim();
     if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
