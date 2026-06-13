@@ -194,7 +194,8 @@ pub struct PlexiApp {
     /// TTL is the invalidation, matching the downstream
     /// `OUTSIDE_WORKSPACE_CHECK_INTERVAL` of the only consumer (the terminal
     /// "outside workspace" badge).
-    pub(crate) workspace_root_fallback_cache: Option<(std::time::Instant, Option<std::path::PathBuf>)>,
+    pub(crate) workspace_root_fallback_cache:
+        Option<(std::time::Instant, Option<std::path::PathBuf>)>,
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
     /// One-shot guard: true after `request_focus()` fires on the rename modal's
@@ -523,7 +524,11 @@ impl PlexiApp {
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
         let dark_mode = !theme::is_light_preset(
-            config.theme.as_ref().and_then(|t| t.preset.as_deref()).unwrap_or(""),
+            config
+                .theme
+                .as_ref()
+                .and_then(|t| t.preset.as_deref())
+                .unwrap_or(""),
         );
         theme::setup_style(&cc.egui_ctx, &colors, dark_mode);
         let window_theme = if dark_mode {
@@ -1305,7 +1310,10 @@ impl PlexiApp {
         let user_theme = config.theme.clone().unwrap_or_default();
         // Prefer [theme] preset; fall back to legacy top-level theme_preset so
         // existing configs survive the migration without silently losing their theme.
-        let preset_name = user_theme.preset.as_deref().or(config.theme_preset.as_deref());
+        let preset_name = user_theme
+            .preset
+            .as_deref()
+            .or(config.theme_preset.as_deref());
         if let Some(preset_name) = preset_name {
             if let Some(preset) = theme::preset_colors(preset_name) {
                 log::info!("Applying theme preset: {}", preset_name.trim());
@@ -2516,9 +2524,8 @@ impl eframe::App for PlexiApp {
                 // terminal renders later this same frame and would forward it
                 // to its PTY — swallow all key/text events before closing.
                 ctx.input_mut(|i| {
-                    i.events.retain(|e| {
-                        !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_))
-                    });
+                    i.events
+                        .retain(|e| !matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
                 });
                 self.close_focused_app();
             }
@@ -2907,12 +2914,9 @@ impl eframe::App for PlexiApp {
                                     .into_iter()
                                     .flatten()
                                     .filter_map(|e| e.ok())
-                                    .filter(|e| {
-                                        e.path().extension().map_or(false, |x| x == "md")
-                                    })
+                                    .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
                                     .filter_map(|e| {
-                                        let mtime =
-                                            e.metadata().and_then(|m| m.modified()).ok()?;
+                                        let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
                                         Some((mtime, e.path()))
                                     })
                                     .collect();
@@ -2924,7 +2928,8 @@ impl eframe::App for PlexiApp {
                                 .iter()
                                 .filter_map(|p| crate::notes::NotePickerEntry::load(p, true))
                                 .collect();
-                        let workspace_slug = self.palette_workspace_root
+                        let workspace_slug = self
+                            .palette_workspace_root
                             .as_ref()
                             .and_then(|p| p.file_name().map(|n| n.to_os_string()))
                             .map(|n| n.to_string_lossy().into_owned());
@@ -2937,10 +2942,7 @@ impl eframe::App for PlexiApp {
                                 .iter()
                                 .filter_map(|p| crate::notes::NotePickerEntry::load(p, false)),
                         );
-                        log::info!(
-                            "palette: loaded {} notes",
-                            palette_notes.len()
-                        );
+                        log::info!("palette: loaded {} notes", palette_notes.len());
                         self.palette_notes = palette_notes;
                     } else {
                         self.palette_workspace_root = None;
@@ -3104,14 +3106,14 @@ impl eframe::App for PlexiApp {
                     self.new_child_context_from_keyboard();
                 }
                 Action::PushPaneToSubcontext => {
-                    self.push_pane_to_subcontext(None);
+                    self.push_pane_to_subcontext(None, None);
                 }
                 Action::SetContextRootFromCwd => {
                     let active = self.active_window;
                     if let Some(tile_id) = self.windows[active].focused_pane {
                         if let Some(cwd) = self.windows[active].get_focused_pane_cwd(tile_id) {
                             log::info!("SetContextRootFromCwd: setting root to {}", cwd.display());
-                            self.set_active_context_root(cwd);
+                            self.set_context_root(cwd, None);
                         } else {
                             log::warn!("SetContextRootFromCwd: no CWD available for focused pane");
                         }

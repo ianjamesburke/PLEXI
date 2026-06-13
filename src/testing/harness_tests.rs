@@ -373,7 +373,7 @@ fn read_json_response(path: &str) -> serde_json::Value {
 fn pane_slots_write_read_list_delete() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(tmp.path().to_path_buf());
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
     let pane = h.add_test_pane();
 
     let write_file = temp_response(tmp.path(), "slot-write");
@@ -441,7 +441,7 @@ fn pane_slots_write_read_list_delete() {
 fn pane_slot_read_preserves_error_like_json_content() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(tmp.path().to_path_buf());
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
     let pane = h.add_test_pane();
     let raw_json = br#"{"ok":false,"error":"stored artifact"}"#;
 
@@ -475,7 +475,7 @@ fn pane_slot_read_preserves_error_like_json_content() {
 fn pane_slot_read_errors_use_sidecar_file() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(tmp.path().to_path_buf());
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
     let pane = h.add_test_pane();
 
     let read_file = temp_response(tmp.path(), "slot-missing-read");
@@ -503,7 +503,7 @@ fn pane_slot_read_errors_use_sidecar_file() {
 fn pane_slot_write_requires_replace_or_append_for_existing_slot() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(tmp.path().to_path_buf());
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
     let pane = h.add_test_pane();
 
     let first_file = temp_response(tmp.path(), "slot-first");
@@ -552,7 +552,7 @@ fn pane_slot_write_requires_replace_or_append_for_existing_slot() {
 fn pane_slot_write_rejects_content_over_10_mib() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(tmp.path().to_path_buf());
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
     let pane = h.add_test_pane();
 
     let response_file = temp_response(tmp.path(), "slot-too-large");
@@ -577,7 +577,7 @@ fn pane_slot_write_rejects_content_over_10_mib() {
 fn pane_slot_append_rejects_final_file_over_10_mib() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(tmp.path().to_path_buf());
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
     let pane = h.add_test_pane();
 
     let first_file = temp_response(tmp.path(), "slot-first");
@@ -618,7 +618,7 @@ fn pane_slot_append_uses_tracked_path_after_context_root_changes() {
     let second_root = tempfile::tempdir().expect("second root");
     let mut h = HostHarness::new();
     h.app
-        .set_active_context_root(first_root.path().to_path_buf());
+        .set_context_root(first_root.path().to_path_buf(), None);
     let pane = h.add_test_pane();
 
     let write_file = temp_response(first_root.path(), "slot-root-write");
@@ -637,7 +637,7 @@ fn pane_slot_append_uses_tracked_path_after_context_root_changes() {
         .to_string();
 
     h.app
-        .set_active_context_root(second_root.path().to_path_buf());
+        .set_context_root(second_root.path().to_path_buf(), None);
     let append_file = temp_response(second_root.path(), "slot-root-append");
     h.inject_ipc(AppRequest::SlotWrite {
         pane_id: pane,
@@ -661,7 +661,7 @@ fn pane_slot_append_uses_tracked_path_after_context_root_changes() {
 fn pane_info_and_list_include_slots_object() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(tmp.path().to_path_buf());
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
     let pane = h.add_test_pane();
 
     let write_file = temp_response(tmp.path(), "slot-info-write");
@@ -711,7 +711,7 @@ fn pane_info_and_list_include_slots_object() {
 fn workspace_clean_slots_lists_and_removes_dead_pane_slot_dirs() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(tmp.path().to_path_buf());
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
     let pane = h.add_test_pane();
 
     let write_file = temp_response(tmp.path(), "slot-clean-write");
@@ -764,7 +764,7 @@ fn workspace_clean_slots_lists_and_removes_dead_pane_slot_dirs() {
 fn workspace_clean_slots_removes_unregistered_files_for_reused_pane_ids() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(tmp.path().to_path_buf());
+    h.app.set_context_root(tmp.path().to_path_buf(), None);
     let pane = h.add_test_pane();
 
     let slot_dir = tmp
@@ -1086,7 +1086,7 @@ fn notification_modal_handle_key_returns_consumed() {
 fn cwd_for_welcome_tab_returns_context_root_when_set() {
     let root = std::path::PathBuf::from("/tmp");
     let mut h = HostHarness::new();
-    h.app.set_active_context_root(root.clone());
+    h.app.set_context_root(root.clone(), None);
     assert_eq!(
         h.app.cwd_for_welcome_tab(),
         root,
@@ -2291,14 +2291,21 @@ fn emit_event_enters_host_timeline() {
     proc.background_tick();
 
     let timeline = proc.app_timeline.lock().unwrap();
-    assert_eq!(timeline.events().len(), 1, "accepted event must be recorded");
+    assert_eq!(
+        timeline.events().len(),
+        1,
+        "accepted event must be recorded"
+    );
     let rec = &timeline.events()[0];
     assert_eq!(rec.app_id, "test");
     assert_eq!(rec.event, "move.played");
     assert_eq!(rec.summary, "White played e4");
     assert_eq!(rec.resource_id, "game-abc");
     assert_eq!(rec.revision_after, "rev-13");
-    assert!(timeline.checkpoints().is_empty(), "no rollback metadata = no checkpoint");
+    assert!(
+        timeline.checkpoints().is_empty(),
+        "no rollback metadata = no checkpoint"
+    );
 }
 
 /// EmitEvent with a rollback token also creates an undo checkpoint carrying
@@ -2568,9 +2575,10 @@ fn list_undo_checkpoints_responds_with_serialized_records() {
     proc.background_tick();
     let events = h.effects_drain(pane);
     let listed = events.iter().find_map(|e| match e {
-        PlexiEvent::UndoCheckpoints { request_id, checkpoints } if request_id == "lc-1" => {
-            Some(checkpoints.clone())
-        }
+        PlexiEvent::UndoCheckpoints {
+            request_id,
+            checkpoints,
+        } if request_id == "lc-1" => Some(checkpoints.clone()),
         _ => None,
     });
     let listed = listed.expect("ListUndoCheckpoints must answer with UndoCheckpoints");
@@ -2632,21 +2640,23 @@ fn subscribe_app_events_gated_and_delivers() {
     );
 
     // Allow grant for this subscriber on the publisher's stream.
-    h.process_app_mut(subscriber).grant_store.record(GrantRecord {
-        actor_type: ActorType::App,
-        actor_id: "agent-app".to_string(),
-        actor_scope: ActorScope::User,
-        workspace_root: None,
-        target_type: TargetType::AppEventStream,
-        target_id: "test::move.played".to_string(),
-        resource_scope: ResourceScope::Game,
-        resource_id: None,
-        decision: Decision::Allow,
-        duration: GrantDuration::Session,
-        source: GrantSource::User,
-        created_at: 0,
-        expires_at: None,
-    });
+    h.process_app_mut(subscriber)
+        .grant_store
+        .record(GrantRecord {
+            actor_type: ActorType::App,
+            actor_id: "agent-app".to_string(),
+            actor_scope: ActorScope::User,
+            workspace_root: None,
+            target_type: TargetType::AppEventStream,
+            target_id: "test::move.played".to_string(),
+            resource_scope: ResourceScope::Game,
+            resource_id: None,
+            decision: Decision::Allow,
+            duration: GrantDuration::Session,
+            source: GrantSource::User,
+            created_at: 0,
+            expires_at: None,
+        });
     h.inject(subscriber, subscribe_cmd("sub-req-2"));
     h.process_app_mut(subscriber).background_tick();
     let events = h.effects_drain(subscriber);
@@ -2690,8 +2700,14 @@ fn subscribe_app_events_gated_and_delivers() {
     assert_eq!(event, "move.played");
     assert_eq!(trigger, TriggerMode::Conversation);
     assert_eq!(summary.as_deref(), Some("White played e4"));
-    assert!(payload.is_none(), "summary mode must not deliver the payload");
-    assert!(state_ref.is_none(), "summary mode must not deliver the state ref");
+    assert!(
+        payload.is_none(),
+        "summary mode must not deliver the payload"
+    );
+    assert!(
+        state_ref.is_none(),
+        "summary mode must not deliver the state ref"
+    );
 }
 
 /// Subscribing to an undeclared stream name is refused before the broker is
@@ -2839,15 +2855,19 @@ default = "ask"
     }
 
     fn chess_tools() -> Vec<AiTool> {
-        ["chess.current_state", "chess.legal_moves", "chess.make_move"]
-            .into_iter()
-            .map(|name| AiTool {
-                name: name.to_string(),
-                description: format!("test {name}"),
-                input_schema: serde_json::json!({"type": "object", "properties": {}}),
-                timeout_ms: Some(2_000),
-            })
-            .collect()
+        [
+            "chess.current_state",
+            "chess.legal_moves",
+            "chess.make_move",
+        ]
+        .into_iter()
+        .map(|name| AiTool {
+            name: name.to_string(),
+            description: format!("test {name}"),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            timeout_ms: Some(2_000),
+        })
+        .collect()
     }
 
     /// Register the chess tools and spawn a thread acting as the chess app:
@@ -2922,8 +2942,7 @@ default = "ask"
                 .tool_dispatcher
                 .as_ref()
                 .expect("agent turns must carry a tool dispatcher");
-            let visible: Vec<String> =
-                dispatcher.all_tools().into_iter().map(|t| t.name).collect();
+            let visible: Vec<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
             if visible.iter().any(|n| n == "chess.make_move") {
                 let result = dispatcher.dispatch_call(
                     "call-1".to_string(),
@@ -2953,8 +2972,7 @@ default = "ask"
                     "denied tool must be uninvocable: {result:?}"
                 );
                 AiBrokerResponse::ok(
-                    "A fine position. I would play Nf6, but I am not allowed to move."
-                        .to_string(),
+                    "A fine position. I would play Nf6, but I am not allowed to move.".to_string(),
                     1,
                     1,
                 )
@@ -2967,7 +2985,11 @@ default = "ask"
         loop {
             host.tick();
             let agent = &host.agents[0];
-            if agent.transcript.iter().any(|e| e.role == "agent" || e.role == "error") {
+            if agent
+                .transcript
+                .iter()
+                .any(|e| e.role == "agent" || e.role == "error")
+            {
                 return agent.transcript.clone();
             }
             assert!(
@@ -3110,7 +3132,10 @@ default = "ask"
             .unwrap()
             .record_event("chess", CHESS_PANE, turn_ready())
             .unwrap();
-        assert_eq!(outcome.deliveries_queued, 0, "no subscription = no delivery");
+        assert_eq!(
+            outcome.deliveries_queued, 0,
+            "no subscription = no delivery"
+        );
 
         host.tick();
         assert!(
@@ -3164,21 +3189,23 @@ default = "ask"
             .unwrap();
 
         // Allow the requesting app to roll back chess checkpoints.
-        h.process_app_mut(requester).grant_store.record(GrantRecord {
-            actor_type: ActorType::App,
-            actor_id: "test".to_string(),
-            actor_scope: ActorScope::User,
-            workspace_root: None,
-            target_type: TargetType::UndoCheckpoint,
-            target_id: "chess".to_string(),
-            resource_scope: ResourceScope::Game,
-            resource_id: None,
-            decision: Decision::Allow,
-            duration: GrantDuration::Session,
-            source: GrantSource::User,
-            created_at: 0,
-            expires_at: None,
-        });
+        h.process_app_mut(requester)
+            .grant_store
+            .record(GrantRecord {
+                actor_type: ActorType::App,
+                actor_id: "test".to_string(),
+                actor_scope: ActorScope::User,
+                workspace_root: None,
+                target_type: TargetType::UndoCheckpoint,
+                target_id: "chess".to_string(),
+                resource_scope: ResourceScope::Game,
+                resource_id: None,
+                decision: Decision::Allow,
+                duration: GrantDuration::Session,
+                source: GrantSource::User,
+                created_at: 0,
+                expires_at: None,
+            });
 
         h.process_app_mut(requester)
             .request_rollback(ActorType::App, "test", &ckpt_id)
@@ -3239,8 +3266,7 @@ fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, pane_id: u64) {
         .iter_mut()
         .find(|w| w.window_id == window_id)
         .expect("target window must exist");
-    win.panes
-        .insert(pane_id, Pane::App(Box::new(app_pane)));
+    win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
     let tile_id = win.tree.tiles.insert_pane(pane_id);
     if win.tree.root.is_none() {
         win.tree.root = Some(tile_id);
@@ -3268,7 +3294,9 @@ fn portal_context_state_refreshes_when_child_context_changes() {
         depth: 1,
         parked: false,
     });
-    h.app.context_active_window.insert(child_ctx_id, child_win_id);
+    h.app
+        .context_active_window
+        .insert(child_ctx_id, child_win_id);
     h.app.windows.push(crate::host::context::Window {
         name: String::new(),
         path: std::path::PathBuf::from("/tmp/harness_2023_child"),

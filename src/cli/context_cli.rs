@@ -8,7 +8,7 @@ pub fn context_new_cli(
     windows: &[String],
     focus: bool,
     direction: &str,
-    pane: Option<u64>,
+    from: Option<u64>,
 ) -> i32 {
     let explicit_root = match path {
         Some(_) => match resolve_path(path) {
@@ -58,9 +58,9 @@ pub fn context_new_cli(
     } else {
         None
     };
-    // Portal split anchor: explicit --pane wins; otherwise the caller's own pane
+    // Portal split anchor: explicit --from wins; otherwise the caller's own pane
     // (PLEXI_PANE_ID, set in every Plexi terminal). Only meaningful with --parent.
-    let anchor_pane = pane.or_else(|| {
+    let anchor_pane = from.or_else(|| {
         std::env::var("PLEXI_PANE_ID")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -173,7 +173,8 @@ pub fn context_open_cli(path: Option<&str>) -> i32 {
 
 /// `plexi context set-root [path]`
 ///
-/// Sets the root of the active context. Uses CWD if path omitted.
+/// Sets the root of the caller's context (PLEXI_CONTEXT_ID), falling back to
+/// the active context. Uses CWD if path omitted.
 pub fn context_set_root_cli(path: Option<&str>) -> i32 {
     let root = match resolve_path(path) {
         Ok(p) => p,
@@ -182,10 +183,19 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
             return 1;
         }
     };
-    let rc = send_to_socket(serde_json::json!({
+    let context_id = caller_context_id();
+    log::info!(
+        "context_set_root_cli: root={} context_id={context_id:?}",
+        root.display()
+    );
+    let mut payload = serde_json::json!({
         "type": "set_context_root",
         "root": root,
-    }));
+    });
+    if let Some(cid) = context_id {
+        payload["context_id"] = serde_json::Value::from(cid);
+    }
+    let rc = send_to_socket(payload);
     if rc == 0 {
         print_tip(
             "you can also press \u{21E7}\u{2318}I to set the context root from the focused pane",
@@ -196,24 +206,48 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
 
 /// `plexi context describe "text"`
 ///
-/// Sets the description of the active context.
+/// Sets the description of the caller's context (PLEXI_CONTEXT_ID), falling
+/// back to the active context.
 pub fn context_describe_cli(text: &str) -> i32 {
-    send_to_socket(serde_json::json!({
+    let context_id = caller_context_id();
+    log::info!("context_describe_cli: context_id={context_id:?}");
+    let mut payload = serde_json::json!({
         "type": "set_context_description",
         "description": text,
-    }))
+    });
+    if let Some(cid) = context_id {
+        payload["context_id"] = serde_json::Value::from(cid);
+    }
+    send_to_socket(payload)
 }
 
-/// `plexi context push [name]`
+/// `plexi context push [name] [--pane-id <id>]`
 ///
-/// Push the focused pane into a new sub-context. The pane becomes a portal
-/// and its content moves into the child context.
-pub fn context_push_cli(name: Option<&str>) -> i32 {
+/// Push a pane into a new sub-context. The pane becomes a portal and its
+/// content moves into the child context. Defaults to the calling pane
+/// (PLEXI_PANE_ID), falling back to the focused pane.
+pub fn context_push_cli(name: Option<&str>, pane_id: Option<u64>) -> i32 {
+    let pane_id = pane_id.or_else(|| {
+        std::env::var("PLEXI_PANE_ID")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+    });
+    log::info!("context_push_cli: name={name:?} pane_id={pane_id:?}");
     let mut payload = serde_json::json!({ "type": "push_pane_to_subcontext" });
     if let Some(n) = name {
         payload["name"] = serde_json::Value::String(n.to_string());
     }
+    if let Some(pid) = pane_id {
+        payload["pane_id"] = serde_json::Value::from(pid);
+    }
     send_to_socket(payload)
+}
+
+/// The caller's context id from PLEXI_CONTEXT_ID (set in every Plexi pane).
+fn caller_context_id() -> Option<u64> {
+    std::env::var("PLEXI_CONTEXT_ID")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
 }
 
 /// `plexi context current`

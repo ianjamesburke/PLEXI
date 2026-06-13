@@ -65,14 +65,13 @@ fn new_child_context_no_focused_pane_inserts_sub_ctx() {
     let parent_pane_count_before = app.windows[0].panes.len();
     let parent_id = app.router.active().context_id;
 
-    let result =
-        app.new_child_context(
-            "Test",
-            std::path::PathBuf::from("/tmp/child2"),
-            true,
-            false,
-            None,
-        );
+    let result = app.new_child_context(
+        "Test",
+        std::path::PathBuf::from("/tmp/child2"),
+        true,
+        false,
+        None,
+    );
 
     // Whether success or failure, the parent's focused_pane must remain None.
     assert_eq!(
@@ -107,7 +106,7 @@ fn new_child_context_no_focused_pane_inserts_sub_ctx() {
     }
 }
 
-/// `plexi context new --pane <id>`: the portal split must anchor at the given
+/// `plexi context new --from <id>`: the portal split must anchor at the given
 /// pane, not the parent context's focused pane. Two panes exist; A is focused;
 /// the anchor names B — the portal must land as B's sibling.
 #[test]
@@ -1829,5 +1828,169 @@ fn closing_last_pane_in_background_subcontext_removes_it_without_switching() {
         app.router.active().context_id,
         root_id,
         "active context must not change when a background subcontext collapses"
+    );
+}
+
+/// End-to-end over the real IPC path: `plexi context push` sends `pane_id`
+/// (the caller's PLEXI_PANE_ID) and the host pushes THAT pane into the new
+/// sub-context — not the focused one.
+#[test]
+fn push_pane_ipc_targets_caller_pane_not_focused() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_test_pane();
+    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).unwrap();
+    h.app.windows[0].focused_pane = Some(tile_a);
+    let parent_id = h.app.router.active().context_id;
+    let ctx_count_before = h.app.router.len();
+
+    let payload = serde_json::json!({
+        "type": "push_pane_to_subcontext",
+        "name": "pushed",
+        "pane_id": pane_b,
+    });
+    let req: crate::app_protocol::AppRequest =
+        serde_json::from_value(payload).expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    assert_eq!(
+        h.app.router.len(),
+        ctx_count_before + 1,
+        "push must create one child context"
+    );
+    let parent_win = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent_id)
+        .expect("parent window must still exist");
+    assert!(
+        parent_win.panes.contains_key(&pane_a),
+        "focused pane A must stay in the parent window"
+    );
+    assert!(
+        !parent_win.panes.contains_key(&pane_b),
+        "caller pane B must have moved into the child context"
+    );
+    let child_win = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id != parent_id)
+        .expect("child window must exist");
+    assert!(
+        child_win.panes.contains_key(&pane_b),
+        "caller pane B must live in the child window"
+    );
+}
+
+/// `plexi context push` with an unknown pane id falls back to the focused pane.
+#[test]
+fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).unwrap();
+    h.app.windows[0].focused_pane = Some(tile_a);
+    let parent_id = h.app.router.active().context_id;
+
+    let payload = serde_json::json!({
+        "type": "push_pane_to_subcontext",
+        "pane_id": 999_999u64,
+    });
+    let req: crate::app_protocol::AppRequest =
+        serde_json::from_value(payload).expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let parent_win = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent_id)
+        .expect("parent window must still exist");
+    assert!(
+        !parent_win.panes.contains_key(&pane_a),
+        "fallback must push the focused pane"
+    );
+}
+
+/// `plexi context describe` sends the caller's PLEXI_CONTEXT_ID — the host
+/// must set the description on THAT context, not the active one.
+#[test]
+fn set_context_description_ipc_targets_caller_context() {
+    let mut h = crate::testing::HostHarness::new();
+    let active_id = h.app.router.active().context_id;
+    let other_id = active_id + 100;
+    h.app
+        .router
+        .push(test_context(other_id, active_id, "background"));
+
+    let payload = serde_json::json!({
+        "type": "set_context_description",
+        "description": "set from a background pane",
+        "context_id": other_id,
+    });
+    let req: crate::app_protocol::AppRequest =
+        serde_json::from_value(payload).expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let other_idx = h.app.router.position(|c| c.context_id == other_id).unwrap();
+    assert_eq!(
+        h.app.router.get(other_idx).description.as_deref(),
+        Some("set from a background pane"),
+        "description must land on the caller's context"
+    );
+    let active_idx = h
+        .app
+        .router
+        .position(|c| c.context_id == active_id)
+        .unwrap();
+    assert_eq!(
+        h.app.router.get(active_idx).description,
+        None,
+        "active context must be untouched"
+    );
+}
+
+/// `plexi context set-root` sends the caller's PLEXI_CONTEXT_ID — the host
+/// must re-root THAT context, not the active one.
+#[test]
+fn set_context_root_ipc_targets_caller_context() {
+    let mut h = crate::testing::HostHarness::new();
+    let active_id = h.app.router.active().context_id;
+    let active_root_before = h.app.router.active().root.clone();
+    let other_id = active_id + 100;
+    h.app
+        .router
+        .push(test_context(other_id, active_id, "background"));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let payload = serde_json::json!({
+        "type": "set_context_root",
+        "root": tmp.path(),
+        "context_id": other_id,
+    });
+    let req: crate::app_protocol::AppRequest =
+        serde_json::from_value(payload).expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let other_idx = h.app.router.position(|c| c.context_id == other_id).unwrap();
+    assert_eq!(
+        h.app.router.get(other_idx).root.as_deref(),
+        Some(tmp.path()),
+        "root must land on the caller's context"
+    );
+    let active_idx = h
+        .app
+        .router
+        .position(|c| c.context_id == active_id)
+        .unwrap();
+    assert_eq!(
+        h.app.router.get(active_idx).root,
+        active_root_before,
+        "active context root must be untouched"
     );
 }

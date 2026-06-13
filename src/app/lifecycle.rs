@@ -1452,15 +1452,13 @@ impl PlexiApp {
                     let current_ctx_id = self.router.active().context_id;
                     let current_win_id = self.windows[self.active_window].window_id;
                     let current_focused = self.windows[self.active_window].focused_pane;
-                    if let Err(e) =
-                        self.new_child_context(
-                            pname.as_str(),
-                            path,
-                            portal_vertical,
-                            portal_first,
-                            *anchor_pane,
-                        )
-                    {
+                    if let Err(e) = self.new_child_context(
+                        pname.as_str(),
+                        path,
+                        portal_vertical,
+                        portal_first,
+                        *anchor_pane,
+                    ) {
                         log::warn!("pane_ipc: create_context with parent failed: {e}");
                         ctx_ok = false;
                     } else {
@@ -1562,14 +1560,20 @@ impl PlexiApp {
                     root.display()
                 );
             }
-            crate::app_protocol::AppRequest::SetContextRoot { root } => {
-                log::info!("pane_ipc: kind=set_context_root root={}", root.display());
-                self.set_active_context_root(root.clone());
+            crate::app_protocol::AppRequest::SetContextRoot { root, context_id } => {
+                log::info!(
+                    "pane_ipc: kind=set_context_root root={} context_id={context_id:?}",
+                    root.display()
+                );
+                self.set_context_root(root.clone(), *context_id);
                 self.save_workspace();
             }
-            crate::app_protocol::AppRequest::SetContextDescription { description } => {
-                log::info!("pane_ipc: kind=set_context_description");
-                let idx = self.router.active_idx();
+            crate::app_protocol::AppRequest::SetContextDescription {
+                description,
+                context_id,
+            } => {
+                log::info!("pane_ipc: kind=set_context_description context_id={context_id:?}");
+                let idx = self.resolve_context_idx(*context_id, "set_context_description");
                 let trimmed = description.trim().to_string();
                 self.router.get_mut(idx).description = if trimmed.is_empty() {
                     None
@@ -1596,9 +1600,11 @@ impl PlexiApp {
                 );
                 self.zoom_out_of_context();
             }
-            crate::app_protocol::AppRequest::PushPaneToSubcontext { name } => {
-                log::info!("pane_ipc: kind=push_pane_to_subcontext name={:?}", name);
-                self.push_pane_to_subcontext(name.clone());
+            crate::app_protocol::AppRequest::PushPaneToSubcontext { name, pane_id } => {
+                log::info!(
+                    "pane_ipc: kind=push_pane_to_subcontext name={name:?} pane_id={pane_id:?}"
+                );
+                self.push_pane_to_subcontext(name.clone(), *pane_id);
             }
             crate::app_protocol::AppRequest::ListPermissions { response_file } => {
                 log::info!("pane_ipc: kind=list_permissions response_file={response_file:?}");
@@ -1761,8 +1767,7 @@ impl PlexiApp {
             // Dual-write the unified broker store so grants.toml stays in
             // lockstep with the legacy permissions.toml until all call sites
             // read through the broker (permissions-broker spec, Phase A).
-            let mut grants =
-                crate::broker::GrantStore::load_or_default(&self.permission_store_dir);
+            let mut grants = crate::broker::GrantStore::load_or_default(&self.permission_store_dir);
             grants.record_app_capability(
                 app_id,
                 &ws,

@@ -65,12 +65,11 @@ Skip this step for any other command.
 ## Step 3 — Split and launch
 
 ```bash
-NEW_ID=$($PLEXI terminal \
-  --layout split_h \
-  --from-pane-id $MY_ID \
+NEW_ID=$($PLEXI pane new "c \"$CMD\"" \
+  --right \
+  --from $MY_ID \
   --cwd "$REPO_DIR" \
-  --no-focus \
-  "c \"$CMD\"")
+  --no-focus)
 $PLEXI pane name $NEW_ID "$LABEL"
 ```
 

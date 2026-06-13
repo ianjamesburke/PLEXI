@@ -368,8 +368,35 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn push_pane_to_subcontext(&mut self, name: Option<String>) {
-        let parent_win_idx = self.active_window;
+    pub(crate) fn push_pane_to_subcontext(
+        &mut self,
+        name: Option<String>,
+        target_pane: Option<u64>,
+    ) {
+        // An explicit pane (the caller's PLEXI_PANE_ID over IPC) selects both
+        // the window and the tile; otherwise the focused pane is pushed.
+        let target = target_pane.and_then(|pid| {
+            self.windows
+                .iter()
+                .enumerate()
+                .find_map(|(idx, w)| w.tree.tiles.find_pane(&pid).map(|tile| (idx, tile)))
+        });
+        if target_pane.is_some() && target.is_none() {
+            log::warn!(
+                "push_pane_to_subcontext: pane {target_pane:?} not found — falling back to focused pane"
+            );
+        }
+        let (parent_win_idx, target_tile) = match target {
+            Some(t) => t,
+            None => {
+                let win_idx = self.active_window;
+                let Some(focused_tile) = self.windows[win_idx].focused_pane else {
+                    log::warn!("push_pane_to_subcontext: no focused pane");
+                    return;
+                };
+                (win_idx, focused_tile)
+            }
+        };
         let parent_ctx_id = self.windows[parent_win_idx].context_id;
         let parent_depth = self
             .router
@@ -378,15 +405,10 @@ impl PlexiApp {
             .map(|c| c.depth)
             .unwrap_or(0);
 
-        let Some(focused_tile) = self.windows[parent_win_idx].focused_pane else {
-            log::warn!("push_pane_to_subcontext: no focused pane");
-            return;
-        };
-
-        let pane_id = match self.windows[parent_win_idx].tree.tiles.get(focused_tile) {
+        let pane_id = match self.windows[parent_win_idx].tree.tiles.get(target_tile) {
             Some(egui_tiles::Tile::Pane(pid)) => *pid,
             _ => {
-                log::warn!("push_pane_to_subcontext: focused tile is not a pane");
+                log::warn!("push_pane_to_subcontext: target tile is not a pane");
                 return;
             }
         };
@@ -443,10 +465,8 @@ impl PlexiApp {
         };
 
         let portal_pane_id = self.host.alloc_pane_id();
-        if let Some(egui_tiles::Tile::Pane(slot)) = self.windows[parent_win_idx]
-            .tree
-            .tiles
-            .get_mut(focused_tile)
+        if let Some(egui_tiles::Tile::Pane(slot)) =
+            self.windows[parent_win_idx].tree.tiles.get_mut(target_tile)
         {
             *slot = portal_pane_id;
         }
@@ -493,7 +513,7 @@ impl PlexiApp {
 
         let current_win_id = self.windows[parent_win_idx].window_id;
         self.router
-            .push_depth(parent_ctx_id, current_win_id, Some(focused_tile));
+            .push_depth(parent_ctx_id, current_win_id, Some(target_tile));
         let new_ctx_idx = self.router.len() - 1;
         self.switch_workspace(new_ctx_idx);
 
@@ -1162,17 +1182,37 @@ impl PlexiApp {
         self.save_workspace();
     }
 
-    /// Set the `root` of the active context.
-    pub(crate) fn set_active_context_root(&mut self, root: PathBuf) {
-        let idx = self.router.active_idx();
+    /// Resolve an optional context id to a router index. Falls back to the
+    /// active context (with a warning) when the id is absent or unknown.
+    pub(crate) fn resolve_context_idx(&self, context_id: Option<u64>, op: &str) -> usize {
+        match context_id {
+            Some(cid) => match self.router.position(|c| c.context_id == cid) {
+                Some(idx) => idx,
+                None => {
+                    log::warn!("{op}: context_id={cid} not found — falling back to active context");
+                    self.router.active_idx()
+                }
+            },
+            None => self.router.active_idx(),
+        }
+    }
+
+    /// Set the `root` of a context. `context_id` targets a specific context
+    /// (the caller's PLEXI_CONTEXT_ID over IPC); `None` means the active one.
+    pub(crate) fn set_context_root(&mut self, root: PathBuf, context_id: Option<u64>) {
+        let idx = self.resolve_context_idx(context_id, "set_context_root");
         log::info!(
-            "set_active_context_root: ctx_id={} root={}",
-            self.router.active().context_id,
+            "set_context_root: ctx_id={} root={}",
+            self.router.get(idx).context_id,
             root.display()
         );
         auto_init_workspace(&root);
         self.router.get_mut(idx).root = Some(root);
-        self.apply_context_transition_effects();
+        // Transition effects (registry rescan, watcher restart, agent reload)
+        // only apply when the *active* context's root changed.
+        if idx == self.router.active_idx() {
+            self.apply_context_transition_effects();
+        }
     }
 
     /// Single choke point for all context-transition side effects.

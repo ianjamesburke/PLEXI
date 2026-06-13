@@ -269,7 +269,7 @@ Before adding any new CLI command, verify it belongs in the right namespace — 
 
 ## CLI Pane Naming
 
-Always name panes after spawning them. Every `plexi terminal`, `plexi app open`, split, or new window should be followed by `plexi pane name <id> "descriptive name"`. Named panes make the UI scannable, help the project-manager read state from `plexi pane list`, and make dispatch lanes identifiable at a glance.
+Always name panes after spawning them. Every `plexi pane new`, `plexi app open`, split, or new window should be followed by `plexi pane name <id> "descriptive name"`. Named panes make the UI scannable, help the project-manager read state from `plexi pane list`, and make dispatch lanes identifiable at a glance.
 
 ## CLI Tips
 
