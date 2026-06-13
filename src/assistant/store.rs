@@ -8,11 +8,11 @@
 //!   conversations/<id>.jsonl       — one serialized `Turn` per line
 //! ```
 //!
-//! JSON lines match the host event-log persistence style: append-only writes
-//! per turn, tolerant line-by-line reads (a corrupt line is logged and
-//! skipped, never fatal).
+//! JSON lines with tolerant line-by-line reads (a corrupt line is logged and
+//! skipped, never fatal). Each save rewrites the whole transcript: turns can
+//! finish out of submission order (a reply commits at its anchor while
+//! slash-view rows append), so disk order mirrors memory order by rewrite.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::model::Turn;
@@ -114,21 +114,24 @@ impl AssistantStore {
         self.write_state(&state)
     }
 
-    /// Append one turn to the conversation's JSONL file.
-    pub fn append_turn(&self, id: &str, turn: &Turn) -> Result<(), String> {
+    /// Write the full conversation transcript, replacing the file. A turn
+    /// finishing mid-conversation inserts at its anchor rather than at the
+    /// end, so disk order can only be kept equal to memory order by
+    /// rewriting — append-only would freeze the order of the racing rows.
+    pub fn write_turns(&self, id: &str, turns: &[Turn]) -> Result<(), String> {
         let path = self.conversation_path(id);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create {}: {e}", parent.display()))?;
         }
-        let line =
-            serde_json::to_string(turn).map_err(|e| format!("serialize turn for {id}: {e}"))?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| format!("open {}: {e}", path.display()))?;
-        writeln!(file, "{line}").map_err(|e| format!("write {}: {e}", path.display()))
+        let mut raw = String::new();
+        for turn in turns {
+            let line = serde_json::to_string(turn)
+                .map_err(|e| format!("serialize turn for {id}: {e}"))?;
+            raw.push_str(&line);
+            raw.push('\n');
+        }
+        std::fs::write(&path, raw).map_err(|e| format!("write {}: {e}", path.display()))
     }
 
     /// Load every turn of a conversation. Missing file = empty conversation.
@@ -175,9 +178,14 @@ mod tests {
 
         let id = "conv-test-1";
         store.set_active_conversation(id, None).unwrap();
-        store.append_turn(id, &Turn::now(TurnRole::User, "hello")).unwrap();
         store
-            .append_turn(id, &Turn::now(TurnRole::Assistant, "hi there"))
+            .write_turns(
+                id,
+                &[
+                    Turn::now(TurnRole::User, "hello"),
+                    Turn::now(TurnRole::Assistant, "hi there"),
+                ],
+            )
             .unwrap();
 
         // A fresh store handle (same workspace) resumes the same state.
@@ -189,6 +197,14 @@ mod tests {
         assert_eq!(turns[0].text, "hello");
         assert_eq!(turns[1].role, TurnRole::Assistant);
         assert_eq!(turns[1].text, "hi there");
+
+        // A later save replaces the transcript — no stale tail lines.
+        reopened
+            .write_turns(id, &[Turn::now(TurnRole::User, "only")])
+            .unwrap();
+        let turns = reopened.load_turns(id);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].text, "only");
     }
 
     #[test]
@@ -231,17 +247,22 @@ mod tests {
         assert!(store.load_turns("nope").is_empty());
 
         let id = "conv-corrupt";
-        store.append_turn(id, &Turn::now(TurnRole::User, "ok")).unwrap();
+        store
+            .write_turns(
+                id,
+                &[Turn::now(TurnRole::User, "ok"), Turn::now(TurnRole::User, "after")],
+            )
+            .unwrap();
         let path = ws
             .path()
             .join(crate::config::workspace_channel_dir())
             .join("assistant")
             .join("conversations")
             .join(format!("{id}.jsonl"));
-        let mut raw = std::fs::read_to_string(&path).unwrap();
-        raw.push_str("not json\n");
-        std::fs::write(&path, raw).unwrap();
-        store.append_turn(id, &Turn::now(TurnRole::User, "after")).unwrap();
+        // Inject a corrupt line between the two valid ones.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let (first, rest) = raw.split_once('\n').unwrap();
+        std::fs::write(&path, format!("{first}\nnot json\n{rest}")).unwrap();
 
         let turns = store.load_turns(id);
         assert_eq!(turns.len(), 2, "corrupt line skipped, valid lines kept");

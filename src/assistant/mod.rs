@@ -181,10 +181,6 @@ pub struct AssistantApp {
     /// Session grants are recorded in memory only; "always" grants are saved.
     grant_store: GrantStore,
     audit: AuditLog,
-    /// How many of `model.turns` are already on disk for the active
-    /// conversation. Reset when the conversation id changes.
-    persisted_turns: usize,
-    persisted_conversation: String,
     outcome_tx: Sender<TurnOutcome>,
     outcome_rx: Receiver<TurnOutcome>,
     /// Live deltas from the in-flight turn's worker thread.
@@ -262,8 +258,6 @@ impl AssistantApp {
         // Load persisted session name (if any) so it survives restarts.
         model.session_name = store.active_session_name();
         model.show_thoughts = store.show_thoughts();
-        let persisted_turns = model.turns.len();
-        let persisted_conversation = model.conversation_id.clone();
         let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
         let (flow_tx, flow_rx) = std::sync::mpsc::channel();
         let mut app = Self {
@@ -273,8 +267,6 @@ impl AssistantApp {
             workspace_root,
             grant_store: GrantStore::load_or_default(profile_dir),
             audit: AuditLog::new(profile_dir.join("audit.jsonl")),
-            persisted_turns,
-            persisted_conversation,
             outcome_tx,
             outcome_rx,
             delta_rx: None,
@@ -537,27 +529,23 @@ impl AssistantApp {
         ]
     }
 
-    /// Persist the active conversation id and any turns not yet on disk.
+    /// Persist the active conversation id and the full transcript.
     fn session_write(&mut self) {
-        if self.persisted_conversation != self.model.conversation_id {
-            self.persisted_conversation = self.model.conversation_id.clone();
-            self.persisted_turns = 0;
-        }
         if let Err(e) = self
             .store
             .set_active_conversation(&self.model.conversation_id, self.model.session_name.as_deref())
         {
             log::error!("assistant: failed to persist active conversation: {e}");
         }
-        for turn in &self.model.turns[self.persisted_turns.min(self.model.turns.len())..] {
-            if let Err(e) = self.store.append_turn(&self.model.conversation_id, turn) {
-                log::error!(
-                    "assistant[{}]: failed to persist turn: {e}",
-                    self.model.conversation_id
-                );
-            }
+        if let Err(e) = self
+            .store
+            .write_turns(&self.model.conversation_id, &self.model.turns)
+        {
+            log::error!(
+                "assistant[{}]: failed to persist transcript: {e}",
+                self.model.conversation_id
+            );
         }
-        self.persisted_turns = self.model.turns.len();
     }
 
     /// Conversation history for the broker: user/assistant turns plus
@@ -882,6 +870,9 @@ impl AssistantApp {
             in_flight: true,
             ..Default::default()
         };
+        // Anchor this turn's rows after the queued messages/events that
+        // triggered it, same as a `submit()`-dispatched turn.
+        self.model.turn_anchor = Some(self.model.turns.len());
         let conversation_id = self.model.conversation_id.clone();
         self.start_turn(conversation_id, String::new());
     }

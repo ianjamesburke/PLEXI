@@ -180,7 +180,15 @@ impl AssistantRenderer {
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 ui.add_space(style::SPACE_SM);
-                for (i, turn) in model.turns.iter().enumerate() {
+                // The in-flight turn renders at its anchor — right after the
+                // message that started it — so rows appended mid-turn
+                // (slash-view output, queued messages) appear below it, in
+                // the position the committed reply will land in.
+                let anchor = model
+                    .turn_anchor
+                    .unwrap_or(model.turns.len())
+                    .min(model.turns.len());
+                for (i, turn) in model.turns[..anchor].iter().enumerate() {
                     ui.push_id(i, |ui| {
                         Self::draw_turn_row(ui, md_cache, colors, turn, model.show_thoughts);
                     });
@@ -191,6 +199,11 @@ impl AssistantRenderer {
                 if model.streaming.in_flight {
                     ui.push_id("streaming", |ui| {
                         Self::draw_streaming_row(ui, model, md_cache, colors);
+                    });
+                }
+                for (i, turn) in model.turns[anchor..].iter().enumerate() {
+                    ui.push_id(anchor + i, |ui| {
+                        Self::draw_turn_row(ui, md_cache, colors, turn, model.show_thoughts);
                     });
                 }
                 ui.add_space(style::SPACE_SM);
@@ -589,9 +602,21 @@ impl AssistantRenderer {
         let should_scroll = selected_idx != prev_selected;
         let mouse_moved = ui.ctx().input(|i| i.pointer.delta().length_sq() > 0.5);
 
+        // The popup rect is computed here, not by egui: a bottom-pivoted Area
+        // positions itself from its own last-frame size, and the ScrollArea
+        // clamps to the space below that position — a feedback loop with a
+        // stable collapsed state (the "one visible row" bug). Deriving the
+        // height from the row count breaks the loop.
+        let row_gap = ui.spacing().item_spacing.y;
+        let content_h = matches.len() as f32 * style::LIST_ROW_H
+            + matches.len().saturating_sub(1) as f32 * row_gap;
+        let list_h = content_h.min(max_h.max(0.0));
+        let margin = style::SPACE_XS;
+        let popup_h = list_h + 2.0 * margin + 2.0;
+        let pos = composer_rect.left_top() - egui::vec2(0.0, style::SPACE_XS + popup_h);
+
         egui::Area::new(pane_id.with("assistant_picker"))
-            .pivot(egui::Align2::LEFT_BOTTOM)
-            .fixed_pos(composer_rect.left_top() - egui::vec2(0.0, style::SPACE_XS))
+            .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 ui.set_width(composer_rect.width());
@@ -599,12 +624,13 @@ impl AssistantRenderer {
                     .fill(colors.bg_active)
                     .stroke(egui::Stroke::new(1.0, colors.border))
                     .corner_radius(style::RADIUS_MD)
-                    .inner_margin(egui::Margin::same(style::SPACE_XS as i8))
+                    .inner_margin(egui::Margin::same(margin as i8))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         egui::ScrollArea::vertical()
                             .id_salt("assistant_picker_scroll")
-                            .max_height(max_h.max(0.0))
+                            .max_height(list_h)
+                            .min_scrolled_height(list_h)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 for (i, (name, purpose)) in matches.iter().enumerate() {

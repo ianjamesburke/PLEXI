@@ -149,6 +149,12 @@ pub struct AssistantModel {
     /// appended to `turns`; this count tells the pump to dispatch one
     /// follow-up turn that folds them in.
     pub queued_user_turns: usize,
+    /// Transcript index where the in-flight turn's rows belong: just after
+    /// the user message that started it. Tool rows and the final reply
+    /// insert here (advancing it), so output appended mid-turn — slash-view
+    /// rows, queued messages — stays below the reply it chronologically
+    /// follows. `None` while no turn is in flight.
+    pub turn_anchor: Option<usize>,
     /// Show reasoning ("thoughts") sections in the transcript. Toggled by
     /// `/thoughts`, persisted in the assistant store's `state.toml`.
     pub show_thoughts: bool,
@@ -167,6 +173,7 @@ impl AssistantModel {
             active_tools: Vec::new(),
             pending_permission: None,
             queued_user_turns: 0,
+            turn_anchor: None,
             show_thoughts: false,
         }
     }
@@ -233,6 +240,7 @@ impl AssistantModel {
             input.len()
         );
         self.turns.push(Turn::now(TurnRole::User, input.clone()));
+        self.turn_anchor = Some(self.turns.len());
         self.streaming = StreamingState {
             in_flight: true,
             ..Default::default()
@@ -264,7 +272,23 @@ impl AssistantModel {
         self.active_tools.clear();
         self.pending_permission = None;
         self.queued_user_turns = 0;
+        self.turn_anchor = None;
         vec![AssistantEffect::CancelTurn]
+    }
+
+    /// Insert a row that belongs to the in-flight turn at the turn anchor,
+    /// keeping it above anything appended mid-turn (slash-view output,
+    /// queued messages). Falls back to a plain append when no turn is in
+    /// flight.
+    fn push_flight_turn(&mut self, turn: Turn) {
+        match self.turn_anchor {
+            Some(at) => {
+                let at = at.min(self.turns.len());
+                self.turns.insert(at, turn);
+                self.turn_anchor = Some(at + 1);
+            }
+            None => self.turns.push(turn),
+        }
     }
 
     /// Execute a parsed slash command. `/clear`, `/new`, and `/help` are
@@ -433,7 +457,7 @@ impl AssistantModel {
             None => Turn::tool(tool.to_string(), ToolStatus::Succeeded),
             Some(e) => Turn::tool(format!("{tool} — {e}"), ToolStatus::Failed),
         };
-        self.turns.push(turn);
+        self.push_flight_turn(turn);
         vec![AssistantEffect::SessionWrite {
             conversation_id: self.conversation_id.clone(),
         }]
@@ -456,7 +480,7 @@ impl AssistantModel {
         };
         match choice {
             PermissionChoice::Deny => {
-                self.turns.push(Turn::tool(
+                self.push_flight_turn(Turn::tool(
                     format!("{} — denied by user", pending.tool),
                     ToolStatus::Failed,
                 ));
@@ -479,13 +503,13 @@ impl AssistantModel {
         outcome: Result<String, String>,
     ) -> Vec<AssistantEffect> {
         if conversation_id != self.conversation_id {
+            // Touch nothing: `interrupt_turn` already reset all streaming
+            // state when the conversation switched, so any in-flight state
+            // now belongs to a newer turn this late outcome must not clobber.
             log::info!(
                 "assistant: dropping turn outcome for stale conversation {conversation_id} (active {})",
                 self.conversation_id
             );
-            self.streaming = StreamingState::default();
-            self.active_tools.clear();
-            self.pending_permission = None;
             return Vec::new();
         }
         match outcome {
@@ -500,16 +524,17 @@ impl AssistantModel {
                 if !self.streaming.partial_reasoning.is_empty() {
                     turn.thoughts = Some(std::mem::take(&mut self.streaming.partial_reasoning));
                 }
-                self.turns.push(turn);
+                self.push_flight_turn(turn);
             }
             Err(e) => {
                 log::warn!("assistant[{}]: turn failed: {e}", self.conversation_id);
-                self.turns.push(Turn::now(TurnRole::Error, e));
+                self.push_flight_turn(Turn::now(TurnRole::Error, e));
             }
         }
         self.streaming = StreamingState::default();
         self.active_tools.clear();
         self.pending_permission = None;
+        self.turn_anchor = None;
         vec![AssistantEffect::SessionWrite {
             conversation_id: self.conversation_id.clone(),
         }]
@@ -628,6 +653,61 @@ mod tests {
         m.finish_turn(&id, Err("api_key_missing".to_string()));
         assert_eq!(m.turns.last().unwrap().role, TurnRole::Error);
         assert!(!m.streaming.in_flight);
+    }
+
+    #[test]
+    fn mid_turn_command_output_lands_below_the_final_reply() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "hi");
+        // View command runs while the turn is still in flight.
+        submitted(&mut m, "/help");
+        let id = m.conversation_id.clone();
+        m.finish_turn(&id, Ok("hello there".to_string()));
+        assert_eq!(m.turns[0].text, "hi");
+        assert_eq!(m.turns[1].text, "hello there", "reply commits at its anchor");
+        assert!(m.turns[2].text.contains("Built-in commands"));
+        assert_eq!(m.turn_anchor, None);
+    }
+
+    #[test]
+    fn tool_rows_stay_with_their_turn_above_mid_turn_output() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "do it");
+        m.tool_call_started("csv.read_range");
+        m.tool_call_finished("csv.read_range", None);
+        submitted(&mut m, "/help");
+        let id = m.conversation_id.clone();
+        m.finish_turn(&id, Ok("done".to_string()));
+        assert_eq!(m.turns[0].role, TurnRole::User);
+        assert_eq!(m.turns[1].role, TurnRole::Tool);
+        assert_eq!(m.turns[2].text, "done");
+        assert!(m.turns[3].text.contains("Built-in commands"));
+    }
+
+    #[test]
+    fn queued_message_stays_below_the_reply_it_followed() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "first");
+        submitted(&mut m, "second");
+        let id = m.conversation_id.clone();
+        m.finish_turn(&id, Ok("reply one".to_string()));
+        let texts: Vec<&str> = m.turns.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, ["first", "reply one", "second"]);
+    }
+
+    #[test]
+    fn stale_outcome_does_not_clobber_a_newer_turn() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "q1");
+        let old_id = m.conversation_id.clone();
+        submitted(&mut m, "/clear");
+        submitted(&mut m, "q2");
+        m.apply_answer_delta("fresh");
+        let effects = m.finish_turn(&old_id, Ok("late".to_string()));
+        assert!(effects.is_empty());
+        assert!(m.streaming.in_flight, "newer turn's streaming must survive");
+        assert_eq!(m.streaming.partial_answer, "fresh");
+        assert_eq!(m.turns.len(), 1, "only q2's user row");
     }
 
     #[test]
