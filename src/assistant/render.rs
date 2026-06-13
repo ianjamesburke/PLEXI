@@ -331,18 +331,9 @@ impl AssistantRenderer {
                         Self::draw_thoughts_section(ui, colors, thoughts);
                     }
                 }
-                let bubble_max = ui.available_width() * 0.85;
-                egui::Frame::new()
-                    .fill(colors.bg_active)
-                    .corner_radius(style::RADIUS_MD)
-                    .inner_margin(egui::Margin::symmetric(
-                        style::SPACE_SM as i8,
-                        style::SPACE_XS as i8,
-                    ))
-                    .show(ui, |ui| {
-                        ui.set_max_width(bubble_max);
-                        Self::markdown_body(ui, md_cache, colors, text);
-                    });
+                Self::assistant_bubble(ui, colors, |ui| {
+                    Self::markdown_body(ui, md_cache, colors, text);
+                });
                 ui.add_space(style::SPACE_MD);
             }
             TurnRole::Error => {
@@ -450,6 +441,29 @@ impl AssistantRenderer {
         ui.add_space(style::SPACE_XS);
     }
 
+    /// The soft, left-aligned assistant reply bubble. Shared by committed turns
+    /// (`draw_turn_row`) and the in-flight streaming row so the background is
+    /// identical from the first frame of a turn — it must not pop in only once
+    /// the turn commits.
+    fn assistant_bubble(
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        add_contents: impl FnOnce(&mut egui::Ui),
+    ) {
+        let bubble_max = ui.available_width() * 0.85;
+        egui::Frame::new()
+            .fill(colors.bg_active)
+            .corner_radius(style::RADIUS_MD)
+            .inner_margin(egui::Margin::symmetric(
+                style::SPACE_SM as i8,
+                style::SPACE_XS as i8,
+            ))
+            .show(ui, |ui| {
+                ui.set_max_width(bubble_max);
+                add_contents(ui);
+            });
+    }
+
     fn draw_streaming_row(
         ui: &mut egui::Ui,
         model: &AssistantModel,
@@ -459,11 +473,16 @@ impl AssistantRenderer {
         if model.show_thoughts && !model.streaming.partial_reasoning.is_empty() {
             Self::draw_thoughts_section(ui, colors, &model.streaming.partial_reasoning);
         }
-        if model.streaming.partial_answer.is_empty() {
-            Self::draw_thinking_dots(ui, colors);
-        } else {
-            Self::markdown_body(ui, md_cache, colors, &model.streaming.partial_answer);
-        }
+        // Same bubble as a committed reply, present from the first frame —
+        // the thinking-dots beat and every streamed token sit on the
+        // background, so it never appears only after streaming ends.
+        Self::assistant_bubble(ui, colors, |ui| {
+            if model.streaming.partial_answer.is_empty() {
+                Self::draw_thinking_dots(ui, colors);
+            } else {
+                Self::markdown_body(ui, md_cache, colors, &model.streaming.partial_answer);
+            }
+        });
         ui.add_space(style::SPACE_MD);
     }
 
