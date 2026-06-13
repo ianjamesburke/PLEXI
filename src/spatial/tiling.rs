@@ -272,7 +272,10 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     if preview.windows.iter().flat_map(|w| &w.panes).any(|p| {
                         matches!(p.activity, Some(crate::app_protocol::AgentState::Working))
                     }) {
-                        ui.ctx().request_repaint();
+                        // Pulse only needs ~10fps; an unconditional
+                        // request_repaint pins the window at display refresh.
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(100));
                     }
                     let painter = ui.painter();
                     paint_portal_minimap(painter, map_area, &preview.windows, &colors_for_portal, t);
@@ -671,7 +674,7 @@ pub(crate) fn paint_portal_minimap(
             let title_font_size: f32 = if cell.width() > 80.0 { 11.0 } else { 9.0 };
             let activity_dot = pane.activity.as_ref().filter(|_| cell.width() > 14.0);
             if let Some(state) = activity_dot {
-                let color = crate::ui::activity::dot_color_from_time(state, colors, time);
+                let color = crate::ui::activity::dot_color_from_time(state, colors, time, 0);
                 painter.circle_filled(
                     egui::pos2(
                         cell.min.x + ACTIVITY_DOT_PAD + ACTIVITY_DOT_R,

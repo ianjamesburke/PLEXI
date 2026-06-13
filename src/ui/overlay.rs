@@ -109,6 +109,9 @@ impl<'a> ModalShell<'a> {
             egui::Area::new(self.id.with("scrim"))
                 .fixed_pos(screen.min)
                 .order(scrim_order)
+                // fade_in(false): overlays must appear instantly — egui's
+                // default fade reads as input lag on launcher-style modals.
+                .fade_in(false)
                 .show(ctx, |ui| {
                     ui.painter()
                         .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
@@ -122,7 +125,15 @@ impl<'a> ModalShell<'a> {
         egui::Area::new(self.id.with("overlay"))
             .anchor(self.anchor, self.offset)
             .order(self.order)
+            .fade_in(false)
             .show(ctx, |ui| {
+                // A brand-new Area spends its first frame in an invisible
+                // sizing pass, so the scrim would appear one frame before the
+                // modal. Discard this pass and re-run the frame so both paint
+                // together. Only fires the frame a modal opens.
+                if ui.is_sizing_pass() {
+                    ctx.request_discard("modal first-frame sizing pass");
+                }
                 egui::Frame::new()
                     .fill(colors.bg_sidebar)
                     .stroke(egui::Stroke::new(1.0, colors.border))

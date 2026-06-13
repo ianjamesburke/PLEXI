@@ -104,7 +104,11 @@ fn draw_pips(
         .iter()
         .any(|s| matches!(s, Some(crate::app_protocol::AgentState::Working)));
     if has_working {
-        ui.ctx().request_repaint();
+        // Pulse animation only needs ~10fps. An unconditional request_repaint
+        // here is self-perpetuating and pins the whole window at display
+        // refresh for as long as any agent is Working.
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
     }
     let painter = ui.painter();
     let cy = rect.center().y;
@@ -114,7 +118,7 @@ fn draw_pips(
         let agent_state = dots.activities.get(dot_i).and_then(|s| s.as_ref());
         let focused = dots.focused_idx == Some(dot_i);
         let mut color =
-            crate::ui::activity::pip_color(agent_state, focused, colors, t).gamma_multiply(row_alpha);
+            crate::ui::activity::pip_color(agent_state, focused, colors, t, dot_i).gamma_multiply(row_alpha);
         if is_dragging && agent_state.is_none() && !focused {
             color = color.gamma_multiply(0.4);
         }

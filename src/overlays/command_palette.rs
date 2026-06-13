@@ -34,6 +34,11 @@ enum PaletteEntry {
         name: &'static str,
         description: &'static str,
     },
+    Note {
+        path: std::path::PathBuf,
+        title: String,
+        preview: String,
+    },
 }
 
 /// Builtin host apps surfaced in the palette alongside registry apps.
@@ -141,6 +146,120 @@ fn palette_pips_for_context(
     })
 }
 
+/// One palette row per pane — the unpacked view shown for the active context
+/// (and for query-pierced matches in collapsed contexts). Spatial order across
+/// the context's windows, matching the pip strip on the collapsed `ctx` row.
+struct PaneRow {
+    win_idx: usize,
+    window_id: u64,
+    pane_id: u64,
+    name: String,
+    chip: &'static str,
+    pips: ListRowPips,
+}
+
+fn palette_pane_rows_for_context(
+    windows: &[crate::host::context::Window],
+    context_active_window: &std::collections::HashMap<u64, u64>,
+    context_names: &[(u64, String)],
+    ctx_id: u64,
+) -> Vec<PaneRow> {
+    let mut ctx_windows: Vec<usize> = windows
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.context_id == ctx_id)
+        .map(|(idx, _)| idx)
+        .collect();
+    ctx_windows.sort_by_key(|&idx| {
+        let w = &windows[idx];
+        (w.grid_y, w.grid_x)
+    });
+
+    let active_window_id = context_active_window
+        .get(&ctx_id)
+        .copied()
+        .filter(|id| {
+            windows
+                .iter()
+                .any(|w| w.window_id == *id && w.context_id == ctx_id)
+        })
+        .or_else(|| ctx_windows.first().map(|idx| windows[*idx].window_id));
+    let focused_pane_id = active_window_id
+        .and_then(|active_win_id| windows.iter().find(|w| w.window_id == active_win_id))
+        .and_then(|win| {
+            win.focused_pane
+                .and_then(|tile_id| match win.tree.tiles.get(tile_id) {
+                    Some(egui_tiles::Tile::Pane(pid)) => Some(*pid),
+                    _ => None,
+                })
+        });
+
+    let mut rows = Vec::new();
+    for &win_idx in &ctx_windows {
+        let win = &windows[win_idx];
+        let Some(root) = win.tree.root() else {
+            continue;
+        };
+        for pane_id in crate::spatial::tiling::collect_pane_ids_spatial(&win.tree.tiles, root) {
+            let Some(pane) = win.panes.get(&pane_id) else {
+                continue;
+            };
+            let (name, chip) = pane_row_identity(pane, context_names);
+            rows.push(PaneRow {
+                win_idx,
+                window_id: win.window_id,
+                pane_id,
+                name,
+                chip,
+                pips: ListRowPips {
+                    count: 1,
+                    focused_idx: (Some(pane_id) == focused_pane_id).then_some(0),
+                    hidden_indices: if pane.is_hidden() { vec![0] } else { Vec::new() },
+                    activities: vec![pane.effective_activity().cloned()],
+                },
+            });
+        }
+    }
+    rows
+}
+
+/// Display name + type chip for a palette pane row.
+fn pane_row_identity(
+    pane: &crate::host::pane::Pane,
+    context_names: &[(u64, String)],
+) -> (String, &'static str) {
+    match pane {
+        crate::host::pane::Pane::Terminal(t) => (
+            t.name
+                .clone()
+                .or_else(|| t.pty_title.clone())
+                .unwrap_or_else(|| "terminal".to_string()),
+            "term",
+        ),
+        crate::host::pane::Pane::App(a) => {
+            let chip = if a.manifest_id == "text-editor" {
+                "text"
+            } else {
+                "app"
+            };
+            let name = if a.name.is_empty() {
+                a.runtime.display_name()
+            } else {
+                a.name.clone()
+            };
+            (name, chip)
+        }
+        crate::host::pane::Pane::Portal(p) => (
+            context_names
+                .iter()
+                .find(|(id, _)| *id == p.target_context_id)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| "sub-context".to_string()),
+            "ctx",
+        ),
+    }
+}
+
 impl PlexiApp {
     pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
         let query = self.palette_query.to_lowercase();
@@ -174,163 +293,127 @@ impl PlexiApp {
         };
 
         let mut entries: Vec<PaletteEntry> = {
-            // For each context we emit exactly ONE primary entry — either the
-            // context name (active pane is unnamed) or "context › pane-name"
-            // (active pane is named). Additional named panes beyond the active
-            // one appear as secondary entries. This keeps the ⌘P → ↓ → Enter
-            // flow clean: the top entry for each context always represents the
-            // most-recently-active pane.
-            let mut seen_contexts: std::collections::HashSet<u64> =
-                std::collections::HashSet::new();
-            let mut ctx_entries: Vec<PaletteEntry> = Vec::new();
+            // Context-scoped unpacking: the ACTIVE context expands to one row
+            // per pane (each carrying a single status pip), while every OTHER
+            // context collapses to one `ctx` row carrying its full pip strip.
+            // A non-empty query pierces the collapse — matching pane names
+            // surface from inactive contexts so the palette stays a global
+            // jump tool.
+            let context_names: Vec<(u64, String)> = self
+                .router
+                .iter()
+                .map(|c| (c.context_id, c.name.clone()))
+                .collect();
 
-            // Resolve the active pane name for a context (following
-            // context_active_window → focused_pane → terminal name).
-            let active_pane_for_context = |ctx_id: u64| -> Option<(usize, u64, u64, String)> {
-                let active_win_id = self.context_active_window.get(&ctx_id).copied()?;
-                let (win_ci, win) = self
-                    .windows
-                    .iter()
-                    .enumerate()
-                    .find(|(_, w)| w.window_id == active_win_id)?;
-                let tile_id = win.focused_pane?;
-                let tile = win.tree.tiles.get(tile_id)?;
-                let pane_id = match tile {
-                    egui_tiles::Tile::Pane(pid) => *pid,
-                    _ => return None,
-                };
-                let pane_name = win
-                    .panes
-                    .get(&pane_id)
-                    .and_then(|p| p.as_terminal())
-                    .and_then(|t| t.name.clone())?;
-                Some((win_ci, active_win_id, pane_id, pane_name))
-            };
-
-            for (ci, w) in self.windows.iter().enumerate() {
-                let Some(ctx_meta) = self.router.iter().find(|c| c.context_id == w.context_id)
-                else {
-                    continue;
-                };
+            // Non-parked contexts that own at least one window. The jump
+            // target is context_active_window when it still belongs to the
+            // context, else the context's first window.
+            struct CtxInfo {
+                ctx_id: u64,
+                name: String,
+                win_idx: usize,
+                window_id: u64,
+            }
+            let mut contexts: Vec<CtxInfo> = Vec::new();
+            for ctx_meta in self.router.iter() {
                 if ctx_meta.parked {
                     continue;
                 }
-                let ctx_name = ctx_meta.name.clone();
-
-                // Primary entry — one per context.
-                if !seen_contexts.contains(&w.context_id) {
-                    seen_contexts.insert(w.context_id);
-
-                    // Fallback window if context_active_window is absent/stale.
-                    let fallback_win_id = self
-                        .context_active_window
-                        .get(&w.context_id)
-                        .copied()
-                        .and_then(|id| {
-                            self.windows
-                                .iter()
-                                .enumerate()
-                                .find(|(_, w2)| w2.window_id == id)
+                let resolved = self
+                    .context_active_window
+                    .get(&ctx_meta.context_id)
+                    .copied()
+                    .and_then(|id| {
+                        self.windows.iter().enumerate().find(|(_, w)| {
+                            w.window_id == id && w.context_id == ctx_meta.context_id
                         })
-                        .map(|(i, w2)| (i, w2.window_id))
-                        .unwrap_or((ci, w.window_id));
+                    })
+                    .or_else(|| {
+                        self.windows
+                            .iter()
+                            .enumerate()
+                            .find(|(_, w)| w.context_id == ctx_meta.context_id)
+                    });
+                let Some((win_idx, win)) = resolved else {
+                    continue;
+                };
+                contexts.push(CtxInfo {
+                    ctx_id: ctx_meta.context_id,
+                    name: ctx_meta.name.clone(),
+                    win_idx,
+                    window_id: win.window_id,
+                });
+            }
+            // rank_of already tiers active-context windows first, then recency.
+            contexts.sort_by_key(|c| rank_of(c.window_id));
 
-                    if let Some((win_ci, win_id, pane_id, pane_name)) =
-                        active_pane_for_context(w.context_id)
-                    {
-                        // Active pane is named — it IS the primary entry.
+            let mut ctx_entries: Vec<PaletteEntry> = Vec::new();
+            for c in &contexts {
+                if c.ctx_id == active_ctx_id {
+                    // Active context — unpack every pane, one pip each.
+                    for row in palette_pane_rows_for_context(
+                        &self.windows,
+                        &self.context_active_window,
+                        &context_names,
+                        c.ctx_id,
+                    ) {
                         if query.is_empty()
-                            || pane_name.to_lowercase().contains(&query)
-                            || ctx_name.to_lowercase().contains(&query)
+                            || row.name.to_lowercase().contains(&query)
+                            || c.name.to_lowercase().contains(&query)
                         {
                             ctx_entries.push(PaletteEntry::Context {
-                                ctx_idx: win_ci,
-                                context_id: win_id,
-                                name: pane_name,
-                                workspace_name: ctx_name.clone(),
-                                metadata_chip: "term",
-                                pane_pips: palette_pips_for_context(
-                                    &self.windows,
-                                    &self.context_active_window,
-                                    w.context_id,
-                                    Some(active_win_id),
-                                ),
-                                pane_id: Some(pane_id),
-                            });
-                        }
-                    } else {
-                        // Active pane is unnamed — show the context by name.
-                        if query.is_empty() || ctx_name.to_lowercase().contains(&query) {
-                            ctx_entries.push(PaletteEntry::Context {
-                                ctx_idx: fallback_win_id.0,
-                                context_id: fallback_win_id.1,
-                                name: ctx_name.clone(),
-                                workspace_name: String::new(),
-                                metadata_chip: "ctx",
-                                pane_pips: palette_pips_for_context(
-                                    &self.windows,
-                                    &self.context_active_window,
-                                    w.context_id,
-                                    Some(active_win_id),
-                                ),
-                                pane_id: None,
+                                ctx_idx: row.win_idx,
+                                context_id: row.window_id,
+                                name: row.name,
+                                workspace_name: c.name.clone(),
+                                metadata_chip: row.chip,
+                                pane_pips: Some(row.pips),
+                                pane_id: Some(row.pane_id),
                             });
                         }
                     }
-                }
-
-                // Secondary entries — named panes that are NOT the active pane.
-                let active_win_id = self
-                    .context_active_window
-                    .get(&w.context_id)
-                    .copied()
-                    .unwrap_or(0);
-                let active_pane_id = if w.window_id == active_win_id {
-                    w.focused_pane.and_then(|tid| {
-                        w.tree.tiles.get(tid).and_then(|tile| match tile {
-                            egui_tiles::Tile::Pane(pid) => Some(*pid),
-                            _ => None,
-                        })
-                    })
                 } else {
-                    None
-                };
-
-                for (&pane_id, pane) in &w.panes {
-                    if let Some(t) = pane.as_terminal() {
-                        if let Some(pane_name) = &t.name {
-                            // Skip if this is already the primary entry.
-                            if Some(pane_id) == active_pane_id && w.window_id == active_win_id {
-                                continue;
-                            }
-                            if query.is_empty()
-                                || pane_name.to_lowercase().contains(&query)
-                                || ctx_name.to_lowercase().contains(&query)
-                            {
+                    // Inactive context — one collapsed row, full pip strip.
+                    if query.is_empty() || c.name.to_lowercase().contains(&query) {
+                        ctx_entries.push(PaletteEntry::Context {
+                            ctx_idx: c.win_idx,
+                            context_id: c.window_id,
+                            name: c.name.clone(),
+                            workspace_name: String::new(),
+                            metadata_chip: "ctx",
+                            pane_pips: palette_pips_for_context(
+                                &self.windows,
+                                &self.context_active_window,
+                                c.ctx_id,
+                                Some(active_win_id),
+                            ),
+                            pane_id: None,
+                        });
+                    }
+                    if !query.is_empty() {
+                        // Search pierces the collapse — match on pane name only,
+                        // so typing a context name keeps the single ctx row.
+                        for row in palette_pane_rows_for_context(
+                            &self.windows,
+                            &self.context_active_window,
+                            &context_names,
+                            c.ctx_id,
+                        ) {
+                            if row.name.to_lowercase().contains(&query) {
                                 ctx_entries.push(PaletteEntry::Context {
-                                    ctx_idx: ci,
-                                    context_id: w.window_id,
-                                    name: pane_name.clone(),
-                                    workspace_name: ctx_name.clone(),
-                                    metadata_chip: "term",
-                                    pane_pips: palette_pips_for_context(
-                                        &self.windows,
-                                        &self.context_active_window,
-                                        w.context_id,
-                                        Some(active_win_id),
-                                    ),
-                                    pane_id: Some(pane_id),
+                                    ctx_idx: row.win_idx,
+                                    context_id: row.window_id,
+                                    name: row.name,
+                                    workspace_name: c.name.clone(),
+                                    metadata_chip: row.chip,
+                                    pane_pips: Some(row.pips),
+                                    pane_id: Some(row.pane_id),
                                 });
                             }
                         }
                     }
                 }
             }
-
-            ctx_entries.sort_by_key(|e| match e {
-                PaletteEntry::Context { context_id, .. } => rank_of(*context_id),
-                _ => (usize::MAX, usize::MAX),
-            });
 
             ctx_entries
         };
@@ -416,6 +499,20 @@ impl PlexiApp {
             });
         }
 
+        // ── Note entries ────────────────────────────────────────────────────
+        for note in &self.palette_notes {
+            let matches = query.is_empty()
+                || note.title.to_lowercase().contains(&query)
+                || note.search_text.contains(&query);
+            if matches {
+                entries.push(PaletteEntry::Note {
+                    path: note.path.clone(),
+                    title: note.title.clone(),
+                    preview: note.preview.clone(),
+                });
+            }
+        }
+
         let total = entries.len();
 
         if self.palette_selected >= total && total > 0 {
@@ -428,6 +525,7 @@ impl PlexiApp {
             JumpContext(usize, u64, Option<u64>),
             LaunchApp(String),
             LaunchBuiltin(&'static str),
+            OpenNote(std::path::PathBuf),
         }
         let mut action: Option<Action> = None;
         let prev_selected = self.palette_selected;
@@ -468,6 +566,9 @@ impl PlexiApp {
                     Some(PaletteEntry::Builtin { id, .. }) => {
                         action = Some(Action::LaunchBuiltin(id));
                     }
+                    Some(PaletteEntry::Note { path, .. }) => {
+                        action = Some(Action::OpenNote(path.clone()));
+                    }
                     None => {}
                 }
             }
@@ -490,6 +591,27 @@ impl PlexiApp {
                 self.show_command_palette = false;
                 self.palette_query.clear();
                 self.launch_builtin_by_id(id);
+                return;
+            }
+            Some(Action::OpenNote(path)) => {
+                self.show_command_palette = false;
+                self.palette_query.clear();
+                let active = self.active_window;
+                let path_str = path.display().to_string();
+                if let Some((existing_tile_id, _)) =
+                    self.find_open_text_editor_tile(active, &path)
+                {
+                    log::info!("palette: note already open, focusing pane");
+                    self.set_window_focused_pane(active, existing_tile_id);
+                } else {
+                    log::info!("palette: opening note {:?} in new pane", path);
+                    let _ = self.launch_app_by_id_with_layout(
+                        "text-editor",
+                        None,
+                        &[path_str],
+                        None,
+                    );
+                }
                 return;
             }
             None => {}
@@ -531,8 +653,12 @@ impl PlexiApp {
                 let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
                 let should_scroll = self.palette_selected != prev_selected;
                 let mut shown_apps_header = false;
+                let mut shown_notes_header = false;
 
                 egui::ScrollArea::vertical()
+                    // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
+                    .animated(false)
+                    .id_salt("palette_list")
                     .max_height(palette_max_list_h)
                     .min_scrolled_height(palette_max_list_h)
                     .auto_shrink([false, false])
@@ -563,10 +689,10 @@ impl PlexiApp {
                                         row = row.pane_pips(pips);
                                     }
                                     let row_response = row.show(ui, &colors);
-
-                                    if is_selected && should_scroll {
-                                        row_response.scroll_to_me(None);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
                                     }
+
                                     if row_response.row_clicked() {
                                         click_action = Some(Action::JumpContext(
                                             *ctx_idx,
@@ -605,10 +731,10 @@ impl PlexiApp {
                                         .selected(is_selected);
 
                                     let row_response = row.show(ui, &colors);
-
-                                    if is_selected && should_scroll {
-                                        row_response.scroll_to_me(None);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
                                     }
+
                                     if row_response.row_clicked() {
                                         click_action = Some(Action::LaunchApp(id.clone()));
                                     }
@@ -638,11 +764,38 @@ impl PlexiApp {
                                         .selected(is_selected)
                                         .show(ui, &colors);
 
-                                    if is_selected && should_scroll {
-                                        row_response.scroll_to_me(None);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
                                     }
                                     if row_response.row_clicked() {
                                         click_action = Some(Action::LaunchBuiltin(id));
+                                    }
+                                    if row_response.row_hovered() {
+                                        hover_select = Some(i);
+                                    }
+                                }
+                                PaletteEntry::Note { path, title, preview } => {
+                                    if !shown_notes_header {
+                                        shown_notes_header = true;
+                                        ui.add_space(style::SPACE_XS);
+                                        ui.label(
+                                            RichText::new("NOTES")
+                                                .size(style::TEXT_HINT)
+                                                .color(colors.text_dim),
+                                        );
+                                        ui.add_space(style::SPACE_XS);
+                                    }
+                                    let row = ListRow::new(title.as_str())
+                                        .chip("text")
+                                        .secondary(preview.as_str())
+                                        .selected(is_selected);
+                                    let row_response = row.show(ui, &colors);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
+                                    }
+                                    if row_response.row_clicked() {
+                                        click_action =
+                                            Some(Action::OpenNote(path.clone()));
                                     }
                                     if row_response.row_hovered() {
                                         hover_select = Some(i);
@@ -683,6 +836,31 @@ impl PlexiApp {
                             self.palette_query.clear();
                             self.launch_builtin_by_id(id);
                         }
+                        Action::OpenNote(path) => {
+                            self.show_command_palette = false;
+                            self.palette_query.clear();
+                            let active = self.active_window;
+                            let path_str = path.display().to_string();
+                            if let Some((existing_tile_id, _)) =
+                                self.find_open_text_editor_tile(active, &path)
+                            {
+                                log::info!(
+                                    "palette: note already open, focusing pane"
+                                );
+                                self.set_window_focused_pane(active, existing_tile_id);
+                            } else {
+                                log::info!(
+                                    "palette: opening note {:?} in new pane",
+                                    path
+                                );
+                                let _ = self.launch_app_by_id_with_layout(
+                                    "text-editor",
+                                    None,
+                                    &[path_str],
+                                    None,
+                                );
+                            }
+                        }
                     }
                 }
             });
@@ -707,6 +885,9 @@ impl PlexiApp {
     /// If `pane_id` is provided, also focuses that specific pane in the window.
     fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64, pane_id: Option<u64>) {
         let target_ctx_id = self.windows[ctx_idx].context_id;
+        log::info!(
+            "palette: jump to context {target_ctx_id} (window {win_id}, pane {pane_id:?})"
+        );
         if let Some(ctx_idx_sidebar) = self.router.position(|c| c.context_id == target_ctx_id) {
             if ctx_idx_sidebar != self.router.active_idx() {
                 // switch_workspace → pick_active_context_from_workspace sets
@@ -829,5 +1010,89 @@ mod tests {
             context_state: None,
             hidden,
         }))
+    }
+
+    #[test]
+    fn pane_rows_unpack_each_pane_with_a_single_pip() {
+        let win = test_window(1, 1, 0, 0, &[(10, false), (20, false), (30, true)], 1);
+        let context_active_window = std::collections::HashMap::from([(1, 1)]);
+        let windows = vec![win];
+        let names = vec![(1010, "child-a".to_string())];
+
+        let rows = palette_pane_rows_for_context(&windows, &context_active_window, &names, 1);
+
+        assert_eq!(rows.len(), 3);
+        for row in &rows {
+            assert_eq!(row.pips.count, 1);
+            assert_eq!(row.chip, "ctx"); // test panes are portals
+        }
+        // Portal target 1010 resolves to its context name; unknown targets fall back.
+        assert_eq!(rows[0].name, "child-a");
+        assert_eq!(rows[1].name, "sub-context");
+        // Focused pane (idx 1) carries the focus pip; hidden pane (idx 2) the hidden pip.
+        assert_eq!(rows[0].pips.focused_idx, None);
+        assert_eq!(rows[1].pips.focused_idx, Some(0));
+        assert!(rows[0].pips.hidden_indices.is_empty());
+        assert_eq!(rows[2].pips.hidden_indices, vec![0]);
+    }
+
+    #[test]
+    fn pane_rows_cover_every_window_in_the_context() {
+        // Regression: panes must unpack from ALL windows of a context, not
+        // just the first one.
+        let first = test_window(1, 1, 0, 0, &[(10, false)], 0);
+        let second = test_window(1, 2, 1, 0, &[(40, false), (50, false)], 1);
+        let context_active_window = std::collections::HashMap::from([(1, 2)]);
+        let windows = vec![first, second];
+
+        let rows = palette_pane_rows_for_context(&windows, &context_active_window, &[], 1);
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter().map(|r| r.window_id).collect::<Vec<_>>(),
+            vec![1, 2, 2]
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.pane_id).collect::<Vec<_>>(),
+            vec![10, 40, 50]
+        );
+        // Focus follows the context's active window (window 2, pane 50).
+        assert_eq!(rows[2].pips.focused_idx, Some(0));
+        assert_eq!(rows[0].pips.focused_idx, None);
+    }
+
+    #[test]
+    fn pane_row_identity_chips_apps_and_text_editors() {
+        use crate::app::permissions::AppPermissions;
+        use crate::host::pane::{AppPane, AppRuntime};
+        use crate::process_app::ProcessApp;
+
+        let make_app = |manifest_id: &str, name: &str| {
+            let (process_app, _draw_tx) = ProcessApp::new_for_test(99, AppPermissions::builtin());
+            Pane::App(Box::new(AppPane {
+                id: 99,
+                runtime: AppRuntime::Process(Box::new(process_app)),
+                workspace_root: std::env::temp_dir(),
+                permissions: AppPermissions::builtin(),
+                manifest_id: manifest_id.to_string(),
+                name: name.to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+            }))
+        };
+
+        let (name, chip) = pane_row_identity(&make_app("notes", "My Notes"), &[]);
+        assert_eq!((name.as_str(), chip), ("My Notes", "app"));
+
+        let (name, chip) = pane_row_identity(&make_app("text-editor", "todo.md"), &[]);
+        assert_eq!((name.as_str(), chip), ("todo.md", "text"));
+
+        // Empty pane name falls back to the runtime display name.
+        let (name, _) = pane_row_identity(&make_app("notes", ""), &[]);
+        assert_eq!(name, "Test App");
     }
 }

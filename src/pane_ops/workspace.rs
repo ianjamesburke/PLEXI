@@ -202,6 +202,7 @@ impl PlexiApp {
         path: PathBuf,
         vertical: bool,
         new_pane_first: bool,
+        anchor_pane: Option<u64>,
     ) -> Result<(), String> {
         let parent_idx = self
             .router
@@ -252,7 +253,22 @@ impl PlexiApp {
         };
 
         // 2. Insert Portal tile into the parent window via the standard split path.
-        let parent_win_idx = {
+        // An explicit anchor pane (the CLI caller's pane, from --pane or
+        // PLEXI_PANE_ID) selects both the parent window and the split target;
+        // otherwise fall back to the parent's active window and its focused pane.
+        let portal_anchor = anchor_pane.and_then(|pid| {
+            self.windows
+                .iter()
+                .position(|w| w.context_id == parent_id && w.tree.tiles.find_pane(&pid).is_some())
+                .map(|idx| (idx, pid))
+        });
+        if anchor_pane.is_some() && portal_anchor.is_none() {
+            log::warn!(
+                "new_child_context: anchor pane {anchor_pane:?} not found in parent \
+                 ctx_id={parent_id} — falling back to focused pane"
+            );
+        }
+        let parent_win_idx = portal_anchor.map(|(idx, _)| idx).or_else(|| {
             let preferred = self.context_active_window.get(&parent_id).copied();
             preferred
                 .and_then(|wid| {
@@ -261,10 +277,12 @@ impl PlexiApp {
                         .position(|w| w.window_id == wid && w.context_id == parent_id)
                 })
                 .or_else(|| self.windows.iter().position(|w| w.context_id == parent_id))
-        };
+        });
         let sub_ctx_pane_id = self.host.alloc_pane_id();
         if let Some(parent_win_idx) = parent_win_idx {
-            let split_target = self.windows[parent_win_idx].focused_pane;
+            let split_target = portal_anchor
+                .and_then(|(_, pid)| self.windows[parent_win_idx].tree.tiles.find_pane(&pid))
+                .or(self.windows[parent_win_idx].focused_pane);
             crate::pane_ops::layout::insert_split_tile(
                 &mut self.windows[parent_win_idx].tree,
                 split_target,
@@ -333,7 +351,7 @@ impl PlexiApp {
             parent_path.display()
         );
 
-        match self.new_child_context(&parent_name, parent_path, true, false) {
+        match self.new_child_context(&parent_name, parent_path, true, false, None) {
             Ok(()) => {
                 let new_ctx_idx = self.router.len() - 1;
                 self.router
@@ -350,8 +368,35 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn push_pane_to_subcontext(&mut self, name: Option<String>) {
-        let parent_win_idx = self.active_window;
+    pub(crate) fn push_pane_to_subcontext(
+        &mut self,
+        name: Option<String>,
+        target_pane: Option<u64>,
+    ) {
+        // An explicit pane (the caller's PLEXI_PANE_ID over IPC) selects both
+        // the window and the tile; otherwise the focused pane is pushed.
+        let target = target_pane.and_then(|pid| {
+            self.windows
+                .iter()
+                .enumerate()
+                .find_map(|(idx, w)| w.tree.tiles.find_pane(&pid).map(|tile| (idx, tile)))
+        });
+        if target_pane.is_some() && target.is_none() {
+            log::warn!(
+                "push_pane_to_subcontext: pane {target_pane:?} not found — falling back to focused pane"
+            );
+        }
+        let (parent_win_idx, target_tile) = match target {
+            Some(t) => t,
+            None => {
+                let win_idx = self.active_window;
+                let Some(focused_tile) = self.windows[win_idx].focused_pane else {
+                    log::warn!("push_pane_to_subcontext: no focused pane");
+                    return;
+                };
+                (win_idx, focused_tile)
+            }
+        };
         let parent_ctx_id = self.windows[parent_win_idx].context_id;
         let parent_depth = self
             .router
@@ -360,15 +405,10 @@ impl PlexiApp {
             .map(|c| c.depth)
             .unwrap_or(0);
 
-        let Some(focused_tile) = self.windows[parent_win_idx].focused_pane else {
-            log::warn!("push_pane_to_subcontext: no focused pane");
-            return;
-        };
-
-        let pane_id = match self.windows[parent_win_idx].tree.tiles.get(focused_tile) {
+        let pane_id = match self.windows[parent_win_idx].tree.tiles.get(target_tile) {
             Some(egui_tiles::Tile::Pane(pid)) => *pid,
             _ => {
-                log::warn!("push_pane_to_subcontext: focused tile is not a pane");
+                log::warn!("push_pane_to_subcontext: target tile is not a pane");
                 return;
             }
         };
@@ -425,10 +465,8 @@ impl PlexiApp {
         };
 
         let portal_pane_id = self.host.alloc_pane_id();
-        if let Some(egui_tiles::Tile::Pane(slot)) = self.windows[parent_win_idx]
-            .tree
-            .tiles
-            .get_mut(focused_tile)
+        if let Some(egui_tiles::Tile::Pane(slot)) =
+            self.windows[parent_win_idx].tree.tiles.get_mut(target_tile)
         {
             *slot = portal_pane_id;
         }
@@ -475,7 +513,7 @@ impl PlexiApp {
 
         let current_win_id = self.windows[parent_win_idx].window_id;
         self.router
-            .push_depth(parent_ctx_id, current_win_id, Some(focused_tile));
+            .push_depth(parent_ctx_id, current_win_id, Some(target_tile));
         let new_ctx_idx = self.router.len() - 1;
         self.switch_workspace(new_ctx_idx);
 
@@ -842,6 +880,69 @@ impl PlexiApp {
             .unwrap_or(page_count > 1);
     }
 
+    /// Pop the depth stack and return to the parent context/window/focus.
+    /// Shared body of Cmd+Escape (`Action::ContextZoomOut`) and the
+    /// `ZoomOutOfContext` IPC request. Returns true when a switch happened.
+    pub(crate) fn zoom_out_of_context(&mut self) -> bool {
+        if let Some((parent_ctx_id, parent_win_id, focused_tile)) = self.router.pop_depth() {
+            if let Some(ctx_idx) = self.router.position(|c| c.context_id == parent_ctx_id) {
+                self.switch_workspace(ctx_idx);
+                if let Some(win_idx) = self
+                    .windows
+                    .iter()
+                    .position(|w| w.window_id == parent_win_id)
+                {
+                    self.active_window = win_idx;
+                    self.windows[win_idx].focused_pane = focused_tile;
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// If `ctx_id` names a subcontext whose windows are now all empty, delete
+    /// it. When it was the active context, first zoom back out to the parent
+    /// exactly as if Cmd+Escape had been pressed. Root contexts are never
+    /// collapsed — their sole window stays alive as the welcome screen.
+    pub(crate) fn collapse_subcontext_if_empty(&mut self, ctx_id: u64) {
+        if self.router.len() <= 1 {
+            return;
+        }
+        let Some(ctx_idx) = self.router.position(|c| c.context_id == ctx_id) else {
+            return;
+        };
+        let Some(parent_ctx_id) = self.router.get(ctx_idx).parent_id else {
+            return;
+        };
+        if self
+            .windows
+            .iter()
+            .any(|w| w.context_id == ctx_id && !w.panes.is_empty())
+        {
+            return;
+        }
+        let was_active = self.router.active().context_id == ctx_id;
+        log::info!(
+            "collapse_subcontext_if_empty: subcontext {ctx_id} emptied — deleting \
+             (was_active={was_active}, parent={parent_ctx_id})"
+        );
+        if was_active {
+            let zoomed_out = self.zoom_out_of_context();
+            if !zoomed_out || self.router.active().context_id == ctx_id {
+                // No usable depth-stack entry — land on the parent directly.
+                if let Some(parent_idx) =
+                    self.router.position(|c| c.context_id == parent_ctx_id)
+                {
+                    self.switch_workspace(parent_idx);
+                }
+            }
+        }
+        if let Some(idx) = self.router.position(|c| c.context_id == ctx_id) {
+            self.delete_context(idx);
+        }
+    }
+
     pub(crate) fn delete_window(&mut self, index: usize) {
         if self.windows.len() <= 1 {
             return;
@@ -1081,17 +1182,37 @@ impl PlexiApp {
         self.save_workspace();
     }
 
-    /// Set the `root` of the active context.
-    pub(crate) fn set_active_context_root(&mut self, root: PathBuf) {
-        let idx = self.router.active_idx();
+    /// Resolve an optional context id to a router index. Falls back to the
+    /// active context (with a warning) when the id is absent or unknown.
+    pub(crate) fn resolve_context_idx(&self, context_id: Option<u64>, op: &str) -> usize {
+        match context_id {
+            Some(cid) => match self.router.position(|c| c.context_id == cid) {
+                Some(idx) => idx,
+                None => {
+                    log::warn!("{op}: context_id={cid} not found — falling back to active context");
+                    self.router.active_idx()
+                }
+            },
+            None => self.router.active_idx(),
+        }
+    }
+
+    /// Set the `root` of a context. `context_id` targets a specific context
+    /// (the caller's PLEXI_CONTEXT_ID over IPC); `None` means the active one.
+    pub(crate) fn set_context_root(&mut self, root: PathBuf, context_id: Option<u64>) {
+        let idx = self.resolve_context_idx(context_id, "set_context_root");
         log::info!(
-            "set_active_context_root: ctx_id={} root={}",
-            self.router.active().context_id,
+            "set_context_root: ctx_id={} root={}",
+            self.router.get(idx).context_id,
             root.display()
         );
         auto_init_workspace(&root);
         self.router.get_mut(idx).root = Some(root);
-        self.apply_context_transition_effects();
+        // Transition effects (registry rescan, watcher restart, agent reload)
+        // only apply when the *active* context's root changed.
+        if idx == self.router.active_idx() {
+            self.apply_context_transition_effects();
+        }
     }
 
     /// Single choke point for all context-transition side effects.

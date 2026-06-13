@@ -700,8 +700,8 @@ impl AssistantRenderer {
                                         .secondary(purpose)
                                         .selected(i == selected_idx)
                                         .show(ui, colors);
-                                    if i == selected_idx && should_scroll {
-                                        row.scroll_to_me(None);
+                                    if i == selected_idx {
+                                        row.scroll_into_view(ui, should_scroll);
                                     }
                                     if row.row_clicked() {
                                         clicked = Some(*name);
@@ -759,11 +759,12 @@ impl AssistantRenderer {
             ))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                // Caret styling from the host TextField primitive (the
-                // singleline widget itself can't host a growable multiline
-                // composer, but its visual conventions carry over).
-                ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+                // Glyph-height caret, unified with every other host text input
+                // (see `text_field::draw_text_caret`): hide egui's full-row
+                // caret (transparent + no blink) and paint a replacement that
+                // matches the glyph height on top.
+                ui.visuals_mut().text_cursor.blink = false;
+                ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
                 // The TextEdit reports its own height; the ScrollArea caps it at
                 // `max_text_h` and scrolls past that. No hand-rolled galley
                 // measurement — same shape as the quick-note composer. Measuring
@@ -775,33 +776,40 @@ impl AssistantRenderer {
                     .id_salt("assistant_composer_scroll")
                     .max_height(max_text_h)
                     .show(ui, |ui| {
-                        response = Some(ui.add(
-                            egui::TextEdit::multiline(&mut model.composer)
-                                .id(te_id)
-                                .desired_rows(1)
-                                .desired_width(f32::INFINITY)
-                                .frame(false)
-                                // Keep Tab in the composer: without the focus
-                                // lock, egui's frame-start focus traversal
-                                // moves focus away before the picker's Tab
-                                // handler ever sees the key.
-                                .lock_focus(true)
-                                // Plain Enter is consumed for submit before
-                                // the TextEdit runs; Shift+Enter is the
-                                // newline key (the default return_key is
-                                // unmodified Enter, so Shift+Enter would
-                                // otherwise insert nothing).
-                                .return_key(Some(egui::KeyboardShortcut::new(
-                                    egui::Modifiers::SHIFT,
-                                    egui::Key::Enter,
-                                )))
-                                .hint_text(
-                                    RichText::new("Message the assistant — / for commands")
-                                        .size(style::TEXT_CAPTION)
-                                        .color(colors.text_dim),
-                                )
-                                .font(font_id.clone()),
-                        ));
+                        let output = egui::TextEdit::multiline(&mut model.composer)
+                            .id(te_id)
+                            .desired_rows(1)
+                            .desired_width(f32::INFINITY)
+                            .frame(false)
+                            // Keep Tab in the composer: without the focus
+                            // lock, egui's frame-start focus traversal
+                            // moves focus away before the picker's Tab
+                            // handler ever sees the key.
+                            .lock_focus(true)
+                            // Plain Enter is consumed for submit before
+                            // the TextEdit runs; Shift+Enter is the
+                            // newline key (the default return_key is
+                            // unmodified Enter, so Shift+Enter would
+                            // otherwise insert nothing).
+                            .return_key(Some(egui::KeyboardShortcut::new(
+                                egui::Modifiers::SHIFT,
+                                egui::Key::Enter,
+                            )))
+                            .hint_text(
+                                RichText::new("Message the assistant — / for commands")
+                                    .size(style::TEXT_CAPTION)
+                                    .color(colors.text_dim),
+                            )
+                            .font(font_id.clone())
+                            .show(ui);
+                        crate::ui::text_field::draw_text_caret(
+                            ui,
+                            &output,
+                            style::TEXT_BODY,
+                            row_height,
+                            egui::Stroke::new(1.5, colors.accent),
+                        );
+                        response = Some(output.response);
                     });
             });
         // Keep the composer focused whenever the pane is active but the

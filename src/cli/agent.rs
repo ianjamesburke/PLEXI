@@ -455,7 +455,8 @@ tool_detail() {{
 DETAIL=""
 case "$EVENT" in
     PreToolUse)                    STATE="working"; DETAIL=$(tool_detail) ;;
-    SessionStart|UserPromptSubmit) STATE="working" ;;
+    SessionStart)                  STATE="idle" ;;
+    UserPromptSubmit)              STATE="working" ;;
     PermissionRequest)             STATE="blocked" ;;
     PostToolUse|PostToolBatch)       STATE="working" ;;
     Stop|StopFailure|SessionEnd)     STATE="idle" ;;

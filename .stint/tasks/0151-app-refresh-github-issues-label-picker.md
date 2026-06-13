@@ -1,15 +1,26 @@
 ---
 id: "0151"
 title: "App refresh: GitHub Issues label picker"
-status: backlog
+status: done
+estimate: "6h"
+actual: "41m"
+started_at: "2026-06-13T02:23:03Z"
+completed_at: "2026-06-13T03:03:24Z"
 sprint: "s7"
-estimate: 6h
 blocked_by:
   - 36
-gh_issue: ["2164"]
-area: ["apps/github-issues"]
-tags: ["apps", "app-refresh", "github", "labels"]
+gh_issue:
+  - "2164"
+area:
+  - "apps/github-issues"
+tags:
+  - "apps"
+  - "app-refresh"
+  - "github"
+  - "labels"
 ---
+
+
 
 Add a keyboard label picker and smarter row label chips to the GitHub Issues app.
 

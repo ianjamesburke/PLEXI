@@ -4,8 +4,7 @@ title: "Marketplace: Plexi AI subscription via ai.query"
 status: backlog
 sprint: "s4"
 estimate: 12h
-blocked_by:
-  - 20
+blocked_by: []
 gh_issue: []
 area: ["host/ai", "infra/server"]
 tags: ["marketplace", "ai", "subscription"]

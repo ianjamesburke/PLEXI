@@ -66,8 +66,7 @@ impl PlexiUiHarness {
         let harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(width, height))
             .build_eframe(move |cc| {
-                let (app, _ipc_tx) =
-                    PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
+                let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
                 app
             });
         Self { inner: harness }
@@ -264,7 +263,7 @@ impl PlexiUiHarness {
     /// Convert the focused pane into a subcontext portal — same path as the
     /// push-pane-to-subcontext host shortcut and CLI command.
     pub fn push_focused_pane_to_subcontext(&mut self, name: Option<String>) {
-        self.with_app_mut(|app| app.push_pane_to_subcontext(name));
+        self.with_app_mut(|app| app.push_pane_to_subcontext(name, None));
     }
 
     /// Open the host Assistant pane rooted at `workspace_root` — same builtin
@@ -366,10 +365,8 @@ mod tests {
         let mut h = PlexiUiHarness::new();
         h.step();
 
-        let path = std::env::temp_dir().join(format!(
-            "plexi-ui-note-title-{}.md",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("plexi-ui-note-title-{}.md", std::process::id()));
         std::fs::write(
             &path,
             "---\ntitle: \"Groceries\"\nsource: \"scratchpad\"\n---\nmilk and eggs\n",
@@ -524,13 +521,12 @@ mod tests {
             // Set overlay_replaced so the zoom path renders the overtake bar
             // ("← <replaced> / Esc return") via render::app_pane::render.
             if let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) {
-                app_pane.overlay_replaced =
-                    Some(Box::new(Pane::Portal(Box::new(PortalPane {
-                        pane_id: pane_id + 1_000,
-                        target_context_id: 42,
-                        context_state: None,
-                        hidden: false,
-                    }))));
+                app_pane.overlay_replaced = Some(Box::new(Pane::Portal(Box::new(PortalPane {
+                    pane_id: pane_id + 1_000,
+                    target_context_id: 42,
+                    context_state: None,
+                    hidden: false,
+                }))));
             }
             let tile_id = win
                 .tree
@@ -603,11 +599,8 @@ mod tests {
 
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
-        let mut assistant = crate::assistant::AssistantApp::new(
-            ws.path().to_path_buf(),
-            broker,
-            ws.path(),
-        );
+        let mut assistant =
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
         assistant
             .model
             .permission_requested("csv.write_range", r#"{"range": "A1:B2"}"#);

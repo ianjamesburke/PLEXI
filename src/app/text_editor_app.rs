@@ -30,6 +30,10 @@ pub struct TextEditorApp {
     wants_close: bool,
     load_error: Option<String>,
     font_size: f32,
+    /// Whether the text cursor sat at the end of the buffer on the previous
+    /// rendered frame. Gates the down-arrow-appends-newline behavior: the
+    /// press that *moves* the cursor to the end must not also append.
+    cursor_was_at_end: bool,
 }
 
 impl TextEditorApp {
@@ -53,6 +57,7 @@ impl TextEditorApp {
             wants_close: false,
             load_error,
             font_size: FONT_SIZE_DEFAULT,
+            cursor_was_at_end: false,
         }
     }
 
@@ -103,7 +108,22 @@ impl TextEditorApp {
         content_is_effectively_empty(&self.path, &notes_dir, &self.composed())
     }
 
+    /// Durable save: full atomic write with fsync. Used when the document
+    /// lifecycle ends (pane close, file switch).
     fn flush(&mut self) {
+        self.flush_with(Durability::Fsync);
+    }
+
+    /// Debounced autosave: atomic temp+rename without fsync, so the render
+    /// thread never blocks on a 1-10ms APFS fsync between keystrokes. Crash
+    /// safety is preserved (rename is atomic — readers see old or new, never
+    /// partial); only power-loss durability is deferred to the next durable
+    /// flush.
+    fn autosave(&mut self) {
+        self.flush_with(Durability::Fast);
+    }
+
+    fn flush_with(&mut self, durability: Durability) {
         // Empty content → delete the file rather than writing an empty document.
         if self.is_effectively_empty() {
             if self.path.exists() {
@@ -123,7 +143,7 @@ impl TextEditorApp {
             return;
         }
         let document = self.composed();
-        match write_note_atomically(&self.path, document.as_bytes()) {
+        match write_note_atomically(&self.path, document.as_bytes(), durability) {
             Ok(()) => {
                 self.last_edit = None;
                 log::info!(
@@ -269,7 +289,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp dir");
         std::fs::write(&path, "old contents").expect("seed note");
 
-        write_note_atomically(&path, b"new contents").expect("atomic write");
+        write_note_atomically(&path, b"new contents", Durability::Fsync).expect("atomic write");
 
         assert_eq!(
             std::fs::read_to_string(&path).expect("read note"),
@@ -355,7 +375,22 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     normalized
 }
 
-fn write_note_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Whether an atomic note write fsyncs before the rename.
+#[derive(Clone, Copy, PartialEq)]
+enum Durability {
+    /// fsync the temp file before renaming — survives power loss.
+    Fsync,
+    /// Skip fsync — still atomic (rename), but durability is deferred.
+    /// For debounced autosaves on the render thread, where an APFS fsync
+    /// (1-10ms) can land exactly on the next keystroke.
+    Fast,
+}
+
+fn write_note_atomically(
+    path: &Path,
+    bytes: &[u8],
+    durability: Durability,
+) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -377,7 +412,9 @@ fn write_note_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let write_result = (|| {
         let mut temp_file = std::fs::File::create(&temp_path)?;
         temp_file.write_all(bytes)?;
-        temp_file.sync_all()?;
+        if durability == Durability::Fsync {
+            temp_file.sync_all()?;
+        }
         drop(temp_file);
         std::fs::rename(&temp_path, path)
     })();
@@ -484,14 +521,28 @@ impl App for TextEditorApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let output = egui::TextEdit::multiline(&mut self.content)
-                    .id(te_id)
-                    .font(font_id)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(min_rows)
-                    .margin(egui::vec2(4.0, 0.0))
-                    .frame(false)
-                    .show(ui);
+                // egui's caret is hidden (transparent, non-blinking) and
+                // draw_text_caret paints a glyph-height replacement on top.
+                let output = ui.scope(|ui| {
+                    ui.visuals_mut().text_cursor.blink = false;
+                    ui.visuals_mut().text_cursor.stroke.color =
+                        egui::Color32::TRANSPARENT;
+                    egui::TextEdit::multiline(&mut self.content)
+                        .id(te_id)
+                        .font(font_id)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(min_rows)
+                        .margin(egui::vec2(4.0, 0.0))
+                        .frame(false)
+                        .show(ui)
+                }).inner;
+                crate::ui::text_field::draw_text_caret(
+                    ui,
+                    &output,
+                    self.font_size,
+                    row_height,
+                    egui::Stroke::new(2.0, colors.accent),
+                );
 
                 if output.response.changed() {
                     self.last_edit = Some(Instant::now());
@@ -499,23 +550,35 @@ impl App for TextEditorApp {
 
                 if let Some(t) = self.last_edit {
                     if t.elapsed() >= DEBOUNCE {
-                        self.flush();
+                        self.autosave();
                     }
                 }
 
                 // Down arrow at end of content → append a newline so the cursor
                 // can move past the last line without requiring an explicit Enter.
+                //
+                // Two constraints:
+                // * Gate on the cursor having been at the end on the PREVIOUS
+                //   frame. TextEdit has already processed this frame's presses
+                //   (egui reads but does not consume them), so the press that
+                //   moved the cursor TO the end must not also append.
+                // * Append one newline per queued press, not per frame —
+                //   key-repeat can deliver several presses in one frame and
+                //   consume_key would silently swallow the extras, making Down
+                //   feel slower than Enter.
                 if output.response.has_focus() {
                     let at_end = output
                         .cursor_range
                         .map(|r| r.primary.ccursor.index >= self.content.len())
                         .unwrap_or(false);
-                    if at_end {
-                        let down_pressed = ui.input_mut(|i| {
-                            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                    if at_end && self.cursor_was_at_end {
+                        let presses = ui.input_mut(|i| {
+                            i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
                         });
-                        if down_pressed {
-                            self.content.push('\n');
+                        if presses > 0 {
+                            for _ in 0..presses {
+                                self.content.push('\n');
+                            }
                             self.last_edit = Some(Instant::now());
                             // Reposition cursor to the new end.
                             let mut state =
@@ -527,6 +590,7 @@ impl App for TextEditorApp {
                             egui::TextEdit::store_state(ui.ctx(), te_id, state);
                         }
                     }
+                    self.cursor_was_at_end = at_end;
                 }
 
                 // Request focus whenever this pane is active but the TextEdit doesn't

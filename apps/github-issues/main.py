@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """gh-issues — GitHub Issues viewer for the workspace repo.
 
-Two views:
+Three views:
   - LIST: scrollable issue rows with number badge, title, labels
   - DETAIL: metadata card + scrollable markdown body
+  - PICKER: label selector for multi-label AND filtering
 
 Keys: j/k navigate · Enter open detail · Esc back · o open in browser
-      s sort · f filter · c clear filter · r refresh · n new issue in terminal
+      s sort · f filter · l label picker · c clear filter · r refresh · n new
 """
 import asyncio
 import json
@@ -85,12 +86,54 @@ SORT_LABELS = {
 }
 
 
+PRIORITY_PREFIXES = ("p0", "p1", "p2", "p3", "p4", "bug", "enhancement", "feat", "fix")
+MAX_VISIBLE_CHIPS = 3
+
+
 def _issue_labels(issue: dict) -> list[str]:
     return [
         str(label.get("name", ""))
         for label in (issue.get("labels") or [])
         if label and label.get("name")
     ]
+
+
+def _is_priority_label(name: str) -> bool:
+    return name.lower().startswith(PRIORITY_PREFIXES)
+
+
+def _select_visible_chips(
+    issue: dict, active_filters: set[str],
+) -> list[RowChip]:
+    all_labels = _issue_labels(issue)
+    if not all_labels:
+        return []
+    active = [l for l in all_labels if l in active_filters]
+    priority = [l for l in all_labels if l not in active_filters and _is_priority_label(l)]
+    rest = [l for l in all_labels if l not in active_filters and not _is_priority_label(l)]
+    ordered = active + priority + rest
+    visible = ordered[:MAX_VISIBLE_CHIPS]
+    hidden_count = len(all_labels) - len(visible)
+    chips = [RowChip(name, _label_color(name)) for name in visible]
+    if hidden_count > 0:
+        chips.append(RowChip(f"+{hidden_count}", theme.muted))
+    return chips
+
+
+def _collect_unique_labels(issues: list[dict]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for issue in issues:
+        for label in _issue_labels(issue):
+            if label not in seen:
+                seen.add(label)
+                result.append(label)
+    result.sort(key=str.lower)
+    return result
+
+
+def _fuzzy_match(query: str, label: str) -> bool:
+    return query.lower() in label.lower()
 
 
 def _next_sort_mode(mode: str) -> str:
@@ -109,14 +152,14 @@ def _sort_key(issue: dict, mode: str) -> tuple:
 
 def _filter_and_sort_issues(
     issues: list[dict],
-    filter_label: str | None,
+    filter_labels: set[str],
     sort_mode: str,
 ) -> list[dict]:
     visible = list(issues)
-    if filter_label:
+    if filter_labels:
         visible = [
             issue for issue in visible
-            if any(label == filter_label for label in _issue_labels(issue))
+            if filter_labels <= set(_issue_labels(issue))
         ]
     reverse = sort_mode in ("created_desc", "number_desc")
     return sorted(visible, key=lambda issue: _sort_key(issue, sort_mode), reverse=reverse)
@@ -127,6 +170,7 @@ def _filter_and_sort_issues(
 class GhIssues(App):
     VIEW_LIST   = "list"
     VIEW_DETAIL = "detail"
+    VIEW_PICKER = "picker"
 
     repo_dir: Arg[str | None] = Arg("--repo-dir", default=lambda ctx: ctx.workspace_root)
 
@@ -139,10 +183,12 @@ class GhIssues(App):
         self._error          : str | None = None
         self._detail         : dict | None = None
         self._root           = self.repo_dir or ""
-        self._filter_label   : str | None = None
+        self._filter_labels  : set[str] = set()
         self._sort_mode      = "created_desc"
-        # Stable Scrollable instance — scroll offset persists across renders.
         self._body_scroll    = Scrollable(Label(""))
+        self._picker_query   = ""
+        self._picker_sel     = 0
+        self._picker_staged  : set[str] = set()
         self.emit.status_summary("Loading…")
         self.emit.info(f"gh-issues init workspace={self._root!r}")
         self._fetch()
@@ -150,9 +196,9 @@ class GhIssues(App):
     # ── data ──────────────────────────────────────────────────────────────────
 
     def _fetch(self) -> None:
-        self._loading      = True
-        self._error        = None
-        self._filter_label = None
+        self._loading       = True
+        self._error         = None
+        self._filter_labels = set()
         asyncio.create_task(asyncio.to_thread(self._load_list))
 
     def _load_list(self) -> None:
@@ -179,7 +225,7 @@ class GhIssues(App):
         self.emit.schedule_render()
 
     def _visible_issues(self) -> list[dict]:
-        return _filter_and_sort_issues(self._issues, self._filter_label, self._sort_mode)
+        return _filter_and_sort_issues(self._issues, self._filter_labels, self._sort_mode)
 
     def _clamp_selection(self) -> None:
         visible = self._visible_issues()
@@ -204,8 +250,9 @@ class GhIssues(App):
     def _list_subtitle(self) -> str:
         count = len(self._visible_issues())
         parts = [f"{count} open"]
-        if self._filter_label:
-            parts.append(f"label:{self._filter_label}")
+        if self._filter_labels:
+            label_str = "+".join(sorted(self._filter_labels))
+            parts.append(f"label:{label_str}")
         parts.append(SORT_LABELS.get(self._sort_mode, SORT_LABELS["created_desc"]))
         return " · ".join(parts)
 
@@ -248,6 +295,10 @@ class GhIssues(App):
             ], padding_top=0))
             return
 
+        if self._view == self.VIEW_PICKER:
+            self._draw_picker(ctx)
+            return
+
         if self._view == self.VIEW_DETAIL:
             if self._detail_loading:
                 ctx.render(Column([
@@ -277,6 +328,7 @@ class GhIssues(App):
             ("↩", "detail"),
             ("s", "sort"),
             ("f", "filter"),
+            ("l", "labels"),
             ("c", "clear"),
             ("o", "browser"),
             ("r", "refresh"),
@@ -308,10 +360,7 @@ class GhIssues(App):
                 id=f"issue-{issue['number']}",
                 leading=LeadingBadge(f"#{issue['number']}", color=theme.accent),
                 primary=issue.get("title", ""),
-                chips=[
-                    RowChip(lbl.get("name", ""), _label_color(lbl.get("name", "")))
-                    for lbl in (issue.get("labels") or [])[:2]
-                ],
+                chips=_select_visible_chips(issue, self._filter_labels),
             ).to_dict()
             for issue in visible
         ]
@@ -348,9 +397,56 @@ class GhIssues(App):
             FooterKeys([("o", "open in browser"), ("escape", "back")]),
         ], padding_top=0))
 
+    def _picker_filtered_labels(self) -> list[str]:
+        all_labels = _collect_unique_labels(self._issues)
+        if not self._picker_query:
+            return all_labels
+        return [l for l in all_labels if _fuzzy_match(self._picker_query, l)]
+
+    def _draw_picker(self, ctx: RenderContext) -> None:
+        filtered = self._picker_filtered_labels()
+        self._picker_sel = max(0, min(self._picker_sel, len(filtered) - 1)) if filtered else 0
+
+        query_display = self._picker_query or ""
+        subtitle = f"{len(self._picker_staged)} selected" if self._picker_staged else "type to filter"
+        if query_display:
+            subtitle = f'"{query_display}" · {subtitle}'
+
+        appbar = AppBar("Labels", subtitle=subtitle, accent=theme.accent)
+        footer = FooterKeys([
+            ("↩", "apply"),
+            ("space", "toggle"),
+            ("escape", "cancel"),
+        ])
+        appbar_h = appbar.measure(ctx.w)
+        footer_h = footer.measure(ctx.w)
+        appbar.render(ctx, 0.0, 0.0, ctx.w, appbar_h)
+        footer.render(ctx, 0.0, ctx.h - footer_h, ctx.w, footer_h)
+
+        rows = [
+            ListRow(
+                id=f"label-{i}",
+                leading=LeadingBadge("✓" if label in self._picker_staged else " ", color=theme.accent if label in self._picker_staged else theme.muted),
+                primary=label,
+                chips=[RowChip(label, _label_color(label))],
+            ).to_dict()
+            for i, label in enumerate(filtered)
+        ]
+        list_h = max(0.0, ctx.h - appbar_h - footer_h)
+        if rows:
+            ctx.list_view("label-picker", rows, selected=self._picker_sel,
+                          y=float(appbar_h), h=float(list_h))
+        else:
+            ctx.text(PAD, appbar_h + PAD, "No matching labels.", size=BODY, color=theme.muted)
+
     # ── input ─────────────────────────────────────────────────────────────────
 
     def on_escape(self) -> bool:
+        if self._view == self.VIEW_PICKER:
+            self._view = self.VIEW_LIST
+            self.emit.info("gh-issues: picker cancelled")
+            self.emit.schedule_render()
+            return True
         if self._view == self.VIEW_DETAIL:
             self._view   = self.VIEW_LIST
             self._detail = None
@@ -365,6 +461,10 @@ class GhIssues(App):
         if self._loading:
             return
 
+        if self._view == self.VIEW_PICKER:
+            self._handle_picker_key(key)
+            return
+
         if self._view == self.VIEW_LIST:
             if key == "o":
                 await self._open_browser()
@@ -372,6 +472,8 @@ class GhIssues(App):
                 self._cycle_sort()
             elif key == "f":
                 self._toggle_filter_from_selection()
+            elif key == "l":
+                self._open_picker()
             elif key == "c":
                 self._clear_filter()
             elif key == "r":
@@ -392,14 +494,21 @@ class GhIssues(App):
                 if self._body_scroll.handle_key(key):
                     self.emit.schedule_render()
 
-    def on_list_select(self, _id: str, index: int) -> None:
+    def on_list_select(self, list_id: str, index: int) -> None:
+        if list_id == "label-picker":
+            self._picker_sel = index
+            self.emit.schedule_render()
+            return
         self._sel = index
         issue = self._selected_issue()
         if issue:
             self.emit.status_summary(issue["title"])
         self.emit.schedule_render()
 
-    def on_list_activate(self, _id: str, _index: int) -> None:
+    def on_list_activate(self, list_id: str, _index: int) -> None:
+        if list_id == "label-picker":
+            self._apply_picker()
+            return
         self._open_detail()
 
     def on_click(self, _x: float, _y: float, _button: str) -> None:
@@ -422,32 +531,71 @@ class GhIssues(App):
             self.emit.info("gh-issues: selected issue has no labels to filter")
             return
         keep_number = issue.get("number")
-        if self._filter_label in labels:
-            idx = labels.index(self._filter_label)
+        current = next(iter(self._filter_labels), None) if len(self._filter_labels) == 1 else None
+        if current in labels:
+            idx = labels.index(current)
             if idx == len(labels) - 1:
-                cleared = self._filter_label
-                self._filter_label = None
+                self._filter_labels = set()
                 self._select_issue_number(keep_number)
-                self.emit.info(f"gh-issues: cleared filter label:{cleared}")
+                self.emit.info(f"gh-issues: cleared filter label:{current}")
                 self.emit.schedule_render()
                 return
-            self._filter_label = labels[idx + 1]
+            self._filter_labels = {labels[idx + 1]}
         else:
-            self._filter_label = labels[0]
+            self._filter_labels = {labels[0]}
         self._select_issue_number(keep_number)
-        self.emit.info(f"gh-issues: filter label:{self._filter_label}")
+        label_str = next(iter(self._filter_labels))
+        self.emit.info(f"gh-issues: filter label:{label_str}")
         self.emit.schedule_render()
 
     def _clear_filter(self) -> None:
-        if not self._filter_label:
+        if not self._filter_labels:
             return
         issue = self._selected_issue()
         keep_number = issue.get("number") if issue else None
-        cleared = self._filter_label
-        self._filter_label = None
+        cleared = "+".join(sorted(self._filter_labels))
+        self._filter_labels = set()
         self._select_issue_number(keep_number)
         self.emit.info(f"gh-issues: cleared filter label:{cleared}")
         self.emit.schedule_render()
+
+    def _open_picker(self) -> None:
+        self._view = self.VIEW_PICKER
+        self._picker_query = ""
+        self._picker_sel = 0
+        self._picker_staged = set(self._filter_labels)
+        self.emit.info("gh-issues: label picker opened")
+        self.emit.schedule_render()
+
+    def _apply_picker(self) -> None:
+        self._filter_labels = set(self._picker_staged)
+        self._view = self.VIEW_LIST
+        self._clamp_selection()
+        label_str = "+".join(sorted(self._filter_labels)) if self._filter_labels else "none"
+        self.emit.info(f"gh-issues: picker applied labels:{label_str}")
+        self.emit.schedule_render()
+
+    def _handle_picker_key(self, key: str) -> None:
+        filtered = self._picker_filtered_labels()
+        if key == "space":
+            if filtered and 0 <= self._picker_sel < len(filtered):
+                label = filtered[self._picker_sel]
+                if label in self._picker_staged:
+                    self._picker_staged.discard(label)
+                    self.emit.info(f"gh-issues: picker deselected {label!r}")
+                else:
+                    self._picker_staged.add(label)
+                    self.emit.info(f"gh-issues: picker selected {label!r}")
+            self.emit.schedule_render()
+        elif key == "backspace":
+            if self._picker_query:
+                self._picker_query = self._picker_query[:-1]
+                self._picker_sel = 0
+                self.emit.schedule_render()
+        elif len(key) == 1 and key.isprintable():
+            self._picker_query += key
+            self._picker_sel = 0
+            self.emit.schedule_render()
 
     def _open_detail(self) -> None:
         issue = self._selected_issue()

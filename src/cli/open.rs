@@ -152,8 +152,10 @@ pub fn pane_new_cli(
 
     // Fallback: spawn-queue (outside a Plexi pane)
     if from_pane_id.is_some() {
-        log::warn!("pane_new:cli: --from-pane-id requires PLEXI_SOCKET (run inside a Plexi pane); ignoring");
-        eprintln!("warning: --from-pane-id is ignored outside a Plexi pane");
+        log::warn!(
+            "pane_new:cli: --from requires PLEXI_SOCKET (run inside a Plexi pane); ignoring"
+        );
+        eprintln!("warning: --from is ignored outside a Plexi pane");
     }
     let queue_dir = crate::config::config_dir().join("spawn-queue");
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {

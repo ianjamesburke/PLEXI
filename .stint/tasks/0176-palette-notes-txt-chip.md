@@ -1,11 +1,11 @@
 ---
 id: "0176"
 title: "v1 cleanup: notes in command palette with txt chip"
-status: backlog
+status: done
 estimate: "3h"
+completed_at: "2026-06-12T22:45:34Z"
 sprint: "s11"
 blocked_by: []
-blocked_by_gh: []
 gh_issue:
   - "2222"
 area:
@@ -13,6 +13,7 @@ area:
   - "ui/widgets"
 tags: []
 ---
+
 
 ## What
 

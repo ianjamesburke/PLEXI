@@ -446,6 +446,9 @@ impl PlexiApp {
                 let mut shown_inbox_header = false;
                 let mut shown_kept_header = false;
                 egui::ScrollArea::vertical()
+                    // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
+                    .animated(false)
+                    .id_salt("notes_picker_list")
                     .max_height(320.0)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -486,8 +489,9 @@ impl PlexiApp {
                                 .danger_trailing(true)
                                 .selected(is_selected)
                                 .show(ui, &colors);
-                            if is_selected && selected != prev_selected_cell.get() {
-                                row_response.scroll_to_me(None);
+                            if is_selected {
+                                row_response
+                                    .scroll_into_view(ui, selected != prev_selected_cell.get());
                             }
                             if row_response.row_clicked() && !row_response.trailing_clicked() {
                                 open_cell.set(Some(row));

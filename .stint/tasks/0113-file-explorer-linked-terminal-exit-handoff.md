@@ -1,15 +1,25 @@
 ---
 id: "0113"
 title: "File Explorer: linked terminal exit directory handoff"
-status: backlog
+status: done
+estimate: "5h"
+completed_at: "2026-06-12T01:45:22Z"
 sprint: "s1"
-estimate: 5h
 blocked_by:
   - 86
-gh_issue: ["2145"]
-area: ["apps/file-browser", "host/terminal", "host/pane-ops"]
-tags: ["v1", "file-explorer", "terminal", "cwd"]
+gh_issue:
+  - "2145"
+area:
+  - "apps/file-browser"
+  - "host/terminal"
+  - "host/pane-ops"
+tags:
+  - "v1"
+  - "file-explorer"
+  - "terminal"
+  - "cwd"
 ---
+
 
 Replace per-navigation terminal `cd` writes with an explicit exit-time directory handoff.
 

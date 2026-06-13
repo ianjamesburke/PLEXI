@@ -1,0 +1,12 @@
+schema_version = 1
+
+[app]
+id = "keymap-probe"
+type = "app"
+name = "KeyMap Probe"
+version = "0.1.0"
+description = "POC proving KeyMap shortcut helper receives events via both Event::Text (printable) and Event::Key (chords) paths."
+entry = "keymap_probe.py"
+
+[app.capabilities]
+capabilities = []

@@ -917,7 +917,11 @@ impl PlexiApp {
                 }
 
                 if should_close_exited {
+                    let ctx_id = self.windows[self.active_window].context_id;
                     self.close_focused();
+                    // An emptied subcontext collapses entirely — delete it and
+                    // zoom back out to the parent, like Cmd+Escape.
+                    self.collapse_subcontext_if_empty(ctx_id);
                 }
 
                 // Portal double-click zoom — same logic as ToggleZoom on a Portal pane.

@@ -15,11 +15,10 @@ fi
 EXISTING_PANE_ID=$1
 ISSUE=$2
 
-PANE_ID=$($PLEXI terminal \
-  --layout split_v \
-  --from-pane-id "$EXISTING_PANE_ID" \
+PANE_ID=$($PLEXI pane new "c '/implement-issue $ISSUE'" \
+  --down \
+  --from "$EXISTING_PANE_ID" \
   --cwd "$REPO_DIR" \
-  --no-focus \
-  "c '/implement-issue $ISSUE'")
+  --no-focus)
 $PLEXI pane name "$PANE_ID" "#${ISSUE}"
 echo "Added: pane $PANE_ID → #$ISSUE (below pane $EXISTING_PANE_ID)"

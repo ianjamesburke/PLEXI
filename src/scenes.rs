@@ -314,8 +314,30 @@ impl SceneRunner {
                 Ok(None)
             }
             Step::Key { key } => {
-                let (modifiers, k) = parse_key(key)?;
-                self.h.harness().press_key_modifiers(modifiers, k);
+                // Bare printable character — not a named key or modifier chord.
+                // Live Plexi delivers these via egui::Event::Text, not Event::Key
+                // (the host suppresses Event::Key for printable chars to avoid
+                // double-dispatch, relying on Event::Text for OS-resolved chars).
+                // Mirror that path here so scene injection reaches the app the
+                // same way a real keypress does.
+                //
+                // A single non-control character is unambiguously a bare key:
+                // named keys ("enter", "left") and chords ("ctrl+z") are always
+                // multi-character. No `+`-prefix check needed — a literal `+`
+                // key has len == 1 and must take the Event::Text path.
+                let mut key_chars = key.chars();
+                let is_bare_printable = key_chars.next().is_some_and(|c| !c.is_control())
+                    && key_chars.next().is_none();
+                if is_bare_printable {
+                    self.h
+                        .harness()
+                        .input_mut()
+                        .events
+                        .push(egui::Event::Text(key.to_string()));
+                } else {
+                    let (modifiers, k) = parse_key(key)?;
+                    self.h.harness().press_key_modifiers(modifiers, k);
+                }
                 self.h.step();
                 Ok(None)
             }

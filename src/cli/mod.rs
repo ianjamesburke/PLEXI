@@ -172,7 +172,7 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
 /// Best-effort wake of a running instance after a spawn-queue file write.
 ///
 /// A fully idle Plexi produces zero frames and only drains the spawn-queue
-/// during a frame, so without this nudge an outside-shell `plexi terminal`
+/// during a frame, so without this nudge an outside-shell `plexi pane new`
 /// hangs until the user touches the window. Connects to the channel
 /// profile's `notify.sock` and sends a no-op `AppRequest::Wake`; the socket
 /// listener requests a repaint, the resulting frame drains the queue.

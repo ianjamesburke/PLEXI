@@ -1,15 +1,22 @@
 ---
 id: "0018"
 title: "Marketplace: hosted registry and CDN"
-status: backlog
+status: in-progress
+estimate: "16h"
+started_at: "2026-06-13T01:57:12Z"
 sprint: "s4"
-estimate: 16h
 blocked_by:
   - 17
 gh_issue: []
-area: ["infra/server", "infra/build"]
-tags: ["marketplace", "registry", "cdn"]
+area:
+  - "infra/server"
+  - "infra/build"
+tags:
+  - "marketplace"
+  - "registry"
+  - "cdn"
 ---
+
 
 Stand up the hosted app registry surface needed for reviewed marketplace apps, using local package metadata as the source format.
 

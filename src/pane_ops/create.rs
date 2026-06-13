@@ -1219,15 +1219,8 @@ impl PlexiApp {
     ///
     /// Works from any focused pane type (terminal, app, file browser).
     pub(crate) fn open_scratchpad(&mut self) {
+        log::info!("scratchpad: opening new scratch note");
         let active = self.active_window;
-
-        // If an open editor still holds an untouched scratch note (body empty
-        // on disk), focus it instead of stacking another empty note.
-        if let Some((tile_id, pane_id)) = self.find_open_empty_inbox_editor(active) {
-            log::info!("scratchpad: empty scratch note already open in pane {pane_id}, focusing");
-            self.set_window_focused_pane(active, tile_id);
-            return;
-        }
 
         // Capture context like a quick note so triage shows where it came from.
         let cwd = self.windows[active]
@@ -1250,39 +1243,6 @@ impl PlexiApp {
         if let Err(e) = self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None) {
             log::warn!("scratchpad: failed to launch text-editor pane: {e}");
         }
-    }
-
-    /// Find an open text-editor pane holding an inbox note whose on-disk body
-    /// is still empty (frontmatter only, or file not yet written).
-    fn find_open_empty_inbox_editor(
-        &self,
-        window_idx: usize,
-    ) -> Option<(TileId, PaneId)> {
-        let inbox_dir = crate::config::config_dir().join("notes").join("inbox");
-        let window = self.windows.get(window_idx)?;
-        window.tree.tiles.iter().find_map(|(tile_id, tile)| {
-            let Tile::Pane(pane_id) = tile else {
-                return None;
-            };
-            let app_pane = window.panes.get(pane_id)?.as_app()?;
-            if app_pane.runtime.type_id() != "text-editor" {
-                return None;
-            }
-            let path = app_pane
-                .runtime
-                .serialize_state()?
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(PathBuf::from)?;
-            if !path.starts_with(&inbox_dir) {
-                return None;
-            }
-            let body_empty = match std::fs::read_to_string(&path) {
-                Ok(content) => crate::notes::parse_note(&content).1.trim().is_empty(),
-                Err(_) => true, // not yet written → still empty
-            };
-            body_empty.then_some((*tile_id, *pane_id))
-        })
     }
 
     /// Open the quick note modal: capture context and push FocusLayer::QuickNote.
@@ -1327,7 +1287,7 @@ impl PlexiApp {
         use chrono::Utc;
         let now = Utc::now();
         let captured_at = now.to_rfc3339();
-        let filename = format!("note-{}.md", now.format("%Y%m%d-%H%M%S%.3f"));
+        let stamp = now.format("%Y%m%d-%H%M%S%.3f").to_string();
 
         let workspace = ctx
             .workspace_root
@@ -1354,7 +1314,15 @@ impl PlexiApp {
             );
             return None;
         }
-        let path = dir.join(&filename);
+        // Millisecond timestamps collide when two notes land in the same ms
+        // (e.g. back-to-back scratchpad calls); suffix until the path is free
+        // so the second note never overwrites the first.
+        let mut path = dir.join(format!("note-{stamp}.md"));
+        let mut n = 1u32;
+        while path.exists() {
+            path = dir.join(format!("note-{stamp}-{n}.md"));
+            n += 1;
+        }
         match std::fs::write(&path, &content) {
             Ok(()) => {
                 log::info!("QuickNote: saved to {}", path.display());
@@ -1949,6 +1917,56 @@ mod tests {
             result.is_none(),
             "overlay with no focused pane must return None"
         );
+    }
+
+    /// Regression guard for issue #2221: `open_scratchpad` must always create a
+    /// fresh pane — even when an empty inbox note is already open.
+    #[test]
+    fn open_scratchpad_always_opens_new_pane() {
+        // open_scratchpad uses overlay mode, which replaces the focused tile
+        // in-place rather than inserting a new pane map entry.  Supply a
+        // focused pane so the overlay has somewhere to land; pane_count stays
+        // at 1 throughout.
+        let mut h = HostHarness::new();
+        let base_pane = h.add_test_pane();
+        h.focus_pane(base_pane);
+
+        h.app.open_scratchpad();
+        h.app.open_scratchpad();
+
+        // Overlay replaces in-place: still 1 pane in the map.
+        assert_eq!(h.pane_count(), 1, "overlay replaces in-place; count must stay 1");
+
+        // Top of the overlay chain — second scratchpad call.
+        let win = &h.app.windows[0];
+        let Pane::App(top) = &win.panes[&base_pane] else {
+            panic!("expected App pane at overlay top");
+        };
+        assert_eq!(top.manifest_id, "text-editor", "top pane must be text-editor");
+        let path2 = top
+            .runtime
+            .serialize_state()
+            .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(|s| s.to_owned()))
+            .expect("second scratchpad pane must have a path");
+
+        // One level down — first scratchpad call.
+        let Pane::App(inner) = top
+            .overlay_replaced
+            .as_deref()
+            .expect("must have overlay_replaced after two scratchpad calls")
+        else {
+            panic!("overlay_replaced must be an App pane");
+        };
+        assert_eq!(inner.manifest_id, "text-editor", "inner pane must be text-editor");
+        let path1 = inner
+            .runtime
+            .serialize_state()
+            .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(|s| s.to_owned()))
+            .expect("first scratchpad pane must have a path");
+
+        assert_ne!(path1, path2, "each scratchpad call must create a unique note file");
+        assert!(path1.contains("inbox"), "path1 must be an inbox note");
+        assert!(path2.contains("inbox"), "path2 must be an inbox note");
     }
 }
 

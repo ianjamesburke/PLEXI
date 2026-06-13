@@ -10,6 +10,7 @@
 
 use crate::app::permissions::AppPermissions;
 use crate::app::PlexiApp;
+use crate::config::set_test_profile_dir;
 use crate::app_protocol::{AiMessage, AppRequest, DrawCommand, ModelTier};
 use crate::host::pane::{AppPane, AppRuntime, Pane};
 use crate::process_app::ProcessApp;
@@ -77,11 +78,17 @@ pub struct HostHarness {
     /// Platform output from the most recently completed frame.
     /// Contains clipboard writes, open URLs, etc.
     pub last_platform_output: egui::PlatformOutput,
+    /// Keeps the per-test tempdir alive for the harness lifetime; auto-deletes on drop.
+    _profile_dir: tempfile::TempDir,
+    /// Keeps the thread-local profile dir override active for the harness lifetime.
+    _profile_guard: crate::config::TestProfileDirGuard,
 }
 
 impl HostHarness {
     /// Create a harness with an empty `PlexiApp` and a 1280×800 viewport.
     pub fn new() -> Self {
+        let profile_dir = tempfile::TempDir::new().expect("failed to create test profile tempdir");
+        let profile_guard = set_test_profile_dir(profile_dir.path().to_path_buf());
         let ctx = egui::Context::default();
         let frame_tick = Arc::new(AtomicU64::new(0));
         let (app, ipc_tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
@@ -92,6 +99,8 @@ impl HostHarness {
             next_pane_id: 100,
             ipc_tx,
             last_platform_output: egui::PlatformOutput::default(),
+            _profile_dir: profile_dir,
+            _profile_guard: profile_guard,
         }
     }
 
@@ -302,3 +311,20 @@ pub fn ai_query(request_id: &str) -> DrawCommand {
 mod flow_tests;
 #[cfg(test)]
 mod harness_tests;
+
+#[cfg(test)]
+mod profile_isolation_tests {
+    use super::HostHarness;
+
+    #[test]
+    fn host_harness_profile_dir_is_not_in_home() {
+        let _h = HostHarness::new();
+        let dir = crate::config::config_dir();
+        let home = dirs::home_dir().expect("no home dir");
+        assert!(
+            !dir.starts_with(&home),
+            "config_dir() must not point into $HOME inside HostHarness, got: {}",
+            dir.display()
+        );
+    }
+}

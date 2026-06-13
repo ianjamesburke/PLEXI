@@ -17,7 +17,7 @@ You are running inside a Plexi pane. `PLEXI_SOCKET` is set automatically -- ever
 | Var | Purpose |
 |-----|---------|
 | `PLEXI_SOCKET` | IPC socket path; routes all commands to the running instance |
-| `PLEXI_PANE_ID` | Numeric ID of the current pane; pass to `--from` / `--from-pane-id` |
+| `PLEXI_PANE_ID` | Numeric ID of the current pane; pass to `--from` |
 | `PLEXI_CONTEXT_ID` | Context ID the pane belongs to |
 | `PLEXI_CONTEXT_NAME` | Context name the pane belongs to |
 
@@ -48,11 +48,11 @@ pane state ID            App panes: L1 UiNode tree JSON. Terminal panes: simple 
 
 ```
 app open [TYPE_ID]       Open an installed app. Flags: -d, -l, -u, -r, --tab, --window,
-                         --from-pane-id ID. Extra args forwarded to the app.
+                         --from PANE_ID. Extra args forwarded to the app.
 app open --mcp CMD...    Wrap a stdio MCP server in a Plexi pane.
 app open --cli BINARY    Wrap a CLI tool with a Plexi UI.
 app init NAME            Scaffold a new app. --lang python (default), --global, --no-open,
-                         --from-pane-id ID.
+                         --from PANE_ID.
 app install [SPEC]       Install from path, github:owner/repo, or --pack core.
                          No args = install from .plexi/apps.toml. --version SEMVER to pin.
 app uninstall ID         Remove an installed app.
@@ -69,14 +69,14 @@ app action ID ACTION [ARGS]  Send a semantic action to a running app (not raw te
 ### context -- manage project scopes
 
 ```
-context new [NAME]       New context. --path DIR, --parent NAME, --window CMD (repeatable; creates extra windows atomically).
+context new [NAME]       New context. --path DIR, --parent[=NAME] (bare = current context), --from PANE_ID (portal anchor; defaults to caller), -d/-l/-u/-r portal direction, --focus, --window CMD (repeatable; creates extra windows atomically).
 context open [PATH]      Switch current pane to a context at PATH.
-context set-root [PATH]  Change root folder for active context.
+context set-root [PATH]  Change root folder for the caller's context (PLEXI_CONTEXT_ID).
 context current          Print context id/name as JSON.
-context describe TEXT    Set description for active context.
+context describe TEXT    Set description for the caller's context (PLEXI_CONTEXT_ID).
 context zoom ID          Zoom into a sub-context.
 context zoom-out         Zoom out to parent context.
-context push [NAME]      Push focused pane into a new sub-context.
+context push [NAME]      Push a pane into a new sub-context. --pane-id ID (defaults to the calling pane).
 ```
 
 ### notify -- surface information to the user
@@ -100,7 +100,7 @@ secret delete NAME       Remove a secret.
 ### agent -- workspace agent definitions
 
 ```
-agent init NAME          Scaffold agent app (ai.query + chat UI). --from-pane-id ID.
+agent init NAME          Scaffold agent app (ai.query + chat UI). --from PANE_ID.
 agent add NAME           Install from global registry into workspace.
 agent update NAME        Re-install from registry, preserving memory/logs.
 agent list               List workspace agents.
@@ -209,9 +209,9 @@ esac
 ### 2x2 grid layout (apps in three quadrants)
 
 ```bash
-BALLS=$(plexi app open balls -r --from-pane-id $PLEXI_PANE_ID)
-plexi app open tetris -d --from-pane-id $PLEXI_PANE_ID
-plexi app open snake -d --from-pane-id $BALLS
+BALLS=$(plexi app open balls -r --from $PLEXI_PANE_ID)
+plexi app open tetris -d --from $PLEXI_PANE_ID
+plexi app open snake -d --from $BALLS
 ```
 
 ### Named agent dispatch lane

@@ -34,10 +34,17 @@ If you run into any issues, don't hesitate to reach out directly: adhdisntreal@g
 ### One-liner
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ianjamesburke/PLEXI/main/scripts/user-install.sh | sh
+curl -fsSL https://plexiapp.com/install | sh
 ```
 
 Downloads the latest release, installs to `/Applications`, sets up the `plexi` CLI, and wires ZSH integration. Restart your terminal when done.
+
+To install a pre-release channel, pass `--channel`:
+
+```bash
+curl -fsSL https://plexiapp.com/install | bash -s -- --channel beta
+curl -fsSL https://plexiapp.com/install | bash -s -- --channel alpha
+```
 
 **First launch (unsigned app):** macOS may block it on first open.
 - **macOS 15+:** System Settings → Privacy & Security → "Open Anyway".
@@ -305,7 +312,7 @@ All `plexi` subcommands work identically on alpha, beta, stable, and PR builds. 
 | `plexi pack` | Pack management (apply, list packs) |
 | `plexi app init <name>` | Scaffold a new app in the current directory |
 | `plexi app open <app-id>` | Open an app pane |
-| `plexi terminal [cmd]` | Open a terminal pane, optionally running a command |
+| `plexi pane new [cmd]` | Open a terminal pane, optionally running a command |
 | `plexi pane <subcommand>` | Pane management (name, close, list, focus) |
 | `plexi notify` | Emit a notification (see Notifications section) |
 | `plexi context` | Query or set the active workspace context |

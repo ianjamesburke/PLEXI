@@ -5,7 +5,7 @@ status: backlog
 sprint: "s2"
 estimate: 12h
 blocked_by:
-  - 11
+  - 9
 gh_issue: []
 area: ["infra/docs", "sdk/python", "sdk/pgap"]
 tags: ["app-authoring", "docs", "verification"]

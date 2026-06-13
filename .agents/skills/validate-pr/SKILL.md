@@ -116,7 +116,7 @@ gh pr diff $PR_NUMBER
 ```
 
 **Default mode: diff review only.** Do not install the PR build just because a Rust file changed. For small or obvious diffs, especially one-file edits, validation is:
-1. Codex review against `alpha`
+1. Gemini review against `alpha`
 2. Testing block whose pass/fail criteria map to the issue checklist
 3. User manual exercise if the issue is visual or interactive
 
@@ -125,11 +125,11 @@ gh pr diff $PR_NUMBER
 - Packaging, bundle, channel, profile-dir, app-copy, or runtime asset changes
 - Behavior cannot be judged from diff and needs the user to launch `plexi-pr-$PR_NUMBER`
 - The issue's Done When explicitly requires validating the installed PR binary
-- Codex review or a targeted implementation check reports a blocker that requires a rebuilt binary to verify
+- Gemini review or a targeted implementation check reports a blocker that requires a rebuilt binary to verify
 
 **Test evidence gate:** Read the issue Ship Log (or PR body) for a `**Test evidence:**` block from the `/testing` skill. If present and it concludes `install skippable — full coverage`, stay in diff-review mode even when an install trigger above would otherwise fire — unless the trigger is `apps/` file changes or an explicit Done When install requirement, which always install. Evidence concluding `binary install required` means install.
 
-**Do not run cargo tests in validation unless Codex review finds a specific testable risk.** Implementation already owns the cheapest relevant build/test check before commit — and when a `**Test evidence:**` block reports a green run, never re-run the same suite. Validation owns diff review and user acceptance.
+**Do not run cargo tests in validation unless Gemini review finds a specific testable risk.** Implementation already owns the cheapest relevant build/test check before commit — and when a `**Test evidence:**` block reports a green run, never re-run the same suite. Validation owns diff review and user acceptance.
 
 If install is not required → skip Step 2 and use the diff-review testing block.
 
@@ -150,7 +150,7 @@ just pr-install $PR_NUMBER
 
 Wait for completion. The binary is now installed. Move immediately to Step 2b.
 
-> **HARD STOP — do not launch the PR binary.** Do not tail logs waiting for app output. Do not poll, watch, or sleep. The full sequence after install is: codex review → write testing block → notify → stop. The user launches and exercises the app; that is not the agent's job.
+> **HARD STOP — do not launch the PR binary.** Do not tail logs waiting for app output. Do not poll, watch, or sleep. The full sequence after install is: Gemini review → write testing block → notify → stop. The user launches and exercises the app; that is not the agent's job.
 
 ---
 
@@ -161,36 +161,33 @@ Wait for completion. The binary is now installed. Move immediately to Step 2b.
 - **Run checks** if any changed file contains: new logic, new branches, new error paths, behavioral changes, new API surface, bug fixes, or anything systemic that could break silently.
 - **Skip checks** if ALL changes are exclusively: color/spacing/font-size constants, help/doc strings, markdown files, config TOML values, label/copy text, or UI layout values that require human eyes to verify anyway. When skipping, set `AI_FINDINGS="skipped — cosmetic/style change, user verifies visually"`.
 
-When in doubt, run Codex review. Do not expand to broad cargo tests or binary install from doubt alone.
+When in doubt, run Gemini review. Do not expand to broad cargo tests or binary install from doubt alone.
 
-**Review-run cap:** Run `codex review` at most twice for one validation attempt without checking with Ian. The first run is the normal review. If it finds issues and you push fixes, one rerun is allowed to verify those fixes. If the second run finds more issues, stop, report the remaining findings, and ask Ian before running review again.
+**Review-run cap:** Run Gemini review at most twice for one validation attempt without checking with Ian. The first run is the normal review. If it finds issues and you push fixes, one rerun is allowed to verify those fixes. If the second run finds more issues, stop, report the remaining findings, and ask Ian before running review again.
 
-**If running — rigorous Codex review (gpt-5.5, xhigh reasoning):**
+**If running — rigorous Gemini review (gemini-2.5-pro):**
 
 ```bash
-# codex review: [PROMPT] and --base are mutually exclusive — use --base alone.
-# Config (~/.codex/config.toml) already sets model=gpt-5.5 and model_reasoning_effort=xhigh.
 # Use git worktree list to find the alpha root — git rev-parse --show-toplevel returns the
 # CWD's worktree path (not the main repo root) when run from inside a worktree.
 ALPHA_ROOT=$(git worktree list --porcelain | grep -B2 "branch refs/heads/alpha" | grep "^worktree " | head -1 | cut -d' ' -f2)
-REVIEW_OUT="/tmp/plexi-pr-$PR_NUMBER-codex-review.txt"
-(cd "$ALPHA_ROOT/worktrees/$BRANCH" && codex review --base alpha > "$REVIEW_OUT" 2>&1) || true
+REVIEW_OUT="/tmp/plexi-pr-$PR_NUMBER-gemini-review.txt"
+(cd "$ALPHA_ROOT/worktrees/$BRANCH" && git diff alpha...HEAD) | \
+  gemini --approval-mode yolo \
+    -p "Review this git diff for a Rust/Python codebase. Focus on: correctness bugs, unsafe patterns, missed error handling, and clear simplification opportunities. Do not flag style, formatting, or cosmetic issues. Reply with a concise bulleted findings list referencing file and line where possible, or 'No issues found.' if the diff is clean." \
+    > "$REVIEW_OUT" 2>&1 || true
 
-# codex review can print tool transcripts before the actual findings. Keep that
-# bulk out of the main agent context and testing block.
-AI_FINDINGS=$(awk '
-  /Findings|No findings|No issues|Issues found|Review findings/ { capture=1 }
-  capture { print }
-' "$REVIEW_OUT" | tail -120)
+# Strip Gemini CLI skill-conflict warnings that appear before the actual findings.
+AI_FINDINGS=$(grep -v "^Skill conflict" "$REVIEW_OUT" | tail -120)
 
 if [ -z "$AI_FINDINGS" ]; then
-  AI_FINDINGS="Codex review completed; no concise findings section was detected. Full raw output: $REVIEW_OUT"
+  AI_FINDINGS="Gemini review completed; no output detected. Full raw output: $REVIEW_OUT"
 fi
 ```
 
-Only surface `AI_FINDINGS` in the testing block. Do not paste the raw `codex review` transcript into chat; it can be thousands of lines of tool output. If you need to inspect raw output, read the temp file narrowly with `tail`, `rg`, or `sed`.
+Only surface `AI_FINDINGS` in the testing block. Do not paste the raw Gemini transcript into chat. If you need to inspect raw output, read the temp file narrowly with `tail`, `rg`, or `sed`.
 
-After the optional PR install, mergeable check, and review summary are available, surface the testing block immediately. Do not launch the PR app, browse logs, run broad full-suite tests, or keep investigating unless the install, build, targeted tests, or Codex findings show a real blocker.
+After the optional PR install, mergeable check, and review summary are available, surface the testing block immediately. Do not launch the PR app, browse logs, run broad full-suite tests, or keep investigating unless the install, build, targeted tests, or Gemini findings show a real blocker.
 
 ---
 
@@ -220,7 +217,7 @@ What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
 Test evidence (from implementation, when present):
 <test counts + render PNG path + conclusion line from the Ship Log Test evidence block>
 
-Codex review (gpt-5.5 xhigh):
+Gemini review (gemini-2.5-pro):
 <AI_FINDINGS verbatim>
 
 Pass criteria (from Done When):
@@ -442,12 +439,12 @@ PR: <pr-url>
 Issue #<issue-number>: <ISSUE_TITLE>
 What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
 
-No binary install was run; validation is limited to the diff and Codex review.
+No binary install was run; validation is limited to the diff and Gemini review.
 
 Test evidence (from implementation, when present):
 <test counts + render PNG path + conclusion line from the Ship Log Test evidence block>
 
-Codex review (gpt-5.5 xhigh):
+Gemini review (gemini-2.5-pro):
 <AI_FINDINGS verbatim>
 
 Pass criteria:
@@ -470,10 +467,10 @@ pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the d
 ## Rules
 
 - Diff-review validation is the default. `just pr-install` is an exception, not the normal Rust-file path.
-- Step 2b quality checks (Codex diff review) run unless the PR is exclusively cosmetic/style — assess the diff, then decide
-- Do not run `codex review` more than twice in one validation attempt without checking with Ian
+- Step 2b quality checks (Gemini diff review) run unless the PR is exclusively cosmetic/style — assess the diff, then decide
+- Do not run Gemini review more than twice in one validation attempt without checking with Ian
 - Cosmetic = colors, spacing, font sizes, help strings, markdown, config values, UI copy — anything where human visual verification is the only meaningful check
-- Do not run cargo tests during validation unless Codex review names a specific risk that needs a specific test command
+- Do not run cargo tests during validation unless Gemini review names a specific risk that needs a specific test command
 - AI_FINDINGS is always shown verbatim — never summarized or filtered
 - Issue brief (ISSUE_TITLE + ISSUE_WHAT) must appear at the top of every testing block
 - `fail` without description: ask for it before taking any action

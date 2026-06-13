@@ -1,11 +1,11 @@
 ---
 id: "0174"
 title: "v1 cleanup: SessionStart hook reports idle, not working"
-status: backlog
+status: done
 estimate: "1h"
+completed_at: "2026-06-12T21:48:59Z"
 sprint: "s11"
 blocked_by: []
-blocked_by_gh: []
 gh_issue:
   - "2220"
 area:
@@ -13,6 +13,7 @@ area:
   - "cli/commands"
 tags: []
 ---
+
 
 ## What
 

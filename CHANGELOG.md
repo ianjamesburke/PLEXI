@@ -1,6 +1,231 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.762] — 2026-06-13
+
+### Changes
+- feat(apps/github-issues): add label picker and smarter label chips (#2164) (#2235)
+- chore: close stint 0165 (32m actual vs 6h estimate)
+- feat(sdk): add PGAP shortcut helper with scene harness parity (#2196) (#2237)
+- chore(stint): park v2 phase out of the active board — v1-only operating graph
+- feat(ui): intensify pip working flash and stagger adjacent pips
+- chore(stint): descope FE icon/gallery views, reframe 0030 as v1 release gate anchor
+- chore: claim stint 0062
+- chore: claim stint 0018-0021 (marketplace bundle)
+- feat(cli): caller-targeted CLI — portal anchor, context push/set-root/describe, unified --from flag (#2233)
+- perf: throttle remaining Working-pulse repaint loops to 10fps
+- chore(stint): make blocker graph self-contained — drop satisfied @2194, convert @1239 refs to task 0072
+- perf: event-driven frames while typing — kill the 60fps agent-pip loop
+- fix: down-arrow newline append — no double input, no dropped repeats
+- feat: unify glyph-height caret across every text input
+- chore(stint): cut sequencing blockers — blocked_by now means true dependency only
+- tweak: caret height +1px over glyph height
+- chore(stint): v1 handoff audit — reconcile issues, gates, and queue
+- fix: closing the last pane in a subcontext collapses it and zooms out (#2232)
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.761] — 2026-06-13
+
+### Changes
+- feat(sdk): add PGAP shortcut helper with scene harness parity (#2196) (#2237)
+- chore(stint): park v2 phase out of the active board — v1-only operating graph
+- feat(ui): intensify pip working flash and stagger adjacent pips
+- chore(stint): descope FE icon/gallery views, reframe 0030 as v1 release gate anchor
+- chore: claim stint 0062
+- chore: claim stint 0018-0021 (marketplace bundle)
+- feat(cli): caller-targeted CLI — portal anchor, context push/set-root/describe, unified --from flag (#2233)
+- perf: throttle remaining Working-pulse repaint loops to 10fps
+- chore(stint): make blocker graph self-contained — drop satisfied @2194, convert @1239 refs to task 0072
+- perf: event-driven frames while typing — kill the 60fps agent-pip loop
+- fix: down-arrow newline append — no double input, no dropped repeats
+- feat: unify glyph-height caret across every text input
+- chore(stint): cut sequencing blockers — blocked_by now means true dependency only
+- tweak: caret height +1px over glyph height
+- chore(stint): v1 handoff audit — reconcile issues, gates, and queue
+- fix: closing the last pane in a subcontext collapses it and zooms out (#2232)
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.760] — 2026-06-13
+
+### Changes
+- feat(cli): caller-targeted CLI — portal anchor, context push/set-root/describe, unified --from flag (#2233)
+- perf: throttle remaining Working-pulse repaint loops to 10fps
+- chore(stint): make blocker graph self-contained — drop satisfied @2194, convert @1239 refs to task 0072
+- perf: event-driven frames while typing — kill the 60fps agent-pip loop
+- fix: down-arrow newline append — no double input, no dropped repeats
+- feat: unify glyph-height caret across every text input
+- chore(stint): cut sequencing blockers — blocked_by now means true dependency only
+- tweak: caret height +1px over glyph height
+- chore(stint): v1 handoff audit — reconcile issues, gates, and queue
+- fix: closing the last pane in a subcontext collapses it and zooms out (#2232)
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.759] — 2026-06-13
+
+### Changes
+- perf: throttle remaining Working-pulse repaint loops to 10fps
+- chore(stint): make blocker graph self-contained — drop satisfied @2194, convert @1239 refs to task 0072
+- perf: event-driven frames while typing — kill the 60fps agent-pip loop
+- fix: down-arrow newline append — no double input, no dropped repeats
+- feat: unify glyph-height caret across every text input
+- chore(stint): cut sequencing blockers — blocked_by now means true dependency only
+- tweak: caret height +1px over glyph height
+- chore(stint): v1 handoff audit — reconcile issues, gates, and queue
+- fix: closing the last pane in a subcontext collapses it and zooms out (#2232)
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.758] — 2026-06-13
+
+### Changes
+- perf: event-driven frames while typing — kill the 60fps agent-pip loop
+- fix: down-arrow newline append — no double input, no dropped repeats
+- feat: unify glyph-height caret across every text input
+- chore(stint): cut sequencing blockers — blocked_by now means true dependency only
+- tweak: caret height +1px over glyph height
+- chore(stint): v1 handoff audit — reconcile issues, gates, and queue
+- fix: closing the last pane in a subcontext collapses it and zooms out (#2232)
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.757] — 2026-06-13
+
+### Changes
+- fix: down-arrow newline append — no double input, no dropped repeats
+- feat: unify glyph-height caret across every text input
+- chore(stint): cut sequencing blockers — blocked_by now means true dependency only
+- tweak: caret height +1px over glyph height
+- chore(stint): v1 handoff audit — reconcile issues, gates, and queue
+- fix: closing the last pane in a subcontext collapses it and zooms out (#2232)
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.756] — 2026-06-13
+
+### Changes
+- tweak: caret height +1px over glyph height
+- chore(stint): v1 handoff audit — reconcile issues, gates, and queue
+- fix: closing the last pane in a subcontext collapses it and zooms out (#2232)
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.755] — 2026-06-13
+
+### Changes
+- fix: closing the last pane in a subcontext collapses it and zooms out (#2232)
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.754] — 2026-06-13
+
+### Changes
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.753] — 2026-06-13
+
+### Changes
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.752] — 2026-06-13
+
+### Changes
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.751] — 2026-06-12
+
+### Changes
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.750] — 2026-06-12
+
+### Changes
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
+## [0.0.749] — 2026-06-12
+
+### Changes
+- fix: cursor height + scratchpad dedup (#2218, #2221) (#2226)
+- refactor(dispatch, validate-pr): support arbitrary tasks and stint IDs in dispatch, migrate to Gemini review
+- refactor(ui): move notification modal buttons into centralized chrome
+- docs(readme): add --channel flag examples to install one-liner
+- fix(install): point plexiapp.com/install and README to install.sh at repo root
+- feat(install): add --channel flag to one-liner install script
+- Themeable status pips + SessionStart idle fix (#2219, #2220) (#2223)
+## [0.0.748] — 2026-06-12
+
+### Changes
+- feat(install): add --channel flag to one-liner install script
+- Themeable status pips + SessionStart idle fix (#2219, #2220) (#2223)
+## [0.0.747] — 2026-06-12
+
+### Changes
+- Themeable status pips + SessionStart idle fix (#2219, #2220) (#2223)
+## [0.0.746] — 2026-06-12
+
+### Changes
+- fix(sdk): add missing Any import to ui.py; improve install.sh error handling
+- chore: add stint 0171-0176 + rescope 0167 — cleanup batch (gh #2216-#2222)
 ## [0.0.745] — 2026-06-12
 
 ### Changes

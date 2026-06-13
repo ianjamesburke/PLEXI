@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.745"
+verified_version: "0.0.752"
 order: 7
 ---
 
@@ -181,7 +181,7 @@ Example: plexi agent init my-agent
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes | App name (used as the directory name and app ID) |
-| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane. Defaults to PLEXI_PANE_ID if set in the environment |
+| `--from` | string | no | Open the new pane relative to this pane ID. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 
 ### `plexi agent add`
 
@@ -284,22 +284,23 @@ Manage the active context (the folder and project scope tied to the current pane
 | `describe` | Set the description for the active context |
 | `zoom` | Zoom into a sub-context by its numeric context_id |
 | `zoom-out` | Zoom out of the current sub-context to the parent |
-| `push` | Push the focused pane into a new sub-context |
+| `push` | Push a pane into a new sub-context |
 | `list` | List all open contexts as a JSON array |
 
 ### `plexi context new`
 
 Open a new context with an optional name.
 
-Examples: plexi context new "sprint"                          # top-level context plexi context new "sprint" --parent                 # child of current context (no-focus) plexi context new "sprint" --parent "main" -d       # child, portal splits below plexi context new "sprint" --parent --window "echo a" --window "echo b"
+Examples: plexi context new "sprint"                          # top-level context plexi context new "sprint" --parent                 # child of current context (no-focus) plexi context new "sprint" --parent=main -d         # child of "main", portal splits below plexi context new "sprint" --parent --window "echo a" --window "echo b"
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | no | Name for the new context. Defaults to the directory basename |
 | `--path` | string | no | Root path for the new context. Defaults to current working directory |
-| `--parent` | string | no | Create as a child of the named context. With no value, uses the current context (reads PLEXI_CONTEXT_NAME from env) |
+| `--parent` | string | no | Create as a child of a context (the new context is its sub-context). Bare `--parent` uses the current context (reads PLEXI_CONTEXT_NAME from env); use `--parent=<name>` to target another context by name |
 | `--window` | string (repeatable) | no | Command to run in each pre-populated window. Repeatable |
 | `--focus` | flag | no | Focus (zoom into) the new sub-context after creation. Default: stay in current pane |
+| `--from` | string | no | Pane to anchor the portal split at (requires --parent). Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the parent context's focused pane |
 | `--down` / `-d` | flag | no | Split portal below instead of right (requires --parent) |
 | `--left` / `-l` | flag | no | Split portal left (requires --parent) |
 | `--up` / `-u` | flag | no | Split portal above (requires --parent) |
@@ -347,11 +348,14 @@ Zoom out of the current sub-context to the parent
 
 ### `plexi context push`
 
-Push the focused pane into a new sub-context
+Push a pane into a new sub-context.
+
+Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | no | Name for the new sub-context. Defaults to the pane name |
+| `--pane-id` | string | no | Pane to push. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 
 ### `plexi context list`
 
@@ -396,7 +400,7 @@ Pass an app id (e.g. `plexi app open snake`) or a path to an app directory conta
 | `--right` / `-r` | flag | no | Split right |
 | `--tab` | flag | no | New tab |
 | `--window` | flag | no | New window |
-| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
+| `--from` | string | no | Open the new pane relative to this pane ID. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 | `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
 
 ### `plexi app install`
@@ -475,7 +479,7 @@ Use --open to launch it in a split-right pane after scaffolding.
 | `--global` | flag | no | Scaffold into the global app registry instead of the workspace |
 | `--open` | flag | no | Open the app in a split-right pane after scaffolding |
 | `--no-open` | flag | no | Deprecated compatibility flag. App init no longer opens by default |
-| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane. Defaults to PLEXI_PANE_ID if set in the environment |
+| `--from` | string | no | Open the new pane relative to this pane ID. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 
 ### `plexi app validate`
 
@@ -603,7 +607,7 @@ For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
 | `--tab` | flag | no | New tab |
 | `--window` | flag | no | New window |
 | `--overlay` | flag | no | Overlay pane |
-| `--from` | string | no | Pane ID to split relative to (default: focused pane) |
+| `--from` | string | no | Pane ID to split relative to. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 | `--ephemeral` / `-e` | flag | no | Close the pane when the command finishes |
 | `--no-focus` | flag | no | Keep focus on the current pane |
 | `--cwd` | string | no | Working directory |

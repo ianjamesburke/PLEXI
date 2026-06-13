@@ -6,7 +6,6 @@ sprint: "s1"
 estimate: 12h
 blocked_by:
   - 4
-  - 5
 gh_issue: ["2141"]
 area: ["apps/file-browser", "host/pane-ops", "host/permissions"]
 tags: ["file-explorer", "agents", "selection"]

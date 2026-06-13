@@ -38,7 +38,9 @@ impl schemars::JsonSchema for LayoutChild {
 
 /// Closed vocabulary for text anchor alignment.
 /// Values match egui's `Align2` naming convention: `{h}_{v}`.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TextAlign {
     LeftTop,
@@ -869,24 +871,45 @@ pub enum AppRequest {
         /// Direction the portal tile splits in the parent window: "right" | "down" | "left" | "up".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         portal_direction: Option<String>,
+        /// Pane in the parent context to anchor the portal split at. The CLI sends
+        /// the caller's pane (--pane or PLEXI_PANE_ID); absent or unknown ids fall
+        /// back to the parent's focused pane.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor_pane: Option<u64>,
         /// If set, the host writes a JSON response (context_id, windows) to this path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
     },
     /// Focus existing context by root, or create one. Sent by `plexi context open`.
     FocusContext { root: std::path::PathBuf },
-    /// Set/update the root of the active context. Sent by `plexi context set-root`.
-    SetContextRoot { root: std::path::PathBuf },
-    /// Set/update the description of the active context. Sent by `plexi context describe`.
-    SetContextDescription { description: String },
+    /// Set/update the root of a context. Sent by `plexi context set-root`.
+    /// `context_id` targets the caller's context (PLEXI_CONTEXT_ID); when
+    /// absent, the active context is used.
+    SetContextRoot {
+        root: std::path::PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_id: Option<u64>,
+    },
+    /// Set/update the description of a context. Sent by `plexi context describe`.
+    /// `context_id` targets the caller's context (PLEXI_CONTEXT_ID); when
+    /// absent, the active context is used.
+    SetContextDescription {
+        description: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_id: Option<u64>,
+    },
     /// Zoom into a sub-context. Pushes depth stack. Sent by `plexi context zoom`.
     ZoomIntoContext { context_id: u64 },
     /// Zoom out of a sub-context. Pops depth stack. Sent by `plexi context zoom-out`.
     ZoomOutOfContext,
-    /// Push the focused pane into a new sub-context. Sent by `plexi context push`.
+    /// Push a pane into a new sub-context. Sent by `plexi context push`.
+    /// `pane_id` targets the caller's pane (PLEXI_PANE_ID); when absent, the
+    /// focused pane is pushed.
     PushPaneToSubcontext {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pane_id: Option<u64>,
     },
 
     /// Query the rolled-up `ContextState` for a context (#1518).
@@ -3297,8 +3320,19 @@ mod tests {
         let json = r#"{"type":"set_context_description","description":"Main project workspace"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::SetContextDescription { description }) => {
+            DrawCommand::Host(AppRequest::SetContextDescription {
+                description,
+                context_id,
+            }) => {
                 assert_eq!(description, "Main project workspace");
+                assert_eq!(*context_id, None, "context_id defaults to None");
+            }
+            other => panic!("expected SetContextDescription, got {other:?}"),
+        }
+        let targeted = r#"{"type":"set_context_description","description":"d","context_id":7}"#;
+        match serde_json::from_str::<DrawCommand>(targeted).expect("deserialise targeted") {
+            DrawCommand::Host(AppRequest::SetContextDescription { context_id, .. }) => {
+                assert_eq!(context_id, Some(7));
             }
             other => panic!("expected SetContextDescription, got {other:?}"),
         }
@@ -3942,7 +3976,10 @@ mod ai_stream_chunk_tests {
     #[test]
     fn wake_round_trips_serde() {
         let req: AppRequest = serde_json::from_str(r#"{"type":"wake"}"#).expect("deserialise");
-        assert!(matches!(req, AppRequest::Wake), "expected Wake, got {req:?}");
+        assert!(
+            matches!(req, AppRequest::Wake),
+            "expected Wake, got {req:?}"
+        );
         let serialised = serde_json::to_string(&req).expect("serialise");
         assert!(
             serialised.contains(r#""type":"wake""#),

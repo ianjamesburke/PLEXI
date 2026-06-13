@@ -1,17 +1,18 @@
 ---
 id: "0175"
 title: "v1 cleanup: Cmd+Shift+Space always opens a fresh scratch pad"
-status: backlog
+status: done
 estimate: "2h"
+completed_at: "2026-06-12T22:27:26Z"
 sprint: "s11"
 blocked_by: []
-blocked_by_gh: []
 gh_issue:
   - "2221"
 area:
   - "host/pane-ops"
 tags: []
 ---
+
 
 ## What
 

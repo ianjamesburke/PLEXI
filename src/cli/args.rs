@@ -347,9 +347,10 @@ pub enum AppCmd {
         /// New window
         #[arg(long, conflicts_with_all = ["down", "left", "up", "right", "tab"])]
         window: bool,
-        /// Open the new pane relative to this pane ID instead of the focused pane
-        #[arg(long)]
-        from_pane_id: Option<u64>,
+        /// Open the new pane relative to this pane ID. Defaults to the calling
+        /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
+        #[arg(long, value_name = "PANE_ID")]
+        from: Option<u64>,
         /// Extra arguments passed through to the app (only valid with an app id)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
         extra_args: Vec<String>,
@@ -494,10 +495,10 @@ pub enum AppCmd {
         #[arg(long)]
         #[arg(hide = true)]
         no_open: bool,
-        /// Open the new pane relative to this pane ID instead of the focused pane.
-        /// Defaults to PLEXI_PANE_ID if set in the environment.
-        #[arg(long)]
-        from_pane_id: Option<u64>,
+        /// Open the new pane relative to this pane ID. Defaults to the calling
+        /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
+        #[arg(long, value_name = "PANE_ID")]
+        from: Option<u64>,
     },
     /// Check a Plexi app directory or .plexipkg package for errors before publishing or installing.
     ///
@@ -621,8 +622,9 @@ pub enum PaneCmd {
         /// Overlay pane
         #[arg(long, conflicts_with_all = ["down", "left", "up", "tab", "window"])]
         overlay: bool,
-        /// Pane ID to split relative to (default: focused pane)
-        #[arg(long)]
+        /// Pane ID to split relative to. Defaults to the calling pane
+        /// (PLEXI_PANE_ID env), falling back to the focused pane.
+        #[arg(long, value_name = "PANE_ID")]
         from: Option<u64>,
         /// Close the pane when the command finishes
         #[arg(long, short = 'e')]
@@ -840,7 +842,7 @@ pub enum ContextCmd {
     /// Examples:
     ///   plexi context new "sprint"                          # top-level context
     ///   plexi context new "sprint" --parent                 # child of current context (no-focus)
-    ///   plexi context new "sprint" --parent "main" -d       # child, portal splits below
+    ///   plexi context new "sprint" --parent=main -d         # child of "main", portal splits below
     ///   plexi context new "sprint" --parent --window "echo a" --window "echo b"
     New {
         /// Name for the new context. Defaults to the directory basename.
@@ -848,9 +850,10 @@ pub enum ContextCmd {
         /// Root path for the new context. Defaults to current working directory.
         #[arg(long)]
         path: Option<String>,
-        /// Create as a child of the named context.
-        /// With no value, uses the current context (reads PLEXI_CONTEXT_NAME from env).
-        #[arg(long, num_args = 0..=1, default_missing_value = "__current__")]
+        /// Create as a child of a context (the new context is its sub-context).
+        /// Bare `--parent` uses the current context (reads PLEXI_CONTEXT_NAME from
+        /// env); use `--parent=<name>` to target another context by name.
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "__current__", value_name = "NAME")]
         parent: Option<String>,
         /// Command to run in each pre-populated window. Repeatable.
         #[arg(long, action = clap::ArgAction::Append)]
@@ -858,6 +861,11 @@ pub enum ContextCmd {
         /// Focus (zoom into) the new sub-context after creation. Default: stay in current pane.
         #[arg(long)]
         focus: bool,
+        /// Pane to anchor the portal split at (requires --parent).
+        /// Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the
+        /// parent context's focused pane.
+        #[arg(long, value_name = "PANE_ID")]
+        from: Option<u64>,
         /// Split portal below instead of right (requires --parent).
         #[arg(long, short = 'd', conflicts_with_all = ["left", "up", "right"])]
         down: bool,
@@ -886,10 +894,17 @@ pub enum ContextCmd {
     Zoom { context_id: u64 },
     /// Zoom out of the current sub-context to the parent.
     ZoomOut,
-    /// Push the focused pane into a new sub-context.
+    /// Push a pane into a new sub-context.
+    ///
+    /// Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the
+    /// focused pane.
     Push {
         /// Name for the new sub-context. Defaults to the pane name.
         name: Option<String>,
+        /// Pane to push. Defaults to the calling pane (PLEXI_PANE_ID env),
+        /// falling back to the focused pane.
+        #[arg(long, value_name = "PANE_ID")]
+        pane_id: Option<u64>,
     },
     /// List all open contexts as a JSON array.
     List,
@@ -953,10 +968,10 @@ pub enum AgentCmd {
     Init {
         /// App name (used as the directory name and app ID)
         name: String,
-        /// Open the new pane relative to this pane ID instead of the focused pane.
-        /// Defaults to PLEXI_PANE_ID if set in the environment.
-        #[arg(long)]
-        from_pane_id: Option<u64>,
+        /// Open the new pane relative to this pane ID. Defaults to the calling
+        /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
+        #[arg(long, value_name = "PANE_ID")]
+        from: Option<u64>,
     },
     /// Install an agent definition from the global registry into the current workspace.
     ///

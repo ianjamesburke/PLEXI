@@ -147,7 +147,7 @@ Make one path obvious:
 - Make `TextEdit` usable inside normal component trees.
 - Add focused app authoring tests for scaffold, input, state, TextEdit, small-pane layout, and canvas fallback.
 
-The first milestone is "an agent can generate a good local Plexi app." Do not start hosted marketplace work before this is true.
+The first milestone is "an agent can generate a good local Plexi app." Hosted marketplace infrastructure (registry standup, CDN) may proceed in parallel — it depends on the package metadata format, not on finished authoring. The authoring milestone gates what gets *published* (the review quality bar), not when registry work starts.
 
 ### 2. Clean Up Permissions And Trust
 
