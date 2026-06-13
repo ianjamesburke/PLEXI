@@ -224,6 +224,37 @@ pub fn app_init(
     }
 }
 
+/// `plexi app dev [path]` — run `just dev` in the app directory.
+///
+/// Convenience wrapper around the scaffolded justfile's `dev` recipe (which
+/// opens the app in a pane with hot reload). Keeps the author drive loop a
+/// single command without requiring them to remember the underlying open call.
+pub fn app_dev(path: &str) -> i32 {
+    let app_dir = std::path::Path::new(path);
+    if !app_dir.join("justfile").exists() {
+        log::warn!("app_dev: no justfile at {path}");
+        eprintln!("error: no justfile found in {path}");
+        eprintln!("  Run `plexi app init <name>` to scaffold an app with a justfile,");
+        eprintln!("  or add a justfile with a `dev` recipe.");
+        return 1;
+    }
+    log::info!("app_dev: running `just dev` in path={path}");
+    match std::process::Command::new("just")
+        .arg("dev")
+        .current_dir(app_dir)
+        .status()
+    {
+        Ok(s) => s.code().unwrap_or(0),
+        Err(e) => {
+            log::warn!("app_dev: failed to run just: {e}");
+            eprintln!(
+                "error: could not run `just` ({e}) — install it: https://github.com/casey/just"
+            );
+            1
+        }
+    }
+}
+
 fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -250,6 +281,12 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     perms.set_mode(perms.mode() | 0o111);
     std::fs::set_permissions(&main_path, perms)?;
 
+    // justfile — standard app-author drive loop (dev/health/test/lint).
+    std::fs::write(
+        app_dir.join("justfile"),
+        include_str!("../../sdk/python/plexi_sdk/templates/justfile.template"),
+    )?;
+
     Ok(())
 }
 
@@ -273,6 +310,12 @@ fn scaffold_agent_python_app(app_dir: &std::path::Path, name: &str) -> io::Resul
     let mut perms = std::fs::metadata(&main_path)?.permissions();
     perms.set_mode(perms.mode() | 0o111);
     std::fs::set_permissions(&main_path, perms)?;
+
+    // justfile — standard app-author drive loop (dev/health/test/lint).
+    std::fs::write(
+        app_dir.join("justfile"),
+        include_str!("../../sdk/python/plexi_sdk/templates/justfile.template"),
+    )?;
 
     log::info!(
         "scaffold_agent_python_app: created agent scaffold at {}",
@@ -1559,5 +1602,46 @@ mod version_pin_tests {
         );
         // No pinned_version.txt → no pin.
         assert!(!dir.path().join("pinned_version.txt").exists());
+    }
+}
+
+#[cfg(test)]
+mod dev_loop_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn scaffold_python_app_writes_justfile_with_all_targets() {
+        let dir = TempDir::new().unwrap();
+        let app_dir = dir.path().join("myapp");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        scaffold_python_app(&app_dir, "myapp").unwrap();
+        let justfile = std::fs::read_to_string(app_dir.join("justfile")).unwrap();
+        for target in ["dev:", "health:", "test:", "lint:"] {
+            assert!(
+                justfile.contains(target),
+                "scaffolded justfile missing `{target}` recipe"
+            );
+        }
+    }
+
+    #[test]
+    fn scaffold_agent_python_app_writes_justfile() {
+        let dir = TempDir::new().unwrap();
+        let app_dir = dir.path().join("agentapp");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        scaffold_agent_python_app(&app_dir, "agentapp").unwrap();
+        assert!(
+            app_dir.join("justfile").exists(),
+            "agent scaffold must also emit a justfile"
+        );
+    }
+
+    #[test]
+    fn app_dev_errors_without_justfile() {
+        // An empty directory has no justfile → exit 1, not a `just` invocation.
+        let dir = TempDir::new().unwrap();
+        let code = app_dev(dir.path().to_str().unwrap());
+        assert_eq!(code, 1, "app_dev must fail cleanly when no justfile exists");
     }
 }

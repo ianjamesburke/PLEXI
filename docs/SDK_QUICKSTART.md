@@ -112,7 +112,48 @@ plexi pane key <pane_id> minus
 
 The loop is: render, inspect the UiNode tree, send an action or key, inspect again.
 
-## 5. Next Steps
+## 5. The Dev Loop
+
+`plexi app init` scaffolds a `justfile` with the four commands every app author
+(human or agent) needs:
+
+```bash
+just dev      # open the app in a pane with hot reload, then edit main.py
+just health   # validate manifest + SDK shape + render-size matrix (no pane)
+just test     # run tests/ if present (graceful no-op otherwise)
+just lint     # uvx pyright + ruff over the source
+```
+
+`just dev` is also available as `plexi app dev .` — both run the same `dev`
+recipe. The app's manifest sets `watch = true`, so saving `main.py` reloads the
+pane automatically.
+
+### The agent drive loop (render → inspect → act)
+
+An agent iterates on an app without reading host internals by repeating one
+cycle. Concretely, for the counter app:
+
+```bash
+# 1. RENDER — get the current UI tree as JSON (no pane needed)
+plexi app render ./counter
+#    → { "type": "Column", "children": [ ... { "type": "Label", "text": "0" } ] }
+
+# 2. INSPECT — confirm the Label shows "0", decide the next action is "+"
+
+# 3. ACT — open a live pane, then send the key
+plexi app open ./counter            # or: just dev
+plexi pane key <pane_id> plus
+
+# 4. RE-INSPECT — read the pane state and confirm the count advanced
+plexi pane state <pane_id>
+#    → Label now reads "1"
+```
+
+Edit `main.py`, save, and `watch = true` reloads the pane; re-run
+`plexi app render` (or `just health`) to verify the change before moving on.
+Each cycle is one observable diff — keep changes small.
+
+## 6. Next Steps
 
 - SDK v2 reference: [`docs/sdk-v2.md`](sdk-v2.md)
 - PGAP wire reference: [`docs/PGAP_REFERENCE.md`](PGAP_REFERENCE.md)
