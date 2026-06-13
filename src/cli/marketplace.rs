@@ -249,9 +249,6 @@ pub fn app_license_show_cli(id: &str) -> i32 {
             println!("provider:  {}", lic.provider);
             println!("issued_at: {}", lic.issued_at);
             println!("token:     {}", lic.token);
-            if !lic.signature.is_empty() {
-                println!("signature: {}", lic.signature);
-            }
             0
         }
         None => {

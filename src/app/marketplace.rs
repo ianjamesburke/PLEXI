@@ -404,11 +404,13 @@ impl RegistryClient {
 
 // ── Licenses ──────────────────────────────────────────────────────────────────
 
-/// Proof that a user owns a paid app. Issued by a [`PaymentProvider`] on a
-/// successful purchase and persisted on disk. The `token` and `signature` are
-/// opaque provider-issued strings — the host stores and presents them; a real
-/// provider's verification logic validates them. v1 treats presence of a
-/// non-expired license for the app id as ownership.
+/// A receipt proving a user bought a paid app — like owning a purchased
+/// template file. Issued by a [`PaymentProvider`] on a successful purchase and
+/// persisted on disk. It is **never checked to run the app**: once the package
+/// is installed it runs freely, same path as a free app. The receipt only
+/// matters for re-downloading the paid artifact later without paying twice. The
+/// `token` is an opaque provider-issued string a future server uses to verify
+/// ownership on re-download.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct License {
     pub schema_version: u32,
@@ -417,12 +419,9 @@ pub struct License {
     pub version: String,
     /// ISO-8601 UTC issue time.
     pub issued_at: String,
-    /// Opaque provider-issued ownership token.
+    /// Opaque provider-issued ownership token, used for server-side re-download
+    /// verification when real payment is wired.
     pub token: String,
-    /// Opaque provider signature for future server-side verification. Empty
-    /// when the issuing provider does not sign.
-    #[serde(default)]
-    pub signature: String,
     /// Which provider issued this license (e.g. `"stub"`, `"stripe"`).
     pub provider: String,
 }
@@ -835,7 +834,6 @@ mod tests {
             version: "*".to_string(),
             issued_at: "2026-06-12T00:00:00Z".to_string(),
             token: "tok_test".to_string(),
-            signature: String::new(),
             provider: "stub".to_string(),
         };
         store.save(&lic).unwrap();
@@ -854,7 +852,6 @@ mod tests {
             version: "1.0.0".to_string(),
             issued_at: "x".to_string(),
             token: "t".to_string(),
-            signature: String::new(),
             provider: "stub".to_string(),
         };
         assert!(lic.authorizes("a", "1.0.0"));
