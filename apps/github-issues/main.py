@@ -577,15 +577,17 @@ class GhIssues(App):
 
     def _handle_picker_key(self, key: str) -> None:
         filtered = self._picker_filtered_labels()
-        if key == " ":
+        if key == "space":
             if filtered and 0 <= self._picker_sel < len(filtered):
                 label = filtered[self._picker_sel]
                 if label in self._picker_staged:
                     self._picker_staged.discard(label)
+                    self.emit.info(f"gh-issues: picker deselected {label!r}")
                 else:
                     self._picker_staged.add(label)
+                    self.emit.info(f"gh-issues: picker selected {label!r}")
             self.emit.schedule_render()
-        elif key == "Backspace":
+        elif key == "backspace":
             if self._picker_query:
                 self._picker_query = self._picker_query[:-1]
                 self._picker_sel = 0
