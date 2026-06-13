@@ -1,16 +1,24 @@
 ---
 id: "0020"
 title: "Marketplace: browse and install from registry"
-status: backlog
+status: in-progress
+estimate: "16h"
+started_at: "2026-06-13T01:57:12Z"
 sprint: "s4"
-estimate: 16h
 blocked_by:
   - 18
   - 16
 gh_issue: []
-area: ["cli/commands", "host/permissions", "infra/server"]
-tags: ["marketplace", "install", "trust-labels"]
+area:
+  - "cli/commands"
+  - "host/permissions"
+  - "infra/server"
+tags:
+  - "marketplace"
+  - "install"
+  - "trust-labels"
 ---
+
 
 Let a user browse reviewed apps and install a free hosted app while seeing the same trust labels and capabilities as local package install.
 

@@ -1,15 +1,21 @@
 ---
 id: "0021"
 title: "Marketplace: paid apps license and revenue model"
-status: backlog
+status: in-progress
+estimate: "12h"
+started_at: "2026-06-13T01:57:12Z"
 sprint: "s4"
-estimate: 12h
 blocked_by:
   - 20
 gh_issue: []
-area: ["infra/server"]
-tags: ["marketplace", "billing", "licenses"]
+area:
+  - "infra/server"
+tags:
+  - "marketplace"
+  - "billing"
+  - "licenses"
 ---
+
 
 Specify paid app purchase, license metadata, revenue share, refunds, takedowns, and publisher analytics without changing local app ownership.
 
