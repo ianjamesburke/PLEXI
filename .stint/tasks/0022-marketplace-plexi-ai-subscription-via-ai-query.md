@@ -1,8 +1,10 @@
 ---
 id: "0022"
 title: "Marketplace: Plexi AI subscription via ai.query"
-status: todo
+status: done
 estimate: "12h"
+actual: "0m"
+completed_at: "2026-06-13T16:45:46Z"
 sprint: "s4"
 blocked_by:
   - 20
@@ -15,6 +17,7 @@ tags:
   - "ai"
   - "subscription"
 ---
+
 
 
 Write the Plexi AI subscription spec. This is a **spec-only** task (no code). The output is a written document that defines how a Plexi-managed LLM proxy backend slots into the existing `ai.query` routing as one backend choice alongside local Ollama and user-owned API keys.

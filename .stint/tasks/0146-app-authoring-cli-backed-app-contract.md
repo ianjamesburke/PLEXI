@@ -1,8 +1,10 @@
 ---
 id: "0146"
 title: "App authoring: CLI-backed app contract"
-status: todo
+status: done
 estimate: "4h"
+actual: "0m"
+completed_at: "2026-06-13T16:45:46Z"
 sprint: "s2"
 blocked_by: []
 gh_issue: []
@@ -16,6 +18,7 @@ tags:
   - "cli-renderer"
   - "terminal"
 ---
+
 
 
 Formalize and document the contract for CLI-backed Plexi apps. The renderer hardening (0062) already shipped, making de facto decisions about lifecycle, caching, and descriptor invalidation. This task captures those decisions as explicit documentation and fills remaining gaps.

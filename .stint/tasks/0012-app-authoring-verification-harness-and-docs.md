@@ -1,8 +1,10 @@
 ---
 id: "0012"
 title: "App authoring: verification harness and docs"
-status: todo
+status: done
 estimate: "12h"
+actual: "0m"
+completed_at: "2026-06-13T16:45:46Z"
 sprint: "s2"
 blocked_by:
   - 9
@@ -16,6 +18,7 @@ tags:
   - "docs"
   - "verification"
 ---
+
 
 
 Add acceptance coverage and docs proving generated apps render, handle input, save state, and avoid layout overlap.

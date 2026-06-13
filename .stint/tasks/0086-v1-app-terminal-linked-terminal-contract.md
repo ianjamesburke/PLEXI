@@ -1,8 +1,10 @@
 ---
 id: "0086"
 title: "v1 app-terminal: linked terminal contract"
-status: todo
+status: done
 estimate: "10h"
+actual: "0m"
+completed_at: "2026-06-13T16:45:46Z"
 sprint: "s3"
 blocked_by: []
 gh_issue:
@@ -18,6 +20,7 @@ tags:
   - "permissions"
   - "terminal"
 ---
+
 
 
 Formalize and harden the linked app-terminal contract before marketplace-style apps can drive terminals.

@@ -1,8 +1,10 @@
 ---
 id: "0009"
 title: "App authoring: SDK dev standard and agent drive loop"
-status: todo
+status: done
 estimate: "8h"
+actual: "0m"
+completed_at: "2026-06-13T16:45:46Z"
 sprint: "s2"
 blocked_by: []
 gh_issue:
@@ -16,6 +18,7 @@ tags:
   - "sdk-v2"
   - "agent-loop"
 ---
+
 
 
 Standardize app-author commands around a Justfile-backed init, health, test, lint, and agent drive loop.

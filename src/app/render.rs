@@ -1,6 +1,7 @@
 //! Rendering helpers extracted from the main `eframe::App::update()` loop.
 
 use super::{ClickFlash, FocusLayer, PlexiApp};
+use crate::app_protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
 use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
 use egui_tiles::{Tile, TileId};
@@ -621,6 +622,22 @@ impl PlexiApp {
                         let zoomed_tab_info = behavior.tab_info.get(&zoomed_tile).cloned();
                         let zoomed_pane_name = behavior.pane_names.get(&pane_id).cloned();
                         let zoomed_tab_labels = behavior.tab_labels.clone();
+                        let zoomed_tab_activities: HashMap<PaneId, AgentState> = zoomed_tab_info
+                            .as_ref()
+                            .map(|group| {
+                                group
+                                    .members
+                                    .iter()
+                                    .filter_map(|id| {
+                                        behavior
+                                            .panes
+                                            .get(id)
+                                            .and_then(|p| p.effective_activity().cloned())
+                                            .map(|a| (*id, a))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
 
                         // Drop behavior to release the mutable borrow on ctx.panes
                         drop(behavior);
@@ -693,6 +710,7 @@ impl PlexiApp {
                                     bar_rect,
                                     group,
                                     &zoomed_tab_labels,
+                                    &zoomed_tab_activities,
                                     &self.colors,
                                     self.config.pane_title_font_size.unwrap_or(11.0),
                                     is_overtaken_app,

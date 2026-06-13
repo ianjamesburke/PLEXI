@@ -21,6 +21,9 @@ use std::path::Path;
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
+const TAB_PIP_RADIUS: f32 = 4.0;
+const TAB_PIP_MARGIN: f32 = 7.0;
+
 const OUTSIDE_WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const TERMINAL_GLYPH_PADDING_X: f32 = 2.0;
 static LOG_TERMINAL_GLYPH_PADDING: Once = Once::new();
@@ -40,6 +43,7 @@ pub fn render(
     pane_names: &HashMap<PaneId, String>,
     tab_info: &HashMap<TileId, TabGroupInfo>,
     tab_labels: &HashMap<PaneId, String>,
+    tab_activities: &HashMap<PaneId, AgentState>,
     workspace_root: Option<&Path>,
     pane_title_font_size: f32,
 ) -> (bool, Option<(TileId, usize)>) {
@@ -67,15 +71,11 @@ pub fn render(
         pane_id,
         tab_info,
         tab_labels,
+        tab_activities,
         pane_names,
         colors,
         outside_workspace,
         pane_title_font_size,
-        terminal
-            .agent
-            .as_ref()
-            .map(|a| &a.state)
-            .or(terminal.activity.as_ref()),
     );
 
     let font_size = terminal.font_size;
@@ -102,11 +102,11 @@ fn render_name_bar_and_tabs(
     pane_id: &PaneId,
     tab_info: &HashMap<TileId, TabGroupInfo>,
     tab_labels: &HashMap<PaneId, String>,
+    tab_activities: &HashMap<PaneId, AgentState>,
     pane_names: &HashMap<PaneId, String>,
     colors: &Colors,
     outside_workspace: bool,
     name_font_size: f32,
-    agent_state: Option<&AgentState>,
 ) -> Option<(TileId, usize)> {
     let has_name = pane_names.contains_key(pane_id);
     let tab_group = tab_info.get(&tile_id);
@@ -118,16 +118,12 @@ fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         ui.advance_cursor_after_rect(bar_rect);
-        if let Some(idx) = paint_tab_bar(ui.ctx(), ui.painter(), bar_rect, group, tab_labels, colors, name_font_size, false) {
+        if let Some(idx) = paint_tab_bar(ui.ctx(), ui.painter(), bar_rect, group, tab_labels, tab_activities, colors, name_font_size, false) {
             tab_click = Some((group.container_tile, idx));
         }
 
         if outside_workspace {
             paint_outside_workspace_badge(ui.painter(), bar_rect);
-        }
-
-        if let Some(state) = agent_state {
-            paint_activity_dot(ui, bar_rect, state, colors);
         }
     } else if has_name || outside_workspace {
         let bar_rect = egui::Rect::from_min_size(
@@ -137,19 +133,27 @@ fn render_name_bar_and_tabs(
         ui.advance_cursor_after_rect(bar_rect);
         ui.painter().rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
+        let agent_state = tab_activities.get(pane_id);
+        let pip_space = if agent_state.is_some() {
+            TAB_PIP_MARGIN + TAB_PIP_RADIUS * 2.0
+        } else {
+            0.0
+        };
+
+        if let Some(state) = agent_state {
+            paint_activity_dot(ui, bar_rect, state, colors);
+        }
+
         if has_name {
             let name = &pane_names[pane_id];
+            let center_x = bar_rect.center().x + pip_space / 2.0;
             ui.painter().text(
-                bar_rect.center(),
+                egui::pos2(center_x, bar_rect.center().y),
                 egui::Align2::CENTER_CENTER,
                 name,
                 egui::FontId::proportional(name_font_size),
                 colors.text_dim,
             );
-        }
-
-        if let Some(state) = agent_state {
-            paint_activity_dot(ui, bar_rect, state, colors);
         }
 
         if outside_workspace {
@@ -166,14 +170,12 @@ fn paint_activity_dot(
     state: &AgentState,
     colors: &Colors,
 ) {
-    const ACTIVITY_DOT_RADIUS: f32 = 3.0;
-    const ACTIVITY_DOT_MARGIN: f32 = 6.0;
     let t = ui.input(|i| i.time);
     let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
-    let cx = bar_rect.left() + ACTIVITY_DOT_MARGIN + ACTIVITY_DOT_RADIUS;
+    let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
     ui.painter().circle_filled(
         egui::pos2(cx, bar_rect.center().y),
-        ACTIVITY_DOT_RADIUS,
+        TAB_PIP_RADIUS,
         color,
     );
     if matches!(state, AgentState::Working) {

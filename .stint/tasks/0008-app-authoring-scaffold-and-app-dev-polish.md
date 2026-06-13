@@ -1,8 +1,10 @@
 ---
 id: "0008"
 title: "App authoring: scaffold and app dev polish"
-status: todo
+status: done
 estimate: "8h"
+actual: "0m"
+completed_at: "2026-06-13T16:45:46Z"
 sprint: "s2"
 blocked_by: []
 gh_issue:
@@ -15,6 +17,7 @@ tags:
   - "scaffold"
   - "sdk-v2"
 ---
+
 
 
 Make the generated app and `app dev` path visually correct enough that agents start from a good default.

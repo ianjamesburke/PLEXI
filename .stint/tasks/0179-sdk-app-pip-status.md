@@ -1,8 +1,10 @@
 ---
 id: "0179"
 title: "feat(sdk): apps optionally report their own pip status (red/yellow/green)"
-status: todo
+status: done
 estimate: "3h"
+actual: "0m"
+completed_at: "2026-06-13T16:45:46Z"
 sprint: "s2"
 blocked_by: []
 gh_issue:
@@ -15,6 +17,7 @@ tags:
   - "v1"
   - "app-authoring"
 ---
+
 
 
 ## What

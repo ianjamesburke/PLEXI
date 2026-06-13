@@ -1,8 +1,10 @@
 ---
 id: "0010"
 title: "App authoring: component polish and small-pane fit"
-status: todo
+status: done
 estimate: "8h"
+actual: "0m"
+completed_at: "2026-06-13T16:45:46Z"
 sprint: "s2"
 blocked_by: []
 gh_issue:
@@ -15,6 +17,7 @@ tags:
   - "components"
   - "small-pane"
 ---
+
 
 
 Tighten SDK component defaults so generated apps fit small panes without footer clipping, text overlap, or egui-looking shortcut rows.

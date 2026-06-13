@@ -1,3 +1,4 @@
+use crate::app_protocol::AgentState;
 use crate::host::pane::{Pane, TerminalPane};
 use crate::render;
 use crate::ui::style;
@@ -31,6 +32,7 @@ pub(crate) fn paint_tab_bar(
     bar_rect: egui::Rect,
     group: &TabGroupInfo,
     tab_labels: &HashMap<PaneId, String>,
+    tab_activities: &HashMap<PaneId, AgentState>,
     colors: &Colors,
     font_size: f32,
     overtake_hint: bool,
@@ -85,6 +87,29 @@ pub(crate) fn paint_tab_bar(
             );
         }
 
+        const TAB_PIP_RADIUS: f32 = 4.0;
+        const TAB_PIP_LEFT_PAD: f32 = 7.0;
+        let has_pip = tab_activities.contains_key(&pane_id);
+        let pip_space = if has_pip {
+            TAB_PIP_LEFT_PAD + TAB_PIP_RADIUS * 2.0
+        } else {
+            0.0
+        };
+
+        if let Some(state) = tab_activities.get(&pane_id) {
+            let t = ctx.input(|i| i.time);
+            let color = crate::ui::activity::dot_color_from_time(state, colors, t, i);
+            let cx = tab_rect.left() + TAB_PIP_LEFT_PAD + TAB_PIP_RADIUS;
+            painter.circle_filled(
+                egui::pos2(cx, tab_rect.center().y),
+                TAB_PIP_RADIUS,
+                color,
+            );
+            if matches!(state, AgentState::Working) {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
+
         let label = tab_labels
             .get(&pane_id)
             .cloned()
@@ -96,12 +121,13 @@ pub(crate) fn paint_tab_bar(
             colors.text_dim
         };
         let text_pad = 8.0;
-        let max_text_width = (tab_width - text_pad * 2.0).max(0.0);
+        let content_left = tab_rect.left() + pip_space;
+        let max_text_width = (tab_rect.right() - content_left - text_pad).max(0.0);
 
         let galley = painter.layout(label, font.clone(), text_color, max_text_width);
 
         let text_pos = egui::pos2(
-            tab_rect.center().x - galley.size().x / 2.0,
+            content_left + (tab_rect.right() - content_left) / 2.0 - galley.size().x / 2.0,
             tab_rect.center().y - galley.size().y / 2.0,
         );
         painter.galley(text_pos, galley, text_color);
@@ -288,6 +314,24 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         }
 
         let pane_rect = ui.available_rect_before_wrap();
+
+        let tab_activities: HashMap<PaneId, AgentState> = self
+            .tab_info
+            .get(&tile_id)
+            .map(|group| {
+                group
+                    .members
+                    .iter()
+                    .filter_map(|id| {
+                        self.panes
+                            .get(id)
+                            .and_then(|p| p.effective_activity().cloned())
+                            .map(|a| (*id, a))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let Some(pane) = self.panes.get_mut(pane_id) else {
             return UiResponse::None;
         };
@@ -308,7 +352,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 let is_overtaken = app_pane.overlay_replaced.is_some();
                 if let Some(idx) = paint_tab_bar(
                     app_ui.ctx(), app_ui.painter(), bar_rect, group,
-                    &self.tab_labels, &self.colors, self.pane_title_font_size, is_overtaken,
+                    &self.tab_labels, &tab_activities, &self.colors, self.pane_title_font_size, is_overtaken,
                 ) {
                     self.tab_click = Some((group.container_tile, idx));
                 }
@@ -330,6 +374,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 &self.pane_names,
                 &self.tab_info,
                 &self.tab_labels,
+                &tab_activities,
                 self.workspace_root.as_deref(),
                 self.pane_title_font_size,
             );
