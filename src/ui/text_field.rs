@@ -38,6 +38,72 @@ fn styled_text_input_inner(
     .inner
 }
 
+/// Draw a glyph-height caret over a `TextEdit` whose built-in cursor was
+/// hidden (`text_cursor.stroke.color = TRANSPARENT`, `text_cursor.blink =
+/// false` in the surrounding scope).
+///
+/// egui paints its caret at full row height plus a 1.5px overshoot on each
+/// end and exposes no height knob, so editors that want a caret matching the
+/// glyph height must paint their own. The blink timer resets on any cursor
+/// movement or edit so the caret stays solid while navigating. Never hide
+/// egui's caret by painting background over it — that destroys glyph edges.
+pub(crate) fn draw_text_caret(
+    ui: &egui::Ui,
+    output: &egui::widgets::text_edit::TextEditOutput,
+    caret_height: f32,
+    fallback_row_height: f32,
+    stroke: egui::Stroke,
+) {
+    if !output.response.has_focus() {
+        return;
+    }
+    let Some(cursor_range) = &output.cursor_range else {
+        return;
+    };
+    let index = cursor_range.primary.ccursor.index;
+    let now = ui.ctx().input(|i| i.time);
+
+    let state_id = output.response.id.with("caret_blink");
+    let prev: Option<(usize, f64)> = ui.ctx().data(|d| d.get_temp(state_id));
+    let moved = prev.is_none_or(|(last_index, _)| last_index != index);
+    let blink_start = if moved || output.response.changed() || output.response.gained_focus() {
+        now
+    } else {
+        prev.map_or(now, |(_, start)| start)
+    };
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(state_id, (index, blink_start)));
+
+    // Match egui's TextEdit: no caret and no blink repaints while the OS
+    // window is unfocused.
+    if !ui.ctx().input(|i| i.focused) {
+        return;
+    }
+
+    let cursor_pos = output.galley.pos_from_cursor(&cursor_range.primary);
+    let row_h = if cursor_pos.height() > 0.01 {
+        cursor_pos.height()
+    } else {
+        fallback_row_height
+    };
+
+    const ON: f64 = 0.5;
+    const OFF: f64 = 0.5;
+    let t = (now - blink_start) % (ON + OFF);
+    if t < ON {
+        let row_top = output.galley_pos.y + cursor_pos.min.y;
+        let start_y = row_top + (row_h - caret_height) * 0.5;
+        let cx = output.galley_pos.x + cursor_pos.center().x;
+        ui.painter().line_segment(
+            [egui::pos2(cx, start_y), egui::pos2(cx, start_y + caret_height)],
+            stroke,
+        );
+        ui.ctx().request_repaint_after_secs((ON - t) as f32);
+    } else {
+        ui.ctx().request_repaint_after_secs((ON + OFF - t) as f32);
+    }
+}
+
 pub(crate) struct TextField<'a> {
     id: egui::Id,
     hint: egui::WidgetText,

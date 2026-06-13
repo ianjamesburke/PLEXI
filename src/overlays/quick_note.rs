@@ -111,16 +111,18 @@ impl PlexiApp {
                             .max_height(max_text_h)
                             .show(ui, |ui| {
                                 ui.scope(|ui| {
-                                    // egui's built-in cursor handles blink and
-                                    // paints a full-row caret — never hand-roll
-                                    // an erase-and-redraw cursor (it clips
-                                    // glyph edges and ignores cursor movement).
-                                    ui.visuals_mut().text_cursor.stroke =
-                                        egui::Stroke::new(1.5, self.colors.accent);
+                                    // egui's caret is hidden (transparent,
+                                    // non-blinking); draw_text_caret paints a
+                                    // glyph-height replacement on top.
+                                    ui.visuals_mut().text_cursor.blink = false;
+                                    ui.visuals_mut().text_cursor.stroke.color =
+                                        egui::Color32::TRANSPARENT;
 
                                     let te_id = egui::Id::new("quick_note_text");
                                     let qn_font_id = egui::FontId::monospace(style::TEXT_BODY);
-                                    egui::TextEdit::multiline(
+                                    let qn_row_height =
+                                        ui.fonts(|f| f.row_height(&qn_font_id));
+                                    let output = egui::TextEdit::multiline(
                                         &mut self.quick_note_text,
                                     )
                                     .id(te_id)
@@ -137,6 +139,13 @@ impl PlexiApp {
                                             .size(style::TEXT_BODY),
                                     )
                                     .show(ui);
+                                    crate::ui::text_field::draw_text_caret(
+                                        ui,
+                                        &output,
+                                        style::TEXT_BODY,
+                                        qn_row_height,
+                                        egui::Stroke::new(1.5, self.colors.accent),
+                                    );
                                 });
                             });
                     }

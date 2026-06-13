@@ -484,13 +484,12 @@ impl App for TextEditorApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                // egui's built-in cursor handles blink (timer resets on edits
-                // and cursor movement) and paints a full-row caret. Never
-                // hand-roll an erase-and-redraw cursor on top of it: the
-                // erase rect destroys glyph edges under a monospace font.
+                // egui's caret is hidden (transparent, non-blinking) and
+                // draw_text_caret paints a glyph-height replacement on top.
                 let output = ui.scope(|ui| {
-                    ui.visuals_mut().text_cursor.stroke =
-                        egui::Stroke::new(2.0, colors.accent);
+                    ui.visuals_mut().text_cursor.blink = false;
+                    ui.visuals_mut().text_cursor.stroke.color =
+                        egui::Color32::TRANSPARENT;
                     egui::TextEdit::multiline(&mut self.content)
                         .id(te_id)
                         .font(font_id)
@@ -500,6 +499,13 @@ impl App for TextEditorApp {
                         .frame(false)
                         .show(ui)
                 }).inner;
+                crate::ui::text_field::draw_text_caret(
+                    ui,
+                    &output,
+                    self.font_size,
+                    row_height,
+                    egui::Stroke::new(2.0, colors.accent),
+                );
 
                 if output.response.changed() {
                     self.last_edit = Some(Instant::now());
