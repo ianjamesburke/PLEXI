@@ -296,8 +296,25 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
             let mut app_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-            let suppress_overtake = self.tab_info.contains_key(&tile_id);
-            render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused, suppress_overtake);
+
+            let tab_group = self.tab_info.get(&tile_id);
+            let has_tabs = tab_group.is_some();
+            if let Some(group) = tab_group {
+                let bar_rect = egui::Rect::from_min_size(
+                    app_ui.cursor().min,
+                    egui::vec2(app_ui.available_width(), TAB_BAR_HEIGHT),
+                );
+                app_ui.advance_cursor_after_rect(bar_rect);
+                let is_overtaken = app_pane.overlay_replaced.is_some();
+                if let Some(idx) = paint_tab_bar(
+                    app_ui.ctx(), app_ui.painter(), bar_rect, group,
+                    &self.tab_labels, &self.colors, self.pane_title_font_size, is_overtaken,
+                ) {
+                    self.tab_click = Some((group.container_tile, idx));
+                }
+            }
+
+            render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused, has_tabs);
         } else if let Some(terminal) = pane.as_terminal_mut() {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
