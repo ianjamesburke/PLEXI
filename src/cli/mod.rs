@@ -111,8 +111,10 @@ pub mod demo;
 pub mod descriptor;
 pub mod doctor;
 pub mod install;
+pub mod account;
 pub mod install_host;
 pub mod list;
+pub mod marketplace;
 pub mod notes;
 pub mod notify;
 pub mod open;
@@ -208,8 +210,13 @@ pub use agent::{
 pub use ai::{ai_doctor_cli, ai_setup_cli};
 pub use app::{
     app_action_cli, app_info, app_init, app_inspect_cli, app_install_package, app_install_with_pin,
-    app_list, app_package_cli, app_publish, app_render, app_uninstall, app_update_cli,
-    InstallConfirm,
+    app_list, app_package_cli, app_render, app_uninstall, app_update_cli, InstallConfirm,
+};
+pub use account::{
+    account_login_cli, account_logout_cli, account_signup_cli, account_status_cli,
+};
+pub use marketplace::{
+    app_browse_cli, app_license_list_cli, app_license_show_cli, app_publish_cli, app_search_cli,
 };
 pub use app_check::app_check_cli;
 pub use completions::{complete_open_cli, completions_cli};

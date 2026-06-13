@@ -1,8 +1,11 @@
+pub mod account;
 pub mod app_trait;
 mod canvas_bindings;
+pub mod host_version;
 mod dispatch;
 mod focus;
 mod lifecycle;
+pub mod marketplace;
 pub(crate) mod notification_image;
 mod notifications;
 pub mod package;

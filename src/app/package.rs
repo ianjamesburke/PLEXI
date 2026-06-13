@@ -206,6 +206,10 @@ pub struct PackageReport {
     pub capabilities: Vec<Capability>,
     pub file_count: usize,
     pub total_size: u64,
+    /// Declared `[requires].plexi_min` — minimum host version, if any.
+    pub requires_plexi_min: Option<String>,
+    /// Declared `[requires].plexi_max` — soft ceiling host version, if any.
+    pub requires_plexi_max: Option<String>,
 }
 
 // ── Trust label ───────────────────────────────────────────────────────────────
@@ -299,6 +303,11 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
     let files = collect_files(app_dir)?;
     let total_size = files.iter().map(|(_, size)| size).sum();
 
+    let (requires_plexi_min, requires_plexi_max) = manifest
+        .requires
+        .map(|r| (r.plexi_min, r.plexi_max))
+        .unwrap_or((None, None));
+
     Ok(PackageReport {
         id: manifest.app.id,
         name: manifest.app.name,
@@ -308,6 +317,8 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
         capabilities,
         file_count: files.len(),
         total_size,
+        requires_plexi_min,
+        requires_plexi_max,
     })
 }
 
@@ -497,7 +508,9 @@ pub fn build_package(app_dir: &Path, out: Option<&Path>) -> Result<PathBuf, Pack
     Ok(out_path)
 }
 
-fn sha256_file(path: &Path) -> Result<String, PackageError> {
+/// sha256 of a file's contents, hex-encoded. Reused by the marketplace
+/// publisher path to checksum a built `.plexipkg` artifact.
+pub(crate) fn sha256_file(path: &Path) -> Result<String, PackageError> {
     let mut file = fs::File::open(path).map_err(|e| io_err("open", path, e))?;
     let mut hasher = Sha256::new();
     std::io::copy(&mut file, &mut hasher).map_err(|e| io_err("hash", path, e))?;
@@ -1027,6 +1040,8 @@ mod tests {
             capabilities: Vec::new(),
             file_count: 2,
             total_size: 100,
+            requires_plexi_min: None,
+            requires_plexi_max: None,
         }
     }
 

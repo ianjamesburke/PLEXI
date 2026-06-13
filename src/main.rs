@@ -196,9 +196,9 @@ fn main() -> eframe::Result {
         })
         .collect();
     use crate::cli::args::{
-        AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd, HookAction,
-        NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd, SecretCmd, UpdateCmd,
-        WorkspaceCmd,
+        AccountCmd, AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd,
+        HookAction, LicenseCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd, SecretCmd,
+        UpdateCmd, WorkspaceCmd,
     };
     use clap::Parser;
 
@@ -499,9 +499,21 @@ fn main() -> eframe::Result {
                                 log::info!("app_freeze:cli: path={path}");
                                 std::process::exit(cli::freeze_cli(&path));
                             }
-                            AppCmd::Publish => {
-                                std::process::exit(cli::app_publish());
+                            AppCmd::Publish { path } => {
+                                std::process::exit(cli::app_publish_cli(&path));
                             }
+                            AppCmd::Browse => {
+                                std::process::exit(cli::app_browse_cli());
+                            }
+                            AppCmd::Search { query } => {
+                                std::process::exit(cli::app_search_cli(&query));
+                            }
+                            AppCmd::License { cmd } => match cmd {
+                                LicenseCmd::List => std::process::exit(cli::app_license_list_cli()),
+                                LicenseCmd::Show { id } => {
+                                    std::process::exit(cli::app_license_show_cli(&id))
+                                }
+                            },
                             AppCmd::Update { id } => {
                                 log::info!("app_update:cli: id={id:?}");
                                 std::process::exit(cli::app_update_cli(id.as_deref()));
@@ -838,6 +850,16 @@ fn main() -> eframe::Result {
                                 &runner, &command, &extra, &opts,
                             ));
                         }
+                    },
+                    Commands::Account { cmd } => match cmd {
+                        AccountCmd::Status => std::process::exit(cli::account_status_cli()),
+                        AccountCmd::Login { email } => {
+                            std::process::exit(cli::account_login_cli(email.as_deref()))
+                        }
+                        AccountCmd::Signup { email } => {
+                            std::process::exit(cli::account_signup_cli(email.as_deref()))
+                        }
+                        AccountCmd::Logout => std::process::exit(cli::account_logout_cli()),
                     },
                     Commands::Registry { cmd } => match cmd {
                         RegistryCmd::Watch { cli: only } => {

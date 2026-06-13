@@ -449,6 +449,36 @@ pub fn print_trust_sheet(
             println!("  {:<18}{}{sensitive}", cap.as_str(), cap.description());
         }
     }
+    if report.requires_plexi_min.is_some() || report.requires_plexi_max.is_some() {
+        let min = report.requires_plexi_min.as_deref().unwrap_or("any");
+        let max = report.requires_plexi_max.as_deref().unwrap_or("any");
+        println!("requires:     Plexi {min} .. {max}");
+    }
+}
+
+/// Host-version gate: block install when the host is too old for the app (or a
+/// declared requirement is malformed); warn when the host is newer than the
+/// app's declared ceiling. Returns an exit code to abort, or `None` to proceed.
+pub fn host_version_gate(report: &crate::app::package::PackageReport) -> Option<i32> {
+    use crate::app::host_version::{check, current};
+    let verdict = check(
+        report.requires_plexi_min.as_deref(),
+        report.requires_plexi_max.as_deref(),
+        current(),
+    );
+    match verdict.message() {
+        None => None,
+        Some(msg) if verdict.is_blocking() => {
+            eprintln!("error: {msg}");
+            log::warn!("install: host-version gate blocked '{}': {msg}", report.id);
+            Some(1)
+        }
+        Some(msg) => {
+            eprintln!("warning: {msg}");
+            log::info!("install: host-version warning for '{}': {msg}", report.id);
+            None
+        }
+    }
 }
 
 /// Resolve the trust label for a report against the bundled core pack ids.
@@ -506,6 +536,11 @@ fn run_install_gate(report: &crate::app::package::PackageReport, assume_yes: boo
     use std::io::IsTerminal;
     let label = trust_label_for(report);
     print_trust_sheet(report, label);
+    // Host-version compatibility: a too-old host (or malformed requirement)
+    // aborts before the confirm prompt; a too-new host only warns.
+    if let Some(code) = host_version_gate(report) {
+        return Some(code);
+    }
     let is_tty = io::stdin().is_terminal();
     let mut stdin = io::stdin().lock();
     match confirm_install(
@@ -1079,65 +1114,6 @@ pub(super) fn is_github_shorthand(s: &str) -> bool {
     !owner.is_empty() && !repo.is_empty() && !repo.contains('/')
 }
 
-/// Fetch the plexi app registry and resolve a bare app ID to a source spec string.
-///
-/// Registry entries in `ianjamesburke/PLEXI` with a `path` field resolve to `local:<dir>`
-/// so the bundled copy is used without a network clone. Third-party repos resolve to
-/// `github:owner/repo`.
-pub(super) fn resolve_registry_id(id: &str) -> Result<String, String> {
-    const REGISTRY_URL: &str =
-        "https://raw.githubusercontent.com/ianjamesburke/plexi-app-registry/main/registry.json";
-
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(30))
-        .build();
-
-    let body = match agent.get(REGISTRY_URL).call() {
-        Ok(r) => match r.into_string() {
-            Ok(s) => s,
-            Err(e) => return Err(format!("failed to read registry response: {e}")),
-        },
-        Err(e) => return Err(format!("failed to fetch registry: {e}")),
-    };
-
-    let entries: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("failed to parse registry: {e}"))?;
-
-    let arr = entries
-        .as_array()
-        .ok_or_else(|| "registry response is not a JSON array".to_string())?;
-
-    for entry in arr {
-        if entry["id"].as_str() != Some(id) {
-            continue;
-        }
-        let repo = entry["repo"]
-            .as_str()
-            .ok_or_else(|| format!("registry entry '{id}' has no 'repo' field"))?;
-        let path = entry["path"].as_str();
-
-        let spec = if repo == "ianjamesburke/PLEXI" {
-            if let Some(p) = path {
-                // Use the bundled copy — no network clone needed.
-                let dir = p.split('/').next_back().unwrap_or(p);
-                format!("local:{dir}")
-            } else {
-                format!("github:{repo}")
-            }
-        } else {
-            format!("github:{repo}")
-        };
-
-        log::info!("registry: resolved '{id}' → {spec}");
-        return Ok(spec);
-    }
-
-    Err(format!(
-        "unknown app id '{id}' — run `plexi app list` or visit plexiapp.com/apps"
-    ))
-}
-
 /// channel apps dir. Source spec follows `packs::parse_source_spec`.
 fn to_title_case(s: &str) -> String {
     s.split(['-', '_'])
@@ -1164,15 +1140,6 @@ fn to_struct_name(s: &str) -> String {
         .collect::<String>()
 }
 
-/// `plexi app publish` — stub for the v1 marketplace publisher path.
-pub fn app_publish() -> i32 {
-    log::info!("app_publish: stub invoked");
-    println!(
-        "Publishing is on the v1 marketplace roadmap. Use `plexi app validate` before local install flows for now."
-    );
-    println!("Follow progress at https://plexiapp.com");
-    0
-}
 
 /// `plexi app update [<id>]` — local version check for installed apps.
 ///
@@ -1404,6 +1371,8 @@ mod install_confirm_tests {
             capabilities: Vec::new(),
             file_count: 2,
             total_size: 64,
+            requires_plexi_min: None,
+            requires_plexi_max: None,
         }
     }
 
@@ -1522,15 +1491,6 @@ mod app_inspect_tests {
         // No manifest — must fail validation, exit non-zero.
         let code = super::app_inspect_cli(&dir.path().to_string_lossy());
         assert_eq!(code, 1, "dir without manifest must fail inspect");
-    }
-}
-
-#[cfg(test)]
-mod app_publish_tests {
-    #[test]
-    fn publish_stub_returns_0() {
-        let code = super::app_publish();
-        assert_eq!(code, 0, "publish stub should always succeed");
     }
 }
 

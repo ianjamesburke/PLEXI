@@ -1,16 +1,34 @@
 ---
 import Layout from '../../layouts/Layout.astro';
+import registry from '../../lib/registry-index.json';
 
-const REGISTRY_URL = 'https://raw.githubusercontent.com/ianjamesburke/plexi-registry/main/registry.json';
-
+// Detail pages are generated from the central registry index (new schema).
+// Only `public` apps get a page; the build is self-contained (reads the local
+// index stub) so it never depends on a live registry being reachable.
 export async function getStaticPaths() {
-  const apps = await fetch('https://raw.githubusercontent.com/ianjamesburke/plexi-registry/main/registry.json').then(r => r.json());
+  const apps = (registry.apps as any[]).filter(
+    (a) => (a.visibility ?? 'private') === 'public'
+  );
   return apps.map((app: any) => ({ params: { id: app.id }, props: { app } }));
 }
 
 const { app } = Astro.props;
-const repoUrl = `https://github.com/${app.repo}${app.path ? `/tree/main/${app.path}` : ''}`;
-const installCmd = `plexi install ${app.id}`;
+
+function priceLabel(price: any): string {
+  if (!price || price === 'free') return 'Free';
+  if (typeof price === 'object') {
+    const major = Math.floor(price.amount_cents / 100);
+    const minor = String(price.amount_cents % 100).padStart(2, '0');
+    const sym = price.currency?.toLowerCase() === 'usd' ? '$' : '';
+    return `${sym}${major}.${minor} ${price.currency?.toUpperCase() ?? ''}`.trim();
+  }
+  return 'Free';
+}
+
+const sourceUrl = app.source?.startsWith('github:')
+  ? `https://github.com/${app.source.slice('github:'.length)}`
+  : null;
+const installCmd = `plexi app install ${app.id}`;
 ---
 
 <Layout title={`${app.name} — Plexi Apps`} description={app.description}>
@@ -26,7 +44,7 @@ const installCmd = `plexi install ${app.id}`;
     <header class="app-header">
       <div class="title-row">
         <h1>{app.name}</h1>
-        {app.core && <span class="core-badge">core</span>}
+        <span class="core-badge">{priceLabel(app.price)}</span>
         <span class="version">v{app.version}</span>
       </div>
       <p class="desc">{app.description}</p>
@@ -39,26 +57,34 @@ const installCmd = `plexi install ${app.id}`;
     </div>
 
     <div class="meta">
-      <div class="meta-row">
-        <span class="meta-label">Author</span>
-        <span class="meta-val">
-          <a href={`https://github.com/${app.author}`} target="_blank">@{app.author}</a>
-        </span>
-      </div>
-      <div class="meta-row">
-        <span class="meta-label">Source</span>
-        <span class="meta-val">
-          <a href={repoUrl} target="_blank">
-            {app.core ? `core — ${app.repo}` : app.repo}{app.path ? `/${app.path}` : ''}
-          </a>
-        </span>
-      </div>
-      <div class="meta-row">
-        <span class="meta-label">Tags</span>
-        <span class="meta-val tags">
-          {app.tags.map((t: string) => <span class="tag">{t}</span>)}
-        </span>
-      </div>
+      {app.publisher && (
+        <div class="meta-row">
+          <span class="meta-label">Publisher</span>
+          <span class="meta-val">@{app.publisher}</span>
+        </div>
+      )}
+      {app.trust_label && (
+        <div class="meta-row">
+          <span class="meta-label">Trust</span>
+          <span class="meta-val">{app.trust_label}</span>
+        </div>
+      )}
+      {sourceUrl && (
+        <div class="meta-row">
+          <span class="meta-label">Source</span>
+          <span class="meta-val">
+            <a href={sourceUrl} target="_blank">{app.source}</a>
+          </span>
+        </div>
+      )}
+      {app.capabilities?.length > 0 && (
+        <div class="meta-row">
+          <span class="meta-label">Capabilities</span>
+          <span class="meta-val tags">
+            {app.capabilities.map((c: string) => <span class="tag">{c}</span>)}
+          </span>
+        </div>
+      )}
     </div>
 
     <div class="back-row">

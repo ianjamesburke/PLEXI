@@ -1,16 +1,37 @@
-use super::app::{
-    app_is_python, ensure_plexi_sdk, is_bare_id, is_github_shorthand, resolve_registry_id,
-};
+use super::app::{app_is_python, ensure_plexi_sdk, is_bare_id, is_github_shorthand};
 use super::print_tip;
 use std::io::{self, Write};
 
 pub fn install_cli(spec: &str) -> i32 {
+    use crate::cli::marketplace::InstallPlan;
     let (source_str, git_ref) = crate::cli::install_host::split_source_and_ref(spec);
     let resolved = if is_bare_id(&source_str) {
-        match resolve_registry_id(&source_str) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("error: {e}");
+        // A bare id resolves only through the hosted marketplace catalog. A
+        // free/licensed app installs from its CDN artifact (or a declared github
+        // source); a paid app with no license is blocked; an unknown id or an
+        // unreachable registry is a hard error. There is no legacy fallback.
+        match crate::cli::marketplace::plan_install(&source_str) {
+            InstallPlan::Package(pkg) => {
+                return crate::cli::app::app_install_package(
+                    &pkg.to_string_lossy(),
+                    None,
+                    crate::cli::InstallConfirm::Interactive,
+                    false,
+                );
+            }
+            InstallPlan::Source(spec) => spec,
+            InstallPlan::Blocked => return 1,
+            InstallPlan::NotFound => {
+                eprintln!(
+                    "error: no app '{source_str}' in the marketplace — run `plexi app search {source_str}` or `plexi app browse`"
+                );
+                return 1;
+            }
+            InstallPlan::Unreachable => {
+                eprintln!(
+                    "error: could not reach the marketplace to resolve '{source_str}'. \
+                     Check your connection, or install from an explicit source (github:owner/repo)."
+                );
                 return 1;
             }
         }

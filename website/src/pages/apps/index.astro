@@ -1,15 +1,78 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import Newsletter from '../../components/Newsletter.astro';
+import registry from '../../lib/registry-index.json';
+
+// The catalog is served from a central registry index. Until it is populated
+// this stub renders the empty "v1 roadmap" state; once the index has public
+// apps, each becomes a card linking to its detail page. Only `public` apps are
+// listed here — `unlisted`/`private` apps install by id but are never shown.
+type Entry = {
+  id: string;
+  name: string;
+  version: string;
+  description?: string;
+  publisher?: string;
+  capabilities?: string[];
+  trust_label?: string;
+  visibility?: string;
+  price?: string | { amount_cents: number; currency: string };
+};
+
+const apps: Entry[] = (registry.apps as Entry[]).filter(
+  (a) => (a.visibility ?? 'private') === 'public'
+);
+
+function priceLabel(price: Entry['price']): string {
+  if (!price || price === 'free') return 'Free';
+  if (typeof price === 'object') {
+    const major = Math.floor(price.amount_cents / 100);
+    const minor = String(price.amount_cents % 100).padStart(2, '0');
+    const sym = price.currency?.toLowerCase() === 'usd' ? '$' : '';
+    return `${sym}${major}.${minor} ${price.currency?.toUpperCase() ?? ''}`.trim();
+  }
+  return 'Free';
+}
 ---
 
-<Layout title="Apps — Plexi" description="The Plexi App Marketplace is on the v1 roadmap.">
+<Layout title="Apps — Plexi" description="Browse and install Plexi apps from the marketplace.">
   <div class="wrap">
     <header class="apps-header">
       <div class="soon-badge">v1 roadmap</div>
       <h1>App Marketplace</h1>
-      <p class="sub">Local packages come first. Reviewed app installs follow on the v1 path.</p>
+      <p class="sub">
+        Install reviewed apps with <code>plexi app install &lt;id&gt;</code>. Free
+        apps need no account. Apps install into your local <code>.plexi</code>
+        profile and keep running even if the registry is offline.
+      </p>
     </header>
+
+    {apps.length === 0 ? (
+      <div class="empty">
+        <p>No public apps are listed yet.</p>
+        <p class="empty-sub">
+          Local packages come first; reviewed registry installs follow on the v1
+          path. Publishers: <code>plexi app publish</code>.
+        </p>
+      </div>
+    ) : (
+      <div class="grid">
+        {apps.map((app) => (
+          <a class="card" href={`/apps/${app.id}`}>
+            <div class="card-top">
+              <span class="card-name">{app.name}</span>
+              <span class="card-price">{priceLabel(app.price)}</span>
+            </div>
+            <p class="card-desc">{app.description ?? ''}</p>
+            <div class="card-meta">
+              <span class="card-ver">v{app.version}</span>
+              {app.publisher && <span class="card-pub">@{app.publisher}</span>}
+              {app.trust_label && <span class="card-trust">{app.trust_label}</span>}
+            </div>
+          </a>
+        ))}
+      </div>
+    )}
   </div>
 
   <Newsletter />
@@ -17,7 +80,7 @@ import Newsletter from '../../components/Newsletter.astro';
 
 <style>
   .apps-header {
-    padding: 96px 0 80px;
+    padding: 96px 0 48px;
     text-align: center;
   }
 
@@ -48,5 +111,84 @@ import Newsletter from '../../components/Newsletter.astro';
     color: var(--fg-4);
     font-size: 15px;
     line-height: 1.7;
+    max-width: 540px;
+    margin: 0 auto;
+  }
+
+  .sub code,
+  .empty code {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent-light);
+  }
+
+  .empty {
+    text-align: center;
+    padding: 48px 0 96px;
+    color: var(--fg-4);
+  }
+
+  .empty-sub {
+    font-size: 14px;
+    margin-top: 12px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+    padding: 16px 0 96px;
+  }
+
+  .card {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    text-decoration: none;
+    transition: border-color 0.15s ease;
+  }
+
+  .card:hover {
+    border-color: var(--accent-dim);
+  }
+
+  .card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .card-name {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .card-price {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent-light);
+  }
+
+  .card-desc {
+    color: var(--fg-4);
+    font-size: 14px;
+    line-height: 1.6;
+    margin: 8px 0 16px;
+  }
+
+  .card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-4);
+  }
+
+  .card-trust {
+    color: var(--fg-4);
   }
 </style>
