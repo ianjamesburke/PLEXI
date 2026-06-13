@@ -276,7 +276,7 @@ path  = "~/.plexi/backlog"
 [[quick_note.destinations]]
 key     = 2
 label   = "Ask Claude"
-command = "plexi terminal --layout context-end -- claude -p {note}"
+command = "plexi pane new 'claude -p {note}' --window"
 
 [[quick_note.destinations]]
 key   = 3
@@ -300,7 +300,7 @@ hidden  = true
 # label        = "Recent projects"
 # children_cmd = "~/.plexi/scripts/top-projects.sh"
 # # Script stdout format: one entry per line as  key|label|command
-# # Example line: 1|PLEXI|cd ~/Documents/GitHub/PLEXI && plexi terminal --layout context-end -- claude -p {note}
+# # Example line: 1|PLEXI|cd ~/Documents/GitHub/PLEXI && plexi pane new 'claude -p {note}' --window
 
 # ── Coding Agent Commands ──────────────────────────────────────
 # Command templates used when Plexi skills dispatch coding agent panes.

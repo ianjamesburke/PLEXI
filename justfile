@@ -263,7 +263,7 @@ merge-close-stints PR +STINTS:
 ship +issues:
     for issue in {{issues}}; do \
         gh issue edit "$issue" --add-label "in progress" --remove-label "ready" && \
-        plexi terminal "c '/ship-issue $issue'" --layout new_window; \
+        plexi pane new "c '/ship-issue $issue'" --window; \
     done
 
 # Run one UI scene file headlessly. Writes screenshots + a SceneReport JSON to

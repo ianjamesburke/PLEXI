@@ -14,10 +14,10 @@ mod cli;
 
 mod config;
 mod features;
-mod notes;
 mod file_browser;
 mod host;
 mod media;
+mod notes;
 mod overlays;
 mod pane_ops;
 mod platform;
@@ -221,8 +221,8 @@ fn main() -> eframe::Result {
                         RoutineCmd::Run { name } => std::process::exit(cli::routine_run(&name)),
                     },
                     Commands::Agent { cmd } => match cmd {
-                        AgentCmd::Init { name, from_pane_id } => {
-                            std::process::exit(cli::agent_init(&name, from_pane_id))
+                        AgentCmd::Init { name, from } => {
+                            std::process::exit(cli::agent_init(&name, from))
                         }
                         AgentCmd::Add { name } => std::process::exit(cli::agent_add(&name)),
                         AgentCmd::Update { name } => std::process::exit(cli::agent_update(&name)),
@@ -290,7 +290,7 @@ fn main() -> eframe::Result {
                                 right,
                                 tab,
                                 window,
-                                from_pane_id,
+                                from: from_pane_id,
                                 extra_args,
                             } => {
                                 let layout: Option<String> = if down {
@@ -472,7 +472,7 @@ fn main() -> eframe::Result {
                                 global,
                                 open,
                                 no_open,
-                                from_pane_id,
+                                from: from_pane_id,
                             } => std::process::exit(cli::app_init(
                                 &name,
                                 &lang,
@@ -720,11 +720,7 @@ fn main() -> eframe::Result {
                                 text,
                                 enter,
                             } => {
-                                let payload = if enter {
-                                    format!("{text}\n")
-                                } else {
-                                    text
-                                };
+                                let payload = if enter { format!("{text}\n") } else { text };
                                 log::info!(
                                     "pane_command:cli: pane_id={pane_id} len={} enter={enter}",
                                     payload.len()
@@ -872,6 +868,7 @@ fn main() -> eframe::Result {
                             parent,
                             window,
                             focus,
+                            from,
                             down,
                             left,
                             up,
@@ -893,6 +890,7 @@ fn main() -> eframe::Result {
                                 &window,
                                 focus,
                                 dir,
+                                from,
                             ))
                         }
                         ContextCmd::Open { path } => {
@@ -909,8 +907,8 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::context_zoom_cli(context_id))
                         }
                         ContextCmd::ZoomOut => std::process::exit(cli::context_zoom_out_cli()),
-                        ContextCmd::Push { name } => {
-                            std::process::exit(cli::context_push_cli(name.as_deref()))
+                        ContextCmd::Push { name, pane_id } => {
+                            std::process::exit(cli::context_push_cli(name.as_deref(), pane_id))
                         }
                         ContextCmd::List => std::process::exit(cli::context_list_cli()),
                     },
@@ -942,9 +940,7 @@ fn main() -> eframe::Result {
                     Commands::Notes { cmd } => match cmd {
                         Some(NotesCmd::List) | None => std::process::exit(cli::notes_list_cli()),
                         Some(NotesCmd::Open) => std::process::exit(cli::notes_open_cli()),
-                        Some(NotesCmd::Inbox) => {
-                            std::process::exit(cli::notes::notes_inbox_cli())
-                        }
+                        Some(NotesCmd::Inbox) => std::process::exit(cli::notes::notes_inbox_cli()),
                         Some(NotesCmd::Process) => {
                             std::process::exit(cli::notes::notes_process_cli())
                         }

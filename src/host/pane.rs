@@ -182,7 +182,7 @@ pub struct TerminalPane {
     pub name_locked: bool,
     pub font_size: f32,
     /// When true, the pane closes automatically when its process exits (no "[process exited]" prompt).
-    /// Set by `plexi terminal --ephemeral`.
+    /// Set by `plexi pane new --ephemeral`.
     pub ephemeral: bool,
     /// Last OSC 2 title string the process wrote, tracked independently of `name` and `name_locked`.
     /// Used by FocusChanged events to record what was running in the pane.
@@ -298,7 +298,6 @@ impl AppRuntime {
             AppRuntime::Builtin(app) => app.sync_cwd(new_cwd),
         }
     }
-
 
     pub fn type_id(&self) -> &'static str {
         match self {

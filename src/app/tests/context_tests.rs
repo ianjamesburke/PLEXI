@@ -19,6 +19,7 @@ fn new_child_context_does_not_adopt_focused_pane() {
         std::path::PathBuf::from("/tmp/no_adopt"),
         true,
         false,
+        None,
     )
     .expect("child create should succeed");
 
@@ -64,8 +65,13 @@ fn new_child_context_no_focused_pane_inserts_sub_ctx() {
     let parent_pane_count_before = app.windows[0].panes.len();
     let parent_id = app.router.active().context_id;
 
-    let result =
-        app.new_child_context("Test", std::path::PathBuf::from("/tmp/child2"), true, false);
+    let result = app.new_child_context(
+        "Test",
+        std::path::PathBuf::from("/tmp/child2"),
+        true,
+        false,
+        None,
+    );
 
     // Whether success or failure, the parent's focused_pane must remain None.
     assert_eq!(
@@ -100,6 +106,176 @@ fn new_child_context_no_focused_pane_inserts_sub_ctx() {
     }
 }
 
+/// `plexi context new --from <id>`: the portal split must anchor at the given
+/// pane, not the parent context's focused pane. Two panes exist; A is focused;
+/// the anchor names B — the portal must land as B's sibling.
+#[test]
+fn new_child_context_anchor_pane_overrides_focused() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let (tile_a, _pane_a) = app.add_test_pane();
+    let (tile_b, pane_b) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_a);
+    let parent_id = app.router.active().context_id;
+    let parent_name = app.router.active().name.clone();
+
+    app.new_child_context(
+        &parent_name,
+        std::path::PathBuf::from("/tmp/anchor_pane"),
+        true,
+        false,
+        Some(pane_b),
+    )
+    .expect("child create should succeed");
+
+    let parent_win = app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent_id)
+        .expect("parent window must still exist");
+    let portal_pane_id = parent_win
+        .panes
+        .iter()
+        .find(|(_, p)| p.portal_target().is_some())
+        .map(|(id, _)| *id)
+        .expect("parent must contain a Portal tile");
+    let portal_tile = parent_win
+        .tree
+        .tiles
+        .find_pane(&portal_pane_id)
+        .expect("portal tile in tree");
+    let container = parent_win
+        .tree
+        .tiles
+        .parent_of(portal_tile)
+        .expect("portal tile has a parent container");
+    let children: Vec<_> = match parent_win.tree.tiles.get(container) {
+        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
+        other => panic!("portal parent is not a container: {other:?}"),
+    };
+    assert!(
+        children.contains(&tile_b),
+        "portal must split against the anchor pane's tile"
+    );
+    assert!(
+        !children.contains(&tile_a),
+        "portal must NOT split against the focused pane when an anchor is given"
+    );
+}
+
+/// End-to-end over the real IPC path: the exact JSON `plexi context new --parent`
+/// sends (including `anchor_pane`) deserializes into `AppRequest::CreateContext`
+/// and the handler anchors the portal at that pane, not the focused one.
+#[test]
+fn create_context_ipc_anchor_pane_places_portal() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_test_pane();
+    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).unwrap();
+    let tile_b = h.app.windows[0].tree.tiles.find_pane(&pane_b).unwrap();
+    h.app.windows[0].focused_pane = Some(tile_a);
+    let parent_id = h.app.router.active().context_id;
+    let parent_name = h.app.router.active().name.clone();
+
+    let payload = serde_json::json!({
+        "type": "create_context",
+        "name": "anchored",
+        "parent_name": parent_name,
+        "anchor_pane": pane_b,
+        "portal_direction": "down",
+    });
+    let req: crate::app_protocol::AppRequest =
+        serde_json::from_value(payload).expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let parent_win = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent_id)
+        .expect("parent window must still exist");
+    let portal_pane_id = parent_win
+        .panes
+        .iter()
+        .find(|(_, p)| p.portal_target().is_some())
+        .map(|(id, _)| *id)
+        .expect("handler must insert a Portal tile");
+    let portal_tile = parent_win.tree.tiles.find_pane(&portal_pane_id).unwrap();
+    let container = parent_win
+        .tree
+        .tiles
+        .parent_of(portal_tile)
+        .expect("portal tile has a parent container");
+    let children: Vec<_> = match parent_win.tree.tiles.get(container) {
+        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
+        other => panic!("portal parent is not a container: {other:?}"),
+    };
+    assert!(
+        children.contains(&tile_b),
+        "portal must split against the anchor pane sent over IPC"
+    );
+    assert!(
+        !children.contains(&tile_a),
+        "portal must NOT split against the focused pane"
+    );
+}
+
+/// An anchor pane id that doesn't exist in the parent context falls back to the
+/// focused pane — creation must still succeed.
+#[test]
+fn new_child_context_unknown_anchor_falls_back_to_focused() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let (tile_a, _pane_a) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_a);
+    let parent_id = app.router.active().context_id;
+    let parent_name = app.router.active().name.clone();
+
+    app.new_child_context(
+        &parent_name,
+        std::path::PathBuf::from("/tmp/anchor_missing"),
+        true,
+        false,
+        Some(999_999),
+    )
+    .expect("child create should succeed despite unknown anchor");
+
+    let parent_win = app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent_id)
+        .expect("parent window must still exist");
+    let portal_pane_id = parent_win
+        .panes
+        .iter()
+        .find(|(_, p)| p.portal_target().is_some())
+        .map(|(id, _)| *id)
+        .expect("parent must contain a Portal tile");
+    let portal_tile = parent_win
+        .tree
+        .tiles
+        .find_pane(&portal_pane_id)
+        .expect("portal tile in tree");
+    let container = parent_win
+        .tree
+        .tiles
+        .parent_of(portal_tile)
+        .expect("portal tile has a parent container");
+    let children: Vec<_> = match parent_win.tree.tiles.get(container) {
+        Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect(),
+        other => panic!("portal parent is not a container: {other:?}"),
+    };
+    assert!(
+        children.contains(&tile_a),
+        "unknown anchor must fall back to the focused pane"
+    );
+}
+
 /// Issue #1409: parent name lookup must be case-insensitive.
 #[test]
 fn new_child_context_case_insensitive_parent() {
@@ -115,6 +291,7 @@ fn new_child_context_case_insensitive_parent() {
         std::path::PathBuf::from("/tmp/child_ci"),
         true,
         false,
+        None,
     );
     match result {
         Ok(_) => {}
@@ -148,6 +325,7 @@ fn create_child_context_auto_zooms() {
         std::path::PathBuf::from("/tmp/child_zoom"),
         true,
         false,
+        None,
     );
 
     if result.is_err() {
@@ -254,7 +432,7 @@ fn depth_four_chain_has_portal_tiles() {
 
     for &child in &names {
         let path = std::path::PathBuf::from(format!("/tmp/depth_test_{child}"));
-        let result = app.new_child_context(&parent_name, path, true, false);
+        let result = app.new_child_context(&parent_name, path, true, false, None);
         if result.is_err() {
             // PTY unavailable — can't build the full chain in test env. Stop here.
             break;
@@ -1650,5 +1828,169 @@ fn closing_last_pane_in_background_subcontext_removes_it_without_switching() {
         app.router.active().context_id,
         root_id,
         "active context must not change when a background subcontext collapses"
+    );
+}
+
+/// End-to-end over the real IPC path: `plexi context push` sends `pane_id`
+/// (the caller's PLEXI_PANE_ID) and the host pushes THAT pane into the new
+/// sub-context — not the focused one.
+#[test]
+fn push_pane_ipc_targets_caller_pane_not_focused() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_test_pane();
+    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).unwrap();
+    h.app.windows[0].focused_pane = Some(tile_a);
+    let parent_id = h.app.router.active().context_id;
+    let ctx_count_before = h.app.router.len();
+
+    let payload = serde_json::json!({
+        "type": "push_pane_to_subcontext",
+        "name": "pushed",
+        "pane_id": pane_b,
+    });
+    let req: crate::app_protocol::AppRequest =
+        serde_json::from_value(payload).expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    assert_eq!(
+        h.app.router.len(),
+        ctx_count_before + 1,
+        "push must create one child context"
+    );
+    let parent_win = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent_id)
+        .expect("parent window must still exist");
+    assert!(
+        parent_win.panes.contains_key(&pane_a),
+        "focused pane A must stay in the parent window"
+    );
+    assert!(
+        !parent_win.panes.contains_key(&pane_b),
+        "caller pane B must have moved into the child context"
+    );
+    let child_win = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id != parent_id)
+        .expect("child window must exist");
+    assert!(
+        child_win.panes.contains_key(&pane_b),
+        "caller pane B must live in the child window"
+    );
+}
+
+/// `plexi context push` with an unknown pane id falls back to the focused pane.
+#[test]
+fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).unwrap();
+    h.app.windows[0].focused_pane = Some(tile_a);
+    let parent_id = h.app.router.active().context_id;
+
+    let payload = serde_json::json!({
+        "type": "push_pane_to_subcontext",
+        "pane_id": 999_999u64,
+    });
+    let req: crate::app_protocol::AppRequest =
+        serde_json::from_value(payload).expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let parent_win = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent_id)
+        .expect("parent window must still exist");
+    assert!(
+        !parent_win.panes.contains_key(&pane_a),
+        "fallback must push the focused pane"
+    );
+}
+
+/// `plexi context describe` sends the caller's PLEXI_CONTEXT_ID — the host
+/// must set the description on THAT context, not the active one.
+#[test]
+fn set_context_description_ipc_targets_caller_context() {
+    let mut h = crate::testing::HostHarness::new();
+    let active_id = h.app.router.active().context_id;
+    let other_id = active_id + 100;
+    h.app
+        .router
+        .push(test_context(other_id, active_id, "background"));
+
+    let payload = serde_json::json!({
+        "type": "set_context_description",
+        "description": "set from a background pane",
+        "context_id": other_id,
+    });
+    let req: crate::app_protocol::AppRequest =
+        serde_json::from_value(payload).expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let other_idx = h.app.router.position(|c| c.context_id == other_id).unwrap();
+    assert_eq!(
+        h.app.router.get(other_idx).description.as_deref(),
+        Some("set from a background pane"),
+        "description must land on the caller's context"
+    );
+    let active_idx = h
+        .app
+        .router
+        .position(|c| c.context_id == active_id)
+        .unwrap();
+    assert_eq!(
+        h.app.router.get(active_idx).description,
+        None,
+        "active context must be untouched"
+    );
+}
+
+/// `plexi context set-root` sends the caller's PLEXI_CONTEXT_ID — the host
+/// must re-root THAT context, not the active one.
+#[test]
+fn set_context_root_ipc_targets_caller_context() {
+    let mut h = crate::testing::HostHarness::new();
+    let active_id = h.app.router.active().context_id;
+    let active_root_before = h.app.router.active().root.clone();
+    let other_id = active_id + 100;
+    h.app
+        .router
+        .push(test_context(other_id, active_id, "background"));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let payload = serde_json::json!({
+        "type": "set_context_root",
+        "root": tmp.path(),
+        "context_id": other_id,
+    });
+    let req: crate::app_protocol::AppRequest =
+        serde_json::from_value(payload).expect("CLI payload must deserialize");
+    h.inject_ipc(req);
+    h.app.drain_pane_cmd_channel();
+
+    let other_idx = h.app.router.position(|c| c.context_id == other_id).unwrap();
+    assert_eq!(
+        h.app.router.get(other_idx).root.as_deref(),
+        Some(tmp.path()),
+        "root must land on the caller's context"
+    );
+    let active_idx = h
+        .app
+        .router
+        .position(|c| c.context_id == active_id)
+        .unwrap();
+    assert_eq!(
+        h.app.router.get(active_idx).root,
+        active_root_before,
+        "active context root must be untouched"
     );
 }

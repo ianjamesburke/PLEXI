@@ -312,7 +312,7 @@ All `plexi` subcommands work identically on alpha, beta, stable, and PR builds. 
 | `plexi pack` | Pack management (apply, list packs) |
 | `plexi app init <name>` | Scaffold a new app in the current directory |
 | `plexi app open <app-id>` | Open an app pane |
-| `plexi terminal [cmd]` | Open a terminal pane, optionally running a command |
+| `plexi pane new [cmd]` | Open a terminal pane, optionally running a command |
 | `plexi pane <subcommand>` | Pane management (name, close, list, focus) |
 | `plexi notify` | Emit a notification (see Notifications section) |
 | `plexi context` | Query or set the active workspace context |
