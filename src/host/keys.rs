@@ -1063,6 +1063,9 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 ///   Each overlay's `*_handle_key` method owns its own key contract and runs before this function.
 /// `shortcuts_overlay_open` — the shortcuts overlay is open; suppresses CloseApp (Escape)
 ///   so the overlay can own Escape for dismissal.
+/// `tab_captured` — focused app declared `captures_tab = true`; suppresses the
+///   AppActive `ToggleAppFocus` (Tab) binding so the app's own composer/editor
+///   keeps Tab (e.g. the Assistant's command completion). Only Tab is affected.
 pub fn poll_actions(
     ctx: &egui::Context,
     table: &[BindingEntry],
@@ -1070,6 +1073,7 @@ pub fn poll_actions(
     keyboard_capture_active: bool,
     overlay_open: bool,
     shortcuts_overlay_open: bool,
+    tab_captured: bool,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
 
@@ -1091,6 +1095,11 @@ pub fn poll_actions(
                     // Escape is suppressed when the shortcuts overlay is open so the overlay
                     // can own it for dismissal.
                     if matches!(entry.action, Action::CloseApp) && shortcuts_overlay_open {
+                        continue;
+                    }
+                    // Tab belongs to the focused app when it captures Tab (no
+                    // linked terminal to navigate to; the app's composer owns it).
+                    if matches!(entry.action, Action::ToggleAppFocus) && tab_captured {
                         continue;
                     }
                 }
@@ -1127,4 +1136,50 @@ pub fn poll_actions(
     });
 
     actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run `poll_actions` for a single Tab keypress with an active app surface.
+    fn poll_tab(tab_captured: bool) -> Vec<Action> {
+        let table = build_binding_table(&KeyBindings::default());
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput::default();
+        raw.events.push(egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut actions = Vec::new();
+        let _ = ctx.run(raw, |ctx| {
+            actions = poll_actions(
+                ctx, &table, /* app_active */ true, /* keyboard_capture */ false,
+                /* overlay_open */ false, /* shortcuts_overlay_open */ false, tab_captured,
+            );
+        });
+        actions
+    }
+
+    #[test]
+    fn tab_toggles_app_focus_by_default() {
+        let actions = poll_tab(false);
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::ToggleAppFocus)),
+            "Tab should fire ToggleAppFocus for apps that do not capture Tab"
+        );
+    }
+
+    #[test]
+    fn tab_captured_app_keeps_tab() {
+        let actions = poll_tab(true);
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::ToggleAppFocus)),
+            "Tab must not fire ToggleAppFocus when the focused app captures Tab \
+             (the assistant composer owns Tab for command completion)"
+        );
+    }
 }

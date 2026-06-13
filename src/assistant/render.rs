@@ -548,7 +548,13 @@ impl AssistantRenderer {
                     if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
                         complete = true;
                     }
-                    if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                    // Plain Enter completes + sends; Shift+Enter is left for the
+                    // TextEdit to insert a newline. `consume_key` matches
+                    // logically (ignores extra Shift), so guard on `!shift`
+                    // first — otherwise Shift+Enter would be eaten here.
+                    if !input.modifiers.shift
+                        && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                    {
                         complete = true;
                         send = true;
                     }
@@ -572,7 +578,12 @@ impl AssistantRenderer {
         }
         let mut submit = false;
         ui.input_mut(|input| {
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+            // Shift+Enter inserts a newline (handled natively by the TextEdit's
+            // `return_key`); only plain Enter submits. `consume_key` ignores
+            // extra Shift, so guard on `!shift` before consuming.
+            if !input.modifiers.shift
+                && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+            {
                 submit = true;
             }
         });

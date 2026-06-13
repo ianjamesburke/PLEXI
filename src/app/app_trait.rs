@@ -214,6 +214,16 @@ pub trait App: Send {
         false
     }
 
+    /// Returns true if this app handles Tab internally and must not surrender it
+    /// to the host's `ToggleAppFocus` (app↔linked-terminal) binding. The host's
+    /// `poll_actions` runs before the pane renders, so it would otherwise consume
+    /// Tab before the app's own composer/editor ever sees it. Apps with no linked
+    /// terminal and an in-pane Tab role (e.g. the Assistant's command completion)
+    /// set this to true. Narrower than `keyboard_capture`: only Tab is affected.
+    fn captures_tab(&self) -> bool {
+        false
+    }
+
     /// Returns true if the app wants to close itself (e.g. after saving).
     fn wants_close(&self) -> bool {
         false

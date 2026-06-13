@@ -611,6 +611,22 @@ impl PlexiApp {
                             app_cwd.clone(),
                             saved_pane.app_state.as_ref(),
                         );
+                        // The Assistant is a builtin needing a broker + profile
+                        // dir, so the broker-free factory can't build it. Build
+                        // it here where the loaded `config.ai` is available; the
+                        // conversation auto-resumes from disk.
+                        if pane_entry.is_none() && app_type == "assistant" {
+                            let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+                                std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(
+                                    config.ai.clone(),
+                                ));
+                            pane_entry = Some(crate::pane_ops::restore_assistant_pane(
+                                saved_pane.id,
+                                app_cwd.clone(),
+                                broker,
+                                &crate::config::config_dir(),
+                            ));
+                        }
                         if pane_entry.is_none() {
                             if let Some(process) = registry.launch_process(app_type, &app_cwd, &[])
                             {
@@ -2566,7 +2582,7 @@ impl eframe::App for PlexiApp {
 
         // Determine if the focused pane has an active app surface, and whether
         // that app has declared keyboard_capture mode.
-        let (app_active, keyboard_capture_active) = {
+        let (app_active, keyboard_capture_active, tab_captured) = {
             let context = &self.windows[self.active_window];
             let focused_pane = context.focused_pane.and_then(|tile_id| {
                 if let Some(egui_tiles::Tile::Pane(pane_id)) = context.tree.tiles.get(tile_id) {
@@ -2586,7 +2602,15 @@ impl eframe::App for PlexiApp {
             } else {
                 false
             };
-            (active, capture)
+            let tab_captured = if active {
+                focused_pane
+                    .and_then(|p| p.as_app())
+                    .map(|a| a.runtime.captures_tab())
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            (active, capture, tab_captured)
         };
 
         // Handle keyboard shortcuts. Global shortcuts (Cmd+Q, Cmd+W, Cmd+P) always
@@ -2600,6 +2624,7 @@ impl eframe::App for PlexiApp {
             keyboard_capture_active,
             modal_open,
             self.show_shortcuts,
+            tab_captured,
         ) {
             match action {
                 Action::SplitHorizontal => {

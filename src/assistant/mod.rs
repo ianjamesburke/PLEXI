@@ -1187,6 +1187,13 @@ impl App for AssistantApp {
         "Assistant".to_string()
     }
 
+    /// Tab completes the highlighted slash command in the composer. The
+    /// Assistant has no linked terminal, so the host's Tab→ToggleAppFocus
+    /// binding is meaningless here — claim Tab so the composer keeps it.
+    fn captures_tab(&self) -> bool {
+        true
+    }
+
     fn rename_seed(&self) -> Option<String> {
         self.model.session_name.clone()
     }

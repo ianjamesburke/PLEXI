@@ -107,6 +107,45 @@ pub(crate) fn restore_builtin_app_pane(
     })))
 }
 
+/// Rebuild the Assistant pane during workspace restore so a reopened app comes
+/// back to the same conversation, focused. The Assistant is a builtin that
+/// needs a broker and profile dir, so the broker-free [`builtin_factory`]
+/// cannot construct it — the caller supplies the broker (built from
+/// `config.ai`). `AssistantApp::new` auto-resumes the active conversation from
+/// disk, so no `app_state` is required.
+pub(crate) fn restore_assistant_pane(
+    pane_id: PaneId,
+    workspace_root: PathBuf,
+    broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker>,
+    profile_dir: &std::path::Path,
+) -> Pane {
+    let app = Box::new(crate::assistant::AssistantApp::new(
+        workspace_root.clone(),
+        broker,
+        profile_dir,
+    ));
+    let runtime_id = app.type_id().to_string();
+    let name = app.display_name();
+    log::info!(
+        "workspace_restore: restored assistant pane {pane_id} cwd={}",
+        workspace_root.display()
+    );
+    Pane::App(Box::new(crate::host::pane::AppPane {
+        id: pane_id,
+        runtime: crate::host::pane::AppRuntime::Builtin(app),
+        workspace_root,
+        permissions: crate::app::permissions::AppPermissions::builtin(),
+        manifest_id: runtime_id.clone(),
+        name,
+        pane_group: None,
+        linked_pane_id: None,
+        overlay_replaced: None,
+        hidden: false,
+        agent: None,
+        slots: std::collections::HashMap::new(),
+    }))
+}
+
 impl PlexiApp {
     /// Convert a manifest-declared share fraction (0.0..1.0 exclusive) to a `ShareRatio`.
     /// Validates the range and falls back to 0.5 (1:1) on invalid input, logging a warning.
@@ -1455,6 +1494,30 @@ mod tests {
         assert!(
             pane.is_none(),
             "cli-renderer restore needs persisted descriptor state"
+        );
+    }
+
+    #[test]
+    fn workspace_restore_rebuilds_assistant_pane() {
+        let ws = tempfile::tempdir().expect("workspace");
+        let profile = tempfile::tempdir().expect("profile");
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
+
+        let pane = restore_assistant_pane(13, ws.path().to_path_buf(), broker, profile.path());
+        let Pane::App(app) = pane else {
+            panic!("expected app pane");
+        };
+
+        assert_eq!(app.id, 13);
+        assert_eq!(app.manifest_id, "assistant");
+        assert_eq!(app.runtime.type_id(), "assistant");
+        assert_eq!(app.workspace_root, ws.path());
+        assert!(matches!(&app.runtime, AppRuntime::Builtin(_)));
+        // The restored pane must keep Tab for command completion.
+        assert!(
+            app.runtime.captures_tab(),
+            "assistant pane must capture Tab so the composer keeps it"
         );
     }
 
