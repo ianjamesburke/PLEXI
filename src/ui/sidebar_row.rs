@@ -331,7 +331,10 @@ impl ContextItem {
             } else {
                 Color32::TRANSPARENT
             };
-            let hover_rect = crate::ui::list::selection_inset(row_rect);
+            let hover_rect = crate::ui::list::selection_inset(Rect::from_min_max(
+                egui::pos2(row_rect.min.x + 4.0, row_rect.min.y),
+                egui::pos2(row_rect.max.x - 4.0, row_rect.max.y),
+            ));
             ui.painter().set(
                 bg_idx,
                 egui::Shape::rect_filled(hover_rect, crate::ui::style::RADIUS_SM, fill),
