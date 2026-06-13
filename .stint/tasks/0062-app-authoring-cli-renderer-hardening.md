@@ -1,14 +1,21 @@
 ---
 id: "0062"
 title: "App authoring: CLI renderer hardening"
-status: backlog
+status: in-progress
+estimate: "8h"
+started_at: "2026-06-13T02:03:20Z"
 sprint: "s2"
-estimate: 8h
 blocked_by: []
-gh_issue: ["1947"]
-area: ["cli/commands"]
-tags: ["v1", "app-authoring", "cli-renderer"]
+gh_issue:
+  - "1947"
+area:
+  - "cli/commands"
+tags:
+  - "v1"
+  - "app-authoring"
+  - "cli-renderer"
 ---
+
 
 Finish the native CLI renderer path by hardening cache, recursive crawl, Plexi-native descriptor detection, and stale Python-renderer assumptions.
 
