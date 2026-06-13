@@ -1,9 +1,11 @@
 ---
 id: "0177"
 title: "v1 cleanup: notes picker right-aligns type chips like the palette"
-status: in-progress
+status: done
 estimate: "1h"
+actual: "8m"
 started_at: "2026-06-13T21:40:48Z"
+completed_at: "2026-06-13T21:48:04Z"
 sprint: "s11"
 blocked_by: []
 gh_issue:
@@ -14,6 +16,9 @@ tags: []
 ---
 
 
+
+
+**Variance note:** 8m actual vs 1h estimate — one-line swap; existing UI test covered the render path completely, no new test authoring needed.
 
 ## What
 
