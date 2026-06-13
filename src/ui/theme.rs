@@ -700,8 +700,8 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     // Surfaces — layered from the workspace floor up through raised chrome.
     v.panel_fill = colors.bg_darkest;
     v.window_fill = colors.bg_sidebar;
-    v.extreme_bg_color = colors.bg_darkest; // TextEdit / ScrollArea backgrounds.
-    v.faint_bg_color = colors.bg_sidebar; // Striped rows.
+    v.extreme_bg_color = colors.bg_active; // TextEdit / ScrollArea / code block backgrounds.
+    v.faint_bg_color = colors.bg_hover; // Striped rows / blockquote tints.
     v.code_bg_color = colors.bg_darkest;
     v.override_text_color = Some(colors.text_primary);
 

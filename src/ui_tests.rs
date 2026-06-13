@@ -546,6 +546,39 @@ mod tests {
             .expect("render failed");
     }
 
+    /// Renders the markdown-demo POC app through the real process + render
+    /// path and screenshots it. Visual regression for themed markdown chrome:
+    /// fenced code-block cards, inline-code tint, blockquote tint, link color.
+    /// Inspect /tmp/plexi_markdown_demo.png after running.
+    #[test]
+    fn markdown_demo_styling() {
+        // Narrow window so code blocks wrap like a real side pane — this is the
+        // width where copy-icon placement and block padding actually show.
+        let mut h = PlexiUiHarness::new_sized(560.0, 940.0);
+        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/dev/markdown-demo");
+        let pane_id = h
+            .open_app_at(&app_dir, &[])
+            .expect("markdown-demo should launch");
+        h.wait_for_app_frame(pane_id, Duration::from_secs(20))
+            .expect("markdown-demo should render its first frame");
+        h.run_steps(3);
+        // Resting state: copy buttons are hover-only, so blocks render clean
+        // with no icon overlapping the code text.
+        h.save_screenshot("/tmp/plexi_markdown_demo.png")
+            .expect("render failed");
+
+        // Hover state: move the pointer over a code block and confirm the copy
+        // button appears pinned to the block's top-right corner. The Python
+        // block sits low in the narrow layout; hover its interior.
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(egui::pos2(150.0, 485.0)));
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_markdown_demo_hover.png")
+            .expect("render failed");
+    }
+
     #[test]
     fn screenshot_host_ui_gallery_trust_states() {
         let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);
