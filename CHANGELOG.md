@@ -1,6 +1,63 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.770] — 2026-06-13
+
+### Changes
+- chore(stint): mark 0162/0163/0180 done, add variance notes
+- chore: claim stint 0152
+- chore: claim stint 0185
+- perf(ai): reduce broker snapshot and tool-loop cloning (#2028) (#2248)
+- chore: close stint 0060 with variance note
+- chore: close stint 0045 with variance note
+- chore: close stint 0180 with variance note
+- fix(theme): improve Nord text contrast for dim and section roles (stint 0045) (#2249)
+- feat: wire /testing gate into ship lifecycle (#2251)
+- fix: context root env refresh — sidebar/overlay and CLI tip (#2250)
+- feat: display agent activity status in tab bars
+- chore: claim stint 0056
+- chore(skills): expand validate-pr Gemini review skip gate
+- docs(prm): CLI-native PGAP apps + Board/Console primitives PRM
+- feat(scripts): reap finished merged worktrees in merge-pr cleanup
+- fix(scripts): squash-safe stale-target detection in merge-pr cleanup
+- chore(stint): triage s3/s4 done, unblock 0086 + 0022 for s2 batch
+- chore(stint): add scope and shipping status to s2 tasks
+- chore(website): regenerate CLI reference docs
+- chore(stint): move file-explorer tasks 0005, 0007, 0150 to backlog
+- chore(stint): mark 0018-0021 done — marketplace foundation merged
+- Marketplace: hosted registry, publisher submit, paid-app license + payment stub (stint 0018-0021) (#2234)
+- feat(ui): improve parked context sidebar UI and add park/unpark context menu
+- feat: Ghostty-style segmented tab bar + context navigation shortcuts (#2239)
+- fix(ui): match sidebar hover rect to selected rect size (#2238)
+- feat(host): harden native CLI renderer builtin (#1947) (#2236)
+- feat(assistant): Cmd+R rename, dynamic composer, scrollable picker, MockBroker tests (#2216) (#2224)
+- chore: stint done 0151
+- feat(apps/github-issues): add label picker and smarter label chips (#2164) (#2235)
+- chore: close stint 0165 (32m actual vs 6h estimate)
+- feat(sdk): add PGAP shortcut helper with scene harness parity (#2196) (#2237)
+- chore(stint): park v2 phase out of the active board — v1-only operating graph
+- feat(ui): intensify pip working flash and stagger adjacent pips
+- chore(stint): descope FE icon/gallery views, reframe 0030 as v1 release gate anchor
+- chore: claim stint 0062
+- chore: claim stint 0018-0021 (marketplace bundle)
+- feat(cli): caller-targeted CLI — portal anchor, context push/set-root/describe, unified --from flag (#2233)
+- perf: throttle remaining Working-pulse repaint loops to 10fps
+- chore(stint): make blocker graph self-contained — drop satisfied @2194, convert @1239 refs to task 0072
+- perf: event-driven frames while typing — kill the 60fps agent-pip loop
+- fix: down-arrow newline append — no double input, no dropped repeats
+- feat: unify glyph-height caret across every text input
+- chore(stint): cut sequencing blockers — blocked_by now means true dependency only
+- tweak: caret height +1px over glyph height
+- chore(stint): v1 handoff audit — reconcile issues, gates, and queue
+- fix: closing the last pane in a subcontext collapses it and zooms out (#2232)
+- feat: glyph-height text caret via shared draw_text_caret helper
+- feat(palette): context-scoped pane unpacking with single-pip rows (#2228)
+- test(infra): isolate cargo test from $HOME via per-test profile tempdir (#2231)
+- fix: replace hand-rolled note cursor with egui's built-in caret
+- chore: add stint 0179 — sdk-app-pip-status (gh #2230)
+- chore: add stint 0178 — test-profile-dir-isolation (gh #2229)
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
 ## [0.0.769] — 2026-06-13
 
 ### Changes
