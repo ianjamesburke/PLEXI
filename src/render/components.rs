@@ -437,7 +437,6 @@ pub(crate) fn render_component_tree(
             let newly_visible = !focus_ctx.prev_visible.contains(node_id.as_str());
             focus_ctx.current_visible.insert(node_id.clone());
 
-            let prev_value = buffer.clone();
             let widget_id = egui::Id::new(("text_edit_node", node_id.as_str()));
 
             // Styling matches QuickNote overlay: frameless, monospace, accent caret,
@@ -517,8 +516,10 @@ pub(crate) fn render_component_tree(
                 focus_ctx.any_has_focus = true;
             }
 
-            // Emit "change" event when value differs from previous frame.
-            if *buffer != prev_value {
+            // Emit "change" event when the TextEdit mutated the value this
+            // frame. response.changed() avoids the per-frame full-buffer
+            // clone+compare the old prev_value snapshot required.
+            if response.changed() {
                 log::debug!(
                     "render_components: TextEdit change node_id={node_id} value={:?}",
                     buffer

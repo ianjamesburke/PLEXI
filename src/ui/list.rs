@@ -256,7 +256,10 @@ impl<'a> ListRow<'a> {
                 matches!(s, Some(crate::app_protocol::AgentState::Working))
             });
             if has_working {
-                ui.ctx().request_repaint();
+                // Pulse animation only needs ~10fps; an unconditional
+                // request_repaint pins the window at display refresh.
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
             }
             draw_pips(ui, pips, colors, lane_left, lane_right, center_y, t);
         }

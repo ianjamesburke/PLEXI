@@ -104,7 +104,11 @@ fn draw_pips(
         .iter()
         .any(|s| matches!(s, Some(crate::app_protocol::AgentState::Working)));
     if has_working {
-        ui.ctx().request_repaint();
+        // Pulse animation only needs ~10fps. An unconditional request_repaint
+        // here is self-perpetuating and pins the whole window at display
+        // refresh for as long as any agent is Working.
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
     }
     let painter = ui.painter();
     let cy = rect.center().y;

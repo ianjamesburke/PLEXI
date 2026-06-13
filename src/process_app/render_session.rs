@@ -194,8 +194,6 @@ impl RenderSession {
                         *buffer = value.clone();
                     }
                 }
-                let prev_value = buffer.clone();
-
                 // Draw single pill background (fill only).
                 ui.painter().rect_filled(
                     widget_rect,
@@ -294,11 +292,9 @@ impl RenderSession {
                     focus_granted = true;
                 }
                 let cursor_idx = output.cursor_range.map(|cr| cr.primary.ccursor.index);
-                let changed_value = if *buffer != prev_value {
-                    Some(buffer.clone())
-                } else {
-                    None
-                };
+                // response.changed() avoids the per-frame full-buffer
+                // clone+compare the old prev_value snapshot required.
+                let changed_value = output.response.changed().then(|| buffer.clone());
                 (output.response, cursor_idx, changed_value)
             };
 

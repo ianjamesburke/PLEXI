@@ -83,8 +83,12 @@ pub(crate) fn draw_text_caret(
     } else {
         prev.map_or(now, |(_, start)| start)
     };
-    ui.ctx()
-        .data_mut(|d| d.insert_temp(state_id, (index, blink_start)));
+    // Only take the data write lock when the stored state actually changes
+    // (a blink_start reset or cursor move) — steady blinking writes nothing.
+    if prev != Some((index, blink_start)) {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(state_id, (index, blink_start)));
+    }
 
     // Match egui's TextEdit: no caret and no blink repaints while the OS
     // window is unfocused.

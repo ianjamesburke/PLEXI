@@ -108,7 +108,22 @@ impl TextEditorApp {
         content_is_effectively_empty(&self.path, &notes_dir, &self.composed())
     }
 
+    /// Durable save: full atomic write with fsync. Used when the document
+    /// lifecycle ends (pane close, file switch).
     fn flush(&mut self) {
+        self.flush_with(Durability::Fsync);
+    }
+
+    /// Debounced autosave: atomic temp+rename without fsync, so the render
+    /// thread never blocks on a 1-10ms APFS fsync between keystrokes. Crash
+    /// safety is preserved (rename is atomic — readers see old or new, never
+    /// partial); only power-loss durability is deferred to the next durable
+    /// flush.
+    fn autosave(&mut self) {
+        self.flush_with(Durability::Fast);
+    }
+
+    fn flush_with(&mut self, durability: Durability) {
         // Empty content → delete the file rather than writing an empty document.
         if self.is_effectively_empty() {
             if self.path.exists() {
@@ -128,7 +143,7 @@ impl TextEditorApp {
             return;
         }
         let document = self.composed();
-        match write_note_atomically(&self.path, document.as_bytes()) {
+        match write_note_atomically(&self.path, document.as_bytes(), durability) {
             Ok(()) => {
                 self.last_edit = None;
                 log::info!(
@@ -274,7 +289,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp dir");
         std::fs::write(&path, "old contents").expect("seed note");
 
-        write_note_atomically(&path, b"new contents").expect("atomic write");
+        write_note_atomically(&path, b"new contents", Durability::Fsync).expect("atomic write");
 
         assert_eq!(
             std::fs::read_to_string(&path).expect("read note"),
@@ -360,7 +375,22 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     normalized
 }
 
-fn write_note_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Whether an atomic note write fsyncs before the rename.
+#[derive(Clone, Copy, PartialEq)]
+enum Durability {
+    /// fsync the temp file before renaming — survives power loss.
+    Fsync,
+    /// Skip fsync — still atomic (rename), but durability is deferred.
+    /// For debounced autosaves on the render thread, where an APFS fsync
+    /// (1-10ms) can land exactly on the next keystroke.
+    Fast,
+}
+
+fn write_note_atomically(
+    path: &Path,
+    bytes: &[u8],
+    durability: Durability,
+) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -382,7 +412,9 @@ fn write_note_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let write_result = (|| {
         let mut temp_file = std::fs::File::create(&temp_path)?;
         temp_file.write_all(bytes)?;
-        temp_file.sync_all()?;
+        if durability == Durability::Fsync {
+            temp_file.sync_all()?;
+        }
         drop(temp_file);
         std::fs::rename(&temp_path, path)
     })();
@@ -518,7 +550,7 @@ impl App for TextEditorApp {
 
                 if let Some(t) = self.last_edit {
                     if t.elapsed() >= DEBOUNCE {
-                        self.flush();
+                        self.autosave();
                     }
                 }
 
