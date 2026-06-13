@@ -11,7 +11,7 @@ use crate::ui::{
     button::{self, ButtonKind},
     style,
 };
-use egui::{self, Color32, RichText, Vec2};
+use egui::{self, RichText};
 use std::collections::HashMap;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -57,6 +57,9 @@ pub struct CliRendererApp {
     cmd_path: Vec<String>,
     /// Selected index in the current command list.
     selected: usize,
+    /// Previous frame's selection, so keyboard nav can scroll the newly
+    /// selected row into view exactly once when it changes.
+    last_selected: usize,
     /// Per-flag form values, keyed by flag name.
     field_values: HashMap<String, String>,
     /// Linked terminal pane id (0 = not yet linked).
@@ -114,6 +117,7 @@ impl CliRendererApp {
             view,
             cmd_path: vec![],
             selected: 0,
+            last_selected: 0,
             field_values: HashMap::new(),
             terminal_pane_id: 0,
             pending_commands: vec![],
@@ -128,34 +132,13 @@ impl CliRendererApp {
 
     // ── Shared widgets ────────────────────────────────────────────────────────
 
-    /// Full-width clickable "← Back" row, used by both the list and form views
-    /// so the back affordance is identical everywhere. The highlight is inset
-    /// off the pane edge; the hit target spans the full width. Returns true on
-    /// click.
-    fn back_button(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) -> bool {
-        let (outer, resp) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), egui::Sense::click());
-        let hovered = resp.hovered();
-        if hovered {
-            ui.painter().rect_filled(
-                outer.shrink2(Vec2::new(style::SPACE_SM, 0.0)),
-                style::RADIUS_MD,
-                colors.bg_hover,
-            );
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        ui.painter().text(
-            outer.left_center() + Vec2::new(style::SPACE_MD, 0.0),
-            egui::Align2::LEFT_CENTER,
-            "← Back",
-            egui::FontId::proportional(style::TEXT_BODY),
-            if hovered {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            },
-        );
-        resp.clicked()
+    /// A "← Back" row rendered with the shared host `ListRow` so it is
+    /// pixel-identical to the command rows above it. Returns true on click.
+    fn back_row(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) -> bool {
+        crate::ui::list::ListRow::new("← Back")
+            .dense()
+            .show(ui, colors)
+            .row_clicked()
     }
 
     // ── Descriptor navigation ────────────────────────────────────────────────
@@ -403,92 +386,40 @@ impl CliRendererApp {
         });
 
         // Back button if navigated deep
-        if has_path && Self::back_button(ui, colors) {
+        if has_path && Self::back_row(ui, colors) {
             self.navigate_back();
             return;
         }
 
-        // Command list
+        // Command list — rendered with the shared host ListRow so it matches
+        // the command palette, sidebar, and PGAP list views exactly.
         let mut clicked_idx: Option<usize> = None;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (i, row) in rows.iter().enumerate() {
-                let is_selected = i == self.selected;
-                let label = if row.has_children {
-                    format!("{}  ›", row.name)
-                } else {
-                    row.name.clone()
-                };
-
-                let row_height = if row.description.is_some() {
-                    44.0
-                } else {
-                    32.0
-                };
-
-                let (rect, resp) = ui.allocate_exact_size(
-                    Vec2::new(ui.available_width(), row_height),
-                    egui::Sense::click(),
-                );
-                // Pointer hover tracks the mouse so click affordance matches the
-                // keyboard selection highlight.
-                if resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                let active = is_selected || resp.hovered();
-                let bg = if is_selected {
-                    colors.bg_active
-                } else if resp.hovered() {
-                    colors.bg_hover
-                } else {
-                    Color32::TRANSPARENT
-                };
-                // Inset the highlight off the pane edge; the click target stays
-                // full-width while the fill reads as a padded row.
-                ui.painter().rect_filled(
-                    rect.shrink2(Vec2::new(style::SPACE_SM, 0.0)),
-                    style::RADIUS_MD,
-                    bg,
-                );
-
-                let name_color = if active {
-                    colors.accent
-                } else {
-                    colors.text_primary
-                };
-                if row.description.is_some() {
-                    let name_pos = rect.left_top() + Vec2::new(style::SPACE_MD, 8.0);
-                    ui.painter().text(
-                        name_pos,
-                        egui::Align2::LEFT_TOP,
-                        &label,
-                        egui::FontId::proportional(style::TEXT_BODY),
-                        name_color,
-                    );
+        let selection_changed = self.selected != self.last_selected;
+        egui::ScrollArea::vertical()
+            .animated(false)
+            .show(ui, |ui| {
+                for (i, row) in rows.iter().enumerate() {
+                    let is_selected = i == self.selected;
+                    // A trailing "›" marks command groups (rows that drill into
+                    // a sub-list rather than open a form).
+                    let mut list_row = crate::ui::list::ListRow::new(&row.name)
+                        .selected(is_selected);
                     if let Some(desc) = &row.description {
-                        let desc_pos = rect.left_top() + Vec2::new(style::SPACE_MD, 26.0);
-                        ui.painter().text(
-                            desc_pos,
-                            egui::Align2::LEFT_TOP,
-                            desc,
-                            egui::FontId::proportional(style::TEXT_HINT),
-                            colors.text_dim,
-                        );
+                        list_row = list_row.secondary(desc);
                     }
-                } else {
-                    let name_pos = rect.left_center() + Vec2::new(style::SPACE_MD, 0.0);
-                    ui.painter().text(
-                        name_pos,
-                        egui::Align2::LEFT_CENTER,
-                        &label,
-                        egui::FontId::proportional(style::TEXT_BODY),
-                        name_color,
-                    );
+                    if row.has_children {
+                        list_row = list_row.chip("›");
+                    }
+                    let resp = list_row.show(ui, colors);
+                    if is_selected {
+                        resp.scroll_into_view(ui, selection_changed);
+                    }
+                    if resp.row_clicked() {
+                        clicked_idx = Some(i);
+                    }
                 }
-                if resp.clicked() {
-                    clicked_idx = Some(i);
-                }
-            }
-        });
+            });
+        self.last_selected = self.selected;
 
         if let Some(i) = clicked_idx {
             self.selected = i;
@@ -558,8 +489,8 @@ impl CliRendererApp {
 
         ui.add_space(style::SPACE_SM);
 
-        // Back button (same full-width affordance as the list view)
-        if Self::back_button(ui, colors) {
+        // Back button (same ListRow affordance as the list view)
+        if Self::back_row(ui, colors) {
             self.navigate_back();
             return;
         }
@@ -989,6 +920,9 @@ mod tests {
         let (mut app, _dir) = app_from_fixture();
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let ctx = egui::Context::default();
+        // ListRow renders with the custom "ui-medium" font family, which only
+        // exists once the app's fonts are installed.
+        crate::ui::theme::setup_fonts(&ctx);
 
         let render_once = |app: &mut CliRendererApp| {
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
