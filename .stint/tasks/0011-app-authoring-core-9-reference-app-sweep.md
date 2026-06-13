@@ -3,7 +3,7 @@ id: "0011"
 title: "App authoring: Core 9 reference app sweep"
 status: done
 estimate: "16h"
-completed_at: "2026-06-13T08:34:04Z"
+completed_at: "2026-06-13T08:31:31Z"
 sprint: "s2"
 blocked_by:
   - 9
