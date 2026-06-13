@@ -3,8 +3,9 @@ id: "0022"
 title: "Marketplace: Plexi AI subscription via ai.query"
 status: done
 estimate: "12h"
-actual: "0m"
-completed_at: "2026-06-13T16:45:46Z"
+actual: "4m"
+started_at: "2026-06-13T08:46:45Z"
+completed_at: "2026-06-13T08:50:21Z"
 sprint: "s4"
 blocked_by:
   - 20
@@ -17,6 +18,7 @@ tags:
   - "ai"
   - "subscription"
 ---
+
 
 
 
@@ -53,3 +55,32 @@ Apps call `ai.query`; the host routes to local Ollama, user-owned keys, or a Ple
 
 - `docs/prm/app-framework-marketplace.md`
 - `docs/prm/marketplace-hosted.md` (section 5)
+
+## Outcome
+
+Expanded `docs/prm/marketplace-hosted.md` §5 in place (kept cohesive with the
+other four hosted lanes rather than a parallel doc). The spec covers: backend
+routing (the managed proxy is a third arm of `LiveAiBroker::dispatch` in
+`src/plexi_ai/broker.rs`, selected by `backend = "plexi"`, with the account check
+*inside* `dispatch_plexi` only so the ollama/openrouter arms stay account-blind);
+account requirement + strict inverse; metering (local `effective_*_daily_usd`
+safety caps vs. server-side commercial allowance — numbers deferred to a billing
+spec); separation from app purchase (`PaymentProvider`/`LicenseStore` is app
+licenses, the subscription is an account-level entitlement); and the governing
+no-prerequisite rule. Config recommendation: a thin typed `[ai.subscription]`
+sub-section (endpoint + tier overrides) with the `AccountSession` bearer token as
+the sole credential. Corrected the task's stale ref: the broker is
+`src/plexi_ai/broker.rs`, not `src/broker/mod.rs`.
+
+Open questions for the future billing-implementation task (named placeholders in
+the spec, NOT invented): `FREE_TIER_REQUEST_COUNT`, `PAID_TIER_PRICE`,
+`PAID_TIER_REQUEST_ALLOWANCE`/unmetered, `OVERAGE_POLICY`, and confirming the
+`marketplace.subscription_backend` selector name. Spec-only task — no code, no
+implementation scheduled yet.
+
+## Variance
+
+Estimate 12h. Spec-only; the work was reading the `ai.query` broker + account +
+marketplace seams and writing §5 grounded in real types. Delegated the draft to a
+subagent and verified every cited seam (`LiveAiBroker::dispatch`, `BillingModel`,
+the daily-cap accessors) against the code before committing.
