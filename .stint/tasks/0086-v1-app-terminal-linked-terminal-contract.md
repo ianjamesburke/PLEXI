@@ -3,8 +3,9 @@ id: "0086"
 title: "v1 app-terminal: linked terminal contract"
 status: done
 estimate: "10h"
-actual: "0m"
-completed_at: "2026-06-13T16:45:46Z"
+actual: "6m"
+started_at: "2026-06-13T08:23:54Z"
+completed_at: "2026-06-13T08:28:56Z"
 sprint: "s3"
 blocked_by: []
 gh_issue:
@@ -20,6 +21,7 @@ tags:
   - "permissions"
   - "terminal"
 ---
+
 
 
 
@@ -56,3 +58,32 @@ This is broader than paired pane close behavior. It needs to settle how apps obt
 ## Follow-ups
 
 File Explorer directory handoff (#2145 / stint `0113`) already shipped and consumed this contract.
+
+## Audit outcome
+
+The five operations and their permission checks were already shipped (0062). The
+audit found the "inconsistent error surfaces" are in fact **principled**:
+request-response ops (`RequestLinkedTerminal`, `RequestCommandPreview`) carry a
+`request_id` and emit a sentinel on denial so the SDK helper unblocks;
+fire-and-forget ops (`RunInLinkedTerminal`, `InsertPathToken`, `OpenArtifact`)
+have no `request_id` and drop silently. This is a coherent contract — **not**
+changed. Completed the denial-test coverage with silent-drop tests for
+`InsertPathToken` and `OpenArtifact` (the two that were missing).
+
+Genuine gaps were filed as issues rather than changed inline:
+- Lifecycle (paired close, stale-link clearing, visual grouping from
+  `pane_group`) → **#2241**. No close path touches `linked_pane_id` today.
+- `OpenArtifact` lexical path check does not resolve symlinks → **#2242**.
+
+Primary deliverable: `docs/TERMINAL_BINDINGS_CONTRACT.md` documenting the
+capability, the five ops, the principled denial contract, current lifecycle,
+`pane_group` routing (no visual grouping yet), and path safety. This fulfills the
+"define the contract" goal of the linked GitHub issue **#599**, which is closed
+with the doc as evidence; the open lifecycle decisions live in #2241.
+
+## Variance
+
+Estimate 10h. The execution + permissions were already shipped, so the work was
+the audit (confirming the denial contract is principled), the contract doc, two
+denial-coverage tests, and filing the two real gaps as issues — not a rewrite of
+security-sensitive code.

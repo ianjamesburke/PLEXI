@@ -1115,6 +1115,7 @@ fn test_app_pane(pane_id: u64) -> crate::host::pane::Pane {
     let permissions = AppPermissions::builtin();
     let (process_app, _draw_tx) = ProcessApp::new_for_test(pane_id, permissions.clone());
     crate::host::pane::Pane::App(Box::new(AppPane {
+        pip_status: None,
         id: pane_id,
         runtime: AppRuntime::Process(Box::new(process_app)),
         workspace_root: std::env::temp_dir(),

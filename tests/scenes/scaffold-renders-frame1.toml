@@ -1,0 +1,33 @@
+# Scaffold output renders + handles input (stint 0012). apps/dev/counter is the
+# exact output of `plexi app init` (manifest with the [marketplace] placeholder,
+# view()-based counter, justfile). This proves a freshly generated app renders on
+# its first frame and survives a keystroke without crashing — the baseline an
+# agent relies on after scaffolding. suite = false — spawns a real Python child.
+size = [1280.0, 800.0]
+suite = false
+
+[[steps]]
+open_app = "apps/dev/counter"
+
+[[steps]]
+wait_app_frame = { timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 8
+
+# First frame renders the scaffold's AppBar title.
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "Counter" }
+
+# A keystroke reaches the on_key handler; the app keeps running (no crash).
+[[steps]]
+key = "plus"
+
+[[steps]]
+run_steps = 8
+
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "Counter" }
+
+[[steps]]
+shot = "scaffold-renders-frame1.png"

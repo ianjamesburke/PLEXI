@@ -642,6 +642,7 @@ impl PlexiApp {
                             {
                                 pane_entry =
                                     Some(Pane::App(Box::new(crate::host::pane::AppPane {
+                                        pip_status: None,
                                         id: saved_pane.id,
                                         permissions: process.permissions.clone(),
                                         runtime: crate::host::pane::AppRuntime::Process(Box::new(
@@ -1301,6 +1302,7 @@ impl PlexiApp {
 
         let (process_app, _draw_tx) = ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
         let app_pane = AppPane {
+            pip_status: None,
             id: pane_id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),

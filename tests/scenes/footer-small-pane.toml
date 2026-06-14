@@ -1,0 +1,24 @@
+# Small-pane FooterKeys regression (stint 0010). The UI Gallery's footer key row
+# must render centered and full-bleed at a narrow (280px) pane width without
+# crashing the app or clipping the pane. Captures a shot for visual review of the
+# narrow-pane footer band. Centering for issue #2111 ships via the L1
+# UiNode::FooterKeys render path (src/render/components.rs).
+# suite = false — spawns a real Python child process.
+size = [280.0, 480.0]
+suite = false
+
+[[steps]]
+open_app = "apps/dev/ui-gallery"
+
+[[steps]]
+wait_app_frame = { timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 10
+
+# The app survives the narrow pane and keeps rendering its tree (footer included).
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "Footer" }
+
+[[steps]]
+shot = "footer-small-pane.png"

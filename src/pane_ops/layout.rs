@@ -1890,6 +1890,7 @@ mod restore_overlay_replacement_tests {
         use crate::process_app::ProcessApp;
         let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
         Pane::App(Box::new(AppPane {
+            pip_status: None,
             id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),
@@ -1950,6 +1951,7 @@ mod move_to_adjacent_window_tests {
         use crate::process_app::ProcessApp;
         let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
         crate::host::pane::Pane::App(Box::new(AppPane {
+            pip_status: None,
             id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),
@@ -2086,6 +2088,7 @@ mod pop_pane_to_new_window_tests {
         use crate::process_app::ProcessApp;
         let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
         crate::host::pane::Pane::App(Box::new(AppPane {
+            pip_status: None,
             id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),
@@ -2270,6 +2273,7 @@ mod move_to_row_boundary_tests {
         use crate::process_app::ProcessApp;
         let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
         crate::host::pane::Pane::App(Box::new(AppPane {
+            pip_status: None,
             id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),
@@ -2478,6 +2482,7 @@ mod context_root_cwd_tests {
         let pane_id: u64 = 42;
         let (process_app, _tx) = ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
         let app_pane = AppPane {
+            pip_status: None,
             id: pane_id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::path::PathBuf::from("/other/workspace"),
@@ -2607,6 +2612,7 @@ mod navigate_boundary_tests {
         use crate::process_app::ProcessApp;
         let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
         crate::host::pane::Pane::App(Box::new(AppPane {
+            pip_status: None,
             id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),

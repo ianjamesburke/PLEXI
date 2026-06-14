@@ -3247,6 +3247,7 @@ fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, pane_id: u64) {
     use crate::process_app::ProcessApp;
     let (process_app, _draw_tx) = ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
     let app_pane = crate::host::pane::AppPane {
+        pip_status: None,
         id: pane_id,
         runtime: AppRuntime::Process(Box::new(process_app)),
         workspace_root: std::env::temp_dir(),
@@ -3407,5 +3408,75 @@ fn notification_badge_count_propagates_to_sender_pane() {
         h.process_app_mut(pane).pending_notification_count,
         0,
         "badge count must clear on the next frame after the notification is removed"
+    );
+}
+
+// -- App-reported pip status (stint 0179) ---------------------------------
+
+/// An app reporting its own pip status drives the pane activity dot, the host
+/// stamps the sending pane's real id (the wire pane_id is 0), and pip status
+/// takes priority over hook-reported agent state.
+#[test]
+fn set_pip_status_drives_activity_dot_and_overrides_agent() {
+    use crate::app_protocol::{AgentState, AppRequest, PaneAgentState, PipStatus};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.run_frames(1);
+
+    // Fresh app pane: no pip reported yet.
+    assert_eq!(
+        h.app.windows[0].panes.get(&pane).unwrap().pip_status(),
+        None
+    );
+
+    // App reports red. pane_id is 0 on the wire; the host stamps the real pane.
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::SetPipStatus {
+            pane_id: 0,
+            status: PipStatus::Red,
+        }),
+    );
+    h.run_frames(3);
+    {
+        let p = h.app.windows[0].panes.get(&pane).unwrap();
+        assert_eq!(
+            p.pip_status(),
+            Some(PipStatus::Red),
+            "host must stamp the pip on the sending pane (wire pane_id was 0)"
+        );
+        assert_eq!(
+            p.effective_activity(),
+            Some(&AgentState::Blocked),
+            "red pip -> Blocked (red dot)"
+        );
+    }
+
+    // Pip status wins over hook agent state: set an Idle agent, then report green.
+    h.app.windows[0]
+        .panes
+        .get_mut(&pane)
+        .unwrap()
+        .set_agent(Some(PaneAgentState {
+            pane_id: pane,
+            state: AgentState::Idle,
+            agent: "test".to_string(),
+            detail: None,
+            session_id: None,
+        }));
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::SetPipStatus {
+            pane_id: 0,
+            status: PipStatus::Green,
+        }),
+    );
+    h.run_frames(3);
+    let p = h.app.windows[0].panes.get(&pane).unwrap();
+    assert_eq!(
+        p.effective_activity(),
+        Some(&AgentState::Working),
+        "green pip -> Working (green dot), overriding the Idle agent state"
     );
 }

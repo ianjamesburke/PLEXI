@@ -107,11 +107,25 @@ impl Pane {
         }
     }
 
-    /// Activity state for the unified activity dot. Hook-reported agent
-    /// state wins; otherwise falls back to host-observed terminal activity
-    /// (foreground process running / exited). Apps and portals have no
+    /// App-reported pip status, checking the outer app then any overlay-replaced
+    /// pane underneath (mirrors `agent()`).
+    pub fn pip_status(&self) -> Option<crate::app_protocol::PipStatus> {
+        match self {
+            Pane::App(a) => a
+                .pip_status
+                .or_else(|| a.overlay_replaced.as_deref().and_then(Pane::pip_status)),
+            Pane::Terminal(_) | Pane::Portal(_) => None,
+        }
+    }
+
+    /// Activity state for the unified activity dot. App-reported pip status wins;
+    /// then hook-reported agent state; otherwise falls back to host-observed
+    /// terminal activity (foreground process running / exited). Portals have no
     /// host-observed fallback yet.
     pub fn effective_activity(&self) -> Option<&crate::app_protocol::AgentState> {
+        if let Some(pip) = self.pip_status() {
+            return Some(pip.as_agent_state());
+        }
         if let Some(a) = self.agent() {
             return Some(&a.state);
         }
@@ -140,6 +154,22 @@ impl Pane {
                 }
             }
             Pane::Portal(_) => false,
+        }
+    }
+
+    /// Set the app-reported pip status. App panes only (mirrors `set_agent`'s
+    /// overlay delegation). Terminals and portals have no pip surface → false.
+    pub fn set_pip_status(&mut self, status: Option<crate::app_protocol::PipStatus>) -> bool {
+        match self {
+            Pane::App(a) => {
+                if let Some(replaced) = a.overlay_replaced.as_deref_mut() {
+                    replaced.set_pip_status(status)
+                } else {
+                    a.pip_status = status;
+                    true
+                }
+            }
+            Pane::Terminal(_) | Pane::Portal(_) => false,
         }
     }
 
@@ -423,5 +453,8 @@ pub struct AppPane {
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
     pub agent: Option<crate::app_protocol::PaneAgentState>,
+    /// App-reported pip status (red/yellow/green). Takes priority over derived
+    /// activity for the activity dot. `None` = fall back to agent()/host-observed.
+    pub pip_status: Option<crate::app_protocol::PipStatus>,
     pub slots: HashMap<String, PathBuf>,
 }

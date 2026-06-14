@@ -111,6 +111,46 @@ fn denied_app_request_command_preview_emits_empty_cwd_sentinel() {
     }
 }
 
+#[test]
+fn denied_app_insert_path_token_drops_silently() {
+    // Fire-and-forget verb (no request_id) → silent drop on denial, matching
+    // RunInLinkedTerminal. The contract: request-response ops emit a sentinel so
+    // the SDK helper unblocks; fire-and-forget ops drop silently.
+    let Some(mut app) = make_app(HashSet::new()) else {
+        eprintln!("skipping: no /bin/sh available");
+        return;
+    };
+    app.route_command(AppRequest::InsertPathToken {
+        terminal_pane_id: 42,
+        path: "/tmp/x".to_string(),
+        mode: PathTokenMode::Replace,
+    });
+    assert!(
+        !app.pending_commands
+            .iter()
+            .any(|c| matches!(c, AppCommand::InsertPathToken { .. })),
+        "denied path must drop InsertPathToken without dispatch"
+    );
+}
+
+#[test]
+fn denied_app_open_artifact_drops_silently() {
+    let Some(mut app) = make_app(HashSet::new()) else {
+        eprintln!("skipping: no /bin/sh available");
+        return;
+    };
+    app.route_command(AppRequest::OpenArtifact {
+        path: "/tmp/x".to_string(),
+        mode: ArtifactOpenMode::RevealInFinder,
+    });
+    assert!(
+        !app.pending_commands
+            .iter()
+            .any(|c| matches!(c, AppCommand::OpenArtifact { .. })),
+        "denied path must drop OpenArtifact without dispatch"
+    );
+}
+
 // ── Granted-path AppCommand enqueue ─────────────────────────────────
 
 #[test]

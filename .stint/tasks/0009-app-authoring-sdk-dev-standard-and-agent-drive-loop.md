@@ -3,8 +3,9 @@ id: "0009"
 title: "App authoring: SDK dev standard and agent drive loop"
 status: done
 estimate: "8h"
-actual: "0m"
-completed_at: "2026-06-13T16:45:46Z"
+actual: "6m"
+started_at: "2026-06-13T07:46:23Z"
+completed_at: "2026-06-13T07:51:43Z"
 sprint: "s2"
 blocked_by: []
 gh_issue:
@@ -18,6 +19,8 @@ tags:
   - "sdk-v2"
   - "agent-loop"
 ---
+
+
 
 
 
@@ -44,3 +47,13 @@ Agents need a repeatable render-inspect-act loop to build Plexi apps without rea
 - GitHub issue #257
 - `docs/prm/app-framework-marketplace.md`
 - `docs/SDK_QUICKSTART.md`
+
+## Variance
+
+Estimate 8h, actual 6m wall-clock. The estimate assumed designing the dev loop
+from scratch; in practice the scaffold infra (`scaffold_python_app`, `app init`,
+`app check` render-inspect) already existed, so this was additive wiring: a
+generic `justfile.template`, a thin `plexi app dev` wrapper, and docs. Most
+discovery happened in the shared batch analysis pass before `stint start`, so 6m
+undercounts true effort. The `app_dev_workflow.toml` scene test is deferred to
+0012, which owns scene coverage.
