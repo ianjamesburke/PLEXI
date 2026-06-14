@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.785"
+verified_version: "0.1.0"
 order: 7
 ---
 
@@ -932,9 +932,19 @@ Check your Plexi config file for errors
 
 Validate your config.toml and report any errors
 
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--global` / `-g` | flag | no | Use the global channel config.toml only |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
+
 ### `plexi config edit`
 
 Open config.toml in your $EDITOR
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--global` / `-g` | flag | no | Use the global channel config.toml only |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
 
 ### `plexi config get`
 
@@ -944,6 +954,8 @@ Supports dotted keys: agents.low, agents.medium, agents.high. Returns the effect
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
+| `--global` / `-g` | flag | no | Use the global channel config.toml only |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
 | `<key>` | string | yes | Dotted key to retrieve (e.g. agents.medium) |
 
 ### `plexi config reset`
@@ -951,6 +963,11 @@ Supports dotted keys: agents.low, agents.medium, agents.high. Returns the effect
 Overwrite config.toml with the built-in default template.
 
 Creates a backup at config.toml.bak before overwriting.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--global` / `-g` | flag | no | Use the global channel config.toml only |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
 
 ## `plexi notes`
 
