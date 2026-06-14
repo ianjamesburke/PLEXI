@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.784] — 2026-06-14
+
+### Changes
+- fix: prevent changelog modal overlap
 ## [0.0.783] — 2026-06-14
 
 ### Changes
