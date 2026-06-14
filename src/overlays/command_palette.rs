@@ -42,10 +42,11 @@ enum PaletteEntry {
 }
 
 /// Builtin host apps surfaced in the palette alongside registry apps.
-const BUILTIN_APPS: &[(&str, &str, &str)] = &[(
+const BUILTIN_APPS: &[(&str, &str, &str, crate::release::ReleaseFeature)] = &[(
     "assistant",
     "Assistant",
     "Host-native AI chat for this workspace",
+    crate::release::ReleaseFeature::Assistant,
 )];
 
 pub(crate) fn app_metadata_chips(
@@ -478,7 +479,10 @@ impl PlexiApp {
             })
             .collect();
 
-        for &(id, name, description) in BUILTIN_APPS {
+        for &(id, name, description, gate) in BUILTIN_APPS {
+            if !crate::release::feature_enabled(gate) {
+                continue;
+            }
             if query.is_empty()
                 || name.to_lowercase().contains(&query)
                 || id.to_lowercase().contains(&query)
@@ -873,7 +877,13 @@ impl PlexiApp {
     fn launch_builtin_by_id(&mut self, id: &str) {
         log::info!("palette: launching builtin app '{id}'");
         match id {
-            "assistant" => self.open_assistant_pane(),
+            "assistant" => {
+                if crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
+                    self.open_assistant_pane();
+                } else {
+                    log::info!("assistant: palette launch blocked by stable release gate");
+                }
+            }
             other => log::warn!("palette: unknown builtin app id '{other}'"),
         }
     }

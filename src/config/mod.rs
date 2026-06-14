@@ -839,6 +839,10 @@ pub fn ensure_profile_initialized() -> bool {
 
 /// Returns the build channel for this binary: the suffix after `plexi-`, or `None` for the bare `plexi` binary (main channel).
 pub fn build_channel() -> Option<String> {
+    #[cfg(test)]
+    if let Some(channel) = test_channel_override() {
+        return Some(channel);
+    }
     let basename = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))?;
@@ -1575,6 +1579,12 @@ mod tests {
     fn config_dir_name_respects_test_channel_override() {
         let _guard = set_test_channel("pr-999");
         assert_eq!(config_dir_name(), ".plexi-pr-999");
+    }
+
+    #[test]
+    fn build_channel_respects_test_channel_override() {
+        let _guard = set_test_channel("beta");
+        assert_eq!(build_channel().as_deref(), Some("beta"));
     }
 
     #[test]

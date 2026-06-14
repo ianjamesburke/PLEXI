@@ -1177,6 +1177,10 @@ impl PlexiApp {
     /// duplicate. Conversation state is workspace-scoped on disk, so
     /// close-then-reopen resumes the same conversation.
     pub(crate) fn open_assistant_pane(&mut self) {
+        if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
+            crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
+            return;
+        }
         let active = self.active_window;
         // Focus an existing Assistant pane instead of opening a second one.
         let existing = self.windows[active].panes.iter().find_map(|(id, pane)| {

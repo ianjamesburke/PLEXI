@@ -237,6 +237,13 @@ Command templates used when Plexi skills dispatch coding agent panes. `{cmd}` is
 
 Experimental features. Flip any flag to `true` and restart to enable.
 
+Some product features are gated by release channel rather than config. The
+central registry is `src/release.rs`, where each `ReleaseFeature` declares its
+minimum channel. Today `plexi-beta`, `plexi-alpha`, and `plexi-pr-N` can open
+the Assistant, hosted Marketplace/account commands, and CLI/MCP app wrappers.
+The stable `plexi` binary keeps the v1 surface narrow: terminal multiplexing
+plus bundled/installed apps.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `crt` | bool | false | Retro CRT scanlines + green phosphor tint. |

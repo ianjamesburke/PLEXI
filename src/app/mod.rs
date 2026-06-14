@@ -625,7 +625,12 @@ impl PlexiApp {
                         // dir, so the broker-free factory can't build it. Build
                         // it here where the loaded `config.ai` is available; the
                         // conversation auto-resumes from disk.
-                        if pane_entry.is_none() && app_type == "assistant" {
+                        if pane_entry.is_none()
+                            && app_type == "assistant"
+                            && crate::release::feature_enabled(
+                                crate::release::ReleaseFeature::Assistant,
+                            )
+                        {
                             let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
                                 std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(
                                     config.ai.clone(),
@@ -636,6 +641,11 @@ impl PlexiApp {
                                 broker,
                                 &crate::config::config_dir(),
                             ));
+                        }
+                        if pane_entry.is_none() && app_type == "assistant" {
+                            crate::release::log_feature_blocked(
+                                crate::release::ReleaseFeature::Assistant,
+                            );
                         }
                         if pane_entry.is_none() {
                             if let Some(process) = registry.launch_process(app_type, &app_cwd, &[])
