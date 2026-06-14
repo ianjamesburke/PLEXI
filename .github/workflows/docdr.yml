@@ -17,6 +17,4 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ianjamesburke/docdr@v1
-        with:
-          license-key: ${{ secrets.DOCDR_LICENSE_KEY }}
+      - uses: ianjamesburke/docdr-action@v1
