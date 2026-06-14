@@ -610,10 +610,6 @@ fn register_json_hook(
         .cloned()
         .unwrap_or_default();
 
-    if event_hooks.iter().any(contains_plexi_agent_hook) {
-        return;
-    }
-
     let mut hook = serde_json::json!({"type": "command", "command": command});
     if let Some(message) = status_message {
         hook["statusMessage"] = serde_json::Value::String(message.to_string());
@@ -622,9 +618,14 @@ fn register_json_hook(
         "matcher": "",
         "hooks": [hook]
     });
+    let mut event_hooks: Vec<serde_json::Value> = event_hooks
+        .into_iter()
+        .filter(|entry| !contains_plexi_agent_hook(entry))
+        .collect();
+    event_hooks.push(new_entry);
     match settings["hooks"][event].as_array_mut() {
-        Some(a) => a.push(new_entry),
-        None => settings["hooks"][event] = serde_json::json!([new_entry]),
+        Some(a) => *a = event_hooks,
+        None => settings["hooks"][event] = serde_json::Value::Array(event_hooks),
     }
 }
 
@@ -915,12 +916,18 @@ mod agent_tests {
             "PLEXI_AGENT_NAME=codex /tmp/claude-code-agent-state.sh",
             Some("Plexi agent state"),
         );
+        super::register_json_hook(
+            &mut settings,
+            "PreToolUse",
+            "PLEXI_AGENT_NAME=codex /tmp/current/claude-code-agent-state.sh",
+            Some("Plexi agent state"),
+        );
 
         let hooks = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(hooks.len(), 1);
         assert_eq!(
             hooks[0]["hooks"][0]["command"],
-            "PLEXI_AGENT_NAME=codex /tmp/claude-code-agent-state.sh"
+            "PLEXI_AGENT_NAME=codex /tmp/current/claude-code-agent-state.sh"
         );
         assert_eq!(hooks[0]["hooks"][0]["statusMessage"], "Plexi agent state");
     }
