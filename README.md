@@ -15,7 +15,7 @@
   <img src="media/screenshot-4.png" width="48%" alt="Screenshot — code on the left, live app pane on the right" />
 </p>
 
-One binary. A tiling shell that brings Unix composability to the desktop — terminals, apps, and AI agents all speak the same protocol. Pipe output between processes, route notifications across panes, query any model from any context.
+Started as a terminal multiplexer. Got carried away. Now it's closer to a micro operating system — file explorer, notes editor, agent hooks, app runtime/SDK, notifications, and probably more I'm forgetting. Built in Rust.
 
 
 
