@@ -1,5 +1,8 @@
 use super::notes::{print_step_complete, print_step_header};
 
+const TOTAL_STEPS: u8 = 13;
+const CMD: &str = "\u{2318}";
+
 pub fn demo_cli() -> i32 {
     let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
         Ok(v) => v,
@@ -20,181 +23,338 @@ pub fn demo_cli() -> i32 {
     log::info!("demo_cli: starting interactive tutorial for pane_id={my_pane_id}");
 
     let events_path = crate::config::config_dir().join("events.jsonl");
+    let start_offset = file_offset(&events_path).unwrap_or(0);
 
-    // Seek to end — only watch events that occur after demo starts.
-    let start_offset = match std::fs::metadata(&events_path) {
-        Ok(m) => m.len(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-        Err(e) => {
-            log::warn!("demo_cli: could not read events file metadata: {e}");
-            0
-        }
+    print_intro();
+
+    step(1, "Split right");
+    explain(&["Press Command-D. Plexi splits this pane to the right and focuses the new pane."]);
+    key(&format!("{CMD}D"), "split right");
+    let mut right_pane_id = 0;
+    let after_right_split = match poll_event(&events_path, start_offset, |kind, obj| {
+        capture_pane_split(kind, obj, &mut right_pane_id)
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
     };
+    done(1);
 
-    // Welcome banner
-    eprintln!("\x1b[1;36m");
-    eprintln!("  Plexi — Quick Tutorial");
-    eprintln!("\x1b[0m");
-    eprintln!("  Seven moves. That's all you need to know.");
+    step(2, "Split below");
+    explain(&[
+        "The pane on the right should be focused now.",
+        "Press Command-Shift-D to split that pane below.",
+    ]);
+    key(&format!("{CMD}Shift+D"), "split below");
+    let mut lower_pane_id = 0;
+    let after_lower_split = match poll_event(&events_path, after_right_split, |kind, obj| {
+        capture_pane_split(kind, obj, &mut lower_pane_id)
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    done(2);
+
+    step(3, "Move with HJKL");
+    explain(&[
+        "Hold Command and use H J K L to move between panes.",
+        "Your hand naturally rests there during normal typing. Arrow keys work too, but HJKL is worth learning if you spend the day in panes.",
+        "Move around for a moment. Focus each pane at least twice, then come back to this demo pane and press Enter.",
+    ]);
+    eprintln!("        left  down   up  right");
+    eprintln!("          <-    v     ^     ->");
+    eprintln!("          H     J     K     L");
     eprintln!();
+    wait_for_enter();
+    done(3);
+    let after_move = file_offset(&events_path).unwrap_or(after_lower_split);
 
-    // Step 1 — split
-    print_step_header(1, 7, "Split a pane");
-    eprintln!("    Press  \x1b[1m[ \u{2318}D ]\x1b[0m  to split the current pane.");
+    step(4, "Close the extra panes");
+    explain(&[
+        "Close the two panes you created with Command-W.",
+        "Do not close this demo pane. Move back here after each close if you need to.",
+    ]);
+    key(&format!("{CMD}W"), "close the focused extra pane");
+    let mut closed_right = false;
+    let mut closed_lower = false;
+    let after_close = match poll_event(&events_path, after_move, |kind, obj| {
+        if kind != "pane_closed" {
+            return false;
+        }
+        let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) else {
+            return false;
+        };
+        if id == right_pane_id {
+            closed_right = true;
+        }
+        if id == lower_pane_id {
+            closed_lower = true;
+        }
+        closed_right && closed_lower
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    done(4);
+
+    step(5, "Rename this pane");
+    explain(&["Pane names keep busy workspaces readable."]);
+    command("plexi pane name \"Demo terminal\"");
+    let after_rename = match poll_event(&events_path, after_close, |kind, obj| {
+        kind == "pane_renamed"
+            && obj
+                .get("pane_id")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|pid| pid == my_pane_id)
+            && obj
+                .get("name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|name| name == "Demo terminal")
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    done(5);
+
+    step(6, "Open an app from the palette");
+    explain(&[
+        "Split to a fresh terminal, open the command palette, type Balls, and choose the Balls app.",
+        "The app should take over that pane. This demo waits for the Balls app to spawn.",
+    ]);
+    key(&format!("{CMD}D"), "open a new terminal pane");
+    key(&format!("{CMD}P"), "open the command palette");
+    eprintln!("    Type Balls, choose the Balls app, and press Enter.");
     eprintln!();
+    let after_balls = match poll_event(&events_path, after_rename, |kind, obj| {
+        kind == "app_spawned"
+            && obj
+                .get("type_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id == "balls")
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    done(6);
 
-    // Capture the new pane's ID from the split event so step 2 can verify
-    // focus specifically returns from that pane (not a bounce from the split itself).
-    let mut split_pane_id: u64 = 0;
-    let after_split_offset = match poll_event(&events_path, start_offset, |kind, obj| {
-        if kind == "pane_split" {
-            if let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) {
-                split_pane_id = id;
+    step(7, "Send a notification");
+    explain(&[
+        "Agents can notify you through Plexi instead of relying on terminal output.",
+        "Move back to this demo pane, then run the command below.",
+    ]);
+    command("plexi notify --title \"Hello\"");
+    let after_notify = match poll_event(&events_path, after_balls, |kind, obj| {
+        kind == "notification_posted"
+            && obj
+                .get("title")
+                .and_then(|v| v.as_str())
+                .is_some_and(|title| title == "Hello")
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    done(7);
+
+    step(8, "Acknowledge it");
+    explain(&[
+        "Open notifications with Command-Shift-A and click Acknowledge.",
+        "This is the same surface your agents can use when they need your attention.",
+    ]);
+    key(&format!("{CMD}Shift+A"), "open notifications");
+    let after_ack = match poll_event(&events_path, after_notify, |kind, obj| {
+        kind == "notification_action_invoked"
+            && obj
+                .get("action")
+                .and_then(|v| v.as_str())
+                .is_some_and(|action| action == "acknowledge")
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    done(8);
+
+    step(9, "Open files in a tab");
+    explain(&[
+        "The file explorer is a Plexi app for moving through a project directory.",
+        "This opens it in a tab so your terminal stays next to it.",
+    ]);
+    command("plexi app open --tab file_browser");
+    let after_file = match poll_event(&events_path, after_ack, |kind, obj| {
+        kind == "app_spawned"
+            && obj
+                .get("type_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id == "file_browser")
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    done(9);
+
+    step(10, "Write a scratch note");
+    explain(&[
+        "Scratch notes land in your Plexi notes inbox.",
+        "Press Command-Shift-Space, type a line, close it, return here, then press Enter.",
+    ]);
+    key(&format!("{CMD}Shift+Space"), "open a scratch note");
+    wait_for_enter();
+    done(10);
+    let after_note = file_offset(&events_path).unwrap_or(after_file);
+
+    step(11, "Create a context");
+    explain(&[
+        "Contexts group related panes and pages.",
+        "Press Command-Shift-N, name the new context Demo Context, and press Enter.",
+    ]);
+    key(&format!("{CMD}Shift+N"), "create a new context");
+    let mut context_id = 0;
+    let after_context = match poll_event(&events_path, after_note, |kind, obj| {
+        if kind == "context_created" {
+            if let Some(id) = obj.get("context_id").and_then(|v| v.as_u64()) {
+                context_id = id;
                 return true;
             }
         }
         false
     }) {
         Ok(offset) => offset,
-        Err(e) => {
-            eprintln!("error watching {}: {e}", events_path.display());
-            return 1;
-        }
+        Err(e) => return watch_error(&events_path, e),
     };
-    print_step_complete(1, 7);
+    done(11);
 
-    // Step 2 — navigate
-    print_step_header(2, 7, "Navigate panes");
-    eprintln!("       \x1b[2m^\x1b[0m");
-    eprintln!("       K");
-    eprintln!("    H     L");
-    eprintln!("       J");
-    eprintln!();
-    eprintln!("    Press  \x1b[1m[ \u{2318}H ]\x1b[0m  to return to this pane, then  \x1b[1m[ \u{2318}L ]\x1b[0m  to go back.");
-    eprintln!();
-
-    // Require a confirmed round-trip between split_pane and demo pane.
-    // After the split, focus is on split_pane_id. The valid event sequence is:
-    //   focus_changed(split_pane_id)  — user left split pane via ⌘H
-    //   focus_changed(my_pane_id)     — user left demo pane via ⌘L
-    // Any other pane ID appearing between these two resets the state so that
-    // a second ⌘D split cannot satisfy the round-trip without actual navigation.
-    let mut saw_split_depart = false;
-    let after_nav_offset = match poll_event(&events_path, after_split_offset, |kind, obj| {
-        if kind != "focus_changed" {
-            return false;
-        }
-        let Some(pid) = obj.get("pane_id").and_then(|v| v.as_u64()) else {
-            return false;
-        };
-        if !saw_split_depart {
-            if pid == split_pane_id {
-                saw_split_depart = true;
-            }
-            false
-        } else if pid == my_pane_id {
-            true
-        } else {
-            saw_split_depart = pid == split_pane_id;
-            false
-        }
+    step(12, "Rename the context");
+    explain(&[
+        "Press Command-Shift-R, change the context name, and press Enter.",
+        "The demo waits for the rename event in Plexi's event log.",
+    ]);
+    key(&format!("{CMD}Shift+R"), "rename the active context");
+    let after_context_rename = match poll_event(&events_path, after_context, |kind, obj| {
+        kind == "context_renamed"
+            && obj
+                .get("context_id")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|id| id == context_id)
     }) {
         Ok(offset) => offset,
-        Err(e) => {
-            eprintln!("error watching {}: {e}", events_path.display());
-            return 1;
-        }
+        Err(e) => return watch_error(&events_path, e),
     };
-    print_step_complete(2, 7);
+    done(12);
 
-    // Step 3 — close pane
-    print_step_header(3, 7, "Close a pane");
-    eprintln!("    Press  \x1b[1m[ \u{2318}W ]\x1b[0m  to close the split pane.");
+    step(13, "Open the shortcut sheet");
+    explain(&[
+        "Click the button in the top right. It opens the shortcut sheet, where you can also see the Command-/ binding.",
+        "Full intro: https://plexiapp.com/docs/intro",
+        "Hold Command and click the link to open it in your browser.",
+        "If this is not a link, that means I have not uploaded it yet. Try again later.",
+    ]);
+    eprintln!("    Press Enter when you have looked at the shortcut sheet.");
     eprintln!();
-    let after_close_offset = match poll_event(&events_path, after_nav_offset, |kind, obj| {
-        if kind == "pane_closed" {
-            if let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) {
-                return id == split_pane_id;
-            }
-        }
-        false
-    }) {
-        Ok(offset) => offset,
-        Err(e) => {
-            eprintln!("error watching {}: {e}", events_path.display());
-            return 1;
-        }
-    };
-    print_step_complete(3, 7);
+    wait_for_enter();
+    let _ = after_context_rename;
+    done(13);
 
-    // Step 4 — open an app
-    print_step_header(4, 7, "Open an app");
-    eprintln!("    Open a new split (\x1b[1m\u{2318}D\x1b[0m), then in the new pane run:");
-    eprintln!("    \x1b[1mplexi open balls\x1b[0m");
-    eprintln!();
-    let after_app_offset = match poll_event(&events_path, after_close_offset, |kind, _| {
-        kind == "app_spawned"
-    }) {
-        Ok(offset) => offset,
-        Err(e) => {
-            eprintln!("error watching {}: {e}", events_path.display());
-            return 1;
-        }
-    };
-    print_step_complete(4, 7);
-
-    // Step 5 — send a notification
-    print_step_header(5, 7, "Send a notification");
-    eprintln!("    In any pane, run:");
-    eprintln!("    \x1b[1mplexi notify --title \"Hello\"\x1b[0m");
-    eprintln!();
-    let after_notify_offset = match poll_event(&events_path, after_app_offset, |kind, _| {
-        kind == "notification_posted"
-    }) {
-        Ok(offset) => offset,
-        Err(e) => {
-            eprintln!("error watching {}: {e}", events_path.display());
-            return 1;
-        }
-    };
-    print_step_complete(5, 7);
-
-    // Step 6 — scaffold a new app (keypress-advance; app init has no event log path)
-    print_step_header(6, 7, "Scaffold a new app");
-    eprintln!("    In any pane, run:");
-    eprintln!("    \x1b[1mplexi app init my-app\x1b[0m");
-    eprintln!();
-    eprintln!("    Then switch back here and press  \x1b[1m[Enter]\x1b[0m  to continue.");
-    eprintln!();
-    {
-        use std::io::BufRead;
-        let _ = std::io::stdin().lock().lines().next();
-    }
-    // Snapshot offset after keypress so step 7 only catches context_created events
-    // that follow — not any that may have been emitted during steps 1–6.
-    let after_app_init_offset = std::fs::metadata(&events_path)
-        .map(|m| m.len())
-        .unwrap_or(after_notify_offset);
-    print_step_complete(6, 7);
-
-    // Step 7 — create a new context
-    print_step_header(7, 7, "Create a context");
-    eprintln!("    In any pane, run:");
-    eprintln!("    \x1b[1mplexi context new\x1b[0m");
-    eprintln!();
-    eprintln!("    Contexts are how you organise work in Plexi.");
-    eprintln!();
-    if let Err(e) = poll_event(&events_path, after_app_init_offset, |kind, _| {
-        kind == "context_created"
-    }) {
-        eprintln!("error watching {}: {e}", events_path.display());
-        return 1;
-    }
-
-    eprintln!("  \x1b[1;32m\u{2713} 7/7 \u{2014} Plexi is yours.\x1b[0m");
+    eprintln!("  Done. This covers maybe 20% of what Plexi can do.");
     eprintln!();
     log::info!("demo_cli: tutorial completed for pane_id={my_pane_id}");
     0
+}
+
+fn print_intro() {
+    eprintln!("\x1b[1;36mPlexi - Quick Tutorial\x1b[0m");
+    explain(&[
+        "Plexi is a local app workspace for terminals, app panes, notes, contexts, notifications, and agent-driven work.",
+        "This demo watches Plexi events and advances as you try the core host controls. Keep this terminal visible when you can.",
+    ]);
+}
+
+fn step(step: u8, title: &str) {
+    print_step_header(step, TOTAL_STEPS, title);
+    progress(step - 1);
+}
+
+fn done(step: u8) {
+    print_step_complete(step, TOTAL_STEPS);
+}
+
+fn progress(done: u8) {
+    let mut dots = String::with_capacity(TOTAL_STEPS as usize);
+    for idx in 0..TOTAL_STEPS {
+        dots.push(if idx < done { '●' } else { '○' });
+    }
+    eprintln!("    \x1b[2m{dots} {done}/{TOTAL_STEPS}\x1b[0m");
+    eprintln!();
+}
+
+fn explain(lines: &[&str]) {
+    for line in lines {
+        wrapped("    ", line);
+    }
+    eprintln!();
+}
+
+fn command(cmd: &str) {
+    eprintln!("    Run:");
+    wrapped("    \x1b[1m", &format!("{cmd}\x1b[0m"));
+    eprintln!();
+}
+
+fn key(keys: &str, action: &str) {
+    wrapped("    ", &format!("Press [ {keys} ] to {action}."));
+    eprintln!();
+}
+
+fn wrapped(prefix: &str, text: &str) {
+    let width = terminal_width().clamp(46, 72);
+    let content_width = width.saturating_sub(4).max(32);
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let next_len = if line.is_empty() {
+            word.len()
+        } else {
+            line.len() + 1 + word.len()
+        };
+        if next_len > content_width && !line.is_empty() {
+            eprintln!("{prefix}{line}");
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        eprintln!("{prefix}{line}");
+    }
+}
+
+fn wait_for_enter() {
+    use std::io::BufRead;
+    let _ = std::io::stdin().lock().lines().next();
+}
+
+fn terminal_width() -> usize {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(72)
+}
+
+fn file_offset(path: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(path).map(|m| m.len()).ok()
+}
+
+fn capture_pane_split(kind: &str, obj: &serde_json::Value, out: &mut u64) -> bool {
+    if kind == "pane_split" {
+        if let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) {
+            *out = id;
+            return true;
+        }
+    }
+    false
+}
+
+fn watch_error(path: &std::path::Path, error: std::io::Error) -> i32 {
+    eprintln!("error watching {}: {error}", path.display());
+    1
 }
 
 /// Tails `path` from `offset`, advancing the cursor as lines are consumed.
@@ -213,7 +373,6 @@ where
                     f.seek(SeekFrom::Start(offset))?;
                     let mut buf = String::new();
                     f.read_to_string(&mut buf)?;
-                    // Only process lines up to the last newline to avoid partial writes.
                     let process_len = match buf.rfind('\n') {
                         Some(pos) => pos + 1,
                         None => {

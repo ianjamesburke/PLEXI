@@ -665,6 +665,12 @@ impl PlexiApp {
             );
             self.set_window_focused_pane(active, focused_tile);
             log::info!("builtin::{app_name}: launched as overlay on pane {pane_id}");
+            crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+                app_id: app_type_id.clone(),
+                type_id: app_type_id.clone(),
+                pane_id,
+                timestamp: crate::host::event_log::now_timestamp(),
+            });
             return;
         }
 
@@ -681,6 +687,12 @@ impl PlexiApp {
             new_id,
             new_app_pane(new_id, app, workspace_root, group, linked_pane_id, None),
         );
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+            app_id: app_type_id.clone(),
+            type_id: app_type_id.clone(),
+            pane_id: new_id,
+            timestamp: crate::host::event_log::now_timestamp(),
+        });
 
         // Empty context: no focused pane means no existing tile to split.
         // Install the new pane directly as the tree root.

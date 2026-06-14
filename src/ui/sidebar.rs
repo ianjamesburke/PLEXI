@@ -190,7 +190,14 @@ impl PlexiApp {
                             } else {
                                 let new_name = self.rename_buffer.trim().to_string();
                                 if !new_name.is_empty() {
-                                    self.router.get_mut(i).name = new_name;
+                                    self.router.get_mut(i).name = new_name.clone();
+                                    crate::host::event_log::emit(
+                                        crate::host::event_log::HostEvent::ContextRenamed {
+                                            context_id: self.router.get(i).context_id,
+                                            name: new_name,
+                                            timestamp: crate::host::event_log::now_timestamp(),
+                                        },
+                                    );
                                 }
                                 self.renaming_window = None;
                             }
