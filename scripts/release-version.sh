@@ -60,9 +60,14 @@ echo "Generating changelog..."
     --tag "v$new" \
     --prepend CHANGELOG.md)
 
+# ── update generated docs ─────────────────────────────────────────────────────
+
+echo "Regenerating CLI docs..."
+(cd "$TREE" && just gen-cli-docs)
+
 # ── commit ────────────────────────────────────────────────────────────────────
 
-git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md
+git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md website/src/content/docs/cli.md
 git -C "$TREE" commit -m "chore: release v$new"
 git -C "$TREE" tag "$tag"
 
