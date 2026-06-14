@@ -1,9 +1,11 @@
 ---
 id: "0168"
 title: "Assistant interrupt-and-fold turn policy + act-on-your-turn prompt"
-status: in-progress
+status: done
 estimate: "4h"
+actual: "283m"
 started_at: "2026-06-13T22:55:05Z"
+completed_at: "2026-06-14T03:37:25Z"
 sprint: "s5"
 blocked_by: []
 gh_issue:
@@ -13,6 +15,7 @@ area:
 tags:
   - "v1"
 ---
+
 
 
 
