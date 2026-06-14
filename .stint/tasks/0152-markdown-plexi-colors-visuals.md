@@ -1,9 +1,11 @@
 ---
 id: "0152"
 title: "Markdown: inject PlexiColors into CommonMarkViewer visuals"
-status: in-progress
+status: done
 estimate: "3h"
+actual: "659m"
 started_at: "2026-06-13T20:04:07Z"
+completed_at: "2026-06-14T07:02:15Z"
 sprint: "s7"
 blocked_by: []
 gh_issue:
@@ -15,6 +17,7 @@ tags:
   - "markdown"
   - "theming"
 ---
+
 
 
 

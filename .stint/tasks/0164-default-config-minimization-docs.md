@@ -1,9 +1,11 @@
 ---
 id: "0164"
 title: "config: minimal default template, docs/CONFIG.md reference, plexiapp.com links"
-status: in-progress
+status: done
 estimate: "4h"
+actual: "3256m"
 started_at: "2026-06-12T00:50:15Z"
+completed_at: "2026-06-14T07:05:27Z"
 sprint: "s11"
 blocked_by: []
 gh_issue:
@@ -15,6 +17,7 @@ tags:
   - "config"
   - "docs"
 ---
+
 
 
 Rewrite `scripts/default-config.toml` to ~50 prose-free lines, fold `theme_preset` into `[theme] preset` (loud error on old key), write `docs/CONFIG.md` as the canonical reference, and replace all `plexiapp.dev` links with `plexiapp.com`. Full spec in GH #2195.
