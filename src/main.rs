@@ -268,12 +268,24 @@ fn main() -> eframe::Result {
                             idle,
                         } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
                         AgentCmd::Hook { action } => match action {
-                            HookAction::Install { claude_code } => {
-                                std::process::exit(cli::agent_hook_install_cli(claude_code))
-                            }
-                            HookAction::Uninstall { claude_code } => {
-                                std::process::exit(cli::agent_hook_uninstall_cli(claude_code))
-                            }
+                            HookAction::Install {
+                                claude_code,
+                                codex,
+                                pi,
+                            } => std::process::exit(cli::agent_hook_install_cli(
+                                claude_code,
+                                codex,
+                                pi,
+                            )),
+                            HookAction::Uninstall {
+                                claude_code,
+                                codex,
+                                pi,
+                            } => std::process::exit(cli::agent_hook_uninstall_cli(
+                                claude_code,
+                                codex,
+                                pi,
+                            )),
                         },
                     },
                     Commands::Secret { cmd } => match cmd {

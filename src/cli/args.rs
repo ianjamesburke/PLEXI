@@ -1160,14 +1160,15 @@ pub enum AgentCmd {
         #[arg(long)]
         idle: bool,
     },
-    /// Install or uninstall Claude Code hook integration.
+    /// Install or uninstall agent hook integrations.
     ///
-    /// install: patches ~/.claude/settings.json with hook registrations for all
-    /// Claude Code lifecycle events, routing them to plexi agent report.
+    /// install: patches the selected agent config with lifecycle hook
+    /// registrations, routing them to plexi agent report.
     ///
-    /// uninstall: removes all PLEXI hook entries from ~/.claude/settings.json.
+    /// uninstall: removes all PLEXI hook entries from the selected agent config.
     ///
     /// Example: plexi agent hook install --claude-code
+    /// Example: plexi agent hook install --codex --pi
     /// Example: plexi agent hook uninstall --claude-code
     Hook {
         #[command(subcommand)]
@@ -1177,17 +1178,29 @@ pub enum AgentCmd {
 
 #[derive(Subcommand)]
 pub enum HookAction {
-    /// Install the PLEXI hook script into ~/.claude/settings.json.
+    /// Install PLEXI agent-state hook integrations.
     Install {
         /// Install Claude Code hooks (PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, PermissionRequest, Stop, StopFailure, SessionEnd)
         #[arg(long = "claude-code")]
         claude_code: bool,
+        /// Install Codex hooks (SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, Stop)
+        #[arg(long)]
+        codex: bool,
+        /// Install Pi extension hooks (session, agent, and tool lifecycle events)
+        #[arg(long)]
+        pi: bool,
     },
-    /// Remove PLEXI hook entries from ~/.claude/settings.json.
+    /// Remove PLEXI agent-state hook integrations.
     Uninstall {
         /// Remove Claude Code hooks
         #[arg(long = "claude-code")]
         claude_code: bool,
+        /// Remove Codex hooks
+        #[arg(long)]
+        codex: bool,
+        /// Remove Pi extension hooks
+        #[arg(long)]
+        pi: bool,
     },
 }
 

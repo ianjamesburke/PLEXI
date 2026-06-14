@@ -1,9 +1,11 @@
 ---
 id: "0192"
 title: "v1: Codex and Pi agent state hooks"
-status: todo
+status: done
 estimate: "3h"
-sprint: "s14"
+actual: "10m"
+started_at: "2026-06-14T21:37:18Z"
+completed_at: "2026-06-14T21:46:36Z"
 blocked_by: []
 gh_issue: []
 area:
@@ -14,6 +16,8 @@ tags:
   - "codex"
   - "pi"
 ---
+
+
 
 Wire up the Plexi agent-state hook to Codex CLI and Pi so they report tool activity into Plexi pane headers/status the same way Claude Code does.
 
@@ -47,6 +51,14 @@ Claude Code calls `~/.plexi-beta/hooks/claude-code-agent-state.sh` on every tool
 - Do not rewrite the hook script from scratch.
 - Do not add hooks for any other agent (Gemini CLI, etc.) in this task.
 - Do not change the Plexi host to handle new hook message shapes — adapt the script to emit the existing shape.
+
+## Implementation Notes
+
+- Codex supports command hooks via `~/.codex/hooks.json` or inline `[hooks]` config tables. The installer writes `~/.codex/hooks.json` to avoid rewriting the user's main config and registers SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, and Stop.
+- Codex non-managed hook trust is intentionally user-mediated. After install, Codex persists trust for the hook hash through `/hooks`; the installer cannot safely bypass that in normal interactive use.
+- Pi supports lifecycle/tool observation through its extension system rather than a Claude/Codex-style hook config. The installer writes an auto-discovered global extension at `~/.pi/agent/extensions/plexi-agent-state.ts`.
+- Claude, Codex, and Pi all call the existing `claude-code-agent-state.sh` path. The script detects the calling agent through `PLEXI_AGENT_NAME` when needed and emits the existing `plexi agent report` shape.
+- Variance: implementation was much faster than the 3h estimate because Codex and Pi already expose compatible lifecycle payloads; this only needed installer/config wiring and script adaptation, not host changes.
 
 ## References
 
