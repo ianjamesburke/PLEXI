@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.0] — 2026-06-14
+
+### Changes
+- fix(palette): keep search focus after scrolling past first page
+- feat(release): add stable-tier rc gates
+- fix: apply workspace config on context switch (#2263)
 ## [0.0.785] — 2026-06-14
 
 ### Changes
