@@ -1,7 +1,7 @@
 ---
 id: "0154"
 title: "Testing: /testing skill — agent self-validation artifact bridging implement and validate-pr"
-status: done
+status: backlog
 estimate: "12h"
 actual: "458m"
 started_at: "2026-06-11T10:06:01Z"
@@ -18,6 +18,7 @@ tags:
   - "v1+"
   - "ship-pipeline"
 ---
+
 
 
 

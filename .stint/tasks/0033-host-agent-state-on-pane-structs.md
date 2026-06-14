@@ -22,6 +22,7 @@ tags:
 
 
 
+
 Move agent state onto pane structs so `pane info`, `pane list`, portals, and orchestration surfaces can read it without a side-channel join.
 
 ## Why
