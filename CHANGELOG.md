@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.783] — 2026-06-14
+
+### Changes
+- feat(ui): add shared list dropdown header
+- chore(stint): close task 0168 after PR 2258
 ## [0.0.782] — 2026-06-14
 
 ### Changes
