@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bump version, regenerate CHANGELOG via git-cliff, and commit.
+# Bump version, regenerate CHANGELOG via git-cliff, commit, and tag the release commit.
 # Usage: scripts/release-version.sh [patch|minor|major]
 # Default: patch
 # After this, run: just promote [beta|main]
@@ -40,6 +40,11 @@ case "$bump" in
 esac
 
 echo "Bumping $current → $new ($bump)..."
+tag="v$new"
+
+if git -C "$TREE" rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+    die "tag $tag already exists — refusing to reuse a release boundary"
+fi
 
 # ── bump Cargo.toml ───────────────────────────────────────────────────────────
 
@@ -59,7 +64,8 @@ echo "Generating changelog..."
 
 git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md
 git -C "$TREE" commit -m "chore: release v$new"
+git -C "$TREE" tag "$tag"
 
 echo ""
-echo "v$new committed on alpha."
+echo "$tag committed and tagged locally on alpha."
 echo "Next: just promote beta"

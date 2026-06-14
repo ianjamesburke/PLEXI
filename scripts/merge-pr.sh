@@ -2,13 +2,12 @@
 # merge-pr.sh — PLEXI squash-merge pipeline
 #
 # Usage:
-#   scripts/merge-pr.sh <PR>                   full flow (rebase→squash→sync→cleanup→bump→close)
+#   scripts/merge-pr.sh <PR>                   full flow (rebase→squash→sync→cleanup→close)
 #   scripts/merge-pr.sh <PR> no-issue          full flow for a standalone PR — skips issue/stint close
 #   scripts/merge-pr.sh rebase <BRANCH>        rebase feature branch on origin/alpha + force-push
 #   scripts/merge-pr.sh squash <PR>            squash-merge only
 #   scripts/merge-pr.sh sync                   reset local alpha to origin/alpha (safe — fails if unexpected commits)
 #   scripts/merge-pr.sh cleanup <PR> <BRANCH>  channel-clean + wtp remove + remote branch delete
-#   scripts/merge-pr.sh bump                   just bump + git push
 #   scripts/merge-pr.sh close <ISSUE> <PR>     strip pipeline labels + close issue + append ship log
 #   scripts/merge-pr.sh close-stints <PR> <ID...>
 #
@@ -70,19 +69,13 @@ do_cleanup() {
     just clean-stale-targets 2>/dev/null || true
 }
 
-do_bump() {
-    echo "==> Bumping version"
-    just bump
-    git push
-}
-
 do_close() {
     local ISSUE="$1"
     local PR="$2"
     local VERSION
     VERSION=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 
-    echo "==> Closing issue #$ISSUE (v$VERSION)"
+    echo "==> Closing issue #$ISSUE (current alpha v$VERSION)"
     gh issue edit "$ISSUE" \
         --remove-label "pipeline:merge" \
         --remove-label "pipeline:validate" \
@@ -90,10 +83,10 @@ do_close() {
         --remove-label "pipeline:implement" \
         --remove-label "in progress" 2>/dev/null || true
 
-    gh issue close "$ISSUE" --comment "Closed by PR #${PR} — verified on alpha v${VERSION}"
+    gh issue close "$ISSUE" --comment "Closed by PR #${PR} — merged to alpha (current version v${VERSION})"
 
     CURRENT_BODY=$(gh issue view "$ISSUE" --json body --jq '.body')
-    gh issue edit "$ISSUE" --body "$(printf '%s\n**Merged:** PR #%s → alpha v%s (%s)' \
+    gh issue edit "$ISSUE" --body "$(printf '%s\n**Merged:** PR #%s → alpha (current version v%s, %s)' \
         "$CURRENT_BODY" "$PR" "$VERSION" "$(date +%Y-%m-%d)")"
 }
 
@@ -148,7 +141,7 @@ do_close_stints() {
     git add .stint/tasks
     git commit -m "chore(stint): close tasks $STINTS after PR #$PR"
     git push
-    echo "==> Closed stint task(s) $STINTS on alpha v$VERSION"
+    echo "==> Closed stint task(s) $STINTS on alpha (current version v$VERSION)"
 }
 
 resolve_issue() {
@@ -246,7 +239,6 @@ case "$CMD" in
     squash)   do_squash "${2:?PR required}" ;;
     sync)     do_sync ;;
     cleanup)  do_cleanup "${2:?PR required}" "${3:?BRANCH required}" ;;
-    bump)     do_bump ;;
     close)    do_close "${2:?ISSUE required}" "${3:?PR required}" ;;
     close-stints)
         PR="${2:?PR required}"
@@ -317,7 +309,6 @@ case "$CMD" in
 
         do_sync
         do_cleanup "$PR" "$BRANCH"
-        do_bump
         if [ "$NO_ISSUE" -eq 1 ]; then
             echo "==> Skipping issue/stint close (no-issue)"
         elif [ -n "$ISSUE" ]; then
@@ -329,11 +320,11 @@ case "$CMD" in
         VERSION=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         echo ""
         if [ "$NO_ISSUE" -eq 1 ]; then
-            echo "==> Done: PR #$PR merged → alpha v$VERSION (standalone — nothing closed)"
+            echo "==> Done: PR #$PR merged → alpha (current version v$VERSION, standalone — nothing closed)"
         elif [ -n "$ISSUE" ]; then
-            echo "==> Done: PR #$PR merged → alpha v$VERSION, issue #$ISSUE closed"
+            echo "==> Done: PR #$PR merged → alpha (current version v$VERSION), issue #$ISSUE closed"
         else
-            echo "==> Done: PR #$PR merged → alpha v$VERSION, stint task(s) $(join_by ", " "${STINT_ARGS[@]}") closed"
+            echo "==> Done: PR #$PR merged → alpha (current version v$VERSION), stint task(s) $(join_by ", " "${STINT_ARGS[@]}") closed"
         fi
         ;;
 esac

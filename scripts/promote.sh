@@ -5,6 +5,7 @@
 #   With argument: skips prompt (useful for scripting).
 #
 # Run `just bump` on alpha before promoting to beta if you haven't already.
+# `just bump` creates the version tag locally; main promotion pushes that tag.
 set -euo pipefail
 
 REPO_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
@@ -126,13 +127,20 @@ echo "Syncing main worktree..."
 git -C "$MAIN_TREE" pull origin main
 
 if git -C "$MAIN_TREE" tag -l "v$version" | grep -q "v$version"; then
-    echo "Tag v$version already exists — skipping tag creation."
+    tagged_commit=$(git -C "$MAIN_TREE" rev-list -n 1 "v$version")
+    main_commit=$(git -C "$MAIN_TREE" rev-parse HEAD)
+    [[ "$tagged_commit" == "$main_commit" ]] \
+        || die "tag v$version points at $tagged_commit, not main HEAD $main_commit"
+    echo "Tag v$version exists locally at main HEAD."
 else
-    git -C "$MAIN_TREE" tag "v$version"
+    die "tag v$version is missing — run just bump on alpha before promoting"
 fi
 
-if git ls-remote --tags origin "v$version" | grep -q "v$version"; then
-    echo "Tag v$version already on remote — skipping push."
+remote_tag=$(git ls-remote --tags origin "refs/tags/v$version" | awk '{print $1}')
+if [[ -n "$remote_tag" ]]; then
+    [[ "$remote_tag" == "$tagged_commit" ]] \
+        || die "remote tag v$version points at $remote_tag, not local $tagged_commit"
+    echo "Tag v$version already on remote at the expected commit."
 else
     git -C "$MAIN_TREE" push origin "v$version"
 fi

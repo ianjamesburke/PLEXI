@@ -200,8 +200,8 @@ channel-uninstall channel="all":
 clear-apps channel="":
     bash scripts/clear-apps.sh {{channel}}
 
-# Bump version, generate CHANGELOG via git-cliff, and commit. Defaults to patch.
-# Run after merging a PR to alpha, before promoting to beta.
+# Bump version, generate CHANGELOG via git-cliff, commit, and tag locally. Defaults to patch.
+# Run at the end of a release batch, or immediately before promoting to beta.
 #   just bump           — patch bump
 #   just bump minor     — minor bump
 #   just bump major     — major bump
@@ -228,7 +228,7 @@ promote to="":
 uninstall channel="all":
     bash scripts/uninstall.sh {{channel}}
 
-# Squash-merge a validated PR to alpha: rebase, merge, sync, cleanup, bump, close issue.
+# Squash-merge a validated PR to alpha: rebase, merge, sync, cleanup, close issue.
 # Intended for the merge-pr skill — run from repo root.
 #   just merge-pr 2155
 #   just merge-pr 2202 no-issue   — standalone follow-up PR, skips issue/stint close
@@ -240,7 +240,6 @@ merge-pr PR *FLAGS:
 #   just merge-squash 2155               — squash-merge only
 #   just merge-sync                      — reset local alpha to origin/alpha
 #   just merge-cleanup 2155 feature/2155-foo
-#   just merge-bump
 #   just merge-close 2144 2155
 #   just merge-close-stints 2186 0015 0016
 merge-rebase BRANCH:
@@ -254,9 +253,6 @@ merge-sync:
 
 merge-cleanup PR BRANCH:
     bash scripts/merge-pr.sh cleanup {{PR}} {{BRANCH}}
-
-merge-bump:
-    bash scripts/merge-pr.sh bump
 
 merge-close ISSUE PR:
     bash scripts/merge-pr.sh close {{ISSUE}} {{PR}}
