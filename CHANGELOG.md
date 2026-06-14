@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.785] — 2026-06-14
+
+### Changes
+- fix: include CLI docs in release commit
 ## [0.0.784] — 2026-06-14
 
 ### Changes
