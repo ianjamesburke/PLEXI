@@ -429,6 +429,7 @@ pub(crate) fn show_prompt_modal(
                                             workspace_root: Some(ws_root_clone),
                                             open_panes,
                                             tool_dispatcher: Some(td),
+                                            cancel: crate::plexi_ai::CancelToken::new(),
                                         },
                                         &mut on_delta,
                                     );

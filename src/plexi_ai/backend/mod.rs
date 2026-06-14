@@ -90,6 +90,10 @@ pub struct AiBackendRequest {
     /// Model tier from the broker request. Used by backends to apply
     /// tier-specific request parameters (e.g. disabling reasoning for Low).
     pub model_tier: Option<ModelTier>,
+    /// Cooperative cancellation handle. The streaming read loop checks this
+    /// each chunk and aborts (drops `tx`) when tripped, so an interrupted turn
+    /// stops consuming the network stream instead of running to completion.
+    pub cancel: crate::plexi_ai::CancelToken,
 }
 
 /// Error returned when a backend call cannot start.

@@ -178,7 +178,10 @@ mod tests {
 
         // Idle frame first: no tick.
         let _ = h.app.drain_all_app_commands();
-        assert_eq!(h.app.background_apps["notify-app"].1.background_tick_count, 0);
+        assert_eq!(
+            h.app.background_apps["notify-app"].1.background_tick_count,
+            0
+        );
 
         // App emits a notification: the stdout reader sends the command, then
         // sets draw_pending (and wakes the host via repaint_ctx in prod).
@@ -345,6 +348,7 @@ impl PlexiApp {
         if disposition == crate::app::app_trait::KeyDisposition::Consumed {
             ctx.input_mut(|i| {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
             });
         }
     }

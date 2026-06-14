@@ -1149,7 +1149,6 @@ fn to_struct_name(s: &str) -> String {
         .collect::<String>()
 }
 
-
 /// `plexi app update [<id>]` — local version check for installed apps.
 ///
 /// v1: compares `<app_dir>/installed_version.txt` against `manifest.toml`

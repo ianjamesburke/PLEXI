@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::button::{ButtonKind, chrome_button, choice_button};
+use crate::ui::button::{choice_button, chrome_button, ButtonKind};
 
 /// Maximum displayed image height inside the notification card. Width is
 /// constrained by the card's available width; aspect ratio is preserved.
@@ -284,200 +284,203 @@ impl PlexiApp {
                         ui.allocate_exact_size(Vec2::new(10.0, 10.0), egui::Sense::hover());
                     ui.painter()
                         .circle_filled(dot_rect.center(), 5.0, level_color);
-                            ui.add_space(style::SPACE_SM);
-                            let kind_label = match notif.kind {
-                                NotifyKind::Message => "MESSAGE",
-                                NotifyKind::Choice => "CHOICE",
-                                NotifyKind::Input => "INPUT",
-                            };
+                    ui.add_space(style::SPACE_SM);
+                    let kind_label = match notif.kind {
+                        NotifyKind::Message => "MESSAGE",
+                        NotifyKind::Choice => "CHOICE",
+                        NotifyKind::Input => "INPUT",
+                    };
+                    ui.label(
+                        RichText::new(format!("{}  ·  {}", notif.level.to_uppercase(), kind_label))
+                            .size(style::TEXT_HINT)
+                            .color(self.colors.text_dim)
+                            .strong(),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if queue_len > 1 {
+                            // RTL layout: L first (rightmost), then H.
+                            crate::ui::shortcuts::key_chip(
+                                ui,
+                                "L",
+                                &self.colors,
+                                egui::FontId::monospace(crate::ui::style::TEXT_CAPTION),
+                            );
+                            ui.add_space(4.0);
+                            crate::ui::shortcuts::key_chip(
+                                ui,
+                                "H",
+                                &self.colors,
+                                egui::FontId::monospace(crate::ui::style::TEXT_CAPTION),
+                            );
+                            ui.add_space(8.0);
                             ui.label(
-                                RichText::new(format!(
-                                    "{}  ·  {}",
-                                    notif.level.to_uppercase(),
-                                    kind_label
-                                ))
-                                .size(style::TEXT_HINT)
+                                RichText::new(format!("{position_idx} of {queue_len}  ·  cycle"))
+                                    .size(style::TEXT_HINT)
+                                    .color(self.colors.text_dim),
+                            );
+                        }
+                    });
+                });
+
+                ui.add_space(style::SPACE_XL);
+
+                // Title — centered, large.
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new(&notif.title)
+                            .size(style::TEXT_TITLE_XL)
+                            .color(self.colors.text_primary)
+                            .strong(),
+                    );
+                });
+
+                // Body — centered under the title.
+                if !notif.body.is_empty() {
+                    ui.add_space(style::SPACE_MD);
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(style::MODAL_WIDTH_NOTIFY - 120.0);
+                        ui.label(
+                            RichText::new(&notif.body)
+                                .size(style::TEXT_BODY)
+                                .color(self.colors.text_primary),
+                        );
+                    });
+                }
+
+                // Image attachment (#74) — renders above the
+                // kind-specific body / action buttons. Sized to fit
+                // the modal width with aspect ratio preserved, max
+                // height 200 px. Placeholder badges render the
+                // user-visible reason text.
+                if let Some(state) = &image_state {
+                    ui.add_space(style::SPACE_MD);
+                    ui.vertical_centered(|ui| {
+                        draw_notification_image(ui, state, &self.colors);
+                    });
+                }
+
+                ui.add_space(style::SPACE_XL);
+
+                if notif.tombstoned {
+                    // Source ended — show a dim label and a plain Dismiss button.
+                    // Action buttons are hidden since the app can no longer respond.
+                    ui.add_space(style::SPACE_SM);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new("Source ended")
+                                .size(style::TEXT_BODY)
                                 .color(self.colors.text_dim)
-                                .strong(),
-                            );
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if queue_len > 1 {
-                                    // RTL layout: L first (rightmost), then H.
-                                    crate::ui::shortcuts::key_chip(
-                                        ui, "L", &self.colors,
-                                        egui::FontId::monospace(crate::ui::style::TEXT_CAPTION),
-                                    );
-                                    ui.add_space(4.0);
-                                    crate::ui::shortcuts::key_chip(
-                                        ui, "H", &self.colors,
-                                        egui::FontId::monospace(crate::ui::style::TEXT_CAPTION),
-                                    );
-                                    ui.add_space(8.0);
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "{position_idx} of {queue_len}  ·  cycle"
-                                        ))
-                                        .size(style::TEXT_HINT)
-                                        .color(self.colors.text_dim),
-                                    );
-                                }
-                            });
-                        });
-
-                        ui.add_space(style::SPACE_XL);
-
-                        // Title — centered, large.
-                        ui.vertical_centered(|ui| {
-                            ui.label(
-                                RichText::new(&notif.title)
-                                    .size(style::TEXT_TITLE_XL)
-                                    .color(self.colors.text_primary)
-                                    .strong(),
-                            );
-                        });
-
-                        // Body — centered under the title.
-                        if !notif.body.is_empty() {
-                            ui.add_space(style::SPACE_MD);
-                            ui.vertical_centered(|ui| {
-                                ui.set_max_width(style::MODAL_WIDTH_NOTIFY - 120.0);
-                                ui.label(
-                                    RichText::new(&notif.body)
-                                        .size(style::TEXT_BODY)
-                                        .color(self.colors.text_primary),
-                                );
-                            });
-                        }
-
-                        // Image attachment (#74) — renders above the
-                        // kind-specific body / action buttons. Sized to fit
-                        // the modal width with aspect ratio preserved, max
-                        // height 200 px. Placeholder badges render the
-                        // user-visible reason text.
-                        if let Some(state) = &image_state {
-                            ui.add_space(style::SPACE_MD);
-                            ui.vertical_centered(|ui| {
-                                draw_notification_image(ui, state, &self.colors);
-                            });
-                        }
-
-                        ui.add_space(style::SPACE_XL);
-
-                        if notif.tombstoned {
-                            // Source ended — show a dim label and a plain Dismiss button.
-                            // Action buttons are hidden since the app can no longer respond.
-                            ui.add_space(style::SPACE_SM);
-                            ui.vertical_centered(|ui| {
-                                ui.label(
-                                    RichText::new("Source ended")
-                                        .size(style::TEXT_BODY)
-                                        .color(self.colors.text_dim)
-                                        .italics(),
-                                );
-                            });
-                            ui.add_space(style::SPACE_SM);
-                            ui.add_space(style::SPACE_MD);
-                            ui.vertical_centered(|ui| {
-                                let resp = chrome_button(ui, "Dismiss", ButtonKind::Accent, &self.colors, 180.0);
-                                if resp.clicked() {
-                                    if let Some(n) = self.pending_notifications
-                                        .iter()
-                                        .find(|n| n.notify_id == current_id)
-                                        .cloned()
-                                    {
-                                        self.pending_notifications
-                                            .retain(|x| x.notify_id != current_id);
-                                        self.save_notifications();
-                                        self.current_notify_id = None;
-                                        if !n.notify_id.is_empty()
-                                            && !n.notify_id.starts_with("__host__:")
-                                        {
-                                            action_cmd =
-                                                Some(AppCommand::DeliverNotifyAction {
-                                                    pane_id: n.sender_pane_id,
-                                                    notify_id: n.notify_id.clone(),
-                                                    action_label: "tombstone_dismiss"
-                                                        .to_string(),
-                                                    value: Some(
-                                                        "tombstone_dismiss".to_string(),
-                                                    ),
-                                                    response_file: n.response_file,
-                                                    host_action: None,
-                                                });
-                                        }
-                                    }
-                                }
-                            });
-                            ui.add_space(style::SPACE_MD);
-                        } else {
-                        // Kind-specific body.
-                        match notif.kind {
-                            NotifyKind::Message => {}
-                            NotifyKind::Choice => {
-                                for (idx, opt) in notif.options.iter().enumerate() {
-                                    let focused = idx == self.modal_focused_option;
-                                    let shortcut_hint = opt
-                                        .shortcut
-                                        .as_ref()
-                                        .map(|s| format!("[{}]", s.to_uppercase()))
-                                        .unwrap_or_else(|| format!("[{}]", idx + 1));
-                                    let resp = choice_button(
-                                        ui,
-                                        &opt.label,
-                                        &shortcut_hint,
-                                        focused,
-                                        &self.colors,
-                                    );
-                                    if resp.clicked() {
-                                        let value = if opt.value.is_empty() {
-                                            opt.label.clone()
-                                        } else {
-                                            opt.value.clone()
-                                        };
-                                        action_cmd = Some(AppCommand::DeliverNotifyAction {
-                                            pane_id: notif.sender_pane_id,
-                                            notify_id: notif.notify_id.clone(),
-                                            action_label: opt.label.clone(),
-                                            value: Some(value),
-                                            response_file: notif.response_file.clone(),
-                                            host_action: opt.host_action.clone(),
-                                        });
-                                    }
-                                    ui.add_space(style::SPACE_SM);
+                                .italics(),
+                        );
+                    });
+                    ui.add_space(style::SPACE_SM);
+                    ui.add_space(style::SPACE_MD);
+                    ui.vertical_centered(|ui| {
+                        let resp =
+                            chrome_button(ui, "Dismiss", ButtonKind::Accent, &self.colors, 180.0);
+                        if resp.clicked() {
+                            if let Some(n) = self
+                                .pending_notifications
+                                .iter()
+                                .find(|n| n.notify_id == current_id)
+                                .cloned()
+                            {
+                                self.pending_notifications
+                                    .retain(|x| x.notify_id != current_id);
+                                self.save_notifications();
+                                self.current_notify_id = None;
+                                if !n.notify_id.is_empty() && !n.notify_id.starts_with("__host__:")
+                                {
+                                    action_cmd = Some(AppCommand::DeliverNotifyAction {
+                                        pane_id: n.sender_pane_id,
+                                        notify_id: n.notify_id.clone(),
+                                        action_label: "tombstone_dismiss".to_string(),
+                                        value: Some("tombstone_dismiss".to_string()),
+                                        response_file: n.response_file,
+                                        host_action: None,
+                                    });
                                 }
                             }
-                            NotifyKind::Input => {
-                                if let Some(prompt) = &notif.input_prompt {
-                                    ui.vertical_centered(|ui| {
-                                        ui.label(
-                                            RichText::new(prompt)
-                                                .size(style::TEXT_CAPTION)
-                                                .color(self.colors.text_dim),
-                                        );
+                        }
+                    });
+                    ui.add_space(style::SPACE_MD);
+                } else {
+                    // Kind-specific body.
+                    match notif.kind {
+                        NotifyKind::Message => {}
+                        NotifyKind::Choice => {
+                            for (idx, opt) in notif.options.iter().enumerate() {
+                                let focused = idx == self.modal_focused_option;
+                                let shortcut_hint = opt
+                                    .shortcut
+                                    .as_ref()
+                                    .map(|s| format!("[{}]", s.to_uppercase()))
+                                    .unwrap_or_else(|| format!("[{}]", idx + 1));
+                                let resp = choice_button(
+                                    ui,
+                                    &opt.label,
+                                    &shortcut_hint,
+                                    focused,
+                                    &self.colors,
+                                );
+                                if resp.clicked() {
+                                    let value = if opt.value.is_empty() {
+                                        opt.label.clone()
+                                    } else {
+                                        opt.value.clone()
+                                    };
+                                    action_cmd = Some(AppCommand::DeliverNotifyAction {
+                                        pane_id: notif.sender_pane_id,
+                                        notify_id: notif.notify_id.clone(),
+                                        action_label: opt.label.clone(),
+                                        value: Some(value),
+                                        response_file: notif.response_file.clone(),
+                                        host_action: opt.host_action.clone(),
                                     });
-                                    ui.add_space(style::SPACE_SM);
                                 }
-                                // Multiline editor: Enter inserts a newline,
-                                // Cmd+Enter submits (handled in the keyboard
-                                // pre-pass below). Scrolls vertically once it
-                                // exceeds the visible row count.
-                                let resp = ui.scope(|ui| {
+                                ui.add_space(style::SPACE_SM);
+                            }
+                        }
+                        NotifyKind::Input => {
+                            if let Some(prompt) = &notif.input_prompt {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        RichText::new(prompt)
+                                            .size(style::TEXT_CAPTION)
+                                            .color(self.colors.text_dim),
+                                    );
+                                });
+                                ui.add_space(style::SPACE_SM);
+                            }
+                            // Multiline editor: Enter inserts a newline,
+                            // Cmd+Enter submits (handled in the keyboard
+                            // pre-pass below). Scrolls vertically once it
+                            // exceeds the visible row count.
+                            let resp = ui
+                                .scope(|ui| {
                                     // egui's caret is hidden (transparent, non-blinking);
                                     // draw_text_caret paints a glyph-height replacement on top.
                                     ui.visuals_mut().text_cursor.blink = false;
-                                    ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
+                                    ui.visuals_mut().text_cursor.stroke.color =
+                                        egui::Color32::TRANSPARENT;
                                     ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
-                                    ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
-                                    ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
+                                    ui.visuals_mut().widgets.active.bg_stroke =
+                                        egui::Stroke::new(1.0, self.colors.accent);
+                                    ui.visuals_mut().widgets.inactive.bg_stroke =
+                                        egui::Stroke::new(1.0, self.colors.border);
                                     let font_id = egui::FontId::proportional(16.0);
                                     let row_height = ui.fonts(|f| f.row_height(&font_id));
-                                    let output = egui::TextEdit::multiline(&mut self.modal_input_buffer)
-                                        .desired_width(f32::INFINITY)
-                                        .desired_rows(6)
-                                        .font(font_id)
-                                        .margin(egui::Margin::symmetric(12, 10))
-                                        .hint_text("Type. Enter for newline, \u{2318}\u{21B5} to submit.")
-                                        .show(ui);
+                                    let output = egui::TextEdit::multiline(
+                                        &mut self.modal_input_buffer,
+                                    )
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(6)
+                                    .font(font_id)
+                                    .margin(egui::Margin::symmetric(12, 10))
+                                    .hint_text(
+                                        "Type. Enter for newline, \u{2318}\u{21B5} to submit.",
+                                    )
+                                    .show(ui);
                                     crate::ui::text_field::draw_text_caret(
                                         ui,
                                         &output,
@@ -486,116 +489,121 @@ impl PlexiApp {
                                         egui::Stroke::new(1.5, self.colors.accent),
                                     );
                                     output.response
-                                }).inner;
-                                resp.request_focus();
-                            }
+                                })
+                                .inner;
+                            resp.request_focus();
                         }
+                    }
 
+                    ui.add_space(style::SPACE_MD);
+
+                    // Footer: primary action for message kind, plus a
+                    // centered hint row describing keyboard shortcuts.
+                    if matches!(notif.kind, NotifyKind::Message) {
+                        ui.vertical_centered(|ui| {
+                            let resp = chrome_button(
+                                ui,
+                                "Acknowledge",
+                                ButtonKind::Accent,
+                                &self.colors,
+                                180.0,
+                            );
+                            if resp.clicked() {
+                                action_cmd = Some(AppCommand::DeliverNotifyAction {
+                                    pane_id: notif.sender_pane_id,
+                                    notify_id: notif.notify_id.clone(),
+                                    action_label: "acknowledge".to_string(),
+                                    value: None,
+                                    response_file: notif.response_file.clone(),
+                                    host_action: None,
+                                });
+                            }
+                        });
                         ui.add_space(style::SPACE_MD);
+                    }
+                } // end !tombstoned
 
-                        // Footer: primary action for message kind, plus a
-                        // centered hint row describing keyboard shortcuts.
-                        if matches!(notif.kind, NotifyKind::Message) {
-                            ui.vertical_centered(|ui| {
-                                let resp = chrome_button(ui, "Acknowledge", ButtonKind::Accent, &self.colors, 180.0);
-                                if resp.clicked() {
-                                    action_cmd = Some(AppCommand::DeliverNotifyAction {
-                                        pane_id: notif.sender_pane_id,
-                                        notify_id: notif.notify_id.clone(),
-                                        action_label: "acknowledge".to_string(),
-                                        value: None,
-                                        response_file: notif.response_file.clone(),
-                                        host_action: None,
-                                    });
-                                }
-                            });
-                            ui.add_space(style::SPACE_MD);
+                // Footer keyboard hints — separator + centered hint row per kind.
+                // Not shown for tombstoned notifications (only a Dismiss button).
+                //
+                // Centering strategy: egui's vertical_centered expands all child
+                // rects to full available width (Layout::top_down(Center) sets
+                // frame_size.x = max(desired, available)), so placing a ui.horizontal
+                // inside vertical_centered does NOT center it — content paints at x=0.
+                // Fix: pre-measure the row width with ui.fonts, then use
+                // allocate_ui_with_layout(exact_size) — justify_and_align then places
+                // the child rect at center_x − hint_w/2, which IS centered.
+                if !notif.tombstoned {
+                    ui.add_space(style::SPACE_SM);
+                    ui.separator();
+                    match notif.kind {
+                        NotifyKind::Message if notif.required => {
+                            let hints = [crate::ui::hints::HintGroup::alternatives(
+                                &[&["Enter"], &["Space"]],
+                                "acknowledge",
+                            )];
+                            crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
                         }
-                        } // end !tombstoned
-
-                        // Footer keyboard hints — separator + centered hint row per kind.
-                        // Not shown for tombstoned notifications (only a Dismiss button).
-                        //
-                        // Centering strategy: egui's vertical_centered expands all child
-                        // rects to full available width (Layout::top_down(Center) sets
-                        // frame_size.x = max(desired, available)), so placing a ui.horizontal
-                        // inside vertical_centered does NOT center it — content paints at x=0.
-                        // Fix: pre-measure the row width with ui.fonts, then use
-                        // allocate_ui_with_layout(exact_size) — justify_and_align then places
-                        // the child rect at center_x − hint_w/2, which IS centered.
-                        if !notif.tombstoned {
-                            ui.add_space(style::SPACE_SM);
-                            ui.separator();
-                            match notif.kind {
-                                NotifyKind::Message if notif.required => {
-                                    let hints = [
-                                        crate::ui::hints::HintGroup::alternatives(
-                                            &[&["Enter"], &["Space"]],
-                                            "acknowledge",
-                                        ),
-                                    ];
-                                    crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-                                }
-                                NotifyKind::Message => {
-                                    let hints = [
-                                        crate::ui::hints::HintGroup::alternatives(
-                                            &[&["Enter"], &["Space"]],
-                                            "acknowledge",
-                                        ),
-                                        crate::ui::hints::HintGroup::new(&["Esc"], "dismiss"),
-                                    ];
-                                    crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-                                }
-                                NotifyKind::Choice if notif.required => {
-                                    let hints = [
-                                        crate::ui::hints::HintGroup::alternatives(
-                                            &[&["↑↓"], &["j/k"]],
-                                            "navigate",
-                                        ),
-                                        crate::ui::hints::HintGroup::alternatives(
-                                            &[&["Enter"], &["1-9"]],
-                                            "select",
-                                        ),
-                                    ];
-                                    crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-                                }
-                                NotifyKind::Choice => {
-                                    let hints = [
-                                        crate::ui::hints::HintGroup::alternatives(
-                                            &[&["↑↓"], &["j/k"]],
-                                            "navigate",
-                                        ),
-                                        crate::ui::hints::HintGroup::alternatives(
-                                            &[&["Enter"], &["1-9"]],
-                                            "select",
-                                        ),
-                                        crate::ui::hints::HintGroup::new(&["Esc"], "dismiss"),
-                                    ];
-                                    crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-                                }
-                                NotifyKind::Input if notif.required => {
-                                    let hints = [
-                                        crate::ui::hints::HintGroup::new(&["Enter"], "newline"),
-                                        crate::ui::hints::HintGroup::new(
-                                            &["\u{2318}", "\u{21B5}"],
-                                            "submit",
-                                        ),
-                                    ];
-                                    crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-                                }
-                                NotifyKind::Input => {
-                                    let hints = [
-                                        crate::ui::hints::HintGroup::new(&["Enter"], "newline"),
-                                        crate::ui::hints::HintGroup::new(
-                                            &["\u{2318}", "\u{21B5}"],
-                                            "submit",
-                                        ),
-                                        crate::ui::hints::HintGroup::new(&["Esc"], "dismiss"),
-                                    ];
-                                    crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-                                }
-                            }
-                        } // end !tombstoned keyboard hint
+                        NotifyKind::Message => {
+                            let hints = [
+                                crate::ui::hints::HintGroup::alternatives(
+                                    &[&["Enter"], &["Space"]],
+                                    "acknowledge",
+                                ),
+                                crate::ui::hints::HintGroup::new(&["Esc"], "dismiss"),
+                            ];
+                            crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
+                        }
+                        NotifyKind::Choice if notif.required => {
+                            let hints = [
+                                crate::ui::hints::HintGroup::alternatives(
+                                    &[&["↑↓"], &["j/k"]],
+                                    "navigate",
+                                ),
+                                crate::ui::hints::HintGroup::alternatives(
+                                    &[&["Enter"], &["1-9"]],
+                                    "select",
+                                ),
+                            ];
+                            crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
+                        }
+                        NotifyKind::Choice => {
+                            let hints = [
+                                crate::ui::hints::HintGroup::alternatives(
+                                    &[&["↑↓"], &["j/k"]],
+                                    "navigate",
+                                ),
+                                crate::ui::hints::HintGroup::alternatives(
+                                    &[&["Enter"], &["1-9"]],
+                                    "select",
+                                ),
+                                crate::ui::hints::HintGroup::new(&["Esc"], "dismiss"),
+                            ];
+                            crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
+                        }
+                        NotifyKind::Input if notif.required => {
+                            let hints = [
+                                crate::ui::hints::HintGroup::new(&["Enter"], "newline"),
+                                crate::ui::hints::HintGroup::new(
+                                    &["\u{2318}", "\u{21B5}"],
+                                    "submit",
+                                ),
+                            ];
+                            crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
+                        }
+                        NotifyKind::Input => {
+                            let hints = [
+                                crate::ui::hints::HintGroup::new(&["Enter"], "newline"),
+                                crate::ui::hints::HintGroup::new(
+                                    &["\u{2318}", "\u{21B5}"],
+                                    "submit",
+                                ),
+                                crate::ui::hints::HintGroup::new(&["Esc"], "dismiss"),
+                            ];
+                            crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
+                        }
+                    }
+                } // end !tombstoned keyboard hint
             });
 
         // ── Resolve keyboard input into an action_cmd (only if not already

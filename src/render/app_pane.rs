@@ -22,8 +22,11 @@ const OVERTAKE_BAR_HEIGHT: f32 = 24.0;
 
 /// Total height consumed by visible host chrome bands.
 pub(crate) fn chrome_height(has_overtake: bool, has_nav: bool) -> f32 {
-    (if has_overtake { OVERTAKE_BAR_HEIGHT } else { 0.0 })
-        + (if has_nav { NAV_BAR_HEIGHT } else { 0.0 })
+    (if has_overtake {
+        OVERTAKE_BAR_HEIGHT
+    } else {
+        0.0
+    }) + (if has_nav { NAV_BAR_HEIGHT } else { 0.0 })
 }
 
 pub fn render(

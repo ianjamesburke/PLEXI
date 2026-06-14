@@ -141,6 +141,12 @@ fn stream_ollama(
     let mut output_tokens: Option<u32> = None;
 
     for line_result in reader.lines() {
+        // Cooperative cancel: stop reading and drop `tx` so the turn loop
+        // returns the partial text rather than draining the full stream.
+        if request.cancel.is_cancelled() {
+            log::info!("ollama: stream cancelled by caller — aborting read mid-stream");
+            return;
+        }
         let line = match line_result {
             Ok(l) => l,
             Err(e) => {

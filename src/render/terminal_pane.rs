@@ -118,7 +118,17 @@ fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         ui.advance_cursor_after_rect(bar_rect);
-        if let Some(idx) = paint_tab_bar(ui.ctx(), ui.painter(), bar_rect, group, tab_labels, tab_activities, colors, name_font_size, false) {
+        if let Some(idx) = paint_tab_bar(
+            ui.ctx(),
+            ui.painter(),
+            bar_rect,
+            group,
+            tab_labels,
+            tab_activities,
+            colors,
+            name_font_size,
+            false,
+        ) {
             tab_click = Some((group.container_tile, idx));
         }
 
@@ -131,7 +141,8 @@ fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         ui.advance_cursor_after_rect(bar_rect);
-        ui.painter().rect_filled(bar_rect, 0.0, colors.pane_header_bg());
+        ui.painter()
+            .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
         let agent_state = tab_activities.get(pane_id);
         let pip_space = if agent_state.is_some() {
@@ -173,11 +184,8 @@ fn paint_activity_dot(
     let t = ui.input(|i| i.time);
     let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
     let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
-    ui.painter().circle_filled(
-        egui::pos2(cx, bar_rect.center().y),
-        TAB_PIP_RADIUS,
-        color,
-    );
+    ui.painter()
+        .circle_filled(egui::pos2(cx, bar_rect.center().y), TAB_PIP_RADIUS, color);
     if matches!(state, AgentState::Working) {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));

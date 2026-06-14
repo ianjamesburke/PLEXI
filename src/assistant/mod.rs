@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
-use crate::app::app_trait::{App, AppRenderContext};
+use crate::app::app_trait::{App, AppRenderContext, KeyDisposition};
 use crate::app_protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
@@ -27,6 +27,7 @@ use crate::broker::{
 use crate::host::app_timeline::{AppTimeline, SubscriptionRecord};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest};
 use crate::plexi_ai::turn_loop::TurnDelta;
+use crate::plexi_ai::CancelToken;
 
 /// Owned streaming delta forwarded from the broker worker thread to the UI
 /// thread (`TurnDelta` borrows from the stream buffer and cannot cross the
@@ -57,6 +58,10 @@ you to react when something happens, your FIRST action must be to call \
 host.events.subscribe for that app's relevant events — without a subscription you \
 will never see the user's actions, so do not assume you will be notified. After \
 subscribing, tell the user you are now watching those events. \
+When a delivered event hands you the turn, ACT: if the situation calls for a \
+tool call, make it immediately rather than only describing what you would do. \
+Do not narrate intentions you can carry out — take the action, then report the \
+result. \
 Pane and terminal control arrives in a later phase — when \
 asked to act on panes, explain that those tools are not wired up yet.";
 
@@ -79,7 +84,9 @@ struct TurnOutcome {
 enum PermissionReply {
     /// Run the call. `remember` lets the in-turn gate skip re-asking for the
     /// same tool (session/always grants).
-    Allow { remember: bool },
+    Allow {
+        remember: bool,
+    },
     Deny,
 }
 
@@ -121,8 +128,8 @@ struct AssistantToolHooks {
 
 impl ToolCallHooks for AssistantToolHooks {
     fn before_call(&self, name: &str, input_json: &str) -> Result<(), String> {
-        let needs_ask = self.ask_tools.contains(name)
-            && !self.session_allowed.lock().unwrap().contains(name);
+        let needs_ask =
+            self.ask_tools.contains(name) && !self.session_allowed.lock().unwrap().contains(name);
         if needs_ask {
             let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
             self.flow_tx
@@ -200,6 +207,10 @@ pub struct AssistantApp {
     /// Trigger lines for non-self-caused deliveries that arrived while a
     /// turn was in flight — folded into the next dispatched turn.
     queued_event_lines: Vec<String>,
+    /// Cancellation handle for the in-flight turn. A fresh token is installed
+    /// at each `start_turn`; ESC and event-preempt trip it to abort the
+    /// streaming turn and fold queued context into an immediate follow-up.
+    turn_cancel: CancelToken,
     /// Cached layout state for `egui_commonmark` markdown rendering of
     /// assistant replies. Persists across frames for performance.
     commonmark_cache: egui_commonmark::CommonMarkCache,
@@ -279,6 +290,7 @@ impl AssistantApp {
             live_subs: Vec::new(),
             pending_subscribe: None,
             queued_event_lines: Vec::new(),
+            turn_cancel: CancelToken::new(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             markdown_text_cache: MarkdownTextCache::default(),
         };
@@ -338,22 +350,25 @@ impl AssistantApp {
             return;
         }
         let subscription_id = format!("assistant-sub-{}", uuid::Uuid::new_v4());
-        self.timeline.lock().unwrap().add_subscription(SubscriptionRecord {
-            subscription_id: subscription_id.clone(),
-            subscriber_type: ActorType::Agent,
-            subscriber_id: ASSISTANT_ACTOR_ID.to_string(),
-            app_id: app.to_string(),
-            event_names: if event == "*" {
-                Vec::new()
-            } else {
-                vec![event.to_string()]
-            },
-            payload_mode: PayloadMode::Full,
-            trigger_mode: TriggerMode::Conversation,
-            resource_id: None,
-            duration: GrantDuration::Session,
-            created_at: crate::host::event_log::now_timestamp(),
-        });
+        self.timeline
+            .lock()
+            .unwrap()
+            .add_subscription(SubscriptionRecord {
+                subscription_id: subscription_id.clone(),
+                subscriber_type: ActorType::Agent,
+                subscriber_id: ASSISTANT_ACTOR_ID.to_string(),
+                app_id: app.to_string(),
+                event_names: if event == "*" {
+                    Vec::new()
+                } else {
+                    vec![event.to_string()]
+                },
+                payload_mode: PayloadMode::Full,
+                trigger_mode: TriggerMode::Conversation,
+                resource_id: None,
+                duration: GrantDuration::Session,
+                created_at: crate::host::event_log::now_timestamp(),
+            });
         log::info!("assistant: subscribed to '{target}' ({subscription_id})");
         self.live_subs.push((target, subscription_id));
     }
@@ -400,17 +415,9 @@ impl AssistantApp {
                 // unblock worker threads parked on a permission reply so they
                 // can finish and have their stale outcome dropped.
                 AssistantEffect::CancelTurn => {
-                    if let Some(tx) = self.pending_reply.take() {
-                        let _ = tx.send(PermissionReply::Deny);
-                    }
-                    if let Some(pending) = self.pending_subscribe.take() {
-                        let _ = pending.reply.send(ToolCallResult {
-                            output_json: None,
-                            error: Some(
-                                "cancelled: the conversation was cleared mid-turn".to_string(),
-                            ),
-                        });
-                    }
+                    self.unblock_pending_workers(
+                        "cancelled: the conversation was cleared mid-turn",
+                    );
                     log::info!("assistant: in-flight turn cancelled by conversation switch");
                 }
                 // Phase 3 stub: correctly shaped, logged, never panics.
@@ -534,10 +541,10 @@ impl AssistantApp {
 
     /// Persist the active conversation id and the full transcript.
     fn session_write(&mut self) {
-        if let Err(e) = self
-            .store
-            .set_active_conversation(&self.model.conversation_id, self.model.session_name.as_deref())
-        {
+        if let Err(e) = self.store.set_active_conversation(
+            &self.model.conversation_id,
+            self.model.session_name.as_deref(),
+        ) {
             log::error!("assistant: failed to persist active conversation: {e}");
         }
         if let Err(e) = self
@@ -578,7 +585,12 @@ impl AssistantApp {
     /// Execute one `host.events.*` call on the UI thread. Replies on the
     /// worker's channel — except an ask-gated subscribe, which parks the
     /// reply in `pending_subscribe` until the permission sheet resolves.
-    fn handle_host_call(&mut self, tool: &str, input_json: &str, reply: SyncSender<ToolCallResult>) {
+    fn handle_host_call(
+        &mut self,
+        tool: &str,
+        input_json: &str,
+        reply: SyncSender<ToolCallResult>,
+    ) {
         let err = |msg: String| ToolCallResult {
             output_json: None,
             error: Some(msg),
@@ -590,8 +602,14 @@ impl AssistantApp {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(input_json);
         let (app, event) = match &parsed {
             Ok(v) => (
-                v.get("app").and_then(|a| a.as_str()).unwrap_or("").to_string(),
-                v.get("event").and_then(|e| e.as_str()).unwrap_or("").to_string(),
+                v.get("app")
+                    .and_then(|a| a.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                v.get("event")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             ),
             Err(e) => {
                 let _ = reply.send(err(format!("invalid_input: {e}")));
@@ -600,7 +618,7 @@ impl AssistantApp {
         };
         if app.trim().is_empty() || event.trim().is_empty() {
             let _ = reply.send(err(
-                "invalid_input: 'app' and 'event' must be non-empty".to_string(),
+                "invalid_input: 'app' and 'event' must be non-empty".to_string()
             ));
             return;
         }
@@ -635,7 +653,8 @@ impl AssistantApp {
                     }
                     Decision::Ask => {
                         log::info!("assistant: permission sheet shown for stream '{target}'");
-                        self.model.permission_requested(HOST_TOOL_SUBSCRIBE, &target);
+                        self.model
+                            .permission_requested(HOST_TOOL_SUBSCRIBE, &target);
                         self.pending_subscribe = Some(PendingSubscribe {
                             app,
                             event,
@@ -669,6 +688,10 @@ impl AssistantApp {
     fn start_turn(&mut self, conversation_id: String, _prompt: String) {
         let (delta_tx, delta_rx) = std::sync::mpsc::channel();
         self.delta_rx = Some(delta_rx);
+        // Fresh cancel token per turn — a clone goes to the worker/broker, the
+        // original stays here so ESC and event-preempt can trip this turn only.
+        let cancel = CancelToken::new();
+        self.turn_cancel = cancel.clone();
         let dispatcher = self.gated_dispatcher();
         let request = AiBrokerRequest {
             app_id: "assistant".to_string(),
@@ -679,6 +702,7 @@ impl AssistantApp {
             workspace_root: Some(self.workspace_root.clone()),
             open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
             tool_dispatcher: Some(Arc::new(dispatcher)),
+            cancel,
         };
         log::info!(
             "assistant[{conversation_id}]: dispatching turn ({} message(s))",
@@ -839,7 +863,9 @@ impl AssistantApp {
                     ""
                 }
             );
-            self.model.turns.push(model::Turn::now(TurnRole::Event, line.clone()));
+            self.model
+                .turns
+                .push(model::Turn::now(TurnRole::Event, line.clone()));
             if !self_caused {
                 trigger_lines.push(line);
             }
@@ -849,11 +875,17 @@ impl AssistantApp {
             return;
         }
         if self.model.streaming.in_flight {
+            // Preempt: the world changed under the in-flight turn (e.g. the
+            // game board moved). Queue the new lines and trip the cancel token
+            // so the current turn ends fast and the pump folds these into an
+            // immediate follow-up that reacts to the latest state — instead of
+            // finishing a now-stale comment (the 6-26s queue-behind lag).
             log::info!(
-                "assistant: {} event line(s) queued — turn in flight",
+                "assistant: {} event line(s) queued, preempting in-flight turn",
                 trigger_lines.len()
             );
             self.queued_event_lines.extend(trigger_lines);
+            self.turn_cancel.cancel();
         } else {
             self.start_event_turn(trigger_lines.len());
         }
@@ -880,6 +912,48 @@ impl AssistantApp {
         self.start_turn(conversation_id, String::new());
     }
 
+    /// User pressed ESC during an in-flight turn. Stop generating, and if the
+    /// composer holds a draft, queue it so the pump folds it into an immediate
+    /// follow-up turn (stop-and-send). With an empty composer this is a plain
+    /// stop. Default typing-while-streaming still queues silently (see
+    /// `AssistantModel::submit`); ESC is the explicit interrupt.
+    fn interrupt_in_flight_turn(&mut self) {
+        if !self.model.streaming.in_flight {
+            return;
+        }
+        // A pending draft becomes a queued user turn first, so the folded
+        // follow-up dispatched after cancel includes it.
+        if !self.model.composer.trim().is_empty() {
+            let effects = self.model.submit();
+            self.execute_effects(effects);
+        }
+        self.turn_cancel.cancel();
+        // Unblock a worker parked on a permission sheet so it observes the
+        // cancel at the next tool-loop boundary instead of hanging.
+        self.unblock_pending_workers("cancelled: interrupted by user (ESC)");
+        log::info!(
+            "assistant: ESC interrupt — cancelling in-flight turn ({} queued user message(s), {} queued event line(s))",
+            self.model.queued_user_turns,
+            self.queued_event_lines.len()
+        );
+    }
+
+    /// Unblock any worker thread parked on a permission sheet or pending
+    /// subscribe so it observes the cancel token at the next tool-loop
+    /// boundary instead of hanging. Shared by conversation-switch cancel and
+    /// ESC interrupt. `reason` is surfaced to the blocked subscribe caller.
+    fn unblock_pending_workers(&mut self, reason: &str) {
+        if let Some(tx) = self.pending_reply.take() {
+            let _ = tx.send(PermissionReply::Deny);
+        }
+        if let Some(pending) = self.pending_subscribe.take() {
+            let _ = pending.reply.send(ToolCallResult {
+                output_json: None,
+                error: Some(reason.to_string()),
+            });
+        }
+    }
+
     /// Apply the user's permission-sheet decision: record the grant per its
     /// duration, audit it, and unblock the worker thread.
     fn resolve_permission(&mut self, choice: PermissionChoice) {
@@ -893,7 +967,9 @@ impl AssistantApp {
         let target = Self::connector_target(&pending.tool);
         let (decision_str, reply) = match choice {
             PermissionChoice::Deny => ("deny", PermissionReply::Deny),
-            PermissionChoice::AllowOnce => ("allow_once", PermissionReply::Allow { remember: false }),
+            PermissionChoice::AllowOnce => {
+                ("allow_once", PermissionReply::Allow { remember: false })
+            }
             PermissionChoice::AllowSession => {
                 self.record_assistant_grant(
                     TargetType::AppConnector,
@@ -914,7 +990,10 @@ impl AssistantApp {
                 ("allow_always", PermissionReply::Allow { remember: true })
             }
         };
-        log::info!("assistant: permission sheet decision for '{}' = {decision_str}", pending.tool);
+        log::info!(
+            "assistant: permission sheet decision for '{}' = {decision_str}",
+            pending.tool
+        );
         self.audit.append(&AuditEvent::now(
             "permission_decision",
             &target,
@@ -1106,7 +1185,10 @@ impl AssistantApp {
                 )
             })
             .collect();
-        log::info!("assistant: /permissions — {} grant(s) for assistant", lines.len());
+        log::info!(
+            "assistant: /permissions — {} grant(s) for assistant",
+            lines.len()
+        );
         let text = if lines.is_empty() {
             "No persisted grants for the assistant. Tool calls will ask.".to_string()
         } else {
@@ -1197,12 +1279,29 @@ impl App for AssistantApp {
         true
     }
 
+    fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
+        if input.key_pressed(egui::Key::Escape) && self.model.streaming.in_flight {
+            self.interrupt_in_flight_turn();
+            return KeyDisposition::Consumed;
+        }
+        if !input.modifiers.any()
+            && input.key_pressed(egui::Key::ArrowUp)
+            && self.model.recall_previous_user_message()
+        {
+            return KeyDisposition::Consumed;
+        }
+        KeyDisposition::Passthrough
+    }
+
     fn rename_seed(&self) -> Option<String> {
         self.model.session_name.clone()
     }
 
     fn on_pane_renamed(&mut self, name: &str) {
-        log::info!("assistant[{}]: pane renamed to '{name}'", self.model.conversation_id);
+        log::info!(
+            "assistant[{}]: pane renamed to '{name}'",
+            self.model.conversation_id
+        );
         self.model.set_session_name(name);
         self.session_write();
     }
@@ -1211,7 +1310,8 @@ impl App for AssistantApp {
         self.pump_turn_io();
         if self.model.streaming.in_flight {
             // Keep frames coming while a worker thread streams a turn.
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
         }
         let event = AssistantRenderer::draw(
             ui,
@@ -1245,7 +1345,9 @@ mod tests {
 
     impl MockBroker {
         fn ok(reply: impl Into<String>) -> Arc<Self> {
-            Arc::new(Self { reply: Some(reply.into()) })
+            Arc::new(Self {
+                reply: Some(reply.into()),
+            })
         }
         fn error() -> Arc<Self> {
             Arc::new(Self { reply: None })
@@ -1347,7 +1449,10 @@ mod tests {
         let prior = app.store.load_turns(&first_id);
         assert_eq!(prior.len(), 2);
         // The new conversation is the persisted active one.
-        assert_eq!(app.store.active_conversation().as_deref(), Some(second_id.as_str()));
+        assert_eq!(
+            app.store.active_conversation().as_deref(),
+            Some(second_id.as_str())
+        );
     }
 
     /// The Tool row role renders through the same Turn shape (Phase 2 seam).
@@ -1437,10 +1542,7 @@ mod tests {
 
     /// Dispatch `tool` on a worker thread (the gate blocks there, never on
     /// the test thread). Returns the result receiver.
-    fn dispatch_on_worker(
-        dispatcher: Arc<ToolDispatcher>,
-        tool: &str,
-    ) -> Receiver<ToolCallResult> {
+    fn dispatch_on_worker(dispatcher: Arc<ToolDispatcher>, tool: &str) -> Receiver<ToolCallResult> {
         dispatch_on_worker_with_input(dispatcher, tool, "{\"x\": 1}")
     }
 
@@ -1474,8 +1576,7 @@ mod tests {
         // t_ask has no grant → default Ask.
 
         let dispatcher = app.gated_dispatcher();
-        let mut visible: Vec<String> =
-            dispatcher.all_tools().into_iter().map(|t| t.name).collect();
+        let mut visible: Vec<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
         visible.sort();
         assert_eq!(
             visible,
@@ -1491,7 +1592,11 @@ mod tests {
         // Denied tool is also uninvocable.
         let result = dispatcher.dispatch_call("c-deny".to_string(), "t_deny", "{}".to_string());
         assert!(
-            result.error.as_deref().unwrap_or("").contains("tool_not_found"),
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("tool_not_found"),
             "denied tool must be uninvocable: {:?}",
             result.error
         );
@@ -1520,11 +1625,18 @@ mod tests {
         let result = result_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("tool call must complete");
-        assert!(result.error.is_none(), "allowed call must succeed: {:?}", result.error);
+        assert!(
+            result.error.is_none(),
+            "allowed call must succeed: {:?}",
+            result.error
+        );
 
         // The completed tool row lands in the transcript.
         pump_until(&mut app, "tool row", |a| {
-            a.model.turns.iter().any(|t| t.status == Some(ToolStatus::Succeeded))
+            a.model
+                .turns
+                .iter()
+                .any(|t| t.status == Some(ToolStatus::Succeeded))
         });
         // Allow-once persists nothing.
         assert!(
@@ -1533,7 +1645,11 @@ mod tests {
         );
         // Audit: one permission decision + one tool call.
         let events = app.audit.tail(10);
-        assert_eq!(events.len(), 2, "audit must record decision + call: {events:?}");
+        assert_eq!(
+            events.len(),
+            2,
+            "audit must record decision + call: {events:?}"
+        );
         assert_eq!(events[0].kind, "permission_decision");
         assert_eq!(events[0].decision, "allow_once");
         assert_eq!(events[1].kind, "tool_call");
@@ -1568,7 +1684,10 @@ mod tests {
             .expect("allow-always must persist a grant");
         assert_eq!(record.decision, Decision::Allow);
         assert_eq!(record.duration, GrantDuration::Always);
-        assert!(ws.path().join("grants.toml").is_file(), "grant must be saved to disk");
+        assert!(
+            ws.path().join("grants.toml").is_file(),
+            "grant must be saved to disk"
+        );
 
         // Next turn's dispatcher: the tool now evaluates Allow — no sheet.
         let dispatcher2 = Arc::new(app.gated_dispatcher());
@@ -1603,7 +1722,11 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("denied call must still return");
         assert!(
-            result.error.as_deref().unwrap_or("").contains("permission_denied"),
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("permission_denied"),
             "denial must be a tool error for the model: {:?}",
             result.error
         );
@@ -1614,7 +1737,10 @@ mod tests {
         let events = app.audit.tail(10);
         assert_eq!(events[0].kind, "permission_decision");
         assert_eq!(events[0].decision, "deny");
-        assert!(app.grant_store.records().is_empty(), "deny persists nothing");
+        assert!(
+            app.grant_store.records().is_empty(),
+            "deny persists nothing"
+        );
 
         tool_dispatch::unregister(9103);
     }
@@ -1641,14 +1767,23 @@ mod tests {
         app.model.composer = "/revoke app.view.tool".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
-        assert!(app.model.turns.last().unwrap().text.contains("Revoked 1 grant(s)"));
+        assert!(app
+            .model
+            .turns
+            .last()
+            .unwrap()
+            .text
+            .contains("Revoked 1 grant(s)"));
         assert!(app.grant_store.records().is_empty());
 
         app.model.composer = "/audit".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
         let audit_row = &app.model.turns.last().unwrap().text;
-        assert!(audit_row.contains("revoke"), "revoke must be audited: {audit_row}");
+        assert!(
+            audit_row.contains("revoke"),
+            "revoke must be audited: {audit_row}"
+        );
 
         tool_dispatch::unregister(9104);
     }
@@ -1755,7 +1890,10 @@ mod tests {
             .unwrap();
         assert!(row.text.contains("chess: move.played"), "{}", row.text);
         assert!(row.text.contains("White played e4"), "{}", row.text);
-        assert!(app.model.streaming.in_flight, "user event must auto-start a turn");
+        assert!(
+            app.model.streaming.in_flight,
+            "user event must auto-start a turn"
+        );
         wait_for_turn(&mut app);
         assert_eq!(app.model.turns.last().unwrap().role, TurnRole::Assistant);
         assert_eq!(app.model.turns.last().unwrap().text, "echo: ok");
@@ -1823,16 +1961,27 @@ mod tests {
         app.subscribe_stream("chess", "move.played");
 
         // The assistant as the event actor: row, no turn.
-        emit_move(&timeline, AppEventActor::Agent, Some("agent:assistant"), None);
+        emit_move(
+            &timeline,
+            AppEventActor::Agent,
+            Some("agent:assistant"),
+            None,
+        );
         app.pump_turn_io();
         assert_eq!(event_rows(&app), 1);
-        assert!(!app.model.streaming.in_flight, "own action must not trigger");
+        assert!(
+            !app.model.streaming.in_flight,
+            "own action must not trigger"
+        );
 
         // App-emitted event caused by the assistant's tool call: row, no turn.
         emit_move(&timeline, AppEventActor::App, None, Some("agent:assistant"));
         app.pump_turn_io();
         assert_eq!(event_rows(&app), 2);
-        assert!(!app.model.streaming.in_flight, "caused-by-self must not trigger");
+        assert!(
+            !app.model.streaming.in_flight,
+            "caused-by-self must not trigger"
+        );
         assert!(app.queued_event_lines.is_empty());
     }
 
@@ -1849,11 +1998,18 @@ mod tests {
         app.pump_turn_io();
         assert_eq!(event_rows(&app), 1, "row appended even while in flight");
         assert_eq!(app.queued_event_lines.len(), 1);
+        assert!(
+            app.turn_cancel.is_cancelled(),
+            "a mid-turn event must preempt the in-flight turn, not just queue behind it"
+        );
 
         // The turn ends: the queued event triggers the follow-up turn.
         app.model.streaming = model::StreamingState::default();
         app.pump_turn_io();
-        assert!(app.model.streaming.in_flight, "queued event must start the next turn");
+        assert!(
+            app.model.streaming.in_flight,
+            "queued event must start the next turn"
+        );
         assert!(app.queued_event_lines.is_empty());
         // The event line is folded into the dispatched history.
         let history = app.history_messages();
@@ -1867,6 +2023,107 @@ mod tests {
         assert_eq!(app.model.turns.last().unwrap().text, "echo: ok");
     }
 
+    /// ESC mid-turn with a pending draft: the in-flight turn is cancelled and
+    /// the draft is folded into an immediate follow-up turn. The cancelled
+    /// turn commits no empty bubble.
+    #[test]
+    fn esc_interrupt_folds_queued_draft_into_followup() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// Turn 1 blocks until the cancel token trips (simulating a long
+        /// stream the user ESCs); the folded follow-up replies immediately.
+        struct InterruptibleBroker {
+            dispatched: AtomicUsize,
+        }
+        impl AiBroker for InterruptibleBroker {
+            fn dispatch(
+                &self,
+                request: AiBrokerRequest,
+                on_delta: &mut dyn FnMut(TurnDelta<'_>),
+            ) -> AiBrokerResponse {
+                let n = self.dispatched.fetch_add(1, Ordering::SeqCst) + 1;
+                if n == 1 {
+                    let start = std::time::Instant::now();
+                    while !request.cancel.is_cancelled() {
+                        if start.elapsed() > std::time::Duration::from_secs(5) {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    // Cancelled before any text streamed: empty partial.
+                    return AiBrokerResponse::ok(String::new(), 0, 0);
+                }
+                on_delta(TurnDelta::Text("folded reply"));
+                AiBrokerResponse::ok("folded reply".to_string(), 1, 1)
+            }
+        }
+
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = AssistantApp::new(
+            ws.path().to_path_buf(),
+            Arc::new(InterruptibleBroker {
+                dispatched: AtomicUsize::new(0),
+            }),
+            ws.path(),
+        );
+
+        // Turn 1 starts and parks in the broker.
+        app.model.composer = "start".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert!(app.model.streaming.in_flight, "turn 1 must be in flight");
+
+        // User types a follow-up and hits ESC.
+        app.model.composer = "actually do X".to_string();
+        app.interrupt_in_flight_turn();
+        assert!(
+            app.turn_cancel.is_cancelled(),
+            "ESC must trip the cancel token"
+        );
+        assert_eq!(
+            app.model.queued_user_turns, 1,
+            "the draft must be queued for the fold"
+        );
+
+        // Drive to idle: turn 1 unblocks (cancelled), the fold dispatches turn 2.
+        let start = std::time::Instant::now();
+        loop {
+            app.pump_turn_io();
+            let idle = !app.model.streaming.in_flight
+                && app.queued_event_lines.is_empty()
+                && app.model.queued_user_turns == 0;
+            if idle {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(8),
+                "assistant never reached idle after interrupt"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        // The folded follow-up replied; the draft is in the transcript.
+        assert_eq!(app.model.turns.last().unwrap().text, "folded reply");
+        assert!(
+            app.model
+                .turns
+                .iter()
+                .any(|t| t.role == TurnRole::User && t.text == "actually do X"),
+            "the interrupted-and-folded draft must be in the transcript"
+        );
+        // The cancelled turn left no empty assistant bubble.
+        let empty_assistant = app
+            .model
+            .turns
+            .iter()
+            .filter(|t| t.role == TurnRole::Assistant && t.text.is_empty())
+            .count();
+        assert_eq!(
+            empty_assistant, 0,
+            "a cancelled turn must not commit an empty assistant bubble"
+        );
+    }
+
     #[test]
     fn subscribe_host_tool_ask_allow_always_persists_grant_and_revoke_unsubscribes() {
         let ws = tempfile::tempdir().unwrap();
@@ -1875,11 +2132,7 @@ mod tests {
 
         // Host event tools are visible in the turn snapshot.
         let dispatcher = Arc::new(app.gated_dispatcher());
-        let names: HashSet<String> = dispatcher
-            .all_tools()
-            .into_iter()
-            .map(|t| t.name)
-            .collect();
+        let names: HashSet<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
         assert!(names.contains(HOST_TOOL_SUBSCRIBE));
         assert!(names.contains(HOST_TOOL_UNSUBSCRIBE));
 
@@ -1926,7 +2179,12 @@ mod tests {
         let effects = app.model.submit();
         app.execute_effects(effects);
         assert!(
-            app.model.turns.last().unwrap().text.contains("live subscription"),
+            app.model
+                .turns
+                .last()
+                .unwrap()
+                .text
+                .contains("live subscription"),
             "{}",
             app.model.turns.last().unwrap().text
         );
@@ -1964,13 +2222,20 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("denied subscribe must still return");
         assert!(
-            result.error.as_deref().unwrap_or("").contains("permission_denied"),
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("permission_denied"),
             "{:?}",
             result.error
         );
         assert!(app.live_subs.is_empty());
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
-        assert!(app.grant_store.records().is_empty(), "deny persists nothing");
+        assert!(
+            app.grant_store.records().is_empty(),
+            "deny persists nothing"
+        );
     }
 
     #[test]
@@ -1999,7 +2264,11 @@ mod tests {
             tx,
         );
         let result = rx.try_recv().unwrap();
-        assert!(result.error.as_deref().unwrap_or("").contains("not_subscribed"));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("not_subscribed"));
     }
 
     #[test]

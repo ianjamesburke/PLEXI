@@ -12,7 +12,8 @@
 use crate::app::account::AccountStore;
 use crate::app::marketplace::{
     license_gate, payment_provider, LicenseDecision, LicenseStore, MarketplaceManifest,
-    PaymentError, PublishClient, RegistryClient, RegistryEntry, RegistryError, Submission, Visibility,
+    PaymentError, PublishClient, RegistryClient, RegistryEntry, RegistryError, Submission,
+    Visibility,
 };
 use crate::app::package;
 use std::path::{Path, PathBuf};
@@ -67,12 +68,7 @@ pub fn app_search_cli(query: &str) -> i32 {
 }
 
 fn print_entry_table(entries: &[&RegistryEntry]) {
-    let id_w = entries
-        .iter()
-        .map(|e| e.id.len())
-        .max()
-        .unwrap_or(3)
-        .max(3);
+    let id_w = entries.iter().map(|e| e.id.len()).max().unwrap_or(3).max(3);
     let ver_w = entries
         .iter()
         .map(|e| e.version.len())
@@ -159,12 +155,18 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
 
     // Prefer a CDN artifact; fall back to a declared source spec.
     if !entry.checksum.is_empty() {
-        let dest = std::env::temp_dir()
-            .join(format!("plexi-mkt-{}-{}.plexipkg", entry.id, uuid::Uuid::new_v4()));
+        let dest = std::env::temp_dir().join(format!(
+            "plexi-mkt-{}-{}.plexipkg",
+            entry.id,
+            uuid::Uuid::new_v4()
+        ));
         match cli.download_package(&entry, &dest) {
             Ok(path) => return InstallPlan::Package(path),
             Err(e) => {
-                eprintln!("error: could not download '{}' from the marketplace: {e}", entry.id);
+                eprintln!(
+                    "error: could not download '{}' from the marketplace: {e}",
+                    entry.id
+                );
                 return InstallPlan::Blocked;
             }
         }
@@ -202,7 +204,11 @@ fn attempt_purchase(entry: &RegistryEntry, store: &LicenseStore) -> bool {
         eprintln!("error: {}", PaymentError::NotConfigured);
         return false;
     }
-    log::info!("marketplace: purchasing '{}' as {}", entry.id, session.email);
+    log::info!(
+        "marketplace: purchasing '{}' as {}",
+        entry.id,
+        session.email
+    );
     match provider.purchase(entry, &session) {
         Ok(license) => {
             if let Err(e) = store.save(&license) {
@@ -353,7 +359,9 @@ pub fn app_publish_cli(path: &str) -> i32 {
                 "Set [marketplace].submit_url in your config to enable upload, or share the \
                  artifact above directly."
             );
-            crate::cli::print_tip("follow marketplace progress at https://plexiapp.com/docs/marketplace");
+            crate::cli::print_tip(
+                "follow marketplace progress at https://plexiapp.com/docs/marketplace",
+            );
             0
         }
         Err(e) => {

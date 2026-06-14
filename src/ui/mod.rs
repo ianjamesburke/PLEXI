@@ -4,6 +4,7 @@ pub mod focus;
 pub mod hints;
 pub mod labels;
 pub mod list;
+pub mod markdown;
 pub mod overlay;
 pub mod row;
 pub mod shortcuts;

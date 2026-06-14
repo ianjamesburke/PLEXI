@@ -1716,8 +1716,7 @@ fn closing_last_pane_in_subcontext_collapses_and_zooms_out() {
     });
 
     // Zoom Root → child, as sidebar/portal zoom does.
-    app.router
-        .push_depth(root_id, root_win_id, Some(root_tile));
+    app.router.push_depth(root_id, root_win_id, Some(root_tile));
     let child_idx = app.router.position(|c| c.context_id == child_id).unwrap();
     app.switch_workspace(child_idx);
     assert_eq!(app.router.active().context_id, child_id);

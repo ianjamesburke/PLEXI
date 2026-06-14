@@ -1185,6 +1185,7 @@ impl ProcessApp {
                                 workspace_root: Some(workspace_root),
                                 open_panes,
                                 tool_dispatcher: Some(tool_dispatcher),
+                                cancel: crate::plexi_ai::CancelToken::new(),
                             },
                             &mut on_delta,
                         );
@@ -2101,11 +2102,9 @@ impl ProcessApp {
                     self.type_id
                 );
                 let actor_id = self.type_id.clone();
-                if let Err(e) = self.request_rollback(
-                    crate::broker::ActorType::App,
-                    &actor_id,
-                    &checkpoint_id,
-                ) {
+                if let Err(e) =
+                    self.request_rollback(crate::broker::ActorType::App, &actor_id, &checkpoint_id)
+                {
                     log::warn!(
                         "ProcessApp[{}]: RequestRollback rejected — {e}",
                         self.type_id

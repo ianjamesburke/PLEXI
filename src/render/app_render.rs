@@ -414,10 +414,7 @@ fn render_commands_to_png(
     let mut png_data: Vec<u8> = Vec::new();
     image::RgbaImage::from_raw(width, height, pixels)
         .ok_or_else(|| "PNG encoding failed: buffer size mismatch".to_string())?
-        .write_to(
-            &mut Cursor::new(&mut png_data),
-            image::ImageFormat::Png,
-        )
+        .write_to(&mut Cursor::new(&mut png_data), image::ImageFormat::Png)
         .map_err(|e| format!("PNG encoding failed: {e}"))?;
     log::info!(
         "app_render: encoded {} bytes for {width}×{height}",

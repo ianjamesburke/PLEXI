@@ -28,6 +28,7 @@
 //! land in the agent's transcript, which is the host-visible record of what
 //! the agent said — the Phase D Assistant UI consumes this seam.
 
+use crate::app_protocol::{AiMessage, ModelTier, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorType, Decision, GrantDuration, GrantStore, PermissionPosture, PermissionRequest,
     TargetType,
@@ -35,7 +36,6 @@ use crate::broker::{
 use crate::host::app_timeline::{AppTimeline, EventDelivery};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
-use crate::app_protocol::{AiMessage, ModelTier, PayloadMode, TriggerMode};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
@@ -146,8 +146,8 @@ impl AgentDefinition {
         if prompt.trim().is_empty() {
             return Err("AGENT.md must be non-empty — it is the agent's system prompt".to_string());
         }
-        let settings: SettingsToml = toml::from_str(settings_toml)
-            .map_err(|e| format!("invalid settings.toml: {e}"))?;
+        let settings: SettingsToml =
+            toml::from_str(settings_toml).map_err(|e| format!("invalid settings.toml: {e}"))?;
         if settings.agent.id.trim().is_empty() {
             return Err("settings.toml: [agent] id must be non-empty".to_string());
         }
@@ -433,9 +433,15 @@ impl AgentHost {
     pub fn tick(&mut self) {
         // 1. Drain completed turns into transcripts.
         while let Ok(outcome) = self.outcome_rx.try_recv() {
-            let Some(agent) = self.agents.iter_mut().find(|a| a.def.id == outcome.agent_id)
+            let Some(agent) = self
+                .agents
+                .iter_mut()
+                .find(|a| a.def.id == outcome.agent_id)
             else {
-                log::warn!("agent: turn outcome for unknown agent '{}'", outcome.agent_id);
+                log::warn!(
+                    "agent: turn outcome for unknown agent '{}'",
+                    outcome.agent_id
+                );
                 continue;
             };
             agent.in_flight = agent.in_flight.saturating_sub(1);
@@ -483,8 +489,8 @@ impl AgentHost {
             // as the actor, or events an app emitted while servicing one of
             // its tool calls (`caused_by`). Without this, a move → move.played
             // → turn → move feedback loop plays the game against itself.
-            let self_caused = d.actor_id == self_id
-                || d.caused_by.as_deref() == Some(self_id.as_str());
+            let self_caused =
+                d.actor_id == self_id || d.caused_by.as_deref() == Some(self_id.as_str());
             if self_caused {
                 log::info!(
                     "agent[{}]: delivery {} of '{}' is self-caused — recorded, no turn",
@@ -586,10 +592,7 @@ impl AgentHost {
             .collect();
         messages.push(AiMessage {
             role: "user".to_string(),
-            content: format!(
-                "App events delivered to you:\n{}",
-                event_lines.join("\n")
-            ),
+            content: format!("App events delivered to you:\n{}", event_lines.join("\n")),
         });
 
         let request = AiBrokerRequest {
@@ -601,6 +604,7 @@ impl AgentHost {
             workspace_root: Some(self.workspace_root.clone()),
             open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
             tool_dispatcher: Some(dispatcher),
+            cancel: crate::plexi_ai::CancelToken::new(),
         };
         let agent_id = agent.def.id.clone();
         log::info!(
@@ -754,8 +758,8 @@ default = "ask"
         assert!(err.contains("AGENT.md"), "{err}");
 
         // Missing [agent] table.
-        let err = AgentDefinition::parse("p", "[permissions]\ndefault_posture = \"ask\"\n")
-            .unwrap_err();
+        let err =
+            AgentDefinition::parse("p", "[permissions]\ndefault_posture = \"ask\"\n").unwrap_err();
         assert!(err.contains("settings.toml"), "{err}");
 
         // Bad tier.
@@ -820,9 +824,7 @@ default_tier = "low"
     /// and switching away detaches them and removes their subscriptions.
     #[test]
     fn reload_workspace_attaches_and_detaches_agents() {
-        use crate::broker::{
-            ActorScope, GrantRecord, GrantSource, ResourceScope,
-        };
+        use crate::broker::{ActorScope, GrantRecord, GrantSource, ResourceScope};
 
         let ws = tempfile::tempdir().unwrap();
         let agent_dir = ws
@@ -895,11 +897,8 @@ default_tier = "low"
         use crate::host::app_timeline::EventDelivery;
 
         let timeline = Arc::new(Mutex::new(AppTimeline::default()));
-        let mut host = AgentHost::new_for_test(
-            timeline,
-            Arc::new(InertAiBroker),
-            std::env::temp_dir(),
-        );
+        let mut host =
+            AgentHost::new_for_test(timeline, Arc::new(InertAiBroker), std::env::temp_dir());
         host.attach(AgentDefinition::parse("prose", SETTINGS).unwrap());
         assert_eq!(host.agents[0].in_flight, 0);
 
@@ -927,16 +926,29 @@ default_tier = "low"
         // Agent's own move (actor_id matches its caller identity): no turn.
         host.handle_deliveries(
             0,
-            vec![delivery(1, AppEventActor::Agent, "agent:chess-opponent", None)],
+            vec![delivery(
+                1,
+                AppEventActor::Agent,
+                "agent:chess-opponent",
+                None,
+            )],
         );
         assert_eq!(host.agents[0].in_flight, 0, "own action must not trigger");
 
         // App-emitted event caused by the agent's tool call: no turn.
         host.handle_deliveries(
             0,
-            vec![delivery(2, AppEventActor::App, "chess", Some("agent:chess-opponent"))],
+            vec![delivery(
+                2,
+                AppEventActor::App,
+                "chess",
+                Some("agent:chess-opponent"),
+            )],
         );
-        assert_eq!(host.agents[0].in_flight, 0, "caused-by-self must not trigger");
+        assert_eq!(
+            host.agents[0].in_flight, 0,
+            "caused-by-self must not trigger"
+        );
 
         // Both still land in the transcript as event lines.
         assert_eq!(host.agents[0].transcript.len(), 2);

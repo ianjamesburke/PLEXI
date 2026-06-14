@@ -215,7 +215,10 @@ fn main() -> eframe::Result {
         Ok(cli) => {
             if let Some(cmd) = cli.command {
                 match cmd {
-                    Commands::Run { command, extra_args } => match command {
+                    Commands::Run {
+                        command,
+                        extra_args,
+                    } => match command {
                         Some(cmd) => std::process::exit(cli::run_command(&cmd, &extra_args)),
                         None => std::process::exit(cli::run_list_commands()),
                     },
@@ -832,7 +835,10 @@ fn main() -> eframe::Result {
                             if json {
                                 let runner = cli::descriptor::RealRunner;
                                 match cli::descriptor::resolve_cli_with(
-                                    &runner, &command, !no_registry, !no_crawl,
+                                    &runner,
+                                    &command,
+                                    !no_registry,
+                                    !no_crawl,
                                 ) {
                                     Ok(resolved) => {
                                         match serde_json::to_string_pretty(&resolved.descriptor) {
@@ -841,7 +847,9 @@ fn main() -> eframe::Result {
                                                 std::process::exit(0);
                                             }
                                             Err(e) => {
-                                                eprintln!("error: could not serialize descriptor: {e}");
+                                                eprintln!(
+                                                    "error: could not serialize descriptor: {e}"
+                                                );
                                                 std::process::exit(1);
                                             }
                                         }
@@ -1107,7 +1115,9 @@ fn known_subcommands() -> &'static std::collections::HashSet<String> {
 /// Returns true when the only meaningful argument (ignoring `--profile <value>`) is `--help`/`-h`.
 fn top_level_help_flag(args: &[String]) -> bool {
     let mut skip_next = false;
-    let filtered: Vec<&str> = args.iter().skip(1)
+    let filtered: Vec<&str> = args
+        .iter()
+        .skip(1)
         .filter(|a| {
             if skip_next {
                 skip_next = false;

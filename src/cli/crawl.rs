@@ -199,7 +199,14 @@ pub(crate) fn crawl_with_runner(
     // Recursively enrich each command with its flags, positional args, and
     // nested subcommands by crawling `<cli> <cmd…> --help`.
     let mut budget = CrawlBudget::new();
-    enrich_commands(cli_name, runner, &mut descriptor.commands, &[], 1, &mut budget);
+    enrich_commands(
+        cli_name,
+        runner,
+        &mut descriptor.commands,
+        &[],
+        1,
+        &mut budget,
+    );
 
     let count = descriptor.commands.len();
     let flag_total: usize = count_flags(&descriptor.commands);
@@ -599,7 +606,9 @@ fn looks_like_metavar(tok: &str) -> bool {
     let inner = tok.trim_matches(['<', '>', '[', ']', '.']);
     !inner.is_empty()
         && inner.len() >= 2
-        && inner.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c == '-')
+        && inner
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_' || c == '-')
 }
 
 fn metavar_clean(tok: &str) -> String {
@@ -697,7 +706,11 @@ fn is_flag_ident(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        && name.chars().next().map(|c| c.is_ascii_alphanumeric()).unwrap_or(false)
+        && name
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_alphanumeric())
+            .unwrap_or(false)
 }
 
 /// Parse positional arguments from a command's `--help` ARGUMENTS section.
@@ -739,7 +752,11 @@ fn parse_arg_line(line: &str) -> Option<ArgSpec> {
     let name = token.trim_matches(['<', '>', '[', ']', '.']);
     // Drop ellipsis/variadic markers and empties.
     let name = name.trim_end_matches('.').trim();
-    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         return None;
     }
 
@@ -981,8 +998,7 @@ collaborate (see also: git help workflows)
     #[test]
     fn crawl_serves_from_cache_on_second_call() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let runner =
-            MapRunner::new(None).with("--help", "COMMANDS\n  go   Do the thing\n");
+        let runner = MapRunner::new(None).with("--help", "COMMANDS\n  go   Do the thing\n");
         let cache_dir = tmp.path().join("cache");
         let _ = crawl_with_runner("cached-cli", &runner, &cache_dir).unwrap();
         let result2 = crawl_with_runner("cached-cli", &runner, &cache_dir).unwrap();
@@ -1045,8 +1061,7 @@ collaborate (see also: git help workflows)
         let cache_dir = tmp.path().join("cache");
         std::fs::create_dir_all(&cache_dir).unwrap();
 
-        let runner =
-            MapRunner::new(None).with("--help", "COMMANDS\n  run   Do the thing\n");
+        let runner = MapRunner::new(None).with("--help", "COMMANDS\n  run   Do the thing\n");
 
         // "../../evil" → each of '.','.','/','.','.','/' is non-alphanumeric → "______evil"
         crawl_with_runner("../../evil", &runner, &cache_dir)
@@ -1093,8 +1108,7 @@ OPTIONS:
             .with("--help", top)
             .with("greet --help", greet);
 
-        let result =
-            crawl_with_runner("demo", &runner, &tmp.path().join("cache")).unwrap();
+        let result = crawl_with_runner("demo", &runner, &tmp.path().join("cache")).unwrap();
         let greet_cmd = result
             .descriptor
             .commands
@@ -1119,7 +1133,11 @@ OPTIONS:
         // --loud is a bool (no metavar); --output takes a path-ish value.
         let loud = greet_cmd.flags.iter().find(|f| f.name == "--loud").unwrap();
         assert_eq!(loud.ty, ArgType::Bool);
-        let output = greet_cmd.flags.iter().find(|f| f.name == "--output").unwrap();
+        let output = greet_cmd
+            .flags
+            .iter()
+            .find(|f| f.name == "--output")
+            .unwrap();
         assert_eq!(output.ty, ArgType::Path);
 
         // Leaf command should be hinted as a form.
@@ -1130,8 +1148,10 @@ OPTIONS:
     fn recursive_crawl_captures_nested_subcommands() {
         let tmp = tempfile::TempDir::new().unwrap();
         let top = "A VCS\n\nCOMMANDS\n  remote   Manage remotes\n";
-        let remote = "Manage remotes\n\nCOMMANDS\n  add      Add a remote\n  remove   Remove a remote\n";
-        let remote_add = "Add a remote\n\nARGUMENTS:\n  <NAME>   Remote name\n  <URL>    Remote URL\n";
+        let remote =
+            "Manage remotes\n\nCOMMANDS\n  add      Add a remote\n  remove   Remove a remote\n";
+        let remote_add =
+            "Add a remote\n\nARGUMENTS:\n  <NAME>   Remote name\n  <URL>    Remote URL\n";
         let runner = MapRunner::new(Some("vcs 2.0.0"))
             .with("--help", top)
             .with("remote --help", remote)

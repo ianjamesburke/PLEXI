@@ -580,10 +580,10 @@ impl PlexiApp {
         }
     }
 
-
     pub(crate) fn switch_to_tab(&mut self, container_tile: TileId, idx: usize) {
         let ctx = &self.windows[self.active_window];
-        let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get(container_tile) else {
+        let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get(container_tile)
+        else {
             return;
         };
         let children = &tabs.children;
@@ -593,7 +593,8 @@ impl PlexiApp {
         let target = children[idx];
 
         let ctx = &mut self.windows[self.active_window];
-        if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(container_tile) {
+        if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(container_tile)
+        {
             tabs.set_active(target);
         }
 

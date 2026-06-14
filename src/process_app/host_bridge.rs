@@ -117,10 +117,7 @@ impl ProcessApp {
                     self.type_id, request_id, max_width, max_lines, n_rows, height
                 );
                 self.outbound_events.push_back(
-                    crate::app_protocol::PlexiEvent::TextWrappedMeasured {
-                        request_id,
-                        height,
-                    },
+                    crate::app_protocol::PlexiEvent::TextWrappedMeasured { request_id, height },
                 );
             }
             ControlCommand::SetMinSize { width, height } => {

@@ -89,10 +89,8 @@ impl<'a> ListRow<'a> {
         } else {
             style::LIST_ROW_H
         };
-        let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), row_h),
-            egui::Sense::click(),
-        );
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), egui::Sense::click());
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -252,9 +250,10 @@ impl<'a> ListRow<'a> {
                 .secondary_center_y
                 .unwrap_or(text_metrics.primary_center_y + COMPACT_METADATA_PIP_OFFSET_Y);
             let t = ui.input(|i| i.time);
-            let has_working = pips.activities.iter().any(|s| {
-                matches!(s, Some(crate::app_protocol::AgentState::Working))
-            });
+            let has_working = pips
+                .activities
+                .iter()
+                .any(|s| matches!(s, Some(crate::app_protocol::AgentState::Working)));
             if has_working {
                 // Pulse animation only needs ~10fps; an unconditional
                 // request_repaint pins the window at display refresh.
@@ -708,10 +707,8 @@ mod tests {
                             if i == 10 {
                                 ui.label("SECTION");
                             }
-                            let (rect, resp) = ui.allocate_exact_size(
-                                egui::vec2(120.0, 48.0),
-                                egui::Sense::click(),
-                            );
+                            let (rect, resp) = ui
+                                .allocate_exact_size(egui::vec2(120.0, 48.0), egui::Sense::click());
                             scroll_row_into_view(ui, &resp, i == selected);
                             if i == selected {
                                 visible = ui.clip_rect().contains_rect(rect);

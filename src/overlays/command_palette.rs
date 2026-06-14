@@ -214,7 +214,11 @@ fn palette_pane_rows_for_context(
                 pips: ListRowPips {
                     count: 1,
                     focused_idx: (Some(pane_id) == focused_pane_id).then_some(0),
-                    hidden_indices: if pane.is_hidden() { vec![0] } else { Vec::new() },
+                    hidden_indices: if pane.is_hidden() {
+                        vec![0]
+                    } else {
+                        Vec::new()
+                    },
                     activities: vec![pane.effective_activity().cloned()],
                 },
             });
@@ -319,21 +323,21 @@ impl PlexiApp {
                 if ctx_meta.parked {
                     continue;
                 }
-                let resolved = self
-                    .context_active_window
-                    .get(&ctx_meta.context_id)
-                    .copied()
-                    .and_then(|id| {
-                        self.windows.iter().enumerate().find(|(_, w)| {
-                            w.window_id == id && w.context_id == ctx_meta.context_id
+                let resolved =
+                    self.context_active_window
+                        .get(&ctx_meta.context_id)
+                        .copied()
+                        .and_then(|id| {
+                            self.windows.iter().enumerate().find(|(_, w)| {
+                                w.window_id == id && w.context_id == ctx_meta.context_id
+                            })
                         })
-                    })
-                    .or_else(|| {
-                        self.windows
-                            .iter()
-                            .enumerate()
-                            .find(|(_, w)| w.context_id == ctx_meta.context_id)
-                    });
+                        .or_else(|| {
+                            self.windows
+                                .iter()
+                                .enumerate()
+                                .find(|(_, w)| w.context_id == ctx_meta.context_id)
+                        });
                 let Some((win_idx, win)) = resolved else {
                     continue;
                 };
@@ -598,19 +602,14 @@ impl PlexiApp {
                 self.palette_query.clear();
                 let active = self.active_window;
                 let path_str = path.display().to_string();
-                if let Some((existing_tile_id, _)) =
-                    self.find_open_text_editor_tile(active, &path)
+                if let Some((existing_tile_id, _)) = self.find_open_text_editor_tile(active, &path)
                 {
                     log::info!("palette: note already open, focusing pane");
                     self.set_window_focused_pane(active, existing_tile_id);
                 } else {
                     log::info!("palette: opening note {:?} in new pane", path);
-                    let _ = self.launch_app_by_id_with_layout(
-                        "text-editor",
-                        None,
-                        &[path_str],
-                        None,
-                    );
+                    let _ =
+                        self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None);
                 }
                 return;
             }
@@ -774,7 +773,11 @@ impl PlexiApp {
                                         hover_select = Some(i);
                                     }
                                 }
-                                PaletteEntry::Note { path, title, preview } => {
+                                PaletteEntry::Note {
+                                    path,
+                                    title,
+                                    preview,
+                                } => {
                                     if !shown_notes_header {
                                         shown_notes_header = true;
                                         ui.add_space(style::SPACE_XS);
@@ -794,8 +797,7 @@ impl PlexiApp {
                                         row_response.scroll_into_view(ui, should_scroll);
                                     }
                                     if row_response.row_clicked() {
-                                        click_action =
-                                            Some(Action::OpenNote(path.clone()));
+                                        click_action = Some(Action::OpenNote(path.clone()));
                                     }
                                     if row_response.row_hovered() {
                                         hover_select = Some(i);
@@ -844,15 +846,10 @@ impl PlexiApp {
                             if let Some((existing_tile_id, _)) =
                                 self.find_open_text_editor_tile(active, &path)
                             {
-                                log::info!(
-                                    "palette: note already open, focusing pane"
-                                );
+                                log::info!("palette: note already open, focusing pane");
                                 self.set_window_focused_pane(active, existing_tile_id);
                             } else {
-                                log::info!(
-                                    "palette: opening note {:?} in new pane",
-                                    path
-                                );
+                                log::info!("palette: opening note {:?} in new pane", path);
                                 let _ = self.launch_app_by_id_with_layout(
                                     "text-editor",
                                     None,
@@ -885,9 +882,7 @@ impl PlexiApp {
     /// If `pane_id` is provided, also focuses that specific pane in the window.
     fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64, pane_id: Option<u64>) {
         let target_ctx_id = self.windows[ctx_idx].context_id;
-        log::info!(
-            "palette: jump to context {target_ctx_id} (window {win_id}, pane {pane_id:?})"
-        );
+        log::info!("palette: jump to context {target_ctx_id} (window {win_id}, pane {pane_id:?})");
         if let Some(ctx_idx_sidebar) = self.router.position(|c| c.context_id == target_ctx_id) {
             if ctx_idx_sidebar != self.router.active_idx() {
                 // switch_workspace → pick_active_context_from_workspace sets

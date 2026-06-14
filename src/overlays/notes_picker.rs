@@ -381,11 +381,7 @@ impl PlexiApp {
         let filtered = self.notes_picker_filtered();
         let selected = self.notes_picker_selected;
         let total = self.notes_picker_entries.len();
-        let inbox_total = self
-            .notes_picker_entries
-            .iter()
-            .filter(|e| e.inbox)
-            .count();
+        let inbox_total = self.notes_picker_entries.iter().filter(|e| e.inbox).count();
         let filtering = self.notes_picker_filtering;
         let renaming = self.notes_picker_rename.is_some();
 
@@ -458,8 +454,8 @@ impl PlexiApp {
                                 shown_inbox_header = true;
                                 ui.label(
                                     egui::RichText::new(format!("Inbox ({inbox_total})"))
-                                    .size(style::TEXT_CAPTION)
-                                    .color(colors.text_dim),
+                                        .size(style::TEXT_CAPTION)
+                                        .color(colors.text_dim),
                                 );
                                 ui.add_space(style::SPACE_XS);
                             }

@@ -51,7 +51,12 @@ impl std::fmt::Display for ConfigDiagnostic {
                     write!(f, "{path}: unknown key `{key}` in [{table}]")
                 }
             }
-            Self::DeprecatedSection { path, section, hint, error } => {
+            Self::DeprecatedSection {
+                path,
+                section,
+                hint,
+                error,
+            } => {
                 let severity = if *error { "error" } else { "warning" };
                 write!(f, "{path}: {severity}: `{section}` is deprecated. {hint}")
             }

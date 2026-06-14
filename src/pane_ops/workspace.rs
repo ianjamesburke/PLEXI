@@ -931,9 +931,7 @@ impl PlexiApp {
             let zoomed_out = self.zoom_out_of_context();
             if !zoomed_out || self.router.active().context_id == ctx_id {
                 // No usable depth-stack entry — land on the parent directly.
-                if let Some(parent_idx) =
-                    self.router.position(|c| c.context_id == parent_ctx_id)
-                {
+                if let Some(parent_idx) = self.router.position(|c| c.context_id == parent_ctx_id) {
                     self.switch_workspace(parent_idx);
                 }
             }

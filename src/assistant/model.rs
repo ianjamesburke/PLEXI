@@ -158,6 +158,9 @@ pub struct AssistantModel {
     /// Show reasoning ("thoughts") sections in the transcript. Toggled by
     /// `/thoughts`, persisted in the assistant store's `state.toml`.
     pub show_thoughts: bool,
+    /// Shell-style composer history cursor over prior user turns. `None`
+    /// means normal editing; `Some(0)` is the newest user message.
+    history_cursor: Option<usize>,
 }
 
 impl AssistantModel {
@@ -175,6 +178,7 @@ impl AssistantModel {
             queued_user_turns: 0,
             turn_anchor: None,
             show_thoughts: false,
+            history_cursor: None,
         }
     }
 
@@ -218,6 +222,7 @@ impl AssistantModel {
             return Vec::new();
         }
         self.composer.clear();
+        self.history_cursor = None;
         self.picker_selected = 0;
         if let Some(cmd) = commands::parse_slash_command(&input) {
             return self.execute_command(&cmd);
@@ -254,6 +259,44 @@ impl AssistantModel {
                 prompt: input,
             },
         ]
+    }
+
+    /// Recall previous user messages into the composer. The first Up starts
+    /// from the latest submitted user turn; repeated Up walks older turns.
+    /// A non-empty draft is left untouched unless history recall is already
+    /// active, so one accidental Up never overwrites in-progress typing.
+    pub fn recall_previous_user_message(&mut self) -> bool {
+        if self.history_cursor.is_none() && !self.composer.trim().is_empty() {
+            return false;
+        }
+        let history: Vec<&str> = self
+            .turns
+            .iter()
+            .rev()
+            .filter(|t| t.role == TurnRole::User && !t.text.trim().is_empty())
+            .map(|t| t.text.as_str())
+            .collect();
+        if history.is_empty() {
+            return false;
+        }
+        let next = self
+            .history_cursor
+            .map(|idx| (idx + 1).min(history.len() - 1))
+            .unwrap_or(0);
+        self.history_cursor = Some(next);
+        self.composer = history[next].to_string();
+        self.picker_selected = 0;
+        log::info!(
+            "assistant[{}]: recalled composer history entry {} of {}",
+            self.conversation_id,
+            next + 1,
+            history.len()
+        );
+        true
+    }
+
+    pub fn reset_history_recall(&mut self) {
+        self.history_cursor = None;
     }
 
     /// Abandon the in-flight turn for a conversation switch: reset all
@@ -356,7 +399,10 @@ impl AssistantModel {
                         "Thoughts are now hidden. Run /thoughts again to show them."
                     },
                 ));
-                log::info!("assistant: /thoughts — show_thoughts={}", self.show_thoughts);
+                log::info!(
+                    "assistant: /thoughts — show_thoughts={}",
+                    self.show_thoughts
+                );
                 vec![
                     AssistantEffect::PersistShowThoughts(self.show_thoughts),
                     AssistantEffect::SessionWrite {
@@ -520,11 +566,17 @@ impl AssistantModel {
                     text.len(),
                     self.streaming.partial_reasoning.len()
                 );
-                let mut turn = Turn::now(TurnRole::Assistant, text);
-                if !self.streaming.partial_reasoning.is_empty() {
-                    turn.thoughts = Some(std::mem::take(&mut self.streaming.partial_reasoning));
+                // An empty reply with no reasoning means nothing was produced —
+                // e.g. a turn cancelled before any text streamed. Don't commit
+                // an empty assistant bubble; just reset and let any folded
+                // follow-up turn do the talking.
+                if !text.is_empty() || !self.streaming.partial_reasoning.is_empty() {
+                    let mut turn = Turn::now(TurnRole::Assistant, text);
+                    if !self.streaming.partial_reasoning.is_empty() {
+                        turn.thoughts = Some(std::mem::take(&mut self.streaming.partial_reasoning));
+                    }
+                    self.push_flight_turn(turn);
                 }
-                self.push_flight_turn(turn);
             }
             Err(e) => {
                 log::warn!("assistant[{}]: turn failed: {e}", self.conversation_id);
@@ -598,6 +650,27 @@ mod tests {
     }
 
     #[test]
+    fn up_history_recalls_previous_user_turns_without_overwriting_draft() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "first");
+        m.finish_turn(&m.conversation_id.clone(), Ok("one".to_string()));
+        submitted(&mut m, "second");
+        m.finish_turn(&m.conversation_id.clone(), Ok("two".to_string()));
+
+        assert!(m.recall_previous_user_message());
+        assert_eq!(m.composer, "second");
+        assert!(m.recall_previous_user_message());
+        assert_eq!(m.composer, "first");
+        assert!(m.recall_previous_user_message());
+        assert_eq!(m.composer, "first", "history clamps at oldest entry");
+
+        m.composer = "draft".to_string();
+        m.reset_history_recall();
+        assert!(!m.recall_previous_user_message());
+        assert_eq!(m.composer, "draft");
+    }
+
+    #[test]
     fn clear_mid_turn_interrupts_and_cancels() {
         let mut m = AssistantModel::fresh();
         submitted(&mut m, "question");
@@ -642,7 +715,9 @@ mod tests {
         assert_eq!(m.streaming, StreamingState::default());
         assert_eq!(m.turns.last().unwrap().role, TurnRole::Assistant);
         assert_eq!(m.turns.last().unwrap().text, "final answer");
-        assert!(matches!(&effects[0], AssistantEffect::SessionWrite { conversation_id } if *conversation_id == id));
+        assert!(
+            matches!(&effects[0], AssistantEffect::SessionWrite { conversation_id } if *conversation_id == id)
+        );
     }
 
     #[test]
@@ -664,7 +739,10 @@ mod tests {
         let id = m.conversation_id.clone();
         m.finish_turn(&id, Ok("hello there".to_string()));
         assert_eq!(m.turns[0].text, "hi");
-        assert_eq!(m.turns[1].text, "hello there", "reply commits at its anchor");
+        assert_eq!(
+            m.turns[1].text, "hello there",
+            "reply commits at its anchor"
+        );
         assert!(m.turns[2].text.contains("Built-in commands"));
         assert_eq!(m.turn_anchor, None);
     }
@@ -721,7 +799,10 @@ mod tests {
         submitted(&mut m, "/clear");
         let effects = m.finish_turn(&old_id, Ok("late answer".to_string()));
         assert!(effects.is_empty());
-        assert!(m.turns.is_empty(), "stale outcome must not land in the cleared conversation");
+        assert!(
+            m.turns.is_empty(),
+            "stale outcome must not land in the cleared conversation"
+        );
     }
 
     #[test]
@@ -733,8 +814,10 @@ mod tests {
         let effects = submitted(&mut m, "/clear");
         assert_ne!(m.conversation_id, old_id);
         assert!(m.turns.is_empty());
-        assert!(matches!(&effects[0], AssistantEffect::SessionWrite { conversation_id }
-            if *conversation_id == m.conversation_id));
+        assert!(
+            matches!(&effects[0], AssistantEffect::SessionWrite { conversation_id }
+            if *conversation_id == m.conversation_id)
+        );
     }
 
     #[test]
@@ -766,12 +849,18 @@ mod tests {
     #[test]
     fn phase2_views_route_to_their_effects() {
         let mut m = AssistantModel::fresh();
-        assert_eq!(submitted(&mut m, "/tools"), vec![AssistantEffect::ListTools]);
+        assert_eq!(
+            submitted(&mut m, "/tools"),
+            vec![AssistantEffect::ListTools]
+        );
         assert_eq!(
             submitted(&mut m, "/permissions"),
             vec![AssistantEffect::ListPermissions]
         );
-        assert_eq!(submitted(&mut m, "/audit"), vec![AssistantEffect::ShowAudit]);
+        assert_eq!(
+            submitted(&mut m, "/audit"),
+            vec![AssistantEffect::ShowAudit]
+        );
         assert_eq!(
             submitted(&mut m, "/revoke app.csv.write_range"),
             vec![AssistantEffect::RevokeGrant {

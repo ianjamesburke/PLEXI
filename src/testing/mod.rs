@@ -10,8 +10,8 @@
 
 use crate::app::permissions::AppPermissions;
 use crate::app::PlexiApp;
-use crate::config::set_test_profile_dir;
 use crate::app_protocol::{AiMessage, AppRequest, DrawCommand, ModelTier};
+use crate::config::set_test_profile_dir;
 use crate::host::pane::{AppPane, AppRuntime, Pane};
 use crate::process_app::ProcessApp;
 use crate::spatial::tiling::PaneId;

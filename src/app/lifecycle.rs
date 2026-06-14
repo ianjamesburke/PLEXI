@@ -344,7 +344,10 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::app_protocol::AppRequest::GetPreviousPaneInfo { response_file, steps } => {
+            crate::app_protocol::AppRequest::GetPreviousPaneInfo {
+                response_file,
+                steps,
+            } => {
                 let steps = (*steps).max(1);
                 log::info!(
                     "pane_ipc: kind=get_previous_pane_info steps={steps} response_file={:?}",

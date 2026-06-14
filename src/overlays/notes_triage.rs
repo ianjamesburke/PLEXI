@@ -102,14 +102,22 @@ impl PlexiApp {
                 self.notes_triage_back_to_picker();
             }
             Some(TriageKey::Keep) => {
-                if let Some(note) = self.notes_triage_notes.get(self.notes_triage_index).cloned() {
+                if let Some(note) = self
+                    .notes_triage_notes
+                    .get(self.notes_triage_index)
+                    .cloned()
+                {
                     log::info!("notes_triage: s — keeping {:?}", note.path);
                     self.notes_triage_keep(&note);
                     self.notes_triage_advance();
                 }
             }
             Some(TriageKey::Trash) => {
-                if let Some(note) = self.notes_triage_notes.get(self.notes_triage_index).cloned() {
+                if let Some(note) = self
+                    .notes_triage_notes
+                    .get(self.notes_triage_index)
+                    .cloned()
+                {
                     log::info!("notes_triage: d/x — trashing {:?}", note.path);
                     self.notes_triage_trash(&note);
                     self.notes_triage_advance();
@@ -135,7 +143,9 @@ impl PlexiApp {
                     .cloned();
                 if let (Some(action), Some(note)) = (
                     action,
-                    self.notes_triage_notes.get(self.notes_triage_index).cloned(),
+                    self.notes_triage_notes
+                        .get(self.notes_triage_index)
+                        .cloned(),
                 ) {
                     log::info!(
                         "notes_triage: {} — running action '{}' on {:?}",
@@ -320,9 +330,7 @@ impl PlexiApp {
 
     /// Move `note` to `notes/<workspace>/` using an explicit workspace slug.
     pub(crate) fn notes_triage_keep_to(&self, note: &InboxNote, workspace: &str) {
-        let dest_dir = crate::config::config_dir()
-            .join("notes")
-            .join(workspace);
+        let dest_dir = crate::config::config_dir().join("notes").join(workspace);
         if let Err(e) = std::fs::create_dir_all(&dest_dir) {
             log::warn!("notes_triage: keep — failed to create {:?}: {e}", dest_dir);
             return;
@@ -336,11 +344,7 @@ impl PlexiApp {
                 match std::fs::copy(&note.path, &dest) {
                     Ok(_) => {
                         let _ = std::fs::remove_file(&note.path);
-                        log::info!(
-                            "notes_triage: kept (copy) {:?} → {:?}",
-                            note.path,
-                            dest
-                        );
+                        log::info!("notes_triage: kept (copy) {:?} → {:?}", note.path, dest);
                     }
                     Err(e2) => {
                         log::warn!(
@@ -357,7 +361,10 @@ impl PlexiApp {
     pub(crate) fn notes_triage_trash(&self, note: &InboxNote) {
         let trash_dir = crate::config::config_dir().join("notes").join("trash");
         if let Err(e) = std::fs::create_dir_all(&trash_dir) {
-            log::warn!("notes_triage: trash — failed to create {:?}: {e}", trash_dir);
+            log::warn!(
+                "notes_triage: trash — failed to create {:?}: {e}",
+                trash_dir
+            );
             // Fallback: just delete.
             let _ = std::fs::remove_file(&note.path);
             return;
@@ -366,25 +373,19 @@ impl PlexiApp {
         let dest = trash_dir.join(file_name);
         match std::fs::rename(&note.path, &dest) {
             Ok(_) => log::info!("notes_triage: trashed {:?} → {:?}", note.path, dest),
-            Err(_) => {
-                match std::fs::copy(&note.path, &dest) {
-                    Ok(_) => {
-                        let _ = std::fs::remove_file(&note.path);
-                        log::info!(
-                            "notes_triage: trashed (copy) {:?} → {:?}",
-                            note.path,
-                            dest
-                        );
-                    }
-                    Err(e2) => {
-                        log::warn!(
-                            "notes_triage: trash failed {:?}: {e2} — deleting directly",
-                            note.path
-                        );
-                        let _ = std::fs::remove_file(&note.path);
-                    }
+            Err(_) => match std::fs::copy(&note.path, &dest) {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&note.path);
+                    log::info!("notes_triage: trashed (copy) {:?} → {:?}", note.path, dest);
                 }
-            }
+                Err(e2) => {
+                    log::warn!(
+                        "notes_triage: trash failed {:?}: {e2} — deleting directly",
+                        note.path
+                    );
+                    let _ = std::fs::remove_file(&note.path);
+                }
+            },
         }
     }
 
@@ -412,7 +413,7 @@ impl PlexiApp {
                 self.spawn_terminal_pane_at(
                     win_idx,
                     focused_tile,
-                    true,  // split vertically
+                    true, // split vertically
                     false,
                     Some(&cmd),
                     false, // keep pane open after exit

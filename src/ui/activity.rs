@@ -41,15 +41,10 @@ pub fn dot_color_from_time(
     match state {
         AgentState::Working => {
             let stagger = pip_index as f64 * 0.35;
-            let alpha =
-                0.20 + 0.80 * (0.5 + 0.5 * ((time + stagger) * 1.2 * std::f64::consts::PI).sin()) as f32;
+            let alpha = 0.20
+                + 0.80 * (0.5 + 0.5 * ((time + stagger) * 1.2 * std::f64::consts::PI).sin()) as f32;
             let c = colors.pip_working;
-            egui::Color32::from_rgba_unmultiplied(
-                c.r(),
-                c.g(),
-                c.b(),
-                (c.a() as f32 * alpha) as u8,
-            )
+            egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
         }
         AgentState::Idle => colors.pip_idle,
         AgentState::Blocked => colors.pip_blocked,

@@ -99,10 +99,12 @@ impl PlexiApp {
                     {
                         // Hint
                         ui.label(
-                            RichText::new("Enter to save  ·  Shift+Enter for new line  ·  Esc to discard")
-                                .color(self.colors.text_dim.linear_multiply(0.5))
-                                .size(style::TEXT_HINT)
-                                .family(egui::FontFamily::Monospace),
+                            RichText::new(
+                                "Enter to save  ·  Shift+Enter for new line  ·  Esc to discard",
+                            )
+                            .color(self.colors.text_dim.linear_multiply(0.5))
+                            .size(style::TEXT_HINT)
+                            .family(egui::FontFamily::Monospace),
                         );
                         ui.add_space(style::SPACE_SM);
 
@@ -120,25 +122,23 @@ impl PlexiApp {
 
                                     let te_id = egui::Id::new("quick_note_text");
                                     let qn_font_id = egui::FontId::monospace(style::TEXT_BODY);
-                                    let qn_row_height =
-                                        ui.fonts(|f| f.row_height(&qn_font_id));
-                                    let output = egui::TextEdit::multiline(
-                                        &mut self.quick_note_text,
-                                    )
-                                    .id(te_id)
-                                    .font(qn_font_id)
-                                    .text_color(self.colors.text_primary)
-                                    .desired_width(f32::INFINITY)
-                                    .desired_rows(initial_rows)
-                                    .frame(false)
-                                    .hint_text(
-                                        RichText::new("What's on your mind?")
-                                            .color(
-                                                self.colors.text_dim.linear_multiply(0.3),
+                                    let qn_row_height = ui.fonts(|f| f.row_height(&qn_font_id));
+                                    let output =
+                                        egui::TextEdit::multiline(&mut self.quick_note_text)
+                                            .id(te_id)
+                                            .font(qn_font_id)
+                                            .text_color(self.colors.text_primary)
+                                            .desired_width(f32::INFINITY)
+                                            .desired_rows(initial_rows)
+                                            .frame(false)
+                                            .hint_text(
+                                                RichText::new("What's on your mind?")
+                                                    .color(
+                                                        self.colors.text_dim.linear_multiply(0.3),
+                                                    )
+                                                    .size(style::TEXT_BODY),
                                             )
-                                            .size(style::TEXT_BODY),
-                                    )
-                                    .show(ui);
+                                            .show(ui);
                                     crate::ui::text_field::draw_text_caret(
                                         ui,
                                         &output,

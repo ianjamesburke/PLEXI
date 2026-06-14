@@ -78,7 +78,11 @@ fn wake_request_is_noop_on_host() {
     h.inject_ipc(crate::app_protocol::AppRequest::Wake);
     h.app.drain_pane_cmd_channel();
 
-    assert_eq!(h.app.windows.len(), windows_before, "wake must not touch windows");
+    assert_eq!(
+        h.app.windows.len(),
+        windows_before,
+        "wake must not touch windows"
+    );
     let panes_after: usize = h.app.windows.iter().map(|w| w.panes.len()).sum();
     assert_eq!(panes_after, panes_before, "wake must not touch panes");
 }
