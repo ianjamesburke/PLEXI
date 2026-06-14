@@ -46,7 +46,10 @@ pub(crate) fn status_chip_with_color(
         .fill(colors.bg_active)
         .stroke(egui::Stroke::new(1.0, color))
         .corner_radius(style::RADIUS_BADGE)
-        .inner_margin(egui::Margin::symmetric(8, 3))
+        .inner_margin(egui::Margin::symmetric(
+            style::BADGE_PAD_H as i8,
+            style::BADGE_PAD_V as i8,
+        ))
         .show(ui, |ui| {
             ui.label(RichText::new(label).size(style::TEXT_HINT).color(color));
         })
