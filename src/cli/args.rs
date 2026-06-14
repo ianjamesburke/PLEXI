@@ -1,7 +1,7 @@
 use clap::{
     builder::styling::{AnsiColor, Effects, Styles},
     builder::ValueHint,
-    Parser, Subcommand,
+    Args, Parser, Subcommand,
 };
 
 fn plexi_styles() -> Styles {
@@ -984,21 +984,77 @@ pub enum ContextCmd {
 #[derive(Subcommand)]
 pub enum ConfigCmd {
     /// Validate your config.toml and report any errors.
-    Check,
+    Check {
+        #[command(flatten)]
+        scope: ConfigScopeArgs,
+    },
     /// Open config.toml in your $EDITOR.
-    Edit,
+    Edit {
+        #[command(flatten)]
+        scope: ConfigScopeArgs,
+    },
     /// Print the resolved value of a config key to stdout.
     ///
     /// Supports dotted keys: agents.low, agents.medium, agents.high.
     /// Returns the effective value (user setting or built-in default).
     Get {
+        #[command(flatten)]
+        scope: ConfigScopeArgs,
         /// Dotted key to retrieve (e.g. agents.medium).
         key: String,
     },
     /// Overwrite config.toml with the built-in default template.
     ///
     /// Creates a backup at config.toml.bak before overwriting.
-    Reset,
+    Reset {
+        #[command(flatten)]
+        scope: ConfigScopeArgs,
+    },
+}
+
+#[derive(Args, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConfigScopeArgs {
+    /// Use the global channel config.toml only.
+    #[arg(short = 'g', long = "global", conflicts_with = "workspace")]
+    pub global: bool,
+    /// Use the active workspace's channel-scoped config.toml only.
+    #[arg(short = 'w', long = "workspace", visible_alias = "ws")]
+    pub workspace: bool,
+}
+
+impl ConfigScopeArgs {
+    pub fn scope(self) -> ConfigScope {
+        if self.global {
+            ConfigScope::Global
+        } else if self.workspace {
+            ConfigScope::Workspace
+        } else {
+            ConfigScope::Effective
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigScope {
+    Effective,
+    Global,
+    Workspace,
+}
+
+pub fn normalize_config_scope_aliases(args: Vec<String>) -> Vec<String> {
+    let Some(config_idx) = args.iter().position(|arg| arg == "config") else {
+        return args;
+    };
+    args.into_iter()
+        .enumerate()
+        .map(|(idx, arg)| {
+            if idx > config_idx && arg == "-ws" {
+                "--workspace".to_string()
+            } else {
+                arg
+            }
+        })
+        .collect()
 }
 
 #[derive(Subcommand)]
@@ -1162,7 +1218,9 @@ pub enum AiCmd {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppCmd, Cli, Commands, SecretCmd};
+    use super::{
+        normalize_config_scope_aliases, AppCmd, Cli, Commands, ConfigCmd, ConfigScope, SecretCmd,
+    };
     use clap::Parser;
 
     #[test]
@@ -1186,6 +1244,53 @@ mod tests {
             panic!("expected secret command");
         };
         assert!(matches!(cmd, SecretCmd::List { global: false }));
+    }
+
+    #[test]
+    fn config_get_accepts_global_scope_flag() {
+        let cli =
+            Cli::try_parse_from(["plexi", "config", "get", "--global", "theme.accent"]).unwrap();
+
+        let Some(Commands::Config { cmd }) = cli.command else {
+            panic!("expected config command");
+        };
+        let ConfigCmd::Get { scope, key } = cmd else {
+            panic!("expected config get command");
+        };
+        assert_eq!(scope.scope(), ConfigScope::Global);
+        assert_eq!(key, "theme.accent");
+    }
+
+    #[test]
+    fn config_check_accepts_workspace_scope_alias() {
+        let cli = Cli::try_parse_from(["plexi", "config", "check", "--ws"]).unwrap();
+
+        let Some(Commands::Config { cmd }) = cli.command else {
+            panic!("expected config command");
+        };
+        let ConfigCmd::Check { scope } = cmd else {
+            panic!("expected config check command");
+        };
+        assert_eq!(scope.scope(), ConfigScope::Workspace);
+    }
+
+    #[test]
+    fn config_check_accepts_single_dash_ws_alias_after_normalization() {
+        let args = normalize_config_scope_aliases(
+            ["plexi", "config", "check", "-ws"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+        );
+        let cli = Cli::try_parse_from(args).unwrap();
+
+        let Some(Commands::Config { cmd }) = cli.command else {
+            panic!("expected config command");
+        };
+        let ConfigCmd::Check { scope } = cmd else {
+            panic!("expected config check command");
+        };
+        assert_eq!(scope.scope(), ConfigScope::Workspace);
     }
 
     #[test]

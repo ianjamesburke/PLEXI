@@ -210,6 +210,7 @@ fn main() -> eframe::Result {
         UpdateCmd, WorkspaceCmd,
     };
     use clap::Parser;
+    let args = cli::args::normalize_config_scope_aliases(args);
 
     match Cli::try_parse_from(&args) {
         Ok(cli) => {
@@ -949,17 +950,17 @@ fn main() -> eframe::Result {
                         std::process::exit(cli::completions_cli(s, &binary_name));
                     }
                     Commands::Config { cmd: config_cmd } => match config_cmd {
-                        ConfigCmd::Check => {
-                            std::process::exit(cli::config_check());
+                        ConfigCmd::Check { scope } => {
+                            std::process::exit(cli::config_check(scope.scope()));
                         }
-                        ConfigCmd::Edit => {
-                            std::process::exit(cli::config_edit());
+                        ConfigCmd::Edit { scope } => {
+                            std::process::exit(cli::config_edit(scope.scope()));
                         }
-                        ConfigCmd::Get { key } => {
-                            std::process::exit(cli::config_get(&key));
+                        ConfigCmd::Get { scope, key } => {
+                            std::process::exit(cli::config_get(&key, scope.scope()));
                         }
-                        ConfigCmd::Reset => {
-                            std::process::exit(cli::config_reset());
+                        ConfigCmd::Reset { scope } => {
+                            std::process::exit(cli::config_reset(scope.scope()));
                         }
                     },
                     Commands::Notes { cmd } => match cmd {

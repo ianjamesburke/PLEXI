@@ -1,4 +1,70 @@
 use super::super::*;
+use crate::host::context::Window;
+
+#[test]
+fn workspace_config_applies_when_switching_contexts() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_a = tempfile::tempdir().expect("root a");
+    let root_b = tempfile::tempdir().expect("root b");
+    write_workspace_config(root_a.path(), "#111111");
+    write_workspace_config(root_b.path(), "#22aa44");
+
+    app.router.get_mut(0).root = Some(root_a.path().to_path_buf());
+    app.windows[0].path = root_a.path().to_path_buf();
+    app.reload_config();
+    assert_eq!(
+        app.colors.accent,
+        egui::Color32::from_rgb(0x11, 0x11, 0x11),
+        "initial active context should load root A config"
+    );
+
+    let ctx_b_id = 2;
+    let win_b_id = 2;
+    app.router.push(crate::host::context::Context {
+        name: "Context B".into(),
+        path: root_b.path().to_path_buf(),
+        root: Some(root_b.path().to_path_buf()),
+        description: None,
+        context_id: ctx_b_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.windows.push(Window {
+        name: "Context B".into(),
+        path: root_b.path().to_path_buf(),
+        tree: egui_tiles::Tree::empty("workspace_config_b"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: win_b_id,
+        context_id: ctx_b_id,
+    });
+
+    app.switch_workspace(1);
+
+    assert_eq!(
+        app.colors.accent,
+        egui::Color32::from_rgb(0x22, 0xaa, 0x44),
+        "switching contexts should immediately load root B config"
+    );
+}
+
+fn write_workspace_config(root: &std::path::Path, accent: &str) {
+    let config_dir = root.join(crate::config::workspace_channel_dir());
+    std::fs::create_dir_all(&config_dir).expect("create workspace config dir");
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!("[theme]\naccent = \"{accent}\"\n"),
+    )
+    .expect("write workspace config");
+}
+
 /// Issue #1392: creating a child context must NOT remove or replace the parent's
 /// focused pane (adoption branch was removed). The parent should have:
 /// (count_before + 1) panes — its original pane(s) plus the new Portal tile.

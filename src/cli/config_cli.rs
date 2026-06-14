@@ -1,14 +1,29 @@
-pub fn config_check() -> i32 {
-    log::info!("config_check: validating config files");
-    let diags = crate::config::validate_all();
+use crate::cli::args::ConfigScope;
+use std::path::PathBuf;
 
+pub fn config_check(scope: ConfigScope) -> i32 {
+    log::info!("config_check: validating config files scope={scope:?}");
+    let paths = match config_paths_for_scope(scope, false) {
+        Ok(paths) => paths,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return 1;
+        }
+    };
+    let mut diags = if scope == ConfigScope::Effective {
+        crate::config::validate_all()
+    } else {
+        Vec::new()
+    };
+    if scope != ConfigScope::Effective {
+        for path in &paths {
+            diags.extend(crate::config::validate_from_path(path));
+        }
+    }
     if diags.is_empty() {
-        let path = crate::config::config_path();
-        eprintln!("✓ {} is valid", path.display());
-        if let Some(root) = crate::config::active_workspace_root() {
-            let project_path = crate::config::workspace_config_path(&root);
-            if project_path.exists() {
-                eprintln!("✓ {} is valid", project_path.display());
+        for path in paths {
+            if path.exists() {
+                eprintln!("✓ {} is valid", path.display());
             }
         }
         return 0;
@@ -30,9 +45,18 @@ pub fn config_check() -> i32 {
     }
 }
 
-pub fn config_edit() -> i32 {
-    let path = crate::config::ensure_config_exists();
-    log::info!("config_edit: opening {} in editor", path.display());
+pub fn config_edit(scope: ConfigScope) -> i32 {
+    let path = match writable_config_path(scope) {
+        Ok(path) => path,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return 1;
+        }
+    };
+    log::info!(
+        "config_edit: opening {} in editor scope={scope:?}",
+        path.display()
+    );
 
     if let Ok(editor_env) = std::env::var("EDITOR") {
         if editor_env.trim().is_empty() {
@@ -72,60 +96,67 @@ pub fn config_edit() -> i32 {
     }
 }
 
-pub fn config_get(key: &str) -> i32 {
-    log::info!("config_get: resolving key={key}");
+pub fn config_get(key: &str, scope: ConfigScope) -> i32 {
+    log::info!("config_get: resolving key={key} scope={scope:?}");
 
     // agents.* are special-cased because they have programmatic defaults
     // not stored in config.toml — always return via effective_*() for those.
-    match key {
-        "agents.low" | "agents.medium" | "agents.high" => {
-            let config = crate::config::PlexiConfig::load_with_workspace(
-                crate::config::active_workspace_root().as_deref(),
-            );
-            let agents = config.agents.as_ref();
-            let value = match key {
-                "agents.low" => agents
-                    .map(|a| a.effective_low())
-                    .unwrap_or(crate::config::DEFAULT_AGENT_LOW),
-                "agents.medium" => agents
-                    .map(|a| a.effective_medium())
-                    .unwrap_or(crate::config::DEFAULT_AGENT_MEDIUM),
-                _ => agents
-                    .map(|a| a.effective_high())
-                    .unwrap_or(crate::config::DEFAULT_AGENT_HIGH),
-            };
-            println!("{value}");
-            return 0;
-        }
-        _ => {}
+    if scope == ConfigScope::Effective {
+        match key {
+            "agents.low" | "agents.medium" | "agents.high" => {
+                let config = crate::config::PlexiConfig::load_with_workspace(
+                    crate::config::active_workspace_root().as_deref(),
+                );
+                let agents = config.agents.as_ref();
+                let value = match key {
+                    "agents.low" => agents
+                        .map(|a| a.effective_low())
+                        .unwrap_or(crate::config::DEFAULT_AGENT_LOW),
+                    "agents.medium" => agents
+                        .map(|a| a.effective_medium())
+                        .unwrap_or(crate::config::DEFAULT_AGENT_MEDIUM),
+                    _ => agents
+                        .map(|a| a.effective_high())
+                        .unwrap_or(crate::config::DEFAULT_AGENT_HIGH),
+                };
+                println!("{value}");
+                return 0;
+            }
+            _ => {}
+        };
     }
 
     // Generic path: load config as a raw TOML value and walk the dot-separated key.
-    // Workspace config (if present) overlays the global config at the TOML level.
-    let global_path = crate::config::config_path();
-    let mut root: toml::Value = match std::fs::read_to_string(&global_path) {
-        Ok(data) => match toml::from_str(&data) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("error: could not parse {}: {e}", global_path.display());
-                return 1;
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            toml::Value::Table(toml::map::Map::new())
-        }
-        Err(e) => {
-            eprintln!("error: could not read {}: {e}", global_path.display());
+    // Effective scope overlays workspace config on top of the global config.
+    let paths = match config_paths_for_scope(scope, false) {
+        Ok(paths) => paths,
+        Err(msg) => {
+            eprintln!("error: {msg}");
             return 1;
         }
     };
-
-    // Overlay workspace config on top if one exists.
-    if let Some(workspace_root) = crate::config::active_workspace_root() {
-        let project_path = crate::config::workspace_config_path(&workspace_root);
-        if let Ok(data) = std::fs::read_to_string(&project_path) {
-            if let Ok(project_val) = toml::from_str::<toml::Value>(&data) {
-                toml_merge(&mut root, project_val);
+    let mut root = toml::Value::Table(toml::map::Map::new());
+    for path in paths {
+        match std::fs::read_to_string(&path) {
+            Ok(data) => match toml::from_str::<toml::Value>(&data) {
+                Ok(val) => toml_merge(&mut root, val),
+                Err(e) => {
+                    eprintln!("error: could not parse {}: {e}", path.display());
+                    return 1;
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if scope == ConfigScope::Workspace {
+                    eprintln!(
+                        "error: workspace config does not exist at {}",
+                        path.display()
+                    );
+                    return 1;
+                }
+            }
+            Err(e) => {
+                eprintln!("error: could not read {}: {e}", path.display());
+                return 1;
             }
         }
     }
@@ -182,34 +213,94 @@ fn toml_value_to_string(v: &toml::Value) -> String {
     }
 }
 
-pub fn config_reset() -> i32 {
-    let path = crate::config::config_path();
-    log::info!("config_reset: writing default config to {}", path.display());
+pub fn config_reset(scope: ConfigScope) -> i32 {
+    let path = match writable_config_path(scope) {
+        Ok(path) => path,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return 1;
+        }
+    };
+    log::info!(
+        "config_reset: writing default config to {} scope={scope:?}",
+        path.display()
+    );
+    match write_default_config(&path) {
+        Ok(()) => 0,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            1
+        }
+    }
+}
+
+fn writable_config_path(scope: ConfigScope) -> Result<PathBuf, String> {
+    match scope {
+        ConfigScope::Effective | ConfigScope::Global => {
+            let path = crate::config::ensure_config_exists();
+            Ok(path)
+        }
+        ConfigScope::Workspace => {
+            let root = crate::config::active_workspace_root()
+                .ok_or_else(|| "not inside a Plexi workspace".to_string())?;
+            let path = crate::config::workspace_config_path(&root);
+            if !path.exists() {
+                write_default_config(&path)?;
+            }
+            Ok(path)
+        }
+    }
+}
+
+fn config_paths_for_scope(
+    scope: ConfigScope,
+    include_missing_workspace: bool,
+) -> Result<Vec<PathBuf>, String> {
+    let global = crate::config::config_path();
+    match scope {
+        ConfigScope::Global => Ok(vec![global]),
+        ConfigScope::Workspace => {
+            let root = crate::config::active_workspace_root()
+                .ok_or_else(|| "not inside a Plexi workspace".to_string())?;
+            Ok(vec![crate::config::workspace_config_path(&root)])
+        }
+        ConfigScope::Effective => {
+            let mut paths = vec![global];
+            if let Some(root) = crate::config::active_workspace_root() {
+                let workspace = crate::config::workspace_config_path(&root);
+                if include_missing_workspace || workspace.exists() {
+                    paths.push(workspace);
+                }
+            }
+            Ok(paths)
+        }
+    }
+}
+
+fn write_default_config(path: &std::path::Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!(
-                "error: could not create config dir {}: {e}",
+            return Err(format!(
+                "could not create config dir {}: {e}",
                 parent.display()
-            );
-            return 1;
+            ));
         }
     }
     if path.exists() {
         let bak = path.with_extension("toml.bak");
         if let Err(e) = std::fs::copy(&path, &bak) {
-            eprintln!("error: could not back up config to {}: {e}", bak.display());
-            return 1;
+            return Err(format!(
+                "could not back up config to {}: {e}",
+                bak.display()
+            ));
         }
         eprintln!("backed up existing config to {}", bak.display());
     }
     match std::fs::write(&path, crate::config::CONFIG_TEMPLATE) {
         Ok(()) => {
             eprintln!("✓ wrote default config to {}", path.display());
-            0
+            Ok(())
         }
-        Err(e) => {
-            eprintln!("error: could not write config: {e}");
-            1
-        }
+        Err(e) => Err(format!("could not write config: {e}")),
     }
 }

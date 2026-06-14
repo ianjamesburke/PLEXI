@@ -1106,6 +1106,7 @@ impl PlexiApp {
             .copied()
             .unwrap_or(page_count > 1);
 
+        self.reload_config_for_active_context();
         self.apply_context_transition_effects();
     }
 
@@ -1491,6 +1492,7 @@ impl PlexiApp {
             .unwrap_or(0);
         if let Some(parent_ctx_idx) = self.router.position(|c| c.context_id == parent_ctx_id) {
             self.router.set_active(parent_ctx_idx);
+            self.reload_config_for_active_context();
         }
 
         self.pending_notifications.retain(|n| {
