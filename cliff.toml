@@ -1,7 +1,7 @@
 [changelog]
 header = "# Changelog\n\nNewest releases appear first.\n"
 body = """
-## [{{ version | trim_start_matches(pat="v") }}] — {{ timestamp | date(format="%Y-%m-%d") }}
+## [{{ version | default(value="Unreleased") | trim_start_matches(pat="v") }}] — {{ timestamp | date(format="%Y-%m-%d") }}
 
 ### Changes
 {% for commit in commits -%}
@@ -10,7 +10,10 @@ body = """
 """
 trim = true
 footer = ""
-postprocessors = []
+postprocessors = [
+  { pattern = " \\(stints? [^)]+\\)", replace = "" },
+  { pattern = " \\([0-9]+ tasks\\)", replace = "" },
+]
 
 [git]
 conventional_commits = false
@@ -33,7 +36,59 @@ message = "^chore: promote"
 skip = true
 
 [[git.commit_parsers]]
+message = "^chore(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
 message = "^chore: DEV_LOG"
+skip = true
+
+[[git.commit_parsers]]
+message = "^docs(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^test(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^refactor(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^style(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^ci(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^build(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^(feat|fix|perf)\\((scripts|infra|skills)\\):"
+skip = true
+
+[[git.commit_parsers]]
+message = "^(skills|planning):"
+skip = true
+
+[[git.commit_parsers]]
+message = ".*implement-stint skill.*"
+skip = true
+
+[[git.commit_parsers]]
+message = "^refine .*skills:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^tweak:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^stint:"
 skip = true
 
 [[git.commit_parsers]]
