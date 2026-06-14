@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.768"
+verified_version: "0.0.783"
 order: 7
 ---
 
@@ -20,6 +20,7 @@ Example: plexi run dev
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<command>` | string | no | Command name to run (omit to list available commands) |
+| `<extra_args>` | string (repeatable) | no | Extra arguments forwarded to the command as $1, $2, … positional params |
 
 ## `plexi workspace`
 
@@ -753,7 +754,7 @@ Print details about the current pane (or the previously focused pane) as JSON
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--previous` | flag | no | Return info for the previously focused pane instead of the current one |
+| `--previous` | string | no | Return info for a previously focused pane. With no value, returns the immediately previous pane (step 1). Provide an integer N to walk back N steps in focus history.  Examples: plexi pane info --previous      # pane focused 1 step ago plexi pane info --previous 3    # pane focused 3 steps ago |
 
 ### `plexi pane capture`
 
