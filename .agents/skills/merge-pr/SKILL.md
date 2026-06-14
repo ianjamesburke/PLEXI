@@ -1,6 +1,6 @@
 ---
 name: merge-pr
-description: "Phase 4 of the PLEXI ship pipeline. Takes an approved PR number, squash-merges to alpha, bumps the version, closes the issue, and cleans up. Input: PR number. Output: merged alpha at new version."
+description: "Phase 4 of the PLEXI ship pipeline. Takes an approved PR number, squash-merges to alpha, closes the issue, and cleans up. Input: PR number. Output: merged alpha."
 risk: medium
 source: local
 date_added: "2026-05-20"
@@ -8,7 +8,7 @@ date_added: "2026-05-20"
 
 # Merge PR
 
-Phase 4 of the ship pipeline. Input: approved PR number. Output: clean alpha at new version.
+Phase 4 of the ship pipeline. Input: approved PR number. Output: clean alpha with the PR merged. Version bumps happen later at release-batch or promotion time.
 
 > **Labels are the live state.** On success, all `pipeline:*` labels are removed when the issue closes. On failure, remove all `pipeline:*` labels and `in progress`, add `ready`.
 
@@ -38,14 +38,14 @@ pipeline_slots_set merge "$ISSUE" "$PR_NUMBER" merging "" ""
 just merge-pr <PR_NUMBER>
 ```
 
-Handles: rebase, squash-merge, alpha sync, artifact cleanup, version bump, issue close, ship log.
+Handles: rebase, squash-merge, alpha sync, artifact cleanup, issue close, ship log.
 
 **If it exits non-zero**, read the error and recover with sub-steps:
 
 | Error | Recovery |
 |-------|----------|
 | Rebase conflict | Resolve in `worktrees/$BRANCH`, then: `just merge-rebase $BRANCH` → `just merge-squash $PR` → continue below |
-| PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH && just merge-bump && just merge-close $ISSUE $PR` |
+| PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH && just merge-close $ISSUE $PR` |
 | Dirty root worktree | Commit or restore changed files, re-run `just merge-pr $PR` |
 | `>1 unexpected commits` on local alpha | Investigate before proceeding; do not force-reset blindly |
 | `could not resolve GitHub issue or stint tasks` | Only if the PR genuinely has nothing to close (standalone follow-up): `just merge-pr $PR no-issue`. Otherwise fix the PR body's closing keyword first. |
@@ -56,7 +56,6 @@ just merge-rebase <BRANCH>       # fetch + rebase feature branch on origin/alpha
 just merge-squash <PR>           # squash-merge only
 just merge-sync                  # reset local alpha to origin/alpha (safe: fails if >1 unexpected commit)
 just merge-cleanup <PR> <BRANCH> # channel-clean + wtp remove + remote branch delete
-just merge-bump                  # just bump + git push
 just merge-close <ISSUE> <PR>    # strip pipeline labels + close issue + append ship log
 ```
 

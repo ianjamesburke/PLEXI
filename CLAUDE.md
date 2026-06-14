@@ -142,22 +142,22 @@ Worktrees:
 ## Releases
 
 Release flow:
-1. `just bump [patch|minor|major]` — bumps version, generates CHANGELOG via git-cliff, commits `chore: release vX.Y.Z`
+1. `just bump [patch|minor|major]` — bumps version, generates CHANGELOG via git-cliff, commits `chore: release vX.Y.Z`, and creates local tag `vX.Y.Z`
 2. `just promote beta` — pushes alpha→beta, syncs beta worktree
 3. Test on beta
-4. `just promote main` — pushes beta→main, tags `vX.Y.Z`, triggers GitHub Actions release
+4. `just promote main` — pushes beta→main, pushes existing tag `vX.Y.Z`, triggers GitHub Actions release
 
 ## Build & Install
 
-`just bump` is the standard post-merge command — bumps the version and regenerates CHANGELOG via git-cliff. Always run from the repo root.
+`just bump` is the standard release-batch command — bumps the version, regenerates CHANGELOG via git-cliff, commits the release, and creates the local release tag that marks the next changelog boundary. Always run from the repo root.
 
 `just install` is manual. Do not run it automatically at the end of direct-to-alpha or PR merge flows; the user handles install when they want to update the local app. When run, use the repo root unless a channel-specific instruction says otherwise.
 
 `just bump [minor|major]` without install is for explicit pre-promote version bumps when you need a minor or major release.
 
-**Bump after Rust code commits to alpha.** Only needed when Rust source changes — skip for commits that only touch docs, skills, scripts, or config. Every Rust commit to alpha must end with `just bump`. If unrelated uncommitted changes block `just bump`, stash them first and pop after.
+**Bump at release boundaries, not after every PR.** Merge validated PRs to alpha without bumping. Run `just bump` once at the end of a release batch, end of day, or immediately before `just promote beta`. Use patch for bugfix/internal batches, minor for meaningful feature batches. If unrelated uncommitted changes block `just bump`, stash them first and pop after.
 
-**Never claim a task complete based on an install from a feature worktree.** Uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. The full PR done cycle is: commit → PR → squash-merge to alpha → `git pull` in the repo root → `just bump` from the repo root. Direct-to-alpha flow ends after commit and the required `just bump` when Rust changed.
+**Never claim a task complete based on an install from a feature worktree.** Uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. The full PR done cycle is: commit → PR → squash-merge to alpha → `git pull` in the repo root. Direct-to-alpha flow ends after commit; release batching owns the later `just bump`.
 
 ## Logging
 
