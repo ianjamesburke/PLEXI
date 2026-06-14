@@ -658,6 +658,16 @@ mod tests {
             app.show_ui_gallery = true;
         });
         h.run_steps(2);
+        h.harness().get_by_label("Code and toast surfaces");
+        h.harness().get_by_label("Shell completions aren't set up.");
+        h.harness().get_by_label("plexi completions zsh");
+        assert!(
+            h.harness()
+                .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+                .count()
+                > 0,
+            "gallery should render the host TextArea primitive"
+        );
         h.save_screenshot("/tmp/plexi_host_ui_gallery_trust.png")
             .expect("render failed");
         assert!(
@@ -665,6 +675,30 @@ mod tests {
             "gallery should remain open for screenshot"
         );
         println!("Screenshot saved to /tmp/plexi_host_ui_gallery_trust.png");
+    }
+
+    #[test]
+    fn screenshot_changelog_modal_uses_host_chrome() {
+        let mut h = PlexiUiHarness::new_sized(1024.0, 640.0);
+        add_focused_pane(&mut h);
+        h.step();
+        h.with_app_mut(|app| {
+            app.show_changelog = true;
+        });
+        h.run_steps(2);
+
+        h.harness().get_by_label("Changelog");
+        assert!(
+            h.harness().get_all_by_label("Changes").count() > 0,
+            "changelog body should render release section labels"
+        );
+        h.save_screenshot("/tmp/plexi_changelog_modal.png")
+            .expect("render failed");
+        assert!(
+            h.with_app(|app| app.show_changelog),
+            "changelog should remain open for screenshot"
+        );
+        println!("Screenshot saved to /tmp/plexi_changelog_modal.png");
     }
 
     /// Host Assistant pane smoke: open → step → assert visible (epic Phase D).

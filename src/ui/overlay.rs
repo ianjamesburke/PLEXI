@@ -93,6 +93,35 @@ impl<'a> ModalShell<'a> {
         colors: &Colors,
         add_body: impl FnOnce(&mut egui::Ui) -> R,
     ) -> ModalResponse {
+        self.show_frame(ctx, colors, add_body)
+    }
+
+    pub(crate) fn show_scroll_body<R>(
+        self,
+        ctx: &egui::Context,
+        colors: &Colors,
+        max_height: f32,
+        id_salt: impl std::hash::Hash,
+        add_body: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> ModalResponse {
+        self.show_frame(ctx, colors, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt(id_salt)
+                .max_height(max_height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    add_body(ui);
+                });
+        })
+    }
+
+    fn show_frame<R>(
+        self,
+        ctx: &egui::Context,
+        colors: &Colors,
+        add_body: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> ModalResponse {
         let mut dismissed = self.escape
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
 
@@ -154,11 +183,7 @@ impl<'a> ModalShell<'a> {
                             ui.set_width(self.width);
                         }
                         if let Some(title) = self.title {
-                            ui.label(
-                                egui::RichText::new(title)
-                                    .font(crate::ui::theme::font_medium(style::TEXT_TITLE))
-                                    .color(colors.text_primary),
-                            );
+                            crate::ui::typography::modal_title(ui, title, colors);
                             ui.add_space(style::SPACE_MD);
                         }
                         add_body(ui)

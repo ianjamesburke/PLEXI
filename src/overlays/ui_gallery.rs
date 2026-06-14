@@ -7,8 +7,12 @@ use crate::ui::{
     overlay::ModalShell,
     row::selectable_row,
     shortcuts::key_chip,
-    surface::{color_swatch, empty_state_panel, status_chip, trust_decision_panel, TrustTone},
-    text_field::TextField,
+    surface::{
+        color_swatch, compact_copyable_command, copyable_command, empty_state_panel, status_chip,
+        trust_decision_panel, TrustTone,
+    },
+    text_field::{TextArea, TextField},
+    toast::{toast_caption, ProgressDots},
 };
 
 impl PlexiApp {
@@ -43,6 +47,26 @@ impl PlexiApp {
                         chrome_section(ui, "Modal shell", &colors, |ui| {
                             token_strip(ui, &colors);
                             hint_bar(ui, &colors);
+                        });
+
+                        chrome_section(ui, "Code and toast surfaces", &colors, |ui| {
+                            copyable_command(
+                                ui,
+                                egui::Id::new("host_ui_gallery_copyable_command"),
+                                "sudo ln -sf /Applications/Plexi.app/Contents/MacOS/plexi /usr/local/bin/plexi",
+                                &colors,
+                            );
+                            ui.add_space(style::SPACE_SM);
+                            ui.horizontal(|ui| {
+                                toast_caption(ui, "Shell completions aren't set up.", &colors);
+                                compact_copyable_command(
+                                    ui,
+                                    egui::Id::new("host_ui_gallery_compact_command"),
+                                    "plexi completions zsh",
+                                    &colors,
+                                );
+                                ProgressDots::new(2, 3).show(ui, &colors);
+                            });
                         });
 
                         chrome_section(ui, "Trust and confirmations", &colors, |ui| {
@@ -149,6 +173,15 @@ impl PlexiApp {
                                 &mut self.ui_gallery_focused_buf,
                                 &colors,
                             );
+                            ui.add_space(style::SPACE_SM);
+                            let mut multiline_demo = String::new();
+                            TextArea::multiline(
+                                egui::Id::new("host_ui_gallery_text_area"),
+                                "Multiline text area",
+                            )
+                            .rows(3)
+                            .log_name("ui_gallery")
+                            .show(ui, &mut multiline_demo, &colors);
                         });
 
                         chrome_section(ui, "Modal patterns", &colors, |ui| {

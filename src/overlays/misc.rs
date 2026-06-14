@@ -10,6 +10,10 @@ pub(super) fn section_label(ui: &mut egui::Ui, title: &str, colors: &Colors) {
     ui.add_space(2.0);
 }
 
+fn shortcut_description(ui: &mut egui::Ui, desc: &str, colors: &Colors) {
+    crate::ui::typography::caption(ui, desc, colors);
+}
+
 fn should_show_changelog_line(line: &str) -> bool {
     let Some(entry) = line
         .trim_start()
@@ -71,11 +75,7 @@ impl PlexiApp {
                                     ];
                                     for (keys, desc) in rows {
                                         crate::ui::shortcuts::key_combo(ui, keys, colors);
-                                        ui.label(
-                                            RichText::new(*desc)
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.text_dim),
-                                        );
+                                        shortcut_description(ui, desc, colors);
                                         ui.end_row();
                                     }
                                 });
@@ -94,10 +94,10 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    ui.label(
-                                        RichText::new("Move focus (panes & windows)")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
+                                    shortcut_description(
+                                        ui,
+                                        "Move focus (panes & windows)",
+                                        colors,
                                     );
                                     ui.end_row();
 
@@ -110,11 +110,7 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    ui.label(
-                                        RichText::new("Next / prev tab")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
+                                    shortcut_description(ui, "Next / prev tab", colors);
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo_list(
@@ -126,11 +122,7 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    ui.label(
-                                        RichText::new("First / last tab")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
+                                    shortcut_description(ui, "First / last tab", colors);
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo_list(
@@ -139,10 +131,10 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    ui.label(
-                                        RichText::new("Focus history back / forward")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
+                                    shortcut_description(
+                                        ui,
+                                        "Focus history back / forward",
+                                        colors,
                                     );
                                     ui.end_row();
 
@@ -152,11 +144,7 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    ui.label(
-                                        RichText::new("Switch context 1–9")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
+                                    shortcut_description(ui, "Switch context 1–9", colors);
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo(
@@ -164,11 +152,7 @@ impl PlexiApp {
                                         &["\u{2318}", "\u{21A9}"],
                                         colors,
                                     );
-                                    ui.label(
-                                        RichText::new("Zoom pane / enter context")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
+                                    shortcut_description(ui, "Zoom pane / enter context", colors);
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo_list(
@@ -177,11 +161,7 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    ui.label(
-                                        RichText::new("Swap pane (focus follows)")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
+                                    shortcut_description(ui, "Swap pane (focus follows)", colors);
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo_list(
@@ -192,11 +172,7 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    ui.label(
-                                        RichText::new("Send pane (focus stays)")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
+                                    shortcut_description(ui, "Send pane (focus stays)", colors);
                                     ui.end_row();
                                 });
                         });
@@ -226,11 +202,7 @@ impl PlexiApp {
                                     ];
                                     for (keys, desc) in rows {
                                         crate::ui::shortcuts::key_combo(ui, keys, colors);
-                                        ui.label(
-                                            RichText::new(*desc)
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.text_dim),
-                                        );
+                                        shortcut_description(ui, desc, colors);
                                         ui.end_row();
                                     }
                                 });
@@ -249,11 +221,7 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    ui.label(
-                                        RichText::new("Scroll terminal")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
+                                    shortcut_description(ui, "Scroll terminal", colors);
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo_list(
@@ -262,11 +230,7 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    ui.label(
-                                        RichText::new("Font size +/−")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                    );
+                                    shortcut_description(ui, "Font size +/−", colors);
                                     ui.end_row();
                                 });
 
@@ -290,11 +254,7 @@ impl PlexiApp {
                                     ];
                                     for (keys, desc) in rows {
                                         crate::ui::shortcuts::key_combo(ui, keys, colors);
-                                        ui.label(
-                                            RichText::new(*desc)
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.text_dim),
-                                        );
+                                        shortcut_description(ui, desc, colors);
                                         ui.end_row();
                                     }
                                 });
@@ -322,97 +282,55 @@ impl PlexiApp {
             .title("Changelog")
             .width(560.0)
             .escape(true)
-            .show(ctx, &self.colors.clone(), |ui| {
-                {
-                    ui.set_max_height(480.0);
-
-                    if let Some(ref latest) = self.update_available.clone() {
-                        ui.add_space(8.0);
-                        egui::Frame::new()
-                            .fill(self.colors.accent.gamma_multiply(0.15))
-                            .stroke(Stroke::new(1.0, self.colors.accent.gamma_multiply(0.4)))
-                            .corner_radius(R6)
-                            .inner_margin(egui::Margin::symmetric(12, 8))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "Run plexi update to upgrade to v{latest}"
-                                        ))
-                                        .size(style::TEXT_HINT)
-                                        .color(self.colors.accent),
-                                    );
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            crate::ui::button::copy_button(
-                                                ui,
-                                                egui::Id::new("update_banner_copy"),
-                                                "plexi update",
-                                            );
-                                        },
-                                    );
-                                });
-                            });
-                    }
-
-                    ui.add_space(8.0);
-
-                    egui::ScrollArea::vertical()
-                        .max_height(420.0)
-                        .auto_shrink([false, true])
+            .show_scroll_body(ctx, &self.colors.clone(), 420.0, "changelog_body", |ui| {
+                if let Some(ref latest) = self.update_available.clone() {
+                    egui::Frame::new()
+                        .fill(self.colors.accent.gamma_multiply(0.15))
+                        .stroke(Stroke::new(1.0, self.colors.accent.gamma_multiply(0.4)))
+                        .corner_radius(R6)
+                        .inner_margin(egui::Margin::symmetric(12, 8))
                         .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            for line in CHANGELOG.lines() {
-                                if !should_render_changelog_body_line(line) {
-                                    continue;
-                                }
-                                let clean = |s: &str| s.replace("**", "");
-                                if line.starts_with("## ") {
-                                    ui.add_space(6.0);
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(clean(&line[3..]))
-                                                .size(style::TEXT_BODY)
-                                                .color(self.colors.text_primary)
-                                                .strong(),
-                                        )
-                                        .wrap(),
-                                    );
-                                    ui.add_space(2.0);
-                                } else if line.starts_with("### ") {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(clean(&line[4..]))
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_dim)
-                                                .strong(),
-                                        )
-                                        .wrap(),
-                                    );
-                                } else if line.starts_with("- ") || line.starts_with("* ") {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(clean(line))
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_primary),
-                                        )
-                                        .wrap(),
-                                    );
-                                } else if line.starts_with('#') || line.trim().is_empty() {
-                                    // skip top-level # heading and blank lines
-                                } else {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(clean(line))
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_dim),
-                                        )
-                                        .wrap(),
-                                    );
-                                }
-                            }
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Run plexi update to upgrade to v{latest}"
+                                    ))
+                                    .size(style::TEXT_HINT)
+                                    .color(self.colors.accent),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        crate::ui::button::copy_button(
+                                            ui,
+                                            egui::Id::new("update_banner_copy"),
+                                            "plexi update",
+                                        );
+                                    },
+                                );
+                            });
                         });
+                    ui.add_space(style::SPACE_SM);
+                }
+
+                for line in CHANGELOG.lines() {
+                    if !should_render_changelog_body_line(line) {
+                        continue;
+                    }
+                    let clean = |s: &str| s.replace("**", "");
+                    if line.starts_with("## ") {
+                        ui.add_space(style::SPACE_XS);
+                        crate::ui::typography::body_strong(ui, clean(&line[3..]), &self.colors);
+                        ui.add_space(2.0);
+                    } else if line.starts_with("### ") {
+                        crate::ui::typography::caption_strong(ui, clean(&line[4..]), &self.colors);
+                    } else if line.starts_with("- ") || line.starts_with("* ") {
+                        crate::ui::typography::body(ui, clean(line), &self.colors);
+                    } else if line.starts_with('#') || line.trim().is_empty() {
+                        // skip top-level # heading and blank lines
+                    } else {
+                        crate::ui::typography::caption(ui, clean(line), &self.colors);
+                    }
                 }
             });
         if response.dismissed {
@@ -771,37 +689,16 @@ impl PlexiApp {
             .scrim(false)
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("edit_description_input");
-                let te = ui
-                    .scope(|ui| {
-                        // egui's caret is hidden (transparent, non-blinking);
-                        // draw_text_caret paints a glyph-height replacement on top.
-                        ui.visuals_mut().text_cursor.blink = false;
-                        ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
-                        ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
-                        ui.visuals_mut().widgets.active.bg_stroke =
-                            egui::Stroke::new(1.0, self.colors.accent);
-                        ui.visuals_mut().widgets.inactive.bg_stroke =
-                            egui::Stroke::new(1.0, self.colors.border);
-                        let font_id = egui::TextStyle::Body.resolve(ui.style());
-                        let row_height = ui.fonts(|f| f.row_height(&font_id));
-                        let output = egui::TextEdit::multiline(&mut self.description_buffer)
-                            .id(te_id)
-                            .desired_width(MODAL_WIDTH)
-                            .desired_rows(3)
-                            .hint_text("What are you working on in this context?")
-                            .font(egui::TextStyle::Body)
-                            .margin(egui::Margin::symmetric(8, 5))
-                            .show(ui);
-                        crate::ui::text_field::draw_text_caret(
-                            ui,
-                            &output,
-                            font_id.size,
-                            row_height,
-                            egui::Stroke::new(1.5, self.colors.accent),
-                        );
-                        output.response
-                    })
-                    .inner;
+                let te = crate::ui::text_field::TextArea::multiline(
+                    te_id,
+                    "What are you working on in this context?",
+                )
+                .font(egui::TextStyle::Body.resolve(ui.style()))
+                .desired_width(MODAL_WIDTH)
+                .rows(3)
+                .focused(!self.description_focus_requested)
+                .log_name("context_description")
+                .show(ui, &mut self.description_buffer, &self.colors);
 
                 let hints = [
                     crate::ui::hints::HintGroup::new(&["\u{2318}", "Enter"], "save"),

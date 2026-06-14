@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod button;
+pub mod dialog;
 pub mod focus;
 pub mod hints;
 pub mod labels;
@@ -14,3 +15,5 @@ pub mod style;
 pub mod surface;
 pub mod text_field;
 pub mod theme;
+pub mod toast;
+pub mod typography;

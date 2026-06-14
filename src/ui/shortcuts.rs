@@ -70,6 +70,19 @@ pub(crate) fn key_combo_list(
     trailing: Option<&str>,
     colors: &Colors,
 ) {
+    key_combo_list_with_body(ui, combos, colors, |ui| {
+        if let Some(text) = trailing {
+            ui.label(shortcut_hint_label(text, colors));
+        }
+    });
+}
+
+pub(crate) fn key_combo_list_with_body<R>(
+    ui: &mut egui::Ui,
+    combos: &[&[&str]],
+    colors: &Colors,
+    add_trailing: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for (i, keys) in combos.iter().enumerate() {
@@ -83,11 +96,9 @@ pub(crate) fn key_combo_list(
                 key_chip(ui, key, colors, combo_chip_font());
             }
         }
-        if let Some(text) = trailing {
-            ui.add_space(style::KEYCHIP_DESC_GAP);
-            ui.label(shortcut_hint_label(text, colors));
-        }
-    });
+        ui.add_space(style::KEYCHIP_DESC_GAP);
+        add_trailing(ui)
+    })
 }
 
 pub(crate) fn key_combo_list_width(

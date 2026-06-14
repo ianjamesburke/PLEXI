@@ -456,42 +456,20 @@ impl PlexiApp {
                             // Cmd+Enter submits (handled in the keyboard
                             // pre-pass below). Scrolls vertically once it
                             // exceeds the visible row count.
-                            let resp = ui
-                                .scope(|ui| {
-                                    // egui's caret is hidden (transparent, non-blinking);
-                                    // draw_text_caret paints a glyph-height replacement on top.
-                                    ui.visuals_mut().text_cursor.blink = false;
-                                    ui.visuals_mut().text_cursor.stroke.color =
-                                        egui::Color32::TRANSPARENT;
-                                    ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
-                                    ui.visuals_mut().widgets.active.bg_stroke =
-                                        egui::Stroke::new(1.0, self.colors.accent);
-                                    ui.visuals_mut().widgets.inactive.bg_stroke =
-                                        egui::Stroke::new(1.0, self.colors.border);
-                                    let font_id = egui::FontId::proportional(16.0);
-                                    let row_height = ui.fonts(|f| f.row_height(&font_id));
-                                    let output = egui::TextEdit::multiline(
-                                        &mut self.modal_input_buffer,
-                                    )
-                                    .desired_width(f32::INFINITY)
-                                    .desired_rows(6)
-                                    .font(font_id)
-                                    .margin(egui::Margin::symmetric(12, 10))
-                                    .hint_text(
-                                        "Type. Enter for newline, \u{2318}\u{21B5} to submit.",
-                                    )
-                                    .show(ui);
-                                    crate::ui::text_field::draw_text_caret(
-                                        ui,
-                                        &output,
-                                        16.0,
-                                        row_height,
-                                        egui::Stroke::new(1.5, self.colors.accent),
-                                    );
-                                    output.response
-                                })
-                                .inner;
-                            resp.request_focus();
+                            crate::ui::text_field::TextArea::multiline(
+                                egui::Id::new("notification_modal_input"),
+                                "Type. Enter for newline, \u{2318}\u{21B5} to submit.",
+                            )
+                            .font(egui::FontId::proportional(16.0))
+                            .rows(6)
+                            .margin(egui::Margin::symmetric(12, 10))
+                            .focused(true)
+                            .log_name("notification_input")
+                            .show(
+                                ui,
+                                &mut self.modal_input_buffer,
+                                &self.colors,
+                            );
                         }
                     }
 

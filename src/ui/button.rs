@@ -3,6 +3,7 @@ use egui::{Align2, Color32, RichText, Vec2};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
+#[derive(Clone, Copy)]
 pub(crate) enum ButtonKind {
     Primary,
     Secondary,

@@ -178,3 +178,157 @@ impl<'a> TextField<'a> {
         response
     }
 }
+
+pub(crate) struct TextArea<'a> {
+    id: egui::Id,
+    hint: egui::WidgetText,
+    focused: bool,
+    rows: usize,
+    desired_width: f32,
+    max_height: Option<f32>,
+    font_id: egui::FontId,
+    text_color: Option<egui::Color32>,
+    hint_color: Option<egui::Color32>,
+    margin: egui::Margin,
+    frame: bool,
+    log_name: &'a str,
+}
+
+impl<'a> TextArea<'a> {
+    pub(crate) fn multiline(id: egui::Id, hint: impl Into<egui::WidgetText>) -> Self {
+        Self {
+            id,
+            hint: hint.into(),
+            focused: false,
+            rows: 3,
+            desired_width: f32::INFINITY,
+            max_height: None,
+            font_id: egui::FontId::proportional(crate::ui::style::TEXT_BODY),
+            text_color: None,
+            hint_color: None,
+            margin: egui::Margin::symmetric(8, 5),
+            frame: true,
+            log_name: "text_area",
+        }
+    }
+
+    pub(crate) fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    pub(crate) fn rows(mut self, rows: usize) -> Self {
+        self.rows = rows;
+        self
+    }
+
+    pub(crate) fn desired_width(mut self, desired_width: f32) -> Self {
+        self.desired_width = desired_width;
+        self
+    }
+
+    pub(crate) fn max_height(mut self, max_height: f32) -> Self {
+        self.max_height = Some(max_height);
+        self
+    }
+
+    pub(crate) fn font(mut self, font_id: egui::FontId) -> Self {
+        self.font_id = font_id;
+        self
+    }
+
+    pub(crate) fn monospace(mut self, size: f32) -> Self {
+        self.font_id = egui::FontId::monospace(size);
+        self
+    }
+
+    pub(crate) fn text_color(mut self, text_color: egui::Color32) -> Self {
+        self.text_color = Some(text_color);
+        self
+    }
+
+    pub(crate) fn hint_color(mut self, hint_color: egui::Color32) -> Self {
+        self.hint_color = Some(hint_color);
+        self
+    }
+
+    pub(crate) fn margin(mut self, margin: egui::Margin) -> Self {
+        self.margin = margin;
+        self
+    }
+
+    pub(crate) fn frame(mut self, frame: bool) -> Self {
+        self.frame = frame;
+        self
+    }
+
+    pub(crate) fn log_name(mut self, log_name: &'a str) -> Self {
+        self.log_name = log_name;
+        self
+    }
+
+    pub(crate) fn show(
+        self,
+        ui: &mut egui::Ui,
+        buf: &mut String,
+        colors: &Colors,
+    ) -> egui::Response {
+        let id = self.id;
+        let focused = self.focused;
+        let log_name = self.log_name;
+        let response = if let Some(max_height) = self.max_height {
+            egui::ScrollArea::vertical()
+                .max_height(max_height)
+                .show(ui, |ui| self.show_editor(ui, buf, colors))
+                .inner
+        } else {
+            self.show_editor(ui, buf, colors)
+        };
+
+        if focused && !response.has_focus() {
+            response.request_focus();
+            log::info!("{log_name}: focus requested for host TextArea");
+        }
+        if focused || response.has_focus() {
+            crate::ui::focus::register_overlay_focus(ui.ctx(), id);
+        }
+        response
+    }
+
+    fn show_editor(self, ui: &mut egui::Ui, buf: &mut String, colors: &Colors) -> egui::Response {
+        let hint_color = self
+            .hint_color
+            .unwrap_or_else(|| colors.text_primary.gamma_multiply(0.5));
+        let hint = self.hint.color(hint_color);
+        ui.scope(|ui| {
+            // egui's caret is hidden (transparent, non-blinking); draw_text_caret
+            // paints a glyph-height replacement on top.
+            ui.visuals_mut().text_cursor.blink = false;
+            ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
+            ui.visuals_mut().extreme_bg_color = colors.bg_active;
+            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+
+            let row_height = ui.fonts(|f| f.row_height(&self.font_id));
+            let output = egui::TextEdit::multiline(buf)
+                .id(self.id)
+                .font(self.font_id.clone())
+                .text_color(self.text_color.unwrap_or(colors.text_primary))
+                .desired_width(self.desired_width)
+                .desired_rows(self.rows)
+                .frame(self.frame)
+                .margin(self.margin)
+                .hint_text(hint)
+                .show(ui);
+            draw_text_caret(
+                ui,
+                &output,
+                self.font_id.size,
+                row_height,
+                egui::Stroke::new(1.5, colors.accent),
+            );
+            output.response
+        })
+        .inner
+    }
+}

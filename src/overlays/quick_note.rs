@@ -108,46 +108,18 @@ impl PlexiApp {
                         );
                         ui.add_space(style::SPACE_SM);
 
-                        // Text input — starts at ~25% screen height, grows with content, caps at ~80%.
-                        egui::ScrollArea::vertical()
-                            .max_height(max_text_h)
-                            .show(ui, |ui| {
-                                ui.scope(|ui| {
-                                    // egui's caret is hidden (transparent,
-                                    // non-blinking); draw_text_caret paints a
-                                    // glyph-height replacement on top.
-                                    ui.visuals_mut().text_cursor.blink = false;
-                                    ui.visuals_mut().text_cursor.stroke.color =
-                                        egui::Color32::TRANSPARENT;
-
-                                    let te_id = egui::Id::new("quick_note_text");
-                                    let qn_font_id = egui::FontId::monospace(style::TEXT_BODY);
-                                    let qn_row_height = ui.fonts(|f| f.row_height(&qn_font_id));
-                                    let output =
-                                        egui::TextEdit::multiline(&mut self.quick_note_text)
-                                            .id(te_id)
-                                            .font(qn_font_id)
-                                            .text_color(self.colors.text_primary)
-                                            .desired_width(f32::INFINITY)
-                                            .desired_rows(initial_rows)
-                                            .frame(false)
-                                            .hint_text(
-                                                RichText::new("What's on your mind?")
-                                                    .color(
-                                                        self.colors.text_dim.linear_multiply(0.3),
-                                                    )
-                                                    .size(style::TEXT_BODY),
-                                            )
-                                            .show(ui);
-                                    crate::ui::text_field::draw_text_caret(
-                                        ui,
-                                        &output,
-                                        style::TEXT_BODY,
-                                        qn_row_height,
-                                        egui::Stroke::new(1.5, self.colors.accent),
-                                    );
-                                });
-                            });
+                        crate::ui::text_field::TextArea::multiline(
+                            egui::Id::new("quick_note_text"),
+                            RichText::new("What's on your mind?").size(style::TEXT_BODY),
+                        )
+                        .monospace(style::TEXT_BODY)
+                        .text_color(self.colors.text_primary)
+                        .hint_color(self.colors.text_dim.linear_multiply(0.3))
+                        .rows(initial_rows)
+                        .max_height(max_text_h)
+                        .frame(false)
+                        .log_name("quick_note")
+                        .show(ui, &mut self.quick_note_text, &self.colors);
                     }
                 }
             });

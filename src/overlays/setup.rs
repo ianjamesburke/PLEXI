@@ -145,15 +145,21 @@ impl PlexiApp {
                     ];
 
                     for (keys, desc) in shortcuts {
-                        ui.horizontal(|ui| {
-                            crate::ui::shortcuts::key_combo(ui, keys, &colors);
-                            ui.add_space(style::SPACE_SM);
-                            ui.label(
-                                RichText::new(*desc)
-                                    .size(style::TEXT_BODY)
-                                    .color(colors.text_dim),
-                            );
-                        });
+                        let combos = [*keys];
+                        crate::ui::shortcuts::key_combo_list_with_body(
+                            ui,
+                            &combos,
+                            &colors,
+                            |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        crate::ui::shortcuts::shortcut_hint_label(desc, &colors)
+                                            .size(style::TEXT_BODY),
+                                    )
+                                    .wrap(),
+                                );
+                            },
+                        );
                         ui.add_space(style::SPACE_SM);
                     }
 
@@ -244,28 +250,12 @@ impl PlexiApp {
                             );
                             ui.add_space(2.0);
 
-                            // Copyable install command with code-block styling.
-                            egui::Frame::new()
-                                .fill(colors.bg_darkest)
-                                .corner_radius(R6)
-                                .inner_margin(egui::Margin::symmetric(12, 8))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(cmd)
-                                                .size(style::TEXT_CAPTION)
-                                                .color(colors.text_primary)
-                                                .monospace(),
-                                        );
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            crate::ui::button::copy_button(
-                                                ui,
-                                                egui::Id::new("cli_setup_copy"),
-                                                cmd,
-                                            );
-                                        });
-                                    });
-                                });
+                            crate::ui::surface::copyable_command(
+                                ui,
+                                egui::Id::new("cli_setup_copy"),
+                                cmd,
+                                &colors,
+                            );
 
                             ui.add_space(style::SPACE_MD);
 
@@ -332,86 +322,49 @@ impl PlexiApp {
         let colors = self.colors;
         let cmd = crate::cli::setup::INSTALL_COMMAND;
 
-        egui::Area::new(egui::Id::new("completions_banner"))
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, colors.border))
-                    .corner_radius(R6)
-                    .inner_margin(egui::Margin::symmetric(16, 10))
-                    .show(ui, |ui| {
-                        // egui's horizontal() centers children against the row
-                        // height at placement time (initially interact_size.y).
-                        // Any child that ends up taller grows the row downward
-                        // WITHOUT re-centering earlier children — so every
-                        // child here must stay <= CONTROL_H or the label drifts
-                        // toward the top. The copy button was the inflator:
-                        // caption text + global 6px button padding ≈ 27px,
-                        // inside a chip frame with 6px margins ≈ 39px.
-                        const CONTROL_H: f32 = 28.0;
-                        ui.spacing_mut().interact_size.y = CONTROL_H;
-                        ui.spacing_mut().item_spacing.x = style::SPACE_MD;
-                        ui.spacing_mut().button_padding = egui::vec2(12.0, 4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Shell completions aren't set up.")
-                                    .size(style::TEXT_CAPTION)
-                                    .color(colors.text_dim),
-                            );
-                            egui::Frame::new()
-                                .fill(colors.bg_darkest)
-                                .corner_radius(R6)
-                                .inner_margin(egui::Margin::symmetric(10, 3))
-                                .show(ui, |ui| {
-                                    // Chip interior: 22 + 3px margins = 28.
-                                    ui.spacing_mut().interact_size.y = CONTROL_H - 6.0;
-                                    ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
-                                    ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(cmd)
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.text_primary)
-                                                .monospace(),
-                                        );
-                                        crate::ui::button::copy_button(
-                                            ui,
-                                            egui::Id::new("completions_banner_copy"),
-                                            cmd,
-                                        );
-                                    });
-                                });
-                            if crate::ui::button::chrome_button_sized(
-                                ui,
-                                "Done",
-                                crate::ui::button::ButtonKind::Primary,
-                                &colors,
-                                56.0,
-                                CONTROL_H,
-                                )
-                                .clicked()
-                            {
-                                log::info!("cli_setup: completions banner — user clicked Done, marking sentinel");
-                                crate::cli::setup::completions_mark_prompted();
-                                self.show_completions_banner = false;
-                            }
-                            if crate::ui::button::chrome_button_sized(
-                                ui,
-                                "Not now",
-                                crate::ui::button::ButtonKind::Secondary,
-                                &colors,
-                                72.0,
-                                CONTROL_H,
-                                )
-                                .clicked()
-                            {
-                                log::info!("cli_setup: completions banner — user clicked Not now (session-only dismiss)");
-                                self.show_completions_banner = false;
-                            }
-                        });
-                    });
+        crate::ui::toast::ToastShell::bottom("completions_banner")
+            .offset(egui::vec2(0.0, -20.0))
+            .show(ctx, &colors, |ui| {
+                ui.horizontal(|ui| {
+                    crate::ui::toast::toast_caption(
+                        ui,
+                        "Shell completions aren't set up.",
+                        &colors,
+                    );
+                    crate::ui::surface::compact_copyable_command(
+                        ui,
+                        egui::Id::new("completions_banner_copy"),
+                        cmd,
+                        &colors,
+                    );
+                    if crate::ui::button::chrome_button_sized(
+                        ui,
+                        "Done",
+                        crate::ui::button::ButtonKind::Primary,
+                        &colors,
+                        56.0,
+                        crate::ui::toast::TOAST_CONTROL_H,
+                    )
+                    .clicked()
+                    {
+                        log::info!("cli_setup: completions banner — user clicked Done, marking sentinel");
+                        crate::cli::setup::completions_mark_prompted();
+                        self.show_completions_banner = false;
+                    }
+                    if crate::ui::button::chrome_button_sized(
+                        ui,
+                        "Not now",
+                        crate::ui::button::ButtonKind::Secondary,
+                        &colors,
+                        72.0,
+                        crate::ui::toast::TOAST_CONTROL_H,
+                    )
+                    .clicked()
+                    {
+                        log::info!("cli_setup: completions banner — user clicked Not now (session-only dismiss)");
+                        self.show_completions_banner = false;
+                    }
+                });
             });
     }
 }

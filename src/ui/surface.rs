@@ -3,6 +3,73 @@ use egui::{Align2, RichText};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
+pub(crate) fn code_block<R>(
+    ui: &mut egui::Ui,
+    colors: &Colors,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    egui::Frame::new()
+        .fill(colors.bg_darkest)
+        .corner_radius(style::RADIUS_SM)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add_contents(ui)
+        })
+}
+
+pub(crate) fn copyable_command(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    command: &str,
+    colors: &Colors,
+) -> egui::Response {
+    code_block(ui, colors, |ui| {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(command)
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.text_primary)
+                        .monospace(),
+                )
+                .wrap(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                crate::ui::button::copy_button(ui, id, command);
+            });
+        });
+    })
+    .response
+}
+
+pub(crate) fn compact_copyable_command(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    command: &str,
+    colors: &Colors,
+) -> egui::Response {
+    egui::Frame::new()
+        .fill(colors.bg_darkest)
+        .corner_radius(style::RADIUS_SM)
+        .inner_margin(egui::Margin::symmetric(10, 3))
+        .show(ui, |ui| {
+            ui.spacing_mut().interact_size.y = crate::ui::toast::TOAST_CONTROL_H - 6.0;
+            ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
+            ui.spacing_mut().item_spacing.x = style::SPACE_SM;
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(command)
+                        .size(style::TEXT_HINT)
+                        .color(colors.text_primary)
+                        .monospace(),
+                );
+                crate::ui::button::copy_button(ui, id, command);
+            });
+        })
+        .response
+}
+
 pub(crate) fn color_swatch(
     ui: &mut egui::Ui,
     label: &str,

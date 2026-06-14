@@ -12,106 +12,60 @@ impl PlexiApp {
 
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
         let count = self.quit_press_count;
-        // Bottom-hung progress toast, not a blocking dialog: no scrim, and
-        // width follows content rather than the modal default.
-        crate::ui::overlay::ModalShell::centered("quit_confirm_overlay")
-            .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -40.0))
-            .scrim(false)
-            .width(0.0)
-            .show(ctx, &self.colors, |ui| {
+        crate::ui::toast::ToastShell::bottom("quit_confirm_overlay").show(
+            ctx,
+            &self.colors,
+            |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "\u{2318}Q pressed {} of 3 — press again to quit",
-                            count
-                        ))
-                        .size(style::TEXT_CAPTION)
-                        .color(self.colors.text_dim),
+                    crate::ui::toast::toast_caption(
+                        ui,
+                        format!("\u{2318}Q pressed {} of 3 — press again to quit", count),
+                        &self.colors,
                     );
-                    ui.add_space(style::SPACE_SM);
-                    for i in 1u8..=3 {
-                        let color = if i <= count {
-                            self.colors.accent
-                        } else {
-                            self.colors.bg_active
-                        };
-                        let (rect, _) =
-                            ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
-                        ui.painter().circle_filled(rect.center(), 4.0, color);
-                    }
+                    crate::ui::toast::ProgressDots::new(count, 3).show(ui, &self.colors);
                 });
-            });
+            },
+        );
     }
 
     pub(crate) fn draw_confirm_close(&mut self, ctx: &egui::Context) {
-        let mut confirmed = false;
-        let mut cancelled = false;
-
-        // Consume Enter/Escape at the context level so they cannot bleed
-        // through to the focused pane this frame. `ui.input(|i| key_pressed)`
-        // is a *read-only* check — it does not remove the event — which is
-        // how this modal used to leak a confirming Enter into the pane behind
-        // it (e.g. the backlog app opened the selected note on Cmd+W → Enter).
-        // Combined with the `FocusLayer::ConfirmClose` capture, this is the
-        // systemic fix: overlay owns focus, overlay drains its own keys.
-        ctx.input_mut(|i| {
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
-                confirmed = true;
-            }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-                cancelled = true;
-            }
-        });
-
-        // Centered kit modal. Click-away sets `dismissed` (the old scrim
-        // cancel); button results come out via the captured locals.
-        let mut btn_confirmed = false;
-        let mut btn_cancelled = false;
-        let response = crate::ui::overlay::ModalShell::centered("confirm_close_overlay")
-            .title("Close pane?")
-            .width(super::MODAL_WIDTH)
-            .show(ctx, &self.colors, |ui| {
-                let c = &mut btn_confirmed;
-                let k = &mut btn_cancelled;
-                ui.label(
-                    RichText::new("The running process will be terminated.")
-                        .size(style::TEXT_CAPTION)
-                        .color(self.colors.text_dim),
-                );
-                ui.add_space(style::SPACE_MD);
-                ui.horizontal(|ui| {
-                    if crate::ui::button::chrome_button(
+        let actions = [
+            crate::ui::dialog::DialogAction::new(
+                "close",
+                "Close",
+                crate::ui::button::ButtonKind::Danger,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Enter"],
+                "confirm",
+                egui::Modifiers::NONE,
+                egui::Key::Enter,
+            )),
+            crate::ui::dialog::DialogAction::new(
+                "cancel",
+                "Cancel",
+                crate::ui::button::ButtonKind::Secondary,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Esc"],
+                "cancel",
+                egui::Modifiers::NONE,
+                egui::Key::Escape,
+            )),
+        ];
+        let response =
+            crate::ui::dialog::ActionModal::new("confirm_close_overlay", "Close pane?", &actions)
+                .width(super::MODAL_WIDTH)
+                .show(ctx, &self.colors, |ui| {
+                    crate::ui::typography::caption(
                         ui,
-                        "Close",
-                        crate::ui::button::ButtonKind::Danger,
+                        "The running process will be terminated.",
                         &self.colors,
-                        0.0,
-                    )
-                    .clicked()
-                    {
-                        *c = true;
-                    }
-                    ui.add_space(8.0);
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Cancel",
-                        crate::ui::button::ButtonKind::Secondary,
-                        &self.colors,
-                        0.0,
-                    )
-                    .clicked()
-                    {
-                        *k = true;
-                    }
+                    );
                 });
-                let hints = [
-                    crate::ui::hints::HintGroup::new(&["Enter"], "confirm"),
-                    crate::ui::hints::HintGroup::new(&["Esc"], "cancel"),
-                ];
-                crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-            });
-        confirmed |= btn_confirmed;
-        cancelled |= response.dismissed | btn_cancelled;
+
+        let confirmed = response.selected == Some("close");
+        let cancelled = response.dismissed || response.selected == Some("cancel");
 
         if confirmed {
             self.pending_close = false;
@@ -253,97 +207,60 @@ impl PlexiApp {
             None => return,
         };
 
-        let mut close_all = false;
-        let mut dissolve = false;
-        let mut cancelled = false;
-
-        ctx.input_mut(|i| {
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
-                close_all = true;
-            }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::D) {
-                dissolve = true;
-            }
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-                cancelled = true;
-            }
-        });
-
         let colors = self.colors;
         let title = if state.context_name.is_empty() {
             "Close context?".to_string()
         } else {
             format!("Close \"{}\"?", state.context_name)
         };
-        let mut btn_close_all = false;
-        let mut btn_dissolve = false;
-        let mut btn_cancelled = false;
-        let response = crate::ui::overlay::ModalShell::centered("ctx_close_confirm_modal")
-            .title(&title)
-            .width(super::MODAL_WIDTH)
-            .show(ctx, &colors, |ui| {
-                let ca = &mut btn_close_all;
-                let dv = &mut btn_dissolve;
-                let ck = &mut btn_cancelled;
-
-                for item in &state.items {
-                    let label = format!("{} — {}", item.kind, item.name);
-                    ui.label(
-                        RichText::new(&label)
-                            .size(style::TEXT_HINT)
-                            .color(colors.text_dim),
-                    );
-                }
-
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Close all",
-                        crate::ui::button::ButtonKind::Danger,
-                        &colors,
-                        0.0,
-                    )
-                    .clicked()
-                    {
-                        *ca = true;
-                    }
-                    ui.add_space(6.0);
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Dissolve",
-                        crate::ui::button::ButtonKind::Secondary,
-                        &colors,
-                        0.0,
-                    )
-                    .clicked()
-                    {
-                        *dv = true;
-                    }
-                    ui.add_space(6.0);
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Cancel",
-                        crate::ui::button::ButtonKind::Secondary,
-                        &colors,
-                        0.0,
-                    )
-                    .clicked()
-                    {
-                        *ck = true;
+        let actions = [
+            crate::ui::dialog::DialogAction::new(
+                "close_all",
+                "Close all",
+                crate::ui::button::ButtonKind::Danger,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Enter"],
+                "close all",
+                egui::Modifiers::NONE,
+                egui::Key::Enter,
+            )),
+            crate::ui::dialog::DialogAction::new(
+                "dissolve",
+                "Dissolve",
+                crate::ui::button::ButtonKind::Secondary,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["D"],
+                "dissolve",
+                egui::Modifiers::NONE,
+                egui::Key::D,
+            )),
+            crate::ui::dialog::DialogAction::new(
+                "cancel",
+                "Cancel",
+                crate::ui::button::ButtonKind::Secondary,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Esc"],
+                "cancel",
+                egui::Modifiers::NONE,
+                egui::Key::Escape,
+            )),
+        ];
+        let response =
+            crate::ui::dialog::ActionModal::new("ctx_close_confirm_modal", &title, &actions)
+                .width(super::MODAL_WIDTH)
+                .show(ctx, &colors, |ui| {
+                    for item in &state.items {
+                        let label = format!("{} — {}", item.kind, item.name);
+                        crate::ui::typography::caption(ui, label, &colors);
                     }
                 });
 
-                let hints = [
-                    crate::ui::hints::HintGroup::new(&["Enter"], "close all"),
-                    crate::ui::hints::HintGroup::new(&["D"], "dissolve"),
-                    crate::ui::hints::HintGroup::new(&["Esc"], "cancel"),
-                ];
-                crate::ui::hints::HintBar::new(&hints).show(ui, &colors);
-            });
-        close_all |= btn_close_all;
-        dissolve |= btn_dissolve;
-        cancelled |= response.dismissed | btn_cancelled;
+        let close_all = response.selected == Some("close_all");
+        let dissolve = response.selected == Some("dissolve");
+        let cancelled = response.dismissed || response.selected == Some("cancel");
 
         if close_all {
             let idx = self
@@ -428,32 +345,15 @@ impl PlexiApp {
     }
 
     fn draw_triple_tap_overlay(&self, ctx: &egui::Context, id: &str, count: u8, label: &str) {
-        crate::ui::overlay::ModalShell::centered(id)
-            .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -40.0))
-            .scrim(false)
-            .width(0.0)
-            .show(ctx, &self.colors, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "{label} {} of 3 -- press again to delete context",
-                            count
-                        ))
-                        .size(style::TEXT_CAPTION)
-                        .color(self.colors.text_dim),
-                    );
-                    ui.add_space(style::SPACE_SM);
-                    for i in 1u8..=3 {
-                        let color = if i <= count {
-                            self.colors.accent
-                        } else {
-                            self.colors.bg_active
-                        };
-                        let (rect, _) =
-                            ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
-                        ui.painter().circle_filled(rect.center(), 4.0, color);
-                    }
-                });
+        crate::ui::toast::ToastShell::bottom(id).show(ctx, &self.colors, |ui| {
+            ui.horizontal(|ui| {
+                crate::ui::toast::toast_caption(
+                    ui,
+                    format!("{label} {} of 3 -- press again to delete context", count),
+                    &self.colors,
+                );
+                crate::ui::toast::ProgressDots::new(count, 3).show(ui, &self.colors);
             });
+        });
     }
 }
