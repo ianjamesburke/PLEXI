@@ -865,6 +865,7 @@
         },
         {
           "description": "List permission state across apps (stint 0017). Gated on\n`permissions.manage` when arriving over PGAP. Host writes a JSON object\nto `response_file`:\n\n```json\n{\n  \"permissions\": [\n    {\n      \"app_id\": \"...\",\n      \"workspace\": \"/abs/path\",\n      \"capability\": \"panes.read\",\n      \"state\": \"green\" | \"yellow\" | \"red\",\n      \"stored\": true | false,\n      \"sensitive\": true | false,\n      \"description\": \"...\"\n    }\n  ],\n  \"running\": [\"app_id\", ...]\n}\n```\n\nOne row per entry persisted in `permissions.toml` (`stored: true`),\nplus one row per live capability of a currently-running app that has\nno stored entry (`stored: false` — granted → \"green\", blocked →\n\"red\"). Live capabilities in the effective yellow state (declared but\nneither granted nor blocked) are not retained by the host after\nlaunch and only appear once a decision is stored.",
+
           "properties": {
             "response_file": {
               "type": "string"
