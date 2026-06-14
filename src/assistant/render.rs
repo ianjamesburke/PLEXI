@@ -585,14 +585,19 @@ impl AssistantRenderer {
     /// shown before the first answer token arrives. The pane already
     /// requests repaints every 50ms while a turn is in flight.
     fn draw_thinking_dots(ui: &mut egui::Ui, colors: &Colors) {
+        const DOT_R: f32 = 2.5;
+        const DOT_GAP: f32 = 11.0;
+        const EDGE_PAD: f32 = 3.5;
+        const DOTS_W: f32 = EDGE_PAD * 2.0 + DOT_R * 2.0 + DOT_GAP * 2.0;
+
         let t = ui.input(|i| i.time);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(40.0, 18.0), egui::Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(DOTS_W, 18.0), egui::Sense::hover());
         for k in 0..3 {
             let phase = (((t * 2.2 - k as f64 * 0.45).sin() * 0.5 + 0.5)) as f32;
             let color = colors.text_dim.gamma_multiply(0.35 + 0.65 * phase);
             ui.painter().circle_filled(
-                egui::pos2(rect.left() + 6.0 + k as f32 * 11.0, rect.center().y),
-                2.5,
+                egui::pos2(rect.left() + EDGE_PAD + DOT_R + k as f32 * DOT_GAP, rect.center().y),
+                DOT_R,
                 color,
             );
         }
