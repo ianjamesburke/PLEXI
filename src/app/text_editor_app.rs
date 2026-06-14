@@ -386,11 +386,7 @@ enum Durability {
     Fast,
 }
 
-fn write_note_atomically(
-    path: &Path,
-    bytes: &[u8],
-    durability: Durability,
-) -> std::io::Result<()> {
+fn write_note_atomically(path: &Path, bytes: &[u8], durability: Durability) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -523,19 +519,20 @@ impl App for TextEditorApp {
             .show(ui, |ui| {
                 // egui's caret is hidden (transparent, non-blinking) and
                 // draw_text_caret paints a glyph-height replacement on top.
-                let output = ui.scope(|ui| {
-                    ui.visuals_mut().text_cursor.blink = false;
-                    ui.visuals_mut().text_cursor.stroke.color =
-                        egui::Color32::TRANSPARENT;
-                    egui::TextEdit::multiline(&mut self.content)
-                        .id(te_id)
-                        .font(font_id)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(min_rows)
-                        .margin(egui::vec2(4.0, 0.0))
-                        .frame(false)
-                        .show(ui)
-                }).inner;
+                let output = ui
+                    .scope(|ui| {
+                        ui.visuals_mut().text_cursor.blink = false;
+                        ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
+                        egui::TextEdit::multiline(&mut self.content)
+                            .id(te_id)
+                            .font(font_id)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(min_rows)
+                            .margin(egui::vec2(4.0, 0.0))
+                            .frame(false)
+                            .show(ui)
+                    })
+                    .inner;
                 crate::ui::text_field::draw_text_caret(
                     ui,
                     &output,

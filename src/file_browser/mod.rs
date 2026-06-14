@@ -113,12 +113,7 @@ enum PendingFileOperation {
 /// Elide a path label from the left so the leaf directory stays visible —
 /// `…/projects/plexi/src` reads better than `/Users/ian/Documents/proj…`.
 /// Width-measured against the actual font, not a char-count guess.
-fn elide_path_leading(
-    ui: &egui::Ui,
-    path: &str,
-    font_id: egui::FontId,
-    max_width: f32,
-) -> String {
+fn elide_path_leading(ui: &egui::Ui, path: &str, font_id: egui::FontId, max_width: f32) -> String {
     if max_width <= 0.0 {
         return String::new();
     }
@@ -1948,7 +1943,9 @@ impl FileBrowserApp {
             );
             ui.colored_label(
                 colors.accent,
-                egui::RichText::new(elided).size(style::TEXT_HINT).monospace(),
+                egui::RichText::new(elided)
+                    .size(style::TEXT_HINT)
+                    .monospace(),
             );
         });
         ui.add_space(style::SPACE_XS);
@@ -2663,11 +2660,17 @@ mod tests {
 
         assert!(consumed);
         assert!(app.should_close);
-        let cd_cwd = app.take_pending_commands().into_iter().find_map(|c| match c {
-            AppCommand::CdRequest { cwd, .. } => Some(cwd),
-            _ => None,
-        });
-        assert_eq!(cd_cwd.as_deref(), Some(dir.path().to_string_lossy().as_ref()));
+        let cd_cwd = app
+            .take_pending_commands()
+            .into_iter()
+            .find_map(|c| match c {
+                AppCommand::CdRequest { cwd, .. } => Some(cwd),
+                _ => None,
+            });
+        assert_eq!(
+            cd_cwd.as_deref(),
+            Some(dir.path().to_string_lossy().as_ref())
+        );
     }
 
     #[test]

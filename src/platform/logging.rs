@@ -441,7 +441,11 @@ mod tests {
             log::Level::Info,
             log::LevelFilter::Debug
         ));
-        assert!(!log_allowed("appkit", log::Level::Info, log::LevelFilter::Debug));
+        assert!(!log_allowed(
+            "appkit",
+            log::Level::Info,
+            log::LevelFilter::Debug
+        ));
     }
 
     /// set_level reports whether the level actually changed and round-trips

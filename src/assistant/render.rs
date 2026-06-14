@@ -28,9 +28,6 @@ use super::model::{AssistantModel, PermissionChoice, ToolStatus, TurnRole};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerEvent {
     Submit,
-    /// ESC pressed during an in-flight turn: stop generating (and send any
-    /// pending draft as an immediate folded follow-up).
-    Interrupt,
     /// The user decided the pending permission sheet.
     Permission(PermissionChoice),
 }
@@ -65,7 +62,7 @@ impl MarkdownTextCache {
             });
         if entry.source_len != turn.text.len() {
             entry.source_len = turn.text.len();
-            entry.softened = AssistantRenderer::soften_newlines(&turn.text);
+            entry.softened = crate::ui::markdown::harden_soft_breaks(&turn.text);
         }
         &entry.softened
     }
@@ -124,8 +121,8 @@ impl AssistantRenderer {
         // Picker shows up to 10 command rows, clamped so it never overruns
         // the transcript area in a short pane (but always fits at least 3).
         let total_h = ui.available_rect_before_wrap().height();
-        let picker_max_h = (style::LIST_ROW_H * 10.0)
-            .min((total_h * 0.8).max(style::LIST_ROW_H * 3.0));
+        let picker_max_h =
+            (style::LIST_ROW_H * 10.0).min((total_h * 0.8).max(style::LIST_ROW_H * 3.0));
         let mut event = None;
         let mut composer_rect = None;
 
@@ -157,19 +154,21 @@ impl AssistantRenderer {
                     is_focused,
                     total_h * Self::COMPOSER_MAX_FRACTION,
                 ));
-                let hints = [
+                let mut hints = vec![
                     HintGroup::new(&["\u{21b5}"], "send"),
                     HintGroup::new(&["\u{21e7}", "\u{21b5}"], "newline"),
                     HintGroup::new(&["/"], "commands"),
                 ];
+                if model.streaming.in_flight {
+                    hints.push(HintGroup::new(&["Esc"], "stop"));
+                }
                 HintBar::new(&hints).show(ui, colors);
             });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(
-                style::SPACE_MD as i8,
-                0,
-            )))
+            .frame(
+                egui::Frame::new().inner_margin(egui::Margin::symmetric(style::SPACE_MD as i8, 0)),
+            )
             .show_inside(ui, |ui| {
                 Self::draw_transcript(ui, model, md_cache, text_cache, colors);
             });
@@ -199,10 +198,7 @@ impl AssistantRenderer {
             let t = ui.input(|i| i.time);
             let phase = ((t * 2.5).sin() * 0.5 + 0.5) as f32;
             colors.accent.gamma_multiply(0.45 + 0.55 * phase)
-        } else if matches!(
-            model.turns.last().map(|t| t.role),
-            Some(TurnRole::Error)
-        ) {
+        } else if matches!(model.turns.last().map(|t| t.role), Some(TurnRole::Error)) {
             colors.danger
         } else {
             colors.text_dim
@@ -303,29 +299,6 @@ impl AssistantRenderer {
             });
     }
 
-    /// Convert markdown soft breaks to hard breaks: every newline outside a
-    /// fenced code block gets a trailing two-space hard break, so single
-    /// newlines stay visible line breaks (the chat-client convention) instead
-    /// of collapsing into one paragraph. Block structure — lists, headings,
-    /// fences — is decided per line before inline rendering, so the trailing
-    /// spaces never change it.
-    fn soften_newlines(text: &str) -> String {
-        let mut out = String::with_capacity(text.len() + text.lines().count() * 2);
-        let mut in_fence = false;
-        for line in text.lines() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-                in_fence = !in_fence;
-            }
-            out.push_str(line);
-            if !in_fence && !line.trim().is_empty() {
-                out.push_str("  ");
-            }
-            out.push('\n');
-        }
-        out
-    }
-
     /// Render `text` as markdown (links, emphasis, inline code, fenced
     /// blocks) sized to the chat body scale. Hyperlinks open through egui's
     /// native `open_url`. Raw inline HTML is not interpreted — it renders as
@@ -336,26 +309,14 @@ impl AssistantRenderer {
         colors: &Colors,
         markdown: &str,
     ) {
-        let s = ui.style_mut();
-        s.visuals.override_text_color = Some(colors.text_primary);
-        s.visuals.hyperlink_color = colors.accent;
-        s.text_styles.insert(
-            egui::TextStyle::Body,
-            egui::FontId::proportional(style::TEXT_BODY),
+        crate::ui::markdown::show(
+            ui,
+            md_cache,
+            colors,
+            markdown,
+            colors.text_primary,
+            style::TEXT_BODY,
         );
-        s.text_styles.insert(
-            egui::TextStyle::Heading,
-            egui::FontId::proportional(style::TEXT_BODY * 1.3),
-        );
-        s.text_styles.insert(
-            egui::TextStyle::Monospace,
-            egui::FontId::monospace(style::TEXT_BODY * 0.9),
-        );
-        s.text_styles.insert(
-            egui::TextStyle::Small,
-            egui::FontId::proportional(style::TEXT_HINT),
-        );
-        egui_commonmark::CommonMarkViewer::new().show(ui, md_cache, markdown);
     }
 
     fn draw_turn_row(
@@ -547,7 +508,7 @@ impl AssistantRenderer {
         colors: &Colors,
         add_contents: impl FnOnce(&mut egui::Ui),
     ) {
-        let bubble_max = ui.available_width() * 0.85;
+        let bubble_max = ui.available_width() * Self::BUBBLE_MAX_FRACTION;
         egui::Frame::new()
             .fill(colors.bg_active)
             .corner_radius(style::RADIUS_MD)
@@ -577,7 +538,8 @@ impl AssistantRenderer {
             if model.streaming.partial_answer.is_empty() {
                 Self::draw_thinking_dots(ui, colors);
             } else {
-                let markdown = Self::soften_newlines(&model.streaming.partial_answer);
+                let markdown =
+                    crate::ui::markdown::harden_soft_breaks(&model.streaming.partial_answer);
                 Self::markdown_body(ui, md_cache, colors, &markdown);
             }
         });
@@ -596,10 +558,13 @@ impl AssistantRenderer {
         let t = ui.input(|i| i.time);
         let (rect, _) = ui.allocate_exact_size(egui::vec2(DOTS_W, 18.0), egui::Sense::hover());
         for k in 0..3 {
-            let phase = (((t * 2.2 - k as f64 * 0.45).sin() * 0.5 + 0.5)) as f32;
+            let phase = ((t * 2.2 - k as f64 * 0.45).sin() * 0.5 + 0.5) as f32;
             let color = colors.text_dim.gamma_multiply(0.35 + 0.65 * phase);
             ui.painter().circle_filled(
-                egui::pos2(rect.left() + EDGE_PAD + DOT_R + k as f32 * DOT_GAP, rect.center().y),
+                egui::pos2(
+                    rect.left() + EDGE_PAD + DOT_R + k as f32 * DOT_GAP,
+                    rect.center().y,
+                ),
                 DOT_R,
                 color,
             );
@@ -645,15 +610,6 @@ impl AssistantRenderer {
     ) -> Option<ComposerEvent> {
         if !ui.memory(|m| m.has_focus(te_id)) {
             return None;
-        }
-        // ESC during an in-flight turn interrupts it (stop, or stop-and-send a
-        // queued draft). Consume the key so it does not also propagate to
-        // host-level ESC handling. When no turn is in flight, ESC falls through
-        // untouched, preserving existing behavior.
-        if model.streaming.in_flight
-            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-        {
-            return Some(ComposerEvent::Interrupt);
         }
         if model.picker_active() {
             let matches = commands::filter_commands(&model.picker_query());
@@ -712,8 +668,7 @@ impl AssistantRenderer {
             // Shift+Enter inserts a newline (handled natively by the TextEdit's
             // `return_key`); only plain Enter submits. `consume_key` ignores
             // extra Shift, so guard on `!shift` before consuming.
-            if !input.modifiers.shift
-                && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+            if !input.modifiers.shift && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
             {
                 submit = true;
             }
@@ -840,7 +795,11 @@ impl AssistantRenderer {
         // Accent outline while the composer holds keyboard focus — same
         // affordance as the host text fields.
         let has_kb_focus = ui.memory(|m| m.has_focus(te_id));
-        let stroke_color = if has_kb_focus { colors.accent } else { colors.border };
+        let stroke_color = if has_kb_focus {
+            colors.accent
+        } else {
+            colors.border
+        };
 
         let mut response = None;
         let frame_response = egui::Frame::new()
@@ -903,6 +862,9 @@ impl AssistantRenderer {
                             row_height,
                             egui::Stroke::new(1.5, colors.accent),
                         );
+                        if output.response.changed() {
+                            model.reset_history_recall();
+                        }
                         response = Some(output.response);
                     });
             });
@@ -921,24 +883,5 @@ impl AssistantRenderer {
             }
         }
         frame_response.response.rect
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::AssistantRenderer;
-
-    #[test]
-    fn soften_newlines_makes_single_breaks_hard_outside_fences() {
-        let out = AssistantRenderer::soften_newlines("line one\nline two\n\nline three");
-        assert_eq!(out, "line one  \nline two  \n\nline three  \n");
-    }
-
-    #[test]
-    fn soften_newlines_leaves_fenced_code_untouched() {
-        let out = AssistantRenderer::soften_newlines("before\n```\nlet x = 1;\nlet y = 2;\n```\nafter");
-        assert!(out.contains("before  \n"));
-        assert!(out.contains("let x = 1;\nlet y = 2;\n"), "code lines must stay byte-identical");
-        assert!(out.contains("after  \n"));
     }
 }

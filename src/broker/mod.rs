@@ -307,8 +307,8 @@ impl PermissionPosture {
     /// `default_posture` is required — no silent fallback. Accepted values:
     /// `allow`, `ask`, `review` (alias for ask), `deny`.
     pub fn from_toml_str(raw: &str) -> Result<Self, String> {
-        let parsed: PostureToml = toml::from_str(raw)
-            .map_err(|e| format!("invalid [permissions] table: {e}"))?;
+        let parsed: PostureToml =
+            toml::from_str(raw).map_err(|e| format!("invalid [permissions] table: {e}"))?;
         let t = parsed.permissions;
         let default_posture = match t.default_posture.as_str() {
             "allow" => Decision::Allow,
@@ -828,7 +828,11 @@ mod tests {
         let mut store = GrantStore::default();
         store.record(agent_grant(Decision::Allow, GrantSource::User));
         store.record(agent_grant(Decision::Deny, GrantSource::User));
-        assert_eq!(store.records().len(), 1, "same identity+source must replace");
+        assert_eq!(
+            store.records().len(),
+            1,
+            "same identity+source must replace"
+        );
         assert_eq!(store.evaluate(&agent_request(), None), Decision::Deny);
     }
 
@@ -1036,11 +1040,13 @@ deny = ["host.secrets.read"]
 
     #[test]
     fn posture_rejects_unknown_default_and_missing_table() {
-        let err = PermissionPosture::from_toml_str(
-            "[permissions]\ndefault_posture = \"sometimes\"\n",
-        )
-        .unwrap_err();
-        assert!(err.contains("sometimes"), "error must name the bad value: {err}");
+        let err =
+            PermissionPosture::from_toml_str("[permissions]\ndefault_posture = \"sometimes\"\n")
+                .unwrap_err();
+        assert!(
+            err.contains("sometimes"),
+            "error must name the bad value: {err}"
+        );
         assert!(
             PermissionPosture::from_toml_str("[other]\nx = 1\n").is_err(),
             "missing [permissions] table must fail, not silently default"

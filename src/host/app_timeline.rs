@@ -438,7 +438,11 @@ impl AppTimeline {
     fn route_to_subscriptions(&mut self, app_id: &str, record: &AppEventRecord) -> usize {
         let mut queued = 0;
         let mut new_deliveries = Vec::new();
-        for sub in self.subscriptions.iter().filter(|s| s.matches(app_id, record)) {
+        for sub in self
+            .subscriptions
+            .iter()
+            .filter(|s| s.matches(app_id, record))
+        {
             // `never` = record in the timeline only — no delivery.
             if sub.trigger_mode == TriggerMode::Never {
                 continue;
@@ -447,16 +451,10 @@ impl AppTimeline {
             let (summary, payload, state_ref) = match sub.payload_mode {
                 PayloadMode::Off => (None, None, None),
                 PayloadMode::Summary => (Some(record.summary.clone()), None, None),
-                PayloadMode::Full => (
-                    Some(record.summary.clone()),
-                    record.payload.clone(),
-                    None,
-                ),
-                PayloadMode::StateRef => (
-                    Some(record.summary.clone()),
-                    None,
-                    record.state_ref.clone(),
-                ),
+                PayloadMode::Full => (Some(record.summary.clone()), record.payload.clone(), None),
+                PayloadMode::StateRef => {
+                    (Some(record.summary.clone()), None, record.state_ref.clone())
+                }
             };
             new_deliveries.push(EventDelivery {
                 delivery_id: self.next_delivery_id,
@@ -637,11 +635,13 @@ impl AppTimeline {
         subscriber_id: &str,
     ) -> (usize, usize) {
         let subs_before = self.subscriptions.len();
-        self.subscriptions
-            .retain(|s| !(s.subscriber_type == subscriber_type && s.subscriber_id == subscriber_id));
+        self.subscriptions.retain(|s| {
+            !(s.subscriber_type == subscriber_type && s.subscriber_id == subscriber_id)
+        });
         let dels_before = self.deliveries.len();
-        self.deliveries
-            .retain(|d| !(d.subscriber_type == subscriber_type && d.subscriber_id == subscriber_id));
+        self.deliveries.retain(|d| {
+            !(d.subscriber_type == subscriber_type && d.subscriber_id == subscriber_id)
+        });
         let removed = (
             subs_before - self.subscriptions.len(),
             dels_before - self.deliveries.len(),
@@ -743,7 +743,8 @@ mod tests {
 
     fn timeline_with_stream() -> AppTimeline {
         let mut t = AppTimeline::default();
-        t.declare_streams("chess", vec![decl("move.played")]).unwrap();
+        t.declare_streams("chess", vec![decl("move.played")])
+            .unwrap();
         t
     }
 
@@ -773,13 +774,18 @@ mod tests {
             description: None,
         };
         assert!(t.declare_streams("a", vec![bad]).is_err());
-        assert!(t.declared_streams("a").is_empty(), "nothing partial recorded");
+        assert!(
+            t.declared_streams("a").is_empty(),
+            "nothing partial recorded"
+        );
     }
 
     #[test]
     fn undeclared_stream_is_rejected() {
         let mut t = AppTimeline::default();
-        let err = t.record_event("chess", 1, emitted("move.played")).unwrap_err();
+        let err = t
+            .record_event("chess", 1, emitted("move.played"))
+            .unwrap_err();
         assert!(err.contains("not a declared event stream"), "{err}");
         assert!(t.events().is_empty());
     }
@@ -788,25 +794,46 @@ mod tests {
     fn required_fields_are_enforced() {
         let mut t = timeline_with_stream();
         for (field, mutate) in [
-            ("event", Box::new(|e: &mut EmittedEvent| e.event = String::new())
-                as Box<dyn Fn(&mut EmittedEvent)>),
-            ("summary", Box::new(|e: &mut EmittedEvent| e.summary = "  ".to_string())),
-            ("resource_id", Box::new(|e: &mut EmittedEvent| e.resource_id = String::new())),
-            ("revision_after", Box::new(|e: &mut EmittedEvent| e.revision_after = String::new())),
+            (
+                "event",
+                Box::new(|e: &mut EmittedEvent| e.event = String::new())
+                    as Box<dyn Fn(&mut EmittedEvent)>,
+            ),
+            (
+                "summary",
+                Box::new(|e: &mut EmittedEvent| e.summary = "  ".to_string()),
+            ),
+            (
+                "resource_id",
+                Box::new(|e: &mut EmittedEvent| e.resource_id = String::new()),
+            ),
+            (
+                "revision_after",
+                Box::new(|e: &mut EmittedEvent| e.revision_after = String::new()),
+            ),
         ] {
             let mut e = emitted("move.played");
             mutate(&mut e);
             let err = t.record_event("chess", 1, e).unwrap_err();
-            assert!(err.contains(field), "expected '{field}' in error, got: {err}");
+            assert!(
+                err.contains(field),
+                "expected '{field}' in error, got: {err}"
+            );
         }
-        assert!(t.events().is_empty(), "rejected events must not be recorded");
+        assert!(
+            t.events().is_empty(),
+            "rejected events must not be recorded"
+        );
     }
 
     #[test]
     fn accepted_event_enters_timeline_without_checkpoint() {
         let mut t = timeline_with_stream();
         let out = t.record_event("chess", 7, emitted("move.played")).unwrap();
-        assert_eq!(out.checkpoint_id, None, "no rollback metadata = no checkpoint");
+        assert_eq!(
+            out.checkpoint_id, None,
+            "no rollback metadata = no checkpoint"
+        );
         assert_eq!(t.events().len(), 1);
         let rec = &t.events()[0];
         assert_eq!(rec.app_id, "chess");
@@ -823,7 +850,9 @@ mod tests {
         e.rollback_token = Some("undo-abc".to_string());
         e.changed_resources = vec!["game-abc".to_string()];
         let out = t.record_event("chess", 7, e).unwrap();
-        let ckpt_id = out.checkpoint_id.expect("rollback metadata must checkpoint");
+        let ckpt_id = out
+            .checkpoint_id
+            .expect("rollback metadata must checkpoint");
         let ckpt = &t.checkpoints()[0];
         assert_eq!(ckpt.checkpoint_id, ckpt_id);
         assert_eq!(ckpt.rollback_token, "undo-abc");
@@ -840,7 +869,11 @@ mod tests {
         let mut t = timeline_with_stream();
         let mut e = emitted("move.played");
         e.rollback_token = Some("undo-abc".to_string());
-        let ckpt_id = t.record_event("chess", 7, e).unwrap().checkpoint_id.unwrap();
+        let ckpt_id = t
+            .record_event("chess", 7, e)
+            .unwrap()
+            .checkpoint_id
+            .unwrap();
 
         let verify = t.begin_rollback(&ckpt_id).unwrap();
         assert_eq!(verify.expected_revision, "rev-13");
@@ -865,7 +898,11 @@ mod tests {
         let mut t = timeline_with_stream();
         let mut e = emitted("move.played");
         e.rollback_token = Some("undo-abc".to_string());
-        let ckpt_id = t.record_event("chess", 7, e).unwrap().checkpoint_id.unwrap();
+        let ckpt_id = t
+            .record_event("chess", 7, e)
+            .unwrap()
+            .checkpoint_id
+            .unwrap();
 
         t.begin_rollback(&ckpt_id).unwrap();
         let verdict = t.resolve_rollback_verify(&ckpt_id, "rev-99").unwrap();
@@ -886,7 +923,11 @@ mod tests {
         ));
         let mut e = emitted("move.played");
         e.rollback_token = Some("undo-abc".to_string());
-        let ckpt_id = t.record_event("chess", 7, e).unwrap().checkpoint_id.unwrap();
+        let ckpt_id = t
+            .record_event("chess", 7, e)
+            .unwrap()
+            .checkpoint_id
+            .unwrap();
         t.begin_rollback(&ckpt_id).unwrap();
         assert!(matches!(
             t.begin_rollback(&ckpt_id),
@@ -900,7 +941,8 @@ mod tests {
     #[test]
     fn subscription_routing_filters_event_name_and_resource() {
         let mut t = timeline_with_stream();
-        t.declare_streams("chess", vec![decl("game.ended")]).unwrap();
+        t.declare_streams("chess", vec![decl("game.ended")])
+            .unwrap();
         let mut sub = subscription(PayloadMode::Summary, TriggerMode::Conversation);
         sub.event_names = vec!["game.ended".to_string()];
         t.add_subscription(sub);
@@ -919,7 +961,10 @@ mod tests {
         sub2.resource_id = Some("game-other".to_string());
         t.add_subscription(sub2);
         let out = t.record_event("chess", 1, emitted("move.played")).unwrap();
-        assert_eq!(out.deliveries_queued, 0, "resource mismatch must not deliver");
+        assert_eq!(
+            out.deliveries_queued, 0,
+            "resource mismatch must not deliver"
+        );
 
         // Deliveries for someone else stay queued.
         assert!(t
@@ -939,7 +984,10 @@ mod tests {
         let mut t = timeline_with_stream();
         t.add_subscription(subscription(PayloadMode::Full, TriggerMode::Never));
         let out = t.record_event("chess", 1, emitted("move.played")).unwrap();
-        assert_eq!(out.deliveries_queued, 0, "never = timeline only, no delivery");
+        assert_eq!(
+            out.deliveries_queued, 0,
+            "never = timeline only, no delivery"
+        );
         assert_eq!(t.events().len(), 1);
         assert_eq!(t.pending_delivery_count(), 0);
     }

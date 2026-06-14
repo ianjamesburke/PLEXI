@@ -17,16 +17,25 @@ pub struct ParsedCommand {
 /// `/clear`, `/new`, and `/help` are implemented in Phase 1; the rest are
 /// recognized and answered with a "not yet implemented" assistant row.
 pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
-    ("help", "Show built-in commands, installed skills, and tool packs."),
+    (
+        "help",
+        "Show built-in commands, installed skills, and tool packs.",
+    ),
     ("clear", "Start a new conversation in the same workspace."),
     ("resume", "Open a previous Assistant session."),
-    ("compact", "Summarize older turns and keep the active task context."),
+    (
+        "compact",
+        "Summarize older turns and keep the active task context.",
+    ),
     (
         "context",
         "Show token use, loaded instructions, active pane/app context, and enabled tools.",
     ),
     ("memory", "Show agent prompt files and future memory state."),
-    ("model", "Switch model tier or backend for this session/agent."),
+    (
+        "model",
+        "Switch model tier or backend for this session/agent.",
+    ),
     ("effort", "Switch reasoning effort for this session/agent."),
     ("agent", "Switch, inspect, create, or edit agents."),
     ("settings", "Open Assistant settings."),
@@ -40,8 +49,14 @@ pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
         "Show enabled host tools, app connectors, MCP tools, and tool collections.",
     ),
     ("apps", "Show app connectors available in the workspace."),
-    ("skills", "Show installed skills and marketplace skill packs."),
-    ("install", "Install a local or marketplace skill/tool/agent package."),
+    (
+        "skills",
+        "Show installed skills and marketplace skill packs.",
+    ),
+    (
+        "install",
+        "Install a local or marketplace skill/tool/agent package.",
+    ),
     ("hooks", "Show lifecycle hooks and their source."),
     (
         "audit",
@@ -49,10 +64,22 @@ pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
     ),
     ("revoke", "Revoke a persisted grant by target id."),
     ("export", "Export the current transcript and tool-call log."),
-    ("rewind", "Restore the conversation to an earlier checkpoint."),
-    ("new", "Create a new named conversation without deleting the current one."),
-    ("history", "Open conversation history and checkpoint browser."),
-    ("thoughts", "Show or hide the model's reasoning for every turn."),
+    (
+        "rewind",
+        "Restore the conversation to an earlier checkpoint.",
+    ),
+    (
+        "new",
+        "Create a new named conversation without deleting the current one.",
+    ),
+    (
+        "history",
+        "Open conversation history and checkpoint browser.",
+    ),
+    (
+        "thoughts",
+        "Show or hide the model's reasoning for every turn.",
+    ),
 ];
 
 /// Commands with a real implementation (Phase 1: help/clear/new; Phase 2:
@@ -193,11 +220,14 @@ mod tests {
         let all = filter_commands("");
         assert_eq!(all.len(), BUILT_IN_COMMANDS.len());
         let hits = filter_commands("perm");
-        assert_eq!(hits, vec![BUILT_IN_COMMANDS
-            .iter()
-            .copied()
-            .find(|(n, _)| *n == "permissions")
-            .unwrap()]);
+        assert_eq!(
+            hits,
+            vec![BUILT_IN_COMMANDS
+                .iter()
+                .copied()
+                .find(|(n, _)| *n == "permissions")
+                .unwrap()]
+        );
         assert!(filter_commands("zzz").is_empty());
     }
 

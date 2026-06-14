@@ -1,9 +1,9 @@
 pub mod account;
 pub mod app_trait;
 mod canvas_bindings;
-pub mod host_version;
 mod dispatch;
 mod focus;
+pub mod host_version;
 mod lifecycle;
 pub mod marketplace;
 pub(crate) mod notification_image;
@@ -3214,7 +3214,10 @@ impl eframe::App for PlexiApp {
                             self.delete_context(idx);
                             self.save_workspace();
                         } else {
-                            log::info!("close_context: ctx={ctx_id} has {} panes, showing confirm dialog", state.items.len());
+                            log::info!(
+                                "close_context: ctx={ctx_id} has {} panes, showing confirm dialog",
+                                state.items.len()
+                            );
                             self.pending_context_close = Some(state);
                         }
                     }

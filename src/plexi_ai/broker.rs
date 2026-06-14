@@ -1060,8 +1060,10 @@ mod tests {
     /// correctly across both turns.
     #[test]
     fn tool_loop_builds_conversation_correctly() {
-        use crate::plexi_ai::backend::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
         use crate::app_protocol::AiTool;
+        use crate::plexi_ai::backend::{
+            AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
+        };
         use std::sync::mpsc;
         use std::sync::{Arc, Mutex};
 
@@ -1075,7 +1077,9 @@ mod tests {
         }
 
         impl AiBackend for ToolThenTextBackend {
-            fn name(&self) -> &str { "tool-then-text" }
+            fn name(&self) -> &str {
+                "tool-then-text"
+            }
 
             fn stream_to_channel(
                 &self,
@@ -1088,7 +1092,10 @@ mod tests {
                     *c
                 };
                 // Clone the Arc itself so we can check pointer identity later.
-                self.seen_systems.lock().unwrap().push(Arc::clone(&req.system));
+                self.seen_systems
+                    .lock()
+                    .unwrap()
+                    .push(Arc::clone(&req.system));
                 self.seen_tools.lock().unwrap().push(Arc::clone(&req.tools));
 
                 assert_eq!(&*req.system, "sys");
@@ -1151,19 +1158,36 @@ mod tests {
 
         let billing = crate::plexi_ai::backend::BillingModel::Subscription;
         let resp = run_turn_and_respond(
-            request, &backend, billing, "test-model".to_string(), String::new(), &mut |_| {},
+            request,
+            &backend,
+            billing,
+            "test-model".to_string(),
+            String::new(),
+            &mut |_| {},
         );
-        assert!(resp.content.is_some(), "broker must return final text after tool round-trip");
+        assert!(
+            resp.content.is_some(),
+            "broker must return final text after tool round-trip"
+        );
         assert_eq!(resp.content.as_deref(), Some("final answer"));
-        assert_eq!(resp.tokens_in, 30, "token counts must accumulate across iterations");
+        assert_eq!(
+            resp.tokens_in, 30,
+            "token counts must accumulate across iterations"
+        );
         assert_eq!(resp.tokens_out, 13);
 
         // Both iterations must have received the same Arc allocation — no deep copy.
         let ss = seen_systems.lock().unwrap();
         assert_eq!(ss.len(), 2, "backend must be called exactly twice");
-        assert!(Arc::ptr_eq(&ss[0], &ss[1]), "system Arc must be the same allocation on both iterations");
+        assert!(
+            Arc::ptr_eq(&ss[0], &ss[1]),
+            "system Arc must be the same allocation on both iterations"
+        );
         let st = seen_tools.lock().unwrap();
-        assert!(Arc::ptr_eq(&st[0], &st[1]), "tools Arc must be the same allocation on both iterations");
+        assert!(
+            Arc::ptr_eq(&st[0], &st[1]),
+            "tools Arc must be the same allocation on both iterations"
+        );
     }
 
     /// A pre-tripped cancel token must short-circuit the tool loop before the

@@ -274,7 +274,9 @@ pub fn open_cli_by_name(
 ) -> i32 {
     log::info!("open:cli: resolving `{name}`");
     match crate::cli::descriptor::resolve_cli(name) {
-        Ok(resolved) => open_descriptor_in_renderer(&resolved.descriptor, name, layout, from_pane_id, cwd),
+        Ok(resolved) => {
+            open_descriptor_in_renderer(&resolved.descriptor, name, layout, from_pane_id, cwd)
+        }
         Err(e) => {
             eprintln!("error: could not resolve CLI `{name}`: {e}");
             1

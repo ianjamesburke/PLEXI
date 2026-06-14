@@ -115,7 +115,10 @@ pub(crate) fn draw_text_caret(
         let start_y = row_top + (row_h - caret_height) * 0.5;
         let cx = output.galley_pos.x + cursor_pos.center().x;
         ui.painter().line_segment(
-            [egui::pos2(cx, start_y), egui::pos2(cx, start_y + caret_height)],
+            [
+                egui::pos2(cx, start_y),
+                egui::pos2(cx, start_y + caret_height),
+            ],
             stroke,
         );
         ui.ctx().request_repaint_after_secs((ON - t) as f32);

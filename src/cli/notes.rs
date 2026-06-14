@@ -52,11 +52,7 @@ pub fn notes_inbox_cli() -> i32 {
         return 0;
     }
     for note in &notes {
-        let ts = note
-            .frontmatter
-            .captured_at
-            .as_deref()
-            .unwrap_or("unknown");
+        let ts = note.frontmatter.captured_at.as_deref().unwrap_or("unknown");
         let cwd = note.frontmatter.cwd.as_deref().unwrap_or("");
         let preview: String = note.body.trim().chars().take(60).collect();
         println!("{}\t{}\t{}", ts, cwd, preview);
@@ -114,7 +110,11 @@ pub fn notes_list_cli() -> i32 {
         .map(|n| n.to_string_lossy().into_owned());
     let workspace_dir = workspace_slug.map(|slug| notes_base.join(slug));
 
-    log::info!("notes_list: scanning inbox={:?} workspace={:?}", inbox_dir, workspace_dir);
+    log::info!(
+        "notes_list: scanning inbox={:?} workspace={:?}",
+        inbox_dir,
+        workspace_dir
+    );
 
     let mut paths: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
 

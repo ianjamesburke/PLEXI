@@ -75,10 +75,7 @@ pub fn print_grouped_help() {
         for arg in &visible_positional {
             let name = format!("[{}]", arg.get_id().as_str().to_uppercase());
             let padded = format!("{name:<22}");
-            let help = arg
-                .get_help()
-                .map(|s| s.to_string())
-                .unwrap_or_default();
+            let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
             println!("  {} {help}", lit(padded));
         }
         println!();
@@ -109,10 +106,7 @@ pub fn print_grouped_help() {
         println!("{}", header(heading));
         for &name in *names {
             if let Some(sub) = cmd.find_subcommand(name) {
-                let about = sub
-                    .get_about()
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
+                let about = sub.get_about().map(|s| s.to_string()).unwrap_or_default();
                 println!("  {} {about}", lit(format!("{name:<col_width$}")));
             }
         }

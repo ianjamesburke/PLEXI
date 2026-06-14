@@ -199,7 +199,7 @@ impl Link {
 
         let mut layout_job = LayoutJob::default();
         for t in text {
-            t.append_to(
+            t.underline().append_to(
                 &mut layout_job,
                 ui.style(),
                 egui::FontSelection::Default,

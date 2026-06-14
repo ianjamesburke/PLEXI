@@ -371,11 +371,7 @@ impl AppRegistry {
             }
             let local_agents = root.join(&channel_dir).join("agents");
             if local_agents.is_dir() {
-                registry.scan_dir(
-                    &local_agents,
-                    RegistrySource::LocalAgent,
-                    Some(root),
-                );
+                registry.scan_dir(&local_agents, RegistrySource::LocalAgent, Some(root));
             }
         }
 

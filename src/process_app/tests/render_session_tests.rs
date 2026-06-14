@@ -145,12 +145,7 @@ fn render_session_pgap_frame_stable_output_no_spurious_events() {
                         max_length: 0,
                     },
                     UiNode::Raw {
-                        command: Box::new(text_cmd(
-                            0.0,
-                            "raw node text".to_string(),
-                            None,
-                            None,
-                        )),
+                        command: Box::new(text_cmd(0.0, "raw node text".to_string(), None, None)),
                     },
                 ],
                 gap: 4.0,

@@ -146,11 +146,7 @@ impl PlexiApp {
                     if is_hidden {
                         hidden_set.insert(dot_idx);
                     }
-                    activities.push(
-                        pane_opt
-                            .and_then(|p| p.effective_activity())
-                            .cloned(),
-                    );
+                    activities.push(pane_opt.and_then(|p| p.effective_activity()).cloned());
                 }
                 Some(PaneDots {
                     count: pane_count,
@@ -398,8 +394,7 @@ impl PlexiApp {
                 })
                 .response;
 
-            let interact =
-                ui.interact(header_response.rect, divider_id, egui::Sense::click());
+            let interact = ui.interact(header_response.rect, divider_id, egui::Sense::click());
             if interact.clicked() {
                 self.parked_section_expanded = !self.parked_section_expanded;
             }
@@ -432,12 +427,10 @@ impl PlexiApp {
                     for &win_idx in &ctx_windows {
                         let w = &self.windows[win_idx];
                         if let Some(root) = w.tree.root() {
-                            pane_ids.extend(
-                                crate::spatial::tiling::collect_pane_ids_spatial(
-                                    &w.tree.tiles,
-                                    root,
-                                ),
-                            );
+                            pane_ids.extend(crate::spatial::tiling::collect_pane_ids_spatial(
+                                &w.tree.tiles,
+                                root,
+                            ));
                         }
                     }
                     let pane_count = pane_ids.len();
@@ -454,11 +447,7 @@ impl PlexiApp {
                             if is_hidden {
                                 hidden_set.insert(dot_idx);
                             }
-                            activities.push(
-                                pane_opt
-                                    .and_then(|p| p.effective_activity())
-                                    .cloned(),
-                            );
+                            activities.push(pane_opt.and_then(|p| p.effective_activity()).cloned());
                         }
                         Some(PaneDots {
                             count: pane_count,

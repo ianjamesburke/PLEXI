@@ -1940,14 +1940,21 @@ mod tests {
         h.app.open_scratchpad();
 
         // Overlay replaces in-place: still 1 pane in the map.
-        assert_eq!(h.pane_count(), 1, "overlay replaces in-place; count must stay 1");
+        assert_eq!(
+            h.pane_count(),
+            1,
+            "overlay replaces in-place; count must stay 1"
+        );
 
         // Top of the overlay chain — second scratchpad call.
         let win = &h.app.windows[0];
         let Pane::App(top) = &win.panes[&base_pane] else {
             panic!("expected App pane at overlay top");
         };
-        assert_eq!(top.manifest_id, "text-editor", "top pane must be text-editor");
+        assert_eq!(
+            top.manifest_id, "text-editor",
+            "top pane must be text-editor"
+        );
         let path2 = top
             .runtime
             .serialize_state()
@@ -1962,14 +1969,20 @@ mod tests {
         else {
             panic!("overlay_replaced must be an App pane");
         };
-        assert_eq!(inner.manifest_id, "text-editor", "inner pane must be text-editor");
+        assert_eq!(
+            inner.manifest_id, "text-editor",
+            "inner pane must be text-editor"
+        );
         let path1 = inner
             .runtime
             .serialize_state()
             .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(|s| s.to_owned()))
             .expect("first scratchpad pane must have a path");
 
-        assert_ne!(path1, path2, "each scratchpad call must create a unique note file");
+        assert_ne!(
+            path1, path2,
+            "each scratchpad call must create a unique note file"
+        );
         assert!(path1.contains("inbox"), "path1 must be an inbox note");
         assert!(path2.contains("inbox"), "path2 must be an inbox note");
     }
@@ -1994,8 +2007,12 @@ mod quick_note_tests {
     fn write_inbox_note_creates_file_with_frontmatter() {
         let dir = tempfile::tempdir().expect("tempdir");
         let c = ctx("/tmp/myproject");
-        let path = PlexiApp::write_inbox_note("hello inbox", "quick-note", &dir.path().to_path_buf(), &c);
-        assert!(path.is_some(), "write_inbox_note must return the path on success");
+        let path =
+            PlexiApp::write_inbox_note("hello inbox", "quick-note", &dir.path().to_path_buf(), &c);
+        assert!(
+            path.is_some(),
+            "write_inbox_note must return the path on success"
+        );
 
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -2004,10 +2021,19 @@ mod quick_note_tests {
         assert_eq!(entries.len(), 1, "exactly one file must be created");
 
         let content = std::fs::read_to_string(entries[0].path()).unwrap();
-        assert!(content.contains("source: \"quick-note\""), "frontmatter must include source: quick-note");
-        assert!(content.contains("captured_at:"), "frontmatter must include captured_at");
+        assert!(
+            content.contains("source: \"quick-note\""),
+            "frontmatter must include source: quick-note"
+        );
+        assert!(
+            content.contains("captured_at:"),
+            "frontmatter must include captured_at"
+        );
         assert!(content.contains("hello inbox"), "note body must be present");
-        assert!(content.starts_with("---\n"), "must start with frontmatter delimiter");
+        assert!(
+            content.starts_with("---\n"),
+            "must start with frontmatter delimiter"
+        );
     }
 
     // ── Agent context spawning tests (#1518) ─────────────────────────────────
@@ -2177,10 +2203,7 @@ mod quick_note_tests {
 
 /// Build a fresh timestamped note path in `notes/inbox/`. Does not create the file.
 fn new_inbox_note_path() -> PathBuf {
-    let filename = format!(
-        "note-{}.md",
-        chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f")
-    );
+    let filename = format!("note-{}.md", chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f"));
     crate::config::config_dir()
         .join("notes")
         .join("inbox")

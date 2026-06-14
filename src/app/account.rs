@@ -105,7 +105,10 @@ impl AccountStore {
                 Ok(())
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("could not clear session {}: {e}", self.path.display())),
+            Err(e) => Err(format!(
+                "could not clear session {}: {e}",
+                self.path.display()
+            )),
         }
     }
 }

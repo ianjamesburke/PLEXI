@@ -101,6 +101,7 @@ pub mod registry;
 pub mod setup;
 pub mod subprocess;
 
+pub mod account;
 pub mod agent;
 pub mod ai;
 pub mod app;
@@ -112,7 +113,6 @@ pub mod demo;
 pub mod descriptor;
 pub mod doctor;
 pub mod install;
-pub mod account;
 pub mod install_host;
 pub mod list;
 pub mod marketplace;
@@ -204,21 +204,15 @@ pub(super) fn binary_in_path(name: &str) -> bool {
 }
 
 // ── Public re-exports (preserve crate::cli::fn_name() call sites in main.rs) ──
+pub use account::{account_login_cli, account_logout_cli, account_signup_cli, account_status_cli};
 pub use agent::{
     agent_add, agent_hook_install_cli, agent_hook_uninstall_cli, agent_init, agent_list,
     agent_report_cli, agent_status_cli, agent_update,
 };
 pub use ai::{ai_doctor_cli, ai_setup_cli};
 pub use app::{
-    app_action_cli, app_info, app_init, app_inspect_cli, app_install_package,
-    app_install_with_pin, app_list, app_package_cli, app_render, app_uninstall, app_update_cli,
-    InstallConfirm,
-};
-pub use account::{
-    account_login_cli, account_logout_cli, account_signup_cli, account_status_cli,
-};
-pub use marketplace::{
-    app_browse_cli, app_license_list_cli, app_license_show_cli, app_publish_cli, app_search_cli,
+    app_action_cli, app_info, app_init, app_inspect_cli, app_install_package, app_install_with_pin,
+    app_list, app_package_cli, app_render, app_uninstall, app_update_cli, InstallConfirm,
 };
 pub use app_check::app_check_cli;
 pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
@@ -234,6 +228,9 @@ pub use install::{
     self_update_cli, update_cli,
 };
 pub use list::{freeze_cli, parse_notify_choice};
+pub use marketplace::{
+    app_browse_cli, app_license_list_cli, app_license_show_cli, app_publish_cli, app_search_cli,
+};
 pub use notes::{notes_list_cli, notes_open_cli};
 pub use notify::notify_cli;
 pub use open::{

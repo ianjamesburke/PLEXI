@@ -253,8 +253,7 @@ impl RenderSession {
                     // egui's caret is hidden (transparent, non-blinking);
                     // draw_text_caret paints a glyph-height replacement on top.
                     inner_child.visuals_mut().text_cursor.blink = false;
-                    inner_child.visuals_mut().text_cursor.stroke.color =
-                        egui::Color32::TRANSPARENT;
+                    inner_child.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
                     let edit = egui::TextEdit::singleline(buffer)
                         .id(widget_id)
                         .desired_width(inner_rect.width())

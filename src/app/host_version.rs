@@ -150,9 +150,15 @@ mod tests {
         assert!(v.is_blocking());
         assert!(matches!(v, VersionVerdict::TooOld { .. }));
         // exactly at min is fine
-        assert_eq!(check(Some("0.0.760"), None, Version(0, 0, 760)), VersionVerdict::Ok);
+        assert_eq!(
+            check(Some("0.0.760"), None, Version(0, 0, 760)),
+            VersionVerdict::Ok
+        );
         // above min is fine
-        assert_eq!(check(Some("0.0.760"), None, Version(0, 1, 0)), VersionVerdict::Ok);
+        assert_eq!(
+            check(Some("0.0.760"), None, Version(0, 1, 0)),
+            VersionVerdict::Ok
+        );
     }
 
     #[test]
@@ -161,14 +167,23 @@ mod tests {
         assert!(!v.is_blocking(), "too-new must warn, not block");
         assert!(matches!(v, VersionVerdict::TooNew { .. }));
         // at or below max is fine
-        assert_eq!(check(None, Some("0.0.760"), Version(0, 0, 760)), VersionVerdict::Ok);
+        assert_eq!(
+            check(None, Some("0.0.760"), Version(0, 0, 760)),
+            VersionVerdict::Ok
+        );
     }
 
     #[test]
     fn malformed_requirement_blocks() {
         let v = check(Some("not-a-version"), None, Version(0, 0, 760));
         assert!(v.is_blocking());
-        assert!(matches!(v, VersionVerdict::Malformed { field: "plexi_min", .. }));
+        assert!(matches!(
+            v,
+            VersionVerdict::Malformed {
+                field: "plexi_min",
+                ..
+            }
+        ));
     }
 
     #[test]

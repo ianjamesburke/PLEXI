@@ -196,7 +196,9 @@ hidden = true
 /// Load triage actions from `<config_dir>/notes/actions.toml`.
 /// Writes the default template on first open. Returns an empty vec on parse errors.
 pub(crate) fn load_triage_actions() -> Vec<TriageAction> {
-    let actions_path = crate::config::config_dir().join("notes").join("actions.toml");
+    let actions_path = crate::config::config_dir()
+        .join("notes")
+        .join("actions.toml");
 
     if !actions_path.exists() {
         if let Some(parent) = actions_path.parent() {
@@ -276,11 +278,7 @@ fn parse_actions_toml(src: &str) -> Vec<TriageAction> {
 }
 
 /// Substitute {note}, {cwd}, {context_root} tokens in `cmd`.
-pub(crate) fn substitute_action_tokens(
-    cmd: &str,
-    note_body: &str,
-    fm: &NoteFrontmatter,
-) -> String {
+pub(crate) fn substitute_action_tokens(cmd: &str, note_body: &str, fm: &NoteFrontmatter) -> String {
     let quoted_note = crate::host::shell::shell_quote(note_body.trim());
     let cwd_str = fm
         .cwd
@@ -334,11 +332,7 @@ pub(crate) fn scan_inbox() -> Vec<InboxNote> {
 
     let mut paths: Vec<(std::time::SystemTime, PathBuf)> = entries
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map_or(false, |x| x == "md")
-        })
+        .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
         .filter_map(|e| {
             let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
             Some((mtime, e.path()))
@@ -442,8 +436,7 @@ mod tests {
 
     #[test]
     fn picker_entry_title_fallbacks() {
-        let dir =
-            std::env::temp_dir().join(format!("plexi-notes-entry-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("plexi-notes-entry-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
 
         let titled = dir.join("titled.md");

@@ -179,7 +179,11 @@ pub(crate) fn unregister(pane_id: u64) {
 /// True when `pane_id` has a registry entry (it exposed tools and is still
 /// open) — i.e. host-routed events can reach it.
 pub(crate) fn pane_reachable(pane_id: u64) -> bool {
-    global_registry().lock().unwrap().sender_for(pane_id).is_some()
+    global_registry()
+        .lock()
+        .unwrap()
+        .sender_for(pane_id)
+        .is_some()
 }
 
 /// Send a `PlexiEvent` to a registered pane's stdin channel (Phase C: the
@@ -697,14 +701,22 @@ mod tests {
 
         let blocked = dispatcher.dispatch_call("c1".to_string(), "gated_tool", "{}".to_string());
         assert!(
-            blocked.error.as_deref().unwrap_or("").contains("permission_denied"),
+            blocked
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("permission_denied"),
             "hook denial must surface as the tool error: {:?}",
             blocked.error
         );
 
         let unknown = dispatcher.dispatch_call("c2".to_string(), "nope", "{}".to_string());
         assert!(
-            unknown.error.as_deref().unwrap_or("").contains("tool_not_found"),
+            unknown
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("tool_not_found"),
             "unknown tool must bypass hooks: {:?}",
             unknown.error
         );

@@ -880,9 +880,7 @@ impl ProcessApp {
             permission_store: crate::app::permissions::PermissionStore::default(),
             grant_store: crate::broker::GrantStore::default(),
             posture: None,
-            app_timeline: Arc::new(Mutex::new(
-                crate::host::app_timeline::AppTimeline::default(),
-            )),
+            app_timeline: Arc::new(Mutex::new(crate::host::app_timeline::AppTimeline::default())),
             pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new(
                 std::env::temp_dir().join(format!("plexi-pipes-{}", uuid::Uuid::new_v4())),
             ))),

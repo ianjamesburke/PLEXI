@@ -4003,7 +4003,10 @@ mod ai_stream_chunk_tests {
         let json = r#"{"type":"get_previous_pane_info","response_file":"/tmp/prev.json"}"#;
         let req: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &req {
-            AppRequest::GetPreviousPaneInfo { response_file, steps } => {
+            AppRequest::GetPreviousPaneInfo {
+                response_file,
+                steps,
+            } => {
                 assert_eq!(response_file, "/tmp/prev.json");
                 assert_eq!(*steps, 1, "default steps must be 1");
             }
@@ -4127,7 +4130,10 @@ mod pip_status_tests {
             serde_json::from_str(r#"{"type":"set_pip_status","status":"red"}"#).unwrap();
         match req {
             AppRequest::SetPipStatus { pane_id, status } => {
-                assert_eq!(pane_id, 0, "omitted pane_id must default to 0 for host stamping");
+                assert_eq!(
+                    pane_id, 0,
+                    "omitted pane_id must default to 0 for host stamping"
+                );
                 assert_eq!(status, PipStatus::Red);
             }
             other => panic!("expected SetPipStatus, got {other:?}"),

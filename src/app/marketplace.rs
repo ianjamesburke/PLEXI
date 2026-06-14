@@ -233,7 +233,11 @@ impl RegistryEntry {
             version: report.version.clone(),
             description: String::new(),
             publisher: marketplace.publisher.clone().unwrap_or_default(),
-            capabilities: report.capabilities.iter().map(|c| c.as_str().to_string()).collect(),
+            capabilities: report
+                .capabilities
+                .iter()
+                .map(|c| c.as_str().to_string())
+                .collect(),
             tags,
             trust_label: trust_label.to_string(),
             visibility: marketplace.visibility,
@@ -326,7 +330,10 @@ impl RegistryClient {
 
     /// Fetch and parse the catalog index.
     pub fn fetch_index(&self) -> Result<RegistryIndex, RegistryError> {
-        log::info!("marketplace: fetching registry index from {}", self.index_url);
+        log::info!(
+            "marketplace: fetching registry index from {}",
+            self.index_url
+        );
         let body = Self::agent()
             .get(&self.index_url)
             .call()
@@ -372,14 +379,18 @@ impl RegistryClient {
         dest: &std::path::Path,
     ) -> Result<PathBuf, RegistryError> {
         let url = self.artifact_url(entry);
-        log::info!("marketplace: downloading '{}' artifact from {url}", entry.id);
+        log::info!(
+            "marketplace: downloading '{}' artifact from {url}",
+            entry.id
+        );
         let resp = Self::agent()
             .get(&url)
             .call()
             .map_err(|e| RegistryError::Download(e.to_string()))?;
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| RegistryError::Download(format!("create {}: {e}", parent.display())))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                RegistryError::Download(format!("create {}: {e}", parent.display()))
+            })?;
         }
         let mut reader = resp.into_reader();
         let mut file = std::fs::File::create(dest)
@@ -397,7 +408,11 @@ impl RegistryClient {
                 actual,
             });
         }
-        log::info!("marketplace: downloaded + verified '{}' to {}", entry.id, dest.display());
+        log::info!(
+            "marketplace: downloaded + verified '{}' to {}",
+            entry.id,
+            dest.display()
+        );
         Ok(dest.to_path_buf())
     }
 }
@@ -944,6 +959,9 @@ mod tests {
         );
         let mut e2 = e.clone();
         e2.package_url = Some("https://direct.example/a.plexipkg".to_string());
-        assert_eq!(client.artifact_url(&e2), "https://direct.example/a.plexipkg");
+        assert_eq!(
+            client.artifact_url(&e2),
+            "https://direct.example/a.plexipkg"
+        );
     }
 }

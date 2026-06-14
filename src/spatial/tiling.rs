@@ -100,11 +100,7 @@ pub(crate) fn paint_tab_bar(
             let t = ctx.input(|i| i.time);
             let color = crate::ui::activity::dot_color_from_time(state, colors, t, i);
             let cx = tab_rect.left() + TAB_PIP_LEFT_PAD + TAB_PIP_RADIUS;
-            painter.circle_filled(
-                egui::pos2(cx, tab_rect.center().y),
-                TAB_PIP_RADIUS,
-                color,
-            );
+            painter.circle_filled(egui::pos2(cx, tab_rect.center().y), TAB_PIP_RADIUS, color);
             if matches!(state, AgentState::Working) {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
@@ -156,7 +152,12 @@ pub(crate) fn paint_tab_bar(
             egui::vec2(chip_w, chip_h),
         );
         painter.rect_filled(chip_rect, egui::CornerRadius::same(3), colors.bg_active);
-        painter.rect_stroke(chip_rect, egui::CornerRadius::same(3), egui::Stroke::new(1.0, colors.border), egui::StrokeKind::Inside);
+        painter.rect_stroke(
+            chip_rect,
+            egui::CornerRadius::same(3),
+            egui::Stroke::new(1.0, colors.border),
+            egui::StrokeKind::Inside,
+        );
         painter.text(
             chip_rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -351,8 +352,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 app_ui.advance_cursor_after_rect(bar_rect);
                 let is_overtaken = app_pane.overlay_replaced.is_some();
                 if let Some(idx) = paint_tab_bar(
-                    app_ui.ctx(), app_ui.painter(), bar_rect, group,
-                    &self.tab_labels, &tab_activities, &self.colors, self.pane_title_font_size, is_overtaken,
+                    app_ui.ctx(),
+                    app_ui.painter(),
+                    bar_rect,
+                    group,
+                    &self.tab_labels,
+                    &tab_activities,
+                    &self.colors,
+                    self.pane_title_font_size,
+                    is_overtaken,
                 ) {
                     self.tab_click = Some((group.container_tile, idx));
                 }
@@ -454,7 +462,13 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                             .request_repaint_after(std::time::Duration::from_millis(100));
                     }
                     let painter = ui.painter();
-                    paint_portal_minimap(painter, map_area, &preview.windows, &colors_for_portal, t);
+                    paint_portal_minimap(
+                        painter,
+                        map_area,
+                        &preview.windows,
+                        &colors_for_portal,
+                        t,
+                    );
                 }
             });
             // Double-click on portal pane to zoom into the sub-context.

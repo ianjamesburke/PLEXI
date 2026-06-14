@@ -80,7 +80,11 @@ impl AssistantStore {
 
     /// Persist `id` as the active conversation, along with an optional
     /// session name. Other persisted preferences are preserved.
-    pub fn set_active_conversation(&self, id: &str, session_name: Option<&str>) -> Result<(), String> {
+    pub fn set_active_conversation(
+        &self,
+        id: &str,
+        session_name: Option<&str>,
+    ) -> Result<(), String> {
         let mut state = self.read_state().unwrap_or(StateToml {
             active_conversation: String::new(),
             session_name: None,
@@ -126,8 +130,8 @@ impl AssistantStore {
         }
         let mut raw = String::new();
         for turn in turns {
-            let line = serde_json::to_string(turn)
-                .map_err(|e| format!("serialize turn for {id}: {e}"))?;
+            let line =
+                serde_json::to_string(turn).map_err(|e| format!("serialize turn for {id}: {e}"))?;
             raw.push_str(&line);
             raw.push('\n');
         }
@@ -250,7 +254,10 @@ mod tests {
         store
             .write_turns(
                 id,
-                &[Turn::now(TurnRole::User, "ok"), Turn::now(TurnRole::User, "after")],
+                &[
+                    Turn::now(TurnRole::User, "ok"),
+                    Turn::now(TurnRole::User, "after"),
+                ],
             )
             .unwrap();
         let path = ws

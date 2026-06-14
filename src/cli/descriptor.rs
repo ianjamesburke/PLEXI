@@ -81,7 +81,10 @@ pub fn probe_with_options<R: DescriptorRunner>(
             }
             _ => {}
         }
-        eprintln!("error: no descriptor available for `{command} {}` — native --plexi failed.", args.join(" "));
+        eprintln!(
+            "error: no descriptor available for `{command} {}` — native --plexi failed.",
+            args.join(" ")
+        );
         return 1;
     }
 
@@ -387,8 +390,8 @@ mod descriptor_tests {
     #[test]
     fn resolve_prefers_native_plexi() {
         let mock = ok_descriptor_runner();
-        let resolved = resolve_cli_with(&mock, "fake-cli", true, true)
-            .expect("native descriptor resolves");
+        let resolved =
+            resolve_cli_with(&mock, "fake-cli", true, true).expect("native descriptor resolves");
         assert!(matches!(resolved.source, SummarySource::Native));
         assert_eq!(resolved.descriptor.name, "fake");
         // The native probe must invoke `<cli> --plexi`.

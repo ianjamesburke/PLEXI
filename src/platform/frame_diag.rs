@@ -352,9 +352,7 @@ mod tests {
         );
 
         // Truncation appends the overflow count.
-        let many: Vec<(String, u32)> = (0..10)
-            .map(|i| (format!("src/f.rs:{i}"), 10 - i))
-            .collect();
+        let many: Vec<(String, u32)> = (0..10).map(|i| (format!("src/f.rs:{i}"), 10 - i)).collect();
         let line = egui_summary_line(&many, 8);
         assert!(line.ends_with(" (+2 more)"), "got: {line}");
         assert!(line.contains("src/f.rs:0=10"));

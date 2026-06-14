@@ -93,7 +93,11 @@ pub(crate) fn choice_button(
         ui.allocate_exact_size(Vec2::new(width, style::BUTTON_H_LG), egui::Sense::click());
 
     let (bg, fg, hint_color) = if focused {
-        (colors.accent, Color32::BLACK, Color32::from_black_alpha(140))
+        (
+            colors.accent,
+            Color32::BLACK,
+            Color32::from_black_alpha(140),
+        )
     } else {
         (colors.bg_hover, colors.text_primary, colors.text_dim)
     };

@@ -2102,11 +2102,9 @@ impl ProcessApp {
                     self.type_id
                 );
                 let actor_id = self.type_id.clone();
-                if let Err(e) = self.request_rollback(
-                    crate::broker::ActorType::App,
-                    &actor_id,
-                    &checkpoint_id,
-                ) {
+                if let Err(e) =
+                    self.request_rollback(crate::broker::ActorType::App, &actor_id, &checkpoint_id)
+                {
                     log::warn!(
                         "ProcessApp[{}]: RequestRollback rejected — {e}",
                         self.type_id

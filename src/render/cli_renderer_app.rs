@@ -395,30 +395,27 @@ impl CliRendererApp {
         // the command palette, sidebar, and PGAP list views exactly.
         let mut clicked_idx: Option<usize> = None;
         let selection_changed = self.selected != self.last_selected;
-        egui::ScrollArea::vertical()
-            .animated(false)
-            .show(ui, |ui| {
-                for (i, row) in rows.iter().enumerate() {
-                    let is_selected = i == self.selected;
-                    // A trailing "›" marks command groups (rows that drill into
-                    // a sub-list rather than open a form).
-                    let mut list_row = crate::ui::list::ListRow::new(&row.name)
-                        .selected(is_selected);
-                    if let Some(desc) = &row.description {
-                        list_row = list_row.secondary(desc);
-                    }
-                    if row.has_children {
-                        list_row = list_row.chip("›");
-                    }
-                    let resp = list_row.show(ui, colors);
-                    if is_selected {
-                        resp.scroll_into_view(ui, selection_changed);
-                    }
-                    if resp.row_clicked() {
-                        clicked_idx = Some(i);
-                    }
+        egui::ScrollArea::vertical().animated(false).show(ui, |ui| {
+            for (i, row) in rows.iter().enumerate() {
+                let is_selected = i == self.selected;
+                // A trailing "›" marks command groups (rows that drill into
+                // a sub-list rather than open a form).
+                let mut list_row = crate::ui::list::ListRow::new(&row.name).selected(is_selected);
+                if let Some(desc) = &row.description {
+                    list_row = list_row.secondary(desc);
                 }
-            });
+                if row.has_children {
+                    list_row = list_row.chip("›");
+                }
+                let resp = list_row.show(ui, colors);
+                if is_selected {
+                    resp.scroll_into_view(ui, selection_changed);
+                }
+                if resp.row_clicked() {
+                    clicked_idx = Some(i);
+                }
+            }
+        });
         self.last_selected = self.selected;
 
         if let Some(i) = clicked_idx {
@@ -654,10 +651,7 @@ impl CliRendererApp {
                         if want_focus && !resp.has_focus() {
                             resp.request_focus();
                             took_focus = true;
-                            log::info!(
-                                "CliRendererApp: auto-focused field '{}'",
-                                arg.name
-                            );
+                            log::info!("CliRendererApp: auto-focused field '{}'", arg.name);
                         }
                     }
                 }
@@ -871,7 +865,11 @@ mod tests {
         let (app, _dir) = app_from_fixture();
         let d = app.descriptor.as_ref().expect("descriptor loaded");
         assert_eq!(d.name, "demo");
-        let names: Vec<&str> = app.commands_at_path().iter().map(|c| c.name.as_str()).collect();
+        let names: Vec<&str> = app
+            .commands_at_path()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
         assert_eq!(names, vec!["greet", "remote"]);
     }
 
@@ -889,7 +887,11 @@ mod tests {
         let (mut app, _dir) = app_from_fixture();
         app.navigate_into(1); // remote — has children
         assert_eq!(app.view, View::List);
-        let names: Vec<&str> = app.commands_at_path().iter().map(|c| c.name.as_str()).collect();
+        let names: Vec<&str> = app
+            .commands_at_path()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
         assert_eq!(names, vec!["add"]);
     }
 
@@ -897,7 +899,8 @@ mod tests {
     fn build_command_string_assembles_flags_and_args() {
         let (mut app, _dir) = app_from_fixture();
         app.navigate_into(0); // greet
-        app.field_values.insert("name".into(), "Ada Lovelace".into());
+        app.field_values
+            .insert("name".into(), "Ada Lovelace".into());
         app.field_values.insert("--loud".into(), "true".into());
         app.field_values.insert("--lang".into(), "fr".into());
         let cmd = app.build_command_string();
@@ -946,7 +949,11 @@ mod tests {
     }
 
     /// Drive `handle_key` with a single key event through a real egui frame.
-    fn press_key(app: &mut CliRendererApp, key: egui::Key, modifiers: egui::Modifiers) -> KeyDisposition {
+    fn press_key(
+        app: &mut CliRendererApp,
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+    ) -> KeyDisposition {
         let ctx = egui::Context::default();
         let mut disposition = KeyDisposition::Passthrough;
         let _ = ctx.run(

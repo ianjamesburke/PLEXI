@@ -326,8 +326,8 @@ impl SceneRunner {
                 // multi-character. No `+`-prefix check needed — a literal `+`
                 // key has len == 1 and must take the Event::Text path.
                 let mut key_chars = key.chars();
-                let is_bare_printable = key_chars.next().is_some_and(|c| !c.is_control())
-                    && key_chars.next().is_none();
+                let is_bare_printable =
+                    key_chars.next().is_some_and(|c| !c.is_control()) && key_chars.next().is_none();
                 if is_bare_printable {
                     self.h
                         .harness()

@@ -120,8 +120,8 @@ fn draw_pips(
         let is_hidden = dots.hidden_set.contains(&dot_i);
         let agent_state = dots.activities.get(dot_i).and_then(|s| s.as_ref());
         let focused = dots.focused_idx == Some(dot_i);
-        let mut color =
-            crate::ui::activity::pip_color(agent_state, focused, colors, t, dot_i).gamma_multiply(row_alpha);
+        let mut color = crate::ui::activity::pip_color(agent_state, focused, colors, t, dot_i)
+            .gamma_multiply(row_alpha);
         if is_dragging && agent_state.is_none() && !focused {
             color = color.gamma_multiply(0.4);
         }
@@ -133,14 +133,12 @@ fn draw_pips(
         }
     }
     if dots.count > PANE_DOT_MAX {
-        let overflow_x =
-            rect.min.x + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
-        let overflow_color =
-            if dots.focused_idx.map_or(false, |idx| idx >= PANE_DOT_MAX) {
-                with_alpha(colors.accent, row_alpha)
-            } else {
-                with_alpha(colors.text_dim, 0.5)
-            };
+        let overflow_x = rect.min.x + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
+        let overflow_color = if dots.focused_idx.map_or(false, |idx| idx >= PANE_DOT_MAX) {
+            with_alpha(colors.accent, row_alpha)
+        } else {
+            with_alpha(colors.text_dim, 0.5)
+        };
         painter.text(
             egui::pos2(overflow_x, cy),
             egui::Align2::LEFT_CENTER,
@@ -205,94 +203,96 @@ impl ContextItem {
 
                 // Content column: name row + optional path row.
                 // Pips live on the name row, right-aligned before the action zone.
-                let name_row_h = ui.vertical(|ui| {
-                    // --- Name row (includes pips right-aligned) ---
-                    let name_y_before = ui.cursor().min.y;
-                    ui.horizontal(|ui| {
-                        // Compute pip strip width so we can budget the name text.
-                        let pip_strip_w = if let Some(ref dots) = pane_dots {
-                            if dots.count > 0 {
-                                let capped = dots.count.min(PANE_DOT_MAX);
-                                let mut w = (capped as f32) * PANE_DOT_SPACING;
-                                if dots.count > PANE_DOT_MAX {
-                                    w += 20.0;
+                let name_row_h = ui
+                    .vertical(|ui| {
+                        // --- Name row (includes pips right-aligned) ---
+                        let name_y_before = ui.cursor().min.y;
+                        ui.horizontal(|ui| {
+                            // Compute pip strip width so we can budget the name text.
+                            let pip_strip_w = if let Some(ref dots) = pane_dots {
+                                if dots.count > 0 {
+                                    let capped = dots.count.min(PANE_DOT_MAX);
+                                    let mut w = (capped as f32) * PANE_DOT_SPACING;
+                                    if dots.count > PANE_DOT_MAX {
+                                        w += 20.0;
+                                    }
+                                    w + 6.0 // gap between name text and dots
+                                } else {
+                                    0.0
                                 }
-                                w + 6.0 // gap between name text and dots
                             } else {
                                 0.0
-                            }
-                        } else {
-                            0.0
-                        };
+                            };
 
-                        let right_reserve = if action_enabled {
-                            ACTION_ZONE_WIDTH + 4.0
-                        } else {
-                            8.0
-                        };
-                        let badge_w = if badge_count > 0 { 26.0 } else { 0.0 };
-                        let text_max = (ui.available_width()
-                            - right_reserve
-                            - badge_w
-                            - pip_strip_w)
-                            .max(0.0);
+                            let right_reserve = if action_enabled {
+                                ACTION_ZONE_WIDTH + 4.0
+                            } else {
+                                8.0
+                            };
+                            let badge_w = if badge_count > 0 { 26.0 } else { 0.0 };
+                            let text_max =
+                                (ui.available_width() - right_reserve - badge_w - pip_strip_w)
+                                    .max(0.0);
 
-                        ui.scope(|ui| {
-                            ui.set_max_width(text_max);
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&ctx_name)
-                                        .size(13.0)
-                                        .color(text_color),
-                                )
-                                .selectable(false)
-                                .truncate(),
-                            );
-                        });
-
-                        // Pips: rendered inline right of the name, before badge/action.
-                        draw_pips(ui, &pane_dots, &colors, row_alpha, is_dragging);
-
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add_space(if action_enabled { ACTION_ZONE_WIDTH } else { 0.0 });
-                            if badge_count > 0 {
-                                let badge_text = if badge_count > 9 {
-                                    "9+".to_string()
-                                } else {
-                                    badge_count.to_string()
-                                };
-                                ui.label(
-                                    egui::RichText::new(badge_text)
-                                        .size(10.0)
-                                        .color(with_alpha(accent_color, row_alpha)),
-                                );
-                            }
-                        });
-                    });
-                    // Capture name-row height before the subtitle row is added.
-                    let name_h = ui.cursor().min.y - name_y_before;
-
-                    // --- Path row (subtitle only, no pips) ---
-                    if let Some(ref path) = subtitle {
-                        ui.horizontal(|ui| {
-                            let path_max = (ui.available_width() - 8.0).max(0.0);
                             ui.scope(|ui| {
-                                ui.set_max_width(path_max);
+                                ui.set_max_width(text_max);
                                 ui.add(
                                     egui::Label::new(
-                                        egui::RichText::new(shorten_path(path))
-                                            .size(10.0)
-                                            .color(with_alpha(text_dim, row_alpha * 0.7)),
+                                        egui::RichText::new(&ctx_name).size(13.0).color(text_color),
                                     )
                                     .selectable(false)
                                     .truncate(),
                                 );
                             });
-                        });
-                    }
 
-                    name_h
-                }).inner;
+                            // Pips: rendered inline right of the name, before badge/action.
+                            draw_pips(ui, &pane_dots, &colors, row_alpha, is_dragging);
+
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.add_space(if action_enabled {
+                                    ACTION_ZONE_WIDTH
+                                } else {
+                                    0.0
+                                });
+                                if badge_count > 0 {
+                                    let badge_text = if badge_count > 9 {
+                                        "9+".to_string()
+                                    } else {
+                                        badge_count.to_string()
+                                    };
+                                    ui.label(
+                                        egui::RichText::new(badge_text)
+                                            .size(10.0)
+                                            .color(with_alpha(accent_color, row_alpha)),
+                                    );
+                                }
+                            });
+                        });
+                        // Capture name-row height before the subtitle row is added.
+                        let name_h = ui.cursor().min.y - name_y_before;
+
+                        // --- Path row (subtitle only, no pips) ---
+                        if let Some(ref path) = subtitle {
+                            ui.horizontal(|ui| {
+                                let path_max = (ui.available_width() - 8.0).max(0.0);
+                                ui.scope(|ui| {
+                                    ui.set_max_width(path_max);
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(shorten_path(path))
+                                                .size(10.0)
+                                                .color(with_alpha(text_dim, row_alpha * 0.7)),
+                                        )
+                                        .selectable(false)
+                                        .truncate(),
+                                    );
+                                });
+                            });
+                        }
+
+                        name_h
+                    })
+                    .inner;
                 name_row_h_capture = name_row_h;
             });
 
