@@ -6,6 +6,7 @@ _tier() {
   local name="$1"
   case "$name" in
     main|alpha|beta) echo "production" ;;
+    rc-*)            echo "release-candidate" ;;
     pr-*)            echo "ephemeral" ;;
     *)               echo "development" ;;
   esac

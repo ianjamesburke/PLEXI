@@ -250,3 +250,6 @@ Visual effects. Restart after changing these values.
 Project-level config at `.plexi/workspace.toml` (main channel) or `.plexi-alpha/workspace.toml` etc. for channel builds. Any key set here overrides the global config for that project. Fields not present in the workspace config inherit from the global config.
 
 Initialize with: `plexi workspace init`
+
+Release-gated product features are not controlled by config. They are controlled
+by the running binary channel; see [`RELEASE_CHANNELS.md`](RELEASE_CHANNELS.md).

@@ -24,6 +24,7 @@ mod platform;
 mod plexi_ai;
 mod process_app;
 mod protocol;
+mod release;
 mod render;
 #[cfg(test)]
 mod scenes;
@@ -37,6 +38,16 @@ mod ui_tests;
 mod workspace;
 
 fn main() -> eframe::Result {
+    fn exit_if_feature_disabled(feature: crate::release::ReleaseFeature) {
+        if !crate::release::feature_enabled(feature) {
+            eprintln!(
+                "error: {}",
+                crate::release::feature_unavailable_message(feature)
+            );
+            std::process::exit(1);
+        }
+    }
+
     if std::env::args().nth(1).as_deref() == Some("--render") {
         render_cli();
         std::process::exit(0);
@@ -338,6 +349,9 @@ fn main() -> eframe::Result {
                                     // Prefix routing: cli:, mcp:, app:, or bare name
                                     match cli::parse_prefix(&tid) {
                                         cli::OpenPrefix::Cli(name) => {
+                                            exit_if_feature_disabled(
+                                                crate::release::ReleaseFeature::AppWrappers,
+                                            );
                                             log::info!("app_open:cli: prefix-routed cli:{name}");
                                             std::process::exit(cli::open_cli_by_name(
                                                 &name,
@@ -347,6 +361,9 @@ fn main() -> eframe::Result {
                                             ));
                                         }
                                         cli::OpenPrefix::Mcp(name) => {
+                                            exit_if_feature_disabled(
+                                                crate::release::ReleaseFeature::AppWrappers,
+                                            );
                                             log::info!("app_open:cli: prefix-routed mcp:{name}");
                                             std::process::exit(cli::open_mcp_by_name(
                                                 &name,
@@ -377,6 +394,9 @@ fn main() -> eframe::Result {
                                         }
                                     }
                                 } else if !mcp.is_empty() {
+                                    exit_if_feature_disabled(
+                                        crate::release::ReleaseFeature::AppWrappers,
+                                    );
                                     let title = cli::mcp_pane_title(&mcp);
                                     log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
                                     let layout_str = layout.as_deref().unwrap_or("split_h");
@@ -394,6 +414,9 @@ fn main() -> eframe::Result {
                                     ));
                                 } else {
                                     let binary = cli_flag.unwrap();
+                                    exit_if_feature_disabled(
+                                        crate::release::ReleaseFeature::AppWrappers,
+                                    );
                                     log::info!("app_open:cli: --cli routing `{binary}` through unified resolver");
                                     std::process::exit(cli::open_cli_by_name(
                                         &binary,
@@ -446,6 +469,9 @@ fn main() -> eframe::Result {
                                                 yes,
                                             ));
                                         } else {
+                                            exit_if_feature_disabled(
+                                                crate::release::ReleaseFeature::Marketplace,
+                                            );
                                             log::info!("app_install:cli: remote spec={s} version={version:?}");
                                             std::process::exit(cli::install_cli(&s));
                                         }
@@ -513,17 +539,34 @@ fn main() -> eframe::Result {
                                 std::process::exit(cli::freeze_cli(&path));
                             }
                             AppCmd::Publish { path } => {
+                                exit_if_feature_disabled(
+                                    crate::release::ReleaseFeature::Marketplace,
+                                );
                                 std::process::exit(cli::app_publish_cli(&path));
                             }
                             AppCmd::Browse => {
+                                exit_if_feature_disabled(
+                                    crate::release::ReleaseFeature::Marketplace,
+                                );
                                 std::process::exit(cli::app_browse_cli());
                             }
                             AppCmd::Search { query } => {
+                                exit_if_feature_disabled(
+                                    crate::release::ReleaseFeature::Marketplace,
+                                );
                                 std::process::exit(cli::app_search_cli(&query));
                             }
                             AppCmd::License { cmd } => match cmd {
-                                LicenseCmd::List => std::process::exit(cli::app_license_list_cli()),
+                                LicenseCmd::List => {
+                                    exit_if_feature_disabled(
+                                        crate::release::ReleaseFeature::Marketplace,
+                                    );
+                                    std::process::exit(cli::app_license_list_cli())
+                                }
                                 LicenseCmd::Show { id } => {
+                                    exit_if_feature_disabled(
+                                        crate::release::ReleaseFeature::Marketplace,
+                                    );
                                     std::process::exit(cli::app_license_show_cli(&id))
                                 }
                             },
@@ -872,16 +915,19 @@ fn main() -> eframe::Result {
                             ));
                         }
                     },
-                    Commands::Account { cmd } => match cmd {
-                        AccountCmd::Status => std::process::exit(cli::account_status_cli()),
-                        AccountCmd::Login { email } => {
-                            std::process::exit(cli::account_login_cli(email.as_deref()))
+                    Commands::Account { cmd } => {
+                        exit_if_feature_disabled(crate::release::ReleaseFeature::Marketplace);
+                        match cmd {
+                            AccountCmd::Status => std::process::exit(cli::account_status_cli()),
+                            AccountCmd::Login { email } => {
+                                std::process::exit(cli::account_login_cli(email.as_deref()))
+                            }
+                            AccountCmd::Signup { email } => {
+                                std::process::exit(cli::account_signup_cli(email.as_deref()))
+                            }
+                            AccountCmd::Logout => std::process::exit(cli::account_logout_cli()),
                         }
-                        AccountCmd::Signup { email } => {
-                            std::process::exit(cli::account_signup_cli(email.as_deref()))
-                        }
-                        AccountCmd::Logout => std::process::exit(cli::account_logout_cli()),
-                    },
+                    }
                     Commands::Registry { cmd } => match cmd {
                         RegistryCmd::Watch { cli: only } => {
                             std::process::exit(cli::registry::watch_cli(only.as_deref()));

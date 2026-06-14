@@ -92,7 +92,10 @@ Each build channel is a **fully isolated instance** — its own binary, app bund
 | Main | `plexi` | `~/.plexi/` | `Plexi.app` |
 | Beta | `plexi-beta` | `~/.plexi-beta/` | `Plexi Beta.app` |
 | Alpha | `plexi-alpha` | `~/.plexi-alpha/` | `Plexi Alpha.app` |
+| Release candidate | `plexi-rc-<version>` | `~/.plexi-rc-<version>/` | `Plexi Rc-<version>.app` |
 | PR build | `plexi-pr-<N>` | `~/.plexi-pr-<N>/` | `Plexi PR<N>.app` |
+
+**RC builds** are local stable-tier release candidates installed with `just channel-install rc-010` (or similar). They are isolated like any other named channel, but release gates treat `rc-*` exactly like stable/main so agents can test the limited public feature set before promoting to main.
 
 **PR builds** are ephemeral isolated instances installed by `just pr-install <N>` from inside the feature worktree. They never capture the bare `plexi` symlink. Remove them after merge with `just channel-clean pr-<N>`.
 
@@ -129,6 +132,12 @@ When beta is ready to ship as a release:
 just promote main
 ```
 This pushes beta→main, creates and pushes the version tag, and triggers the GitHub Actions release workflow.
+
+For public release candidates, install a stable-tier local channel before promotion:
+```
+just channel-install rc-010
+```
+Run the RC binary (`plexi-rc-010`) from the workspace you want to test. Its workspace config lives in `.plexi-rc-010/`, but release-gated features still follow the binary channel tier, not workspace config.
 
 **Worktree base is always local `HEAD`.** `wtp add` branches from the last local commit, not `origin/alpha`. This means unpushed commits are included in the base and dirty files are irrelevant (worktrees are commit-isolated). Never stop worktree creation due to a dirty working tree — only stop if a merge or rebase is in progress (`MERGE_HEAD` / `REBASE_HEAD` exists).
 

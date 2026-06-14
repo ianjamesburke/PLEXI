@@ -230,6 +230,14 @@ pub fn app_init(
 /// `src/cli/marketplace.rs`); `publisher` is the field required to publish.
 const MARKETPLACE_PLACEHOLDER: &str = "\n# Uncomment and fill in to publish with `plexi app publish`:\n# [marketplace]\n# visibility = \"public\"   # public | unlisted | private\n# price = \"free\"          # \"free\", or a price like \"4.99\"\n# publisher = \"your-org\"  # required: your publisher / org slug\n";
 
+fn marketplace_placeholder() -> &'static str {
+    if crate::release::feature_enabled(crate::release::ReleaseFeature::Marketplace) {
+        MARKETPLACE_PLACEHOLDER
+    } else {
+        ""
+    }
+}
+
 fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -238,7 +246,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
         "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"timer\"]\n\n[launch]\n{mp}",
         name = name,
         display = to_title_case(name),
-        mp = MARKETPLACE_PLACEHOLDER,
+        mp = marketplace_placeholder(),
     ))?;
 
     // main.py — plexi_sdk is injected via PYTHONPATH by the host at launch;
@@ -268,7 +276,7 @@ fn scaffold_agent_python_app(app_dir: &std::path::Path, name: &str) -> io::Resul
         "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"An agent app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"ai.query\"]\n\n[launch]\n{mp}",
         name = name,
         display = to_title_case(name),
-        mp = MARKETPLACE_PLACEHOLDER,
+        mp = marketplace_placeholder(),
     ))?;
 
     let template = include_str!("../../sdk/python/plexi_sdk/templates/agent_init.py");
@@ -295,7 +303,7 @@ fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
         "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = []\n\n[launch]\n{mp}",
         name = name,
         display = to_title_case(name),
-        mp = MARKETPLACE_PLACEHOLDER,
+        mp = marketplace_placeholder(),
     ))?;
 
     // Cargo.toml
@@ -1575,9 +1583,9 @@ mod scaffold_marketplace_tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Every scaffold must emit a commented top-level `[marketplace]` placeholder
-    /// naming `publisher`, and the comment must neither break parsing nor produce
-    /// a live `[marketplace]` section.
+    /// Beta/alpha scaffolds emit a commented top-level `[marketplace]`
+    /// placeholder naming `publisher`. The comment must neither break parsing
+    /// nor produce a live `[marketplace]` section.
     fn assert_placeholder(manifest: &str) {
         assert!(
             manifest.contains("# [marketplace]"),
@@ -1595,6 +1603,16 @@ mod scaffold_marketplace_tests {
         );
     }
 
+    fn assert_no_placeholder(manifest: &str) {
+        assert!(
+            !manifest.contains("# [marketplace]"),
+            "stable scaffolds should not advertise marketplace publishing"
+        );
+        let parsed: crate::app::registry::AppManifest =
+            toml::from_str(manifest).expect("scaffolded manifest must parse");
+        assert!(parsed.marketplace.is_none());
+    }
+
     fn manifest_for(scaffold: fn(&std::path::Path, &str) -> io::Result<()>) -> String {
         let dir = TempDir::new().unwrap();
         let app_dir = dir.path().join("myapp");
@@ -1604,17 +1622,25 @@ mod scaffold_marketplace_tests {
     }
 
     #[test]
-    fn python_scaffold_has_marketplace_placeholder() {
+    fn stable_python_scaffold_omits_marketplace_placeholder() {
+        assert_no_placeholder(&manifest_for(scaffold_python_app));
+    }
+
+    #[test]
+    fn stable_agent_scaffold_omits_marketplace_placeholder() {
+        assert_no_placeholder(&manifest_for(scaffold_agent_python_app));
+    }
+
+    #[test]
+    fn stable_rust_scaffold_omits_marketplace_placeholder() {
+        assert_no_placeholder(&manifest_for(scaffold_rust_app));
+    }
+
+    #[test]
+    fn beta_scaffolds_keep_marketplace_placeholder() {
+        let _channel = crate::config::set_test_channel("beta");
         assert_placeholder(&manifest_for(scaffold_python_app));
-    }
-
-    #[test]
-    fn agent_scaffold_has_marketplace_placeholder() {
         assert_placeholder(&manifest_for(scaffold_agent_python_app));
-    }
-
-    #[test]
-    fn rust_scaffold_has_marketplace_placeholder() {
         assert_placeholder(&manifest_for(scaffold_rust_app));
     }
 }

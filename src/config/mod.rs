@@ -838,6 +838,10 @@ pub fn ensure_profile_initialized() -> bool {
 
 /// Returns the build channel for this binary: the suffix after `plexi-`, or `None` for the bare `plexi` binary (main channel).
 pub fn build_channel() -> Option<String> {
+    #[cfg(test)]
+    if let Some(channel) = test_channel_override() {
+        return Some(channel);
+    }
     let basename = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))?;

@@ -150,6 +150,7 @@ pr-install number: fetch-python-runtime sdk-smoke
 #   just channel-install          — auto-detect from branch
 #   just channel-install gpui     — install as plexi-gpui channel
 #   just channel-install pr-123   — install as PR build
+#   just channel-install rc-010   — install a stable-tier local release candidate
 channel-install channel="": fetch-python-runtime regen-if-stale
     bash scripts/install.sh {{channel}}
 
@@ -157,6 +158,7 @@ channel-install channel="": fetch-python-runtime regen-if-stale
 # Works for any channel name: main, alpha, beta, pr-123, gpui, etc.
 #   just channel-clean gpui       — remove plexi-gpui artifacts
 #   just channel-clean pr-123     — remove PR 123 artifacts
+#   just channel-clean rc-010     — remove local release candidate artifacts
 channel-clean channel:
     bash scripts/channel-clean.sh {{channel}}
 

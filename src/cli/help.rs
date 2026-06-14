@@ -105,6 +105,11 @@ pub fn print_grouped_help() {
     for (heading, names) in HELP_GROUPS {
         println!("{}", header(heading));
         for &name in *names {
+            if name == "account"
+                && !crate::release::feature_enabled(crate::release::ReleaseFeature::Marketplace)
+            {
+                continue;
+            }
             if let Some(sub) = cmd.find_subcommand(name) {
                 let about = sub.get_about().map(|s| s.to_string()).unwrap_or_default();
                 println!("  {} {about}", lit(format!("{name:<col_width$}")));
