@@ -43,7 +43,7 @@ fn styled_text_input_inner(
             &output,
             font_id.size,
             row_height,
-            egui::Stroke::new(1.5, colors.accent),
+            egui::Stroke::new(1.0, colors.accent),
         );
         output.response
     })
@@ -96,9 +96,9 @@ pub(crate) fn draw_text_caret(
         return;
     }
 
-    // Bare glyph height reads slightly short against the row; +1px splits
-    // the difference with egui's full-row caret.
-    let caret_height = caret_height + 1.0;
+    // Bare glyph height reads slightly short against the row; +2px keeps the
+    // caret visible without returning to egui's full-row overshoot.
+    let caret_height = caret_height + 2.0;
 
     let cursor_pos = output.galley.pos_from_cursor(&cursor_range.primary);
     let row_h = if cursor_pos.height() > 0.01 {
@@ -325,7 +325,7 @@ impl<'a> TextArea<'a> {
                 &output,
                 self.font_id.size,
                 row_height,
-                egui::Stroke::new(1.5, colors.accent),
+                egui::Stroke::new(1.0, colors.accent),
             );
             output.response
         })

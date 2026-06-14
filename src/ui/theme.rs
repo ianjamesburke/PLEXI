@@ -724,7 +724,7 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     v.hyperlink_color = colors.accent;
     v.selection.bg_fill = colors.accent.gamma_multiply(0.35);
     v.selection.stroke = egui::Stroke::new(1.0, colors.accent);
-    v.text_cursor.stroke = egui::Stroke::new(2.0, colors.accent);
+    v.text_cursor.stroke = egui::Stroke::new(1.0, colors.accent);
     v.warn_fg_color = colors.warning;
     v.error_fg_color = colors.danger;
     v.slider_trailing_fill = true;

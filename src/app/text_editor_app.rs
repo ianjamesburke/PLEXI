@@ -538,7 +538,7 @@ impl App for TextEditorApp {
                     &output,
                     self.font_size,
                     row_height,
-                    egui::Stroke::new(2.0, colors.accent),
+                    egui::Stroke::new(1.0, colors.accent),
                 );
 
                 if output.response.changed() {

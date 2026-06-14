@@ -235,7 +235,7 @@ impl RenderSession {
                                 &output,
                                 font_id.size,
                                 row_height,
-                                egui::Stroke::new(1.5, colors.accent),
+                                egui::Stroke::new(1.0, colors.accent),
                             );
                             output
                         })
@@ -268,7 +268,7 @@ impl RenderSession {
                         &output,
                         font_id.size,
                         row_height,
-                        egui::Stroke::new(1.5, colors.accent),
+                        egui::Stroke::new(1.0, colors.accent),
                     );
                     output
                 };

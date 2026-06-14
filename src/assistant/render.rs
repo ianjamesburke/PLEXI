@@ -860,7 +860,7 @@ impl AssistantRenderer {
                             &output,
                             style::TEXT_BODY,
                             row_height,
-                            egui::Stroke::new(1.5, colors.accent),
+                            egui::Stroke::new(1.0, colors.accent),
                         );
                         if output.response.changed() {
                             model.reset_history_recall();

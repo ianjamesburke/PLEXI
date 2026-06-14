@@ -486,7 +486,7 @@ pub(crate) fn render_component_tree(
                         &output,
                         style::TEXT_BODY,
                         row_height,
-                        egui::Stroke::new(1.5, colors.accent),
+                        egui::Stroke::new(1.0, colors.accent),
                     );
                     output.response
                 })
