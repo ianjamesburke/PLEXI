@@ -52,6 +52,16 @@ This creates:
 RC installs also install shell completions for the channel binary, for example
 `_plexi-rc-010` for zsh.
 
+After installing a new or updated channel, open a fresh Plexi pane before testing
+completion behavior. Existing zsh sessions may keep an old completion cache; if
+autocomplete still looks stale, reset it in that pane:
+
+```sh
+rm -f ~/.zcompdump*
+autoload -Uz compinit
+compinit
+```
+
 Workspace config for that RC lives under `.plexi-rc-010/` inside the project
 root. For example:
 
