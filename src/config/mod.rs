@@ -69,7 +69,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "font_size",
     "theme_preset",
     "theme",
-    "beta",
+    "effects",
     "log",
     "notifications",
     "ai",
@@ -120,7 +120,7 @@ const KNOWN_THEME: &[&str] = &[
     "bright_white",
     "bright_foreground",
 ];
-const KNOWN_BETA: &[&str] = &["crt", "ghost", "ghost_opacity", "osc_pane_title"];
+const KNOWN_EFFECTS: &[&str] = &["crt", "ghost", "ghost_opacity"];
 const KNOWN_LOG: &[&str] = &["level", "retention_days"];
 const KNOWN_NOTIFICATIONS: &[&str] = &["enabled", "focus_mode", "interrupt_threshold"];
 const KNOWN_AI: &[&str] = &[
@@ -222,8 +222,8 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             if let Some(toml::Value::Table(t)) = table.get("theme") {
                 check_unknown_keys(t, "theme", KNOWN_THEME, &path_str, &mut diags);
             }
-            if let Some(toml::Value::Table(t)) = table.get("beta") {
-                check_unknown_keys(t, "beta", KNOWN_BETA, &path_str, &mut diags);
+            if let Some(toml::Value::Table(t)) = table.get("effects") {
+                check_unknown_keys(t, "effects", KNOWN_EFFECTS, &path_str, &mut diags);
             }
             if let Some(toml::Value::Table(t)) = table.get("log") {
                 check_unknown_keys(t, "log", KNOWN_LOG, &path_str, &mut diags);
@@ -459,7 +459,7 @@ pub struct PlexiConfig {
     pub osc_pane_title: Option<bool>,
     pub theme_preset: Option<String>,
     pub theme: Option<ThemeConfig>,
-    pub beta: Option<BetaConfig>,
+    pub effects: Option<EffectsConfig>,
     pub log: Option<LogConfig>,
     pub notifications: Option<NotificationsConfig>,
     pub ai: Option<AiConfig>,
@@ -706,13 +706,12 @@ impl LogConfig {
 }
 
 #[derive(Deserialize, Default, Clone)]
-pub struct BetaConfig {
+pub struct EffectsConfig {
     pub crt: Option<bool>,
     pub ghost: Option<bool>,
-    /// Opacity for unfocused panes when ghost is enabled. Range 0.0–1.0; default 0.9.
-    /// Setting this implies ghost = true regardless of the `ghost` flag.
+    /// Opacity for unfocused panes when ghost is enabled. Range 0.0–1.0; default 0.75.
+    /// Setting this implies ghost = true unless `ghost = false` is explicit.
     pub ghost_opacity: Option<f32>,
-    pub osc_pane_title: Option<bool>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -1195,9 +1194,7 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
 
 impl PlexiConfig {
     pub fn osc_pane_title_enabled(&self) -> bool {
-        self.osc_pane_title
-            .or_else(|| self.beta.as_ref().and_then(|b| b.osc_pane_title))
-            .unwrap_or(true)
+        self.osc_pane_title.unwrap_or(true)
     }
 
     /// Load the global config only — no project-level merge. Most call sites
@@ -1256,7 +1253,7 @@ impl PlexiConfig {
 
     /// Field-level overlay of `other` on top of `self`. Any `Some(_)` value in
     /// `other` replaces the corresponding field in `self`. Nested structs
-    /// (theme, beta, log, notifications) are overlaid recursively.
+    /// (theme, effects, log, notifications) are overlaid recursively.
     fn overlay(&mut self, other: Self) {
         if other.font_size.is_some() {
             self.font_size = other.font_size;
@@ -1287,9 +1284,9 @@ impl PlexiConfig {
             (None, Some(incoming)) => self.theme = Some(incoming),
             _ => {}
         }
-        match (self.beta.as_mut(), other.beta) {
+        match (self.effects.as_mut(), other.effects) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
-            (None, Some(incoming)) => self.beta = Some(incoming),
+            (None, Some(incoming)) => self.effects = Some(incoming),
             _ => {}
         }
         match (self.log.as_mut(), other.log) {
@@ -1430,7 +1427,7 @@ impl ThemeConfig {
     }
 }
 
-impl BetaConfig {
+impl EffectsConfig {
     fn overlay(&mut self, other: Self) {
         if other.crt.is_some() {
             self.crt = other.crt;
@@ -1441,20 +1438,15 @@ impl BetaConfig {
         if other.ghost_opacity.is_some() {
             self.ghost_opacity = other.ghost_opacity;
         }
-        if other.osc_pane_title.is_some() {
-            self.osc_pane_title = other.osc_pane_title;
-        }
     }
 
     /// Resolved unfocused-pane opacity.
-    /// `ghost_opacity` set → use it; `ghost = true` → 0.9; else → None (no dimming).
+    /// `ghost = false` disables; otherwise ghost defaults on at 0.75 opacity.
     pub fn unfocused_opacity(&self) -> Option<f32> {
-        if let Some(opacity) = self.ghost_opacity {
-            Some(opacity)
-        } else if self.ghost.unwrap_or(false) {
-            Some(0.9)
-        } else {
+        if self.ghost == Some(false) {
             None
+        } else {
+            Some(self.ghost_opacity.unwrap_or(0.75).clamp(0.0, 1.0))
         }
     }
 }
@@ -1644,27 +1636,45 @@ mod tests {
     }
 
     #[test]
-    fn osc_pane_title_defaults_on_with_beta_fallback() {
+    fn osc_pane_title_defaults_on() {
         let default_cfg = PlexiConfig::default();
         assert!(default_cfg.osc_pane_title_enabled());
 
         let top_level_disabled: PlexiConfig = toml::from_str("osc_pane_title = false\n").unwrap();
         assert!(!top_level_disabled.osc_pane_title_enabled());
-
-        let beta_disabled: PlexiConfig =
-            toml::from_str("[beta]\nosc_pane_title = false\n").unwrap();
-        assert!(!beta_disabled.osc_pane_title_enabled());
     }
 
     #[test]
     fn validate_unknown_key_in_section() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        fs::write(&path, "[beta]\ncrt = true\nfake_flag = true\n").unwrap();
+        fs::write(&path, "[effects]\ncrt = true\nfake_flag = true\n").unwrap();
         let diags = validate_from_path(&path);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].to_string().contains("fake_flag"));
-        assert!(diags[0].to_string().contains("[beta]"));
+        assert!(diags[0].to_string().contains("[effects]"));
+    }
+
+    #[test]
+    fn validate_beta_section_is_unknown_after_effects_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[beta]\nghost = true\n").unwrap();
+        let diags = validate_from_path(&path);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].to_string().contains("unknown key `beta`"));
+    }
+
+    #[test]
+    fn effects_ghost_defaults_on_at_point_seven_five() {
+        let cfg = EffectsConfig::default();
+        assert_eq!(cfg.unfocused_opacity(), Some(0.75));
+
+        let disabled: EffectsConfig = toml::from_str("ghost = false\n").unwrap();
+        assert_eq!(disabled.unfocused_opacity(), None);
+
+        let custom: EffectsConfig = toml::from_str("ghost_opacity = 0.6\n").unwrap();
+        assert_eq!(custom.unfocused_opacity(), Some(0.6));
     }
 
     #[test]

@@ -78,7 +78,7 @@ tips = true
 # Default email pre-filled by `plexi account login`.
 # account_email   = "you@example.com"
 
-[beta]
-# crt           = false
-# ghost         = false
-# ghost_opacity = 0.9
+[effects]
+crt           = false
+ghost         = true
+ghost_opacity = 0.75

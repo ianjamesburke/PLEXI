@@ -182,6 +182,8 @@ No new capability, command, or user-visible behavior ships without at least one 
 
 Required fields have no defaults — fail fast with a clear error. Optional fields are clearly marked. Never paper over ambiguity with invisible magic. Prefer a verbose generated config with all options visible over a sparse one with hidden behavior.
 
+Until Plexi has real external users, do not add backward-compatibility shims for renamed config sections, flags, CLI commands, or internal APIs. Clean breaks are cheaper than compatibility code smells during v1 polish. Update the generated defaults and docs in the same change, and let stale config warn or fail visibly.
+
 ## Python Tooling
 
 Use `uv` for all Python projects. `pyproject.toml` with `requires-python = ">=3.11"`, `uv sync`, `uv run`. Bootstrap with `curl -LsSf https://astral.sh/uv/install.sh | sh` if absent. Never write manual venv creation loops.

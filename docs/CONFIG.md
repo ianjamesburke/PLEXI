@@ -233,15 +233,15 @@ Command templates used when Plexi skills dispatch coding agent panes. `{cmd}` is
 
 ---
 
-## [beta]
+## [effects]
 
-Experimental features. Flip any flag to `true` and restart to enable.
+Visual effects. Restart after changing these values.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `crt` | bool | false | Retro CRT scanlines + green phosphor tint. |
-| `ghost` | bool | false | Unfocused panes render at reduced opacity. |
-| `ghost_opacity` | float | 0.9 | Opacity for unfocused panes. Range: 0.0–1.0. Setting this implies `ghost = true`. |
+| `ghost` | bool | true | Unfocused panes render at reduced opacity. |
+| `ghost_opacity` | float | 0.75 | Opacity for unfocused panes. Range: 0.0–1.0. |
 
 ---
 

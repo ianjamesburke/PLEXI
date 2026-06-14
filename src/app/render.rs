@@ -488,7 +488,10 @@ impl PlexiApp {
                 }
 
                 let unfocused_opacity =
-                    self.config.beta.as_ref().and_then(|b| b.unfocused_opacity());
+                    self.config
+                        .effects
+                        .as_ref()
+                        .map_or(Some(0.75), |effects| effects.unfocused_opacity());
                 {
                     let ghost_log_id = egui::Id::new("ghost_opacity_logged");
                     let cur = unfocused_opacity.map(|v| (v * 100.0) as u32);
