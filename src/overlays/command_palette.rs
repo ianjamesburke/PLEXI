@@ -633,10 +633,20 @@ impl PlexiApp {
             .escape(true)
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("palette_search");
-                let te = TextField::singleline(te_id, "Jump to context or launch app...")
-                    .focused(true)
-                    .log_name("command_palette")
-                    .show(ui, &mut self.palette_query, &colors);
+                let te = ui
+                    .scope_builder(
+                        egui::UiBuilder::new().layer_id(egui::LayerId::new(
+                            egui::Order::Tooltip,
+                            te_id.with("paint_layer"),
+                        )),
+                        |ui| {
+                            TextField::singleline(te_id, "Jump to context or launch app...")
+                                .focused(true)
+                                .log_name("command_palette")
+                                .show(ui, &mut self.palette_query, &colors)
+                        },
+                    )
+                    .inner;
                 if te.changed() {
                     self.palette_selected = 0;
                 }

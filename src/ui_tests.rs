@@ -901,6 +901,54 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_command_palette_metadata_lane.png");
     }
 
+    #[test]
+    fn command_palette_keeps_search_focus_after_scrolled_down_nav() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.palette_notes = (0..40)
+                .map(|idx| crate::notes::NotePickerEntry {
+                    path: std::env::temp_dir().join(format!("palette-note-{idx}.md")),
+                    title: format!("Palette note {idx:02}"),
+                    preview: "Deterministic row for palette scrolling".to_string(),
+                    inbox: false,
+                    search_text: format!("palette note {idx:02} deterministic row"),
+                })
+                .collect();
+            app.show_command_palette = true;
+            app.palette_selected = 0;
+            app.sync_command_palette_focus();
+        });
+
+        h.run_steps(2);
+        for _ in 0..18 {
+            h.harness().press_key(egui::Key::ArrowDown);
+            h.step();
+        }
+        h.run_steps(2);
+
+        let (open, selected, focused) = h.with_app(|app| {
+            (
+                app.show_command_palette,
+                app.palette_selected,
+                app.ctx.memory(|m| m.focused()),
+            )
+        });
+        assert!(
+            open,
+            "command palette should remain open during keyboard nav"
+        );
+        assert!(
+            selected >= 18,
+            "ArrowDown should advance selection into the scrolled list"
+        );
+        assert_eq!(
+            focused,
+            Some(egui::Id::new("palette_search")),
+            "palette search must keep focus after scrolling down past the first page"
+        );
+    }
+
     // ── Regression: layout flows ──────────────────────────────────────────────
 
     #[test]
