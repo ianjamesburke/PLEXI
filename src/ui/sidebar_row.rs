@@ -344,15 +344,18 @@ impl ContextItem {
             );
         }
 
-        // Paint the index number centered vertically in the gutter.
+        // Paint the index number centered on the title line. Rows can include
+        // subtitle/pip content below the title, so full-row centering makes the
+        // number read as too low beside the context name.
         if let Some(idx) = ctx_index {
             if idx < 9 {
+                let title_center_y = row_rect.min.y + ROW_PAD_V + name_row_h / 2.0;
                 let gutter_rect = Rect::from_min_size(
                     egui::pos2(row_rect.min.x + indent, row_rect.min.y),
-                    Vec2::new(GUTTER_W, row_rect.height()),
+                    Vec2::new(GUTTER_W, ROW_PAD_V + name_row_h),
                 );
                 ui.painter().text(
-                    gutter_rect.center(),
+                    egui::pos2(gutter_rect.center().x, title_center_y),
                     egui::Align2::CENTER_CENTER,
                     format!("{}", idx + 1),
                     egui::FontId::proportional(11.0),
