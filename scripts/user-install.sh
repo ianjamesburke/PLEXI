@@ -145,12 +145,12 @@ info "Installing shell completions..."
 if command -v brew &>/dev/null; then
     BREW_ZSH="$(brew --prefix)/share/zsh/site-functions"
     if [[ -d "$BREW_ZSH" ]]; then
-        "$CLI_DEST" completions zsh > "$BREW_ZSH/_plexi"
+        "$BINARY" completions zsh > "$BREW_ZSH/_plexi"
         ok "Completions (zsh): $BREW_ZSH/_plexi"
     fi
 else
     mkdir -p "$HOME/.zfunc"
-    "$CLI_DEST" completions zsh > "$HOME/.zfunc/_plexi"
+    "$BINARY" completions zsh > "$HOME/.zfunc/_plexi"
     ok "Completions (zsh): ~/.zfunc/_plexi"
     # ensure ~/.zfunc is on fpath
     if [[ -f "$HOME/.zshrc" ]] && ! grep -qF '.zfunc' "$HOME/.zshrc"; then
@@ -159,11 +159,11 @@ else
     fi
 fi
 mkdir -p "$HOME/.bash_completion.d"
-"$CLI_DEST" completions bash > "$HOME/.bash_completion.d/plexi"
+"$BINARY" completions bash > "$HOME/.bash_completion.d/plexi"
 ok "Completions (bash): ~/.bash_completion.d/plexi"
 if [[ -d "$HOME/.config/fish" ]]; then
     mkdir -p "$HOME/.config/fish/completions"
-    "$CLI_DEST" completions fish > "$HOME/.config/fish/completions/plexi.fish"
+    "$BINARY" completions fish > "$HOME/.config/fish/completions/plexi.fish"
     ok "Completions (fish): ~/.config/fish/completions/plexi.fish"
 fi
 

@@ -154,7 +154,11 @@ install_completions() {
 }
 
 if [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" || "$channel" == rc-* ]]; then
-  install_completions "$bin_dest"
+  if [[ "$channel" == "main" ]]; then
+    install_completions "$app_dest/Contents/MacOS/plexi"
+  else
+    install_completions "$bin_dest"
+  fi
 fi
 
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps" "$profile_dir/scripts"
