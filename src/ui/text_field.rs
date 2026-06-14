@@ -131,6 +131,7 @@ pub(crate) struct TextField<'a> {
     id: egui::Id,
     hint: egui::WidgetText,
     focused: bool,
+    select_all_on_focus: bool,
     password: bool,
     log_name: &'a str,
 }
@@ -141,6 +142,7 @@ impl<'a> TextField<'a> {
             id,
             hint: hint.into(),
             focused: false,
+            select_all_on_focus: false,
             password: false,
             log_name: "text_field",
         }
@@ -148,6 +150,11 @@ impl<'a> TextField<'a> {
 
     pub(crate) fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
+        self
+    }
+
+    pub(crate) fn select_all_on_focus(mut self, select_all_on_focus: bool) -> Self {
+        self.select_all_on_focus = select_all_on_focus;
         self
     }
 
@@ -168,9 +175,21 @@ impl<'a> TextField<'a> {
         colors: &Colors,
     ) -> egui::Response {
         let response = styled_text_input_inner(ui, buf, self.hint, self.id, colors, self.password);
-        if self.focused && !response.has_focus() {
+        let requested_focus = self.focused && !response.has_focus();
+        if requested_focus {
             response.request_focus();
             log::info!("{}: focus requested for host TextField", self.log_name);
+        }
+        if self.select_all_on_focus && (response.gained_focus() || requested_focus) {
+            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), self.id) {
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(buf.len()),
+                    )));
+                state.store(ui.ctx(), self.id);
+            }
         }
         if self.focused || response.has_focus() {
             crate::ui::focus::register_overlay_focus(ui.ctx(), self.id);

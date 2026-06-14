@@ -1,4 +1,5 @@
-use crate::ui::list::paint_selection;
+use crate::ui::list::{paint_selection, paint_text_centered};
+use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::{Align, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Vec2};
 
@@ -13,6 +14,7 @@ const ROW_PAD_V: f32 = 7.0;
 const PANE_DOT_RADIUS: f32 = 4.0;
 const PANE_DOT_SPACING: f32 = 11.0;
 const PANE_DOT_MAX: usize = 8;
+const SIDEBAR_BADGE_W: f32 = 26.0;
 
 pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
@@ -229,7 +231,11 @@ impl ContextItem {
                             } else {
                                 8.0
                             };
-                            let badge_w = if badge_count > 0 { 26.0 } else { 0.0 };
+                            let badge_w = if badge_count > 0 {
+                                SIDEBAR_BADGE_W
+                            } else {
+                                0.0
+                            };
                             let text_max =
                                 (ui.available_width() - right_reserve - badge_w - pip_strip_w)
                                     .max(0.0);
@@ -238,7 +244,9 @@ impl ContextItem {
                                 ui.set_max_width(text_max);
                                 ui.add(
                                     egui::Label::new(
-                                        egui::RichText::new(&ctx_name).size(13.0).color(text_color),
+                                        egui::RichText::new(&ctx_name)
+                                            .size(style::TEXT_SIDEBAR_TITLE)
+                                            .color(text_color),
                                     )
                                     .selectable(false)
                                     .truncate(),
@@ -262,7 +270,7 @@ impl ContextItem {
                                     };
                                     ui.label(
                                         egui::RichText::new(badge_text)
-                                            .size(10.0)
+                                            .size(style::TEXT_META)
                                             .color(with_alpha(accent_color, row_alpha)),
                                     );
                                 }
@@ -274,13 +282,13 @@ impl ContextItem {
                         // --- Path row (subtitle only, no pips) ---
                         if let Some(ref path) = subtitle {
                             ui.horizontal(|ui| {
-                                let path_max = (ui.available_width() - 8.0).max(0.0);
+                                let path_max = (ui.available_width() - style::SPACE_SM).max(0.0);
                                 ui.scope(|ui| {
                                     ui.set_max_width(path_max);
                                     ui.add(
                                         egui::Label::new(
                                             egui::RichText::new(shorten_path(path))
-                                                .size(10.0)
+                                                .size(style::TEXT_META)
                                                 .color(with_alpha(text_dim, row_alpha * 0.7)),
                                         )
                                         .selectable(false)
@@ -354,12 +362,12 @@ impl ContextItem {
                     egui::pos2(row_rect.min.x + indent, row_rect.min.y),
                     Vec2::new(GUTTER_W, ROW_PAD_V + name_row_h),
                 );
-                ui.painter().text(
-                    egui::pos2(gutter_rect.center().x, title_center_y),
-                    egui::Align2::CENTER_CENTER,
+                paint_text_centered(
+                    ui,
                     format!("{}", idx + 1),
-                    egui::FontId::proportional(11.0),
+                    egui::FontId::proportional(style::TEXT_HINT),
                     with_alpha(text_dim, row_alpha),
+                    egui::pos2(gutter_rect.center().x, title_center_y),
                 );
             }
         }
@@ -379,12 +387,12 @@ impl ContextItem {
             if hovered && !is_dragging {
                 let glyph_color =
                     with_alpha(if in_action { text_primary } else { text_dim }, row_alpha);
-                ui.painter().text(
-                    az.center(),
-                    egui::Align2::CENTER_CENTER,
+                paint_text_centered(
+                    ui,
                     "\u{2715}",
-                    egui::FontId::proportional(13.0),
+                    egui::FontId::proportional(style::TEXT_SIDEBAR_TITLE),
                     glyph_color,
+                    az.center(),
                 );
             }
         }

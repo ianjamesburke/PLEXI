@@ -1,4 +1,4 @@
-use egui::{Align2, RichText};
+use egui::RichText;
 
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -84,12 +84,12 @@ pub(crate) fn color_swatch(
         egui::Stroke::new(1.0, colors.border),
         egui::StrokeKind::Inside,
     );
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
+    crate::ui::list::paint_text_centered(
+        ui,
         label,
         egui::FontId::proportional(style::TEXT_HINT),
         colors.text_on(fill),
+        rect.center(),
     );
     response
 }

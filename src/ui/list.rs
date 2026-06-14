@@ -69,20 +69,112 @@ impl<'a> ListDropdownHeader<'a> {
             Stroke::NONE,
         ));
 
-        let text_pos = Pos2::new(
-            chevron_rect.right() + style::SPACE_XS,
-            rect.center().y - style::TEXT_CAPTION / 2.0,
-        );
-        ui.painter().text(
-            text_pos,
-            Align2::LEFT_TOP,
+        paint_text_left_center(
+            ui,
             self.label,
             crate::ui::theme::font_medium(style::TEXT_CAPTION),
             colors.text_section,
+            chevron_rect.right() + style::SPACE_XS,
+            rect.center().y,
         );
 
         response
     }
+}
+
+pub(crate) fn paint_text_left_center(
+    ui: &egui::Ui,
+    text: impl Into<String>,
+    font_id: egui::FontId,
+    color: Color32,
+    left: f32,
+    center_y: f32,
+) {
+    let galley = ui.fonts(|f| f.layout_no_wrap(text.into(), font_id, color));
+    ui.painter().galley(
+        Pos2::new(left, center_y - galley.size().y / 2.0),
+        galley,
+        color,
+    );
+}
+
+pub(crate) fn paint_text_centered(
+    ui: &egui::Ui,
+    text: impl Into<String>,
+    font_id: egui::FontId,
+    color: Color32,
+    center: Pos2,
+) {
+    let galley = ui.fonts(|f| f.layout_no_wrap(text.into(), font_id, color));
+    ui.painter().galley(
+        Pos2::new(
+            center.x - galley.size().x / 2.0,
+            center.y - galley.size().y / 2.0,
+        ),
+        galley,
+        color,
+    );
+}
+
+pub(crate) fn paint_table_header_background(ui: &egui::Ui, rect: egui::Rect, colors: &Colors) {
+    ui.painter()
+        .rect_filled(rect, style::RADIUS_MD, colors.bg_sidebar);
+    ui.painter().rect_stroke(
+        rect,
+        style::RADIUS_MD,
+        Stroke::new(1.0, colors.border),
+        StrokeKind::Inside,
+    );
+}
+
+pub(crate) fn paint_table_header_label(
+    ui: &egui::Ui,
+    cell: egui::Rect,
+    label: impl Into<String>,
+    colors: &Colors,
+) {
+    paint_text_left_center(
+        ui,
+        label,
+        egui::FontId::proportional(style::TEXT_HINT),
+        colors.text_dim,
+        cell.left() + style::SPACE_SM,
+        cell.center().y,
+    );
+}
+
+pub(crate) fn paint_table_cell_text(
+    ui: &egui::Ui,
+    cell: egui::Rect,
+    text: impl Into<String>,
+    font_id: egui::FontId,
+    color: Color32,
+) {
+    paint_text_left_center(
+        ui,
+        text,
+        font_id,
+        color,
+        cell.left() + style::SPACE_SM,
+        cell.center().y,
+    );
+}
+
+pub(crate) fn paint_table_row_background(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    selected: bool,
+    hovered: bool,
+    colors: &Colors,
+) {
+    let fill = if selected {
+        colors.bg_active
+    } else if hovered {
+        colors.bg_hover
+    } else {
+        Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, style::RADIUS_MD, fill);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

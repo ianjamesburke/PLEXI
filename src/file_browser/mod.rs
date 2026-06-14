@@ -3,7 +3,7 @@ mod icons;
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
 use crate::ui::hints::{HintBar, HintGroup};
-use crate::ui::list::ListRow;
+use crate::ui::list::{self, ListRow};
 use crate::ui::overlay::ModalShell;
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -22,7 +22,7 @@ use icons::paint_entry_icon;
 const DETAILS_TABLE_MIN_WIDTH: f32 = 560.0;
 const INSPECTOR_MIN_WIDTH: f32 = 920.0;
 const DIR_PREVIEW_CAP: usize = 500;
-const DETAILS_HEADER_H: f32 = 28.0;
+const DETAILS_HEADER_H: f32 = style::TABLE_HEADER_H;
 const DETAILS_ROW_H: f32 = style::LIST_ROW_DENSE_H;
 // Total footer reservation subtracted from the body scroll area: SPACE_XS
 // gap + separator + the status row + item spacing. Must cover everything
@@ -1229,14 +1229,7 @@ impl FileBrowserApp {
             if self.selected == idx {
                 crate::ui::list::scroll_row_into_view(ui, &response, should_scroll);
             }
-            let fill = if selected {
-                colors.bg_active
-            } else if response.hovered() {
-                colors.bg_hover
-            } else {
-                Color32::TRANSPARENT
-            };
-            ui.painter().rect_filled(rect, style::RADIUS_MD, fill);
+            list::paint_table_row_background(ui, rect, selected, response.hovered(), colors);
 
             self.paint_details_cells(ui, colors, rect, &entry, selected);
 
@@ -1263,14 +1256,7 @@ impl FileBrowserApp {
             egui::vec2(ui.available_width(), DETAILS_HEADER_H),
             egui::Sense::hover(),
         );
-        ui.painter()
-            .rect_filled(rect, style::RADIUS_MD, colors.bg_sidebar);
-        ui.painter().rect_stroke(
-            rect,
-            style::RADIUS_MD,
-            Stroke::new(1.0, colors.border),
-            StrokeKind::Inside,
-        );
+        list::paint_table_header_background(ui, rect, colors);
         for (column, cell) in self.details_columns(rect) {
             let handle_rect = egui::Rect::from_min_max(
                 egui::pos2(cell.right() - 5.0, cell.top()),
@@ -1336,12 +1322,11 @@ impl FileBrowserApp {
             } else {
                 ""
             };
-            ui.painter().text(
-                egui::pos2(cell.left() + style::SPACE_SM, cell.center().y),
-                egui::Align2::LEFT_CENTER,
+            list::paint_table_header_label(
+                ui,
+                cell,
                 format!("{}{}", column.id.label(), sort_suffix),
-                egui::FontId::proportional(style::TEXT_HINT),
-                colors.text_dim,
+                colors,
             );
             ui.painter().line_segment(
                 [
@@ -1376,10 +1361,9 @@ impl FileBrowserApp {
                 paint_entry_icon(ui.painter(), icon_rect, entry, colors);
                 cell = cell.shrink2(egui::vec2(28.0, 0.0));
             }
-            let text_pos = egui::pos2(cell.left() + style::SPACE_SM, cell.center().y);
-            ui.painter().text(
-                text_pos,
-                egui::Align2::LEFT_CENTER,
+            list::paint_table_cell_text(
+                ui,
+                cell,
                 Self::entry_cell_text(entry, column.id),
                 font.clone(),
                 if column.id == ColumnId::Name {

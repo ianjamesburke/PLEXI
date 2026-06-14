@@ -388,57 +388,39 @@ impl PlexiApp {
             .width(MODAL_WIDTH)
             .click_away(false)
             .show(ctx, &colors, |ui| {
-                {
-                    {
-                        let te_id = egui::Id::new("text_input_overlay_field");
-                        let (overlay, _target) = self.text_overlay.as_mut().unwrap();
-                        let te = crate::ui::text_field::styled_text_input(
-                            ui,
-                            &mut overlay.buffer,
-                            hint.as_str(),
-                            te_id,
-                            &self.colors,
-                        );
-
-                        // One-shot focus guard.
-                        if !overlay.focus_requested {
-                            te.request_focus();
-                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                                state
-                                    .cursor
-                                    .set_char_range(Some(egui::text::CCursorRange::two(
-                                        egui::text::CCursor::new(0),
-                                        egui::text::CCursor::new(overlay.buffer.len()),
-                                    )));
-                                state.store(ui.ctx(), te_id);
-                            }
-                            overlay.focus_requested = true;
-                            log::info!("TextInputOverlay: focus requested");
-                        }
-
-                        if show_browse {
-                            ui.add_space(style::SPACE_SM);
-                            ui.horizontal(|ui| {
-                                if crate::ui::button::chrome_button(
-                                    ui,
-                                    "Browse\u{2026}",
-                                    crate::ui::button::ButtonKind::Primary,
-                                    &self.colors,
-                                    80.0,
-                                )
-                                .clicked()
-                                {
-                                    browse_clicked = true;
-                                }
-                            });
-                        }
-                        let hints = [
-                            crate::ui::hints::HintGroup::new(&["Enter"], "confirm"),
-                            crate::ui::hints::HintGroup::new(&["Esc"], "cancel"),
-                        ];
-                        crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-                    }
+                let te_id = egui::Id::new("text_input_overlay_field");
+                let (overlay, _target) = self.text_overlay.as_mut().unwrap();
+                let request_focus = !overlay.focus_requested;
+                crate::ui::text_field::TextField::singleline(te_id, hint.as_str())
+                    .focused(request_focus)
+                    .select_all_on_focus(true)
+                    .log_name("TextInputOverlay")
+                    .show(ui, &mut overlay.buffer, &self.colors);
+                if request_focus {
+                    overlay.focus_requested = true;
                 }
+
+                if show_browse {
+                    ui.add_space(style::SPACE_SM);
+                    ui.horizontal(|ui| {
+                        if crate::ui::button::chrome_button(
+                            ui,
+                            "Browse\u{2026}",
+                            crate::ui::button::ButtonKind::Primary,
+                            &self.colors,
+                            80.0,
+                        )
+                        .clicked()
+                        {
+                            browse_clicked = true;
+                        }
+                    });
+                }
+                let hints = [
+                    crate::ui::hints::HintGroup::new(&["Enter"], "confirm"),
+                    crate::ui::hints::HintGroup::new(&["Esc"], "cancel"),
+                ];
+                crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
             });
 
         if cancel {
