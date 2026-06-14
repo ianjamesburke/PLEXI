@@ -3,6 +3,88 @@ use egui::{Align2, Color32, CornerRadius, Pos2, Response, Stroke, StrokeKind, Ve
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
+pub struct ListDropdownHeader<'a> {
+    label: &'a str,
+    expanded: bool,
+    indent: f32,
+}
+
+impl<'a> ListDropdownHeader<'a> {
+    pub fn new(label: &'a str, expanded: bool) -> Self {
+        Self {
+            label,
+            expanded,
+            indent: style::LIST_ROW_PAD_H,
+        }
+    }
+
+    pub fn indent(mut self, indent: f32) -> Self {
+        self.indent = indent;
+        self
+    }
+
+    pub fn show(self, ui: &mut egui::Ui, id: egui::Id, colors: &Colors) -> egui::Response {
+        let (rect, _) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), style::LIST_DROPDOWN_HEADER_H),
+            egui::Sense::hover(),
+        );
+        let response = ui.interact(rect, id, egui::Sense::click());
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        let inset = selection_inset(rect);
+        if response.hovered() {
+            ui.painter()
+                .rect_filled(inset, style::RADIUS_SM, colors.bg_hover);
+        }
+
+        let chevron_rect = egui::Rect::from_min_size(
+            Pos2::new(rect.left() + self.indent, rect.top()),
+            Vec2::new(style::LIST_DROPDOWN_CHEVRON_W, rect.height()),
+        );
+        let center = chevron_rect.center();
+        let chevron_color = if response.hovered() {
+            colors.text_primary
+        } else {
+            colors.text_section
+        };
+        let r = 4.5;
+        let points = if self.expanded {
+            vec![
+                Pos2::new(center.x - r, center.y - r * 0.45),
+                Pos2::new(center.x + r, center.y - r * 0.45),
+                Pos2::new(center.x, center.y + r * 0.65),
+            ]
+        } else {
+            vec![
+                Pos2::new(center.x - r * 0.45, center.y - r),
+                Pos2::new(center.x - r * 0.45, center.y + r),
+                Pos2::new(center.x + r * 0.65, center.y),
+            ]
+        };
+        ui.painter().add(egui::Shape::convex_polygon(
+            points,
+            chevron_color,
+            Stroke::NONE,
+        ));
+
+        let text_pos = Pos2::new(
+            chevron_rect.right() + style::SPACE_XS,
+            rect.center().y - style::TEXT_CAPTION / 2.0,
+        );
+        ui.painter().text(
+            text_pos,
+            Align2::LEFT_TOP,
+            self.label,
+            crate::ui::theme::font_medium(style::TEXT_CAPTION),
+            colors.text_section,
+        );
+
+        response
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ListRowPips {
     pub count: usize,

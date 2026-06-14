@@ -1,5 +1,6 @@
 use crate::host::context::WindowMenuAction;
 use crate::ui::button;
+use crate::ui::list::ListDropdownHeader;
 use crate::ui::sidebar_row::{ContextItem, PaneDots, SidebarAction};
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
@@ -366,40 +367,14 @@ impl PlexiApp {
         if parked_count > 0 {
             ui.add_space(8.0);
 
-            // Section header: matches "Contexts" header style, clickable chevron
             let divider_id = egui::Id::new("parked_divider");
             let expanded = self.parked_section_expanded;
-            let chevron = if expanded { "\u{25BE}" } else { "\u{25B8}" };
 
-            let header_response = ui
-                .horizontal(|ui| {
-                    ui.add_space(16.0);
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(chevron)
-                                .size(10.0)
-                                .color(self.colors.text_section),
-                        )
-                        .selectable(false),
-                    );
-                    ui.add_space(2.0);
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("Parked ({parked_count})"))
-                                .size(10.0)
-                                .color(self.colors.text_section),
-                        )
-                        .selectable(false),
-                    );
-                })
-                .response;
-
-            let interact = ui.interact(header_response.rect, divider_id, egui::Sense::click());
-            if interact.clicked() {
+            let response = ListDropdownHeader::new(&format!("Parked ({parked_count})"), expanded)
+                .indent(12.0)
+                .show(ui, divider_id, &self.colors);
+            if response.clicked() {
                 self.parked_section_expanded = !self.parked_section_expanded;
-            }
-            if interact.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
             ui.add_space(4.0);
 

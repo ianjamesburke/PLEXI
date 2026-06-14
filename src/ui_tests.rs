@@ -453,6 +453,74 @@ mod tests {
             .expect("render failed");
     }
 
+    #[test]
+    fn parked_sidebar_dropdown_uses_shared_list_header() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            app.parked_section_expanded = false;
+            let mk = |id: u64, name: &str| crate::host::context::Context {
+                name: name.to_string(),
+                path: std::env::temp_dir().join(name),
+                root: None,
+                description: None,
+                context_id: id,
+                parent_id: None,
+                depth: 0,
+                parked: true,
+            };
+            app.router.push(mk(70_001, "parked-alpha"));
+            app.router.push(mk(70_002, "parked-beta"));
+        });
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert_eq!(
+                app.router.iter().filter(|ctx| ctx.parked).count(),
+                2,
+                "test setup should render a parked dropdown"
+            );
+            assert!(!app.parked_section_expanded);
+        });
+        h.save_screenshot("/tmp/plexi_parked_dropdown_collapsed.png")
+            .expect("render failed");
+
+        // The parked header sits under the "Contexts" header and active row;
+        // click its shared fixed-height hit target near the chevron.
+        let click = egui::pos2(28.0, 126.0);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(click));
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerButton {
+                pos: click,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerButton {
+                pos: click,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        h.run_steps(2);
+
+        h.with_app(|app| {
+            assert!(
+                app.parked_section_expanded,
+                "shared dropdown header should toggle the parked list"
+            );
+        });
+        h.save_screenshot("/tmp/plexi_parked_dropdown_expanded.png")
+            .expect("render failed");
+    }
+
     /// Notes triage overlay: renders a note, and emptying the inbox returns
     /// to the picker instead of closing outright.
     #[test]

@@ -74,6 +74,8 @@ pub const LIST_ROW_H: f32 = 48.0;
 pub const LIST_ROW_DENSE_H: f32 = 30.0;
 pub const LIST_ROW_PAD_H: f32 = 14.0;
 pub const LIST_ROW_GAP: f32 = 8.0;
+pub const LIST_DROPDOWN_HEADER_H: f32 = 28.0;
+pub const LIST_DROPDOWN_CHEVRON_W: f32 = 24.0;
 
 // ── Overlay / modal chrome ─────────────────────────────────────────────────
 /// Alpha (0-255) of the black scrim drawn behind modals. Higher = more of the
