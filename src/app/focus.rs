@@ -2,6 +2,7 @@
 
 use super::PendingNotification;
 use super::PlexiApp;
+use std::path::Path;
 use std::time::Duration;
 
 pub(crate) const FOCUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15 * 60);
@@ -401,6 +402,7 @@ impl PlexiApp {
             // Sync sidebar: router active must match the context of the window we navigated to.
             if let Some(ctx_idx) = self.router.position(|c| c.context_id == ctx_id) {
                 self.router.set_active(ctx_idx);
+                self.reload_config_for_active_context();
             }
             self.context_active_window.insert(ctx_id, window_id);
             self.restore_minimap_for_context(ctx_id);
@@ -450,6 +452,7 @@ impl PlexiApp {
             // Sync sidebar: router active must match the context of the window we navigated to.
             if let Some(ctx_idx) = self.router.position(|c| c.context_id == ctx_id) {
                 self.router.set_active(ctx_idx);
+                self.reload_config_for_active_context();
             }
             self.context_active_window.insert(ctx_id, window_id);
             self.restore_minimap_for_context(ctx_id);
@@ -490,10 +493,22 @@ impl PlexiApp {
     /// effect without a restart (theme, font size, notification settings,
     /// confirmation toggles). Logs the reload so the user knows it worked.
     pub(crate) fn reload_config(&mut self) {
-        let active_workspace = crate::config::active_workspace_root();
+        self.reload_config_for_active_context();
+    }
 
+    pub(crate) fn reload_config_for_active_context(&mut self) {
+        let active_workspace = self
+            .router
+            .active()
+            .root
+            .clone()
+            .or_else(crate::config::active_workspace_root);
+        self.reload_config_for_workspace(active_workspace.as_deref());
+    }
+
+    pub(crate) fn reload_config_for_workspace(&mut self, active_workspace: Option<&Path>) {
         let mut all_diags = crate::config::validate_from_path(&crate::config::config_path());
-        if let Some(root) = active_workspace.as_ref() {
+        if let Some(root) = active_workspace {
             let project_path = root
                 .join(crate::config::workspace_channel_dir())
                 .join("config.toml");
@@ -560,7 +575,7 @@ impl PlexiApp {
             return;
         }
 
-        let fresh = crate::config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
+        let fresh = crate::config::PlexiConfig::load_with_workspace(active_workspace);
 
         // Log level — applies live; the fern filter reads it atomically per record.
         let new_level = fresh
@@ -654,7 +669,12 @@ impl PlexiApp {
         // Without this, a config reload that restores a disk preset would leave
         // last_system_theme unchanged, silently suppressing the auto-switch.
         self.last_system_theme = None;
-        log::info!("Configuration reloaded from disk.");
+        log::info!(
+            "Configuration reloaded from disk. active_workspace={}",
+            active_workspace
+                .map(|root| root.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        );
     }
 
     /// Auto-switch to the paired preset for `system_theme`.
@@ -894,6 +914,7 @@ impl PlexiApp {
         // new active context immediately (router.active_idx() drives the highlight).
         if let Some(ctx_idx) = self.router.position(|ctx| ctx.context_id == ctx_id) {
             self.router.set_active(ctx_idx);
+            self.reload_config_for_active_context();
             self.context_active_window
                 .insert(ctx_id, self.windows[idx].window_id);
             self.restore_minimap_for_context(ctx_id);
