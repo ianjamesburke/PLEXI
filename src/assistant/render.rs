@@ -10,6 +10,9 @@
 //! Enter/Tab/arrow keys are consumed *before* the composer TextEdit renders,
 //! so completion and submit never flash an intermediate buffer state.
 
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+
 use egui::RichText;
 
 use crate::ui::button::{chrome_button, ButtonKind};
@@ -32,6 +35,55 @@ pub enum ComposerEvent {
 /// Stateless renderer for the Assistant pane.
 pub struct AssistantRenderer;
 
+#[derive(Default)]
+pub(crate) struct MarkdownTextCache {
+    softened_by_turn: HashMap<u64, CachedMarkdownText>,
+}
+
+struct CachedMarkdownText {
+    source_len: usize,
+    softened: String,
+}
+
+impl MarkdownTextCache {
+    fn softened_turn_text<'a>(
+        &'a mut self,
+        conversation_id: &str,
+        turn_index: usize,
+        turn: &super::model::Turn,
+    ) -> &'a str {
+        let key = Self::turn_key(conversation_id, turn_index, turn);
+        let entry = self
+            .softened_by_turn
+            .entry(key)
+            .or_insert_with(|| CachedMarkdownText {
+                source_len: 0,
+                softened: String::new(),
+            });
+        if entry.source_len != turn.text.len() {
+            entry.source_len = turn.text.len();
+            entry.softened = AssistantRenderer::soften_newlines(&turn.text);
+        }
+        &entry.softened
+    }
+
+    fn turn_key(conversation_id: &str, turn_index: usize, turn: &super::model::Turn) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        conversation_id.hash(&mut hasher);
+        turn_index.hash(&mut hasher);
+        turn.created_at.hash(&mut hasher);
+        match turn.role {
+            TurnRole::User => 0_u8,
+            TurnRole::Assistant => 1,
+            TurnRole::Tool => 2,
+            TurnRole::Error => 3,
+            TurnRole::Event => 4,
+        }
+        .hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 impl AssistantRenderer {
     /// Header bar height — mirrors the terminal pane name bar and the
     /// text-editor note header so the assistant reads as the same chrome.
@@ -47,6 +99,7 @@ impl AssistantRenderer {
         ui: &mut egui::Ui,
         model: &mut AssistantModel,
         md_cache: &mut egui_commonmark::CommonMarkCache,
+        text_cache: &mut MarkdownTextCache,
         colors: &Colors,
         is_focused: bool,
     ) -> Option<ComposerEvent> {
@@ -115,7 +168,7 @@ impl AssistantRenderer {
                 0,
             )))
             .show_inside(ui, |ui| {
-                Self::draw_transcript(ui, model, md_cache, colors);
+                Self::draw_transcript(ui, model, md_cache, text_cache, colors);
             });
 
         if model.picker_active() {
@@ -177,6 +230,7 @@ impl AssistantRenderer {
         ui: &mut egui::Ui,
         model: &AssistantModel,
         md_cache: &mut egui_commonmark::CommonMarkCache,
+        text_cache: &mut MarkdownTextCache,
         colors: &Colors,
     ) {
         // Native cross-widget text selection: a drag started in one bubble must
@@ -208,7 +262,16 @@ impl AssistantRenderer {
                     .min(model.turns.len());
                 for (i, turn) in model.turns[..anchor].iter().enumerate() {
                     ui.push_id(i, |ui| {
-                        Self::draw_turn_row(ui, md_cache, colors, turn, model.show_thoughts);
+                        Self::draw_turn_row(
+                            ui,
+                            md_cache,
+                            text_cache,
+                            &model.conversation_id,
+                            i,
+                            colors,
+                            turn,
+                            model.show_thoughts,
+                        );
                     });
                 }
                 for active in &model.active_tools {
@@ -221,7 +284,16 @@ impl AssistantRenderer {
                 }
                 for (i, turn) in model.turns[anchor..].iter().enumerate() {
                     ui.push_id(anchor + i, |ui| {
-                        Self::draw_turn_row(ui, md_cache, colors, turn, model.show_thoughts);
+                        Self::draw_turn_row(
+                            ui,
+                            md_cache,
+                            text_cache,
+                            &model.conversation_id,
+                            anchor + i,
+                            colors,
+                            turn,
+                            model.show_thoughts,
+                        );
                     });
                 }
                 ui.add_space(style::SPACE_SM);
@@ -259,7 +331,7 @@ impl AssistantRenderer {
         ui: &mut egui::Ui,
         md_cache: &mut egui_commonmark::CommonMarkCache,
         colors: &Colors,
-        text: &str,
+        markdown: &str,
     ) {
         let s = ui.style_mut();
         s.visuals.override_text_color = Some(colors.text_primary);
@@ -280,12 +352,15 @@ impl AssistantRenderer {
             egui::TextStyle::Small,
             egui::FontId::proportional(style::TEXT_HINT),
         );
-        egui_commonmark::CommonMarkViewer::new().show(ui, md_cache, &Self::soften_newlines(text));
+        egui_commonmark::CommonMarkViewer::new().show(ui, md_cache, markdown);
     }
 
     fn draw_turn_row(
         ui: &mut egui::Ui,
         md_cache: &mut egui_commonmark::CommonMarkCache,
+        text_cache: &mut MarkdownTextCache,
+        conversation_id: &str,
+        turn_index: usize,
         colors: &Colors,
         turn: &super::model::Turn,
         show_thoughts: bool,
@@ -350,7 +425,8 @@ impl AssistantRenderer {
                     }
                 }
                 Self::assistant_bubble(ui, colors, |ui| {
-                    Self::markdown_body(ui, md_cache, colors, text);
+                    let markdown = text_cache.softened_turn_text(conversation_id, turn_index, turn);
+                    Self::markdown_body(ui, md_cache, colors, markdown);
                 });
                 ui.add_space(style::SPACE_MD);
             }
@@ -498,7 +574,8 @@ impl AssistantRenderer {
             if model.streaming.partial_answer.is_empty() {
                 Self::draw_thinking_dots(ui, colors);
             } else {
-                Self::markdown_body(ui, md_cache, colors, &model.streaming.partial_answer);
+                let markdown = Self::soften_newlines(&model.streaming.partial_answer);
+                Self::markdown_body(ui, md_cache, colors, &markdown);
             }
         });
         ui.add_space(style::SPACE_MD);

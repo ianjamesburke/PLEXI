@@ -41,7 +41,7 @@ use crate::plexi_ai::tool_dispatch::{
 
 use audit::{AuditEvent, AuditLog};
 use model::{AssistantEffect, AssistantModel, PermissionChoice, TurnRole};
-use render::{AssistantRenderer, ComposerEvent};
+use render::{AssistantRenderer, ComposerEvent, MarkdownTextCache};
 use store::AssistantStore;
 
 const ASSISTANT_SYSTEM_PROMPT: &str = "You are the Plexi Assistant, the workspace \
@@ -203,6 +203,8 @@ pub struct AssistantApp {
     /// Cached layout state for `egui_commonmark` markdown rendering of
     /// assistant replies. Persists across frames for performance.
     commonmark_cache: egui_commonmark::CommonMarkCache,
+    /// Cached soft-break conversion for committed markdown turns.
+    markdown_text_cache: MarkdownTextCache,
 }
 
 /// An ask-gated subscribe waiting on the permission sheet.
@@ -278,6 +280,7 @@ impl AssistantApp {
             pending_subscribe: None,
             queued_event_lines: Vec::new(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
+            markdown_text_cache: MarkdownTextCache::default(),
         };
         // Persist the active id immediately so close-then-reopen resumes
         // this conversation even before the first turn.
@@ -1214,6 +1217,7 @@ impl App for AssistantApp {
             ui,
             &mut self.model,
             &mut self.commonmark_cache,
+            &mut self.markdown_text_cache,
             ctx.colors,
             ctx.is_focused,
         );
