@@ -49,6 +49,9 @@ This creates:
 - `/usr/local/bin/plexi-rc-010`
 - `~/.plexi-rc-010/`
 
+RC installs also install shell completions for the channel binary, for example
+`_plexi-rc-010` for zsh.
+
 Workspace config for that RC lives under `.plexi-rc-010/` inside the project
 root. For example:
 
@@ -58,6 +61,11 @@ my-project/.plexi-rc-010/config.toml
 
 That config affects preferences only. It does not change release tier. The
 running binary name decides release-gated feature availability.
+
+Inside a Plexi PTY, host commands that use `PLEXI_SOCKET` route to the running
+instance regardless of the binary name. Channel-specific or release-gated CLI
+behavior still belongs to the binary you invoke, so use `plexi-rc-010` when
+testing the RC and `plexi-beta` when testing beta.
 
 ## Stable Release Flow
 

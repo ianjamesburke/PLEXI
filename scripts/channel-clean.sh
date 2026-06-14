@@ -36,6 +36,25 @@ if [[ -e "$bin" || -L "$bin" ]]; then
     echo "Removed $bin"
     removed=1
 fi
+if [[ "$channel" != "main" ]]; then
+    binary_name="plexi${suffix}"
+    if command -v brew &>/dev/null; then
+        brew_zsh_dir="$(brew --prefix)/share/zsh/site-functions"
+        comp="$brew_zsh_dir/_${binary_name}"
+        if [[ -e "$comp" ]]; then
+            rm -f "$comp"
+            echo "Removed $comp"
+            removed=1
+        fi
+    fi
+    for comp in "$HOME/.zfunc/_${binary_name}" "$HOME/.bash_completion.d/${binary_name}" "$HOME/.config/fish/completions/${binary_name}.fish"; do
+        if [[ -e "$comp" ]]; then
+            rm -f "$comp"
+            echo "Removed $comp"
+            removed=1
+        fi
+    done
+fi
 if [[ -d "$profile" ]]; then
     rm -rf "$profile"
     echo "Removed $profile"

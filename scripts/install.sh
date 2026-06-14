@@ -96,7 +96,7 @@ if [[ "$channel" == "main" ]]; then
   ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" /usr/local/bin/plexi
 fi
 
-# Install shell completions for production channels (main, alpha, beta).
+# Install shell completions for production and release-candidate channels.
 install_completions() {
   local binary="$1"
   local binary_name
@@ -130,7 +130,7 @@ install_completions() {
   fi
 }
 
-if [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" ]]; then
+if [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" || "$channel" == rc-* ]]; then
   install_completions "$bin_dest"
 fi
 

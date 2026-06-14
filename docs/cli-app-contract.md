@@ -247,15 +247,16 @@ as equivalent to trusting `<binary>` on your shell.
 
 ## 6. Channel-agnostic behavior
 
-A CLI-backed app behaves **identically** on `main`, `beta`, `alpha`, and
-`plexi-pr-<N>` builds. The channel is an implementation detail; nothing in the
-contract above is channel-specific.
+A CLI-backed app behaves **identically** on `main`, `rc-*`, `beta`, `alpha`,
+and `plexi-pr-<N>` builds. The channel is an implementation detail; nothing in
+the contract above is channel-specific.
 
 - **Descriptor resolution** is pure CLI-process logic and channel-independent at
   the algorithm level.
 - **The crawl cache path** is derived from `crate::config::config_dir()`
   (`crawl.rs:118`), so each channel caches into its own profile dir
-  (`~/.plexi/cache/...`, `~/.plexi-alpha/cache/...`, `~/.plexi-pr-<N>/cache/...`).
+  (`~/.plexi/cache/...`, `~/.plexi-rc-010/cache/...`,
+  `~/.plexi-alpha/cache/...`, `~/.plexi-pr-<N>/cache/...`).
   Caches never leak across channels.
 - **The registry path** (Tier 2) is likewise `~/.plexi-<channel>/registry/...`
   (`cli-descriptor-guide.md` §6).
