@@ -25,6 +25,14 @@ fn should_show_changelog_line(line: &str) -> bool {
     !entry.starts_with("chore:") && !entry.starts_with("chore(")
 }
 
+fn should_render_changelog_body_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed == "# Changelog" || trimmed == "Newest releases appear first." {
+        return false;
+    }
+    should_show_changelog_line(line)
+}
+
 impl PlexiApp {
     pub(crate) fn draw_shortcuts_overlay(&mut self, ctx: &egui::Context) {
         if !self.show_shortcuts {
@@ -354,41 +362,53 @@ impl PlexiApp {
                         .max_height(420.0)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
-                            ui.set_width(512.0);
+                            ui.set_width(ui.available_width());
                             for line in CHANGELOG.lines() {
-                                if !should_show_changelog_line(line) {
+                                if !should_render_changelog_body_line(line) {
                                     continue;
                                 }
                                 let clean = |s: &str| s.replace("**", "");
                                 if line.starts_with("## ") {
                                     ui.add_space(6.0);
-                                    ui.label(
-                                        RichText::new(clean(&line[3..]))
-                                            .size(style::TEXT_BODY)
-                                            .color(self.colors.text_primary)
-                                            .strong(),
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(clean(&line[3..]))
+                                                .size(style::TEXT_BODY)
+                                                .color(self.colors.text_primary)
+                                                .strong(),
+                                        )
+                                        .wrap(),
                                     );
                                     ui.add_space(2.0);
                                 } else if line.starts_with("### ") {
-                                    ui.label(
-                                        RichText::new(clean(&line[4..]))
-                                            .size(style::TEXT_HINT)
-                                            .color(self.colors.text_dim)
-                                            .strong(),
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(clean(&line[4..]))
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim)
+                                                .strong(),
+                                        )
+                                        .wrap(),
                                     );
                                 } else if line.starts_with("- ") || line.starts_with("* ") {
-                                    ui.label(
-                                        RichText::new(clean(line))
-                                            .size(style::TEXT_HINT)
-                                            .color(self.colors.text_primary),
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(clean(line))
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_primary),
+                                        )
+                                        .wrap(),
                                     );
                                 } else if line.starts_with('#') || line.trim().is_empty() {
                                     // skip top-level # heading and blank lines
                                 } else {
-                                    ui.label(
-                                        RichText::new(clean(line))
-                                            .size(style::TEXT_HINT)
-                                            .color(self.colors.text_dim),
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(clean(line))
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        )
+                                        .wrap(),
                                     );
                                 }
                             }
@@ -862,7 +882,7 @@ impl PlexiApp {
 
 #[cfg(test)]
 mod tests {
-    use super::should_show_changelog_line;
+    use super::{should_render_changelog_body_line, should_show_changelog_line};
 
     #[test]
     fn changelog_filter_hides_chore_entries() {
@@ -881,5 +901,14 @@ mod tests {
         assert!(should_show_changelog_line("### Changes"));
         assert!(should_show_changelog_line("- fix: route update checks"));
         assert!(should_show_changelog_line("- feature: add app launcher"));
+    }
+
+    #[test]
+    fn changelog_body_skips_document_intro() {
+        assert!(!should_render_changelog_body_line("# Changelog"));
+        assert!(!should_render_changelog_body_line(
+            "Newest releases appear first."
+        ));
+        assert!(should_render_changelog_body_line("## [0.1.0] — 2026-06-11"));
     }
 }
