@@ -24,6 +24,11 @@ preset = "catppuccin-mocha"
 # text_primary = "#cdd6f4"
 # foreground   = "#e8e6ed"
 
+[effects]
+crt           = false
+ghost         = true
+ghost_opacity = 0.75
+
 [notifications]
 # enabled = true
 # focus_mode = false
@@ -77,8 +82,3 @@ tips = true
 # account_backend = "none"
 # Default email pre-filled by `plexi account login`.
 # account_email   = "you@example.com"
-
-[effects]
-crt           = false
-ghost         = true
-ghost_opacity = 0.75
