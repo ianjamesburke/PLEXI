@@ -52,7 +52,7 @@ echo "    • Install shell completions"
 echo "    • Install agent skills for AI coding assistants"
 echo "    • Sign the app for macOS Gatekeeper"
 echo ""
-echo "  Admin access may be required for the CLI symlink."
+echo "  Admin access may be required for the CLI shim."
 echo ""
 printf "  \033[2mPlexi is early-stage software. If anything\n"
 printf "  goes wrong, reach out — happy to help.\033[0m\n"
@@ -100,18 +100,42 @@ cp -R "$APP_SRC" "$APP_DEST"
 xattr -c "$APP_DEST" 2>/dev/null || true
 ok "Installed $APP_DEST"
 
-# ── CLI symlink ────────────────────────────────────────────────────────────────
+# ── CLI shim ───────────────────────────────────────────────────────────────────
 
 info "Setting up CLI..."
 BINARY="$APP_DEST/Contents/MacOS/plexi"
 [[ -f "$BINARY" ]] || die "Binary not found at $BINARY."
 
+SHIM="$TMP/plexi-shim"
+cat > "$SHIM" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+stable_binary="/Applications/Plexi.app/Contents/MacOS/plexi"
+
+if [[ ! -x "$stable_binary" ]]; then
+  echo "error: stable Plexi binary not found at $stable_binary" >&2
+  exit 1
+fi
+
+if [[ -n "${PLEXI_CHANNEL:-}" ]]; then
+  channel_binary="/usr/local/bin/plexi-${PLEXI_CHANNEL}"
+  if [[ -x "$channel_binary" ]]; then
+    exec "$channel_binary" "$@"
+  fi
+fi
+
+exec "$stable_binary" "$@"
+EOF
+
 if $NEED_SUDO; then
     [[ -d "$CLI_DIR" ]] || sudo mkdir -p "$CLI_DIR"
-    sudo ln -sf "$BINARY" "$CLI_DEST"
+    sudo rm -f "$CLI_DEST"
+    sudo install -m 0755 "$SHIM" "$CLI_DEST"
 else
     [[ -d "$CLI_DIR" ]] || mkdir -p "$CLI_DIR"
-    ln -sf "$BINARY" "$CLI_DEST"
+    rm -f "$CLI_DEST"
+    install -m 0755 "$SHIM" "$CLI_DEST"
 fi
 ok "CLI: $CLI_DEST"
 

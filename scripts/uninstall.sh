@@ -143,7 +143,7 @@ case "$channel" in
     echo ""
     echo "This will remove the main Plexi channel:"
     echo "  • /Applications/Plexi.app"
-    echo "  • /usr/local/bin/plexi"
+    echo "  • /usr/local/bin/plexi  (contextual shim)"
     echo "  • ~/.plexi/  (profile directory)"
     echo "  • Shell integration from ~/.zshrc / ~/.bashrc"
     echo "  • Shell completions (zsh, bash, fish)"

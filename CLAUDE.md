@@ -97,7 +97,7 @@ Each build channel is a **fully isolated instance** — its own binary, app bund
 
 **RC builds** are local stable-tier release candidates installed with `just channel-install rc-010` (or similar). They are isolated like any other named channel, but release gates treat `rc-*` exactly like stable/main so agents can test the limited public feature set before promoting to main.
 
-**PR builds** are ephemeral isolated instances installed by `just pr-install <N>` from inside the feature worktree. They never capture the bare `plexi` symlink. Remove them after merge with `just channel-clean pr-<N>`.
+**PR builds** are ephemeral isolated instances installed by `just pr-install <N>` from inside the feature worktree. They never capture the bare `plexi` shim. Remove them after merge with `just channel-clean pr-<N>`.
 
 **Alpha config stays default.** `~/.plexi-alpha/config.toml` is reset to the default template on every `just install`. Never customize it — use beta or main for personal config. PR builds seed from the alpha config, so a customized alpha would pollute every PR channel.
 
@@ -268,9 +268,10 @@ Before writing any keyboard shortcut display, badge, chip, or inline label widge
 Every CLI command and feature must work identically on alpha, beta, main, and PR builds. This is non-negotiable — the release channel is an implementation detail, not something callers should need to know.
 
 **How it works:**
-- `PLEXI_SOCKET` (set inside a Plexi pane) routes **host commands** (pane, notify, context, open, etc.) to the correct running instance — but it does NOT re-route the binary itself. Typing `plexi` inside a PR817 pane still runs the main/alpha binary; to target a specific channel you must use the full binary name (`plexi-alpha`, `plexi-pr-817`, etc.).
+- `/usr/local/bin/plexi` is a contextual macOS shim. If `PLEXI_CHANNEL` is set inside a Plexi PTY and `/usr/local/bin/plexi-$PLEXI_CHANNEL` is executable, bare `plexi ...` delegates to that channel binary with the original args. Otherwise it falls back to `/Applications/Plexi.app/Contents/MacOS/plexi`.
+- `PLEXI_SOCKET` (set inside a Plexi pane) routes **host commands** (pane, notify, context, open, etc.) to the correct running instance. Binary-local behavior (config/profile paths, workspace paths, update/install behavior, and release gates) comes from the binary the shim executes.
 - When `PLEXI_SOCKET` is not set, commands fall back to channel-specific mechanisms (spawn-queue, config_dir) derived from the running binary name.
-- `/usr/local/bin/plexi` (the bare `plexi` command) is reserved for the `main` channel binary. If `main` is not installed, the bare symlink should not exist. PR builds never capture the bare name.
+- Channel-specific binaries (`plexi-alpha`, `plexi-beta`, `plexi-rc-*`, `plexi-pr-*`) stay direct symlinks to their app-bundle binaries. PR builds never capture the bare `plexi` command.
 
 **Enforcement:** Never hardcode a profile directory path (e.g. `~/.plexi-alpha/`) in CLI code — always use `config_dir()`. Never route around `PLEXI_SOCKET` when it is set. Any new CLI command that communicates with a running instance must follow the socket-first pattern in `open_cli()`.
 

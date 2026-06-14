@@ -62,10 +62,37 @@ my-project/.plexi-rc-010/config.toml
 That config affects preferences only. It does not change release tier. The
 running binary name decides release-gated feature availability.
 
-Inside a Plexi PTY, host commands that use `PLEXI_SOCKET` route to the running
-instance regardless of the binary name. Channel-specific or release-gated CLI
-behavior still belongs to the binary you invoke, so use `plexi-rc-010` when
-testing the RC and `plexi-beta` when testing beta.
+## Bare CLI Shim
+
+On macOS, `/usr/local/bin/plexi` is a contextual shim, not a direct symlink to
+the stable app-bundle binary. The real stable binary remains:
+
+```text
+/Applications/Plexi.app/Contents/MacOS/plexi
+```
+
+When `PLEXI_CHANNEL` is set inside a Plexi PTY and the matching
+`/usr/local/bin/plexi-$PLEXI_CHANNEL` binary exists, the shim delegates to that
+channel binary with the original arguments. Otherwise it falls back to the
+stable app-bundle binary.
+
+Examples:
+
+```sh
+# inside a beta PTY
+plexi app browse      # runs plexi-beta app browse
+
+# inside an rc-010 PTY
+plexi app browse      # runs plexi-rc-010 app browse, stable-tier gates apply
+
+# outside Plexi
+plexi app browse      # runs stable Plexi
+```
+
+Host commands that use `PLEXI_SOCKET`, such as `plexi pane info`, route to the
+running instance. Binary-local behavior, such as config paths, workspace paths,
+update/install behavior, and release gates, comes from whichever binary the
+shim executes.
 
 ## Stable Release Flow
 

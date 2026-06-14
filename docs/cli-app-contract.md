@@ -306,6 +306,11 @@ plexi pane info            # metadata for the current pane
 plexi pane state <id>      # the renderer's current UI snapshot
 ```
 
+On macOS, bare `plexi` is a contextual shim. Inside a Plexi PTY it delegates to
+the binary named by `PLEXI_CHANNEL` when that channel binary is installed, so
+the examples above inspect the current channel. Outside Plexi, bare `plexi`
+falls back to the stable app-bundle binary.
+
 - The pane's display name comes from `App::display_name`
   (`cli_renderer_app.rs:679`): the descriptor's `name`, or `"CLI Renderer"` if
   the descriptor failed to load.

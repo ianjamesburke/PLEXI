@@ -88,12 +88,35 @@ if [[ -n "$suffix" ]]; then
   mv "$app_dest/Contents/MacOS/plexi" "$app_dest/Contents/MacOS/plexi${suffix}"
 fi
 
-ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
-
-# Only the main channel owns the bare `plexi` symlink.
-# PR builds and development channels are excluded.
 if [[ "$channel" == "main" ]]; then
-  ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" /usr/local/bin/plexi
+  # Main owns the bare `plexi` PATH command, but installs it as a contextual
+  # shim instead of a symlink. Inside a Plexi PTY, the shim delegates to the
+  # active channel binary from PLEXI_CHANNEL. Outside Plexi, it runs stable.
+  # Remove first so an old symlink is not followed when writing the script.
+  rm -f "$bin_dest"
+  cat > "$bin_dest" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+stable_binary="/Applications/Plexi.app/Contents/MacOS/plexi"
+
+if [[ ! -x "$stable_binary" ]]; then
+  echo "error: stable Plexi binary not found at $stable_binary" >&2
+  exit 1
+fi
+
+if [[ -n "${PLEXI_CHANNEL:-}" ]]; then
+  channel_binary="/usr/local/bin/plexi-${PLEXI_CHANNEL}"
+  if [[ -x "$channel_binary" ]]; then
+    exec "$channel_binary" "$@"
+  fi
+fi
+
+exec "$stable_binary" "$@"
+EOF
+  chmod +x "$bin_dest"
+else
+  ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
 fi
 
 # Install shell completions for production and release-candidate channels.

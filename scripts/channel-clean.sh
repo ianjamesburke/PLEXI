@@ -7,7 +7,7 @@ set -euo pipefail
 channel="${1:?channel name required}"
 
 if [[ "$channel" == "main" ]]; then
-  echo "This will remove the main Plexi channel (Plexi.app, /usr/local/bin/plexi, ~/.plexi/)."
+  echo "This will remove the main Plexi channel (Plexi.app, /usr/local/bin/plexi shim, ~/.plexi/)."
   read -r -p "Proceed? [y/N] " confirm
   [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
   suffix=""
@@ -59,15 +59,6 @@ if [[ -d "$profile" ]]; then
     rm -rf "$profile"
     echo "Removed $profile"
     removed=1
-fi
-
-# For main channel, also remove the bare plexi symlink if it exists
-if [[ "$channel" == "main" ]]; then
-    if [[ -e /usr/local/bin/plexi || -L /usr/local/bin/plexi ]]; then
-        rm -f /usr/local/bin/plexi
-        echo "Removed /usr/local/bin/plexi (bare symlink)"
-        removed=1
-    fi
 fi
 
 if [[ $removed -eq 0 ]]; then
