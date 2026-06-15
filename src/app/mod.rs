@@ -3390,6 +3390,11 @@ impl PlexiApp {
             entries.len() - inbox_count,
             notes_dir
         );
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::NotesPickerOpened {
+            inbox_count,
+            kept_count: entries.len() - inbox_count,
+            timestamp: crate::host::event_log::now_timestamp(),
+        });
         self.notes_picker_entries = entries;
         self.notes_picker_selected = 0;
         self.notes_picker_query.clear();

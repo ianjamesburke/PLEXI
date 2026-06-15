@@ -1,6 +1,6 @@
 use super::notes::{print_step_complete, print_step_header};
 
-const TOTAL_STEPS: u8 = 13;
+const TOTAL_STEPS: u8 = 11;
 const CMD: &str = "\u{2318}";
 
 pub fn demo_cli() -> i32 {
@@ -44,7 +44,7 @@ pub fn demo_cli() -> i32 {
         "The pane on the right should be focused now.",
         "Press Command-Shift-D to split that pane below.",
     ]);
-    key(&format!("{CMD}Shift+D"), "split below");
+    key(&format!("{CMD}+Shift+D"), "split below");
     let mut lower_pane_id = 0;
     let after_lower_split = match poll_event(&events_path, after_right_split, |kind, obj| {
         capture_pane_split(kind, obj, &mut lower_pane_id)
@@ -96,29 +96,7 @@ pub fn demo_cli() -> i32 {
     };
     done(4);
 
-    step(5, "Rename this pane");
-    explain(&[
-        "Pane names keep busy workspaces readable.",
-        "Use the rename shortcut, enter Demo terminal, and confirm it.",
-    ]);
-    key(&format!("{CMD}R"), "rename this pane");
-    let after_rename = match poll_event(&events_path, after_close, |kind, obj| {
-        kind == "pane_renamed"
-            && obj
-                .get("pane_id")
-                .and_then(|v| v.as_u64())
-                .is_some_and(|pid| pid == my_pane_id)
-            && obj
-                .get("name")
-                .and_then(|v| v.as_str())
-                .is_some_and(|name| name == "Demo terminal")
-    }) {
-        Ok(offset) => offset,
-        Err(e) => return watch_error(&events_path, e),
-    };
-    done(5);
-
-    step(6, "Open an app from the palette");
+    step(5, "Open an app from the palette");
     explain(&[
         "Split to a fresh terminal, open the command palette, type Balls, and choose the Balls app.",
         "The app should take over that pane. This demo waits for the Balls app to spawn.",
@@ -127,61 +105,79 @@ pub fn demo_cli() -> i32 {
     key(&format!("{CMD}P"), "open the command palette");
     eprintln!("    Type Balls, choose the Balls app, and press Enter.");
     eprintln!();
-    let after_balls = match poll_event(&events_path, after_rename, |kind, obj| {
-        kind == "app_spawned"
+    let mut balls_pane_id = 0;
+    let after_balls = match poll_event(&events_path, after_close, |kind, obj| {
+        if kind != "app_spawned"
+            || !obj
+                .get("type_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id == "balls")
+        {
+            return false;
+        }
+        if let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) {
+            balls_pane_id = id;
+            true
+        } else {
+            false
+        }
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    done(5);
+
+    step(6, "Return to the terminal");
+    explain(&[
+        "Congrats, you can press Escape or Command-W to exit and return back to the regular terminal pane.",
+    ]);
+    key("Esc", "exit the app");
+    let after_balls_close = match poll_event(&events_path, after_balls, |kind, obj| {
+        kind == "app_closed"
             && obj
                 .get("type_id")
                 .and_then(|v| v.as_str())
                 .is_some_and(|id| id == "balls")
+            && obj
+                .get("pane_id")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|id| id == balls_pane_id)
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
     };
     done(6);
 
-    step(7, "Send a notification");
+    step(7, "Rename this app pane");
     explain(&[
-        "Agents can notify you through Plexi instead of relying on terminal output.",
-        "Move back to this demo pane, then run the command below.",
+        "You should be back in the terminal that launched Balls.",
+        "Rename it so the pane list is easier to scan.",
+        "Use the rename shortcut, enter Demo app pane, and confirm it.",
     ]);
-    command("plexi notify --title \"Hello\"");
-    let after_notify = match poll_event(&events_path, after_balls, |kind, obj| {
-        kind == "notification_posted"
+    key(&format!("{CMD}R"), "rename this pane");
+    let after_app_rename = match poll_event(&events_path, after_balls_close, |kind, obj| {
+        kind == "pane_renamed"
             && obj
-                .get("title")
+                .get("pane_id")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|pid| pid == balls_pane_id)
+            && obj
+                .get("name")
                 .and_then(|v| v.as_str())
-                .is_some_and(|title| title == "Hello")
+                .is_some_and(|name| name == "Demo app pane")
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
     };
     done(7);
 
-    step(8, "Acknowledge it");
+    step(8, "Open File Browser");
     explain(&[
-        "Open notifications with Command-Shift-A and click Acknowledge.",
-        "This is the same surface your agents can use when they need your attention.",
+        "File Browser opens on the current pane.",
+        "Use H J K L, or the arrow keys, to move through the file tree and view files.",
     ]);
-    key(&format!("{CMD}Shift+A"), "open notifications");
-    let after_ack = match poll_event(&events_path, after_notify, |kind, obj| {
-        kind == "notification_action_invoked"
-            && obj
-                .get("action")
-                .and_then(|v| v.as_str())
-                .is_some_and(|action| action == "acknowledge")
-    }) {
-        Ok(offset) => offset,
-        Err(e) => return watch_error(&events_path, e),
-    };
-    done(8);
-
-    step(9, "Open files in a tab");
-    explain(&[
-        "The file explorer is a Plexi app for moving through a project directory.",
-        "This opens it in a tab so your terminal stays next to it.",
-    ]);
-    command("plexi app open --tab file_browser");
-    let after_file = match poll_event(&events_path, after_ack, |kind, obj| {
+    key(&format!("{CMD}E"), "open File Browser");
+    let after_file = match poll_event(&events_path, after_app_rename, |kind, obj| {
         kind == "app_spawned"
             && obj
                 .get("type_id")
@@ -191,71 +187,88 @@ pub fn demo_cli() -> i32 {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
     };
+    done(8);
+
+    step(9, "Split below File Browser");
+    explain(&[
+        "Keep File Browser open and add a terminal underneath it.",
+        "The new terminal should be focused after the split.",
+    ]);
+    key(&format!("{CMD}+Shift+D"), "split below");
+    let mut note_terminal_pane_id = 0;
+    let after_file_split = match poll_event(&events_path, after_file, |kind, obj| {
+        capture_pane_split(kind, obj, &mut note_terminal_pane_id)
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
     done(9);
 
     step(10, "Write a scratch note");
     explain(&[
         "Scratch notes land in your Plexi notes inbox.",
-        "Press Command-Shift-Space, type a line, close it, return here, then press Enter.",
+        "Open one from the terminal under File Browser, type a short note, then press Escape to leave it.",
     ]);
-    key(&format!("{CMD}Shift+Space"), "open a scratch note");
-    wait_for_enter();
-    done(10);
-    let after_note = file_offset(&events_path).unwrap_or(after_file);
-
-    step(11, "Create a context");
-    explain(&[
-        "Contexts group related panes and pages.",
-        "Press Command-Shift-N, name the new context Demo Context, and press Enter.",
-    ]);
-    key(&format!("{CMD}Shift+N"), "create a new context");
-    let mut context_id = 0;
-    let after_context = match poll_event(&events_path, after_note, |kind, obj| {
-        if kind == "context_created" {
-            if let Some(id) = obj.get("context_id").and_then(|v| v.as_u64()) {
-                context_id = id;
-                return true;
-            }
+    key(&format!("{CMD}+Shift+Space"), "open a scratch note");
+    let mut scratch_note_path = String::new();
+    let after_scratch_open = match poll_event(&events_path, after_file_split, |kind, obj| {
+        if kind != "scratchpad_opened" {
+            return false;
         }
-        false
+        if let Some(path) = obj.get("path").and_then(|v| v.as_str()) {
+            scratch_note_path = path.to_string();
+            true
+        } else {
+            false
+        }
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    let after_scratch_close = match poll_event(&events_path, after_scratch_open, |kind, obj| {
+        kind == "app_closed"
+            && obj
+                .get("type_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id == "text-editor")
+            && obj
+                .get("pane_id")
+                .and_then(|v| v.as_u64())
+                .is_some_and(|id| id == note_terminal_pane_id)
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    done(10);
+
+    step(11, "Open your notes");
+    explain(&[
+        "From any terminal, Command-O opens your notes.",
+        "Press Enter in the picker to return to the scratch note you just wrote.",
+    ]);
+    key(&format!("{CMD}O"), "open your notes");
+    let after_notes_picker = match poll_event(&events_path, after_scratch_close, |kind, _obj| {
+        kind == "notes_picker_opened"
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    let _after_note_open = match poll_event(&events_path, after_notes_picker, |kind, obj| {
+        kind == "note_opened"
+            && obj
+                .get("path")
+                .and_then(|v| v.as_str())
+                .is_some_and(|path| path == scratch_note_path)
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
     };
     done(11);
 
-    step(12, "Rename the context");
+    eprintln!("  More to cover");
     explain(&[
-        "Press Command-Shift-R, change the context name, and press Enter.",
-        "The demo waits for the rename event in Plexi's event log.",
+        "Here is where the full intro link will go when I actually get around to making it.",
     ]);
-    key(&format!("{CMD}Shift+R"), "rename the active context");
-    let after_context_rename = match poll_event(&events_path, after_context, |kind, obj| {
-        kind == "context_renamed"
-            && obj
-                .get("context_id")
-                .and_then(|v| v.as_u64())
-                .is_some_and(|id| id == context_id)
-    }) {
-        Ok(offset) => offset,
-        Err(e) => return watch_error(&events_path, e),
-    };
-    done(12);
-
-    step(13, "Open the shortcut sheet");
-    explain(&[
-        "Click the button in the top right. It opens the shortcut sheet, where you can also see the Command-/ binding.",
-        "Full intro: https://plexiapp.com/docs/intro",
-        "Hold Command and click the link to open it in your browser.",
-        "If this is not a link, that means I have not uploaded it yet. Try again later.",
-    ]);
-    eprintln!("    Press Enter when you have looked at the shortcut sheet.");
-    eprintln!();
-    wait_for_enter();
-    let _ = after_context_rename;
-    done(13);
-
-    eprintln!("  Done. This covers maybe 20% of what Plexi can do.");
     eprintln!();
     log::info!("demo_cli: tutorial completed for pane_id={my_pane_id}");
     0
@@ -291,12 +304,6 @@ fn explain(lines: &[&str]) {
     for line in lines {
         wrapped("    ", line);
     }
-    eprintln!();
-}
-
-fn command(cmd: &str) {
-    eprintln!("    Run:");
-    wrapped_styled("    ", "\x1b[1m", cmd, "\x1b[0m");
     eprintln!();
 }
 

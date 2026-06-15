@@ -1261,8 +1261,16 @@ impl PlexiApp {
 
         let path_str = path.display().to_string();
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
-        if let Err(e) = self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None) {
-            log::warn!("scratchpad: failed to launch text-editor pane: {e}");
+        match self.launch_app_by_id_with_layout("text-editor", None, &[path_str.clone()], None) {
+            Ok(()) => {
+                crate::host::event_log::emit(crate::host::event_log::HostEvent::ScratchpadOpened {
+                    path: path_str,
+                    timestamp: crate::host::event_log::now_timestamp(),
+                })
+            }
+            Err(e) => {
+                log::warn!("scratchpad: failed to launch text-editor pane: {e}");
+            }
         }
     }
 

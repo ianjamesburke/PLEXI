@@ -166,6 +166,16 @@ pub enum HostEvent {
         name: String,
         timestamp: String,
     },
+    /// A scratch note was created and opened.
+    ScratchpadOpened { path: String, timestamp: String },
+    /// The notes picker was opened.
+    NotesPickerOpened {
+        inbox_count: usize,
+        kept_count: usize,
+        timestamp: String,
+    },
+    /// A note was opened from the notes picker.
+    NoteOpened { path: String, timestamp: String },
 }
 
 // ── Wire envelope ─────────────────────────────────────────────────────────────
