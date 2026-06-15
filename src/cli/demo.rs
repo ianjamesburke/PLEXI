@@ -97,8 +97,11 @@ pub fn demo_cli() -> i32 {
     done(4);
 
     step(5, "Rename this pane");
-    explain(&["Pane names keep busy workspaces readable."]);
-    command("plexi pane name \"Demo terminal\"");
+    explain(&[
+        "Pane names keep busy workspaces readable.",
+        "Use the rename shortcut, enter Demo terminal, and confirm it.",
+    ]);
+    key(&format!("{CMD}R"), "rename this pane");
     let after_rename = match poll_event(&events_path, after_close, |kind, obj| {
         kind == "pane_renamed"
             && obj
@@ -293,7 +296,7 @@ fn explain(lines: &[&str]) {
 
 fn command(cmd: &str) {
     eprintln!("    Run:");
-    wrapped("    \x1b[1m", &format!("{cmd}\x1b[0m"));
+    wrapped_styled("    ", "\x1b[1m", cmd, "\x1b[0m");
     eprintln!();
 }
 
@@ -303,17 +306,21 @@ fn key(keys: &str, action: &str) {
 }
 
 fn wrapped(prefix: &str, text: &str) {
+    wrapped_styled(prefix, "", text, "");
+}
+
+fn wrapped_styled(prefix: &str, style_start: &str, text: &str, style_end: &str) {
     let width = terminal_width().clamp(46, 72);
-    let content_width = width.saturating_sub(4).max(32);
+    let content_width = width.saturating_sub(visible_len(prefix)).max(24);
     let mut line = String::new();
     for word in text.split_whitespace() {
         let next_len = if line.is_empty() {
-            word.len()
+            visible_len(word)
         } else {
-            line.len() + 1 + word.len()
+            visible_len(&line) + 1 + visible_len(word)
         };
         if next_len > content_width && !line.is_empty() {
-            eprintln!("{prefix}{line}");
+            eprintln!("{prefix}{style_start}{line}{style_end}");
             line.clear();
         }
         if !line.is_empty() {
@@ -322,7 +329,7 @@ fn wrapped(prefix: &str, text: &str) {
         line.push_str(word);
     }
     if !line.is_empty() {
-        eprintln!("{prefix}{line}");
+        eprintln!("{prefix}{style_start}{line}{style_end}");
     }
 }
 
@@ -332,10 +339,54 @@ fn wait_for_enter() {
 }
 
 fn terminal_width() -> usize {
-    std::env::var("COLUMNS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(72)
+    terminal_width_from_tty().unwrap_or_else(|| {
+        std::env::var("COLUMNS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(72)
+    })
+}
+
+#[cfg(unix)]
+fn terminal_width_from_tty() -> Option<usize> {
+    use std::os::fd::AsRawFd;
+
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let fd = std::io::stderr().as_raw_fd();
+    let rc = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) };
+    if rc == 0 && size.ws_col > 0 {
+        Some(size.ws_col as usize)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(unix))]
+fn terminal_width_from_tty() -> Option<usize> {
+    None
+}
+
+fn visible_len(text: &str) -> usize {
+    let mut len = 0;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            for code_ch in chars.by_ref() {
+                if code_ch.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            len += 1;
+        }
+    }
+    len
 }
 
 fn file_offset(path: &std::path::Path) -> Option<u64> {
