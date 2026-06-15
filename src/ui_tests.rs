@@ -521,6 +521,44 @@ mod tests {
             .expect("render failed");
     }
 
+    /// While a context is being dragged, the Parked header renders even with
+    /// zero parked contexts so the drag has a drop target. Smoke test: set up
+    /// an in-progress drag and confirm the sidebar renders without panicking.
+    #[test]
+    fn dragging_context_shows_parked_drop_target() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            app.parked_section_expanded = false;
+            // Add a second active context so there is a drag source + a list.
+            app.router.push(crate::host::context::Context {
+                name: "second".to_string(),
+                path: std::env::temp_dir().join("second"),
+                root: None,
+                description: None,
+                context_id: 71_001,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            });
+            // Simulate an in-progress drag of the first context.
+            app.drag_context = Some(0);
+        });
+        // Hover low in the sidebar where the (empty) Parked header renders.
+        let pos = egui::pos2(28.0, 150.0);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(pos));
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert_eq!(app.router.iter().filter(|c| c.parked).count(), 0);
+            assert_eq!(app.drag_context, Some(0));
+        });
+        h.save_screenshot("/tmp/plexi_drag_park_drop_target.png")
+            .expect("render failed");
+    }
+
     /// Notes triage overlay: renders a note, and emptying the inbox returns
     /// to the picker instead of closing outright.
     #[test]

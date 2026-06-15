@@ -16,6 +16,57 @@ fn drop_slot_from_rects(rects: &[Rect], mouse_y: f32) -> usize {
     rects.len()
 }
 
+/// Where a dragged context will land when released: which section (active vs.
+/// parked) and the slot within that section's display list. A drop fully
+/// determines both the context's `parked` flag and its order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct SidebarDrop {
+    parked: bool,
+    slot: usize,
+}
+
+/// Resolve a dragged context against the current pointer position. The Parked
+/// header acts as the boundary: anything at or below it targets the parked
+/// section, anything above targets the active section. Within a section the
+/// slot is the insertion index between rows. Returns `None` when the drop would
+/// leave the context exactly where it already is (a no-op).
+///
+/// `src_parked`/`src_slot` describe the dragged context's current position so
+/// same-section no-op drops (onto its own row edges) can be filtered out.
+fn resolve_drag_drop(
+    src_parked: bool,
+    src_slot: usize,
+    parked_header: Option<Rect>,
+    pointer: Option<egui::Pos2>,
+    active_rects: &[Rect],
+    parked_rects: &[Rect],
+) -> Option<SidebarDrop> {
+    let pos = pointer?;
+    let into_parked = parked_header.map_or(false, |h| pos.y >= h.top());
+    let rects = if into_parked { parked_rects } else { active_rects };
+    let slot = drop_slot_from_rects(rects, pos.y);
+    // Same-section drop onto the source's own edges leaves it in place.
+    if into_parked == src_parked && (slot == src_slot || slot == src_slot + 1) {
+        return None;
+    }
+    Some(SidebarDrop {
+        parked: into_parked,
+        slot,
+    })
+}
+
+/// Y coordinate of the reorder indicator line for a drop at `slot` within
+/// `rects` (the section's row rectangles, in display order).
+fn reorder_line_y(rects: &[Rect], slot: usize) -> f32 {
+    if slot == 0 {
+        rects.first().map_or(0.0, |r| r.min.y)
+    } else if slot >= rects.len() {
+        rects.last().map_or(0.0, |r| r.max.y)
+    } else {
+        rects[slot - 1].max.y
+    }
+}
+
 impl PlexiApp {
     pub(crate) fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
         let sidebar_width = ui.available_width();
@@ -43,7 +94,8 @@ impl PlexiApp {
         let mut clicked_workspace: Option<usize> = None;
         let mut delete_context: Option<usize> = None;
         let mut menu_action: Option<(usize, WindowMenuAction)> = None;
-        let mut row_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
+        let mut active_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
+        let mut parked_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
         let mut drag_released = false;
         let mut unpark_context: Option<usize> = None;
 
@@ -222,7 +274,7 @@ impl PlexiApp {
                     ui.add_space(4.0);
                 });
                 let row_rect = scope.response.rect;
-                row_rects.push(row_rect);
+                active_rects.push(row_rect);
                 ui.painter().set(
                     bg_idx,
                     egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill),
@@ -267,7 +319,7 @@ impl PlexiApp {
             }
             .draw(ui, egui::Id::new(("ctx", i)), &self.colors);
 
-            row_rects.push(response.rect);
+            active_rects.push(response.rect);
 
             match action {
                 SidebarAction::DragStart => {
@@ -370,16 +422,25 @@ impl PlexiApp {
         }
 
         // ── Parked section ──────────────────────────────────────────────
+        // The header doubles as a drop target: while a context is being
+        // dragged, render it even when empty so the drag can release onto it.
         let parked_count = parked_order.len();
-        if parked_count > 0 {
+        let mut parked_header_rect: Option<Rect> = None;
+        if parked_count > 0 || self.drag_context.is_some() {
             ui.add_space(8.0);
 
             let divider_id = egui::Id::new("parked_divider");
             let expanded = self.parked_section_expanded;
+            let label = if parked_count > 0 {
+                format!("Parked ({parked_count})")
+            } else {
+                "Parked".to_string()
+            };
 
-            let response = ListDropdownHeader::new(&format!("Parked ({parked_count})"), expanded)
+            let response = ListDropdownHeader::new(&label, expanded)
                 .indent(12.0)
                 .show(ui, divider_id, &self.colors);
+            parked_header_rect = Some(response.rect);
             if response.clicked() {
                 self.parked_section_expanded = !self.parked_section_expanded;
             }
@@ -443,8 +504,8 @@ impl PlexiApp {
 
                     let (action, response) = ContextItem {
                         is_active: false,
-                        is_dragging: false,
-                        any_dragging: false,
+                        is_dragging: self.drag_context == Some(i),
+                        any_dragging: self.drag_context.is_some(),
                         action_enabled: false,
                         ctx_name,
                         ctx_index: None,
@@ -452,9 +513,11 @@ impl PlexiApp {
                         subtitle,
                         pane_dots,
                         indent,
-                        draggable: false,
+                        draggable: true,
                     }
                     .draw(ui, egui::Id::new(("parked_ctx", i)), &self.colors);
+
+                    parked_rects.push(response.rect);
 
                     response.context_menu(|ui| {
                         if ui.button("Unpark").clicked() {
@@ -463,42 +526,70 @@ impl PlexiApp {
                         }
                     });
 
-                    if matches!(action, SidebarAction::Activate) {
-                        unpark_context = Some(i);
+                    match action {
+                        SidebarAction::DragStart => {
+                            self.drag_context = Some(i);
+                        }
+                        SidebarAction::DragEnd => {
+                            drag_released = true;
+                        }
+                        // A plain click must not unpark — parked contexts only
+                        // come back via a drag into the active list or the
+                        // right-click "Unpark" action. Clicking is inert.
+                        _ => {}
                     }
                 }
             }
         }
 
-        // Drop slot + drag reorder
-        let drop_index: Option<usize> = if self.drag_context.is_some() {
-            ui.input(|i| i.pointer.hover_pos())
-                .map(|pos| drop_slot_from_rects(&row_rects, pos.y))
-        } else {
-            None
-        };
+        // Resolve the drag target once and use it for both the drop affordance
+        // and the release action. The Parked header is the section boundary:
+        // dropping at/below it targets the parked list, above it the active
+        // list — in either case at a chosen slot, so a drag can park, unpark,
+        // and reorder within either list.
+        let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+        let src_section = self.drag_context.map(|src| {
+            let src_parked = self.router.get(src).parked;
+            let src_slot = if src_parked {
+                parked_order.iter().position(|&i| i == src).unwrap_or(0)
+            } else {
+                active_order.iter().position(|&i| i == src).unwrap_or(0)
+            };
+            (src_parked, src_slot)
+        });
+        let drop_target = src_section.and_then(|(src_parked, src_slot)| {
+            resolve_drag_drop(
+                src_parked,
+                src_slot,
+                parked_header_rect,
+                pointer_pos,
+                &active_rects,
+                &parked_rects,
+            )
+        });
 
-        if drag_released {
-            if let (Some(src), Some(dst)) = (self.drag_context, drop_index) {
-                if dst != src && dst != src + 1 {
-                    let effective_dst = if dst > src { dst - 1 } else { dst };
-                    self.renaming_window = None;
-                    self.router.reorder_tracking_active(src, effective_dst);
+        // Drop affordance: a reorder line within the target section, or — when
+        // dropping into an empty Parked list — an outline of the header itself.
+        if let Some(drop) = drop_target {
+            let target_rects = if drop.parked {
+                &parked_rects
+            } else {
+                &active_rects
+            };
+            if drop.parked && parked_rects.is_empty() {
+                // Border only — a fill would paint over the header label drawn
+                // earlier this frame and hide the "Parked" text.
+                if let Some(rect) = parked_header_rect {
+                    ui.painter().rect_stroke(
+                        rect.shrink(2.0),
+                        crate::ui::style::RADIUS_SM,
+                        Stroke::new(1.5, self.colors.accent),
+                        egui::StrokeKind::Inside,
+                    );
                 }
-            }
-            self.drag_context = None;
-        }
-
-        if let (Some(src), Some(dst)) = (self.drag_context, drop_index) {
-            if dst != src && dst != src + 1 {
-                let line_y = if dst == 0 {
-                    row_rects.first().map_or(0.0, |r| r.min.y)
-                } else if dst >= row_rects.len() {
-                    row_rects.last().map_or(0.0, |r| r.max.y)
-                } else {
-                    row_rects[dst - 1].max.y
-                };
-                let x0 = row_rects.first().map_or(0.0, |r| r.min.x);
+            } else {
+                let line_y = reorder_line_y(target_rects, drop.slot);
+                let x0 = target_rects.first().map_or(0.0, |r| r.min.x);
                 ui.painter().line_segment(
                     [
                         egui::pos2(x0, line_y),
@@ -507,6 +598,75 @@ impl PlexiApp {
                     Stroke::new(2.0, self.colors.accent),
                 );
             }
+        }
+
+        if drag_released {
+            if let (Some(src), Some(drop), Some((src_parked, src_slot))) =
+                (self.drag_context, drop_target, src_section)
+            {
+                // Rebuild the active/parked section lists with `src` moved to its
+                // new home, then commit the full ordering + parked flag at once.
+                let mut new_active = active_order.clone();
+                let mut new_parked = parked_order.clone();
+                if src_parked {
+                    new_parked.retain(|&i| i != src);
+                } else {
+                    new_active.retain(|&i| i != src);
+                }
+                let dest = if drop.parked {
+                    &mut new_parked
+                } else {
+                    &mut new_active
+                };
+                // Same-section moves past the source's old slot shift down by one
+                // once it is removed.
+                let slot = if drop.parked == src_parked && drop.slot > src_slot {
+                    drop.slot - 1
+                } else {
+                    drop.slot
+                };
+                dest.insert(slot.min(dest.len()), src);
+
+                let src_id = self.router.get(src).context_id;
+                let was_active = self.router.active_idx() == src;
+                self.router.get_mut(src).parked = drop.parked;
+                let mut new_order = new_active;
+                new_order.extend(new_parked);
+                self.router.apply_order(&new_order);
+                self.renaming_window = None;
+
+                let new_src_idx = self
+                    .router
+                    .position(|c| c.context_id == src_id)
+                    .unwrap_or(self.router.active_idx());
+                if drop.parked && !src_parked {
+                    log::info!("sidebar: drag-park context id={src_id} slot={}", drop.slot);
+                    if was_active {
+                        // Hand focus to the nearest unparked neighbor.
+                        let len = self.router.len();
+                        let next = (1..len)
+                            .map(|o| (new_src_idx + o) % len)
+                            .find(|&i| !self.router.get(i).parked);
+                        if let Some(n) = next {
+                            self.switch_workspace(n);
+                        }
+                    }
+                } else if !drop.parked && src_parked {
+                    log::info!(
+                        "sidebar: drag-unpark context id={src_id} slot={}",
+                        drop.slot
+                    );
+                    self.switch_workspace(new_src_idx);
+                } else {
+                    log::info!(
+                        "sidebar: drag-reorder context id={src_id} parked={} slot={}",
+                        drop.parked,
+                        drop.slot
+                    );
+                }
+                self.save_workspace();
+            }
+            self.drag_context = None;
         }
 
         if let Some(i) = unpark_context {
@@ -601,5 +761,116 @@ impl PlexiApp {
         if add_clicked {
             self.new_context();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{reorder_line_y, resolve_drag_drop, SidebarDrop};
+    use egui::{pos2, vec2, Rect};
+
+    // Two stacked active rows (y in [0,20] and [20,40]), the Parked header at
+    // y in [50,70], and two parked rows below it (y in [70,90] and [90,110]).
+    fn active_rects() -> Vec<Rect> {
+        vec![
+            Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 20.0)),
+            Rect::from_min_size(pos2(0.0, 20.0), vec2(100.0, 20.0)),
+        ]
+    }
+    fn parked_rects() -> Vec<Rect> {
+        vec![
+            Rect::from_min_size(pos2(0.0, 70.0), vec2(100.0, 20.0)),
+            Rect::from_min_size(pos2(0.0, 90.0), vec2(100.0, 20.0)),
+        ]
+    }
+    fn header() -> Rect {
+        Rect::from_min_size(pos2(0.0, 50.0), vec2(100.0, 20.0))
+    }
+
+    fn resolve(
+        src_parked: bool,
+        src_slot: usize,
+        pointer_y: f32,
+        parked_rects: &[Rect],
+    ) -> Option<SidebarDrop> {
+        resolve_drag_drop(
+            src_parked,
+            src_slot,
+            Some(header()),
+            Some(pos2(10.0, pointer_y)),
+            &active_rects(),
+            parked_rects,
+        )
+    }
+
+    #[test]
+    fn active_dragged_into_empty_parked_parks() {
+        // No parked rows yet; dropping below the header targets parked slot 0.
+        let target = resolve(false, 0, 60.0, &[]);
+        assert_eq!(target, Some(SidebarDrop { parked: true, slot: 0 }));
+    }
+
+    #[test]
+    fn active_dragged_between_parked_rows_picks_slot() {
+        // Pointer over the gap between the two parked rows → parked slot 1.
+        let target = resolve(false, 0, 88.0, &parked_rects());
+        assert_eq!(target, Some(SidebarDrop { parked: true, slot: 1 }));
+    }
+
+    #[test]
+    fn parked_dragged_into_active_unparks_at_slot() {
+        // Dragging parked row, pointer over the first active row → active slot 0.
+        let target = resolve(true, 0, 5.0, &parked_rects());
+        assert_eq!(target, Some(SidebarDrop { parked: false, slot: 0 }));
+    }
+
+    #[test]
+    fn reorder_within_active_list() {
+        // Dragging active row 0 down past the last active row → active slot 2.
+        let target = resolve(false, 0, 35.0, &parked_rects());
+        assert_eq!(target, Some(SidebarDrop { parked: false, slot: 2 }));
+    }
+
+    #[test]
+    fn reorder_within_parked_list() {
+        // Dragging parked row 0 (src_slot 0) past parked row 1 → parked slot 2.
+        let target = resolve(true, 0, 105.0, &parked_rects());
+        assert_eq!(target, Some(SidebarDrop { parked: true, slot: 2 }));
+    }
+
+    #[test]
+    fn dropping_on_own_active_slot_is_a_noop() {
+        // Active row 0, pointer still over row 0 (slot 0 or 1) → no move.
+        assert_eq!(resolve(false, 0, 5.0, &parked_rects()), None);
+        assert_eq!(resolve(false, 0, 25.0, &parked_rects()), None);
+    }
+
+    #[test]
+    fn dropping_on_own_parked_slot_is_a_noop() {
+        // Parked row 0 (src_slot 0), pointer over its own row edges → no move.
+        assert_eq!(resolve(true, 0, 75.0, &parked_rects()), None);
+        assert_eq!(resolve(true, 0, 95.0, &parked_rects()), None);
+    }
+
+    #[test]
+    fn no_pointer_is_a_noop() {
+        let target = resolve_drag_drop(
+            false,
+            0,
+            Some(header()),
+            None,
+            &active_rects(),
+            &parked_rects(),
+        );
+        assert_eq!(target, None);
+    }
+
+    #[test]
+    fn reorder_line_y_clamps_to_section_bounds() {
+        let rects = active_rects();
+        assert_eq!(reorder_line_y(&rects, 0), 0.0); // top edge
+        assert_eq!(reorder_line_y(&rects, 1), 20.0); // between rows
+        assert_eq!(reorder_line_y(&rects, 2), 40.0); // bottom edge
+        assert_eq!(reorder_line_y(&rects, 99), 40.0); // past end clamps
     }
 }
