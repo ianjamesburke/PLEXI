@@ -164,25 +164,14 @@ impl PlexiApp {
                     }
 
                     ui.add_space(style::SPACE_XL);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("New to Plexi? Run ")
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim),
-                        );
-                        ui.label(
-                            RichText::new("plexi demo")
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim)
-                                .monospace()
-                                .background_color(colors.bg_active),
-                        );
-                        ui.label(
-                            RichText::new(" in any terminal to get started.")
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim),
-                        );
-                    });
+                    ui.label(
+                        RichText::new(
+                            "Brand new to Plexi? Press Command+N to open a new pane, \
+                             then type plexi demo.",
+                        )
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.text_dim),
+                    );
                     ui.add_space(style::SPACE_SM);
                     ui.hyperlink_to(
                         RichText::new("Read the docs at plexiapp.com/docs")
