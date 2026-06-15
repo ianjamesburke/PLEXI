@@ -31,6 +31,7 @@ This skill is not complete when the worktree exists. Completion means the task w
 - Run `stint start <task-id>` from alpha before creating a fresh worktree.
 - Immediately commit only the resulting `.stint/tasks/<task-id>-*.md` change directly to alpha with `git commit .stint/tasks/<task-id>-*.md -m "chore: claim stint <task-id>"`.
 - Create the implementation worktree from that alpha claim commit.
+- Default validation should use an isolated PR build. Do not install from a feature worktree, and do not replace alpha/main as proof of the change. Only mark install skippable when tests and scenes fully cover the behavior.
 - Before claiming, check whether a matching local worktree or branch already exists. If it is dirty, ahead, or the user is clearly resuming, use resume mode instead of creating a new worktree.
 - Name the Plexi pane before coding:
   ```bash
@@ -240,6 +241,13 @@ cargo test --bin plexi <test_name>
 
 Then run the `/testing` skill (`.agents/skills/testing/SKILL.md`) to produce the `**Test evidence:**` block — diff classification, harness tests, headless render screenshots for visual changes. Include the block in the Ship Log entry (or PR body when no issue is linked) during handoff.
 
+Validation bias:
+
+- Use `binary install required` as the default conclusion for visible UI, keyboard, app-launch, channel, filesystem, host/runtime, or interaction changes.
+- Use `install skippable — full coverage` only for pure logic, docs-only, or changes with direct HostHarness/PlexiUiHarness/scene coverage that exercises the full user-visible behavior.
+- If binary install is required, explicitly state that validation should install the PR build with `just pr-install <PR>` after `/open-pr` creates the PR. The validator should run `plexi-pr-<PR>` from the relevant workspace, not `plexi` or `plexi-alpha`.
+- Never cite `cargo build` or a feature-worktree app install as install evidence.
+
 ## Phase 5 - Commit, Push, Handoff
 
 Commit from the worktree:
@@ -265,6 +273,7 @@ If a linked GitHub issue exists, append or update its Ship Log with:
 - cargo test: <passed> passed, <failed> failed — filters: <module list or "full bin suite">
 - PlexiUiHarness render: /tmp/plexi-render-<task>-<name>.png — <what it shows> (omit if no UI layer touched)
 - Conclusion: install skippable — full coverage | binary install required — <why> | docs-only — no test evidence required
+- PR install: required via `just pr-install <PR>` | skippable because <specific coverage reason>
 ```
 
 Set labels:
