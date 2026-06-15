@@ -21,6 +21,7 @@ pub fn demo_cli() -> i32 {
     };
 
     log::info!("demo_cli: starting interactive tutorial for pane_id={my_pane_id}");
+    name_demo_pane(my_pane_id);
 
     let events_path = crate::config::config_dir().join("events.jsonl");
     let start_offset = file_offset(&events_path).unwrap_or(0);
@@ -106,7 +107,13 @@ pub fn demo_cli() -> i32 {
     eprintln!("    Type Balls, choose the Balls app, and press Enter.");
     eprintln!();
     let mut balls_pane_id = 0;
-    let after_balls = match poll_event(&events_path, after_close, |kind, obj| {
+    let after_app_split = match poll_event(&events_path, after_close, |kind, obj| {
+        capture_pane_split(kind, obj, &mut balls_pane_id)
+    }) {
+        Ok(offset) => offset,
+        Err(e) => return watch_error(&events_path, e),
+    };
+    let after_balls = match poll_event(&events_path, after_app_split, |kind, obj| {
         if kind != "app_spawned"
             || !obj
                 .get("type_id")
@@ -115,12 +122,7 @@ pub fn demo_cli() -> i32 {
         {
             return false;
         }
-        if let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) {
-            balls_pane_id = id;
-            true
-        } else {
-            false
-        }
+        true
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
@@ -151,7 +153,7 @@ pub fn demo_cli() -> i32 {
     step(7, "Rename this app pane");
     explain(&[
         "You should be back in the terminal that launched Balls.",
-        "Rename it so the pane list is easier to scan.",
+        "Rename that pane so the pane list is easier to scan.",
         "Use the rename shortcut, enter Demo app pane, and confirm it.",
     ]);
     key(&format!("{CMD}R"), "rename this pane");
@@ -280,6 +282,18 @@ fn print_intro() {
         "Plexi is a local app workspace for terminals, app panes, notes, contexts, notifications, and agent-driven work.",
         "This demo watches Plexi events and advances as you try the core host controls. Keep this terminal visible when you can.",
     ]);
+}
+
+fn name_demo_pane(pane_id: u64) {
+    log::info!("demo_cli: naming demo pane pane_id={pane_id}");
+    let code = super::send_to_socket(serde_json::json!({
+        "type": "set_pane_title",
+        "pane_id": pane_id,
+        "name": "Plexi demo",
+    }));
+    if code != 0 {
+        log::warn!("demo_cli: could not name demo pane pane_id={pane_id}");
+    }
 }
 
 fn step(step: u8, title: &str) {

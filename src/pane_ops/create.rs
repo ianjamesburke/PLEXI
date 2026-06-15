@@ -300,6 +300,12 @@ impl PlexiApp {
             );
             self.set_window_focused_pane(active, focused_tile);
             log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
+            crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+                app_id: app_id.to_string(),
+                type_id: app_id.to_string(),
+                pane_id,
+                timestamp: crate::host::event_log::now_timestamp(),
+            });
             return Some(pane_id);
         }
 
@@ -317,6 +323,12 @@ impl PlexiApp {
             new_id,
             new_app_pane(new_id, process, workspace_root, group, linked_pane_id, None),
         );
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+            app_id: app_id.to_string(),
+            type_id: app_id.to_string(),
+            pane_id: new_id,
+            timestamp: crate::host::event_log::now_timestamp(),
+        });
 
         // Hot reload (#83): if the manifest opted in AND the app was
         // discovered from a workspace-local install, begin watching its
