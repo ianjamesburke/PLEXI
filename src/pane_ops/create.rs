@@ -989,15 +989,16 @@ impl PlexiApp {
         if let Some(installed) = self.registry.get(id) {
             if installed.manifest.manifest_type == crate::app::registry::ManifestType::Terminal {
                 let exec_cmd = installed.manifest.exec.clone().unwrap_or_else(|| id.to_string());
+                let exec_bin = exec_cmd.split_whitespace().next().unwrap_or(&exec_cmd);
                 let install_footer = Some(installed.manifest.description.clone());
-                if !cli_binary_in_path(&exec_cmd) {
+                if !cli_binary_in_path(exec_bin) {
                     log::warn!(
                         "launch_app_by_id: terminal app '{id}' exec='{exec_cmd}' not found in PATH"
                     );
                     self.open_launch_failed_pane(
                         id,
                         hint.as_deref(),
-                        vec![format!("'{exec_cmd}' not found in PATH")],
+                        vec![format!("'{exec_bin}' not found in PATH")],
                         cwd,
                         install_footer,
                     );
@@ -1067,12 +1068,13 @@ impl PlexiApp {
         // Terminal apps bypass ProcessApp entirely — spawn via split_focused (same path as builtin "terminal").
         if installed.manifest.manifest_type == crate::app::registry::ManifestType::Terminal {
             let exec_cmd = installed.manifest.exec.clone().unwrap_or_else(|| app_id.clone());
-            if !cli_binary_in_path(&exec_cmd) {
+            let exec_bin = exec_cmd.split_whitespace().next().unwrap_or(&exec_cmd);
+            if !cli_binary_in_path(exec_bin) {
                 log::warn!(
                     "launch_app_by_path_with_layout: terminal app '{app_id}' exec='{exec_cmd}' not found in PATH"
                 );
                 return Err(format!(
-                    "'{exec_cmd}' not found in PATH — install it and ensure it is on your PATH."
+                    "'{exec_bin}' not found in PATH — install it and ensure it is on your PATH."
                 ));
             }
             let layout_str = layout_hint.as_deref().unwrap_or("split_h");
