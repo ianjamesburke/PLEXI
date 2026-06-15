@@ -659,13 +659,9 @@ fn trailing_size(ui: &egui::Ui, label: &str) -> Vec2 {
 const CHIP_PAD_H: f32 = 4.0;
 const CHIP_PAD_V: f32 = 1.5;
 
-fn chip_galley(ui: &egui::Ui, label: &str, colors: &Colors) -> std::sync::Arc<egui::Galley> {
+fn chip_galley(ui: &egui::Ui, label: &str, color: egui::Color32) -> std::sync::Arc<egui::Galley> {
     ui.fonts(|f| {
-        f.layout_no_wrap(
-            label.to_string(),
-            egui::FontId::monospace(style::TEXT_HINT),
-            colors.text_dim,
-        )
+        f.layout_no_wrap(label.to_string(), egui::FontId::monospace(style::TEXT_HINT), color)
     })
 }
 
@@ -682,7 +678,8 @@ fn chip_size(ui: &egui::Ui, label: &str) -> Vec2 {
 }
 
 fn draw_chip(ui: &egui::Ui, label: &str, colors: &Colors, x: f32, center_y: f32) {
-    let galley = chip_galley(ui, label, colors);
+    let text_color = colors.text_on(colors.bg_active);
+    let galley = chip_galley(ui, label, text_color);
     let size = chip_size(ui, label);
     let rect = egui::Rect::from_min_size(Pos2::new(x, center_y - size.y / 2.0), size);
     ui.painter()
@@ -693,7 +690,7 @@ fn draw_chip(ui: &egui::Ui, label: &str, colors: &Colors, x: f32, center_y: f32)
             rect.center().y - galley.size().y / 2.0,
         ),
         galley,
-        colors.text_dim,
+        text_color,
     );
 }
 

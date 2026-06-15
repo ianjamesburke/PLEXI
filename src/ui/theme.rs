@@ -398,18 +398,18 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "tokyo-day" => Some(ThemeConfig {
             preset: None,
-            bg_darkest: s("#c4c8da"),
+            bg_darkest: s("#b0b3c0"),
             bg_sidebar: s("#d5d6db"),
             bg_toolbar: s("#d5d6db"),
             terminal_bg: s("#e1e2e7"),
-            bg_hover: s("#b4b5be"),
-            bg_sidebar_hover: s("#a8a9b4"),
-            bg_active: s("#9c9da8"),
+            bg_hover: s("#cbccd5"),
+            bg_sidebar_hover: s("#c4c8da"),
+            bg_active: s("#c4c8da"),
             text_primary: s("#3760bf"),
-            text_dim: s("#848cb5"),
-            text_section: s("#8990b3"),
+            text_dim: s("#6172b0"),
+            text_section: s("#848cb5"),
             accent: s("#2e7de9"),
-            border: s("#b4b5be"),
+            border: s("#c4c8da"),
             foreground: s("#3760bf"),
             background: s("#e1e2e7"),
             black: s("#e9e9ec"),
@@ -476,8 +476,8 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bg_sidebar_hover: s("#d5c4a1"),
             bg_active: s("#bdae93"),
             text_primary: s("#3c3836"),
-            text_dim: s("#7c6f64"),
-            text_section: s("#665c54"),
+            text_dim: s("#5c534a"),
+            text_section: s("#7c6f64"),
             accent: s("#d65d0e"),
             border: s("#d5c4a1"),
             foreground: s("#3c3836"),
@@ -616,8 +616,8 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bg_sidebar_hover: s("#d8d4c0"),
             bg_active: s("#d0ccb8"),
             text_primary: s("#657b83"),
-            text_dim: s("#93a1a1"),
-            text_section: s("#839496"),
+            text_dim: s("#586e75"),
+            text_section: s("#657b83"),
             accent: s("#268bd2"),
             border: s("#ddd6c1"),
             foreground: s("#657b83"),
@@ -1066,26 +1066,23 @@ mod tests {
             (hi + 0.05) / (lo + 0.05)
         }
 
-        let cfg = preset_colors("catppuccin-latte").unwrap();
-        let colors = Colors::from_config(&cfg);
-        for surface in [
-            colors.bg_darkest,
-            colors.bg_sidebar,
-            colors.bg_toolbar,
-            colors.terminal_bg,
-            colors.bg_hover,
-        ] {
+        for name in &["catppuccin-latte", "tokyo-day", "gruvbox-light", "solarized-light"] {
+            let cfg = preset_colors(name).unwrap();
+            let colors = Colors::from_config(&cfg);
+            // bg_sidebar is where inactive row text (text_dim) appears — must be readable.
             assert!(
-                contrast(colors.text_primary, surface) >= 4.5,
-                "catppuccin-latte: text_primary below 4.5:1 on {surface:?}"
+                contrast(colors.text_primary, colors.bg_sidebar) >= 4.5,
+                "{name}: text_primary below 4.5:1 on bg_sidebar"
             );
             assert!(
-                contrast(colors.text_dim, surface) >= 3.0,
-                "catppuccin-latte: text_dim below 3:1 on {surface:?}"
+                contrast(colors.text_dim, colors.bg_sidebar) >= 3.0,
+                "{name}: text_dim below 3:1 on bg_sidebar (inactive row text illegible)"
             );
+            // bg_active is the chip background — text_on must achieve 3:1 there.
+            let chip_text = colors.text_on(colors.bg_active);
             assert!(
-                contrast(colors.text_section, surface) >= 3.0,
-                "catppuccin-latte: text_section below 3:1 on {surface:?}"
+                contrast(chip_text, colors.bg_active) >= 3.0,
+                "{name}: chip text_on(bg_active) below 3:1 (chip text illegible)"
             );
         }
     }
