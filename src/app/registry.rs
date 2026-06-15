@@ -271,6 +271,13 @@ pub struct LaunchSection {
     /// user immediate feedback that the app started. Omit to launch silently.
     #[serde(default)]
     pub startup_message: Option<String>,
+    /// Pane layout used when this app is launched from the palette.
+    /// Valid values: `"window"` (spawn in a split then zoom to fill — default for
+    /// Terminal-type apps), `"split_h"` (horizontal split), `"split_v"` (vertical
+    /// split), `"overlay"` (replace the focused pane, Esc restores it — default
+    /// for App-type apps). Explicit caller-supplied hints always win over this.
+    #[serde(default)]
+    pub layout: Option<String>,
 }
 
 impl AppCapabilities {

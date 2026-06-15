@@ -991,6 +991,13 @@ impl PlexiApp {
                 let exec_cmd = installed.manifest.exec.clone().unwrap_or_else(|| id.to_string());
                 let exec_bin = exec_cmd.split_whitespace().next().unwrap_or(&exec_cmd);
                 let install_footer = Some(installed.manifest.description.clone());
+                // Caller hint wins; otherwise use manifest layout; Terminal default is "window".
+                let manifest_layout = installed.launch.layout.clone();
+                let effective_layout = hint
+                    .as_deref()
+                    .or(manifest_layout.as_deref())
+                    .unwrap_or("window")
+                    .to_string();
                 if !cli_binary_in_path(exec_bin) {
                     log::warn!(
                         "launch_app_by_id: terminal app '{id}' exec='{exec_cmd}' not found in PATH"
@@ -1004,13 +1011,22 @@ impl PlexiApp {
                     );
                     return Ok(());
                 }
-                let layout_str = hint.as_deref().unwrap_or("split_h");
-                let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
-                let new_pane_first = matches!(layout_str, "split_above" | "split_left");
+                // "window" = spawn in a split then zoom the new pane to fill the window.
+                let zoom_after = effective_layout == "window";
+                let split_layout = if zoom_after { "split_h" } else { &effective_layout };
+                let vertical = matches!(split_layout, "split_v" | "split_below" | "split_above");
+                let new_pane_first = matches!(split_layout, "split_above" | "split_left");
                 log::info!(
-                    "launch_app_by_id: terminal app '{id}' → split_focused exec='{exec_cmd}' layout='{layout_str}'"
+                    "launch_app_by_id: terminal app '{id}' → split_focused exec='{exec_cmd}' layout='{effective_layout}' zoom={zoom_after}"
                 );
                 self.split_focused(vertical, Some(&exec_cmd), false, new_pane_first, Some(cwd));
+                if zoom_after {
+                    let active = self.active_window;
+                    if let Some(tile) = self.windows[active].focused_pane {
+                        self.windows[active].zoom_to(tile);
+                        log::info!("launch_app_by_id: zoomed terminal pane {tile:?} for '{id}'");
+                    }
+                }
                 return Ok(());
             }
         }
@@ -1077,13 +1093,29 @@ impl PlexiApp {
                     "'{exec_bin}' not found in PATH — install it and ensure it is on your PATH."
                 ));
             }
-            let layout_str = layout_hint.as_deref().unwrap_or("split_h");
-            let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
-            let new_pane_first = matches!(layout_str, "split_above" | "split_left");
+            let manifest_layout = installed.launch.layout.clone();
+            let effective_layout = layout_hint
+                .as_deref()
+                .or(manifest_layout.as_deref())
+                .unwrap_or("window")
+                .to_string();
+            let zoom_after = effective_layout == "window";
+            let split_layout = if zoom_after { "split_h" } else { &effective_layout };
+            let vertical = matches!(split_layout, "split_v" | "split_below" | "split_above");
+            let new_pane_first = matches!(split_layout, "split_above" | "split_left");
             log::info!(
-                "launch_app_by_path_with_layout: terminal app '{app_id}' → split_focused exec='{exec_cmd}' layout='{layout_str}'"
+                "launch_app_by_path_with_layout: terminal app '{app_id}' → split_focused exec='{exec_cmd}' layout='{effective_layout}' zoom={zoom_after}"
             );
             self.split_focused(vertical, Some(&exec_cmd), false, new_pane_first, Some(cwd));
+            if zoom_after {
+                let active = self.active_window;
+                if let Some(tile) = self.windows[active].focused_pane {
+                    self.windows[active].zoom_to(tile);
+                    log::info!(
+                        "launch_app_by_path_with_layout: zoomed terminal pane {tile:?} for '{app_id}'"
+                    );
+                }
+            }
             return Ok(());
         }
 
