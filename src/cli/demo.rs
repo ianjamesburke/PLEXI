@@ -263,7 +263,7 @@ pub fn demo_cli() -> i32 {
     eprintln!("  Great work.");
     explain(&[
         "You covered maybe 10% of what Plexi can do.",
-        "Keep messing around. When the deep dive is ready, this will point to it:",
+        "For a full deep dive, Command-click this link:",
         "Watch this full breakdown [working on the video now lol]",
     ]);
     eprintln!();
