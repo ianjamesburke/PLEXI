@@ -11,6 +11,12 @@ use crate::ui::{
 };
 
 enum PaletteEntry {
+    Command {
+        command: PaletteCommand,
+        name: &'static str,
+        description: &'static str,
+        search_text: &'static str,
+    },
     Context {
         ctx_idx: usize,
         context_id: u64,
@@ -20,6 +26,7 @@ enum PaletteEntry {
         pane_pips: Option<ListRowPips>,
         /// If set, focus this specific pane after navigating to the window.
         pane_id: Option<u64>,
+        search_text: String,
     },
     App {
         id: String,
@@ -27,18 +34,137 @@ enum PaletteEntry {
         description: String,
         running_in_background: bool,
         is_workspace_local: bool,
+        search_text: String,
     },
     /// Host-native builtin app (no registry manifest), launched by id.
     Builtin {
         id: &'static str,
         name: &'static str,
         description: &'static str,
+        search_text: String,
     },
     Note {
         path: std::path::PathBuf,
         title: String,
         preview: String,
+        search_text: String,
     },
+}
+
+impl PaletteEntry {
+    fn group_rank(&self) -> usize {
+        match self {
+            PaletteEntry::Context { .. } => 0,
+            PaletteEntry::Note { .. } => 1,
+            PaletteEntry::App { .. } | PaletteEntry::Builtin { .. } => 2,
+            PaletteEntry::Command { .. } => 3,
+        }
+    }
+
+    fn query_rank(&self, query: &str) -> usize {
+        if query.is_empty() {
+            return self.group_rank();
+        }
+        let search_text = match self {
+            PaletteEntry::Command { search_text, .. } => *search_text,
+            PaletteEntry::Context { search_text, .. }
+            | PaletteEntry::App { search_text, .. }
+            | PaletteEntry::Builtin { search_text, .. }
+            | PaletteEntry::Note { search_text, .. } => search_text.as_str(),
+        };
+        if search_text.starts_with(query) {
+            return 0;
+        }
+        if search_text
+            .split_whitespace()
+            .any(|part| part.starts_with(query))
+        {
+            return 1;
+        }
+        search_text
+            .find(query)
+            .map(|idx| idx + 2)
+            .unwrap_or(usize::MAX)
+    }
+
+    fn matches_query(&self, query: &str) -> bool {
+        if query.is_empty() {
+            return true;
+        }
+        match self {
+            PaletteEntry::Command { search_text, .. } => search_text.contains(query),
+            PaletteEntry::Context { search_text, .. }
+            | PaletteEntry::App { search_text, .. }
+            | PaletteEntry::Builtin { search_text, .. }
+            | PaletteEntry::Note { search_text, .. } => search_text.contains(query),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaletteCommand {
+    SplitRight,
+    SplitDown,
+    OpenConfig,
+    OpenQuickNote,
+    OpenScratchpad,
+}
+
+struct PaletteCommandEntry {
+    command: PaletteCommand,
+    name: &'static str,
+    description: &'static str,
+    search_text: &'static str,
+}
+
+const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
+    PaletteCommandEntry {
+        command: PaletteCommand::SplitRight,
+        name: "Split right",
+        description: "Open a new terminal beside the focused pane",
+        search_text: "split right new terminal shell console pane vsplit vertical",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::SplitDown,
+        name: "Split down",
+        description: "Open a new terminal below the focused pane",
+        search_text: "split down below new terminal shell console pane hsplit horizontal",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::OpenConfig,
+        name: "Open config",
+        description: "Edit the active Plexi config file",
+        search_text: "open config settings preferences config.toml configuration",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::OpenQuickNote,
+        name: "Quick Note",
+        description: "Capture a note in the current context",
+        search_text: "quick note capture inbox memo",
+    },
+    PaletteCommandEntry {
+        command: PaletteCommand::OpenScratchpad,
+        name: "Scratch Pad",
+        description: "Open a fresh scratch note editor",
+        search_text: "scratch pad scratchpad note editor inbox memo",
+    },
+];
+
+fn searchable_text(parts: &[&str]) -> String {
+    parts.join(" ").to_lowercase()
+}
+
+fn sort_palette_entries(entries: &mut [PaletteEntry], query: &str) {
+    entries.sort_by_key(|entry| (entry.query_rank(query), entry.group_rank()));
+}
+
+#[cfg(test)]
+fn palette_command_matches(query: &str) -> Vec<PaletteCommand> {
+    PALETTE_COMMANDS
+        .iter()
+        .filter(|entry| query.is_empty() || entry.search_text.contains(query))
+        .map(|entry| entry.command)
+        .collect()
 }
 
 /// Builtin host apps surfaced in the palette alongside registry apps.
@@ -338,7 +464,9 @@ impl PlexiApp {
             (tier, recency)
         };
 
-        let mut entries: Vec<PaletteEntry> = {
+        let mut entries: Vec<PaletteEntry> = Vec::new();
+
+        let ctx_entries: Vec<PaletteEntry> = {
             // Context-scoped unpacking: the ACTIVE context expands to one row
             // per pane (each carrying a single status pip), while every OTHER
             // context collapses to one `ctx` row carrying its full pip strip.
@@ -406,10 +534,8 @@ impl PlexiApp {
                         active_focused_tile,
                         &self.pane_focus_history,
                     ) {
-                        if query.is_empty()
-                            || row.name.to_lowercase().contains(&query)
-                            || c.name.to_lowercase().contains(&query)
-                        {
+                        let search_text = searchable_text(&[row.name.as_str(), c.name.as_str()]);
+                        if query.is_empty() || search_text.contains(&query) {
                             ctx_entries.push(PaletteEntry::Context {
                                 ctx_idx: row.win_idx,
                                 context_id: row.window_id,
@@ -418,12 +544,14 @@ impl PlexiApp {
                                 metadata_chip: row.chip,
                                 pane_pips: Some(row.pips),
                                 pane_id: Some(row.pane_id),
+                                search_text,
                             });
                         }
                     }
                 } else {
                     // Inactive context — one collapsed row, full pip strip.
-                    if query.is_empty() || c.name.to_lowercase().contains(&query) {
+                    let search_text = searchable_text(&[c.name.as_str()]);
+                    if query.is_empty() || search_text.contains(&query) {
                         ctx_entries.push(PaletteEntry::Context {
                             ctx_idx: c.win_idx,
                             context_id: c.window_id,
@@ -437,6 +565,7 @@ impl PlexiApp {
                                 Some(active_win_id),
                             ),
                             pane_id: None,
+                            search_text,
                         });
                     }
                     if !query.is_empty() {
@@ -451,7 +580,9 @@ impl PlexiApp {
                             active_focused_tile,
                             &self.pane_focus_history,
                         ) {
-                            if row.name.to_lowercase().contains(&query) {
+                            let search_text =
+                                searchable_text(&[row.name.as_str(), c.name.as_str()]);
+                            if search_text.contains(&query) {
                                 ctx_entries.push(PaletteEntry::Context {
                                     ctx_idx: row.win_idx,
                                     context_id: row.window_id,
@@ -460,6 +591,7 @@ impl PlexiApp {
                                     metadata_chip: row.chip,
                                     pane_pips: Some(row.pips),
                                     pane_id: Some(row.pane_id),
+                                    search_text,
                                 });
                             }
                         }
@@ -469,17 +601,18 @@ impl PlexiApp {
 
             ctx_entries
         };
+        entries.extend(ctx_entries);
 
         // ── Note entries ────────────────────────────────────────────────────
         for note in &self.palette_notes {
-            let matches = query.is_empty()
-                || note.title.to_lowercase().contains(&query)
-                || note.search_text.contains(&query);
+            let search_text = searchable_text(&[note.title.as_str(), note.search_text.as_str()]);
+            let matches = query.is_empty() || search_text.contains(&query);
             if matches {
                 entries.push(PaletteEntry::Note {
                     path: note.path.clone(),
                     title: note.title.clone(),
                     preview: note.preview.clone(),
+                    search_text,
                 });
             }
         }
@@ -505,11 +638,11 @@ impl PlexiApp {
             self.registry = crate::app::registry::AppRegistry::load(rescan_cwd);
         }
 
-        let app_entries: Vec<(String, String, String, bool)> = self
+        let app_entries: Vec<(String, String, String, bool, String)> = self
             .registry
             .list()
             .into_iter()
-            .filter(|app| {
+            .filter_map(|app| {
                 // Local apps are visible only when the focused pane is in their workspace.
                 // Use the same explicit predicate here as in the badge below — no wildcard.
                 let workspace_visible = match app.source {
@@ -519,24 +652,29 @@ impl PlexiApp {
                         app.workspace_root.as_ref() == focused_workspace_root
                     }
                 };
-                workspace_visible
-                    && (query.is_empty()
-                        || app.manifest.name.to_lowercase().contains(&query)
-                        || app.manifest.id.to_lowercase().contains(&query)
-                        || app.manifest.description.to_lowercase().contains(&query))
-            })
-            .map(|app| {
+                if !workspace_visible {
+                    return None;
+                }
+                let search_text = searchable_text(&[
+                    app.manifest.name.as_str(),
+                    app.manifest.id.as_str(),
+                    app.manifest.description.as_str(),
+                ]);
+                if !query.is_empty() && !search_text.contains(&query) {
+                    return None;
+                }
                 let is_local = matches!(
                     app.source,
                     crate::app::registry::RegistrySource::LocalApp
                         | crate::app::registry::RegistrySource::LocalAgent
                 );
-                (
+                Some((
                     app.manifest.id.clone(),
                     app.manifest.name.clone(),
                     app.manifest.description.clone(),
                     is_local,
-                )
+                    search_text,
+                ))
             })
             .collect();
 
@@ -544,20 +682,18 @@ impl PlexiApp {
             if !crate::release::feature_enabled(gate) {
                 continue;
             }
-            if query.is_empty()
-                || name.to_lowercase().contains(&query)
-                || id.to_lowercase().contains(&query)
-                || description.to_lowercase().contains(&query)
-            {
+            let search_text = searchable_text(&[name, id, description]);
+            if query.is_empty() || search_text.contains(&query) {
                 entries.push(PaletteEntry::Builtin {
                     id,
                     name,
                     description,
+                    search_text,
                 });
             }
         }
 
-        for (id, name, description, is_workspace_local) in app_entries {
+        for (id, name, description, is_workspace_local, search_text) in app_entries {
             let running_in_background = self.background_apps.contains_key(&id);
             entries.push(PaletteEntry::App {
                 id,
@@ -565,8 +701,23 @@ impl PlexiApp {
                 description,
                 running_in_background,
                 is_workspace_local,
+                search_text,
             });
         }
+
+        entries.extend(
+            PALETTE_COMMANDS
+                .iter()
+                .map(|entry| PaletteEntry::Command {
+                    command: entry.command,
+                    name: entry.name,
+                    description: entry.description,
+                    search_text: entry.search_text,
+                })
+                .filter(|entry| entry.matches_query(&query)),
+        );
+
+        sort_palette_entries(&mut entries, &query);
 
         let total = entries.len();
 
@@ -577,6 +728,7 @@ impl PlexiApp {
         // ── Keyboard nav ───────────────────────────────────────────────────
         #[derive(Clone)]
         enum Action {
+            RunCommand(PaletteCommand),
             JumpContext(usize, u64, Option<u64>),
             LaunchApp(String),
             LaunchBuiltin(&'static str),
@@ -607,6 +759,9 @@ impl PlexiApp {
             }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
                 match entries.get(self.palette_selected) {
+                    Some(PaletteEntry::Command { command, .. }) => {
+                        action = Some(Action::RunCommand(*command));
+                    }
                     Some(PaletteEntry::Context {
                         ctx_idx,
                         context_id,
@@ -630,6 +785,12 @@ impl PlexiApp {
         });
 
         match action {
+            Some(Action::RunCommand(command)) => {
+                self.show_command_palette = false;
+                self.palette_query.clear();
+                self.run_palette_command(command);
+                return;
+            }
             Some(Action::JumpContext(ctx_idx, context_id, pane_id)) => {
                 self.jump_to_context(ctx_idx, context_id, pane_id);
                 self.show_command_palette = false;
@@ -714,6 +875,7 @@ impl PlexiApp {
                 let should_scroll = self.palette_selected != prev_selected;
                 let mut shown_apps_header = false;
                 let mut shown_notes_header = false;
+                let mut shown_commands_header = false;
 
                 egui::ScrollArea::vertical()
                     // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
@@ -732,6 +894,37 @@ impl PlexiApp {
                             let is_selected = i == self.palette_selected;
 
                             match entry {
+                                PaletteEntry::Command {
+                                    command,
+                                    name,
+                                    description,
+                                    ..
+                                } => {
+                                    if !shown_commands_header {
+                                        shown_commands_header = true;
+                                        ui.add_space(style::SPACE_XS);
+                                        ui.label(
+                                            RichText::new("COMMANDS")
+                                                .size(style::TEXT_HINT)
+                                                .color(colors.text_dim),
+                                        );
+                                        ui.add_space(style::SPACE_XS);
+                                    }
+                                    let row_response = ListRow::new(name)
+                                        .metadata_chips(&["cmd"])
+                                        .secondary(description)
+                                        .selected(is_selected)
+                                        .show(ui, &colors);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
+                                    }
+                                    if row_response.row_clicked() {
+                                        click_action = Some(Action::RunCommand(*command));
+                                    }
+                                    if row_response.row_hovered() {
+                                        hover_select = Some(i);
+                                    }
+                                }
                                 PaletteEntry::Context {
                                     ctx_idx,
                                     context_id,
@@ -740,6 +933,7 @@ impl PlexiApp {
                                     metadata_chip,
                                     pane_pips,
                                     pane_id,
+                                    ..
                                 } => {
                                     let mut row = ListRow::new(name.as_str())
                                         .metadata_chips(std::slice::from_ref(metadata_chip))
@@ -770,6 +964,7 @@ impl PlexiApp {
                                     description,
                                     running_in_background,
                                     is_workspace_local,
+                                    ..
                                 } => {
                                     if !shown_apps_header {
                                         shown_apps_header = true;
@@ -806,6 +1001,7 @@ impl PlexiApp {
                                     id,
                                     name,
                                     description,
+                                    ..
                                 } => {
                                     if !shown_apps_header {
                                         shown_apps_header = true;
@@ -838,6 +1034,7 @@ impl PlexiApp {
                                     path,
                                     title,
                                     preview,
+                                    ..
                                 } => {
                                     if !shown_notes_header {
                                         shown_notes_header = true;
@@ -884,6 +1081,11 @@ impl PlexiApp {
 
                 if let Some(act) = click_action {
                     match act {
+                        Action::RunCommand(command) => {
+                            self.show_command_palette = false;
+                            self.palette_query.clear();
+                            self.run_palette_command(command);
+                        }
                         Action::JumpContext(ctx_idx, context_id, pane_id) => {
                             self.jump_to_context(ctx_idx, context_id, pane_id);
                             self.show_command_palette = false;
@@ -945,6 +1147,41 @@ impl PlexiApp {
         }
     }
 
+    fn run_palette_command(&mut self, command: PaletteCommand) {
+        log::info!("palette: running host command {command:?}");
+        match command {
+            PaletteCommand::SplitRight => {
+                self.windows[self.active_window].clear_zoom();
+                self.ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                });
+                self.split_focused(false, None, false, false, None);
+                self.save_workspace();
+            }
+            PaletteCommand::SplitDown => {
+                self.windows[self.active_window].clear_zoom();
+                self.ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                });
+                self.split_focused(true, None, false, false, None);
+                self.save_workspace();
+            }
+            PaletteCommand::OpenConfig => {
+                crate::config::open_config_file();
+            }
+            PaletteCommand::OpenQuickNote => {
+                self.open_quick_note_modal();
+            }
+            PaletteCommand::OpenScratchpad => {
+                self.open_scratchpad();
+            }
+        }
+    }
+
     /// Jump to a window by index, switching context if necessary.
     /// If `pane_id` is provided, also focuses that specific pane in the window.
     fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64, pane_id: Option<u64>) {
@@ -991,6 +1228,109 @@ mod tests {
         assert_eq!(app_metadata_chips(false, false), &["app"]);
         assert_eq!(app_metadata_chips(false, true), &["app", "ws"]);
         assert_eq!(app_metadata_chips(true, true), &["app", "bg", "ws"]);
+    }
+
+    #[test]
+    fn palette_command_aliases_match_starter_synonyms() {
+        assert_eq!(
+            palette_command_matches("shell"),
+            vec![PaletteCommand::SplitRight, PaletteCommand::SplitDown]
+        );
+        assert_eq!(
+            palette_command_matches("console"),
+            vec![PaletteCommand::SplitRight, PaletteCommand::SplitDown]
+        );
+        assert_eq!(
+            palette_command_matches("hsplit"),
+            vec![PaletteCommand::SplitDown]
+        );
+        assert_eq!(
+            palette_command_matches("config"),
+            vec![PaletteCommand::OpenConfig]
+        );
+        assert_eq!(
+            palette_command_matches("scratchpad"),
+            vec![PaletteCommand::OpenScratchpad]
+        );
+        assert_eq!(
+            palette_command_matches("scratch pad"),
+            vec![PaletteCommand::OpenScratchpad]
+        );
+    }
+
+    #[test]
+    fn palette_searchable_text_is_cached_lowercase() {
+        assert_eq!(
+            searchable_text(&["Open Config", "Settings", "CONFIG.toml"]),
+            "open config settings config.toml"
+        );
+        for entry in PALETTE_COMMANDS {
+            assert_eq!(
+                entry.search_text,
+                entry.search_text.to_lowercase(),
+                "palette command search text must be pre-lowercased"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_palette_puts_commands_after_apps() {
+        let mut entries = vec![
+            PaletteEntry::Command {
+                command: PaletteCommand::OpenConfig,
+                name: "Open config",
+                description: "Edit config",
+                search_text: "open config",
+            },
+            PaletteEntry::App {
+                id: "balls".to_string(),
+                name: "Balls".to_string(),
+                description: "Demo".to_string(),
+                running_in_background: false,
+                is_workspace_local: false,
+                search_text: "balls demo".to_string(),
+            },
+            PaletteEntry::Context {
+                ctx_idx: 0,
+                context_id: 1,
+                name: "Workspace".to_string(),
+                workspace_name: String::new(),
+                metadata_chip: "ctx",
+                pane_pips: None,
+                pane_id: None,
+                search_text: "workspace".to_string(),
+            },
+        ];
+
+        sort_palette_entries(&mut entries, "");
+
+        assert!(matches!(entries[0], PaletteEntry::Context { .. }));
+        assert!(matches!(entries[1], PaletteEntry::App { .. }));
+        assert!(matches!(entries[2], PaletteEntry::Command { .. }));
+    }
+
+    #[test]
+    fn typed_palette_query_lets_commands_cut_through_group_order() {
+        let mut entries = vec![
+            PaletteEntry::App {
+                id: "config-viewer".to_string(),
+                name: "Config Viewer".to_string(),
+                description: "Demo".to_string(),
+                running_in_background: false,
+                is_workspace_local: false,
+                search_text: "demo config viewer".to_string(),
+            },
+            PaletteEntry::Command {
+                command: PaletteCommand::OpenConfig,
+                name: "Open config",
+                description: "Edit config",
+                search_text: "open config settings preferences",
+            },
+        ];
+
+        sort_palette_entries(&mut entries, "open");
+
+        assert!(matches!(entries[0], PaletteEntry::Command { .. }));
     }
 
     #[test]

@@ -1854,4 +1854,34 @@ mod tests {
             "version should be added: {result}"
         );
     }
+
+    #[test]
+    fn config_docs_explain_channel_discipline() {
+        for doc in [
+            include_str!("../../docs/CONFIG.md"),
+            include_str!("../../website/src/content/docs/config.md"),
+        ] {
+            assert!(doc.contains("Alpha config stays default"));
+            assert!(doc.contains("Beta config is the staging ground"));
+            assert!(doc.contains("PR builds are isolated"));
+            assert!(doc.contains("~/.plexi-pr-<N>/config.toml"));
+        }
+    }
+
+    #[test]
+    fn public_security_docs_do_not_claim_python_sandboxing() {
+        for doc in [
+            include_str!("../../README.md"),
+            include_str!("../../docs/SECURITY_MODEL.md"),
+            include_str!("../../website/src/content/docs/apps.md"),
+            include_str!("../../website/src/content/docs/sdk.md"),
+            include_str!("../../website/src/content/docs/pgap.md"),
+        ] {
+            assert!(doc.contains("not") && doc.contains("sandbox"));
+            assert!(
+                !doc.contains("Python apps are sandboxed")
+                    && !doc.contains("sandboxed Python apps")
+            );
+        }
+    }
 }

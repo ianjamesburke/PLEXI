@@ -69,7 +69,14 @@ impl Colors {
     pub fn text_on(&self, fill: Color32) -> Color32 {
         fn luminance(c: Color32) -> f32 {
             let rgba = egui::Rgba::from(c);
-            0.2126 * rgba.r() + 0.7152 * rgba.g() + 0.0722 * rgba.b()
+            fn linear(v: f32) -> f32 {
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            }
+            0.2126 * linear(rgba.r()) + 0.7152 * linear(rgba.g()) + 0.0722 * linear(rgba.b())
         }
         fn contrast(a: f32, b: f32) -> f32 {
             let (hi, lo) = if a > b { (a, b) } else { (b, a) };
@@ -239,24 +246,24 @@ pub fn is_light_preset(name: &str) -> bool {
     )
 }
 
-/// Returns the paired preset for `name` under `system_theme`, or `None` if the preset
-/// has no paired variant (nord, dracula), the name is unrecognized, or the preset is
-/// already correct for the current system appearance.
+/// Returns the paired preset for auto-style family aliases under
+/// `system_theme`, or `None` for explicit variants. `catppuccin` may follow
+/// the OS; `catppuccin-latte` and `catppuccin-mocha` mean exactly that flavor.
 pub fn paired_preset(name: &str, system_theme: egui::Theme) -> Option<&'static str> {
-    let canonical = canonical_preset_name(name)?;
+    let normalized = name.trim().to_lowercase().replace([' ', '_'], "-");
     match system_theme {
-        egui::Theme::Dark => match canonical {
-            "catppuccin-latte" => Some("catppuccin-mocha"),
-            "solarized-light" => Some("solarized-dark"),
-            "gruvbox-light" => Some("gruvbox-dark"),
-            "tokyo-day" => Some("tokyo-night"),
+        egui::Theme::Dark => match normalized.as_str() {
+            "catppuccin" => Some("catppuccin-mocha"),
+            "solarized" => Some("solarized-dark"),
+            "gruvbox" => Some("gruvbox-dark"),
+            "tokyo" | "tokyonight" => Some("tokyo-night"),
             _ => None,
         },
-        egui::Theme::Light => match canonical {
-            "catppuccin-mocha" => Some("catppuccin-latte"),
-            "solarized-dark" => Some("solarized-light"),
-            "gruvbox-dark" => Some("gruvbox-light"),
-            "tokyo-night" => Some("tokyo-day"),
+        egui::Theme::Light => match normalized.as_str() {
+            "catppuccin" => Some("catppuccin-latte"),
+            "solarized" => Some("solarized-light"),
+            "gruvbox" => Some("gruvbox-light"),
+            "tokyo" | "tokyonight" => Some("tokyo-day"),
             _ => None,
         },
     }
@@ -289,34 +296,34 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bg_darkest: s("#11111b"),
             bg_sidebar: s("#181825"),
             bg_toolbar: s("#181825"),
-            terminal_bg: s("#292a44"),
-            bg_hover: s("#2a2a3c"),
-            bg_sidebar_hover: s("#2e2e48"),
-            bg_active: s("#313144"),
+            terminal_bg: s("#1e1e2e"),
+            bg_hover: s("#313244"),
+            bg_sidebar_hover: s("#45475a"),
+            bg_active: s("#313244"),
             text_primary: s("#cdd6f4"),
-            text_dim: s("#6c7086"),
-            text_section: s("#585b70"),
+            text_dim: s("#a6adc8"),
+            text_section: s("#9399b2"),
             accent: s("#89b4fa"),
-            border: s("#2a2a3c"),
-            foreground: s("#e8e6ed"),
-            background: s("#292a44"),
-            black: s("#12131e"),
-            red: s("#dd7755"),
-            green: s("#04dbb5"),
-            yellow: s("#f2e7b7"),
-            blue: s("#7aa5ff"),
-            magenta: s("#bf9cf9"),
-            cyan: s("#56d3c2"),
-            white: s("#e4e3e9"),
-            bright_black: s("#666699"),
-            bright_red: s("#ff92cd"),
-            bright_green: s("#01eac0"),
-            bright_yellow: s("#fffca8"),
-            bright_blue: s("#69c0fa"),
-            bright_magenta: s("#c17ff8"),
-            bright_cyan: s("#8bfde1"),
-            bright_white: s("#f4f2f9"),
-            bright_foreground: s("#f4f2f9"),
+            border: s("#313244"),
+            foreground: s("#cdd6f4"),
+            background: s("#1e1e2e"),
+            black: s("#45475a"),
+            red: s("#f38ba8"),
+            green: s("#a6e3a1"),
+            yellow: s("#f9e2af"),
+            blue: s("#89b4fa"),
+            magenta: s("#f5c2e7"),
+            cyan: s("#94e2d5"),
+            white: s("#bac2de"),
+            bright_black: s("#6c7086"),
+            bright_red: s("#f38ba8"),
+            bright_green: s("#a6e3a1"),
+            bright_yellow: s("#f9e2af"),
+            bright_blue: s("#89b4fa"),
+            bright_magenta: s("#f5c2e7"),
+            bright_cyan: s("#94e2d5"),
+            bright_white: s("#cdd6f4"),
+            bright_foreground: s("#cdd6f4"),
             ..ThemeConfig::default()
         }),
         "dracula" => Some(ThemeConfig {
@@ -566,16 +573,16 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         }),
         "catppuccin-latte" => Some(ThemeConfig {
             preset: None,
-            bg_darkest: s("#e6e9ef"),
+            bg_darkest: s("#dce0e8"),
             bg_sidebar: s("#eff1f5"),
             bg_toolbar: s("#eff1f5"),
             terminal_bg: s("#eff1f5"),
-            bg_hover: s("#dce0e8"),
+            bg_hover: s("#e6e9ef"),
             bg_sidebar_hover: s("#ccd0da"),
-            bg_active: s("#bcc0cc"),
+            bg_active: s("#ccd0da"),
             text_primary: s("#4c4f69"),
-            text_dim: s("#8c8fa1"),
-            text_section: s("#9ca0b0"),
+            text_dim: s("#6c6f85"),
+            text_section: s("#5c5f77"),
             accent: s("#8839ef"),
             border: s("#ccd0da"),
             foreground: s("#4c4f69"),
@@ -970,7 +977,14 @@ mod tests {
     fn text_on_is_legible_on_every_preset_accent_and_danger() {
         fn luminance(c: Color32) -> f32 {
             let rgba = egui::Rgba::from(c);
-            0.2126 * rgba.r() + 0.7152 * rgba.g() + 0.0722 * rgba.b()
+            fn linear(v: f32) -> f32 {
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            }
+            0.2126 * linear(rgba.r()) + 0.7152 * linear(rgba.g()) + 0.0722 * linear(rgba.b())
         }
         fn contrast(a: Color32, b: Color32) -> f32 {
             let (hi, lo) = if luminance(a) > luminance(b) {
@@ -990,6 +1004,89 @@ mod tests {
                     "{name}: text_on({fill:?}) = {text:?} is below 3:1 contrast"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn catppuccin_presets_use_official_flavor_tokens() {
+        let mocha = preset_colors("catppuccin-mocha").unwrap();
+        assert_eq!(mocha.background.as_deref(), Some("#1e1e2e"));
+        assert_eq!(mocha.foreground.as_deref(), Some("#cdd6f4"));
+        assert_eq!(mocha.bg_darkest.as_deref(), Some("#11111b"));
+        assert_eq!(mocha.bg_sidebar.as_deref(), Some("#181825"));
+        assert_eq!(mocha.terminal_bg.as_deref(), Some("#1e1e2e"));
+        assert_eq!(mocha.red.as_deref(), Some("#f38ba8"));
+        assert_eq!(mocha.green.as_deref(), Some("#a6e3a1"));
+        assert_eq!(mocha.blue.as_deref(), Some("#89b4fa"));
+
+        let latte = preset_colors("catppuccin-latte").unwrap();
+        assert_eq!(latte.background.as_deref(), Some("#eff1f5"));
+        assert_eq!(latte.foreground.as_deref(), Some("#4c4f69"));
+        assert_eq!(latte.bg_darkest.as_deref(), Some("#dce0e8"));
+        assert_eq!(latte.bg_sidebar.as_deref(), Some("#eff1f5"));
+        assert_eq!(latte.terminal_bg.as_deref(), Some("#eff1f5"));
+        assert_eq!(latte.red.as_deref(), Some("#d20f39"));
+        assert_eq!(latte.green.as_deref(), Some("#40a02b"));
+        assert_eq!(latte.blue.as_deref(), Some("#1e66f5"));
+    }
+
+    #[test]
+    fn explicit_catppuccin_variants_do_not_auto_flip() {
+        assert_eq!(paired_preset("catppuccin-latte", egui::Theme::Dark), None);
+        assert_eq!(paired_preset("catppuccin-mocha", egui::Theme::Light), None);
+        assert_eq!(
+            paired_preset("catppuccin", egui::Theme::Light),
+            Some("catppuccin-latte")
+        );
+        assert_eq!(
+            paired_preset("catppuccin", egui::Theme::Dark),
+            Some("catppuccin-mocha")
+        );
+    }
+
+    #[test]
+    fn catppuccin_latte_secondary_text_is_legible_on_primary_surfaces() {
+        fn luminance(c: Color32) -> f32 {
+            let rgba = egui::Rgba::from(c);
+            fn linear(v: f32) -> f32 {
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            }
+            0.2126 * linear(rgba.r()) + 0.7152 * linear(rgba.g()) + 0.0722 * linear(rgba.b())
+        }
+        fn contrast(a: Color32, b: Color32) -> f32 {
+            let (hi, lo) = if luminance(a) > luminance(b) {
+                (luminance(a), luminance(b))
+            } else {
+                (luminance(b), luminance(a))
+            };
+            (hi + 0.05) / (lo + 0.05)
+        }
+
+        let cfg = preset_colors("catppuccin-latte").unwrap();
+        let colors = Colors::from_config(&cfg);
+        for surface in [
+            colors.bg_darkest,
+            colors.bg_sidebar,
+            colors.bg_toolbar,
+            colors.terminal_bg,
+            colors.bg_hover,
+        ] {
+            assert!(
+                contrast(colors.text_primary, surface) >= 4.5,
+                "catppuccin-latte: text_primary below 4.5:1 on {surface:?}"
+            );
+            assert!(
+                contrast(colors.text_dim, surface) >= 3.0,
+                "catppuccin-latte: text_dim below 3:1 on {surface:?}"
+            );
+            assert!(
+                contrast(colors.text_section, surface) >= 3.0,
+                "catppuccin-latte: text_section below 3:1 on {surface:?}"
+            );
         }
     }
 }

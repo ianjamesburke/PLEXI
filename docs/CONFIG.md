@@ -8,6 +8,14 @@ Online: https://plexiapp.com/docs/config
 
 ---
 
+## Channel discipline
+
+- Alpha config stays default. `just install` refreshes `~/.plexi-alpha/config.toml` from the built-in template, and PR builds seed from alpha.
+- Beta config is the staging ground. `~/.plexi-beta/config.toml` is not reset by alpha installs, so use it for migration testing, advanced settings, and personal overrides.
+- PR builds are isolated. A PR build reads `~/.plexi-pr-<N>/config.toml`; use `plexi-pr-<N>` when testing PR-specific config behavior.
+
+---
+
 ## Top-level keys
 
 | Key | Type | Default | Description |
@@ -66,7 +74,7 @@ Apply a named preset and optionally override individual color tokens.
 | `pip_blocked` | hex color | `red` | Status pip color for Blocked state. Defaults to the `red` ANSI color. |
 | `pip_dim` | float | 0.45 | Opacity multiplier applied to status pips on unfocused panes. Range: 0.0–1.0. |
 
-**Available presets:** `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-night`, `gruvbox-dark`, `nord`, `solarized-dark`, `solarized-light`
+**Available presets:** `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-night`, `tokyo-day`, `gruvbox-dark`, `gruvbox-light`, `nord`, `solarized-dark`, `solarized-light`
 
 Example:
 ```toml

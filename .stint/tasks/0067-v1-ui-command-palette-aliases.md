@@ -1,9 +1,11 @@
 ---
 id: "0067"
 title: "v1 UI: command palette aliases"
-status: todo
+status: done
 estimate: "3h"
-sprint: "s5"
+actual: "30m"
+started_at: "2026-06-15T07:49:33Z"
+completed_at: "2026-06-15T08:12:48Z"
 blocked_by:
   - 147
 gh_issue:
@@ -17,6 +19,8 @@ tags:
 ---
 
 
+
+
 Add command-palette aliases so natural synonyms like `shell`, `console`, `hsplit`, and `config` resolve to the expected Plexi commands.
 
 Sequenced after `0147` because validation handoff reliability is the immediate ship-pipeline CLI blocker.
@@ -24,3 +28,7 @@ Sequenced after `0147` because validation handoff reliability is the immediate s
 ## Note
 
 The issue references old `poc/gpui-ui` paths; the current implementation lives in `src/overlays/command_palette.rs`.
+
+## Variance
+
+Completed with the search-cache task because both changes share the same command-palette entry model. The old path mismatch was the main audit cost.

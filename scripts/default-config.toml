@@ -16,7 +16,7 @@ osc_pane_title = true
 
 [theme]
 preset = "catppuccin-mocha"
-# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark, solarized-light
+# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light
 # Uncomment to override individual colors:
 # accent       = "#89b4fa"
 # bg_darkest   = "#11111b"

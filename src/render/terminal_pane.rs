@@ -11,7 +11,7 @@
 
 use crate::app_protocol::AgentState;
 use crate::host::pane::TerminalPane;
-use crate::spatial::tiling::{paint_tab_bar, PaneId, TabGroupInfo, TAB_BAR_HEIGHT};
+use crate::spatial::tiling::{paint_tab_bar, PaneId, TabBarAction, TabGroupInfo, TAB_BAR_HEIGHT};
 use crate::ui::theme::{self, Colors};
 use egui::Vec2;
 use egui_term::{TerminalTheme, TerminalView};
@@ -30,7 +30,7 @@ static LOG_TERMINAL_GLYPH_PADDING: Once = Once::new();
 
 /// Render one frame of a terminal pane. Returns `true` if the process has
 /// exited and the user pressed a key (the caller should close the tile).
-/// Returns (close_exited, tab_click).
+/// Returns (close_exited, tab_action).
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     ui: &mut egui::Ui,
@@ -46,7 +46,7 @@ pub fn render(
     tab_activities: &HashMap<PaneId, AgentState>,
     workspace_root: Option<&Path>,
     pane_title_font_size: f32,
-) -> (bool, Option<(TileId, usize)>) {
+) -> (bool, Option<(TileId, TabBarAction)>) {
     if terminal.exited {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
@@ -65,7 +65,7 @@ pub fn render(
     }
 
     let outside_workspace = is_terminal_outside_workspace(terminal, workspace_root);
-    let tab_click = render_name_bar_and_tabs(
+    let tab_action = render_name_bar_and_tabs(
         ui,
         tile_id,
         pane_id,
@@ -93,7 +93,7 @@ pub fn render(
         .set_size(Vec2::new(ui.available_width(), ui.available_height()));
     ui.add(view);
 
-    (false, tab_click)
+    (false, tab_action)
 }
 
 fn render_name_bar_and_tabs(
@@ -107,10 +107,10 @@ fn render_name_bar_and_tabs(
     colors: &Colors,
     outside_workspace: bool,
     name_font_size: f32,
-) -> Option<(TileId, usize)> {
+) -> Option<(TileId, TabBarAction)> {
     let has_name = pane_names.contains_key(pane_id);
     let tab_group = tab_info.get(&tile_id);
-    let mut tab_click = None;
+    let mut tab_action = None;
 
     if let Some(group) = tab_group {
         let bar_rect = egui::Rect::from_min_size(
@@ -118,7 +118,7 @@ fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         ui.advance_cursor_after_rect(bar_rect);
-        if let Some(idx) = paint_tab_bar(
+        if let Some(action) = paint_tab_bar(
             ui.ctx(),
             ui.painter(),
             bar_rect,
@@ -129,7 +129,7 @@ fn render_name_bar_and_tabs(
             name_font_size,
             false,
         ) {
-            tab_click = Some((group.container_tile, idx));
+            tab_action = Some((group.container_tile, action));
         }
 
         if outside_workspace {
@@ -172,7 +172,7 @@ fn render_name_bar_and_tabs(
         }
     }
 
-    tab_click
+    tab_action
 }
 
 fn paint_activity_dot(

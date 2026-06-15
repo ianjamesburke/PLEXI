@@ -3,6 +3,7 @@
 
 import csv
 from pathlib import Path
+from typing import Optional
 
 from plexi_sdk import App, Arg
 from plexi_sdk.ui import (
@@ -16,7 +17,7 @@ ROW_H = 24.0
 
 
 class CsvViewer(App):
-    file: Arg[str | None] = Arg(positional=True, default=None)
+    file: Arg[Optional[str]] = Arg(positional=True, default=None)
 
     def on_init(self) -> None:
         launch_dir = Path(self.workspace_root) if self.workspace_root else Path.cwd()

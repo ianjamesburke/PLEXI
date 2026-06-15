@@ -12,6 +12,7 @@ Keys: j/k navigate · Enter open detail · Esc back · o open in browser
 import asyncio
 import json
 import subprocess
+from typing import Optional
 
 from plexi_sdk import (
     App, RenderContext, Arg,
@@ -51,7 +52,7 @@ class _MarkdownBlock(Component):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _gh(*args: str, cwd: str | None = None, timeout: float = 15.0) -> tuple[int, str, str]:
+def _gh(*args: str, cwd: Optional[str] = None, timeout: float = 15.0) -> tuple[int, str, str]:
     """Run gh CLI. Returns (returncode, stdout, stderr). Never raises."""
     try:
         p = subprocess.run(
@@ -172,7 +173,7 @@ class GhIssues(App):
     VIEW_DETAIL = "detail"
     VIEW_PICKER = "picker"
 
-    repo_dir: Arg[str | None] = Arg("--repo-dir", default=lambda ctx: ctx.workspace_root)
+    repo_dir: Arg[Optional[str]] = Arg("--repo-dir", default=lambda ctx: ctx.workspace_root)
 
     async def on_init(self) -> None:
         self._view           = self.VIEW_LIST
@@ -231,14 +232,14 @@ class GhIssues(App):
         visible = self._visible_issues()
         self._sel = max(0, min(self._sel, len(visible) - 1)) if visible else 0
 
-    def _selected_issue(self) -> dict | None:
+    def _selected_issue(self) -> Optional[dict]:
         visible = self._visible_issues()
         if not visible:
             return None
         self._sel = max(0, min(self._sel, len(visible) - 1))
         return visible[self._sel]
 
-    def _select_issue_number(self, number: int | None) -> None:
+    def _select_issue_number(self, number: Optional[int]) -> None:
         visible = self._visible_issues()
         if number is not None:
             for idx, issue in enumerate(visible):

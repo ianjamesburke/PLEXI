@@ -1,9 +1,11 @@
 ---
 id: "0189"
 title: "v1: shallow tab drag reorder"
-status: todo
+status: done
 estimate: "4h"
-sprint: "s31"
+actual: "90m"
+started_at: "2026-06-15T07:57:56Z"
+completed_at: "2026-06-15T08:13:01Z"
 blocked_by: []
 gh_issue: []
 area:
@@ -15,6 +17,8 @@ tags:
   - "tabs"
   - "drag"
 ---
+
+
 
 Add shallow drag reordering inside an existing tab bar without changing the broader pane docking model.
 
@@ -43,3 +47,6 @@ This gives users the immediate missing tab affordance while keeping the change r
 - `src/app/render.rs`
 - `src/pane_ops/layout.rs`
 
+## Variance
+
+Kept the scope shallow: same-container reorder only, no drag preview or docking model changes. The pure pane operation and tests covered the risky state preservation path.
