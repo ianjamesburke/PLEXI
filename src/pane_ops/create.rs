@@ -300,6 +300,12 @@ impl PlexiApp {
             );
             self.set_window_focused_pane(active, focused_tile);
             log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
+            crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+                app_id: app_id.to_string(),
+                type_id: app_id.to_string(),
+                pane_id,
+                timestamp: crate::host::event_log::now_timestamp(),
+            });
             return Some(pane_id);
         }
 
@@ -317,6 +323,12 @@ impl PlexiApp {
             new_id,
             new_app_pane(new_id, process, workspace_root, group, linked_pane_id, None),
         );
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+            app_id: app_id.to_string(),
+            type_id: app_id.to_string(),
+            pane_id: new_id,
+            timestamp: crate::host::event_log::now_timestamp(),
+        });
 
         // Hot reload (#83): if the manifest opted in AND the app was
         // discovered from a workspace-local install, begin watching its
@@ -665,6 +677,12 @@ impl PlexiApp {
             );
             self.set_window_focused_pane(active, focused_tile);
             log::info!("builtin::{app_name}: launched as overlay on pane {pane_id}");
+            crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+                app_id: app_type_id.clone(),
+                type_id: app_type_id.clone(),
+                pane_id,
+                timestamp: crate::host::event_log::now_timestamp(),
+            });
             return;
         }
 
@@ -681,6 +699,12 @@ impl PlexiApp {
             new_id,
             new_app_pane(new_id, app, workspace_root, group, linked_pane_id, None),
         );
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+            app_id: app_type_id.clone(),
+            type_id: app_type_id.clone(),
+            pane_id: new_id,
+            timestamp: crate::host::event_log::now_timestamp(),
+        });
 
         // Empty context: no focused pane means no existing tile to split.
         // Install the new pane directly as the tree root.
@@ -1230,6 +1254,12 @@ impl PlexiApp {
     pub(crate) fn open_scratchpad(&mut self) {
         log::info!("scratchpad: opening new scratch note");
         let active = self.active_window;
+        let target_pane_id = self.windows[active].focused_pane.and_then(|tile_id| {
+            match self.windows[active].tree.tiles.get(tile_id) {
+                Some(Tile::Pane(pane_id)) => Some(*pane_id),
+                _ => None,
+            }
+        });
 
         // Capture context like a quick note so triage shows where it came from.
         let cwd = self.windows[active]
@@ -1249,8 +1279,31 @@ impl PlexiApp {
 
         let path_str = path.display().to_string();
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
-        if let Err(e) = self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None) {
-            log::warn!("scratchpad: failed to launch text-editor pane: {e}");
+        match self.launch_app_by_id_with_layout("text-editor", None, &[path_str.clone()], None) {
+            Ok(()) => {
+                let pane_id = target_pane_id.or_else(|| {
+                    self.windows[active].focused_pane.and_then(|tile_id| {
+                        match self.windows[active].tree.tiles.get(tile_id) {
+                            Some(Tile::Pane(pane_id)) => Some(*pane_id),
+                            _ => None,
+                        }
+                    })
+                });
+                if let Some(pane_id) = pane_id {
+                    crate::host::event_log::emit(
+                        crate::host::event_log::HostEvent::ScratchpadOpened {
+                            pane_id,
+                            path: path_str,
+                            timestamp: crate::host::event_log::now_timestamp(),
+                        },
+                    );
+                } else {
+                    log::warn!("scratchpad: opened note but could not resolve pane id");
+                }
+            }
+            Err(e) => {
+                log::warn!("scratchpad: failed to launch text-editor pane: {e}");
+            }
         }
     }
 

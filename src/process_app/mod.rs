@@ -671,12 +671,6 @@ impl ProcessApp {
         let (http_tx, http_rx) = mpsc::channel::<PlexiEvent>();
         let (file_picker_tx, file_picker_rx) = mpsc::channel::<PlexiEvent>();
 
-        event_log::emit(HostEvent::AppSpawned {
-            app_id: type_id.clone(),
-            type_id: type_id.clone(),
-            pane_id: 0,
-            timestamp: event_log::now_timestamp(),
-        });
         log::info!("app::{}: === SESSION START ===", type_id);
 
         Ok(Self {
@@ -2892,7 +2886,7 @@ impl Drop for ProcessApp {
         event_log::emit(HostEvent::AppClosed {
             app_id: self.type_id.clone(),
             type_id: self.type_id.clone(),
-            pane_id: 0,
+            pane_id: self.pane_id,
             reason: None,
             timestamp: event_log::now_timestamp(),
         });

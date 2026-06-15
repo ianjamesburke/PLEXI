@@ -248,7 +248,7 @@ fn open_descriptor_in_renderer(
         return 1;
     }
     let path = tmp.to_string_lossy().to_string();
-    let layout_str = layout.unwrap_or("split_h");
+    let layout_str = layout.unwrap_or("overlay");
     log::info!("open:cli: launching cli-renderer for `{name}` with descriptor at {path}");
     pane_new_cli(
         None,
@@ -305,7 +305,7 @@ pub fn open_mcp_by_name(
                 entry.command
             );
             let title = mcp_pane_title(&entry.command);
-            let layout_str = layout.unwrap_or("split_h");
+            let layout_str = layout.unwrap_or("overlay");
             pane_new_cli(
                 None,
                 Some(&title),
@@ -360,7 +360,7 @@ pub fn open_cli(
         return open_app_by_path(&abs_path, layout, from_pane_id);
     }
 
-    let layout_str = layout.unwrap_or("split_h");
+    let layout_str = layout.unwrap_or("overlay");
     pane_new_cli(
         None,
         None,
@@ -377,7 +377,7 @@ pub fn open_cli(
 
 /// Open an app from a local directory path (replaces the old `app run` command).
 fn open_app_by_path(abs_path: &str, layout: Option<&str>, from_pane_id: Option<u64>) -> i32 {
-    let layout_str = layout.unwrap_or("split_h");
+    let layout_str = layout.unwrap_or("overlay");
     let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
 
     if std::env::var("PLEXI_SOCKET").is_ok() {
@@ -428,6 +428,68 @@ fn open_app_by_path(abs_path: &str, layout: Option<&str>, from_pane_id: Option<u
     println!("queued: open {abs_path}");
     println!("(running outside a Plexi pane; Plexi will pick this up within a second)");
     0
+}
+
+#[cfg(test)]
+mod open_cli_tests {
+    use super::open_cli;
+    use serde_json::Value;
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn capture_spawn_payload<F>(run_cli: F) -> (i32, Value)
+    where
+        F: FnOnce() -> i32,
+    {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("open.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind open socket");
+        std::env::set_var("PLEXI_SOCKET", &socket_path);
+
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept open connection");
+            let mut line = String::new();
+            BufReader::new(stream)
+                .read_line(&mut line)
+                .expect("read open payload");
+            let payload: Value = serde_json::from_str(&line).expect("open payload json");
+            if let Some(response_file) = payload.get("response_file").and_then(|v| v.as_str()) {
+                std::fs::write(response_file, r#"{"pane_id":123}"#).expect("write open response");
+            }
+            payload
+        });
+
+        let code = run_cli();
+        std::env::remove_var("PLEXI_SOCKET");
+        let payload = handle.join().expect("payload thread");
+        (code, payload)
+    }
+
+    #[test]
+    fn app_open_defaults_to_overlay_layout() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let (code, payload) = capture_spawn_payload(|| open_cli("balls", &[], None, None, None));
+
+        assert_eq!(code, 0);
+        assert_eq!(payload["type"], "spawn_pane");
+        assert_eq!(payload["type_id"], "balls");
+        assert_eq!(payload["layout"], "overlay");
+    }
+
+    #[test]
+    fn app_open_explicit_tab_layout_is_preserved() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let (code, payload) =
+            capture_spawn_payload(|| open_cli("file_browser", &[], Some("tab"), None, None));
+
+        assert_eq!(code, 0);
+        assert_eq!(payload["type"], "spawn_pane");
+        assert_eq!(payload["type_id"], "file_browser");
+        assert_eq!(payload["layout"], "tab");
+    }
 }
 
 /// Read a line from stdin with echo disabled (for password-style input).

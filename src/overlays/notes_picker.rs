@@ -329,6 +329,7 @@ impl PlexiApp {
         {
             log::info!("notes_picker: already open in pane {existing_pane_id}, focusing");
             self.set_window_focused_pane(active, existing_tile_id);
+            emit_note_opened(&path);
             self.pop_focus_layer(&FocusLayer::NotesPicker);
             return;
         }
@@ -351,6 +352,7 @@ impl PlexiApp {
                     if let crate::host::pane::AppRuntime::Builtin(app) = &mut app_pane.runtime {
                         log::info!("notes_picker: opening {:?} in focused pane", path);
                         app.restore_state(&state);
+                        emit_note_opened(&path);
                     }
                 }
                 self.pop_focus_layer(&FocusLayer::NotesPicker);
@@ -372,7 +374,12 @@ impl PlexiApp {
         let path = self.notes_picker_entries[entry_idx].path.clone();
         let path_str = path.display().to_string();
         log::info!("notes_picker: opening {:?} in new text-editor pane", path);
-        let _ = self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None);
+        if self
+            .launch_app_by_id_with_layout("text-editor", None, &[path_str], None)
+            .is_ok()
+        {
+            emit_note_opened(&path);
+        }
         self.pop_focus_layer(&FocusLayer::NotesPicker);
     }
 
@@ -556,6 +563,13 @@ impl PlexiApp {
             self.pop_focus_layer(&FocusLayer::NotesPicker);
         }
     }
+}
+
+fn emit_note_opened(path: &std::path::Path) {
+    crate::host::event_log::emit(crate::host::event_log::HostEvent::NoteOpened {
+        path: path.display().to_string(),
+        timestamp: crate::host::event_log::now_timestamp(),
+    });
 }
 
 #[cfg(test)]

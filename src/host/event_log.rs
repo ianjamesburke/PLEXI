@@ -28,7 +28,7 @@ use std::sync::{mpsc, Arc, OnceLock};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HostEvent {
-    /// A ProcessApp was successfully spawned.
+    /// An app pane was successfully spawned.
     AppSpawned {
         app_id: String,
         type_id: String,
@@ -148,12 +148,38 @@ pub enum HostEvent {
     },
     /// A pane was closed.
     PaneClosed { pane_id: u64, timestamp: String },
+    /// A pane was renamed.
+    PaneRenamed {
+        pane_id: u64,
+        name: String,
+        timestamp: String,
+    },
     /// A new context was created.
     ContextCreated {
         context_id: u64,
         name: String,
         timestamp: String,
     },
+    /// A context was renamed.
+    ContextRenamed {
+        context_id: u64,
+        name: String,
+        timestamp: String,
+    },
+    /// A scratch note was created and opened.
+    ScratchpadOpened {
+        pane_id: u64,
+        path: String,
+        timestamp: String,
+    },
+    /// The notes picker was opened.
+    NotesPickerOpened {
+        inbox_count: usize,
+        kept_count: usize,
+        timestamp: String,
+    },
+    /// A note was opened from the notes picker.
+    NoteOpened { path: String, timestamp: String },
 }
 
 // ── Wire envelope ─────────────────────────────────────────────────────────────

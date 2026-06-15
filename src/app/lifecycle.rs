@@ -146,6 +146,13 @@ impl PlexiApp {
                         }
                     }
                 }
+                if found {
+                    crate::host::event_log::emit(crate::host::event_log::HostEvent::PaneRenamed {
+                        pane_id: *pane_id,
+                        name: name.clone(),
+                        timestamp: crate::host::event_log::now_timestamp(),
+                    });
+                }
                 if !found {
                     log::warn!("pane_ipc: set_pane_title: pane_id={pane_id} not found");
                 }
@@ -1393,6 +1400,14 @@ impl PlexiApp {
                     options.len(),
                     scope,
                     response_file
+                );
+                crate::host::event_log::emit(
+                    crate::host::event_log::HostEvent::NotificationPosted {
+                        id: internal_id.clone(),
+                        title: title.clone(),
+                        urgency: level.clone(),
+                        timestamp: crate::host::event_log::now_timestamp(),
+                    },
                 );
                 self.pending_notifications.push(PendingNotification {
                     notify_id: internal_id.clone(),

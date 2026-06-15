@@ -2220,6 +2220,13 @@ impl eframe::App for PlexiApp {
                     log::info!(
                         "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
                     );
+                    crate::host::event_log::emit(
+                        crate::host::event_log::HostEvent::NotificationActionInvoked {
+                            id: notify_id.clone(),
+                            action: action_label.clone(),
+                            timestamp: crate::host::event_log::now_timestamp(),
+                        },
+                    );
                     // Execute host-side action synchronously before writing the response
                     // file so the navigation is complete before the shell unblocks.
                     if let Some(ref action) = host_action {
@@ -3383,6 +3390,11 @@ impl PlexiApp {
             entries.len() - inbox_count,
             notes_dir
         );
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::NotesPickerOpened {
+            inbox_count,
+            kept_count: entries.len() - inbox_count,
+            timestamp: crate::host::event_log::now_timestamp(),
+        });
         self.notes_picker_entries = entries;
         self.notes_picker_selected = 0;
         self.notes_picker_query.clear();

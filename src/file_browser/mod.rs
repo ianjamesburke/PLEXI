@@ -86,7 +86,6 @@ enum FileBrowserAction {
     Copy,
     Cut,
     Paste,
-    Duplicate,
     MoveToTrash,
     Reveal,
     OpenWithDefault,
@@ -168,9 +167,8 @@ fn classify_key(input: &egui::InputState, in_search: bool) -> Option<FileBrowser
     if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::V) {
         return Some(FileBrowserAction::Paste);
     }
-    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::D) {
-        return Some(FileBrowserAction::Duplicate);
-    }
+    // Cmd+D and Cmd+Shift+D are host split chords. Do not bind them inside
+    // File Browser unless the full shortcut map is reviewed.
     if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::Backspace) {
         return Some(FileBrowserAction::MoveToTrash);
     }
@@ -992,29 +990,6 @@ impl FileBrowserApp {
         self.refresh_preserving_filter();
         if let Some(path) = created.first() {
             self.select_path(path);
-        }
-        Ok(created)
-    }
-
-    fn duplicate_selected(&mut self) -> Result<Vec<PathBuf>, String> {
-        let mut created = Vec::new();
-        for source in self.selected_paths() {
-            let stem = source
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .or_else(|| source.file_name().and_then(|name| name.to_str()))
-                .unwrap_or("Untitled");
-            let ext = source.extension().and_then(|ext| ext.to_str());
-            let target = Self::unique_child_path(&self.cwd, &format!("{stem} copy"), ext);
-            Self::copy_path_recursive(&source, &target)?;
-            created.push(target);
-        }
-        log::info!("file_browser: duplicated {} path(s)", created.len());
-        self.refresh_preserving_filter();
-        self.multi_selected = created.iter().cloned().collect();
-        if let Some(first) = created.first() {
-            self.select_path(first);
-            self.multi_selected = created.iter().cloned().collect();
         }
         Ok(created)
     }
@@ -2454,12 +2429,6 @@ impl App for FileBrowserApp {
                 }
                 KeyDisposition::Consumed
             }
-            (Mode::Normal, Some(FileBrowserAction::Duplicate)) => {
-                if let Err(err) = self.duplicate_selected() {
-                    self.error = Some(err);
-                }
-                KeyDisposition::Consumed
-            }
             (Mode::Normal, Some(FileBrowserAction::MoveToTrash)) => {
                 self.request_move_selected_to_trash();
                 KeyDisposition::Consumed
@@ -2955,16 +2924,22 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_selected_file_creates_copy_and_refreshes_entries() {
+    fn command_d_does_not_duplicate_selected_file() {
         let (mut app, dir) = make_three_file_app();
 
-        app.duplicate_selected().expect("duplicate");
+        let consumed = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::D,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
 
-        assert!(dir.path().join("alpha copy.txt").exists());
-        assert!(app
-            .entries
-            .iter()
-            .any(|entry| entry.name == "alpha copy.txt"));
+        assert!(!consumed);
+        assert!(!dir.path().join("alpha copy.txt").exists());
     }
 
     #[test]

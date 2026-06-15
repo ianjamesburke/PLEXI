@@ -39,6 +39,14 @@ pub(super) fn restore_overlay_replacement(
     match pane {
         Pane::App(mut app) => {
             if let Some(replaced) = app.overlay_replaced.take() {
+                let type_id = app.runtime.type_id().to_string();
+                crate::host::event_log::emit(crate::host::event_log::HostEvent::AppClosed {
+                    app_id: type_id.clone(),
+                    type_id,
+                    pane_id,
+                    reason: Some("overlay_restored".to_string()),
+                    timestamp: crate::host::event_log::now_timestamp(),
+                });
                 panes.insert(pane_id, *replaced);
                 true
             } else {

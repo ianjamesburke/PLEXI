@@ -568,7 +568,7 @@ impl PlexiApp {
                         None
                     } else {
                         log::info!("rename_pane: pane {pane_id} name locked to {:?}", new_name);
-                        Some(new_name)
+                        Some(new_name.clone())
                     };
                 } else if let Some(a) = pane.as_app_mut() {
                     // Let the app react first — TextEditorApp persists the new
@@ -582,6 +582,11 @@ impl PlexiApp {
                     log::info!("rename_pane: app pane {pane_id} named {:?}", a.name);
                 }
             }
+            crate::host::event_log::emit(crate::host::event_log::HostEvent::PaneRenamed {
+                pane_id,
+                name: new_name,
+                timestamp: crate::host::event_log::now_timestamp(),
+            });
             self.renaming_pane = None;
             self.rename_pane_focus_requested = false;
         }
@@ -638,6 +643,13 @@ impl PlexiApp {
             let new_name = self.rename_buffer.trim().to_string();
             if !new_name.is_empty() {
                 self.router.get_mut(ctx_idx).name = new_name;
+                let context_id = self.router.get(ctx_idx).context_id;
+                let name = self.router.get(ctx_idx).name.clone();
+                crate::host::event_log::emit(crate::host::event_log::HostEvent::ContextRenamed {
+                    context_id,
+                    name,
+                    timestamp: crate::host::event_log::now_timestamp(),
+                });
             }
             self.renaming_window = None;
         }
