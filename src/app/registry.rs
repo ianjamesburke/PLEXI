@@ -101,6 +101,7 @@ pub struct SecretDecl {
 pub struct AppManifestApp {
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub entry: String,
     /// Required. Selects host rendering / pane behaviour:
     ///
@@ -150,6 +151,11 @@ pub struct AppManifestApp {
     /// into a per-app venv at `<app_dir>/.venv`. Empty when omitted.
     #[serde(default)]
     pub dependencies: Vec<String>,
+    /// System binary name for `type = "terminal"` apps. Resolved in PATH at
+    /// launch time; host emits a user-visible error if the binary is absent.
+    /// Ignored for App-type apps.
+    #[serde(default)]
+    pub exec: Option<String>,
 }
 
 /// Manifest `[app] type` field — chooses the host rendering surface for
@@ -159,6 +165,8 @@ pub struct AppManifestApp {
 pub enum ManifestType {
     /// Standard draw-canvas app. Host renders whatever the app draws.
     App,
+    /// Terminal app — spawns `exec` binary in a PTY pane. No Python SDK or PGAP.
+    Terminal,
 }
 
 /// Newtype for `[launch] notification_scope` in manifest.toml. Deserialises
@@ -492,7 +500,37 @@ impl AppRegistry {
             ));
         }
 
-        let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
+        let bin_path = match manifest.app.manifest_type {
+            ManifestType::App => {
+                if manifest.app.entry.is_empty() {
+                    return Err(format!(
+                        "app '{}': App-type manifest must declare an 'entry' field",
+                        manifest.app.id
+                    ));
+                }
+                resolve_entry(app_dir, &manifest.app.entry)?
+            }
+            ManifestType::Terminal => {
+                let exec_empty = manifest
+                    .app
+                    .exec
+                    .as_deref()
+                    .map(|s| s.is_empty())
+                    .unwrap_or(true);
+                if exec_empty {
+                    return Err(format!(
+                        "app '{}': Terminal-type manifest must declare an 'exec' field",
+                        manifest.app.id
+                    ));
+                }
+                log::info!(
+                    "AppRegistry: terminal app '{}' registered exec='{}'",
+                    manifest.app.id,
+                    manifest.app.exec.as_deref().unwrap_or(""),
+                );
+                app_dir.clone()
+            }
+        };
 
         for (name, decl) in &manifest.secrets {
             log::debug!(
@@ -606,6 +644,15 @@ impl AppRegistry {
             installed.manifest.manifest_type,
             installed.source.label(),
         );
+
+        if installed.manifest.manifest_type == ManifestType::Terminal {
+            log::info!(
+                "AppRegistry: '{}' is Terminal type — deferring to PTY pane spawn, exec='{}'",
+                id,
+                installed.manifest.exec.as_deref().unwrap_or(""),
+            );
+            return None;
+        }
 
         // Issue #322: log declared-but-routed status for visibility. The
         // missing-secret prompt fires lazily on first `ctx.secret(...)` call —
@@ -1363,5 +1410,34 @@ entry = "main.py"
         assert!(manifest.app.author.is_none());
         assert!(manifest.app.tags.is_empty());
         assert!(manifest.app.repo.is_none());
+    }
+
+    #[test]
+    fn terminal_manifest_loads_without_entry() {
+        let global = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("brogue");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "schema_version = 1\n\n[app]\nid = \"brogue\"\ntype = \"terminal\"\nname = \"Brogue CE\"\nversion = \"1.0.0\"\nexec = \"brogue\"\n\n[app.capabilities]\ncapabilities = []\n";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let app = registry.get("brogue").expect("terminal app must be discoverable");
+        assert_eq!(app.manifest.manifest_type, ManifestType::Terminal);
+        assert_eq!(app.manifest.exec.as_deref(), Some("brogue"));
+        assert!(app.manifest.entry.is_empty(), "terminal app should have empty entry");
+    }
+
+    #[test]
+    fn terminal_manifest_without_exec_fails_to_load() {
+        let global = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("badterm");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "schema_version = 1\n\n[app]\nid = \"badterm\"\ntype = \"terminal\"\nname = \"Bad Terminal\"\nversion = \"1.0.0\"\n\n[app.capabilities]\ncapabilities = []\n";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        assert!(registry.get("badterm").is_none(), "terminal app without exec must not load");
     }
 }

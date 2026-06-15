@@ -241,6 +241,13 @@ fn load_local_app(app_dir: &Path) -> Result<(AppManifest, PathBuf), String> {
         ));
     }
 
+    if manifest.app.manifest_type == crate::app::registry::ManifestType::Terminal {
+        return Err(format!(
+            "'plexi app check' is not supported for Terminal-type apps (exec='{}')",
+            manifest.app.exec.as_deref().unwrap_or("?")
+        ));
+    }
+
     let entry_path = app_dir.join(&manifest.app.entry);
     if !entry_path.exists() {
         return Err(format!(

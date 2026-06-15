@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "brogue"
+type = "terminal"
+name = "Brogue CE"
+version = "1.0.0"
+description = "BrogueCE — a critically acclaimed minimalist roguelike. Install: brew install brogue-ce"
+exec = "brogue"
+tags = ["game", "roguelike", "tui"]
+
+[app.capabilities]
+capabilities = []
+
+[launch]

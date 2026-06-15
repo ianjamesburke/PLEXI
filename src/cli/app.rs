@@ -1013,6 +1013,13 @@ pub fn app_render(
             );
             return 1;
         }
+        if manifest.app.manifest_type == crate::app::registry::ManifestType::Terminal {
+            eprintln!(
+                "error: 'plexi app render' is not supported for Terminal-type apps (exec='{}')",
+                manifest.app.exec.as_deref().unwrap_or("?")
+            );
+            return 1;
+        }
         let entry = app_dir.join(&manifest.app.entry);
         if !entry.exists() {
             eprintln!(
