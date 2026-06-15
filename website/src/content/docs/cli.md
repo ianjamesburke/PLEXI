@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.1.0"
+verified_version: "0.1.1"
 order: 7
 ---
 
@@ -169,7 +169,7 @@ Install agent definitions from the global registry (`~/.plexi/agents/`) into the
 | `list` | List agents installed in the current workspace |
 | `report` | Report agent state for this pane to the host |
 | `status` | Show current agent state for all panes |
-| `hook` | Install or uninstall Claude Code hook integration |
+| `hook` | Install or uninstall agent hook integrations |
 
 ### `plexi agent init`
 
@@ -243,34 +243,38 @@ Example: plexi agent status Example: plexi agent status --blocked
 
 ### `plexi agent hook`
 
-Install or uninstall Claude Code hook integration.
+Install or uninstall agent hook integrations.
 
-install: patches ~/.claude/settings.json with hook registrations for all Claude Code lifecycle events, routing them to plexi agent report.
+install: patches the selected agent config with lifecycle hook registrations, routing them to plexi agent report.
 
-uninstall: removes all PLEXI hook entries from ~/.claude/settings.json.
+uninstall: removes all PLEXI hook entries from the selected agent config.
 
-Example: plexi agent hook install --claude-code Example: plexi agent hook uninstall --claude-code
+Example: plexi agent hook install --claude-code Example: plexi agent hook install --codex --pi Example: plexi agent hook uninstall --claude-code
 
 | Subcommand | Description |
 |---|---|
-| `install` | Install the PLEXI hook script into ~/.claude/settings.json |
-| `uninstall` | Remove PLEXI hook entries from ~/.claude/settings.json |
+| `install` | Install PLEXI agent-state hook integrations |
+| `uninstall` | Remove PLEXI agent-state hook integrations |
 
 #### `plexi agent hook install`
 
-Install the PLEXI hook script into ~/.claude/settings.json
+Install PLEXI agent-state hook integrations
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--claude-code` | flag | no | Install Claude Code hooks (PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, PermissionRequest, Stop, StopFailure, SessionEnd) |
+| `--codex` | flag | no | Install Codex hooks (SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, Stop) |
+| `--pi` | flag | no | Install Pi extension hooks (session, agent, and tool lifecycle events) |
 
 #### `plexi agent hook uninstall`
 
-Remove PLEXI hook entries from ~/.claude/settings.json
+Remove PLEXI agent-state hook integrations
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--claude-code` | flag | no | Remove Claude Code hooks |
+| `--codex` | flag | no | Remove Codex hooks |
+| `--pi` | flag | no | Remove Pi extension hooks |
 
 ## `plexi context`
 
