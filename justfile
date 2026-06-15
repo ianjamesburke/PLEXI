@@ -204,6 +204,10 @@ channel-uninstall channel="all":
 clear-apps channel="":
     bash scripts/clear-apps.sh {{channel}}
 
+# Preview what the next changelog would look like without committing anything.
+changelog:
+    git cliff --unreleased --bump
+
 # Bump version, generate CHANGELOG via git-cliff, commit, and tag locally. Defaults to patch.
 # Run at the end of a release batch, or immediately before promoting to beta.
 #   just bump           — patch bump
