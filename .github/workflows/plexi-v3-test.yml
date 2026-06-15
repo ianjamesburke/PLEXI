@@ -13,7 +13,7 @@ jobs:
       PLEXI_AUDIO: "mock://"
       PLEXI_VIDEO: "mock://"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
