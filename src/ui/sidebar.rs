@@ -521,15 +521,12 @@ impl PlexiApp {
         // Drop affordances: highlight the Parked header, or draw the reorder line.
         match drop_target {
             Some(SidebarDrop::Park) => {
+                // Outline the Parked header as a drop target. Border only — a
+                // filled rect here paints over the already-drawn header text
+                // (drawn earlier this frame) and would hide the "Parked" label.
                 if let Some(rect) = parked_header_rect {
-                    let inset = rect.shrink(2.0);
-                    ui.painter().rect_filled(
-                        inset,
-                        crate::ui::style::RADIUS_SM,
-                        self.colors.bg_hover,
-                    );
                     ui.painter().rect_stroke(
-                        inset,
+                        rect.shrink(2.0),
                         crate::ui::style::RADIUS_SM,
                         Stroke::new(1.5, self.colors.accent),
                         egui::StrokeKind::Inside,
