@@ -129,17 +129,32 @@ impl WorkspaceRouter {
         }
     }
 
-    /// Remove at `src`, insert at `dst` (after removal), tracking active.
-    pub(crate) fn reorder_tracking_active(&mut self, src: usize, dst: usize) {
-        let ctx = self.contexts.remove(src);
-        self.contexts.insert(dst, ctx);
-        if self.active == src {
-            self.active = dst;
-        } else if src < self.active && dst >= self.active {
-            self.active -= 1;
-        } else if src > self.active && dst <= self.active {
-            self.active += 1;
+    /// Reorder the entire context vec to match `new_order`, a permutation of
+    /// the current indices `0..len`. The active context is tracked by identity,
+    /// so its index is rewritten to wherever it lands. Used by sidebar drag-drop
+    /// to commit a fully re-partitioned (active/parked) ordering atomically.
+    pub(crate) fn apply_order(&mut self, new_order: &[usize]) {
+        debug_assert_eq!(
+            new_order.len(),
+            self.contexts.len(),
+            "apply_order needs a full permutation"
+        );
+        let active_id = self.contexts[self.active].context_id;
+        let mut slots: Vec<Option<Context>> = self.contexts.drain(..).map(Some).collect();
+        let mut reordered: Vec<Context> = Vec::with_capacity(slots.len());
+        for &idx in new_order {
+            reordered.push(
+                slots[idx]
+                    .take()
+                    .expect("apply_order: each index referenced exactly once"),
+            );
         }
+        self.contexts = reordered;
+        self.active = self
+            .contexts
+            .iter()
+            .position(|c| c.context_id == active_id)
+            .expect("apply_order: active context survives reorder");
     }
 
     pub(crate) fn move_to_front_tracking_active(&mut self, idx: usize) {
@@ -222,6 +237,21 @@ mod tests {
     fn depth_stack_empty_pop_returns_none() {
         let mut router = WorkspaceRouter::new(vec![make_ctx(1, None, 0)], 0);
         assert_eq!(router.pop_depth(), None);
+    }
+
+    #[test]
+    fn apply_order_permutes_and_tracks_active_by_identity() {
+        let mut router = WorkspaceRouter::new(
+            vec![make_ctx(10, None, 0), make_ctx(20, None, 0), make_ctx(30, None, 0)],
+            1, // active = ctx 20
+        );
+        // Move ctx 20 (index 1) to the front: new order [20, 10, 30].
+        router.apply_order(&[1, 0, 2]);
+        let ids: Vec<u64> = router.iter().map(|c| c.context_id).collect();
+        assert_eq!(ids, vec![20, 10, 30]);
+        // Active still points at ctx 20, now at index 0.
+        assert_eq!(router.active_idx(), 0);
+        assert_eq!(router.active().context_id, 20);
     }
 
     #[test]
