@@ -149,12 +149,13 @@ pub fn demo_cli() -> i32 {
     };
     done(6);
 
-    step(7, "Rename the Balls terminal");
+    step(7, "Rename the right pane");
     explain(&[
-        "You should be back in the terminal that just held Balls.",
-        "Rename that terminal so the pane list is easier to scan.",
+        "Rename the pane on the right, the one that just held Balls.",
+        "If focus is back on this demo, press Command-L first to move right.",
         "Use the rename shortcut, enter Demo app pane, and confirm it.",
     ]);
+    key(&format!("{CMD}L"), "focus the pane on the right");
     key(&format!("{CMD}R"), "rename this pane");
     let after_app_rename = match poll_event(&events_path, after_balls_close, |kind, obj| {
         kind == "pane_renamed"
