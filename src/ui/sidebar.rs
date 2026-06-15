@@ -533,9 +533,9 @@ impl PlexiApp {
                         SidebarAction::DragEnd => {
                             drag_released = true;
                         }
-                        SidebarAction::Activate => {
-                            unpark_context = Some(i);
-                        }
+                        // A plain click must not unpark — parked contexts only
+                        // come back via a drag into the active list or the
+                        // right-click "Unpark" action. Clicking is inert.
                         _ => {}
                     }
                 }
