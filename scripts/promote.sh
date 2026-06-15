@@ -95,8 +95,8 @@ if [[ "$to" == "beta" ]]; then
 
     version=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
     echo ""
-    echo "v$version is on beta — worktrees/beta/ is synced and ready."
-    echo "Install manually when ready: cd worktrees/beta && just install"
+    echo "Installing beta (v$version)..."
+    (cd "$BETA_TREE" && just install)
     exit 0
 fi
 
