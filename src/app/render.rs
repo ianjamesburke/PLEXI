@@ -537,7 +537,7 @@ impl PlexiApp {
                     theme: self.theme.clone(),
                     new_focused: None,
                     close_exited: None,
-                    tab_click: None,
+                    tab_action: None,
                     tab_info,
                     tab_labels,
                     zoomed_pane,
@@ -613,11 +613,14 @@ impl PlexiApp {
                 // needs &mut ctx but behavior holds &mut ctx.panes).
                 let new_focused = behavior.new_focused;
                 let should_close_exited = behavior.close_exited.is_some();
-                let tab_click = behavior.tab_click.take();
+                let tab_action = behavior.tab_action.take();
                 let portal_zoom = behavior.portal_zoom_request.take();
 
                 // Draw zoom overlay if a pane is zoomed
-                let mut zoomed_tab_click: Option<(TileId, usize)> = None;
+                let mut zoomed_tab_action: Option<(
+                    TileId,
+                    crate::spatial::tiling::TabBarAction,
+                )> = None;
                 if let Some(zoomed_tile) = zoomed_pane {
                     if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(zoomed_tile) {
                         let pane_id = *pane_id;
@@ -707,7 +710,7 @@ impl PlexiApp {
                                 self.colors.pane_header_bg(),
                             );
                             if let Some(ref group) = zoomed_tab_info {
-                                if let Some(idx) = crate::spatial::tiling::paint_tab_bar(
+                                if let Some(action) = crate::spatial::tiling::paint_tab_bar(
                                     ui.ctx(),
                                     ui.painter(),
                                     bar_rect,
@@ -718,7 +721,7 @@ impl PlexiApp {
                                     self.config.pane_title_font_size.unwrap_or(11.0),
                                     is_overtaken_app,
                                 ) {
-                                    zoomed_tab_click = Some((group.container_tile, idx));
+                                    zoomed_tab_action = Some((group.container_tile, action));
                                 }
                             } else if let Some(ref name) = zoomed_pane_name {
                                 ui.painter().text(
@@ -924,9 +927,18 @@ impl PlexiApp {
                     }
                 }
 
-                let effective_tab_click = tab_click.or(zoomed_tab_click);
-                if let Some((container_tile, clicked_idx)) = effective_tab_click {
-                    self.switch_to_tab(container_tile, clicked_idx);
+                let effective_tab_action = tab_action.or(zoomed_tab_action);
+                if let Some((container_tile, action)) = effective_tab_action {
+                    match action {
+                        crate::spatial::tiling::TabBarAction::Switch(idx) => {
+                            self.switch_to_tab(container_tile, idx);
+                        }
+                        crate::spatial::tiling::TabBarAction::Reorder { from_idx, to_idx } => {
+                            if self.reorder_tab(container_tile, from_idx, to_idx) {
+                                self.save_workspace();
+                            }
+                        }
+                    }
                 }
 
                 if should_close_exited {

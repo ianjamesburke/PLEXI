@@ -14,6 +14,7 @@ import threading
 import time
 import zlib
 from pathlib import Path
+from typing import Union
 
 DEFAULT_BG = "#1e1e2e"
 
@@ -245,7 +246,7 @@ def assert_pixel(
     png_bytes: bytes,
     x: int,
     y: int,
-    expected: str | tuple[int, int, int, int],
+    expected: Union[str, tuple[int, int, int, int]],
     tolerance: int = 4,
 ) -> None:
     """Assert the pixel at (x, y) matches the expected color within per-channel tolerance.
@@ -285,7 +286,7 @@ def assert_pixel(
 # Snapshot file helper
 # ---------------------------------------------------------------------------
 
-def save_snapshot(png_bytes: bytes, path: str | Path) -> None:
+def save_snapshot(png_bytes: bytes, path: Union[str, Path]) -> None:
     """Write PNG bytes to path. Creates parent directories as needed."""
     p = Path(path)
     try:

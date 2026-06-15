@@ -7,6 +7,7 @@ render viewport passed to render().
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 from plexi_sdk.widgets.scroll import ScrollState
@@ -37,8 +38,8 @@ class TextArea:
     def __init__(
         self,
         buffer: TextBuffer,
-        scroll: ScrollState | None = None,
-        theme: TextAreaTheme | None = None,
+        scroll: Optional[ScrollState] = None,
+        theme: Optional[TextAreaTheme] = None,
     ) -> None:
         self.buffer = buffer
         self.theme = theme or TextAreaTheme()

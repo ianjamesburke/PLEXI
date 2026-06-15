@@ -1,9 +1,11 @@
 ---
 id: "0157"
 title: "UI hardening: host UI gallery visual smoke coverage"
-status: todo
+status: done
 estimate: "8h"
-sprint: "s31"
+actual: "0m"
+started_at: "2026-06-15T07:48:49Z"
+completed_at: "2026-06-15T07:48:49Z"
 blocked_by: []
 gh_issue:
   - "2175"
@@ -17,6 +19,7 @@ tags:
   - "gallery"
   - "testing"
 ---
+
 
 
 Add a lightweight visual smoke path for Host UI Gallery and key host overlays.
@@ -37,3 +40,7 @@ The host UI kit is now split and centralized, but build-only verification will n
 - `src/ui_tests.rs`
 - `src/testing/mod.rs`
 - `.agents/skills/validate-pr/SKILL.md`
+
+## Reconciliation
+
+Marked done in this branch after auditing current alpha. The implementation had already landed: `src/overlays/ui_gallery.rs` renders the host gallery and `src/ui_tests.rs` includes `screenshot_host_ui_gallery_trust_states`.

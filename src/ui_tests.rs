@@ -936,6 +936,32 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_catppuccin_latte_command_palette() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let cfg = crate::ui::theme::preset_colors("catppuccin-latte")
+                .expect("catppuccin latte preset must exist");
+            app.colors = crate::ui::theme::Colors::from_config(&cfg);
+            app.theme = crate::ui::theme::terminal_theme(&cfg);
+            crate::ui::theme::setup_style(&app.ctx, &app.colors, false);
+            app.show_command_palette = true;
+            app.sync_command_palette_focus();
+        });
+        h.run_steps(3);
+        let img = h.render().expect("render failed");
+        img.save("/tmp/plexi_catppuccin_latte_palette.png")
+            .expect("save screenshot");
+        let center = img.get_pixel(img.width() / 2, img.height() / 2).0;
+        let center_luma = (u16::from(center[0]) + u16::from(center[1]) + u16::from(center[2])) / 3;
+        assert!(
+            center_luma > 180,
+            "Catppuccin Latte palette center should be light, got rgba={center:?}"
+        );
+        println!("Screenshot saved to /tmp/plexi_catppuccin_latte_palette.png");
+    }
+
+    #[test]
     fn command_palette_keeps_search_focus_after_scrolled_down_nav() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
         add_focused_pane(&mut h);

@@ -14,6 +14,19 @@ pub type PaneId = u64;
 
 pub(crate) const TAB_BAR_HEIGHT: f32 = 20.0;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabBarAction {
+    Switch(usize),
+    Reorder { from_idx: usize, to_idx: usize },
+}
+
+#[derive(Clone, Copy)]
+struct TabDragState {
+    container_tile: TileId,
+    from_idx: usize,
+    start_pos: egui::Pos2,
+}
+
 #[derive(Clone)]
 pub struct TabGroupInfo {
     pub active_idx: usize,
@@ -23,7 +36,31 @@ pub struct TabGroupInfo {
     pub container_tile: TileId,
 }
 
-/// Render a full-width tab bar and return the index of a clicked tab (if any).
+fn tab_drop_marker_x(bar_rect: egui::Rect, tab_width: f32, from_idx: usize, to_idx: usize) -> f32 {
+    let target_left = bar_rect.left() + to_idx as f32 * tab_width;
+    if to_idx > from_idx {
+        target_left + tab_width
+    } else {
+        target_left
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_drop_marker_tracks_insert_edge() {
+        let bar = egui::Rect::from_min_size(egui::pos2(10.0, 0.0), egui::vec2(300.0, 20.0));
+        let tab_width = 100.0;
+
+        assert_eq!(tab_drop_marker_x(bar, tab_width, 2, 0), 10.0);
+        assert_eq!(tab_drop_marker_x(bar, tab_width, 0, 2), 310.0);
+        assert_eq!(tab_drop_marker_x(bar, tab_width, 1, 1), 110.0);
+    }
+}
+
+/// Render a full-width tab bar and return a switch/reorder action, if any.
 /// The caller must pre-allocate `bar_rect` (typically `TAB_BAR_HEIGHT` px tall)
 /// and advance the cursor past it.
 pub(crate) fn paint_tab_bar(
@@ -36,7 +73,7 @@ pub(crate) fn paint_tab_bar(
     colors: &Colors,
     font_size: f32,
     overtake_hint: bool,
-) -> Option<usize> {
+) -> Option<TabBarAction> {
     painter.rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
     let tab_count = group.members.len();
@@ -48,14 +85,80 @@ pub(crate) fn paint_tab_bar(
     let accent_bar_height = 2.0;
     let font = egui::FontId::proportional(font_size);
 
-    let clicked = ctx.input(|i| {
-        if i.pointer.any_pressed() {
-            i.pointer.interact_pos()
-        } else {
-            None
+    let tab_idx_at = |pos: egui::Pos2| -> Option<usize> {
+        if !bar_rect.contains(pos) {
+            return None;
         }
+        Some((((pos.x - bar_rect.left()) / tab_width).floor() as usize).min(tab_count - 1))
+    };
+
+    let drag_id = egui::Id::new(("plexi_tab_drag", group.container_tile));
+    let (pressed, down, released, pos) = ctx.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            i.pointer.primary_down(),
+            i.pointer.any_released(),
+            i.pointer.interact_pos(),
+        )
     });
-    let mut clicked_idx = None;
+    let mut action = None;
+    let mut drag_marker: Option<(usize, egui::Pos2)> = None;
+
+    if pressed {
+        if let Some(pos) = pos {
+            if let Some(from_idx) = tab_idx_at(pos) {
+                ctx.data_mut(|d| {
+                    d.insert_temp(
+                        drag_id,
+                        TabDragState {
+                            container_tile: group.container_tile,
+                            from_idx,
+                            start_pos: pos,
+                        },
+                    );
+                });
+            }
+        }
+    }
+
+    if released {
+        let state = ctx.data(|d| d.get_temp::<TabDragState>(drag_id));
+        ctx.data_mut(|d| d.remove::<TabDragState>(drag_id));
+        if let (Some(state), Some(pos)) = (state, pos) {
+            if state.container_tile == group.container_tile {
+                let moved = pos.distance_sq(state.start_pos) > 16.0;
+                if moved {
+                    if let Some(to_idx) = tab_idx_at(pos) {
+                        if to_idx != state.from_idx {
+                            action = Some(TabBarAction::Reorder {
+                                from_idx: state.from_idx,
+                                to_idx,
+                            });
+                        }
+                    }
+                } else if let Some(idx) = tab_idx_at(pos) {
+                    if idx != group.active_idx {
+                        action = Some(TabBarAction::Switch(idx));
+                    }
+                }
+            }
+        }
+    } else if !down {
+        ctx.data_mut(|d| d.remove::<TabDragState>(drag_id));
+    } else if let Some(pos) = pos {
+        let state = ctx.data(|d| d.get_temp::<TabDragState>(drag_id));
+        if let Some(state) = state {
+            if state.container_tile == group.container_tile
+                && pos.distance_sq(state.start_pos) > 16.0
+            {
+                if let Some(to_idx) = tab_idx_at(pos) {
+                    if to_idx != state.from_idx {
+                        drag_marker = Some((state.from_idx, pos));
+                    }
+                }
+            }
+        }
+    }
 
     for (i, &pane_id) in group.members.iter().enumerate() {
         let is_active = i == group.active_idx;
@@ -66,12 +169,6 @@ pub(crate) fn paint_tab_bar(
 
         if is_active {
             painter.rect_filled(tab_rect, 0.0, colors.bg_active);
-        }
-
-        if let Some(pos) = clicked {
-            if tab_rect.contains(pos) && !is_active {
-                clicked_idx = Some(i);
-            }
         }
 
         // Vertical divider between tabs (skip before first)
@@ -137,6 +234,17 @@ pub(crate) fn paint_tab_bar(
         }
     }
 
+    if let Some((from_idx, pos)) = drag_marker {
+        if let Some(to_idx) = tab_idx_at(pos) {
+            let x = tab_drop_marker_x(bar_rect, tab_width, from_idx, to_idx);
+            let marker_rect = egui::Rect::from_center_size(
+                egui::pos2(x, bar_rect.center().y),
+                egui::vec2(3.0, TAB_BAR_HEIGHT - 3.0),
+            );
+            painter.rect_filled(marker_rect, 1.5, colors.accent);
+        }
+    }
+
     if overtake_hint {
         let hint_font = egui::FontId::monospace(font_size - 1.0);
         let hint_text = "Esc";
@@ -167,7 +275,7 @@ pub(crate) fn paint_tab_bar(
         );
     }
 
-    clicked_idx
+    action
 }
 
 /// What kind of pane occupies a minimap slot.
@@ -233,8 +341,8 @@ pub struct PlexiBehavior<'a> {
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
     pub close_exited: Option<TileId>,
-    /// Set when a tab bar click selects a different tab: (container_tile, child_index).
-    pub tab_click: Option<(TileId, usize)>,
+    /// Set when a tab bar switches or reorders tabs.
+    pub tab_action: Option<(TileId, TabBarAction)>,
     pub tab_info: HashMap<TileId, TabGroupInfo>,
     /// Pre-computed display label for each pane: user-set name, then app name, then type string.
     pub tab_labels: HashMap<PaneId, String>,
@@ -351,7 +459,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 );
                 app_ui.advance_cursor_after_rect(bar_rect);
                 let is_overtaken = app_pane.overlay_replaced.is_some();
-                if let Some(idx) = paint_tab_bar(
+                if let Some(action) = paint_tab_bar(
                     app_ui.ctx(),
                     app_ui.painter(),
                     bar_rect,
@@ -362,7 +470,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     self.pane_title_font_size,
                     is_overtaken,
                 ) {
-                    self.tab_click = Some((group.container_tile, idx));
+                    self.tab_action = Some((group.container_tile, action));
                 }
             }
 
@@ -371,7 +479,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-            let (close_exited, tab_click) = render::terminal_pane::render(
+            let (close_exited, tab_action) = render::terminal_pane::render(
                 &mut terminal_ui,
                 terminal,
                 tile_id,
@@ -389,8 +497,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             if close_exited {
                 self.close_exited = Some(tile_id);
             }
-            if tab_click.is_some() {
-                self.tab_click = tab_click;
+            if tab_action.is_some() {
+                self.tab_action = tab_action;
             }
         } else if pane.as_portal().is_some() {
             // Portal tile — direct egui rendering.

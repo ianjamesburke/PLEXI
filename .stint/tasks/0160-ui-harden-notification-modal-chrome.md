@@ -1,9 +1,11 @@
 ---
 id: "0160"
 title: "UI hardening: notification modal footer and action chrome"
-status: todo
+status: done
 estimate: "12h"
-sprint: "s31"
+actual: "0m"
+started_at: "2026-06-15T07:48:49Z"
+completed_at: "2026-06-15T07:48:49Z"
 blocked_by: []
 gh_issue:
   - "2174"
@@ -17,6 +19,7 @@ tags:
   - "notifications"
   - "modal"
 ---
+
 
 
 Move notification modal footer and action-row chrome onto shared host UI primitives.
@@ -38,3 +41,7 @@ The notification modal now uses `ModalShell`, but it still has the densest custo
 - `src/ui/hints.rs`
 - `src/ui/row.rs`
 - `src/ui/surface.rs`
+
+## Reconciliation
+
+Marked done in this branch after auditing current alpha. The implementation had already landed: notification prompts use `TextArea::multiline`, action rows use shared `choice_button`, and footer shortcuts use `HintBar`.

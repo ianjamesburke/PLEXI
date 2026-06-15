@@ -1,6 +1,7 @@
 use super::*;
 use crate::ui::{
     button::{chrome_button, icon_button, toolbar_button, ButtonKind},
+    code_viewer::ReadOnlyCodeViewer,
     hints::{HintBar, HintGroup},
     labels::{chrome_section, description_label},
     list::ListRow,
@@ -50,6 +51,15 @@ impl PlexiApp {
                         });
 
                         chrome_section(ui, "Code and toast surfaces", &colors, |ui| {
+                            ReadOnlyCodeViewer::new(
+                                egui::Id::new("host_ui_gallery_code_viewer"),
+                                "fn main() {\n    println!(\"hello from Plexi\");\n}\n",
+                                "rs",
+                            )
+                            .line_numbers(true)
+                            .max_height(96.0)
+                            .show(ui, &colors);
+                            ui.add_space(style::SPACE_SM);
                             copyable_command(
                                 ui,
                                 egui::Id::new("host_ui_gallery_copyable_command"),

@@ -9,6 +9,14 @@ Plexi reads `config.toml` from the active channel profile. Alpha uses `~/.plexi-
 
 Changes take effect on the next launch unless a command says otherwise.
 
+## Channel discipline
+
+Alpha config stays default. `just install` refreshes `~/.plexi-alpha/config.toml` from the built-in template, and PR builds seed from alpha. Do not use alpha for personal overrides you expect to keep.
+
+Beta config is the staging ground. `~/.plexi-beta/config.toml` is not reset by alpha installs, so it is the right place to test migrations, advanced settings, and personal config before promoting a release.
+
+PR builds are isolated. A PR build reads `~/.plexi-pr-<N>/config.toml`; use the `plexi-pr-<N>` binary when checking a PR-specific config behavior.
+
 ## Commands
 
 ```sh
@@ -27,7 +35,7 @@ Pick a preset at the top level:
 theme_preset = "catppuccin-mocha"
 ```
 
-Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-night`, `gruvbox-dark`, `nord`, `solarized-dark`, `solarized-light`.
+Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-night`, `tokyo-day`, `gruvbox-dark`, `gruvbox-light`, `nord`, `solarized-dark`, `solarized-light`.
 
 Override individual colors under `[theme]`:
 
@@ -153,7 +161,7 @@ font_size = 14.0
 # pane_title_font_size = 11
 
 # ── Theme ──────────────────────────────────────────────────────
-# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark, solarized-light
+# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light
 theme_preset = "catppuccin-mocha"
 
 # ── Confirmation Dialogs ───────────────────────────────────────

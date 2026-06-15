@@ -1184,12 +1184,8 @@ mod tests {
         let mut actions = Vec::new();
         let _ = ctx.run(raw, |ctx| {
             actions = poll_actions(
-                ctx,
-                &table,
-                /* app_active */ true,
-                /* keyboard_capture */ false,
-                /* overlay_open */ false,
-                /* shortcuts_overlay_open */ false,
+                ctx, &table, /* app_active */ true, /* keyboard_capture */ false,
+                /* overlay_open */ false, /* shortcuts_overlay_open */ false,
             );
         });
         actions

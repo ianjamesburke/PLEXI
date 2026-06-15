@@ -1456,11 +1456,20 @@ class App:
         blocking is a realistic concern, or move blocking work to a thread via
         ``threading.Thread`` + ``emit.run_sync()``.
         """
-        if inspect.iscoroutinefunction(hook):
-            await hook(*args)
-        else:
-            with _sync_hook_scope():
-                hook(*args)
+        try:
+            if inspect.iscoroutinefunction(hook):
+                await hook(*args)
+            else:
+                with _sync_hook_scope():
+                    hook(*args)
+        except TypeError as exc:
+            if "must be called with 'await' from an 'async def' hook" in str(exc):
+                raise
+            hook_name = getattr(hook, "__qualname__", getattr(hook, "__name__", repr(hook)))
+            raise TypeError(f"{hook_name} failed: {exc}") from exc
+        except BaseException as exc:
+            hook_name = getattr(hook, "__qualname__", getattr(hook, "__name__", repr(hook)))
+            raise RuntimeError(f"{hook_name} failed: {exc}") from exc
 
     def _dispatch_hook_task(self, hook: "Any", *args: Any) -> None:
         """Dispatch a lifecycle hook as a non-blocking background task.

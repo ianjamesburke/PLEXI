@@ -616,6 +616,28 @@ impl PlexiApp {
         log::info!("tab_click: switched to tab index={idx} in container={container_tile:?}");
     }
 
+    pub(crate) fn reorder_tab(
+        &mut self,
+        container_tile: TileId,
+        from_idx: usize,
+        to_idx: usize,
+    ) -> bool {
+        let ctx = &mut self.windows[self.active_window];
+        let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(container_tile)
+        else {
+            return false;
+        };
+        let len = tabs.children.len();
+        if from_idx >= len || to_idx >= len || from_idx == to_idx {
+            return false;
+        }
+
+        let moved = tabs.children.remove(from_idx);
+        tabs.children.insert(to_idx, moved);
+        log::info!("tab_reorder: container={container_tile:?} from_idx={from_idx} to_idx={to_idx}");
+        true
+    }
+
     pub(crate) fn close_focused(&mut self) {
         let focused = match self.windows[self.active_window].focused_pane {
             Some(f) => f,
@@ -1654,6 +1676,59 @@ mod close_pane_by_id_tests {
             window_id,
             context_id,
         }
+    }
+
+    fn install_tab_tree(app: &mut PlexiApp) -> (TileId, Vec<TileId>) {
+        let tiles = &mut app.windows[0].tree.tiles;
+        let children = vec![
+            tiles.insert_pane(100),
+            tiles.insert_pane(101),
+            tiles.insert_pane(102),
+        ];
+        let tabs_tile = tiles.insert_tab_tile(children.clone());
+        if let Some(Tile::Container(Container::Tabs(tabs))) =
+            app.windows[0].tree.tiles.get_mut(tabs_tile)
+        {
+            tabs.set_active(children[1]);
+        }
+        app.windows[0].tree.root = Some(tabs_tile);
+        app.windows[0].focused_pane = Some(children[1]);
+        app.windows[0].zoomed_pane = Some(children[1]);
+        (tabs_tile, children)
+    }
+
+    #[test]
+    fn reorder_tab_moves_child_without_changing_active_focus_or_zoom() {
+        let mut app = test_app();
+        let (tabs_tile, children) = install_tab_tree(&mut app);
+
+        assert!(app.reorder_tab(tabs_tile, 0, 2));
+
+        let Some(Tile::Container(Container::Tabs(tabs))) = app.windows[0].tree.tiles.get(tabs_tile)
+        else {
+            panic!("expected tabs container");
+        };
+        assert_eq!(
+            tabs.children,
+            vec![children[1], children[2], children[0]],
+            "reorder must move only the selected child tile"
+        );
+        assert_eq!(
+            tabs.active,
+            Some(children[1]),
+            "active tab tile must remain the same after reorder"
+        );
+        assert_eq!(app.windows[0].focused_pane, Some(children[1]));
+        assert_eq!(app.windows[0].zoomed_pane, Some(children[1]));
+    }
+
+    #[test]
+    fn reorder_tab_rejects_invalid_indices_and_non_tabs() {
+        let mut app = test_app();
+        let (tabs_tile, children) = install_tab_tree(&mut app);
+        assert!(!app.reorder_tab(tabs_tile, 0, 0));
+        assert!(!app.reorder_tab(tabs_tile, 0, 99));
+        assert!(!app.reorder_tab(children[0], 0, 1));
     }
 
     /// Regression guard for #917: closing the last pane in a non-active window

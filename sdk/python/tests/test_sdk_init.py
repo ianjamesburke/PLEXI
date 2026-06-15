@@ -31,6 +31,14 @@ def test_subclass_with_super_init_still_works() -> None:
     assert app.custom_value == 99
 
 
+def test_testing_helpers_import_on_supported_python_versions() -> None:
+    """Runtime-evaluated annotations in testing helpers must not break Python 3.9."""
+    from plexi_sdk.testing import AppHarness, assert_pixel
+
+    assert AppHarness is not None
+    assert assert_pixel is not None
+
+
 def test_no_super_subclass_runs_without_error() -> None:
     """Instantiating App subclass without super() must not raise any error."""
     class MyApp(App):

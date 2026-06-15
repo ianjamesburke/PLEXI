@@ -6,6 +6,8 @@ separate Rust sub-project. The spec allows either; Python is 80 lines vs a
 new cargo crate + cross-compile setup. This is the intentional choice.
 """
 
+from typing import Optional
+
 from plexi_sdk import App, RenderContext, Arg, Pipe
 from plexi_sdk.ui import Column, AppBar, FooterKeys, Component
 
@@ -66,7 +68,7 @@ class _SnakeCanvas(Component):
 
 
 class SnakeApp(App):
-    pipe_id: Arg[str | None] = Arg("--pipe", default=None)
+    pipe_id: Arg[Optional[str]] = Arg("--pipe", default=None)
 
     def on_init(self) -> None:
         self._pipe: "Pipe | None" = None

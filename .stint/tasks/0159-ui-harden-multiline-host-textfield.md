@@ -1,9 +1,11 @@
 ---
 id: "0159"
 title: "UI hardening: multiline host TextField"
-status: todo
+status: done
 estimate: "12h"
-sprint: "s31"
+actual: "0m"
+started_at: "2026-06-15T07:48:49Z"
+completed_at: "2026-06-15T07:48:49Z"
 blocked_by: []
 gh_issue:
   - "2173"
@@ -16,6 +18,7 @@ tags:
   - "text-field"
   - "focus"
 ---
+
 
 
 Add a multiline host TextField primitive and migrate text-owning overlays that still hand-style multiline `TextEdit`.
@@ -38,3 +41,7 @@ Single-line host inputs are centralized, but QuickNote compose, notification pro
 - `src/overlays/notification_modal.rs`
 - `src/overlays/misc.rs`
 - `GOTCHAS.md`
+
+## Reconciliation
+
+Marked done in this branch after auditing current alpha. The implementation had already landed: `src/ui/text_field.rs` provides `TextArea::multiline`, and QuickNote, notification input, and edit-description overlays use it instead of raw multiline `TextEdit`.
