@@ -1,6 +1,15 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.4] — 2026-06-15
+
+### Changes
+- fix(apps): align Python app venv with SDK floor
+- fix(ci): pin setup-uv release tag
+- fix(ci): update Node 24 compatible actions
+- fix(ci): track CLI docs version source
+- feat(justfile): add changelog recipe to preview unreleased changes
+- feat(promote): auto-install beta after promotion instead of printing manual steps
 ## [0.1.3] — 2026-06-15
 
 ### Changes
