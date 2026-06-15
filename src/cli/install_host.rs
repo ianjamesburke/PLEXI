@@ -370,6 +370,8 @@ fn chmod_python_entries(_app_dir: &Path) {}
 /// - If `uv` is not on PATH: logs `warn!` and returns — never fails the install.
 /// - If venv creation or dep install fails: logs `warn!` — never fails the install.
 /// - If `dependencies` is non-empty: runs `uv pip install` into the venv.
+const PYTHON_APP_VENV_VERSION: &str = "3.12";
+
 fn provision_venv(app_id: &str, app_dir: &Path, manifest: &AppManifest) {
     let entry = &manifest.app.entry;
     let is_python = entry.ends_with(".py");
@@ -410,7 +412,7 @@ fn provision_venv(app_id: &str, app_dir: &Path, manifest: &AppManifest) {
 
     // Create the venv.
     let status = Command::new("uv")
-        .args(["venv", "--python", "3.11"])
+        .args(["venv", "--python", PYTHON_APP_VENV_VERSION])
         .arg(&venv_path)
         .status();
     match status {
@@ -421,9 +423,9 @@ fn provision_venv(app_id: &str, app_dir: &Path, manifest: &AppManifest) {
             return;
         }
         Ok(s) if !s.success() => {
-            // uv may refuse 3.11 if not installed; fall back to default Python.
+            // uv may refuse the pinned interpreter if not installed; fall back to default Python.
             log::warn!(
-                "install[{app_id}]: `uv venv --python 3.11` failed (exit {}); \
+                "install[{app_id}]: `uv venv --python {PYTHON_APP_VENV_VERSION}` failed (exit {}); \
                  retrying without version pin",
                 s.code().unwrap_or(-1)
             );
@@ -984,6 +986,16 @@ mod install_tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn python_app_venv_version_matches_sdk_floor() {
+        let sdk_pyproject = include_str!("../../sdk/python/pyproject.toml");
+        assert!(
+            sdk_pyproject.contains(r#"requires-python = ">=3.12""#),
+            "update this test when the SDK Python floor changes"
+        );
+        assert_eq!(PYTHON_APP_VENV_VERSION, "3.12");
     }
 
     #[test]
