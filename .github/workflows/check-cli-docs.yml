@@ -5,13 +5,15 @@ on:
   push:
     branches: [alpha]
     paths:
-      - 'src/cli_args.rs'
+      - 'Cargo.toml'
+      - 'src/cli/args.rs'
       - 'tools/gen_cli_docs/**'
       - 'website/src/content/docs/cli.md'
   pull_request:
     branches: [alpha]
     paths:
-      - 'src/cli_args.rs'
+      - 'Cargo.toml'
+      - 'src/cli/args.rs'
       - 'tools/gen_cli_docs/**'
       - 'website/src/content/docs/cli.md'
 

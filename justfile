@@ -89,14 +89,15 @@ run:
 # When adding a new generated artifact, add a stale check here.
 #
 # Source file                → Generated artifact(s)               → Generator
-# src/cli_args.rs            → website/src/content/docs/cli.md     → cargo run -p gen_cli_docs
+# Cargo.toml                 → website/src/content/docs/cli.md     → cargo run -p gen_cli_docs
+# src/cli/args.rs            → website/src/content/docs/cli.md     → cargo run -p gen_cli_docs
 # src/app_protocol.rs        → sdk/protocol/pgap.schema.json       → cargo run -p gen_schema
 #                            → sdk/python/plexi_sdk/_protocol.py   → python3 tools/gen_protocol_py.py
 regen-if-stale:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ src/cli_args.rs -nt website/src/content/docs/cli.md ]]; then
-        echo "cli_args.rs changed — regenerating CLI docs..."
+    if [[ Cargo.toml -nt website/src/content/docs/cli.md || src/cli/args.rs -nt website/src/content/docs/cli.md ]]; then
+        echo "CLI docs source changed — regenerating CLI docs..."
         cargo run -p gen_cli_docs > website/src/content/docs/cli.md
     fi
     if [[ src/app_protocol.rs -nt sdk/protocol/pgap.schema.json ]]; then
