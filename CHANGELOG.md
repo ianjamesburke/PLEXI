@@ -1,6 +1,14 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.2] — 2026-06-15
+
+### Changes
+- fix(theme): improve contrast on light themes — Tokyo Day, Gruvbox Light, Solarized Light
+- feat(command-palette): surface commands.toml entries with hot reload (#2274)
+- fix(host/context): insert subcontext after parent subtree in sidebar (#2272)
+- fix: paste in Cmd+F search mode (#2271)
+- v1 polish consolidation (#2268)
 ## [0.1.1] — 2026-06-15
 
 ### Changes
