@@ -368,6 +368,7 @@ impl PlexiApp {
         hint: Option<&str>,
         missing: Vec<String>,
         workspace_root: std::path::PathBuf,
+        footer: Option<String>,
     ) {
         let active = self.active_window;
         let share = Self::share_ratio_from_fraction(app_id, None);
@@ -382,6 +383,7 @@ impl PlexiApp {
                     crate::host::launch_failed::LaunchFailedApp {
                         app_id: app_id.to_string(),
                         missing,
+                        footer,
                     },
                 )),
                 workspace_root,
@@ -962,7 +964,7 @@ impl PlexiApp {
         if !missing.is_empty() {
             log::warn!("pre-flight: '{id}' cannot launch — missing: {missing:?}");
             let fail_hint = layout.or_else(|| Some("overlay".to_string()));
-            self.open_launch_failed_pane(id, fail_hint.as_deref(), missing, cwd);
+            self.open_launch_failed_pane(id, fail_hint.as_deref(), missing, cwd, None);
             return Ok(());
         }
 
@@ -983,10 +985,11 @@ impl PlexiApp {
             return Ok(());
         }
 
-        // Terminal app — spawn exec binary directly in a PTY pane.
+        // Terminal app — spawn exec binary via split_focused (same path as builtin "terminal").
         if let Some(installed) = self.registry.get(id) {
             if installed.manifest.manifest_type == crate::app::registry::ManifestType::Terminal {
                 let exec_cmd = installed.manifest.exec.clone().unwrap_or_else(|| id.to_string());
+                let install_footer = Some(installed.manifest.description.clone());
                 if !cli_binary_in_path(&exec_cmd) {
                     log::warn!(
                         "launch_app_by_id: terminal app '{id}' exec='{exec_cmd}' not found in PATH"
@@ -994,31 +997,19 @@ impl PlexiApp {
                     self.open_launch_failed_pane(
                         id,
                         hint.as_deref(),
-                        vec![format!(
-                            "'{exec_cmd}' not found in PATH. Install it first (e.g. brew install brogue-ce)."
-                        )],
+                        vec![format!("'{exec_cmd}' not found in PATH")],
                         cwd,
+                        install_footer,
                     );
                     return Ok(());
                 }
+                let layout_str = hint.as_deref().unwrap_or("split_h");
+                let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
+                let new_pane_first = matches!(layout_str, "split_above" | "split_left");
                 log::info!(
-                    "launch_app_by_id: terminal app '{id}' → spawning PTY pane exec='{exec_cmd}'"
+                    "launch_app_by_id: terminal app '{id}' → split_focused exec='{exec_cmd}' layout='{layout_str}'"
                 );
-                let win = self.active_window;
-                if let Some(target) = self.windows[win].focused_pane {
-                    self.spawn_terminal_pane_at(
-                        win,
-                        target,
-                        false,
-                        false,
-                        Some(&exec_cmd),
-                        false,
-                        Some(cwd),
-                        true,
-                    );
-                } else {
-                    log::warn!("launch_app_by_id: terminal app '{id}' — no focused tile, cannot spawn PTY pane");
-                }
+                self.split_focused(vertical, Some(&exec_cmd), false, new_pane_first, Some(cwd));
                 return Ok(());
             }
         }
@@ -1073,7 +1064,7 @@ impl PlexiApp {
             "launch_app_by_path_with_layout: workspace_root={}",
             workspace_root.display()
         );
-        // Terminal apps bypass ProcessApp entirely — spawn exec binary in a PTY pane.
+        // Terminal apps bypass ProcessApp entirely — spawn via split_focused (same path as builtin "terminal").
         if installed.manifest.manifest_type == crate::app::registry::ManifestType::Terminal {
             let exec_cmd = installed.manifest.exec.clone().unwrap_or_else(|| app_id.clone());
             if !cli_binary_in_path(&exec_cmd) {
@@ -1081,27 +1072,16 @@ impl PlexiApp {
                     "launch_app_by_path_with_layout: terminal app '{app_id}' exec='{exec_cmd}' not found in PATH"
                 );
                 return Err(format!(
-                    "'{exec_cmd}' not found in PATH. Install it first (e.g. brew install brogue-ce)."
+                    "'{exec_cmd}' not found in PATH — install it and ensure it is on your PATH."
                 ));
             }
+            let layout_str = layout_hint.as_deref().unwrap_or("split_h");
+            let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
+            let new_pane_first = matches!(layout_str, "split_above" | "split_left");
             log::info!(
-                "launch_app_by_path_with_layout: terminal app '{app_id}' → PTY pane exec='{exec_cmd}'"
+                "launch_app_by_path_with_layout: terminal app '{app_id}' → split_focused exec='{exec_cmd}' layout='{layout_str}'"
             );
-            let win = self.active_window;
-            if let Some(target) = self.windows[win].focused_pane {
-                self.spawn_terminal_pane_at(
-                    win,
-                    target,
-                    false,
-                    false,
-                    Some(&exec_cmd),
-                    false,
-                    Some(cwd),
-                    true,
-                );
-            } else {
-                log::warn!("launch_app_by_path_with_layout: terminal app '{app_id}' — no focused tile, cannot spawn PTY pane");
-            }
+            self.split_focused(vertical, Some(&exec_cmd), false, new_pane_first, Some(cwd));
             return Ok(());
         }
 

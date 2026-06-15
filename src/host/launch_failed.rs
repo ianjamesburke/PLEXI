@@ -10,6 +10,9 @@ use egui::RichText;
 pub struct LaunchFailedApp {
     pub app_id: String,
     pub missing: Vec<String>,
+    /// Replaces the default "plexi config edit" footer. Use for Terminal apps
+    /// where the fix is an install command, not a config change.
+    pub footer: Option<String>,
 }
 
 impl App for LaunchFailedApp {
@@ -40,8 +43,12 @@ impl App for LaunchFailedApp {
                 );
             }
             ui.add_space(style::SPACE_SM);
+            let footer_text = self
+                .footer
+                .as_deref()
+                .unwrap_or("plexi config edit");
             ui.label(
-                RichText::new("plexi config edit")
+                RichText::new(footer_text)
                     .size(style::TEXT_CAPTION)
                     .color(colors.text_dim)
                     .monospace(),
