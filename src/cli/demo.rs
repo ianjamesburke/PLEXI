@@ -156,7 +156,7 @@ pub fn demo_cli() -> i32 {
         "Use the rename shortcut, enter Demo app pane, and confirm it.",
     ]);
     key(&format!("{CMD}L"), "focus the pane on the right");
-    key(&format!("{CMD}R"), "rename this pane");
+    key(&format!("{CMD}R"), "rename the pane to the right");
     let after_app_rename = match poll_event(&events_path, after_balls_close, |kind, obj| {
         kind == "pane_renamed"
             && obj
