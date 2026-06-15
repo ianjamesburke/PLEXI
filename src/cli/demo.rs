@@ -260,9 +260,11 @@ pub fn demo_cli() -> i32 {
     };
     done(11);
 
-    eprintln!("  More to cover");
+    eprintln!("  Great work.");
     explain(&[
-        "Here is where the full intro link will go when I actually get around to making it.",
+        "You covered maybe 10% of what Plexi can do.",
+        "Keep messing around. When the deep dive is ready, this will point to it:",
+        "Watch this full breakdown [working on the video now lol]",
     ]);
     eprintln!();
     log::info!("demo_cli: tutorial completed for pane_id={my_pane_id}");
