@@ -1,12 +1,17 @@
 ---
 id: "0187"
 title: "fix: push-to-subcontext inserts new context under parent in sidebar"
-status: backlog
-sprint: s4
-area: host/context
-estimate: 1h
-gh_issue: ["2255"]
+status: in-progress
+estimate: "1h"
+started_at: "2026-06-15T17:52:04Z"
+blocked_by: []
+gh_issue:
+  - "2255"
+area:
+  - "host/context"
+tags: []
 ---
+
 
 When pushing a subcontext from within a subcontext, the new nested context should be inserted immediately after its parent in the sidebar list, not appended at the end.
 

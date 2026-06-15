@@ -1527,8 +1527,15 @@ fn process_search_mode_event(
             sm.query.push_str(text);
             recompile_search(sm, backend);
         },
+        // Paste: append clipboard content to query
+        egui::Event::Paste(text) => {
+            let sm = state.search_mode.as_mut().unwrap();
+            sm.query.push_str(text);
+            log::info!("[search-mode] pasted {} chars into query", text.len());
+            recompile_search(sm, backend);
+        },
         // Absorb all other key events to prevent them reaching the PTY
-        egui::Event::Key { .. } | egui::Event::Copy | egui::Event::Paste(_) => {
+        egui::Event::Key { .. } | egui::Event::Copy => {
         },
         _ => {},
     }
