@@ -1,10 +1,10 @@
 ---
 id: "0197"
 title: "command palette: commands.toml entries with hot reload"
-status: backlog
+status: in-progress
 estimate: "8h"
 created_at: "2026-06-15T17:04:26Z"
-sprint: "s33"
+started_at: "2026-06-15T17:53:31Z"
 blocked_by: []
 gh_issue:
   - "2269"
@@ -17,6 +17,7 @@ tags:
   - "palette"
   - "commands"
 ---
+
 
 Surface workspace and global `commands.toml` entries in the command palette without creating a second command registry.
 
