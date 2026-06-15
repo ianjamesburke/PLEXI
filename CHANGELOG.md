@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.3] — 2026-06-15
+
+### Changes
+- feat(sidebar): drag contexts to reorder, park, and unpark across sections (#2270)
 ## [0.1.2] — 2026-06-15
 
 ### Changes
