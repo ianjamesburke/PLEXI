@@ -72,6 +72,10 @@ pub fn completions_installed() -> bool {
 /// Show the completions banner once when the CLI is installed but completions are not.
 /// Dismissed permanently via sentinel; session-only via the banner's "Not now" button.
 pub fn should_prompt_completions() -> bool {
+    if crate::config::build_channel().is_some_and(|channel| channel.starts_with("pr-")) {
+        log::info!("cli_setup: PR build — skipping completions banner");
+        return false;
+    }
     if completions_was_prompted() {
         log::info!("cli_setup: completions sentinel present — skipping banner");
         return false;
@@ -164,4 +168,20 @@ pub fn is_installed() -> bool {
     std::env::var_os("PATH").map_or(false, |path| {
         std::env::split_paths(&path).any(|dir| dir.join(&name).exists())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn pr_builds_skip_completions_prompt() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _profile_guard = crate::config::set_test_profile_dir(tmp.path().to_path_buf());
+        let _channel_guard = crate::config::set_test_channel("pr-2265");
+
+        assert!(!super::should_prompt_completions());
+        assert!(
+            !super::completions_sentinel_path().exists(),
+            "skipping a PR prompt should not create profile state"
+        );
+    }
 }
