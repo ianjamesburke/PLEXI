@@ -21,7 +21,6 @@ pub fn demo_cli() -> i32 {
     };
 
     log::info!("demo_cli: starting interactive tutorial for pane_id={my_pane_id}");
-    name_demo_pane(my_pane_id);
 
     let events_path = crate::config::config_dir().join("events.jsonl");
     let start_offset = file_offset(&events_path).unwrap_or(0);
@@ -150,10 +149,10 @@ pub fn demo_cli() -> i32 {
     };
     done(6);
 
-    step(7, "Rename this app pane");
+    step(7, "Rename the Balls terminal");
     explain(&[
-        "You should be back in the terminal that launched Balls.",
-        "Rename that pane so the pane list is easier to scan.",
+        "You should be back in the terminal that just held Balls.",
+        "Rename that terminal so the pane list is easier to scan.",
         "Use the rename shortcut, enter Demo app pane, and confirm it.",
     ]);
     key(&format!("{CMD}R"), "rename this pane");
@@ -282,18 +281,6 @@ fn print_intro() {
         "Plexi is a local app workspace for terminals, app panes, notes, contexts, notifications, and agent-driven work.",
         "This demo watches Plexi events and advances as you try the core host controls. Keep this terminal visible when you can.",
     ]);
-}
-
-fn name_demo_pane(pane_id: u64) {
-    log::info!("demo_cli: naming demo pane pane_id={pane_id}");
-    let code = super::send_to_socket(serde_json::json!({
-        "type": "set_pane_title",
-        "pane_id": pane_id,
-        "name": "Plexi demo",
-    }));
-    if code != 0 {
-        log::warn!("demo_cli: could not name demo pane pane_id={pane_id}");
-    }
 }
 
 fn step(step: u8, title: &str) {
