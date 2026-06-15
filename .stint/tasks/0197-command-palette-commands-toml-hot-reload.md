@@ -1,10 +1,12 @@
 ---
 id: "0197"
 title: "command palette: commands.toml entries with hot reload"
-status: in-progress
+status: done
 estimate: "8h"
+actual: "37m"
 created_at: "2026-06-15T17:04:26Z"
 started_at: "2026-06-15T17:53:31Z"
+completed_at: "2026-06-15T18:30:06Z"
 blocked_by: []
 gh_issue:
   - "2269"
@@ -17,6 +19,7 @@ tags:
   - "palette"
   - "commands"
 ---
+
 
 
 Surface workspace and global `commands.toml` entries in the command palette without creating a second command registry.
@@ -36,3 +39,12 @@ Surface workspace and global `commands.toml` entries in the command palette with
 ## Notes
 
 Task `0185` already implemented dynamic shell completions from `commands.toml`; reuse its scope assumptions instead of deriving channel paths again.
+
+## Variance
+
+Estimated 8h, actual 37m. The estimate assumed building command resolution +
+execution from scratch. In practice the existing `PlexiCommands` parser, the
+`split_focused(initial_cmd, cwd)` path, and the palette open-time cache pattern
+(`palette_notes`) were all directly reusable — the work was wiring, not new
+infrastructure. Execution dispatches via `plexi run <name>` in a terminal, so no
+host-side secret/exec machinery was needed.
