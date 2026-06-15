@@ -57,6 +57,11 @@ gate is warranted — trust is identical to a shell alias or cron job.
 the workspace secrets store; missing secrets abort with a clear error rather than
 substituting empty strings.
 
+The command palette surfaces these same workspace commands and global scripts
+(`src/overlays/command_palette.rs` — `run_user_command`). Selecting one opens a
+terminal pane that runs `plexi run <name>`, so execution flows through the exact
+path above — the host never re-implements command execution or secret injection.
+
 ### Quick-note destination command templates → `zsh -c` / `sh -c`
 
 | Field | Value |

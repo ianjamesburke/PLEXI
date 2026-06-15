@@ -962,6 +962,45 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_command_palette_user_commands() {
+        let mut h = PlexiUiHarness::new_sized(1168.0, 1000.0);
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.palette_commands = vec![
+                crate::cli::ResolvedUserCommand {
+                    name: "build".to_string(),
+                    run: Some("cargo build".to_string()),
+                    description: Some("Build the project".to_string()),
+                    scope: crate::cli::UserCommandScope::Workspace,
+                },
+                crate::cli::ResolvedUserCommand {
+                    name: "test".to_string(),
+                    run: Some("cargo test".to_string()),
+                    description: None,
+                    scope: crate::cli::UserCommandScope::Workspace,
+                },
+                crate::cli::ResolvedUserCommand {
+                    name: "deploy".to_string(),
+                    run: None,
+                    description: None,
+                    scope: crate::cli::UserCommandScope::Global,
+                },
+            ];
+            app.show_command_palette = true;
+            app.palette_selected = 0;
+            app.sync_command_palette_focus();
+        });
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_command_palette_user_commands.png")
+            .expect("render failed");
+        assert!(
+            h.with_app(|app| app.show_command_palette && app.palette_commands.len() == 3),
+            "palette should be open with the injected user commands"
+        );
+        println!("Screenshot saved to /tmp/plexi_command_palette_user_commands.png");
+    }
+
+    #[test]
     fn command_palette_keeps_search_focus_after_scrolled_down_nav() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
         add_focused_pane(&mut h);

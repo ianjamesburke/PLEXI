@@ -189,6 +189,10 @@ pub struct PlexiApp {
     pub(crate) palette_workspace_root: Option<std::path::PathBuf>,
     /// Notes loaded at palette-open time, cleared on close.
     pub(crate) palette_notes: Vec<crate::notes::NotePickerEntry>,
+    /// User commands (`commands.toml` + global scripts) resolved at palette-open
+    /// time, cleared on close. Re-read on every open so edits hot-reload without
+    /// a restart — same pattern as `palette_notes`.
+    pub(crate) palette_commands: Vec<crate::cli::ResolvedUserCommand>,
     /// TTL cache for the cwd-derived fallback workspace root passed to
     /// `PlexiBehavior` each frame (#2023). The fallback
     /// (`config::active_workspace_root()`) stat-walks the filesystem from the
@@ -832,6 +836,7 @@ impl PlexiApp {
                     palette_selected: 0,
                     palette_workspace_root: None,
                     palette_notes: Vec::new(),
+                    palette_commands: Vec::new(),
                     workspace_root_fallback_cache: None,
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
@@ -1023,6 +1028,7 @@ impl PlexiApp {
             palette_selected: 0,
             palette_workspace_root: None,
             palette_notes: Vec::new(),
+            palette_commands: Vec::new(),
             workspace_root_fallback_cache: None,
             context_visit_history: Vec::new(),
             renaming_pane: None,
@@ -1228,6 +1234,7 @@ impl PlexiApp {
                 palette_selected: 0,
                 palette_workspace_root: None,
                 palette_notes: Vec::new(),
+                palette_commands: Vec::new(),
                 workspace_root_fallback_cache: None,
                 context_visit_history: Vec::new(),
                 renaming_pane: None,
@@ -2988,9 +2995,19 @@ impl eframe::App for PlexiApp {
                         );
                         log::info!("palette: loaded {} notes", palette_notes.len());
                         self.palette_notes = palette_notes;
+                        // Resolve user commands once at open-time (re-read each open
+                        // → hot reload). Mirrors `plexi run` precedence exactly.
+                        self.palette_commands = crate::cli::resolve_user_commands(
+                            self.palette_workspace_root.as_deref(),
+                        );
+                        log::info!(
+                            "palette: loaded {} user command(s)",
+                            self.palette_commands.len()
+                        );
                     } else {
                         self.palette_workspace_root = None;
                         self.palette_notes.clear();
+                        self.palette_commands.clear();
                     }
                 }
                 Action::RenamePane => {
