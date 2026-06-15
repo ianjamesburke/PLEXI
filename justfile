@@ -117,8 +117,10 @@ sdk-dev:
     uv pip install -e sdk/python
 
 # Headless SDK/app contract smoke: Init -> Ready -> Render -> FrameDone.
+# Pin to the bundled runtime's minor version so uv never falls back to a
+# system Python (e.g. CommandLineTools 3.9) that predates the SDK's floor.
 sdk-smoke:
-    uv run --project sdk/python --with pytest --with pytest-asyncio pytest sdk/python/tests/test_app_harness.py -q
+    uv run --python 3.12 --project sdk/python --with pytest --with pytest-asyncio pytest sdk/python/tests/test_app_harness.py -q
 
 # Build and install the current worktree as a testable PR build.
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
