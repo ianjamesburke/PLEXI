@@ -208,12 +208,19 @@ pub fn demo_cli() -> i32 {
     step(10, "Write a scratch note");
     explain(&[
         "Scratch notes land in your Plexi notes inbox.",
-        "Open one from the terminal under File Browser, type a short note, then press Escape to leave it.",
+        "Open one from the terminal under File Browser.",
     ]);
     key(&format!("{CMD}+Shift+Space"), "open a scratch note");
     let mut scratch_note_path = String::new();
     let after_scratch_open = match poll_event(&events_path, after_file_split, |kind, obj| {
         if kind != "scratchpad_opened" {
+            return false;
+        }
+        if !obj
+            .get("pane_id")
+            .and_then(|v| v.as_u64())
+            .is_some_and(|id| id == note_terminal_pane_id)
+        {
             return false;
         }
         if let Some(path) = obj.get("path").and_then(|v| v.as_str()) {
@@ -226,29 +233,16 @@ pub fn demo_cli() -> i32 {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
     };
-    let after_scratch_close = match poll_event(&events_path, after_scratch_open, |kind, obj| {
-        kind == "app_closed"
-            && obj
-                .get("type_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|id| id == "text-editor")
-            && obj
-                .get("pane_id")
-                .and_then(|v| v.as_u64())
-                .is_some_and(|id| id == note_terminal_pane_id)
-    }) {
-        Ok(offset) => offset,
-        Err(e) => return watch_error(&events_path, e),
-    };
     done(10);
 
     step(11, "Open your notes");
     explain(&[
-        "From any terminal, Command-O opens your notes.",
+        "Type hello world in the note, then press Escape to return to the terminal.",
+        "From there, Command-O opens your notes.",
         "Press Enter in the picker to return to the scratch note you just wrote.",
     ]);
     key(&format!("{CMD}O"), "open your notes");
-    let after_notes_picker = match poll_event(&events_path, after_scratch_close, |kind, _obj| {
+    let after_notes_picker = match poll_event(&events_path, after_scratch_open, |kind, _obj| {
         kind == "notes_picker_opened"
     }) {
         Ok(offset) => offset,

@@ -167,7 +167,11 @@ pub enum HostEvent {
         timestamp: String,
     },
     /// A scratch note was created and opened.
-    ScratchpadOpened { path: String, timestamp: String },
+    ScratchpadOpened {
+        pane_id: u64,
+        path: String,
+        timestamp: String,
+    },
     /// The notes picker was opened.
     NotesPickerOpened {
         inbox_count: usize,

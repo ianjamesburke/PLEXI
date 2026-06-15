@@ -1254,6 +1254,12 @@ impl PlexiApp {
     pub(crate) fn open_scratchpad(&mut self) {
         log::info!("scratchpad: opening new scratch note");
         let active = self.active_window;
+        let target_pane_id = self.windows[active].focused_pane.and_then(|tile_id| {
+            match self.windows[active].tree.tiles.get(tile_id) {
+                Some(Tile::Pane(pane_id)) => Some(*pane_id),
+                _ => None,
+            }
+        });
 
         // Capture context like a quick note so triage shows where it came from.
         let cwd = self.windows[active]
@@ -1275,10 +1281,25 @@ impl PlexiApp {
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
         match self.launch_app_by_id_with_layout("text-editor", None, &[path_str.clone()], None) {
             Ok(()) => {
-                crate::host::event_log::emit(crate::host::event_log::HostEvent::ScratchpadOpened {
-                    path: path_str,
-                    timestamp: crate::host::event_log::now_timestamp(),
-                })
+                let pane_id = target_pane_id.or_else(|| {
+                    self.windows[active].focused_pane.and_then(|tile_id| {
+                        match self.windows[active].tree.tiles.get(tile_id) {
+                            Some(Tile::Pane(pane_id)) => Some(*pane_id),
+                            _ => None,
+                        }
+                    })
+                });
+                if let Some(pane_id) = pane_id {
+                    crate::host::event_log::emit(
+                        crate::host::event_log::HostEvent::ScratchpadOpened {
+                            pane_id,
+                            path: path_str,
+                            timestamp: crate::host::event_log::now_timestamp(),
+                        },
+                    );
+                } else {
+                    log::warn!("scratchpad: opened note but could not resolve pane id");
+                }
             }
             Err(e) => {
                 log::warn!("scratchpad: failed to launch text-editor pane: {e}");
