@@ -94,6 +94,109 @@ pub(super) fn is_executable(path: &std::path::Path) -> bool {
     }
 }
 
+/// Scope of a user-authored command surfaced in the command palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserCommandScope {
+    /// Defined in the focused workspace's channel-scoped `commands.toml`.
+    Workspace,
+    /// A global profile script under `config_dir()/scripts/`.
+    Global,
+}
+
+/// A user-authored command resolved for the command palette.
+///
+/// Mirrors exactly what `plexi run <name>` would resolve from the given
+/// workspace cwd, so the palette never lists a command `plexi run` cannot
+/// execute.
+#[derive(Debug, Clone)]
+pub struct ResolvedUserCommand {
+    pub name: String,
+    /// Shell snippet for `commands.toml` entries (shown as preview text).
+    /// `None` for global scripts — the run target is the script file itself.
+    pub run: Option<String>,
+    pub description: Option<String>,
+    pub scope: UserCommandScope,
+}
+
+/// Resolve user commands for the command palette, mirroring `plexi run`
+/// precedence: a workspace `commands.toml` shadows global scripts entirely
+/// (same fallback chain as [`run::run_command`]). A present-but-unparseable
+/// `commands.toml` yields no commands rather than silently falling back to
+/// global scripts, because `plexi run` would error in that state.
+///
+/// Reads the file fresh on every call, so the palette hot-reloads on the next
+/// open with no mtime bookkeeping — same pattern as palette note loading.
+pub fn resolve_user_commands(
+    workspace_root: Option<&std::path::Path>,
+) -> Vec<ResolvedUserCommand> {
+    if let Some(root) = workspace_root {
+        let config_path = root.join(commands_file());
+        match std::fs::read_to_string(&config_path) {
+            Ok(contents) => {
+                // commands.toml present — its commands are the entire set; global
+                // scripts are NOT consulted (mirrors run_command's fallback chain).
+                match toml::from_str::<PlexiCommands>(&contents) {
+                    Ok(config) => {
+                        let mut cmds: Vec<ResolvedUserCommand> = config
+                            .commands
+                            .iter()
+                            .map(|(name, entry)| ResolvedUserCommand {
+                                name: name.clone(),
+                                run: Some(entry.run().to_string()),
+                                description: entry.description().map(|s| s.to_string()),
+                                scope: UserCommandScope::Workspace,
+                            })
+                            .collect();
+                        cmds.sort_by(|a, b| a.name.cmp(&b.name));
+                        log::info!(
+                            "palette: resolved {} workspace command(s) from {}",
+                            cmds.len(),
+                            config_path.display()
+                        );
+                        return cmds;
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "palette: failed to parse {}: {e}; no workspace commands surfaced",
+                            config_path.display()
+                        );
+                        return Vec::new();
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // No workspace commands.toml — fall through to global scripts.
+            }
+            Err(e) => {
+                log::warn!(
+                    "palette: could not read {}: {e}; no workspace commands surfaced",
+                    config_path.display()
+                );
+                return Vec::new();
+            }
+        }
+    }
+
+    // Global fallback: scripts dir, same as `plexi run` with no commands.toml.
+    let scripts_dir = crate::config::config_dir().join("scripts");
+    let mut cmds: Vec<ResolvedUserCommand> = list_global_scripts(&scripts_dir)
+        .into_iter()
+        .map(|name| ResolvedUserCommand {
+            name,
+            run: None,
+            description: None,
+            scope: UserCommandScope::Global,
+        })
+        .collect();
+    cmds.sort_by(|a, b| a.name.cmp(&b.name));
+    log::info!(
+        "palette: resolved {} global script(s) from {}",
+        cmds.len(),
+        scripts_dir.display()
+    );
+    cmds
+}
+
 pub mod args;
 pub mod crawl;
 pub mod help;
@@ -249,3 +352,111 @@ pub use workspace::{
     workspace_clean_cli, workspace_init, workspace_secret_delete, workspace_secret_get,
     workspace_secret_list, workspace_secret_set,
 };
+
+#[cfg(test)]
+mod resolve_user_commands_tests {
+    use super::{resolve_user_commands, UserCommandScope};
+
+    /// Build a workspace tempdir whose channel-scoped commands.toml holds `body`.
+    fn workspace_with_commands(body: &str) -> (tempfile::TempDir, crate::config::TestChannelGuard) {
+        let guard = crate::config::set_test_channel("test");
+        let tmp = tempfile::tempdir().unwrap();
+        let chan_dir = tmp.path().join(".plexi-test");
+        std::fs::create_dir_all(&chan_dir).unwrap();
+        std::fs::write(chan_dir.join("commands.toml"), body).unwrap();
+        (tmp, guard)
+    }
+
+    #[test]
+    fn workspace_commands_resolve_sorted_with_scope() {
+        let (tmp, _g) = workspace_with_commands(
+            r#"
+[commands]
+zeta = "echo z"
+build = { run = "cargo build", description = "Build it" }
+"#,
+        );
+        let cmds = resolve_user_commands(Some(tmp.path()));
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0].name, "build");
+        assert_eq!(cmds[0].description.as_deref(), Some("Build it"));
+        assert_eq!(cmds[0].run.as_deref(), Some("cargo build"));
+        assert_eq!(cmds[0].scope, UserCommandScope::Workspace);
+        assert_eq!(cmds[1].name, "zeta");
+    }
+
+    #[test]
+    fn workspace_commands_shadow_global_scripts() {
+        // commands.toml present → global scripts must NOT appear (mirrors `plexi run`).
+        let (tmp, _g) = workspace_with_commands("[commands]\nonly = \"echo hi\"\n");
+        let profile = tempfile::tempdir().unwrap();
+        let scripts = profile.path().join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        write_executable(&scripts.join("global-only"));
+        let _pg = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+
+        let cmds = resolve_user_commands(Some(tmp.path()));
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].name, "only");
+        assert_eq!(cmds[0].scope, UserCommandScope::Workspace);
+    }
+
+    #[test]
+    fn hot_reload_rereads_file_each_call() {
+        let (tmp, _g) = workspace_with_commands("[commands]\nfirst = \"echo 1\"\n");
+        let first = resolve_user_commands(Some(tmp.path()));
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].name, "first");
+
+        std::fs::write(
+            tmp.path().join(".plexi-test").join("commands.toml"),
+            "[commands]\nfirst = \"echo 1\"\nsecond = \"echo 2\"\n",
+        )
+        .unwrap();
+        let second = resolve_user_commands(Some(tmp.path()));
+        assert_eq!(second.len(), 2);
+        assert!(second.iter().any(|c| c.name == "second"));
+    }
+
+    #[test]
+    fn global_scripts_when_no_commands_toml() {
+        let _g = crate::config::set_test_channel("test");
+        let tmp = tempfile::tempdir().unwrap(); // workspace root with no commands.toml
+        let profile = tempfile::tempdir().unwrap();
+        let scripts = profile.path().join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        write_executable(&scripts.join("deploy"));
+        let _pg = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+
+        let cmds = resolve_user_commands(Some(tmp.path()));
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].name, "deploy");
+        assert_eq!(cmds[0].scope, UserCommandScope::Global);
+        assert!(cmds[0].run.is_none());
+    }
+
+    #[test]
+    fn unparseable_commands_toml_yields_no_commands() {
+        // Present-but-broken commands.toml → empty, never silent global fallback.
+        let (tmp, _g) = workspace_with_commands("this is = not valid toml [[[\n");
+        let profile = tempfile::tempdir().unwrap();
+        let scripts = profile.path().join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        write_executable(&scripts.join("should-not-appear"));
+        let _pg = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+
+        let cmds = resolve_user_commands(Some(tmp.path()));
+        assert!(cmds.is_empty());
+    }
+
+    fn write_executable(path: &std::path::Path) {
+        std::fs::write(path, "#!/bin/sh\necho hi\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
+    }
+}

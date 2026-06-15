@@ -49,6 +49,15 @@ enum PaletteEntry {
         preview: String,
         search_text: String,
     },
+    /// A user-authored command from `commands.toml` or a global script,
+    /// executed via `plexi run <name>` in a new terminal pane.
+    UserCommand {
+        name: String,
+        /// Secondary text: description, run snippet, or "global script".
+        secondary: String,
+        scope: crate::cli::UserCommandScope,
+        search_text: String,
+    },
 }
 
 impl PaletteEntry {
@@ -58,6 +67,7 @@ impl PaletteEntry {
             PaletteEntry::Note { .. } => 1,
             PaletteEntry::App { .. } | PaletteEntry::Builtin { .. } => 2,
             PaletteEntry::Command { .. } => 3,
+            PaletteEntry::UserCommand { .. } => 4,
         }
     }
 
@@ -70,7 +80,8 @@ impl PaletteEntry {
             PaletteEntry::Context { search_text, .. }
             | PaletteEntry::App { search_text, .. }
             | PaletteEntry::Builtin { search_text, .. }
-            | PaletteEntry::Note { search_text, .. } => search_text.as_str(),
+            | PaletteEntry::Note { search_text, .. }
+            | PaletteEntry::UserCommand { search_text, .. } => search_text.as_str(),
         };
         if search_text.starts_with(query) {
             return 0;
@@ -96,7 +107,8 @@ impl PaletteEntry {
             PaletteEntry::Context { search_text, .. }
             | PaletteEntry::App { search_text, .. }
             | PaletteEntry::Builtin { search_text, .. }
-            | PaletteEntry::Note { search_text, .. } => search_text.contains(query),
+            | PaletteEntry::Note { search_text, .. }
+            | PaletteEntry::UserCommand { search_text, .. } => search_text.contains(query),
         }
     }
 }
@@ -152,6 +164,13 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
 
 fn searchable_text(parts: &[&str]) -> String {
     parts.join(" ").to_lowercase()
+}
+
+/// POSIX single-quote a shell argument: wrap in `'…'` and escape embedded
+/// single quotes as `'\''`. Command names are usually bare identifiers, but
+/// global script filenames may contain spaces.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 fn sort_palette_entries(entries: &mut [PaletteEntry], query: &str) {
@@ -717,6 +736,35 @@ impl PlexiApp {
                 .filter(|entry| entry.matches_query(&query)),
         );
 
+        // ── User commands (commands.toml + global scripts) ──────────────────
+        // Resolved at palette-open time into self.palette_commands; mirrors
+        // `plexi run` precedence. Executed via `plexi run <name>` on select.
+        for cmd in &self.palette_commands {
+            let scope_word = match cmd.scope {
+                crate::cli::UserCommandScope::Workspace => "workspace ws",
+                crate::cli::UserCommandScope::Global => "global script",
+            };
+            let secondary = match (&cmd.description, &cmd.run) {
+                (Some(desc), _) => desc.clone(),
+                (None, Some(run)) => run.clone(),
+                (None, None) => "global script".to_string(),
+            };
+            let search_text = searchable_text(&[
+                cmd.name.as_str(),
+                secondary.as_str(),
+                "run",
+                scope_word,
+            ]);
+            if query.is_empty() || search_text.contains(&query) {
+                entries.push(PaletteEntry::UserCommand {
+                    name: cmd.name.clone(),
+                    secondary,
+                    scope: cmd.scope,
+                    search_text,
+                });
+            }
+        }
+
         sort_palette_entries(&mut entries, &query);
 
         let total = entries.len();
@@ -733,6 +781,10 @@ impl PlexiApp {
             LaunchApp(String),
             LaunchBuiltin(&'static str),
             OpenNote(std::path::PathBuf),
+            RunUserCommand {
+                name: String,
+                scope: crate::cli::UserCommandScope,
+            },
         }
         let mut action: Option<Action> = None;
         let prev_selected = self.palette_selected;
@@ -779,6 +831,12 @@ impl PlexiApp {
                     Some(PaletteEntry::Note { path, .. }) => {
                         action = Some(Action::OpenNote(path.clone()));
                     }
+                    Some(PaletteEntry::UserCommand { name, scope, .. }) => {
+                        action = Some(Action::RunUserCommand {
+                            name: name.clone(),
+                            scope: *scope,
+                        });
+                    }
                     None => {}
                 }
             }
@@ -789,6 +847,12 @@ impl PlexiApp {
                 self.show_command_palette = false;
                 self.palette_query.clear();
                 self.run_palette_command(command);
+                return;
+            }
+            Some(Action::RunUserCommand { name, scope }) => {
+                self.show_command_palette = false;
+                self.palette_query.clear();
+                self.run_user_command(&name, scope);
                 return;
             }
             Some(Action::JumpContext(ctx_idx, context_id, pane_id)) => {
@@ -876,6 +940,7 @@ impl PlexiApp {
                 let mut shown_apps_header = false;
                 let mut shown_notes_header = false;
                 let mut shown_commands_header = false;
+                let mut shown_run_header = false;
 
                 egui::ScrollArea::vertical()
                     // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
@@ -1061,6 +1126,44 @@ impl PlexiApp {
                                         hover_select = Some(i);
                                     }
                                 }
+                                PaletteEntry::UserCommand {
+                                    name,
+                                    secondary,
+                                    scope,
+                                    ..
+                                } => {
+                                    if !shown_run_header {
+                                        shown_run_header = true;
+                                        ui.add_space(style::SPACE_XS);
+                                        ui.label(
+                                            RichText::new("RUN")
+                                                .size(style::TEXT_HINT)
+                                                .color(colors.text_dim),
+                                        );
+                                        ui.add_space(style::SPACE_XS);
+                                    }
+                                    let chips: &[&str] = match scope {
+                                        crate::cli::UserCommandScope::Workspace => &["run", "ws"],
+                                        crate::cli::UserCommandScope::Global => &["run", "global"],
+                                    };
+                                    let row_response = ListRow::new(name.as_str())
+                                        .metadata_chips(chips)
+                                        .secondary(secondary.as_str())
+                                        .selected(is_selected)
+                                        .show(ui, &colors);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
+                                    }
+                                    if row_response.row_clicked() {
+                                        click_action = Some(Action::RunUserCommand {
+                                            name: name.clone(),
+                                            scope: *scope,
+                                        });
+                                    }
+                                    if row_response.row_hovered() {
+                                        hover_select = Some(i);
+                                    }
+                                }
                             }
                         }
                     });
@@ -1085,6 +1188,11 @@ impl PlexiApp {
                             self.show_command_palette = false;
                             self.palette_query.clear();
                             self.run_palette_command(command);
+                        }
+                        Action::RunUserCommand { name, scope } => {
+                            self.show_command_palette = false;
+                            self.palette_query.clear();
+                            self.run_user_command(&name, scope);
                         }
                         Action::JumpContext(ctx_idx, context_id, pane_id) => {
                             self.jump_to_context(ctx_idx, context_id, pane_id);
@@ -1180,6 +1288,26 @@ impl PlexiApp {
                 self.open_scratchpad();
             }
         }
+    }
+
+    /// Execute a user-authored command by opening a terminal pane that runs
+    /// `plexi run <name>` in the focused workspace cwd. Routing through the CLI
+    /// keeps secret injection, workspace scoping, and the security inventory
+    /// true — the host never re-implements command execution.
+    fn run_user_command(&mut self, name: &str, scope: crate::cli::UserCommandScope) {
+        let cwd = self.palette_workspace_root.clone();
+        log::info!(
+            "palette: running user command '{name}' scope={scope:?} cwd={cwd:?}"
+        );
+        self.windows[self.active_window].clear_zoom();
+        self.ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        let initial_cmd = format!("plexi run {}", shell_single_quote(name));
+        self.split_focused(false, Some(&initial_cmd), false, false, cwd);
+        self.save_workspace();
     }
 
     /// Jump to a window by index, switching context if necessary.
@@ -1331,6 +1459,70 @@ mod tests {
         sort_palette_entries(&mut entries, "open");
 
         assert!(matches!(entries[0], PaletteEntry::Command { .. }));
+    }
+
+    #[test]
+    fn empty_palette_puts_user_commands_below_host_commands() {
+        let mut entries = vec![
+            PaletteEntry::UserCommand {
+                name: "build".to_string(),
+                secondary: "cargo build".to_string(),
+                scope: crate::cli::UserCommandScope::Workspace,
+                search_text: "build cargo build run workspace ws".to_string(),
+            },
+            PaletteEntry::Command {
+                command: PaletteCommand::OpenConfig,
+                name: "Open config",
+                description: "Edit config",
+                search_text: "open config",
+            },
+            PaletteEntry::App {
+                id: "balls".to_string(),
+                name: "Balls".to_string(),
+                description: "Demo".to_string(),
+                running_in_background: false,
+                is_workspace_local: false,
+                search_text: "balls demo".to_string(),
+            },
+        ];
+
+        sort_palette_entries(&mut entries, "");
+
+        assert!(matches!(entries[0], PaletteEntry::App { .. }));
+        assert!(matches!(entries[1], PaletteEntry::Command { .. }));
+        assert!(matches!(entries[2], PaletteEntry::UserCommand { .. }));
+    }
+
+    #[test]
+    fn typed_query_surfaces_user_command_by_name() {
+        let mut entries = vec![
+            PaletteEntry::App {
+                // Only a substring match for "test" (inside "fastest").
+                id: "fastest".to_string(),
+                name: "Fastest".to_string(),
+                description: "Demo".to_string(),
+                running_in_background: false,
+                is_workspace_local: false,
+                search_text: "fastest demo loader".to_string(),
+            },
+            PaletteEntry::UserCommand {
+                name: "test".to_string(),
+                secondary: "cargo test".to_string(),
+                scope: crate::cli::UserCommandScope::Workspace,
+                search_text: "test cargo test run workspace ws".to_string(),
+            },
+        ];
+
+        // Prefix match on the command name ranks it ahead of the substring app match.
+        sort_palette_entries(&mut entries, "test");
+        assert!(matches!(entries[0], PaletteEntry::UserCommand { .. }));
+    }
+
+    #[test]
+    fn shell_single_quote_escapes_embedded_quotes() {
+        assert_eq!(shell_single_quote("test"), "'test'");
+        assert_eq!(shell_single_quote("my command"), "'my command'");
+        assert_eq!(shell_single_quote("it's"), r"'it'\''s'");
     }
 
     #[test]
