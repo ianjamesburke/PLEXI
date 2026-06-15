@@ -70,6 +70,26 @@ impl WorkspaceRouter {
         self.contexts.push(ctx);
     }
 
+    /// Insert `ctx` immediately after all existing descendants of `parent_id`.
+    /// Descendants are detected by walking forward from the parent position while
+    /// `depth > parent_depth`. Falls back to `push` if the parent is not found.
+    /// Adjusts the active index to remain coherent.
+    pub(crate) fn insert_after_subtree(&mut self, parent_id: u64, ctx: Context) {
+        let Some(parent_pos) = self.contexts.iter().position(|c| c.context_id == parent_id) else {
+            self.contexts.push(ctx);
+            return;
+        };
+        let parent_depth = self.contexts[parent_pos].depth;
+        let mut insert_pos = parent_pos + 1;
+        while insert_pos < self.contexts.len() && self.contexts[insert_pos].depth > parent_depth {
+            insert_pos += 1;
+        }
+        self.contexts.insert(insert_pos, ctx);
+        if self.active >= insert_pos {
+            self.active += 1;
+        }
+    }
+
     /// Set active to the last context (call after push for new-context flow).
     pub(crate) fn activate_last(&mut self) {
         self.active = self.contexts.len().saturating_sub(1);
@@ -215,5 +235,68 @@ mod tests {
         assert_eq!(router.current_depth(), 2);
         let remaining: Vec<u64> = router.depth_stack.iter().map(|(c, _, _)| *c).collect();
         assert_eq!(remaining, vec![1, 3]);
+    }
+
+    #[test]
+    fn insert_after_subtree_no_existing_children() {
+        // [A(d0)] -> insert child B(d1) under A -> [A, B]
+        let mut router = WorkspaceRouter::new(vec![make_ctx(1, None, 0)], 0);
+        router.insert_after_subtree(1, make_ctx(2, Some(1), 1));
+        let ids: Vec<u64> = router.contexts.iter().map(|c| c.context_id).collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn insert_after_subtree_after_existing_sibling() {
+        // [A(d0), B(d1)] -> insert C(d1) under A -> [A, B, C]
+        let a = make_ctx(1, None, 0);
+        let b = make_ctx(2, Some(1), 1);
+        let mut router = WorkspaceRouter::new(vec![a, b], 0);
+        router.insert_after_subtree(1, make_ctx(3, Some(1), 1));
+        let ids: Vec<u64> = router.contexts.iter().map(|c| c.context_id).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn insert_after_subtree_skips_deep_descendants() {
+        // [A(d0), B(d1), C(d2)] -> insert D(d1) under A -> [A, B, C, D]
+        // C is a grandchild of A (via B), so D lands after C.
+        let a = make_ctx(1, None, 0);
+        let b = make_ctx(2, Some(1), 1);
+        let c = make_ctx(3, Some(2), 2);
+        let mut router = WorkspaceRouter::new(vec![a, b, c], 0);
+        router.insert_after_subtree(1, make_ctx(4, Some(1), 1));
+        let ids: Vec<u64> = router.contexts.iter().map(|c| c.context_id).collect();
+        assert_eq!(ids, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn insert_after_subtree_between_top_level_contexts() {
+        // [A(d0), B(d0)] -> insert C(d1) under A -> [A, C, B]
+        let a = make_ctx(1, None, 0);
+        let b = make_ctx(2, None, 0);
+        let mut router = WorkspaceRouter::new(vec![a, b], 0);
+        router.insert_after_subtree(1, make_ctx(3, Some(1), 1));
+        let ids: Vec<u64> = router.contexts.iter().map(|c| c.context_id).collect();
+        assert_eq!(ids, vec![1, 3, 2]);
+    }
+
+    #[test]
+    fn insert_after_subtree_adjusts_active_index() {
+        // [A(d0), B(d0)] active=1 (B) -> insert C under A -> [A, C, B] active=2
+        let a = make_ctx(1, None, 0);
+        let b = make_ctx(2, None, 0);
+        let mut router = WorkspaceRouter::new(vec![a, b], 1);
+        router.insert_after_subtree(1, make_ctx(3, Some(1), 1));
+        assert_eq!(router.active_idx(), 2);
+        assert_eq!(router.active().context_id, 2);
+    }
+
+    #[test]
+    fn insert_after_subtree_unknown_parent_falls_back_to_push() {
+        let mut router = WorkspaceRouter::new(vec![make_ctx(1, None, 0)], 0);
+        router.insert_after_subtree(99, make_ctx(2, None, 0));
+        let ids: Vec<u64> = router.contexts.iter().map(|c| c.context_id).collect();
+        assert_eq!(ids, vec![1, 2]);
     }
 }

@@ -1981,6 +1981,73 @@ fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
     );
 }
 
+/// Regression for #2255: pushing a pane to a subcontext from within a subcontext
+/// must insert the grandchild immediately after its parent (child1) in the router,
+/// not at the end — even when another sibling context (child2) already exists.
+#[test]
+fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
+    fn push_ipc(
+        h: &mut crate::testing::HostHarness,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) {
+        let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
+            "type": "push_pane_to_subcontext",
+            "pane_id": pane_id,
+        }))
+        .unwrap();
+        h.inject_ipc(req);
+        h.app.drain_pane_cmd_channel();
+    }
+
+    let mut h = crate::testing::HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_test_pane();
+    let root_id = h.app.router.active().context_id;
+
+    // Push pane_a from root -> child1(d1). Router: [root, child1]. Active: child1.
+    push_ipc(&mut h, pane_a);
+    let child1_id = h.app.router.active().context_id;
+
+    // Push pane_b from root's window (IPC targets pane_b explicitly) -> child2(d1).
+    // With insert_after_subtree(root), child2 lands after child1: [root, child1, child2].
+    push_ipc(&mut h, pane_b);
+    let child2_id = h.app.router.active().context_id;
+    assert_eq!(h.app.router.len(), 3, "root + child1 + child2 = 3 contexts");
+    assert_ne!(child2_id, child1_id);
+
+    // Push pane_a from child1's window -> grandchild(d2).
+    // With insert_after_subtree(child1), grandchild lands between child1 and child2:
+    // [root, child1, grandchild, child2].
+    // Without the fix, grandchild would append at the end: [root, child1, child2, grandchild].
+    push_ipc(&mut h, pane_a);
+    assert_eq!(h.app.router.len(), 4, "root + child1 + grandchild + child2 = 4 contexts");
+
+    let ids: Vec<u64> = h.app.router.iter().map(|c| c.context_id).collect();
+    let grandchild = h
+        .app
+        .router
+        .iter()
+        .find(|c| c.parent_id == Some(child1_id))
+        .expect("grandchild must exist");
+    assert_eq!(grandchild.depth, 2, "grandchild depth must be 2");
+
+    let child1_pos = ids.iter().position(|&id| id == child1_id).unwrap();
+    let grandchild_pos = ids.iter().position(|&id| id == grandchild.context_id).unwrap();
+    let child2_pos = ids.iter().position(|&id| id == child2_id).unwrap();
+    let root_pos = ids.iter().position(|&id| id == root_id).unwrap();
+
+    assert!(root_pos < child1_pos, "root before child1");
+    assert_eq!(
+        grandchild_pos,
+        child1_pos + 1,
+        "grandchild must be immediately after child1 (not at end)"
+    );
+    assert!(
+        grandchild_pos < child2_pos,
+        "grandchild must precede sibling child2"
+    );
+}
+
 /// `plexi context describe` sends the caller's PLEXI_CONTEXT_ID — the host
 /// must set the description on THAT context, not the active one.
 #[test]
