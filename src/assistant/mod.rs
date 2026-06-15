@@ -1272,13 +1272,6 @@ impl App for AssistantApp {
         "Assistant".to_string()
     }
 
-    /// Tab completes the highlighted slash command in the composer. The
-    /// Assistant has no linked terminal, so the host's Tab→ToggleAppFocus
-    /// binding is meaningless here — claim Tab so the composer keeps it.
-    fn captures_tab(&self) -> bool {
-        true
-    }
-
     fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
         if input.key_pressed(egui::Key::Escape) && self.model.streaming.in_flight {
             self.interrupt_in_flight_turn();

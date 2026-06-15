@@ -1491,11 +1491,6 @@ mod tests {
         assert_eq!(app.runtime.type_id(), "assistant");
         assert_eq!(app.workspace_root, ws.path());
         assert!(matches!(&app.runtime, AppRuntime::Builtin(_)));
-        // The restored pane must keep Tab for command completion.
-        assert!(
-            app.runtime.captures_tab(),
-            "assistant pane must capture Tab so the composer keeps it"
-        );
     }
 
     /// Regression guard for issue #742: `plexi open terminal` (socket/spawn-queue paths) silently

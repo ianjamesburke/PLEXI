@@ -2615,7 +2615,7 @@ impl eframe::App for PlexiApp {
 
         // Determine if the focused pane has an active app surface, and whether
         // that app has declared keyboard_capture mode.
-        let (app_active, keyboard_capture_active, tab_captured) = {
+        let (app_active, keyboard_capture_active) = {
             let context = &self.windows[self.active_window];
             let focused_pane = context.focused_pane.and_then(|tile_id| {
                 if let Some(egui_tiles::Tile::Pane(pane_id)) = context.tree.tiles.get(tile_id) {
@@ -2635,15 +2635,7 @@ impl eframe::App for PlexiApp {
             } else {
                 false
             };
-            let tab_captured = if active {
-                focused_pane
-                    .and_then(|p| p.as_app())
-                    .map(|a| a.runtime.captures_tab())
-                    .unwrap_or(false)
-            } else {
-                false
-            };
-            (active, capture, tab_captured)
+            (active, capture)
         };
 
         // Handle keyboard shortcuts. Global shortcuts (Cmd+Q, Cmd+W, Cmd+P) always
@@ -2657,7 +2649,6 @@ impl eframe::App for PlexiApp {
             keyboard_capture_active,
             modal_open,
             self.show_shortcuts,
-            tab_captured,
         ) {
             match action {
                 Action::SplitHorizontal => {
@@ -3123,11 +3114,6 @@ impl eframe::App for PlexiApp {
                 }
                 Action::CloseApp => {
                     self.close_focused_app();
-                }
-                Action::ToggleAppFocus => {
-                    // Tab navigates between the app pane and the linked
-                    // terminal pane below (they're separate tiles now).
-                    self.navigate(crate::host::keys::Direction::Down);
                 }
                 Action::OpenFileBrowser => {
                     self.open_file_browser();

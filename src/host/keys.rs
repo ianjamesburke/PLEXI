@@ -39,7 +39,6 @@ use crate::config::KeybindingsConfig;
 // Cmd+0                       — quick note
 // Cmd+1–9                     — switch context (sidebar)
 // Escape (app active)         — close app
-// Tab (app active)            — navigate to linked terminal
 //
 // Apps should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
 // Always guard with `!input.modifiers.command` before consuming Enter, H, J,
@@ -86,8 +85,6 @@ pub enum Action {
     ScrollDown,
     /// Dismiss the active app surface and return to full terminal.
     CloseApp,
-    /// Toggle keyboard focus between app surface and terminal command bar.
-    ToggleAppFocus,
     /// Open the file browser app in the focused terminal.
     OpenFileBrowser,
     /// Open the quick note app (full pane, no terminal split).
@@ -1077,13 +1074,6 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             context: BindingContext::AppActive,
             action: Action::CloseApp,
         },
-        BindingEntry {
-            modifiers: egui::Modifiers::NONE,
-            key: egui::Key::Tab,
-            exact: false,
-            context: BindingContext::AppActive,
-            action: Action::ToggleAppFocus,
-        },
     ];
 
     // Sort: exact before non-exact; within each group, higher modifier count first.
@@ -1109,9 +1099,6 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 ///   Each overlay's `*_handle_key` method owns its own key contract and runs before this function.
 /// `shortcuts_overlay_open` — the shortcuts overlay is open; suppresses CloseApp (Escape)
 ///   so the overlay can own Escape for dismissal.
-/// `tab_captured` — focused app declared `captures_tab = true`; suppresses the
-///   AppActive `ToggleAppFocus` (Tab) binding so the app's own composer/editor
-///   keeps Tab (e.g. the Assistant's command completion). Only Tab is affected.
 pub fn poll_actions(
     ctx: &egui::Context,
     table: &[BindingEntry],
@@ -1119,7 +1106,6 @@ pub fn poll_actions(
     keyboard_capture_active: bool,
     overlay_open: bool,
     shortcuts_overlay_open: bool,
-    tab_captured: bool,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
 
@@ -1141,11 +1127,6 @@ pub fn poll_actions(
                     // Escape is suppressed when the shortcuts overlay is open so the overlay
                     // can own it for dismissal.
                     if matches!(entry.action, Action::CloseApp) && shortcuts_overlay_open {
-                        continue;
-                    }
-                    // Tab belongs to the focused app when it captures Tab (no
-                    // linked terminal to navigate to; the app's composer owns it).
-                    if matches!(entry.action, Action::ToggleAppFocus) && tab_captured {
                         continue;
                     }
                 }
@@ -1189,7 +1170,7 @@ mod tests {
     use super::*;
 
     /// Run `poll_actions` for a single Tab keypress with an active app surface.
-    fn poll_tab(tab_captured: bool) -> Vec<Action> {
+    fn poll_tab() -> Vec<Action> {
         let table = build_binding_table(&KeyBindings::default());
         let ctx = egui::Context::default();
         let mut raw = egui::RawInput::default();
@@ -1209,28 +1190,17 @@ mod tests {
                 /* keyboard_capture */ false,
                 /* overlay_open */ false,
                 /* shortcuts_overlay_open */ false,
-                tab_captured,
             );
         });
         actions
     }
 
     #[test]
-    fn tab_toggles_app_focus_by_default() {
-        let actions = poll_tab(false);
+    fn tab_passes_through_to_active_app() {
+        let actions = poll_tab();
         assert!(
-            actions.iter().any(|a| matches!(a, Action::ToggleAppFocus)),
-            "Tab should fire ToggleAppFocus for apps that do not capture Tab"
-        );
-    }
-
-    #[test]
-    fn tab_captured_app_keeps_tab() {
-        let actions = poll_tab(true);
-        assert!(
-            !actions.iter().any(|a| matches!(a, Action::ToggleAppFocus)),
-            "Tab must not fire ToggleAppFocus when the focused app captures Tab \
-             (the assistant composer owns Tab for command completion)"
+            actions.is_empty(),
+            "plain Tab should not be consumed by host app focus; apps own it"
         );
     }
 }

@@ -308,13 +308,6 @@ impl AppRuntime {
         }
     }
 
-    pub fn captures_tab(&self) -> bool {
-        match self {
-            AppRuntime::Process(app) => app.captures_tab(),
-            AppRuntime::Builtin(app) => app.captures_tab(),
-        }
-    }
-
     pub fn wants_close(&self) -> bool {
         match self {
             AppRuntime::Process(app) => app.wants_close(),
