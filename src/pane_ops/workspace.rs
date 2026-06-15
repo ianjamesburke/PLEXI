@@ -487,16 +487,19 @@ impl PlexiApp {
         let mut child_panes = std::collections::HashMap::new();
         child_panes.insert(pane_id, pane);
 
-        self.router.push(crate::host::context::Context {
-            name: ctx_name,
-            path: parent_path.clone(),
-            root: parent_root,
-            description: None,
-            context_id: ctx_id,
-            parent_id: Some(parent_ctx_id),
-            depth: child_depth,
-            parked: false,
-        });
+        self.router.insert_after_subtree(
+            parent_ctx_id,
+            crate::host::context::Context {
+                name: ctx_name,
+                path: parent_path.clone(),
+                root: parent_root,
+                description: None,
+                context_id: ctx_id,
+                parent_id: Some(parent_ctx_id),
+                depth: child_depth,
+                parked: false,
+            },
+        );
         self.windows.push(Window {
             name: String::new(),
             path: parent_path,
@@ -514,7 +517,10 @@ impl PlexiApp {
         let current_win_id = self.windows[parent_win_idx].window_id;
         self.router
             .push_depth(parent_ctx_id, current_win_id, Some(target_tile));
-        let new_ctx_idx = self.router.len() - 1;
+        let new_ctx_idx = self
+            .router
+            .position(|c| c.context_id == ctx_id)
+            .expect("just-inserted subcontext must be in router");
         self.switch_workspace(new_ctx_idx);
 
         self.save_workspace();
