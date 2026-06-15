@@ -157,6 +157,29 @@ struct PaneRow {
     name: String,
     chip: &'static str,
     pips: ListRowPips,
+    recency_rank: usize,
+    spatial_idx: usize,
+}
+
+fn pane_recency_rank(
+    active_window_id: u64,
+    active_focused_tile: Option<egui_tiles::TileId>,
+    focus_history: &[(u64, egui_tiles::TileId)],
+    window_id: u64,
+    tile_id: egui_tiles::TileId,
+) -> usize {
+    if window_id == active_window_id && active_focused_tile == Some(tile_id) {
+        return 0;
+    }
+
+    focus_history
+        .iter()
+        .rev()
+        .position(|(history_window_id, history_tile_id)| {
+            *history_window_id == window_id && *history_tile_id == tile_id
+        })
+        .map(|idx| idx + 1)
+        .unwrap_or(usize::MAX)
 }
 
 fn palette_pane_rows_for_context(
@@ -164,6 +187,9 @@ fn palette_pane_rows_for_context(
     context_active_window: &std::collections::HashMap<u64, u64>,
     context_names: &[(u64, String)],
     ctx_id: u64,
+    host_active_window_id: u64,
+    active_focused_tile: Option<egui_tiles::TileId>,
+    focus_history: &[(u64, egui_tiles::TileId)],
 ) -> Vec<PaneRow> {
     let mut ctx_windows: Vec<usize> = windows
         .iter()
@@ -176,7 +202,7 @@ fn palette_pane_rows_for_context(
         (w.grid_y, w.grid_x)
     });
 
-    let active_window_id = context_active_window
+    let context_focused_window_id = context_active_window
         .get(&ctx_id)
         .copied()
         .filter(|id| {
@@ -185,7 +211,7 @@ fn palette_pane_rows_for_context(
                 .any(|w| w.window_id == *id && w.context_id == ctx_id)
         })
         .or_else(|| ctx_windows.first().map(|idx| windows[*idx].window_id));
-    let focused_pane_id = active_window_id
+    let focused_pane_id = context_focused_window_id
         .and_then(|active_win_id| windows.iter().find(|w| w.window_id == active_win_id))
         .and_then(|win| {
             win.focused_pane
@@ -196,6 +222,7 @@ fn palette_pane_rows_for_context(
         });
 
     let mut rows = Vec::new();
+    let mut spatial_idx = 0;
     for &win_idx in &ctx_windows {
         let win = &windows[win_idx];
         let Some(root) = win.tree.root() else {
@@ -203,6 +230,9 @@ fn palette_pane_rows_for_context(
         };
         for pane_id in crate::spatial::tiling::collect_pane_ids_spatial(&win.tree.tiles, root) {
             let Some(pane) = win.panes.get(&pane_id) else {
+                continue;
+            };
+            let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) else {
                 continue;
             };
             let (name, chip) = pane_row_identity(pane, context_names);
@@ -222,9 +252,19 @@ fn palette_pane_rows_for_context(
                     },
                     activities: vec![pane.effective_activity().cloned()],
                 },
+                recency_rank: pane_recency_rank(
+                    host_active_window_id,
+                    active_focused_tile,
+                    focus_history,
+                    win.window_id,
+                    tile_id,
+                ),
+                spatial_idx,
             });
+            spatial_idx += 1;
         }
     }
+    rows.sort_by_key(|row| (row.recency_rank, row.spatial_idx));
     rows
 }
 
@@ -276,6 +316,7 @@ impl PlexiApp {
         // Mirrors macOS Cmd+Tab — current app's windows first.
         let active_win_id = self.windows[self.active_window].window_id;
         let active_ctx_id = self.windows[self.active_window].context_id;
+        let active_focused_tile = self.windows[self.active_window].focused_pane;
 
         let rank_of = |win_id: u64| -> (usize, usize) {
             let in_active_ctx = self
@@ -361,6 +402,9 @@ impl PlexiApp {
                         &self.context_active_window,
                         &context_names,
                         c.ctx_id,
+                        active_win_id,
+                        active_focused_tile,
+                        &self.pane_focus_history,
                     ) {
                         if query.is_empty()
                             || row.name.to_lowercase().contains(&query)
@@ -403,6 +447,9 @@ impl PlexiApp {
                             &self.context_active_window,
                             &context_names,
                             c.ctx_id,
+                            active_win_id,
+                            active_focused_tile,
+                            &self.pane_focus_history,
                         ) {
                             if row.name.to_lowercase().contains(&query) {
                                 ctx_entries.push(PaletteEntry::Context {
@@ -422,6 +469,20 @@ impl PlexiApp {
 
             ctx_entries
         };
+
+        // ── Note entries ────────────────────────────────────────────────────
+        for note in &self.palette_notes {
+            let matches = query.is_empty()
+                || note.title.to_lowercase().contains(&query)
+                || note.search_text.contains(&query);
+            if matches {
+                entries.push(PaletteEntry::Note {
+                    path: note.path.clone(),
+                    title: note.title.clone(),
+                    preview: note.preview.clone(),
+                });
+            }
+        }
 
         // ── Workspace-aware app entries ────────────────────────────────────
         // Use the workspace root cached at palette-open time (not re-resolved
@@ -505,20 +566,6 @@ impl PlexiApp {
                 running_in_background,
                 is_workspace_local,
             });
-        }
-
-        // ── Note entries ────────────────────────────────────────────────────
-        for note in &self.palette_notes {
-            let matches = query.is_empty()
-                || note.title.to_lowercase().contains(&query)
-                || note.search_text.contains(&query);
-            if matches {
-                entries.push(PaletteEntry::Note {
-                    path: note.path.clone(),
-                    title: note.title.clone(),
-                    preview: note.preview.clone(),
-                });
-            }
         }
 
         let total = entries.len();
@@ -803,7 +850,7 @@ impl PlexiApp {
                                         ui.add_space(style::SPACE_XS);
                                     }
                                     let row = ListRow::new(title.as_str())
-                                        .chip("text")
+                                        .metadata_chips(&["text"])
                                         .secondary(preview.as_str())
                                         .selected(is_selected);
                                     let row_response = row.show(ui, &colors);
@@ -1034,7 +1081,15 @@ mod tests {
         let windows = vec![win];
         let names = vec![(1010, "child-a".to_string())];
 
-        let rows = palette_pane_rows_for_context(&windows, &context_active_window, &names, 1);
+        let rows = palette_pane_rows_for_context(
+            &windows,
+            &context_active_window,
+            &names,
+            1,
+            999,
+            None,
+            &[],
+        );
 
         assert_eq!(rows.len(), 3);
         for row in &rows {
@@ -1060,7 +1115,8 @@ mod tests {
         let context_active_window = std::collections::HashMap::from([(1, 2)]);
         let windows = vec![first, second];
 
-        let rows = palette_pane_rows_for_context(&windows, &context_active_window, &[], 1);
+        let rows =
+            palette_pane_rows_for_context(&windows, &context_active_window, &[], 1, 999, None, &[]);
 
         assert_eq!(rows.len(), 3);
         assert_eq!(
@@ -1074,6 +1130,31 @@ mod tests {
         // Focus follows the context's active window (window 2, pane 50).
         assert_eq!(rows[2].pips.focused_idx, Some(0));
         assert_eq!(rows[0].pips.focused_idx, None);
+    }
+
+    #[test]
+    fn pane_rows_sort_current_focus_then_reverse_history_before_spatial_fallback() {
+        let win = test_window(1, 1, 0, 0, &[(10, false), (20, false), (30, false)], 0);
+        let current_tile = win.focused_pane.expect("focused tile");
+        let older_tile = win.tree.tiles.find_pane(&20).expect("older tile");
+        let newer_tile = win.tree.tiles.find_pane(&30).expect("newer tile");
+        let context_active_window = std::collections::HashMap::from([(1, 1)]);
+        let windows = vec![win];
+
+        let rows = palette_pane_rows_for_context(
+            &windows,
+            &context_active_window,
+            &[],
+            1,
+            1,
+            Some(current_tile),
+            &[(1, older_tile), (1, newer_tile)],
+        );
+
+        assert_eq!(
+            rows.iter().map(|r| r.pane_id).collect::<Vec<_>>(),
+            vec![10, 30, 20]
+        );
     }
 
     #[test]
