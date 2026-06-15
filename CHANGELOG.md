@@ -1,6 +1,17 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.1] — 2026-06-15
+
+### Changes
+- Refresh interactive demo CLI (#2265)
+- Update welcome demo prompt
+- Remove host Tab app focus binding
+- fix(palette): order panes and notes by recency
+- fix(cli): suppress PR completions prompt
+- fix(agent): refresh stale hook registrations
+- feat(agent): add Codex and Pi hook installers
+- Centralize host UI chrome primitives
 ## [0.1.0] — 2026-06-14
 
 ### Changes
