@@ -127,7 +127,7 @@ class SnakeApp(App):
             self._snake.pop()
 
     def on_key(self, key: str, _mods: dict) -> None:
-        if self._dead and key in ("r", "Enter", " "):
+        if self._dead and key in ("r", "Enter", "space"):
             self._reset()
             return
         if key in DIR_MAP:

@@ -2388,7 +2388,6 @@ impl App for ProcessApp {
                             | egui::Key::Comma
                             | egui::Key::Period
                             | egui::Key::Slash
-                            | egui::Key::Space
                             | egui::Key::Plus
                     );
                     // When a ListView is active, suppress bare j/k/up/down/enter

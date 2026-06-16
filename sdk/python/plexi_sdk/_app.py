@@ -92,7 +92,8 @@ _KEY_ALIASES: "dict[str, str]" = {
     "Escape": "escape",
     "Backspace": "backspace",
     "Tab": "tab",
-    # Space arrives as Event::Text(" "), not Event::Key
+    # Space: Key event path (egui::Key::Space debug format) and Text event path (" ")
+    "Space": "space",
     " ": "space",
     # Printable symbols arrive as raw chars via Event::Text
     "-": "minus",

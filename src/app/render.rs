@@ -554,7 +554,7 @@ impl PlexiApp {
                     modal_open,
                     ctrl_held,
                     pane_gap: self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0),
-                    pane_title_font_size: self.config.pane_title_font_size.unwrap_or(11.0).clamp(6.0, 32.0),
+                    pane_title_font_size: self.config.pane_title_font_size.unwrap_or(12.0).clamp(6.0, 32.0),
                     portal_zoom_request: None,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
@@ -721,7 +721,7 @@ impl PlexiApp {
                                     &zoomed_tab_labels,
                                     &zoomed_tab_activities,
                                     &self.colors,
-                                    self.config.pane_title_font_size.unwrap_or(11.0),
+                                    self.config.pane_title_font_size.unwrap_or(12.0),
                                     is_overtaken_app,
                                 ) {
                                     zoomed_tab_action = Some((group.container_tile, action));

@@ -83,7 +83,7 @@ class TodoApp(App):
         elif key in ("down", "j", "ArrowDown"):
             self._list.handle_key("j")
             self._selected = self._list.selected_idx
-        elif key == " " and self._items:
+        elif key == "space" and self._items:
             self._items[self._selected]["done"] ^= True
             self._save()
             self._sync_list()
