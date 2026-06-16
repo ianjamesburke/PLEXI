@@ -1,9 +1,9 @@
 ---
 id: "0202"
 title: "Empty contexts: explicit launches create a root pane"
-status: todo
+status: in-progress
 estimate: "1h"
-sprint: "s34"
+started_at: "2026-06-16T04:26:14Z"
 blocked_by: []
 gh_issue: []
 area:
@@ -14,6 +14,7 @@ tags:
   - "contexts"
   - "scratchpad"
 ---
+
 
 Make explicit text-editor and scratchpad launches work from an empty context without auto-opening a terminal as a workaround.
 
