@@ -648,42 +648,44 @@ impl PlexiApp {
         };
 
         if matches!(hint, Some("overlay")) {
-            let Some(focused_tile) = self.windows[active].focused_pane else {
-                log::warn!("builtin::{app_name}: overlay launch skipped — no focused pane");
-                return;
-            };
-            let Some(Tile::Pane(focused_pane_id)) =
-                self.windows[active].tree.tiles.get(focused_tile)
-            else {
-                log::warn!(
-                    "builtin::{app_name}: overlay launch skipped — focused tile is not a pane"
-                );
-                return;
-            };
-            let pane_id = *focused_pane_id;
-            let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
-                return;
-            };
-            self.windows[active].panes.insert(
-                pane_id,
-                new_app_pane(
+            if let Some(focused_tile) = self.windows[active].focused_pane {
+                let Some(Tile::Pane(focused_pane_id)) =
+                    self.windows[active].tree.tiles.get(focused_tile)
+                else {
+                    log::warn!(
+                        "builtin::{app_name}: overlay launch skipped — focused tile is not a pane"
+                    );
+                    return;
+                };
+                let pane_id = *focused_pane_id;
+                let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
+                    return;
+                };
+                self.windows[active].panes.insert(
                     pane_id,
-                    app,
-                    workspace_root,
-                    group,
-                    None,
-                    Some(Box::new(replaced_pane)),
-                ),
+                    new_app_pane(
+                        pane_id,
+                        app,
+                        workspace_root,
+                        group,
+                        None,
+                        Some(Box::new(replaced_pane)),
+                    ),
+                );
+                self.set_window_focused_pane(active, focused_tile);
+                log::info!("builtin::{app_name}: launched as overlay on pane {pane_id}");
+                crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+                    app_id: app_type_id.clone(),
+                    type_id: app_type_id.clone(),
+                    pane_id,
+                    timestamp: crate::host::event_log::now_timestamp(),
+                });
+                return;
+            }
+            log::info!(
+                "builtin::{app_name}: overlay requested but empty context — launching as root pane"
             );
-            self.set_window_focused_pane(active, focused_tile);
-            log::info!("builtin::{app_name}: launched as overlay on pane {pane_id}");
-            crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
-                app_id: app_type_id.clone(),
-                type_id: app_type_id.clone(),
-                pane_id,
-                timestamp: crate::host::event_log::now_timestamp(),
-            });
-            return;
+            // fall through to root-pane path below
         }
 
         if self.windows[active].zoomed_pane.take().is_some() {
@@ -1452,6 +1454,54 @@ mod tests {
         assert!(
             h.app.windows[0].tree.root.is_some(),
             "tree root should be set after launch into empty context"
+        );
+    }
+
+    /// Regression guard for stint 0202: launching text-editor or scratchpad from an
+    /// empty context (welcome screen) must create a root pane, not silently no-op.
+    /// Previously `open_builtin_app_pane` returned early when hint="overlay" and
+    /// focused_pane was None.
+    #[test]
+    fn text_editor_launch_in_empty_context_creates_root_pane() {
+        let mut h = HostHarness::new();
+        assert!(
+            h.app.windows[0].focused_pane.is_none(),
+            "no focused pane in empty context"
+        );
+
+        h.app
+            .launch_app_by_id_with_layout("text-editor", None, &[], None)
+            .expect("text-editor launch must succeed");
+
+        assert_eq!(h.pane_count(), 1, "text-editor must appear as a pane");
+        assert!(
+            h.app.windows[0].focused_pane.is_some(),
+            "new root pane should be focused"
+        );
+        assert!(
+            h.app.windows[0].tree.root.is_some(),
+            "tree root should be set after launch into empty context"
+        );
+    }
+
+    #[test]
+    fn scratchpad_in_empty_context_creates_root_pane() {
+        let mut h = HostHarness::new();
+        assert!(
+            h.app.windows[0].focused_pane.is_none(),
+            "no focused pane in empty context"
+        );
+
+        h.app.open_scratchpad();
+
+        assert_eq!(h.pane_count(), 1, "scratchpad must appear as a pane");
+        assert!(
+            h.app.windows[0].focused_pane.is_some(),
+            "new root pane should be focused"
+        );
+        assert!(
+            h.app.windows[0].tree.root.is_some(),
+            "tree root should be set after scratchpad launch into empty context"
         );
     }
 
