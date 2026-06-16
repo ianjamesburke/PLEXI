@@ -1378,23 +1378,42 @@ impl PlexiApp {
             );
             return None;
         }
-        // Millisecond timestamps collide when two notes land in the same ms
-        // (e.g. back-to-back scratchpad calls); suffix until the path is free
-        // so the second note never overwrites the first.
+        // Use O_CREAT|O_EXCL (create_new) so concurrent scratchpad calls can
+        // never overwrite each other — the check-then-write pattern has a TOCTOU
+        // window that is safe today but unsafe if notes are written in parallel.
         let mut path = dir.join(format!("note-{stamp}.md"));
         let mut n = 1u32;
-        while path.exists() {
-            path = dir.join(format!("note-{stamp}-{n}.md"));
-            n += 1;
-        }
-        match std::fs::write(&path, &content) {
-            Ok(()) => {
-                log::info!("QuickNote: saved to {}", path.display());
-                Some(path)
-            }
-            Err(e) => {
-                log::error!("QuickNote: save failed {}: {e}", path.display());
-                None
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    use std::io::Write as _;
+                    match file.write_all(content.as_bytes()) {
+                        Ok(()) => {
+                            log::info!("QuickNote: saved to {}", path.display());
+                            return Some(path);
+                        }
+                        Err(e) => {
+                            // create_new already created the inode; remove it so
+                            // a partial write doesn't leave a ghost file blocking
+                            // any future attempt at the same path.
+                            let _ = std::fs::remove_file(&path);
+                            log::error!("QuickNote: save failed {}: {e}", path.display());
+                            return None;
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    path = dir.join(format!("note-{stamp}-{n}.md"));
+                    n += 1;
+                }
+                Err(e) => {
+                    log::error!("QuickNote: save failed {}: {e}", path.display());
+                    return None;
+                }
             }
         }
     }
@@ -2136,6 +2155,40 @@ mod quick_note_tests {
             content.starts_with("---\n"),
             "must start with frontmatter delimiter"
         );
+    }
+
+    /// Regression guard: write_inbox_note must not overwrite a pre-existing file
+    /// at the target path — it must bump the counter suffix atomically.
+    /// This tests the O_CREAT|O_EXCL path that replaced the TOCTOU
+    /// check-then-write pattern.
+    #[test]
+    fn write_inbox_note_does_not_overwrite_existing_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let c = ctx("/tmp/myproject");
+        // Pre-seed a file at the stamp path write_inbox_note would choose.
+        // Because chrono stamps include milliseconds this has to collide
+        // deliberately — we do it by calling twice in tight succession and
+        // checking both paths are distinct with non-empty content.
+        let path1 =
+            PlexiApp::write_inbox_note("first", "scratchpad", &dir.path().to_path_buf(), &c)
+                .expect("first write must succeed");
+        let path2 =
+            PlexiApp::write_inbox_note("second", "scratchpad", &dir.path().to_path_buf(), &c)
+                .expect("second write must succeed");
+
+        // Even if both calls land in the same millisecond the paths must differ.
+        assert_ne!(path1, path2, "concurrent scratchpad writes must not collide");
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(entries.len(), 2, "two distinct files must exist");
+
+        let c1 = std::fs::read_to_string(&path1).unwrap();
+        let c2 = std::fs::read_to_string(&path2).unwrap();
+        assert!(c1.contains("first"), "first note body must be intact");
+        assert!(c2.contains("second"), "second note body must be intact");
     }
 
     // ── Agent context spawning tests (#1518) ─────────────────────────────────

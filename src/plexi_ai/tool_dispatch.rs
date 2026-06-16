@@ -98,11 +98,13 @@ impl ToolRegistry {
     /// Snapshot of tools visible to a caller in `caller_workspace`, keyed by
     /// tool name. Only panes in the same workspace are included.
     ///
-    /// Duplicate names (within the same workspace) are resolved
-    /// deterministically: highest pane_id wins. This avoids hash-iteration
-    /// nondeterminism when multiple panes expose the same tool name.
+    /// If two panes expose the same tool name, both are **excluded** from the
+    /// snapshot and an `error!` is logged listing the conflicting pane IDs.
+    /// Silently picking a winner would dispatch to an arbitrary pane — callers
+    /// instead get `tool_not_found`, which is the correct fail-visible signal
+    /// until the apps are fixed or namespaced.
     fn snapshot_for_caller(&self, caller_workspace: &Path) -> HashMap<String, (u64, AiTool)> {
-        let mut map = HashMap::new();
+        let mut map: HashMap<String, (u64, AiTool)> = HashMap::new();
         // Use component-by-component comparison to avoid false mismatches from
         // trailing separators or platform path normalization differences.
         let mut pane_ids: Vec<u64> = self
@@ -133,11 +135,13 @@ impl ToolRegistry {
         for (name, mut owners) in owners_by_name {
             if owners.len() > 1 {
                 owners.sort_unstable();
-                log::warn!(
-                    "tool_dispatch: duplicate tool name {:?} exposed by panes {:?}; dispatch will target highest pane_id",
+                log::error!(
+                    "tool_dispatch: tool name {:?} conflict — exposed by panes {:?}; \
+                     tool withheld from model until conflict is resolved",
                     name,
                     owners
                 );
+                map.remove(&name);
             }
         }
         map
@@ -669,6 +673,42 @@ mod tests {
 
         // Clean up global registry.
         unregister(999);
+    }
+
+    /// Two panes in the same workspace exposing the same tool name must both be
+    /// excluded from the snapshot — no silent winner selection.
+    #[test]
+    fn conflicting_tool_names_excluded_from_snapshot() {
+        let mut reg = ToolRegistry::new();
+        let ws = PathBuf::from("/workspace/conflict-test");
+        let (tx1, _rx1) = std::sync::mpsc::channel();
+        let (tx2, _rx2) = std::sync::mpsc::channel();
+        reg.register(
+            10,
+            vec![make_tool("shared_tool"), make_tool("unique_a")],
+            AppEventSender { tx: tx1 },
+            ws.clone(),
+        );
+        reg.register(
+            20,
+            vec![make_tool("shared_tool"), make_tool("unique_b")],
+            AppEventSender { tx: tx2 },
+            ws.clone(),
+        );
+
+        let snap = reg.snapshot_for_caller(&ws);
+        assert!(
+            !snap.contains_key("shared_tool"),
+            "conflicting tool must be excluded from snapshot, not silently picked"
+        );
+        assert!(
+            snap.contains_key("unique_a"),
+            "non-conflicting tool from pane 10 must remain visible"
+        );
+        assert!(
+            snap.contains_key("unique_b"),
+            "non-conflicting tool from pane 20 must remain visible"
+        );
     }
 
     /// A `before_call` error must block the call and skip `after_call`;
