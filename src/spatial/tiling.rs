@@ -1119,7 +1119,7 @@ pub(crate) fn paint_portal_minimap(
                         colors.text_dim.r(),
                         colors.text_dim.g(),
                         colors.text_dim.b(),
-                        (line_alpha * 2).min(255),
+                        (line_alpha as u32 * 2).min(255) as u8,
                     );
                     let fill = egui::Color32::from_rgba_unmultiplied(
                         colors.text_dim.r(),
@@ -1143,7 +1143,7 @@ pub(crate) fn paint_portal_minimap(
                         paper.left_bottom(),
                     ];
                     painter.add(egui::Shape::convex_polygon(
-                        body.clone(),
+                        body,
                         fill,
                         egui::Stroke::new(1.0, outline),
                     ));
@@ -1198,7 +1198,7 @@ pub(crate) fn paint_portal_minimap(
                         colors.text_dim.r(),
                         colors.text_dim.g(),
                         colors.text_dim.b(),
-                        (line_alpha * 3).min(255),
+                        (line_alpha as u32 * 3).min(255) as u8,
                     );
                     let accent_strong = egui::Color32::from_rgba_unmultiplied(
                         colors.accent.r(),
