@@ -5,6 +5,9 @@ deps/egui_term/target/
 # Scratch docs
 docs/scratch/
 
+# Videos
+VIDEOS/
+
 # IDE
 .idea/
 .vscode/
