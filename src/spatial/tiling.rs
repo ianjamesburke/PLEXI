@@ -299,6 +299,9 @@ pub(crate) fn paint_tab_bar(
 pub enum PaneKind {
     Terminal,
     App,
+    /// Text/editor app pane (manifest `text-editor`). Renders a document glyph
+    /// in the minimap instead of the generic app mark.
+    TextEditor,
     Portal,
 }
 
@@ -1094,6 +1097,134 @@ pub(crate) fn paint_portal_minimap(
                             );
                         }
                     }
+                }
+                PaneKind::TextEditor => {
+                    // Portrait sheet with a folded top-right corner plus a short
+                    // pencil laid across the lower-right. Accent stays on the
+                    // pencil tip + metal ferrule so the glyph reads as "edit"
+                    // without growing visually long.
+                    let glyph = (draw_area.width().min(draw_area.height())).clamp(12.0, 56.0);
+                    let pw = glyph * 0.46;
+                    let ph = glyph * 0.60;
+                    // Nudge the sheet slightly up/left so the pencil has room.
+                    let center = egui::pos2(
+                        draw_area.center().x - glyph * 0.05,
+                        draw_area.center().y - glyph * 0.03,
+                    );
+                    let paper =
+                        egui::Rect::from_center_size(center, egui::vec2(pw, ph));
+                    let fold = (pw * 0.34).clamp(2.0, 10.0);
+
+                    let outline = egui::Color32::from_rgba_unmultiplied(
+                        colors.text_dim.r(),
+                        colors.text_dim.g(),
+                        colors.text_dim.b(),
+                        (line_alpha * 2).min(255),
+                    );
+                    let fill = egui::Color32::from_rgba_unmultiplied(
+                        colors.text_dim.r(),
+                        colors.text_dim.g(),
+                        colors.text_dim.b(),
+                        (line_alpha / 2).max(8),
+                    );
+                    let rule = egui::Color32::from_rgba_unmultiplied(
+                        colors.text_dim.r(),
+                        colors.text_dim.g(),
+                        colors.text_dim.b(),
+                        line_alpha,
+                    );
+
+                    // Sheet body (folded corner masked out via two polygons).
+                    let body = vec![
+                        paper.left_top(),
+                        egui::pos2(paper.right() - fold, paper.top()),
+                        egui::pos2(paper.right(), paper.top() + fold),
+                        paper.right_bottom(),
+                        paper.left_bottom(),
+                    ];
+                    painter.add(egui::Shape::convex_polygon(
+                        body.clone(),
+                        fill,
+                        egui::Stroke::new(1.0, outline),
+                    ));
+                    // Folded corner triangle, a touch lighter than the body.
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![
+                            egui::pos2(paper.right() - fold, paper.top()),
+                            egui::pos2(paper.right() - fold, paper.top() + fold),
+                            egui::pos2(paper.right(), paper.top() + fold),
+                        ],
+                        egui::Color32::from_rgba_unmultiplied(
+                            colors.text_dim.r(),
+                            colors.text_dim.g(),
+                            colors.text_dim.b(),
+                            line_alpha,
+                        ),
+                        egui::Stroke::new(1.0, outline),
+                    ));
+
+                    // Text rules — drop the last when the glyph is tiny.
+                    let rule_w = (pw * 0.16).clamp(0.8, 1.6);
+                    let margin = pw * 0.20;
+                    let rule_xs = (paper.left() + margin, paper.right() - margin);
+                    let rows = if ph > 18.0 { 3 } else { 2 };
+                    for i in 0..rows {
+                        let ry = paper.top() + ph * (0.34 + i as f32 * 0.20);
+                        // Last visible rule is shorter, like a paragraph end.
+                        let right = if i == rows - 1 {
+                            rule_xs.0 + (rule_xs.1 - rule_xs.0) * 0.6
+                        } else {
+                            rule_xs.1
+                        };
+                        painter.line_segment(
+                            [egui::pos2(rule_xs.0, ry), egui::pos2(right, ry)],
+                            egui::Stroke::new(rule_w, rule),
+                        );
+                    }
+
+                    // Pencil — short diagonal across the lower-right corner,
+                    // tip pointing down-right.
+                    let pencil_w = (glyph * 0.12).clamp(1.6, 4.0);
+                    let tip = egui::pos2(
+                        paper.right() + glyph * 0.10,
+                        paper.bottom() + glyph * 0.06,
+                    );
+                    let tail = egui::pos2(tip.x - glyph * 0.30, tip.y - glyph * 0.30);
+                    let dir = (tip - tail).normalized();
+                    // Ferrule + tip occupy the last ~30% near the point.
+                    let neck = tip - dir * (pencil_w * 1.6);
+                    let body_end = tip - dir * (pencil_w * 2.8);
+                    let pencil_body = egui::Color32::from_rgba_unmultiplied(
+                        colors.text_dim.r(),
+                        colors.text_dim.g(),
+                        colors.text_dim.b(),
+                        (line_alpha * 3).min(255),
+                    );
+                    let accent_strong = egui::Color32::from_rgba_unmultiplied(
+                        colors.accent.r(),
+                        colors.accent.g(),
+                        colors.accent.b(),
+                        if pane.focused { 200 } else { 150 },
+                    );
+                    // Wood shaft (eraser end → ferrule).
+                    painter.line_segment(
+                        [tail, body_end],
+                        egui::Stroke::new(pencil_w, pencil_body),
+                    );
+                    // Metal ferrule + tip in accent.
+                    painter.line_segment(
+                        [body_end, neck],
+                        egui::Stroke::new(pencil_w, accent_strong),
+                    );
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![
+                            neck + dir.rot90() * (pencil_w * 0.5),
+                            neck - dir.rot90() * (pencil_w * 0.5),
+                            tip,
+                        ],
+                        accent_strong,
+                        egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
+                    ));
                 }
                 PaneKind::Portal => {
                     // 2x2 window grid, outlines only, bottom-right filled with accent (Plexi logo feel)
