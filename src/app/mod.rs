@@ -99,7 +99,7 @@ use crate::ui::theme::{self, Colors};
 use crate::workspace::WorkspaceFile;
 use egui_term::{BackendSettings, PtyEvent, TerminalTheme};
 use egui_tiles::{Tile, Tree};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -179,6 +179,8 @@ pub struct PlexiApp {
     pub(crate) drag_context: Option<usize>,
     /// Whether the "Parked (N)" section in the sidebar is expanded.
     pub(crate) parked_section_expanded: bool,
+    /// Parent context ids whose child rows are collapsed in the sidebar.
+    pub(crate) collapsed_contexts: HashSet<u64>,
     pub(crate) registry: AppRegistry,
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
@@ -831,6 +833,7 @@ impl PlexiApp {
                     description_focus_requested: false,
                     drag_context: None,
                     parked_section_expanded: false,
+                    collapsed_contexts: ws.collapsed_contexts,
                     show_command_palette: false,
                     palette_query: String::new(),
                     palette_selected: 0,
@@ -1068,6 +1071,7 @@ impl PlexiApp {
             description_focus_requested: false,
             drag_context: None,
             parked_section_expanded: false,
+            collapsed_contexts: HashSet::new(),
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
@@ -1274,6 +1278,7 @@ impl PlexiApp {
                 description_focus_requested: false,
                 drag_context: None,
                 parked_section_expanded: false,
+                collapsed_contexts: HashSet::new(),
                 show_command_palette: false,
                 palette_query: String::new(),
                 palette_selected: 0,
@@ -3080,31 +3085,7 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::SwitchContext(n) => {
-                    // Map display position n (0-indexed) to the actual router index by
-                    // computing the same active display order the sidebar renders.
-                    let num = self.router.len();
-                    let mut display_order: Vec<usize> = Vec::with_capacity(num);
-                    for i in 0..num {
-                        if self.router.get(i).parent_id.is_none() {
-                            display_order.push(i);
-                            let ctx_id = self.router.get(i).context_id;
-                            for j in 0..num {
-                                if self.router.get(j).parent_id == Some(ctx_id) {
-                                    display_order.push(j);
-                                }
-                            }
-                        }
-                    }
-                    for i in 0..num {
-                        if !display_order.contains(&i) {
-                            display_order.push(i);
-                        }
-                    }
-                    let active_order: Vec<usize> = display_order
-                        .into_iter()
-                        .filter(|&i| !self.router.get(i).parked)
-                        .collect();
-                    if let Some(&router_idx) = active_order.get(n) {
+                    if let Some(&router_idx) = self.sidebar_top_level_active_order().get(n) {
                         let target_parent = self.router.get(router_idx).parent_id;
                         let current_ctx_id = self.router.active().context_id;
                         if target_parent == Some(current_ctx_id) {

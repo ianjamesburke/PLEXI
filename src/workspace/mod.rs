@@ -6,6 +6,7 @@ use crate::spatial::tiling::PaneId;
 use egui_tiles::{TileId, Tree};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
 
@@ -21,6 +22,9 @@ pub struct WorkspaceFile {
     /// context_id → last active window_id for that context.
     #[serde(default)]
     pub context_active_window: HashMap<u64, u64>,
+    /// Parent context ids whose child rows are collapsed in the sidebar.
+    #[serde(default)]
+    pub collapsed_contexts: HashSet<u64>,
 }
 
 #[derive(Serialize, Deserialize)]

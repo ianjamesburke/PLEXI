@@ -1210,6 +1210,83 @@ fn test_context(id: u64, parent_id: u64, name: &str) -> crate::host::context::Co
     }
 }
 
+#[test]
+fn top_level_shortcuts_ignore_subcontexts() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_id = app.router.active().context_id;
+    app.router.push(test_context(42, root_id, "child"));
+    app.router.push(crate::host::context::Context {
+        name: "second-root".to_string(),
+        path: std::path::PathBuf::from("/tmp/second-root"),
+        root: None,
+        description: None,
+        context_id: 43,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+
+    let top_level = app.sidebar_top_level_active_order();
+    assert_eq!(
+        top_level,
+        vec![0, 2],
+        "only top-level contexts should consume Cmd+1..9"
+    );
+
+    let rows = app.sidebar_visible_rows(false);
+    let summary: Vec<_> = rows
+        .iter()
+        .map(|row| (row.router_idx, row.top_level_number))
+        .collect();
+    assert_eq!(
+        summary,
+        vec![(0, Some(0)), (1, None), (2, Some(1))],
+        "child rows stay visible but do not take a global sidebar number"
+    );
+
+    app.switch_workspace(top_level[1]);
+    assert_eq!(
+        app.router.active().context_id,
+        43,
+        "the second top-level shortcut target should stay stable even with a visible child row"
+    );
+}
+
+#[test]
+fn collapsing_parent_hides_children_without_renumbering_top_level_contexts() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_id = app.router.active().context_id;
+    app.router.push(test_context(52, root_id, "child"));
+    app.router.push(crate::host::context::Context {
+        name: "second-root".to_string(),
+        path: std::path::PathBuf::from("/tmp/second-root"),
+        root: None,
+        description: None,
+        context_id: 53,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.collapsed_contexts.insert(root_id);
+
+    let rows = app.sidebar_visible_rows(false);
+    let summary: Vec<_> = rows
+        .iter()
+        .map(|row| (row.router_idx, row.top_level_number))
+        .collect();
+    assert_eq!(
+        summary,
+        vec![(0, Some(0)), (2, Some(1))],
+        "collapsing a parent should hide only its child rows and preserve top-level numbering"
+    );
+}
+
 /// Issue #2108: dissolving a one-window sub-context should graft that child's
 /// tile tree into the exact Portal slot instead of flattening child panes into
 /// the parent container.
@@ -1986,10 +2063,7 @@ fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
 /// not at the end — even when another sibling context (child2) already exists.
 #[test]
 fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
-    fn push_ipc(
-        h: &mut crate::testing::HostHarness,
-        pane_id: crate::spatial::tiling::PaneId,
-    ) {
+    fn push_ipc(h: &mut crate::testing::HostHarness, pane_id: crate::spatial::tiling::PaneId) {
         let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
             "type": "push_pane_to_subcontext",
             "pane_id": pane_id,
@@ -2020,7 +2094,11 @@ fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     // [root, child1, grandchild, child2].
     // Without the fix, grandchild would append at the end: [root, child1, child2, grandchild].
     push_ipc(&mut h, pane_a);
-    assert_eq!(h.app.router.len(), 4, "root + child1 + grandchild + child2 = 4 contexts");
+    assert_eq!(
+        h.app.router.len(),
+        4,
+        "root + child1 + grandchild + child2 = 4 contexts"
+    );
 
     let ids: Vec<u64> = h.app.router.iter().map(|c| c.context_id).collect();
     let grandchild = h
@@ -2032,7 +2110,10 @@ fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     assert_eq!(grandchild.depth, 2, "grandchild depth must be 2");
 
     let child1_pos = ids.iter().position(|&id| id == child1_id).unwrap();
-    let grandchild_pos = ids.iter().position(|&id| id == grandchild.context_id).unwrap();
+    let grandchild_pos = ids
+        .iter()
+        .position(|&id| id == grandchild.context_id)
+        .unwrap();
     let child2_pos = ids.iter().position(|&id| id == child2_id).unwrap();
     let root_pos = ids.iter().position(|&id| id == root_id).unwrap();
 

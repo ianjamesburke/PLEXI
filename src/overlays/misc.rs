@@ -144,7 +144,11 @@ impl PlexiApp {
                                         None,
                                         colors,
                                     );
-                                    shortcut_description(ui, "Switch context 1–9", colors);
+                                    shortcut_description(
+                                        ui,
+                                        "Switch top-level context 1–9",
+                                        colors,
+                                    );
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo(

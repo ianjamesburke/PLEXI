@@ -676,6 +676,76 @@ mod tests {
             .expect("render failed");
     }
 
+    #[test]
+    fn subcontext_chevron_collapses_and_expands_child_rows() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            app.router.get_mut(0).root = Some(std::env::temp_dir().join("root-parent"));
+            let root_id = app.router.active().context_id;
+            app.router.push(crate::host::context::Context {
+                name: "child".to_string(),
+                path: std::env::temp_dir().join("child"),
+                root: Some(std::env::temp_dir().join("child")),
+                description: None,
+                context_id: 72_001,
+                parent_id: Some(root_id),
+                depth: 1,
+                parked: false,
+            });
+            app.router.push(crate::host::context::Context {
+                name: "second-root".to_string(),
+                path: std::env::temp_dir().join("second-root"),
+                root: Some(std::env::temp_dir().join("second-root")),
+                description: None,
+                context_id: 72_002,
+                parent_id: None,
+                depth: 0,
+                parked: false,
+            });
+        });
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert_eq!(app.sidebar_visible_rows(false).len(), 3);
+            assert!(app.collapsed_contexts.is_empty());
+        });
+        h.save_screenshot("/tmp/plexi_subcontext_chevron_expanded.png")
+            .expect("render failed");
+
+        let click = egui::pos2(16.0, 100.0);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(click));
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerButton {
+                pos: click,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerButton {
+                pos: click,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        h.run_steps(2);
+
+        h.with_app(|app| {
+            let root_id = app.router.active().context_id;
+            assert!(app.collapsed_contexts.contains(&root_id));
+            assert_eq!(app.sidebar_visible_rows(false).len(), 2);
+        });
+        h.save_screenshot("/tmp/plexi_subcontext_chevron_collapsed.png")
+            .expect("render failed");
+    }
+
     /// While a context is being dragged, the Parked header renders even with
     /// zero parked contexts so the drag has a drop target. Smoke test: set up
     /// an in-progress drag and confirm the sidebar renders without panicking.
@@ -1372,7 +1442,6 @@ mod tests {
     /// a trailing ellipsis rather than wrapping or overflowing the tab bar rect.
     #[test]
     fn tab_titles_truncate_to_single_line() {
-
         let mut h = PlexiUiHarness::new();
         h.step();
 
@@ -1412,7 +1481,8 @@ mod tests {
         });
 
         h.run_steps(2);
-        h.render().expect("tab bar with long title must render without panic");
+        h.render()
+            .expect("tab bar with long title must render without panic");
         h.save_screenshot("/tmp/plexi_tab_truncation.png")
             .expect("screenshot failed");
         println!("Screenshot saved to /tmp/plexi_tab_truncation.png");

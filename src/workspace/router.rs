@@ -17,6 +17,8 @@ pub(crate) struct WorkspaceRouter {
     pub(crate) depth_stack: Vec<(u64, u64, Option<TileId>)>,
 }
 
+const MAX_CONTEXT_DEPTH: u32 = 3;
+
 impl WorkspaceRouter {
     pub(crate) fn new(contexts: Vec<Context>, active: usize) -> Self {
         debug_assert!(
@@ -129,34 +131,6 @@ impl WorkspaceRouter {
         }
     }
 
-    /// Reorder the entire context vec to match `new_order`, a permutation of
-    /// the current indices `0..len`. The active context is tracked by identity,
-    /// so its index is rewritten to wherever it lands. Used by sidebar drag-drop
-    /// to commit a fully re-partitioned (active/parked) ordering atomically.
-    pub(crate) fn apply_order(&mut self, new_order: &[usize]) {
-        debug_assert_eq!(
-            new_order.len(),
-            self.contexts.len(),
-            "apply_order needs a full permutation"
-        );
-        let active_id = self.contexts[self.active].context_id;
-        let mut slots: Vec<Option<Context>> = self.contexts.drain(..).map(Some).collect();
-        let mut reordered: Vec<Context> = Vec::with_capacity(slots.len());
-        for &idx in new_order {
-            reordered.push(
-                slots[idx]
-                    .take()
-                    .expect("apply_order: each index referenced exactly once"),
-            );
-        }
-        self.contexts = reordered;
-        self.active = self
-            .contexts
-            .iter()
-            .position(|c| c.context_id == active_id)
-            .expect("apply_order: active context survives reorder");
-    }
-
     pub(crate) fn move_to_front_tracking_active(&mut self, idx: usize) {
         let ctx = self.contexts.remove(idx);
         self.contexts.insert(0, ctx);
@@ -176,6 +150,182 @@ impl WorkspaceRouter {
         } else if self.active > idx {
             self.active -= 1;
         }
+    }
+
+    pub(crate) fn subtree_end(&self, idx: usize) -> usize {
+        let base_depth = self.contexts[idx].depth;
+        let mut end = idx + 1;
+        while end < self.contexts.len() && self.contexts[end].depth > base_depth {
+            end += 1;
+        }
+        end
+    }
+
+    fn is_descendant_id(&self, descendant_id: u64, ancestor_id: u64) -> bool {
+        let mut current = self
+            .contexts
+            .iter()
+            .find(|ctx| ctx.context_id == descendant_id)
+            .and_then(|ctx| ctx.parent_id);
+        while let Some(parent_id) = current {
+            if parent_id == ancestor_id {
+                return true;
+            }
+            current = self
+                .contexts
+                .iter()
+                .find(|ctx| ctx.context_id == parent_id)
+                .and_then(|ctx| ctx.parent_id);
+        }
+        false
+    }
+
+    pub(crate) fn can_move_subtree_to_parent(
+        &self,
+        idx: usize,
+        new_parent_id: Option<u64>,
+    ) -> bool {
+        if idx >= self.contexts.len() {
+            return false;
+        }
+        let moving_id = self.contexts[idx].context_id;
+        let old_parent_id = self.contexts[idx].parent_id;
+        if old_parent_id == new_parent_id {
+            return false;
+        }
+        let new_depth = match new_parent_id {
+            Some(parent_id) => {
+                if parent_id == moving_id || self.is_descendant_id(parent_id, moving_id) {
+                    return false;
+                }
+                let Some(parent) = self.contexts.iter().find(|ctx| ctx.context_id == parent_id)
+                else {
+                    return false;
+                };
+                parent.depth + 1
+            }
+            None => 0,
+        };
+        let end = self.subtree_end(idx);
+        let old_depth = self.contexts[idx].depth;
+        let deepest_relative = self.contexts[idx..end]
+            .iter()
+            .map(|ctx| ctx.depth.saturating_sub(old_depth))
+            .max()
+            .unwrap_or(0);
+        new_depth + deepest_relative <= MAX_CONTEXT_DEPTH
+    }
+
+    pub(crate) fn move_subtree_to_parent(
+        &mut self,
+        idx: usize,
+        new_parent_id: Option<u64>,
+    ) -> bool {
+        if !self.can_move_subtree_to_parent(idx, new_parent_id) {
+            return false;
+        }
+        let old_parent_id = self.contexts[idx].parent_id;
+
+        let active_id = self.contexts[self.active].context_id;
+        let end = self.subtree_end(idx);
+        let old_depth = self.contexts[idx].depth;
+        let mut subtree: Vec<Context> = self.contexts.drain(idx..end).collect();
+
+        let new_depth = match new_parent_id {
+            Some(parent_id) => self
+                .contexts
+                .iter()
+                .find(|ctx| ctx.context_id == parent_id)
+                .map(|ctx| ctx.depth + 1)
+                .unwrap_or(0),
+            None => 0,
+        };
+        let depth_delta = new_depth as i32 - old_depth as i32;
+        for ctx in &mut subtree {
+            ctx.depth = ((ctx.depth as i32) + depth_delta).max(0) as u32;
+        }
+        subtree[0].parent_id = new_parent_id;
+
+        let insert_pos = match new_parent_id {
+            Some(parent_id) => {
+                let parent_pos = self
+                    .contexts
+                    .iter()
+                    .position(|ctx| ctx.context_id == parent_id)
+                    .expect("validated new parent must still exist after drain");
+                let parent_depth = self.contexts[parent_pos].depth;
+                let mut pos = parent_pos + 1;
+                while pos < self.contexts.len() && self.contexts[pos].depth > parent_depth {
+                    pos += 1;
+                }
+                pos
+            }
+            None => {
+                if let Some(former_parent_id) = old_parent_id {
+                    if let Some(parent_pos) = self
+                        .contexts
+                        .iter()
+                        .position(|ctx| ctx.context_id == former_parent_id)
+                    {
+                        let parent_depth = self.contexts[parent_pos].depth;
+                        let mut pos = parent_pos + 1;
+                        while pos < self.contexts.len() && self.contexts[pos].depth > parent_depth {
+                            pos += 1;
+                        }
+                        pos
+                    } else {
+                        self.contexts.len()
+                    }
+                } else {
+                    self.contexts.len()
+                }
+            }
+        };
+
+        self.contexts.splice(insert_pos..insert_pos, subtree);
+        self.active = self
+            .contexts
+            .iter()
+            .position(|ctx| ctx.context_id == active_id)
+            .expect("move_subtree_to_parent: active context survives move");
+        true
+    }
+
+    pub(crate) fn set_subtree_parked(&mut self, idx: usize, parked: bool) -> bool {
+        if idx >= self.contexts.len() {
+            return false;
+        }
+        let end = self.subtree_end(idx);
+        for ctx in &mut self.contexts[idx..end] {
+            ctx.parked = parked;
+        }
+        true
+    }
+
+    pub(crate) fn move_subtree_to_index(&mut self, idx: usize, insert_pos: usize) -> bool {
+        if idx >= self.contexts.len() || insert_pos > self.contexts.len() {
+            return false;
+        }
+        let end = self.subtree_end(idx);
+        if (idx..end).contains(&insert_pos) {
+            return false;
+        }
+        let active_id = self.contexts[self.active].context_id;
+        let subtree_len = end - idx;
+        let subtree: Vec<Context> = self.contexts.drain(idx..end).collect();
+        let adjusted_insert = if insert_pos > idx {
+            insert_pos - subtree_len
+        } else {
+            insert_pos
+        };
+        self.contexts
+            .splice(adjusted_insert..adjusted_insert, subtree);
+        self.active = self
+            .contexts
+            .iter()
+            .position(|ctx| ctx.context_id == active_id)
+            .expect("move_subtree_to_index: active context survives move");
+        true
     }
 
     // ── Depth stack (fractal zoom navigation) ───────────────────────────────
@@ -237,21 +387,6 @@ mod tests {
     fn depth_stack_empty_pop_returns_none() {
         let mut router = WorkspaceRouter::new(vec![make_ctx(1, None, 0)], 0);
         assert_eq!(router.pop_depth(), None);
-    }
-
-    #[test]
-    fn apply_order_permutes_and_tracks_active_by_identity() {
-        let mut router = WorkspaceRouter::new(
-            vec![make_ctx(10, None, 0), make_ctx(20, None, 0), make_ctx(30, None, 0)],
-            1, // active = ctx 20
-        );
-        // Move ctx 20 (index 1) to the front: new order [20, 10, 30].
-        router.apply_order(&[1, 0, 2]);
-        let ids: Vec<u64> = router.iter().map(|c| c.context_id).collect();
-        assert_eq!(ids, vec![20, 10, 30]);
-        // Active still points at ctx 20, now at index 0.
-        assert_eq!(router.active_idx(), 0);
-        assert_eq!(router.active().context_id, 20);
     }
 
     #[test]
@@ -328,5 +463,148 @@ mod tests {
         router.insert_after_subtree(99, make_ctx(2, None, 0));
         let ids: Vec<u64> = router.contexts.iter().map(|c| c.context_id).collect();
         assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn move_subtree_to_parent_keeps_descendants_attached() {
+        let mut router = WorkspaceRouter::new(
+            vec![
+                make_ctx(1, None, 0),
+                make_ctx(2, Some(1), 1),
+                make_ctx(3, Some(2), 2),
+                make_ctx(4, None, 0),
+            ],
+            1,
+        );
+
+        assert!(router.move_subtree_to_parent(3, Some(1)));
+        let rows: Vec<(u64, Option<u64>, u32)> = router
+            .iter()
+            .map(|ctx| (ctx.context_id, ctx.parent_id, ctx.depth))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (1, None, 0),
+                (2, Some(1), 1),
+                (3, Some(2), 2),
+                (4, Some(1), 1),
+            ]
+        );
+        assert_eq!(
+            router.active().context_id,
+            2,
+            "active context tracks by identity"
+        );
+    }
+
+    #[test]
+    fn move_subtree_to_parent_promotes_one_level() {
+        let mut router = WorkspaceRouter::new(
+            vec![
+                make_ctx(1, None, 0),
+                make_ctx(2, Some(1), 1),
+                make_ctx(3, Some(2), 2),
+                make_ctx(4, None, 0),
+            ],
+            2,
+        );
+
+        assert!(router.move_subtree_to_parent(2, None));
+        let rows: Vec<(u64, Option<u64>, u32)> = router
+            .iter()
+            .map(|ctx| (ctx.context_id, ctx.parent_id, ctx.depth))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![(1, None, 0), (2, Some(1), 1), (3, None, 0), (4, None, 0),]
+        );
+        assert_eq!(router.active().context_id, 3);
+    }
+
+    #[test]
+    fn move_subtree_to_parent_rejects_direct_child_cycle() {
+        let mut router =
+            WorkspaceRouter::new(vec![make_ctx(1, None, 0), make_ctx(2, Some(1), 1)], 0);
+
+        assert!(!router.can_move_subtree_to_parent(0, Some(2)));
+        assert!(!router.move_subtree_to_parent(0, Some(2)));
+        let rows: Vec<(u64, Option<u64>, u32)> = router
+            .iter()
+            .map(|ctx| (ctx.context_id, ctx.parent_id, ctx.depth))
+            .collect();
+        assert_eq!(rows, vec![(1, None, 0), (2, Some(1), 1)]);
+    }
+
+    #[test]
+    fn move_subtree_to_parent_rejects_grandchild_cycle() {
+        let mut router = WorkspaceRouter::new(
+            vec![
+                make_ctx(1, None, 0),
+                make_ctx(2, Some(1), 1),
+                make_ctx(3, Some(2), 2),
+            ],
+            0,
+        );
+
+        assert!(!router.can_move_subtree_to_parent(0, Some(3)));
+        assert!(!router.move_subtree_to_parent(0, Some(3)));
+        let rows: Vec<(u64, Option<u64>, u32)> = router
+            .iter()
+            .map(|ctx| (ctx.context_id, ctx.parent_id, ctx.depth))
+            .collect();
+        assert_eq!(rows, vec![(1, None, 0), (2, Some(1), 1), (3, Some(2), 2)]);
+    }
+
+    #[test]
+    fn move_subtree_to_parent_rejects_moves_past_depth_cap() {
+        let mut router = WorkspaceRouter::new(
+            vec![
+                make_ctx(1, None, 0),
+                make_ctx(2, Some(1), 1),
+                make_ctx(3, Some(2), 2),
+                make_ctx(4, Some(3), 3),
+                make_ctx(5, None, 0),
+                make_ctx(6, Some(5), 1),
+            ],
+            0,
+        );
+
+        assert!(!router.can_move_subtree_to_parent(1, Some(6)));
+        assert!(!router.move_subtree_to_parent(1, Some(6)));
+    }
+
+    #[test]
+    fn move_subtree_to_index_keeps_subtree_contiguous() {
+        let mut router = WorkspaceRouter::new(
+            vec![
+                make_ctx(1, None, 0),
+                make_ctx(2, Some(1), 1),
+                make_ctx(3, Some(2), 2),
+                make_ctx(4, None, 0),
+            ],
+            1,
+        );
+
+        assert!(router.move_subtree_to_index(0, 4));
+        let ids: Vec<u64> = router.iter().map(|ctx| ctx.context_id).collect();
+        assert_eq!(ids, vec![4, 1, 2, 3]);
+        assert_eq!(router.active().context_id, 2);
+    }
+
+    #[test]
+    fn set_subtree_parked_updates_descendants() {
+        let mut router = WorkspaceRouter::new(
+            vec![
+                make_ctx(1, None, 0),
+                make_ctx(2, Some(1), 1),
+                make_ctx(3, None, 0),
+            ],
+            0,
+        );
+
+        assert!(router.set_subtree_parked(0, true));
+        let parked: Vec<bool> = router.iter().map(|ctx| ctx.parked).collect();
+        assert_eq!(parked, vec![true, true, false]);
     }
 }

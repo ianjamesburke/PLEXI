@@ -16,13 +16,29 @@ fn drop_slot_from_rects(rects: &[Rect], mouse_y: f32) -> usize {
     rects.len()
 }
 
+const NEST_DROP_X_OFFSET: f32 = 54.0;
+const NEST_DROP_Y_FRACTION: f32 = 0.25;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SidebarDropMode {
+    TopLevelSlot,
+    Nest { target_idx: usize },
+}
+
 /// Where a dragged context will land when released: which section (active vs.
-/// parked) and the slot within that section's display list. A drop fully
-/// determines both the context's `parked` flag and its order.
+/// parked), the slot within that section's display list, and whether the drop
+/// means top-level placement or nesting under a specific row.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct SidebarDrop {
     parked: bool,
     slot: usize,
+    mode: SidebarDropMode,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SidebarRowInfo {
+    pub(crate) router_idx: usize,
+    pub(crate) top_level_number: Option<usize>,
 }
 
 /// Resolve a dragged context against the current pointer position. The Parked
@@ -38,13 +54,34 @@ fn resolve_drag_drop(
     src_slot: usize,
     parked_header: Option<Rect>,
     pointer: Option<egui::Pos2>,
-    active_rects: &[Rect],
-    parked_rects: &[Rect],
+    active_rects: &[(Rect, usize)],
+    parked_rects: &[(Rect, usize)],
 ) -> Option<SidebarDrop> {
     let pos = pointer?;
     let into_parked = parked_header.map_or(false, |h| pos.y >= h.top());
-    let rects = if into_parked { parked_rects } else { active_rects };
-    let slot = drop_slot_from_rects(rects, pos.y);
+    let rects = if into_parked {
+        parked_rects
+    } else {
+        active_rects
+    };
+    let row_rects: Vec<Rect> = rects.iter().map(|(rect, _)| *rect).collect();
+    for (rect, target_idx) in rects {
+        let middle_top = rect.top() + rect.height() * NEST_DROP_Y_FRACTION;
+        let middle_bottom = rect.bottom() - rect.height() * NEST_DROP_Y_FRACTION;
+        if pos.y >= middle_top
+            && pos.y <= middle_bottom
+            && pos.x >= rect.left() + NEST_DROP_X_OFFSET
+        {
+            return Some(SidebarDrop {
+                parked: into_parked,
+                slot: drop_slot_from_rects(&row_rects, pos.y),
+                mode: SidebarDropMode::Nest {
+                    target_idx: *target_idx,
+                },
+            });
+        }
+    }
+    let slot = drop_slot_from_rects(&row_rects, pos.y);
     // Same-section drop onto the source's own edges leaves it in place.
     if into_parked == src_parked && (slot == src_slot || slot == src_slot + 1) {
         return None;
@@ -52,6 +89,7 @@ fn resolve_drag_drop(
     Some(SidebarDrop {
         parked: into_parked,
         slot,
+        mode: SidebarDropMode::TopLevelSlot,
     })
 }
 
@@ -68,6 +106,169 @@ fn reorder_line_y(rects: &[Rect], slot: usize) -> f32 {
 }
 
 impl PlexiApp {
+    pub(crate) fn sidebar_display_order(&self) -> Vec<usize> {
+        fn append_children(app: &PlexiApp, parent_id: Option<u64>, out: &mut Vec<usize>) {
+            for idx in 0..app.router.len() {
+                if app.router.get(idx).parent_id == parent_id {
+                    out.push(idx);
+                    let ctx_id = app.router.get(idx).context_id;
+                    append_children(app, Some(ctx_id), out);
+                }
+            }
+        }
+
+        let mut order = Vec::with_capacity(self.router.len());
+        append_children(self, None, &mut order);
+        for idx in 0..self.router.len() {
+            if !order.contains(&idx) {
+                order.push(idx);
+            }
+        }
+        order
+    }
+
+    pub(crate) fn sidebar_top_level_active_order(&self) -> Vec<usize> {
+        self.sidebar_display_order()
+            .into_iter()
+            .filter(|&idx| self.router.get(idx).parent_id.is_none() && !self.router.get(idx).parked)
+            .collect()
+    }
+
+    fn sidebar_section_order(&self, parked: bool) -> Vec<usize> {
+        self.sidebar_display_order()
+            .into_iter()
+            .filter(|&idx| self.router.get(idx).parked == parked)
+            .collect()
+    }
+
+    fn sidebar_has_children(&self, router_idx: usize) -> bool {
+        let ctx_id = self.router.get(router_idx).context_id;
+        self.router.iter().any(|ctx| ctx.parent_id == Some(ctx_id))
+    }
+
+    fn sidebar_has_collapsed_ancestor_in_section(&self, router_idx: usize, parked: bool) -> bool {
+        let mut parent_id = self.router.get(router_idx).parent_id;
+        while let Some(pid) = parent_id {
+            let Some(parent_idx) = self.router.position(|ctx| ctx.context_id == pid) else {
+                break;
+            };
+            let parent = self.router.get(parent_idx);
+            if parent.parked == parked && self.collapsed_contexts.contains(&pid) {
+                return true;
+            }
+            parent_id = parent.parent_id;
+        }
+        false
+    }
+
+    pub(crate) fn sidebar_visible_rows(&self, parked: bool) -> Vec<SidebarRowInfo> {
+        let mut top_level_number = 0usize;
+        let mut rows = Vec::new();
+        for router_idx in self.sidebar_section_order(parked) {
+            let ctx = self.router.get(router_idx);
+            let number = if !parked && ctx.parent_id.is_none() {
+                let n = top_level_number;
+                top_level_number += 1;
+                Some(n)
+            } else {
+                None
+            };
+            if self.sidebar_has_collapsed_ancestor_in_section(router_idx, parked) {
+                continue;
+            }
+            rows.push(SidebarRowInfo {
+                router_idx,
+                top_level_number: number,
+            });
+        }
+        rows
+    }
+
+    fn active_context_descends_from(&self, ancestor_context_id: u64) -> bool {
+        let mut current = Some(self.router.active().context_id);
+        while let Some(ctx_id) = current {
+            if ctx_id == ancestor_context_id {
+                return true;
+            }
+            current = self
+                .router
+                .iter()
+                .find(|ctx| ctx.context_id == ctx_id)
+                .and_then(|ctx| ctx.parent_id);
+        }
+        false
+    }
+
+    fn toggle_context_children_collapsed(&mut self, router_idx: usize) {
+        if !self.sidebar_has_children(router_idx) {
+            return;
+        }
+        let context_id = self.router.get(router_idx).context_id;
+        if self.collapsed_contexts.remove(&context_id) {
+            log::info!("sidebar: expanded child rows for context id={context_id}");
+            return;
+        }
+        if self.router.active().context_id != context_id
+            && self.active_context_descends_from(context_id)
+        {
+            self.switch_workspace(router_idx);
+        }
+        self.collapsed_contexts.insert(context_id);
+        log::info!("sidebar: collapsed child rows for context id={context_id}");
+    }
+
+    fn sidebar_previous_top_level_context(&self, router_idx: usize) -> Option<usize> {
+        let parked = self.router.get(router_idx).parked;
+        let display_order = self.sidebar_display_order();
+        let pos = display_order.iter().position(|&idx| idx == router_idx)?;
+        display_order[..pos].iter().rev().copied().find(|&idx| {
+            let ctx = self.router.get(idx);
+            ctx.parent_id.is_none() && ctx.parked == parked
+        })
+    }
+
+    fn sidebar_top_level_insert_index(
+        &self,
+        parked: bool,
+        visible_slot: usize,
+        moving_id: u64,
+    ) -> usize {
+        let visible_rows = self.sidebar_visible_rows(parked);
+        let mut top_level_slot = 0usize;
+        for row in visible_rows.iter().take(visible_slot) {
+            let ctx = self.router.get(row.router_idx);
+            if ctx.parent_id.is_none() && ctx.context_id != moving_id {
+                top_level_slot += 1;
+            }
+        }
+
+        let top_level_indices: Vec<usize> = self
+            .sidebar_display_order()
+            .into_iter()
+            .filter(|&idx| {
+                let ctx = self.router.get(idx);
+                ctx.parked == parked && ctx.parent_id.is_none() && ctx.context_id != moving_id
+            })
+            .collect();
+
+        if let Some(&target_idx) = top_level_indices.get(top_level_slot) {
+            return target_idx;
+        }
+        top_level_indices
+            .last()
+            .map_or(self.router.len(), |&idx| self.router.subtree_end(idx))
+    }
+
+    fn switch_after_drag_park(&mut self, moved_idx: usize) {
+        let len = self.router.len();
+        let next = (1..len)
+            .map(|offset| (moved_idx + offset) % len)
+            .find(|&idx| !self.router.get(idx).parked);
+        if let Some(idx) = next {
+            self.switch_workspace(idx);
+        }
+    }
+
     pub(crate) fn draw_sidebar(&mut self, ui: &mut egui::Ui) {
         let sidebar_width = ui.available_width();
 
@@ -94,8 +295,8 @@ impl PlexiApp {
         let mut clicked_workspace: Option<usize> = None;
         let mut delete_context: Option<usize> = None;
         let mut menu_action: Option<(usize, WindowMenuAction)> = None;
-        let mut active_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
-        let mut parked_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
+        let mut active_rects: Vec<(Rect, usize)> = Vec::with_capacity(num_contexts);
+        let mut parked_rects: Vec<(Rect, usize)> = Vec::with_capacity(num_contexts);
         let mut drag_released = false;
         let mut unpark_context: Option<usize> = None;
 
@@ -105,41 +306,12 @@ impl PlexiApp {
             .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
             .and_then(|(w, tile)| w.get_focused_pane_cwd(tile));
 
-        // Build display order: top-level contexts first, each followed by children.
-        // Separate into active (unparked) and parked lists.
-        let mut display_order: Vec<usize> = Vec::with_capacity(num_contexts);
-        for i in 0..num_contexts {
-            if self.router.get(i).parent_id.is_none() {
-                display_order.push(i);
-                let ctx_id = self.router.get(i).context_id;
-                for j in 0..num_contexts {
-                    if self.router.get(j).parent_id == Some(ctx_id) {
-                        display_order.push(j);
-                    }
-                }
-            }
-        }
-        // Catch orphans whose parent was deleted.
-        for i in 0..num_contexts {
-            if !display_order.contains(&i) {
-                display_order.push(i);
-            }
-        }
-
-        // Partition: active contexts render in the main list, parked ones below.
-        let active_order: Vec<usize> = display_order
-            .iter()
-            .copied()
-            .filter(|&i| !self.router.get(i).parked)
-            .collect();
-        let parked_order: Vec<usize> = display_order
-            .iter()
-            .copied()
-            .filter(|&i| self.router.get(i).parked)
-            .collect();
+        let active_rows = self.sidebar_visible_rows(false);
+        let parked_rows = self.sidebar_visible_rows(true);
 
         // ── Active contexts ─────────────────────────────────────────────
-        for (display_idx, &i) in active_order.iter().enumerate() {
+        for row in active_rows.iter().copied() {
+            let i = row.router_idx;
             let is_active = i == self.router.active_idx();
             let is_renaming = self.renaming_window == Some(i);
             let is_dragging = self.drag_context == Some(i);
@@ -274,7 +446,7 @@ impl PlexiApp {
                     ui.add_space(4.0);
                 });
                 let row_rect = scope.response.rect;
-                active_rects.push(row_rect);
+                active_rects.push((row_rect, i));
                 ui.painter().set(
                     bg_idx,
                     egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill),
@@ -310,16 +482,21 @@ impl PlexiApp {
                 any_dragging,
                 action_enabled: num_contexts > 1 && !any_dragging,
                 ctx_name,
-                ctx_index: Some(display_idx),
+                ctx_index: row.top_level_number,
                 badge_count,
                 subtitle,
                 pane_dots,
                 indent,
+                child_toggle: self.sidebar_has_children(i).then_some(
+                    !self
+                        .collapsed_contexts
+                        .contains(&self.router.get(i).context_id),
+                ),
                 draggable: true,
             }
             .draw(ui, egui::Id::new(("ctx", i)), &self.colors);
 
-            active_rects.push(response.rect);
+            active_rects.push((response.rect, i));
 
             match action {
                 SidebarAction::DragStart => {
@@ -335,6 +512,8 @@ impl PlexiApp {
                 let num_ctxs = num_contexts;
                 let cwd_for_menu = focused_cwd.clone();
                 let has_root = self.router.get(i).root.is_some();
+                let prev_top_level = self.sidebar_previous_top_level_context(i);
+                let parent_id = self.router.get(i).parent_id;
                 response.context_menu(|ui| {
                     if ui.button("Rename").clicked() {
                         menu_action = Some((i, WindowMenuAction::Rename));
@@ -362,6 +541,24 @@ impl PlexiApp {
                         }
                         if ui.button("Move to Bottom").clicked() {
                             menu_action = Some((i, WindowMenuAction::MoveToBottom));
+                            ui.close_menu();
+                        }
+                    }
+                    if let Some(target_idx) = prev_top_level {
+                        let target_id = self.router.get(target_idx).context_id;
+                        if parent_id != Some(target_id) {
+                            let label =
+                                format!("Make subcontext of {}", self.router.get(target_idx).name);
+                            if ui.button(label).clicked() {
+                                menu_action =
+                                    Some((i, WindowMenuAction::MoveIntoContext(target_id)));
+                                ui.close_menu();
+                            }
+                        }
+                    }
+                    if parent_id.is_some() {
+                        if ui.button("Promote out one level").clicked() {
+                            menu_action = Some((i, WindowMenuAction::PromoteContext));
                             ui.close_menu();
                         }
                     }
@@ -406,6 +603,10 @@ impl PlexiApp {
                     SidebarAction::Delete => {
                         delete_context = Some(i);
                     }
+                    SidebarAction::ToggleChildren => {
+                        self.toggle_context_children_collapsed(i);
+                        self.save_workspace();
+                    }
                     SidebarAction::Rename => {
                         menu_action = Some((i, WindowMenuAction::Rename));
                     }
@@ -424,7 +625,7 @@ impl PlexiApp {
         // ── Parked section ──────────────────────────────────────────────
         // The header doubles as a drop target: while a context is being
         // dragged, render it even when empty so the drag can release onto it.
-        let parked_count = parked_order.len();
+        let parked_count = self.sidebar_section_order(true).len();
         let mut parked_header_rect: Option<Rect> = None;
         if parked_count > 0 || self.drag_context.is_some() {
             ui.add_space(8.0);
@@ -439,6 +640,7 @@ impl PlexiApp {
 
             let response = ListDropdownHeader::new(&label, expanded)
                 .indent(12.0)
+                .label_left(30.0)
                 .show(ui, divider_id, &self.colors);
             parked_header_rect = Some(response.rect);
             if response.clicked() {
@@ -447,7 +649,8 @@ impl PlexiApp {
             ui.add_space(4.0);
 
             if self.parked_section_expanded {
-                for &i in &parked_order {
+                for row in parked_rows.iter().copied() {
+                    let i = row.router_idx;
                     let ctx = self.router.get(i);
                     let ctx_name = ctx.name.clone();
                     let ctx_id = ctx.context_id;
@@ -513,11 +716,16 @@ impl PlexiApp {
                         subtitle,
                         pane_dots,
                         indent,
+                        child_toggle: self.sidebar_has_children(i).then_some(
+                            !self
+                                .collapsed_contexts
+                                .contains(&self.router.get(i).context_id),
+                        ),
                         draggable: true,
                     }
                     .draw(ui, egui::Id::new(("parked_ctx", i)), &self.colors);
 
-                    parked_rects.push(response.rect);
+                    parked_rects.push((response.rect, i));
 
                     response.context_menu(|ui| {
                         if ui.button("Unpark").clicked() {
@@ -532,6 +740,10 @@ impl PlexiApp {
                         }
                         SidebarAction::DragEnd => {
                             drag_released = true;
+                        }
+                        SidebarAction::ToggleChildren => {
+                            self.toggle_context_children_collapsed(i);
+                            self.save_workspace();
                         }
                         // A plain click must not unpark — parked contexts only
                         // come back via a drag into the active list or the
@@ -551,9 +763,15 @@ impl PlexiApp {
         let src_section = self.drag_context.map(|src| {
             let src_parked = self.router.get(src).parked;
             let src_slot = if src_parked {
-                parked_order.iter().position(|&i| i == src).unwrap_or(0)
+                parked_rows
+                    .iter()
+                    .position(|row| row.router_idx == src)
+                    .unwrap_or(0)
             } else {
-                active_order.iter().position(|&i| i == src).unwrap_or(0)
+                active_rows
+                    .iter()
+                    .position(|row| row.router_idx == src)
+                    .unwrap_or(0)
             };
             (src_parked, src_slot)
         });
@@ -588,83 +806,106 @@ impl PlexiApp {
                     );
                 }
             } else {
-                let line_y = reorder_line_y(target_rects, drop.slot);
-                let x0 = target_rects.first().map_or(0.0, |r| r.min.x);
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(x0, line_y),
-                        egui::pos2(x0 + sidebar_width, line_y),
-                    ],
-                    Stroke::new(2.0, self.colors.accent),
-                );
+                match drop.mode {
+                    SidebarDropMode::TopLevelSlot => {
+                        let rects: Vec<Rect> = target_rects.iter().map(|(rect, _)| *rect).collect();
+                        let line_y = reorder_line_y(&rects, drop.slot);
+                        let x0 = rects.first().map_or(0.0, |r| r.min.x);
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(x0, line_y),
+                                egui::pos2(x0 + sidebar_width, line_y),
+                            ],
+                            Stroke::new(2.0, self.colors.accent),
+                        );
+                    }
+                    SidebarDropMode::Nest { target_idx } => {
+                        if let Some((rect, _)) =
+                            target_rects.iter().find(|(_, idx)| *idx == target_idx)
+                        {
+                            ui.painter().rect_stroke(
+                                rect.shrink(2.0),
+                                crate::ui::style::RADIUS_SM,
+                                Stroke::new(1.5, self.colors.accent),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                    }
+                }
             }
         }
 
         if drag_released {
-            if let (Some(src), Some(drop), Some((src_parked, src_slot))) =
+            if let (Some(src), Some(drop), Some((src_parked, _src_slot))) =
                 (self.drag_context, drop_target, src_section)
             {
-                // Rebuild the active/parked section lists with `src` moved to its
-                // new home, then commit the full ordering + parked flag at once.
-                let mut new_active = active_order.clone();
-                let mut new_parked = parked_order.clone();
-                if src_parked {
-                    new_parked.retain(|&i| i != src);
-                } else {
-                    new_active.retain(|&i| i != src);
-                }
-                let dest = if drop.parked {
-                    &mut new_parked
-                } else {
-                    &mut new_active
-                };
-                // Same-section moves past the source's old slot shift down by one
-                // once it is removed.
-                let slot = if drop.parked == src_parked && drop.slot > src_slot {
-                    drop.slot - 1
-                } else {
-                    drop.slot
-                };
-                dest.insert(slot.min(dest.len()), src);
-
                 let src_id = self.router.get(src).context_id;
                 let was_active = self.router.active_idx() == src;
-                self.router.get_mut(src).parked = drop.parked;
-                let mut new_order = new_active;
-                new_order.extend(new_parked);
-                self.router.apply_order(&new_order);
                 self.renaming_window = None;
 
-                let new_src_idx = self
-                    .router
-                    .position(|c| c.context_id == src_id)
-                    .unwrap_or(self.router.active_idx());
-                if drop.parked && !src_parked {
-                    log::info!("sidebar: drag-park context id={src_id} slot={}", drop.slot);
-                    if was_active {
-                        // Hand focus to the nearest unparked neighbor.
-                        let len = self.router.len();
-                        let next = (1..len)
-                            .map(|o| (new_src_idx + o) % len)
-                            .find(|&i| !self.router.get(i).parked);
-                        if let Some(n) = next {
-                            self.switch_workspace(n);
+                let moved = match drop.mode {
+                    SidebarDropMode::Nest { target_idx } => {
+                        let parent_id = self.router.get(target_idx).context_id;
+                        if self.router.can_move_subtree_to_parent(src, Some(parent_id)) {
+                            let target_parked = self.router.get(target_idx).parked;
+                            self.router.set_subtree_parked(src, target_parked);
+                            let moved = self.router.move_subtree_to_parent(src, Some(parent_id));
+                            if moved {
+                                self.collapsed_contexts.remove(&parent_id);
+                                log::info!(
+                                    "sidebar: drag-nested context id={src_id} under parent id={parent_id}"
+                                );
+                            }
+                            moved
+                        } else {
+                            log::info!(
+                                "sidebar: rejected invalid drag-nest context id={src_id} target_idx={target_idx}"
+                            );
+                            false
                         }
                     }
-                } else if !drop.parked && src_parked {
-                    log::info!(
-                        "sidebar: drag-unpark context id={src_id} slot={}",
-                        drop.slot
-                    );
-                    self.switch_workspace(new_src_idx);
-                } else {
-                    log::info!(
-                        "sidebar: drag-reorder context id={src_id} parked={} slot={}",
-                        drop.parked,
-                        drop.slot
-                    );
+                    SidebarDropMode::TopLevelSlot => {
+                        self.router.set_subtree_parked(src, drop.parked);
+                        let src_after_park = self
+                            .router
+                            .position(|ctx| ctx.context_id == src_id)
+                            .unwrap_or(src);
+                        if self.router.get(src_after_park).parent_id.is_some() {
+                            self.router.move_subtree_to_parent(src_after_park, None);
+                        }
+                        let src_after_promote = self
+                            .router
+                            .position(|ctx| ctx.context_id == src_id)
+                            .unwrap_or(src_after_park);
+                        let insert_pos =
+                            self.sidebar_top_level_insert_index(drop.parked, drop.slot, src_id);
+                        let moved = self
+                            .router
+                            .move_subtree_to_index(src_after_promote, insert_pos);
+                        if moved {
+                            log::info!(
+                                "sidebar: drag-top-level context id={src_id} parked={} slot={}",
+                                drop.parked,
+                                drop.slot
+                            );
+                        }
+                        moved
+                    }
+                };
+
+                if moved {
+                    let new_src_idx = self
+                        .router
+                        .position(|c| c.context_id == src_id)
+                        .unwrap_or(self.router.active_idx());
+                    let now_parked = self.router.get(new_src_idx).parked;
+                    if now_parked && !src_parked && was_active {
+                        self.switch_after_drag_park(new_src_idx);
+                    } else if !now_parked && src_parked {
+                        self.switch_workspace(new_src_idx);
+                    }
+                    self.save_workspace();
                 }
-                self.save_workspace();
             }
             self.drag_context = None;
         }
@@ -699,6 +940,22 @@ impl PlexiApp {
                 WindowMenuAction::MoveToBottom => {
                     self.renaming_window = None;
                     self.router.move_to_back_tracking_active(i);
+                }
+                WindowMenuAction::MoveIntoContext(parent_id) => {
+                    let moved_id = self.router.get(i).context_id;
+                    if self.router.move_subtree_to_parent(i, Some(parent_id)) {
+                        log::info!(
+                            "sidebar: reparent context id={moved_id} under parent id={parent_id}"
+                        );
+                        self.save_workspace();
+                    }
+                }
+                WindowMenuAction::PromoteContext => {
+                    let moved_id = self.router.get(i).context_id;
+                    if self.router.move_subtree_to_parent(i, None) {
+                        log::info!("sidebar: promoted context id={moved_id} out one level");
+                        self.save_workspace();
+                    }
                 }
                 WindowMenuAction::SetRoot(path) => {
                     log::info!(
@@ -766,7 +1023,7 @@ impl PlexiApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{reorder_line_y, resolve_drag_drop, SidebarDrop};
+    use super::{reorder_line_y, resolve_drag_drop, SidebarDrop, SidebarDropMode};
     use egui::{pos2, vec2, Rect};
 
     // Two stacked active rows (y in [0,20] and [20,40]), the Parked header at
@@ -783,6 +1040,13 @@ mod tests {
             Rect::from_min_size(pos2(0.0, 90.0), vec2(100.0, 20.0)),
         ]
     }
+    fn with_ids(rects: Vec<Rect>) -> Vec<(Rect, usize)> {
+        rects
+            .into_iter()
+            .enumerate()
+            .map(|(idx, rect)| (rect, idx))
+            .collect()
+    }
     fn header() -> Rect {
         Rect::from_min_size(pos2(0.0, 50.0), vec2(100.0, 20.0))
     }
@@ -793,13 +1057,14 @@ mod tests {
         pointer_y: f32,
         parked_rects: &[Rect],
     ) -> Option<SidebarDrop> {
+        let parked_rects = with_ids(parked_rects.to_vec());
         resolve_drag_drop(
             src_parked,
             src_slot,
             Some(header()),
             Some(pos2(10.0, pointer_y)),
-            &active_rects(),
-            parked_rects,
+            &with_ids(active_rects()),
+            &parked_rects,
         )
     }
 
@@ -807,35 +1072,90 @@ mod tests {
     fn active_dragged_into_empty_parked_parks() {
         // No parked rows yet; dropping below the header targets parked slot 0.
         let target = resolve(false, 0, 60.0, &[]);
-        assert_eq!(target, Some(SidebarDrop { parked: true, slot: 0 }));
+        assert_eq!(
+            target,
+            Some(SidebarDrop {
+                parked: true,
+                slot: 0,
+                mode: SidebarDropMode::TopLevelSlot,
+            })
+        );
     }
 
     #[test]
     fn active_dragged_between_parked_rows_picks_slot() {
         // Pointer over the gap between the two parked rows → parked slot 1.
         let target = resolve(false, 0, 88.0, &parked_rects());
-        assert_eq!(target, Some(SidebarDrop { parked: true, slot: 1 }));
+        assert_eq!(
+            target,
+            Some(SidebarDrop {
+                parked: true,
+                slot: 1,
+                mode: SidebarDropMode::TopLevelSlot,
+            })
+        );
     }
 
     #[test]
     fn parked_dragged_into_active_unparks_at_slot() {
         // Dragging parked row, pointer over the first active row → active slot 0.
         let target = resolve(true, 0, 5.0, &parked_rects());
-        assert_eq!(target, Some(SidebarDrop { parked: false, slot: 0 }));
+        assert_eq!(
+            target,
+            Some(SidebarDrop {
+                parked: false,
+                slot: 0,
+                mode: SidebarDropMode::TopLevelSlot,
+            })
+        );
     }
 
     #[test]
     fn reorder_within_active_list() {
         // Dragging active row 0 down past the last active row → active slot 2.
         let target = resolve(false, 0, 35.0, &parked_rects());
-        assert_eq!(target, Some(SidebarDrop { parked: false, slot: 2 }));
+        assert_eq!(
+            target,
+            Some(SidebarDrop {
+                parked: false,
+                slot: 2,
+                mode: SidebarDropMode::TopLevelSlot,
+            })
+        );
     }
 
     #[test]
     fn reorder_within_parked_list() {
         // Dragging parked row 0 (src_slot 0) past parked row 1 → parked slot 2.
         let target = resolve(true, 0, 105.0, &parked_rects());
-        assert_eq!(target, Some(SidebarDrop { parked: true, slot: 2 }));
+        assert_eq!(
+            target,
+            Some(SidebarDrop {
+                parked: true,
+                slot: 2,
+                mode: SidebarDropMode::TopLevelSlot,
+            })
+        );
+    }
+
+    #[test]
+    fn dropping_on_row_content_nests_under_that_row() {
+        let target = resolve_drag_drop(
+            false,
+            1,
+            Some(header()),
+            Some(pos2(80.0, 10.0)),
+            &with_ids(active_rects()),
+            &with_ids(parked_rects()),
+        );
+        assert_eq!(
+            target,
+            Some(SidebarDrop {
+                parked: false,
+                slot: 0,
+                mode: SidebarDropMode::Nest { target_idx: 0 },
+            })
+        );
     }
 
     #[test]
@@ -859,8 +1179,8 @@ mod tests {
             0,
             Some(header()),
             None,
-            &active_rects(),
-            &parked_rects(),
+            &with_ids(active_rects()),
+            &with_ids(parked_rects()),
         );
         assert_eq!(target, None);
     }

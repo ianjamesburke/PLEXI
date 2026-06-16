@@ -1,4 +1,4 @@
-use crate::ui::list::{paint_selection, paint_text_centered};
+use crate::ui::list::{paint_disclosure_caret, paint_selection, paint_text_centered};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::{Align, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Vec2};
@@ -51,6 +51,7 @@ fn shorten_path(path: &str) -> String {
 pub enum SidebarAction {
     None,
     Activate,
+    ToggleChildren,
     Rename,
     Delete,
     DragStart,
@@ -80,6 +81,9 @@ pub struct ContextItem {
     pub pane_dots: Option<PaneDots>,
     /// Nesting depth for subcontexts (0 = top-level).
     pub indent: u32,
+    /// `Some(expanded)` when the row owns child contexts and should paint a
+    /// chevron beneath the gutter number.
+    pub child_toggle: Option<bool>,
     /// Whether this row supports drag reordering. When false, hover shows
     /// PointingHand instead of Grab and drag actions are suppressed.
     pub draggable: bool,
@@ -178,6 +182,7 @@ impl ContextItem {
         let badge_count = self.badge_count;
         let subtitle = self.subtitle.clone();
         let pane_dots = self.pane_dots;
+        let child_toggle = self.child_toggle;
         let accent_color = colors.accent;
         let text_primary = colors.text_primary;
         let text_dim = colors.text_dim;
@@ -374,6 +379,30 @@ impl ContextItem {
             }
         }
 
+        let chevron_rect = child_toggle.map(|expanded| {
+            let lower_y0 = row_rect.min.y + ROW_PAD_V + name_row_h;
+            let lower_y1 = row_rect.max.y - ROW_PAD_V;
+            let center_y = if lower_y1 > lower_y0 {
+                (lower_y0 + lower_y1) / 2.0
+            } else {
+                row_rect.min.y + ROW_PAD_V + name_row_h + 6.0
+            };
+            let hit_rect = Rect::from_center_size(
+                egui::pos2(row_rect.min.x + indent + GUTTER_W / 2.0, center_y),
+                Vec2::new(24.0, 20.0),
+            );
+            let color = with_alpha(
+                if ui.rect_contains_pointer(hit_rect) {
+                    text_primary
+                } else {
+                    text_dim
+                },
+                row_alpha,
+            );
+            paint_disclosure_caret(ui, hit_rect.center(), expanded, 4.0, color);
+            hit_rect
+        });
+
         let action_zone = if action_enabled {
             Some(Rect::from_min_max(
                 egui::pos2(row_rect.max.x - ACTION_ZONE_WIDTH, row_rect.min.y),
@@ -384,6 +413,7 @@ impl ContextItem {
         };
 
         let in_action = action_zone.map_or(false, |az| ui.rect_contains_pointer(az));
+        let in_chevron = chevron_rect.map_or(false, |rect| ui.rect_contains_pointer(rect));
 
         if let Some(az) = action_zone {
             if hovered && !is_dragging {
@@ -403,7 +433,7 @@ impl ContextItem {
             response.clone().on_hover_text("Delete context");
         }
 
-        if in_action {
+        if in_action || in_chevron {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         } else {
             let content_max_x = if action_enabled {
@@ -434,6 +464,8 @@ impl ContextItem {
             SidebarAction::DragStart
         } else if self.draggable && response.drag_stopped() {
             SidebarAction::DragEnd
+        } else if response.clicked() && in_chevron {
+            SidebarAction::ToggleChildren
         } else if response.clicked() && in_action && hovered {
             SidebarAction::Delete
         } else if response.clicked() {

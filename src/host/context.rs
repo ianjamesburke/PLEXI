@@ -14,6 +14,8 @@ pub(crate) enum WindowMenuAction {
     MoveUp,
     MoveDown,
     MoveToBottom,
+    MoveIntoContext(u64),
+    PromoteContext,
     Delete,
     SetRoot(PathBuf),
     ClearRoot,

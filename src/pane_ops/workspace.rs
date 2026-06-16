@@ -1606,6 +1606,7 @@ impl PlexiApp {
             contexts: saved_contexts,
             windows: saved_windows,
             context_active_window: self.context_active_window.clone(),
+            collapsed_contexts: self.collapsed_contexts.clone(),
         };
 
         if let Err(e) = ws.save() {

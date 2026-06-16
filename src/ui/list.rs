@@ -7,6 +7,31 @@ pub struct ListDropdownHeader<'a> {
     label: &'a str,
     expanded: bool,
     indent: f32,
+    label_left: Option<f32>,
+}
+
+pub(crate) fn paint_disclosure_caret(
+    ui: &egui::Ui,
+    center: Pos2,
+    expanded: bool,
+    radius: f32,
+    color: Color32,
+) {
+    let points = if expanded {
+        vec![
+            Pos2::new(center.x - radius, center.y - radius * 0.45),
+            Pos2::new(center.x + radius, center.y - radius * 0.45),
+            Pos2::new(center.x, center.y + radius * 0.65),
+        ]
+    } else {
+        vec![
+            Pos2::new(center.x - radius * 0.45, center.y - radius),
+            Pos2::new(center.x - radius * 0.45, center.y + radius),
+            Pos2::new(center.x + radius * 0.65, center.y),
+        ]
+    };
+    ui.painter()
+        .add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
 }
 
 impl<'a> ListDropdownHeader<'a> {
@@ -15,11 +40,17 @@ impl<'a> ListDropdownHeader<'a> {
             label,
             expanded,
             indent: style::LIST_ROW_PAD_H,
+            label_left: None,
         }
     }
 
     pub fn indent(mut self, indent: f32) -> Self {
         self.indent = indent;
+        self
+    }
+
+    pub fn label_left(mut self, label_left: f32) -> Self {
+        self.label_left = Some(label_left);
         self
     }
 
@@ -43,38 +74,22 @@ impl<'a> ListDropdownHeader<'a> {
             Pos2::new(rect.left() + self.indent, rect.top()),
             Vec2::new(style::LIST_DROPDOWN_CHEVRON_W, rect.height()),
         );
-        let center = chevron_rect.center();
         let chevron_color = if response.hovered() {
             colors.text_primary
         } else {
             colors.text_section
         };
-        let r = 4.5;
-        let points = if self.expanded {
-            vec![
-                Pos2::new(center.x - r, center.y - r * 0.45),
-                Pos2::new(center.x + r, center.y - r * 0.45),
-                Pos2::new(center.x, center.y + r * 0.65),
-            ]
-        } else {
-            vec![
-                Pos2::new(center.x - r * 0.45, center.y - r),
-                Pos2::new(center.x - r * 0.45, center.y + r),
-                Pos2::new(center.x + r * 0.65, center.y),
-            ]
-        };
-        ui.painter().add(egui::Shape::convex_polygon(
-            points,
-            chevron_color,
-            Stroke::NONE,
-        ));
+        paint_disclosure_caret(ui, chevron_rect.center(), self.expanded, 4.5, chevron_color);
 
         paint_text_left_center(
             ui,
             self.label,
             crate::ui::theme::font_medium(style::TEXT_CAPTION),
             colors.text_section,
-            chevron_rect.right() + style::SPACE_XS,
+            rect.left()
+                + self
+                    .label_left
+                    .unwrap_or_else(|| chevron_rect.right() - rect.left() + style::SPACE_XS),
             rect.center().y,
         );
 
