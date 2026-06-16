@@ -86,3 +86,47 @@ fn wake_request_is_noop_on_host() {
     let panes_after: usize = h.app.windows.iter().map(|w| w.panes.len()).sum();
     assert_eq!(panes_after, panes_before, "wake must not touch panes");
 }
+
+/// #2283: a `[file_handlers]` entry routes a matching extension into the named
+/// Plexi app via the host open resolver (OpenInPane), rather than falling
+/// through to the OS opener. Proves resolution tier (a) + the launch path.
+#[test]
+fn file_handler_config_routes_extension_to_app() {
+    let ctx = egui::Context::default();
+    let ft = crate::platform::logging::new_frame_tick();
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
+
+    // Map .md -> the builtin text-editor.
+    let mut handlers = std::collections::HashMap::new();
+    handlers.insert("md".to_string(), "app:text-editor".to_string());
+    app.config.file_handlers = Some(handlers);
+
+    let panes_before: usize = app.windows.iter().map(|w| w.panes.len()).sum();
+
+    // sender_pane_id = 0 -> no pane -> workspace path check is bypassed
+    // (trusted host path), so a temp .md path opens cleanly.
+    let path = std::env::temp_dir()
+        .join("note.md")
+        .to_string_lossy()
+        .to_string();
+    app.dispatch_open_artifact(0, path, crate::app_protocol::ArtifactOpenMode::OpenInPane);
+
+    let panes_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
+    assert_eq!(
+        panes_after,
+        panes_before + 1,
+        "the md handler should open exactly one new in-Plexi pane"
+    );
+
+    let opened_text_editor = app.windows.iter().any(|w| {
+        w.panes.values().any(|p| {
+            p.as_app()
+                .map(|a| a.runtime.type_id() == "text-editor")
+                .unwrap_or(false)
+        })
+    });
+    assert!(
+        opened_text_editor,
+        "the file_handler-routed pane should be the text-editor app"
+    );
+}

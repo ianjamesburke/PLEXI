@@ -321,10 +321,9 @@ impl PlexiApp {
         log::info!("OpenArtifact: path={path:?} mode={mode:?}");
         match mode {
             ArtifactOpenMode::OpenInPane => {
-                // For v3.5: directories open the file browser; files fall
-                // through to OpenWithDefault. The proper "open .py in text
-                // editor / .png in image viewer" routing wants a content-
-                // type registry — out of scope here.
+                // Directories open the file browser; files run through the
+                // single open resolver (#2283): `[file_handlers]` → manifest
+                // `file_types` → builtin media players → OS default.
                 let p = std::path::PathBuf::from(&path);
                 if p.is_dir() {
                     // Reuse the file-browser open path, but anchored at
@@ -333,7 +332,7 @@ impl PlexiApp {
                     // its body here with our path.
                     self.open_file_browser_at(p);
                 } else {
-                    shell_open(&path, false);
+                    self.open_file_in_app(&path);
                 }
             }
             ArtifactOpenMode::RevealInFinder => shell_open(&path, true),
@@ -373,6 +372,101 @@ impl PlexiApp {
             Some("split_v"),
             Some(0.5),
         );
+    }
+
+    /// The single file-open resolver (#2283). Decides which handler opens
+    /// `path` and launches it. Resolution order, first match wins:
+    ///   (a) user `[file_handlers]` override
+    ///   (b) app manifest `file_types` association
+    ///   (c) builtin media players (`MediaKind`)
+    ///   (d) OS default opener — mandatory fallback
+    /// Any `app:` target that is absent or fails to launch falls through to the
+    /// OS opener rather than silently doing nothing — this is what makes
+    /// "Enter on a video with no installed player" open in the OS player
+    /// instead of vanishing.
+    fn open_file_in_app(&mut self, path: &str) {
+        use crate::app::file_handlers::FileHandler;
+        let ext = std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        // (a) user `[file_handlers]` override.
+        if let Some(spec) = self
+            .config
+            .file_handlers
+            .as_ref()
+            .and_then(|m| m.get(&ext))
+            .cloned()
+        {
+            match FileHandler::parse(&spec) {
+                Some(FileHandler::Os) => {
+                    log::info!("open: '{path}' → OS default (file_handlers override)");
+                    shell_open(path, false);
+                    return;
+                }
+                Some(FileHandler::App(id)) => {
+                    if self.launch_app_with_path(&id, path) {
+                        log::info!("open: '{path}' → app '{id}' (file_handlers override)");
+                        return;
+                    }
+                    log::warn!(
+                        "open: file_handler app '{id}' for .{ext} unavailable — OS fallback for '{path}'"
+                    );
+                    shell_open(path, false);
+                    return;
+                }
+                Some(FileHandler::Cmd(cmd)) => {
+                    log::warn!(
+                        "open: cmd handler '{cmd}' for .{ext} not yet implemented — OS fallback for '{path}'"
+                    );
+                    shell_open(path, false);
+                    return;
+                }
+                None => log::warn!(
+                    "open: invalid file_handler '{spec}' for .{ext} — ignoring, continuing resolution"
+                ),
+            }
+        }
+
+        // (b) app manifest `file_types` association.
+        if let Some(id) = self.registry.handler_for_ext(&ext).map(|s| s.to_string()) {
+            if self.launch_app_with_path(&id, path) {
+                log::info!("open: '{path}' → app '{id}' (manifest file_types)");
+                return;
+            }
+            log::warn!("open: manifest handler '{id}' for .{ext} failed — continuing resolution");
+        }
+
+        // (c) builtin media players.
+        if let Some(id) =
+            crate::file_browser::MediaKind::for_path(std::path::Path::new(path)).player_app_id()
+        {
+            if self.launch_app_with_path(id, path) {
+                log::info!("open: '{path}' → builtin media player '{id}'");
+                return;
+            }
+            log::warn!("open: media player '{id}' not installed — OS fallback for '{path}'");
+        }
+
+        // (d) OS default — mandatory fallback.
+        log::info!("open: '{path}' → OS default (no Plexi handler)");
+        shell_open(path, false);
+    }
+
+    /// Launch app `id` with `path` as its sole arg, using the app's natural
+    /// placement (`None` layout → manifest `[launch] placement` → `overlay`).
+    /// Returns `true` on a successful launch; `false` when the app is not
+    /// available, so the resolver can fall through to the OS opener.
+    fn launch_app_with_path(&mut self, id: &str, path: &str) -> bool {
+        match self.launch_app_by_id_with_layout(id, None, &[path.to_string()], None) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("open: launch of app '{id}' for '{path}' failed — {e}");
+                false
+            }
+        }
     }
 }
 

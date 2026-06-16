@@ -941,6 +941,12 @@ impl PlexiApp {
             return Ok(());
         }
 
+        // When the caller does not specify a placement, fall back to the app's
+        // manifest-declared `[launch] placement` before the host default
+        // (`overlay`). One resolution point so every downstream hint inherits
+        // it (#2283). Builtins are not in the registry → None → `overlay`.
+        let layout = layout.or_else(|| self.registry.placement_for(id));
+
         let cwd_explicit = cwd_override.is_some();
         let cwd = cwd_override
             .or_else(|| {
