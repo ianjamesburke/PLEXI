@@ -130,3 +130,33 @@ fn file_handler_config_routes_extension_to_app() {
         "the file_handler-routed pane should be the text-editor app"
     );
 }
+
+/// The file browser must open at the context root when one is set, not the
+/// focused pane's CWD. Mirrors `resolve_new_pane_cwd`'s precedence
+/// (context.root → focused cwd → home) that every other new-pane path uses.
+#[test]
+fn file_browser_opens_at_context_root() {
+    let ctx = egui::Context::default();
+    let ft = crate::platform::logging::new_frame_tick();
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
+
+    let root = std::env::temp_dir().join("plexi-fb-root-test");
+    std::fs::create_dir_all(&root).expect("mkdir root");
+    app.set_context_root(root.clone(), None);
+
+    app.open_file_browser();
+
+    let fb_root = app.windows.iter().find_map(|w| {
+        w.panes.values().find_map(|p| {
+            p.as_app()
+                .filter(|a| a.runtime.type_id() == "file_browser")
+                .map(|a| a.workspace_root.clone())
+        })
+    });
+
+    assert_eq!(
+        fb_root.as_deref(),
+        Some(root.as_path()),
+        "file browser should open at the context root, not the focused pane CWD"
+    );
+}
