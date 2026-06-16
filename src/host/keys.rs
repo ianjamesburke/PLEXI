@@ -25,7 +25,6 @@ use crate::config::KeybindingsConfig;
 // Cmd+Shift+R                 — rename context
 // Cmd+[                       — nav back / focus history back
 // Cmd+]                       — focus history forward
-// Cmd+Arrow                   — navigate panes (alias for Cmd+H/J/K/L)
 // Cmd+Shift+Up / Cmd+Shift+Down — scroll
 // Cmd+= / Cmd+-               — font size
 // Cmd+F                       — terminal search (handled inside egui_term, not host)
@@ -819,35 +818,6 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
         BindingEntry {
             modifiers: b.navigate_right.0,
             key: b.navigate_right.1,
-            exact: true,
-            context: BindingContext::Normal,
-            action: Action::Navigate(Direction::Right),
-        },
-        // Cmd+Arrow aliases for Cmd+H/J/K/L pane navigation.
-        BindingEntry {
-            modifiers: cmd(),
-            key: egui::Key::ArrowLeft,
-            exact: true,
-            context: BindingContext::Normal,
-            action: Action::Navigate(Direction::Left),
-        },
-        BindingEntry {
-            modifiers: cmd(),
-            key: egui::Key::ArrowDown,
-            exact: true,
-            context: BindingContext::Normal,
-            action: Action::Navigate(Direction::Down),
-        },
-        BindingEntry {
-            modifiers: cmd(),
-            key: egui::Key::ArrowUp,
-            exact: true,
-            context: BindingContext::Normal,
-            action: Action::Navigate(Direction::Up),
-        },
-        BindingEntry {
-            modifiers: cmd(),
-            key: egui::Key::ArrowRight,
             exact: true,
             context: BindingContext::Normal,
             action: Action::Navigate(Direction::Right),
