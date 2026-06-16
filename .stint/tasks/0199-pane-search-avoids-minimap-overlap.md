@@ -1,9 +1,8 @@
 ---
 id: "0199"
 title: "Pane search: avoid minimap overlap"
-status: todo
+status: backlog
 estimate: "1h"
-sprint: "s34"
 blocked_by: []
 gh_issue: []
 area:
@@ -14,6 +13,7 @@ tags:
   - "search"
   - "minimap"
 ---
+
 
 Move the Cmd+F pane search UI out of the minimap collision zone so search and the top-right minimap can be visible at the same time.
 

@@ -1,9 +1,8 @@
 ---
 id: "0198"
 title: "File Explorer: copy path menu and toast feedback"
-status: todo
+status: backlog
 estimate: "1h"
-sprint: "s34"
 blocked_by: []
 gh_issue: []
 area:
@@ -14,6 +13,7 @@ tags:
   - "file-explorer"
   - "ui"
 ---
+
 
 Add File Explorer actions for copying selected paths without overloading the existing file-operation copy buffer.
 
