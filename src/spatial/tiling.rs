@@ -217,7 +217,23 @@ pub(crate) fn paint_tab_bar(
         let content_left = tab_rect.left() + pip_space;
         let max_text_width = (tab_rect.right() - content_left - text_pad).max(0.0);
 
-        let galley = painter.layout(label, font.clone(), text_color, max_text_width);
+        let mut layout_job = egui::text::LayoutJob::default();
+        layout_job.append(
+            &label,
+            0.0,
+            egui::TextFormat {
+                font_id: font.clone(),
+                color: text_color,
+                ..Default::default()
+            },
+        );
+        layout_job.wrap = egui::text::TextWrapping {
+            max_width: max_text_width,
+            max_rows: 1,
+            break_anywhere: true,
+            overflow_character: Some('…'),
+        };
+        let galley = painter.ctx().fonts(|f| f.layout_job(layout_job));
 
         let text_pos = egui::pos2(
             content_left + (tab_rect.right() - content_left) / 2.0 - galley.size().x / 2.0,

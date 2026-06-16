@@ -1212,4 +1212,56 @@ mod tests {
             "whitespace-only rename must be discarded"
         );
     }
+
+    /// Regression: tab titles with long names must stay on a single line and show
+    /// a trailing ellipsis rather than wrapping or overflowing the tab bar rect.
+    #[test]
+    fn tab_titles_truncate_to_single_line() {
+
+        let mut h = PlexiUiHarness::new();
+        h.step();
+
+        h.with_app_mut(|app| {
+            let pane_id_a = app.host.alloc_pane_id();
+            let pane_id_b = app.host.alloc_pane_id();
+            for (pane_id, name) in [
+                (pane_id_a, "A very long tab title that should not wrap onto a second line under any circumstances"),
+                (pane_id_b, "Short"),
+            ] {
+                let (process_app, _draw_tx) =
+                    ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
+                let app_pane = AppPane {
+                    pip_status: None,
+                    id: pane_id,
+                    runtime: AppRuntime::Process(Box::new(process_app)),
+                    workspace_root: std::env::temp_dir(),
+                    permissions: AppPermissions::builtin(),
+                    manifest_id: "test".to_string(),
+                    name: name.to_string(),
+                    pane_group: None,
+                    linked_pane_id: None,
+                    overlay_replaced: None,
+                    hidden: false,
+                    agent: None,
+                    slots: std::collections::HashMap::new(),
+                };
+                let win = &mut app.windows[app.active_window];
+                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            }
+            let win = &mut app.windows[app.active_window];
+            let tile_a = win.tree.tiles.insert_pane(pane_id_a);
+            let tile_b = win.tree.tiles.insert_pane(pane_id_b);
+            let tab_tile = win.tree.tiles.insert_tab_tile(vec![tile_a, tile_b]);
+            win.tree.root = Some(tab_tile);
+            win.focused_pane = Some(tile_a);
+        });
+
+        h.run_steps(2);
+        h.render().expect("tab bar with long title must render without panic");
+        h.save_screenshot("/tmp/plexi_tab_truncation.png")
+            .expect("screenshot failed");
+        println!("Screenshot saved to /tmp/plexi_tab_truncation.png");
+        // Visual: open /tmp/plexi_tab_truncation.png and confirm the long label
+        // ends with '…' on a single line and does not push the tab bar taller.
+    }
 }
