@@ -112,6 +112,33 @@ fn no_duplicate_exact_normal_chords() {
     }
 }
 
+/// Cmd+Arrow must NOT navigate panes — those chords belong to the text editor
+/// for line-boundary and document-navigation.
+#[test]
+fn cmd_arrow_does_not_navigate_panes() {
+    let table = default_table();
+    let arrow_keys = [
+        egui::Key::ArrowLeft,
+        egui::Key::ArrowRight,
+        egui::Key::ArrowUp,
+        egui::Key::ArrowDown,
+    ];
+    for key in arrow_keys {
+        let produces_navigate = table.iter().any(|e| {
+            e.key == key
+                && e.modifiers.command
+                && !e.modifiers.shift
+                && !e.modifiers.alt
+                && !e.modifiers.ctrl
+                && matches!(e.action, Action::Navigate(_))
+        });
+        assert!(
+            !produces_navigate,
+            "Cmd+{key:?} must not produce Navigate — text editors own that chord"
+        );
+    }
+}
+
 /// Every binding table entry must have a non-Global context OR be a globally
 /// available action. Verify the table is non-empty and all contexts are valid enum variants.
 #[test]
