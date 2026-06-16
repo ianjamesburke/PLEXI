@@ -1,9 +1,9 @@
 ---
 id: "0200"
 title: "Shortcuts: remove Cmd+Arrow pane navigation aliases"
-status: todo
+status: in-progress
 estimate: "30m"
-sprint: "s34"
+started_at: "2026-06-16T04:23:25Z"
 blocked_by: []
 gh_issue: []
 area:
@@ -13,6 +13,7 @@ tags:
   - "v1"
   - "shortcuts"
 ---
+
 
 Remove the host-level Cmd+Arrow aliases for pane navigation so text editors can own line-boundary and document-navigation chords.
 
