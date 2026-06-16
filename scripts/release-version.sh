@@ -51,6 +51,13 @@ fi
 sed -i '' "s/^version = \"$current\"/version = \"$new\"/" "$TREE/Cargo.toml"
 (cd "$TREE" && cargo generate-lockfile --quiet 2>/dev/null || cargo generate-lockfile)
 
+# ── bump Python SDK ───────────────────────────────────────────────────────────
+
+sdk_toml="$TREE/sdk/python/pyproject.toml"
+sdk_current=$(grep '^version' "$sdk_toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
+sed -i '' "s/^version = \"$sdk_current\"/version = \"$new\"/" "$sdk_toml"
+echo "SDK: $sdk_current → $new"
+
 # ── update CHANGELOG via git-cliff ───────────────────────────────────────────
 
 echo "Generating changelog..."
@@ -67,7 +74,7 @@ echo "Regenerating CLI docs..."
 
 # ── commit ────────────────────────────────────────────────────────────────────
 
-git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md website/src/content/docs/cli.md
+git -C "$TREE" add Cargo.toml Cargo.lock CHANGELOG.md website/src/content/docs/cli.md sdk/python/pyproject.toml
 git -C "$TREE" commit -m "chore: release v$new"
 git -C "$TREE" tag "$tag"
 

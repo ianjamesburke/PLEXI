@@ -20,10 +20,28 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
 
+      - name: Check if SDK version already published
+        id: check
+        working-directory: sdk/python
+        run: |
+          VERSION=$(grep '^version' pyproject.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if curl -sf "https://pypi.org/simple/plexi-sdk/" | grep -q "plexi_sdk-${VERSION}-\|plexi_sdk-${VERSION}\.tar"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build SDK
+        if: steps.check.outputs.skip == 'false'
         working-directory: sdk/python
         run: uv build
 
       - name: Publish to PyPI
+        if: steps.check.outputs.skip == 'false'
         working-directory: sdk/python
         run: uv publish --check-url https://pypi.org/simple/plexi-sdk/
+
+      - name: Skip notice
+        if: steps.check.outputs.skip == 'true'
+        run: echo "plexi-sdk ${{ steps.check.outputs.version }} already published — skipping."
