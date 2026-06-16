@@ -357,8 +357,9 @@ mod tests {
     }
 
     /// Subcontext portal whose child context holds a `text-editor` pane: the
-    /// minimap must render the document/pencil glyph (stint 0205) instead of the
-    /// generic app grid. Zoom the portal so the icon is legible in the PNG.
+    /// minimap must render the document glyph (accent text rules, folded corner)
+    /// instead of the generic app grid, with a status pip sized to match the
+    /// sidebar. Zoom the portal so the icon is legible in the PNG.
     #[test]
     fn screenshot_portal_text_editor_icon() {
         let mut h = PlexiUiHarness::new_sized(900.0, 640.0);
@@ -383,7 +384,7 @@ mod tests {
             let (process_app, _tx) =
                 ProcessApp::new_for_test(editor_pane_id, AppPermissions::builtin());
             let editor = AppPane {
-                pip_status: None,
+                pip_status: Some(crate::app_protocol::PipStatus::Green),
                 id: editor_pane_id,
                 runtime: AppRuntime::Process(Box::new(process_app)),
                 workspace_root: std::env::temp_dir(),

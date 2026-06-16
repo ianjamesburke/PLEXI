@@ -11,7 +11,9 @@ const GUTTER_W: f32 = 24.0;
 /// Top and bottom padding added inside each row for vertical breathing room.
 const ROW_PAD_V: f32 = 7.0;
 
-const PANE_DOT_RADIUS: f32 = 4.0;
+/// Status-pip radius. Shared with the portal minimap so activity dots are the
+/// same size everywhere they appear (sidebar rows + portal previews).
+pub(crate) const PANE_DOT_RADIUS: f32 = 4.0;
 const PANE_DOT_SPACING: f32 = 11.0;
 const PANE_DOT_MAX: usize = 8;
 const SIDEBAR_BADGE_W: f32 = 26.0;

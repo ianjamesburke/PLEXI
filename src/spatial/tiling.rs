@@ -986,7 +986,7 @@ pub(crate) fn paint_portal_minimap(
             // Activity dot — top-left of the pane, mirroring the title-bar
             // dot on real panes. Vertically centered on the title line so it
             // reads as part of the title row, with matching left padding.
-            const ACTIVITY_DOT_R: f32 = 2.5;
+            const ACTIVITY_DOT_R: f32 = crate::ui::sidebar_row::PANE_DOT_RADIUS;
             const ACTIVITY_DOT_PAD: f32 = 5.0;
             let title_font_size: f32 = if cell.width() > 80.0 { 11.0 } else { 9.0 };
             let activity_dot = pane.activity.as_ref().filter(|_| cell.width() > 14.0);
@@ -1099,21 +1099,16 @@ pub(crate) fn paint_portal_minimap(
                     }
                 }
                 PaneKind::TextEditor => {
-                    // Portrait sheet with a folded top-right corner plus a short
-                    // pencil laid across the lower-right. Accent stays on the
-                    // pencil tip + metal ferrule so the glyph reads as "edit"
-                    // without growing visually long.
-                    let glyph = (draw_area.width().min(draw_area.height())).clamp(12.0, 56.0);
-                    let pw = glyph * 0.46;
-                    let ph = glyph * 0.60;
-                    // Nudge the sheet slightly up/left so the pencil has room.
-                    let center = egui::pos2(
-                        draw_area.center().x - glyph * 0.05,
-                        draw_area.center().y - glyph * 0.03,
-                    );
+                    // Portrait sheet with a folded top-right corner; the text
+                    // rules carry the accent color so the glyph reads as a
+                    // document at a glance.
+                    let glyph = (draw_area.width().min(draw_area.height())).clamp(12.0, 60.0);
+                    let pw = glyph * 0.58;
+                    let ph = glyph * 0.74;
+                    let center = draw_area.center();
                     let paper =
                         egui::Rect::from_center_size(center, egui::vec2(pw, ph));
-                    let fold = (pw * 0.34).clamp(2.0, 10.0);
+                    let fold = (pw * 0.30).clamp(2.5, 12.0);
 
                     let outline = egui::Color32::from_rgba_unmultiplied(
                         colors.text_dim.r(),
@@ -1127,11 +1122,12 @@ pub(crate) fn paint_portal_minimap(
                         colors.text_dim.b(),
                         (line_alpha / 2).max(8),
                     );
+                    // Accent text rules — the defining cue of the document glyph.
                     let rule = egui::Color32::from_rgba_unmultiplied(
-                        colors.text_dim.r(),
-                        colors.text_dim.g(),
-                        colors.text_dim.b(),
-                        line_alpha,
+                        colors.accent.r(),
+                        colors.accent.g(),
+                        colors.accent.b(),
+                        if pane.focused { 220 } else { 150 },
                     );
 
                     // Sheet body (folded corner masked out via two polygons).
@@ -1164,12 +1160,12 @@ pub(crate) fn paint_portal_minimap(
                     ));
 
                     // Text rules — drop the last when the glyph is tiny.
-                    let rule_w = (pw * 0.16).clamp(0.8, 1.6);
+                    let rule_w = (pw * 0.13).clamp(1.0, 2.0);
                     let margin = pw * 0.20;
                     let rule_xs = (paper.left() + margin, paper.right() - margin);
-                    let rows = if ph > 18.0 { 3 } else { 2 };
+                    let rows = if ph > 22.0 { 3 } else { 2 };
                     for i in 0..rows {
-                        let ry = paper.top() + ph * (0.34 + i as f32 * 0.20);
+                        let ry = paper.top() + ph * (0.36 + i as f32 * 0.18);
                         // Last visible rule is shorter, like a paragraph end.
                         let right = if i == rows - 1 {
                             rule_xs.0 + (rule_xs.1 - rule_xs.0) * 0.6
@@ -1181,50 +1177,6 @@ pub(crate) fn paint_portal_minimap(
                             egui::Stroke::new(rule_w, rule),
                         );
                     }
-
-                    // Pencil — short diagonal across the lower-right corner,
-                    // tip pointing down-right.
-                    let pencil_w = (glyph * 0.12).clamp(1.6, 4.0);
-                    let tip = egui::pos2(
-                        paper.right() + glyph * 0.10,
-                        paper.bottom() + glyph * 0.06,
-                    );
-                    let tail = egui::pos2(tip.x - glyph * 0.30, tip.y - glyph * 0.30);
-                    let dir = (tip - tail).normalized();
-                    // Ferrule + tip occupy the last ~30% near the point.
-                    let neck = tip - dir * (pencil_w * 1.6);
-                    let body_end = tip - dir * (pencil_w * 2.8);
-                    let pencil_body = egui::Color32::from_rgba_unmultiplied(
-                        colors.text_dim.r(),
-                        colors.text_dim.g(),
-                        colors.text_dim.b(),
-                        (line_alpha as u32 * 3).min(255) as u8,
-                    );
-                    let accent_strong = egui::Color32::from_rgba_unmultiplied(
-                        colors.accent.r(),
-                        colors.accent.g(),
-                        colors.accent.b(),
-                        if pane.focused { 200 } else { 150 },
-                    );
-                    // Wood shaft (eraser end → ferrule).
-                    painter.line_segment(
-                        [tail, body_end],
-                        egui::Stroke::new(pencil_w, pencil_body),
-                    );
-                    // Metal ferrule + tip in accent.
-                    painter.line_segment(
-                        [body_end, neck],
-                        egui::Stroke::new(pencil_w, accent_strong),
-                    );
-                    painter.add(egui::Shape::convex_polygon(
-                        vec![
-                            neck + dir.rot90() * (pencil_w * 0.5),
-                            neck - dir.rot90() * (pencil_w * 0.5),
-                            tip,
-                        ],
-                        accent_strong,
-                        egui::Stroke::new(0.0, egui::Color32::TRANSPARENT),
-                    ));
                 }
                 PaneKind::Portal => {
                     // 2x2 window grid, outlines only, bottom-right filled with accent (Plexi logo feel)
@@ -1273,7 +1225,7 @@ pub(crate) fn paint_portal_minimap(
                 PaneKind::Terminal => {
                     // Centered ">_" prompt symbol
                     let font_size =
-                        (draw_area.width().min(draw_area.height()) * 0.45).clamp(8.0, 24.0);
+                        (draw_area.width().min(draw_area.height()) * 0.58).clamp(10.0, 30.0);
                     let prompt_alpha = if pane.focused {
                         line_alpha * 2
                     } else {
