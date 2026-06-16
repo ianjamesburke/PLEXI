@@ -296,6 +296,9 @@ impl PlexiApp {
                                         _ => None,
                                     };
                                     let kind = match pane_ref {
+                                        Some(p) if p.as_app().is_some_and(|a| a.manifest_id == "text-editor") => {
+                                            crate::spatial::tiling::PaneKind::TextEditor
+                                        }
                                         Some(p) if p.as_app().is_some() => crate::spatial::tiling::PaneKind::App,
                                         Some(p) if p.as_portal().is_some() => crate::spatial::tiling::PaneKind::Portal,
                                         _ => crate::spatial::tiling::PaneKind::Terminal,

@@ -356,6 +356,103 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_init.png");
     }
 
+    /// Subcontext portal whose child context holds a `text-editor` pane: the
+    /// minimap must render the document/pencil glyph (stint 0205) instead of the
+    /// generic app grid. Zoom the portal so the icon is legible in the PNG.
+    #[test]
+    fn screenshot_portal_text_editor_icon() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 640.0);
+        let _base = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let active_ctx_id = app.router.active().context_id;
+            let child_ctx_id = active_ctx_id + 5000;
+            // Register the child context so the portal header shows a real name.
+            app.router.push(crate::host::context::Context {
+                name: "Notes".to_string(),
+                path: std::env::temp_dir(),
+                root: None,
+                description: Some("Editing notes".to_string()),
+                context_id: child_ctx_id,
+                parent_id: Some(active_ctx_id),
+                depth: 1,
+                parked: false,
+            });
+
+            // Child window holding the text-editor pane the portal previews.
+            let editor_pane_id = app.host.alloc_pane_id();
+            let (process_app, _tx) =
+                ProcessApp::new_for_test(editor_pane_id, AppPermissions::builtin());
+            let editor = AppPane {
+                pip_status: None,
+                id: editor_pane_id,
+                runtime: AppRuntime::Process(Box::new(process_app)),
+                workspace_root: std::env::temp_dir(),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "text-editor".to_string(),
+                name: "note.md".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+            };
+            let mut child_panes = std::collections::HashMap::new();
+            child_panes.insert(editor_pane_id, Pane::App(Box::new(editor)));
+            let mut child_tiles = egui_tiles::Tiles::default();
+            let child_tile = child_tiles.insert_pane(editor_pane_id);
+            let child_window_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(Window {
+                name: "notes window".to_string(),
+                path: std::env::temp_dir(),
+                tree: egui_tiles::Tree::new("notes window", child_tile, child_tiles),
+                panes: child_panes,
+                focused_pane: Some(child_tile),
+                zoomed_pane: None,
+                grid_x: 0,
+                grid_y: 0,
+                window_id: child_window_id,
+                context_id: child_ctx_id,
+            });
+
+            // Portal pane in the active window targeting the child context.
+            let portal_pane_id = app.host.alloc_pane_id();
+            let active_win = app.active_window;
+            let win = &mut app.windows[active_win];
+            win.panes.insert(
+                portal_pane_id,
+                Pane::Portal(Box::new(PortalPane {
+                    pane_id: portal_pane_id,
+                    target_context_id: child_ctx_id,
+                    context_state: None,
+                    hidden: false,
+                })),
+            );
+            let portal_tile = win.tree.tiles.insert_pane(portal_pane_id);
+            if let Some(root) = win.tree.root {
+                let new_root = win
+                    .tree
+                    .tiles
+                    .insert_horizontal_tile(vec![root, portal_tile]);
+                win.tree.root = Some(new_root);
+            }
+            // Zoom the portal so its minimap fills the window.
+            win.zoom_to(portal_tile);
+        });
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_portal_text_editor_icon.png")
+            .expect("render failed");
+        assert!(
+            h.with_app(|app| app.windows[app.active_window]
+                .panes
+                .values()
+                .any(|p| p.portal_target().is_some())),
+            "active window should contain a portal pane previewing the editor"
+        );
+        println!("Screenshot saved to /tmp/plexi_portal_text_editor_icon.png");
+    }
+
     // Visual smoke coverage lives in `tests/scenes/*.toml`, executed by
     // `scenes::tests::scene_suite`. Run one ad hoc with `just scene <file>`.
 
