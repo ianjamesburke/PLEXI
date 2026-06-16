@@ -1,9 +1,9 @@
 ---
 id: "0203"
 title: "Automation: namespace conflict hardening"
-status: todo
+status: in-progress
 estimate: "1h"
-sprint: "s34"
+started_at: "2026-06-16T04:33:37Z"
 blocked_by: []
 gh_issue: []
 area:
@@ -15,6 +15,7 @@ tags:
   - "automation"
   - "conflicts"
 ---
+
 
 Make automatic iteration fail visibly on namespace conflicts instead of silently choosing a winner.
 
