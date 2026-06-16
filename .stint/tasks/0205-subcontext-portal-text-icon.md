@@ -1,9 +1,11 @@
 ---
 id: "0205"
 title: "Subcontext portals: text icon polish"
-status: in-progress
+status: done
 estimate: "45m"
+actual: "50m"
 started_at: "2026-06-16T04:35:07Z"
+completed_at: "2026-06-16T05:24:51Z"
 blocked_by: []
 gh_issue: []
 area:
@@ -14,6 +16,7 @@ tags:
   - "icons"
   - "portals"
 ---
+
 
 
 Give text/editor subcontext portal previews a clearer icon instead of a generic app mark.
