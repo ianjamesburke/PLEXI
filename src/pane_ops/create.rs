@@ -1397,6 +1397,10 @@ impl PlexiApp {
                             return Some(path);
                         }
                         Err(e) => {
+                            // create_new already created the inode; remove it so
+                            // a partial write doesn't leave a ghost file blocking
+                            // any future attempt at the same path.
+                            let _ = std::fs::remove_file(&path);
                             log::error!("QuickNote: save failed {}: {e}", path.display());
                             return None;
                         }
