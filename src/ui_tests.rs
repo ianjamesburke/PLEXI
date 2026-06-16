@@ -454,6 +454,63 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_portal_text_editor_icon.png");
     }
 
+    /// Direct paint of `paint_portal_minimap` with hand-built `MiniPane`s — no
+    /// PTY needed — so every glyph arm (terminal `>_`, text-editor document,
+    /// generic app grid) and the status pip render in one screenshot for size
+    /// verification. The full-app test above cannot fabricate a Terminal pane
+    /// because that needs a real `TerminalBackend`; this bypasses that by
+    /// setting `PaneKind` directly.
+    #[test]
+    fn screenshot_portal_minimap_glyphs() {
+        use crate::spatial::tiling::{paint_portal_minimap, MiniPane, MiniWindow, PaneKind};
+
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        let mk = |kind, focused, activity, x0: f32, x1: f32| MiniPane {
+            norm_rect: egui::Rect::from_min_max(egui::pos2(x0, 0.0), egui::pos2(x1, 1.0)),
+            kind,
+            focused,
+            has_content: true,
+            title: None,
+            active: true,
+            activity,
+        };
+        let windows = vec![MiniWindow {
+            grid_x: 0,
+            grid_y: 0,
+            panes: vec![
+                mk(PaneKind::Terminal, true, None, 0.0, 0.34),
+                mk(
+                    PaneKind::TextEditor,
+                    false,
+                    Some(crate::app_protocol::AgentState::Working),
+                    0.34,
+                    0.67,
+                ),
+                mk(PaneKind::App, false, None, 0.67, 1.0),
+            ],
+        }];
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(540.0, 320.0))
+            .build(move |ctx| {
+                crate::ui::theme::setup_fonts(ctx);
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::default().fill(colors.bg_darkest))
+                    .show(ctx, |ui| {
+                        paint_portal_minimap(ui.painter(), ui.max_rect(), &windows, &colors, 0.0);
+                    });
+            });
+        harness.run();
+        harness
+            .render()
+            .expect("render failed")
+            .save("/tmp/plexi_portal_minimap_glyphs.png")
+            .expect("save screenshot");
+        println!("Screenshot saved to /tmp/plexi_portal_minimap_glyphs.png");
+    }
+
     // Visual smoke coverage lives in `tests/scenes/*.toml`, executed by
     // `scenes::tests::scene_suite`. Run one ad hoc with `just scene <file>`.
 
