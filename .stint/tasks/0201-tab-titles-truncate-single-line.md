@@ -1,9 +1,11 @@
 ---
 id: "0201"
 title: "Tabs: truncate titles to one line"
-status: in-progress
+status: done
 estimate: "45m"
+actual: "18m"
 started_at: "2026-06-16T04:32:17Z"
+completed_at: "2026-06-16T04:49:38Z"
 blocked_by: []
 gh_issue: []
 area:
@@ -14,6 +16,7 @@ tags:
   - "tabs"
   - "ui"
 ---
+
 
 
 Make tab labels elide or clip to a single line instead of wrapping and breaking fixed-height tab bars.
