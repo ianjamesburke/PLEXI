@@ -1,6 +1,19 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.5] — 2026-06-16
+
+### Changes
+- feat(release): split version-tag push into a dedicated just release step
+- fix(install): use sudo for CLI install when bin dir needs elevated access
+- qa: space key routing fix, no-repeat for destructive keys, font size default, subcontext zoom-out on restore (#2280)
+- polish: portal minimap icons — drop pencil, enlarge+accent document, larger terminal glyph, sidebar-sized pip
+- Text-editor portal preview icon (#2279)
+- feat: truncate tab titles to a single line with ellipsis (#2277)
+- Automation: namespace conflict hardening (#2278)
+- fix(host): text-editor/scratchpad launch creates root pane in empty context (#2276)
+- Shortcuts: remove Cmd+Arrow pane navigation aliases (#2275)
+- fix(sdk): sync Python SDK version with app version on every release
 ## [0.1.4] — 2026-06-15
 
 ### Changes
