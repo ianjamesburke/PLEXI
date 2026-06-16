@@ -604,12 +604,51 @@ pub struct BindingEntry {
     /// Use this when a less-specific binding (e.g. Cmd+D) could be triggered by a
     /// more-specific chord (e.g. Cmd+Shift+D) because egui's `consume_key` uses subset matching.
     pub exact: bool,
+    /// When `true`, key-repeat events (key held down) are ignored for this binding.
+    /// Use for destructive one-shot actions like ClosePane and CloseContext so that
+    /// holding the key doesn't fire the action multiple times per second.
+    pub no_repeat: bool,
     pub context: BindingContext,
     pub action: Action,
 }
 
 fn modifier_count(m: &egui::Modifiers) -> u32 {
     m.command as u32 + m.shift as u32 + m.ctrl as u32 + m.alt as u32
+}
+
+/// Consume the first matching key event that is NOT a key-repeat.
+/// Returns `true` if one was found and consumed.
+fn consume_key_no_repeat(
+    input: &mut egui::InputState,
+    modifiers: egui::Modifiers,
+    key: egui::Key,
+) -> bool {
+    let mut found = false;
+    input.events.retain(|event| {
+        if found {
+            return true;
+        }
+        if let egui::Event::Key {
+            key: ev_key,
+            pressed: true,
+            repeat: false,
+            modifiers: ev_mod,
+            ..
+        } = event
+        {
+            if *ev_key == key
+                && (!modifiers.command || ev_mod.command)
+                && (!modifiers.shift || ev_mod.shift)
+                && (!modifiers.ctrl || ev_mod.ctrl)
+                && (!modifiers.alt || ev_mod.alt)
+            {
+                found = true;
+                return false; // consume by dropping
+            }
+        }
+        true
+    });
+    found
 }
 
 // egui::Modifiers::COMMAND sets mac_cmd=false, but macOS runtime input always
@@ -634,6 +673,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.quit.0,
             key: b.quit.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Global,
             action: Action::Quit,
         },
@@ -641,6 +681,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.close_pane.0,
             key: b.close_pane.1,
             exact: false,
+            no_repeat: true,
             context: BindingContext::Global,
             action: Action::ClosePane,
         },
@@ -648,6 +689,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.toggle_command_palette.0,
             key: b.toggle_command_palette.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Global,
             action: Action::ToggleCommandPalette,
         },
@@ -655,6 +697,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.open_quick_note.0,
             key: b.open_quick_note.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Global,
             action: Action::OpenQuickNote,
         },
@@ -664,6 +707,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.toggle_notification_modal.0,
             key: b.toggle_notification_modal.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Global,
             action: Action::ToggleNotificationModal,
         },
@@ -671,6 +715,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.close_context.0,
             key: b.close_context.1,
             exact: true,
+            no_repeat: true,
             context: BindingContext::Global,
             action: Action::CloseContext,
         },
@@ -679,6 +724,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.split_vertical.0,
             key: b.split_vertical.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SplitVertical,
         },
@@ -686,6 +732,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.split_horizontal.0,
             key: b.split_horizontal.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SplitHorizontal,
         },
@@ -693,6 +740,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.swap_pane_left.0,
             key: b.swap_pane_left.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SwapPane(Direction::Left),
         },
@@ -700,6 +748,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.swap_pane_down.0,
             key: b.swap_pane_down.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SwapPane(Direction::Down),
         },
@@ -707,6 +756,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.swap_pane_up.0,
             key: b.swap_pane_up.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SwapPane(Direction::Up),
         },
@@ -714,6 +764,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.swap_pane_right.0,
             key: b.swap_pane_right.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SwapPane(Direction::Right),
         },
@@ -721,6 +772,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.send_pane_left.0,
             key: b.send_pane_left.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SendPane(Direction::Left),
         },
@@ -728,6 +780,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.send_pane_down.0,
             key: b.send_pane_down.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SendPane(Direction::Down),
         },
@@ -735,6 +788,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.send_pane_up.0,
             key: b.send_pane_up.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SendPane(Direction::Up),
         },
@@ -742,6 +796,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.send_pane_right.0,
             key: b.send_pane_right.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SendPane(Direction::Right),
         },
@@ -749,6 +804,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.new_tab.0,
             key: b.new_tab.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::NewTab,
         },
@@ -756,6 +812,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.next_tab.0,
             key: b.next_tab.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::NextTab,
         },
@@ -763,6 +820,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.prev_tab.0,
             key: b.prev_tab.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::PrevTab,
         },
@@ -770,6 +828,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.next_context.0,
             key: b.next_context.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::NextContext,
         },
@@ -777,6 +836,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.prev_context.0,
             key: b.prev_context.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::PrevContext,
         },
@@ -784,6 +844,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.move_context_up.0,
             key: b.move_context_up.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::MoveContextUp,
         },
@@ -791,6 +852,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.move_context_down.0,
             key: b.move_context_down.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::MoveContextDown,
         },
@@ -798,6 +860,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.navigate_left.0,
             key: b.navigate_left.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::Navigate(Direction::Left),
         },
@@ -805,6 +868,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.navigate_down.0,
             key: b.navigate_down.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::Navigate(Direction::Down),
         },
@@ -812,6 +876,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.navigate_up.0,
             key: b.navigate_up.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::Navigate(Direction::Up),
         },
@@ -819,6 +884,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.navigate_right.0,
             key: b.navigate_right.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::Navigate(Direction::Right),
         },
@@ -826,6 +892,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.nav_back.0,
             key: b.nav_back.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::NavBackApp,
         },
@@ -833,6 +900,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.focus_history_forward.0,
             key: b.focus_history_forward.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::FocusHistoryForward,
         },
@@ -840,6 +908,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.toggle_sidebar.0,
             key: b.toggle_sidebar.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::ToggleSidebar,
         },
@@ -847,6 +916,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.toggle_zoom.0,
             key: b.toggle_zoom.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::ToggleZoom,
         },
@@ -854,6 +924,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.toggle_shortcuts.0,
             key: b.toggle_shortcuts.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::ToggleShortcuts,
         },
@@ -861,6 +932,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.rename_context.0,
             key: b.rename_context.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::RenameContext,
         },
@@ -868,6 +940,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.rename_pane.0,
             key: b.rename_pane.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::RenamePane,
         },
@@ -875,6 +948,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.split_down.0,
             key: b.split_down.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SplitDown,
         },
@@ -882,6 +956,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.split_right.0,
             key: b.split_right.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SplitRight,
         },
@@ -889,6 +964,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.push_to_subcontext.0,
             key: b.push_to_subcontext.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::PushPaneToSubcontext,
         },
@@ -896,6 +972,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.new_child_context.0,
             key: b.new_child_context.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::NewChildContext,
         },
@@ -903,6 +980,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.new_context.0,
             key: b.new_context.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::NewContext,
         },
@@ -910,6 +988,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.new_page_right.0,
             key: b.new_page_right.1,
             exact: true,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::NewPageRight,
         },
@@ -917,6 +996,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.toggle_minimap.0,
             key: b.toggle_minimap.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::ToggleMinimap,
         },
@@ -924,6 +1004,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.scroll_up.0,
             key: b.scroll_up.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::ScrollUp,
         },
@@ -931,6 +1012,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.scroll_down.0,
             key: b.scroll_down.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::ScrollDown,
         },
@@ -938,6 +1020,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.increase_font_size.0,
             key: b.increase_font_size.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::IncreasePaneFontSize,
         },
@@ -945,6 +1028,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.decrease_font_size.0,
             key: b.decrease_font_size.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::DecreasePaneFontSize,
         },
@@ -952,6 +1036,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.open_file_browser.0,
             key: b.open_file_browser.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::OpenFileBrowser,
         },
@@ -959,6 +1044,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.open_config.0,
             key: b.open_config.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::OpenConfig,
         },
@@ -966,6 +1052,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.reload_config.0,
             key: b.reload_config.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::ReloadConfig,
         },
@@ -973,6 +1060,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.open_secrets_manager.0,
             key: b.open_secrets_manager.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::OpenSecretsManager,
         },
@@ -980,6 +1068,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.open_assistant.0,
             key: b.open_assistant.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::OpenAssistant,
         },
@@ -987,6 +1076,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.force_reload_app.0,
             key: b.force_reload_app.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::ForceReloadApp,
         },
@@ -994,6 +1084,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.set_context_root_from_cwd.0,
             key: b.set_context_root_from_cwd.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::SetContextRootFromCwd,
         },
@@ -1001,6 +1092,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.hide_pane.0,
             key: b.hide_pane.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::HidePane,
         },
@@ -1008,6 +1100,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.park_context.0,
             key: b.park_context.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::ParkContext,
         },
@@ -1015,6 +1108,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.open_scratchpad.0,
             key: b.open_scratchpad.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::OpenScratchpad,
         },
@@ -1023,6 +1117,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.open_notes_picker.0,
             key: b.open_notes_picker.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::OpenNotesPicker,
         },
@@ -1032,6 +1127,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: b.context_zoom_out.0,
             key: b.context_zoom_out.1,
             exact: false,
+            no_repeat: false,
             context: BindingContext::Normal,
             action: Action::ContextZoomOut,
         },
@@ -1041,6 +1137,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             modifiers: egui::Modifiers::NONE,
             key: egui::Key::Escape,
             exact: false,
+            no_repeat: false,
             context: BindingContext::AppActive,
             action: Action::CloseApp,
         },
@@ -1106,7 +1203,12 @@ pub fn poll_actions(
                 continue;
             }
 
-            if input.consume_key(entry.modifiers, entry.key) {
+            let triggered = if entry.no_repeat {
+                consume_key_no_repeat(input, entry.modifiers, entry.key)
+            } else {
+                input.consume_key(entry.modifiers, entry.key)
+            };
+            if triggered {
                 actions.push(entry.action.clone());
             }
         }

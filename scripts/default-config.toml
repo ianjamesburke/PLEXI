@@ -5,7 +5,7 @@ config_version = 1
 
 font_size = 14.0
 # pane_gap = 4                 # inter-pane gap in pixels (0-20)
-# pane_title_font_size = 11    # pane title bar font size (6-32)
+# pane_title_font_size = 12    # pane title bar font size (6-32)
 
 confirm_quit  = true
 confirm_close = false

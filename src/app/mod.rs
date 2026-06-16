@@ -903,6 +903,51 @@ impl PlexiApp {
                     overlay_held_cmds: Vec::new(),
                     agent_host: crate::agent::AgentHost::production(config.ai),
                 };
+                // Reconstruct depth_stack so Cmd+Escape works immediately when
+                // the workspace was saved while viewing a subcontext. The stack
+                // is in-memory only and starts empty; without this, zoom_out
+                // silently no-ops until the user manually navigates away and
+                // back in (which calls push_depth).
+                {
+                    let active_ctx_id = app.router.active().context_id;
+                    let mut ancestors: Vec<(u64, u64, Option<egui_tiles::TileId>)> = Vec::new();
+                    let mut cur_id = active_ctx_id;
+                    loop {
+                        let parent_id = app
+                            .router
+                            .iter()
+                            .find(|c| c.context_id == cur_id)
+                            .and_then(|c| c.parent_id);
+                        let Some(pid) = parent_id else { break };
+                        let win_id = app
+                            .context_active_window
+                            .get(&pid)
+                            .and_then(|wid| {
+                                app.windows
+                                    .iter()
+                                    .find(|w| w.window_id == *wid && w.context_id == pid)
+                                    .map(|w| w.window_id)
+                            })
+                            .or_else(|| {
+                                app.windows
+                                    .iter()
+                                    .find(|w| w.context_id == pid)
+                                    .map(|w| w.window_id)
+                            })
+                            .unwrap_or(0);
+                        ancestors.push((pid, win_id, None));
+                        cur_id = pid;
+                    }
+                    ancestors.reverse();
+                    if !ancestors.is_empty() {
+                        log::info!(
+                            "workspace restore: rebuilding depth_stack ({} entries) for subcontext ctx={}",
+                            ancestors.len(),
+                            active_ctx_id
+                        );
+                        app.router.depth_stack = ancestors;
+                    }
+                }
                 app.apply_context_transition_effects();
                 return app;
             }
