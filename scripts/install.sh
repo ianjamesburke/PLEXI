@@ -56,7 +56,18 @@ fi
 app_src="${_target_dir}/release/bundle/osx/Plexi.app"
 app_dest="/Applications/${display}.app"
 bin_dest="/usr/local/bin/plexi${suffix}"
+bin_dir="$(dirname "$bin_dest")"
 profile_dir="$HOME/.plexi${suffix}"
+
+bin_install_needs_sudo=false
+if [[ ! -d "$bin_dir" || ! -w "$bin_dir" ]]; then
+  bin_install_needs_sudo=true
+fi
+
+if $bin_install_needs_sudo; then
+  echo "CLI install needs admin access for $bin_dir"
+  sudo -v
+fi
 
 cargo bundle --release
 
@@ -93,8 +104,8 @@ if [[ "$channel" == "main" ]]; then
   # shim instead of a symlink. Inside a Plexi PTY, the shim delegates to the
   # active channel binary from PLEXI_CHANNEL. Outside Plexi, it runs stable.
   # Remove first so an old symlink is not followed when writing the script.
-  rm -f "$bin_dest"
-  cat > "$bin_dest" <<'EOF'
+  shim_tmp="$(mktemp)"
+  cat > "$shim_tmp" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -114,9 +125,24 @@ fi
 
 exec "$stable_binary" "$@"
 EOF
-  chmod +x "$bin_dest"
+  if $bin_install_needs_sudo; then
+    [[ -d "$bin_dir" ]] || sudo mkdir -p "$bin_dir"
+    sudo rm -f "$bin_dest"
+    sudo install -m 0755 "$shim_tmp" "$bin_dest"
+  else
+    [[ -d "$bin_dir" ]] || mkdir -p "$bin_dir"
+    rm -f "$bin_dest"
+    install -m 0755 "$shim_tmp" "$bin_dest"
+  fi
+  rm -f "$shim_tmp"
 else
-  ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
+  if $bin_install_needs_sudo; then
+    [[ -d "$bin_dir" ]] || sudo mkdir -p "$bin_dir"
+    sudo ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
+  else
+    [[ -d "$bin_dir" ]] || mkdir -p "$bin_dir"
+    ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
+  fi
 fi
 
 # Install shell completions for production and release-candidate channels.
