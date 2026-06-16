@@ -225,6 +225,11 @@ bump bump="patch":
 promote to="":
     bash scripts/promote.sh "{{to}}"
 
+# Push the version tag for the current Cargo.toml version and trigger the GitHub Actions release.
+# Run this only when you want a binary release — promote to main first.
+release:
+    bash scripts/release-tag.sh
+
 # Remove a Plexi channel and its profile dir, app bundle, and CLI binary.
 # Defaults to removing all channels plus shell integration and completions.
 # Backlog folders inside profile dirs are archived to ~/plexi-backlog-archive/.

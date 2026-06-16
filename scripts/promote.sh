@@ -121,27 +121,17 @@ git push origin beta:main
 echo "Syncing main worktree..."
 git -C "$MAIN_TREE" pull origin main
 
+main_commit=$(git -C "$MAIN_TREE" rev-parse HEAD)
 if git -C "$MAIN_TREE" tag -l "v$version" | grep -q "v$version"; then
     tagged_commit=$(git -C "$MAIN_TREE" rev-list -n 1 "v$version")
-    main_commit=$(git -C "$MAIN_TREE" rev-parse HEAD)
-    [[ "$tagged_commit" == "$main_commit" ]] \
-        || die "tag v$version points at $tagged_commit, not main HEAD $main_commit"
-    echo "Tag v$version exists locally at main HEAD."
+    if [[ "$tagged_commit" != "$main_commit" ]]; then
+        echo "info: tag v$version points at an older commit — run 'just bump && just promote main' to cut a release."
+    else
+        echo "Tag v$version is at main HEAD — run 'just release' to push the tag and trigger CI."
+    fi
 else
-    die "tag v$version is missing — run just bump on alpha before promoting"
-fi
-
-remote_tag=$(git ls-remote --tags origin "refs/tags/v$version" | awk '{print $1}')
-if [[ -n "$remote_tag" ]]; then
-    [[ "$remote_tag" == "$tagged_commit" ]] \
-        || die "remote tag v$version points at $remote_tag, not local $tagged_commit"
-    echo "Tag v$version already on remote at the expected commit."
-else
-    git -C "$MAIN_TREE" push origin "v$version"
+    echo "info: no tag for v$version yet — run 'just bump && just promote main' to cut a release."
 fi
 
 echo ""
-echo "Released v$version — GitHub Actions release workflow will run."
-
-echo "Installing main..."
-(cd "$MAIN_TREE" && just install)
+echo "v$version is on main."
