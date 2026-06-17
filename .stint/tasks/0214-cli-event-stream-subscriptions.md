@@ -1,8 +1,9 @@
 ---
 id: "0214"
 title: "Host event subscriptions for third-party agents"
-status: backlog
+status: in-progress
 estimate: "12h"
+started_at: "2026-06-17T21:08:31Z"
 blocked_by: []
 gh_issue:
   - "2288"
@@ -17,6 +18,7 @@ tags:
   - "events"
   - "agents"
 ---
+
 
 Let third-party CLI agents subscribe to Plexi app event streams and receive
 brokered `PlexiEvent::AppEvent` deliveries through both CLI NDJSON and a
