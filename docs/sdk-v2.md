@@ -103,18 +103,100 @@ class WikiApp(App):
             self.emit.schedule_render()
 ```
 
-## Canvas escape hatch (games, animation)
+## Canvas drawing reference (games, animation, data viz)
 
-Override `on_render(self, ctx)` instead of `view()`. Use `ctx.rect()`, `ctx.text()`, `ctx.circle()`, etc.
+Override `on_render(self, ctx)` instead of `view()` for pixel-level control.
+**Never override both `view()` and `on_render()`.**
+
+### Primitives
+
+**`ctx.rect(x, y, w, h, fill, *, radius=0.0, stroke=None, stroke_width=1.0, glow_color=None, glow_radius=0.0, gradient=None)`**
+Fill a rectangle. `fill` is a hex string; supports 8-digit `#rrggbbaa` alpha.
+- `stroke` — outline color hex; `stroke_width` — outline pixels (default 1.0).
+- `glow_color` / `glow_radius` — soft halo painted behind the fill.
+- `gradient` — dict `{"from": "#hex", "to": "#hex", "dir": "h"}` replaces the solid fill.
+  `dir` is `"h"` (left→right) or `"v"` (top→bottom). Corner radius is not applied to the mesh.
 
 ```python
-class SnakeApp(App):
-    def on_render(self, ctx):   # NOT view() — this is the pixel-control path
-        ctx.rect(x, y, w, h, "#ff0000")
-        ctx.text(16, 16, "Score: 5", size=14.0, color="#cdd6f4")
+ctx.rect(10, 10, 200, 80, "#313244", radius=8.0,
+         stroke="#89b4fa", stroke_width=1.5,
+         glow_color="#89b4fa80", glow_radius=12.0)
+
+ctx.rect(10, 100, 200, 60, "#000000",
+         gradient={"from": "#1e1e2e", "to": "#313244", "dir": "h"})
 ```
 
-**Never override both `view()` and `on_render()`.**
+**`ctx.circle(cx, cy, r, fill, *, stroke=None, stroke_width=1.0, glow_color=None, glow_radius=0.0)`**
+Fill a circle. Same color rules as `rect`.
+- `stroke` — outline color hex; `stroke_width` — outline pixels.
+- `glow_color` / `glow_radius` — concentric-ring halo with linear alpha falloff.
+
+```python
+ctx.circle(cx, cy, 32, "#a6e3a1", stroke="#ffffff", stroke_width=2.0,
+           glow_color="#a6e3a140", glow_radius=16.0)
+```
+
+**`ctx.arc(cx, cy, r, start_angle, end_angle, fill)`**
+Filled pie slice. Angles in radians, clockwise from east. Full circle: `0` to `6.2832`.
+
+**`ctx.arc_ring(cx, cy, r, start_angle, end_angle, color, stroke_width=2.0)`**
+Stroked ring/donut arc — hollow, not filled. Same angle convention as `arc`.
+
+```python
+import math
+ctx.arc_ring(cx, cy, 40, 0, math.pi * 1.5, "#89b4fa", stroke_width=4.0)
+```
+
+**`ctx.line(x1, y1, x2, y2, color, width=1.0)`**
+Line segment.
+
+**`ctx.text(x, y, text, size, color, *, monospace=False, bold=False, align="left_top", max_width=None, elide=True, selectable=False, max_lines=None)`**
+Draw text. `align` values: `"left_top"`, `"center_center"`, `"right_bottom"`, etc. (9 anchors).
+
+### Theme tokens
+
+Access via `ctx.theme.<role>`:
+
+| Token | Role |
+|---|---|
+| `bg` | Darkest background (terminal / pane chrome) |
+| `bg_darkest` | Even darker background |
+| `surface` | Card / surface background |
+| `highlight` | Subtle highlight fill |
+| `border` | Border / separator color |
+| `fg` | Primary text |
+| `muted` | Muted / secondary text |
+| `text_section` | Section header text |
+| `accent` | Brand blue |
+| `danger` / `red` | Error / destructive |
+| `success` / `green` | Success |
+| `warning` / `yellow` | Warning |
+
+### Color helpers
+
+`dim(hex, alpha)` — module-level helper (`from plexi_sdk import dim`); returns `hex` with the given alpha (0–255) injected as `#rrggbbaa`. Example: `dim(ctx.theme.accent, 120)`.
+
+### Example
+
+```python
+import math
+from plexi_sdk import App
+
+class GaugeApp(App):
+    def on_render(self, ctx):
+        cx, cy, r = ctx.w / 2, ctx.h / 2, min(ctx.w, ctx.h) * 0.35
+        # Background ring
+        ctx.arc_ring(cx, cy, r, 0, math.tau, ctx.theme.border, stroke_width=8.0)
+        # Filled arc proportional to value
+        ctx.arc_ring(cx, cy, r, -math.pi / 2,
+                     -math.pi / 2 + math.tau * self.value,
+                     ctx.theme.accent, stroke_width=8.0)
+        # Glowing centre dot
+        ctx.circle(cx, cy, 6, ctx.theme.accent,
+                   glow_color=ctx.theme.accent + "60", glow_radius=10.0)
+        ctx.text(cx, cy + r * 0.5, f"{self.value:.0%}",
+                 size=20.0, color=ctx.theme.fg, align="center_center")
+```
 
 ## Layout components (plexi_sdk.ui)
 

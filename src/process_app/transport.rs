@@ -246,6 +246,10 @@ mod tests {
             cy: 10.0,
             r: 4.0,
             fill: "#ffffff".to_string(),
+            stroke: None,
+            stroke_width: 1.0,
+            glow_color: None,
+            glow_radius: 0.0,
         });
 
         assert!(!stdout_command_wakes_host(&cmd));

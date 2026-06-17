@@ -118,7 +118,12 @@ class RenderContext:
                      "fill": fill, "radius": 0.0})
 
     def rect(self, x: float, y: float, w: float, h: float, fill: str,
-             radius: float = 0.0) -> None:
+             radius: float = 0.0,
+             stroke: "str | None" = None,
+             stroke_width: float = 1.0,
+             glow_color: "str | None" = None,
+             glow_radius: float = 0.0,
+             gradient: "dict | None" = None) -> None:
         """Draw a filled rectangle.
 
         Args:
@@ -128,16 +133,36 @@ class RenderContext:
             h: Height in logical pixels
             fill: Fill color as hex string (e.g., "#ff0000" or "#ff0000aa" with alpha)
             radius: Corner radius in pixels (0.0 = sharp corners, default)
+            stroke: Outline color as hex string; omit for no stroke.
+            stroke_width: Outline width in pixels (default 1.0).
+            glow_color: Halo color as hex string; omit for no glow.
+            glow_radius: Halo radius in pixels — 0 = no glow (default).
+            gradient: Linear fill replacing solid fill when set.
+                Dict with keys: ``from`` (hex), ``to`` (hex), ``dir`` ("h" or "v", default "h").
+                Corner radius is not applied to the gradient mesh (always sharp-cornered).
         """
         if not isinstance(fill, str):
             raise TypeError(
                 f"ctx.rect() fill must be a hex color string (e.g. \"#ff0000\"), "
                 f"got {type(fill).__name__}: {fill!r}"
             )
-        self._queue({"type": "rect", "x": x, "y": y, "w": w, "h": h,
-                     "fill": fill, "radius": radius})
+        d: dict = {"type": "rect", "x": x, "y": y, "w": w, "h": h,
+                   "fill": fill, "radius": radius}
+        if stroke is not None:
+            d["stroke"] = stroke
+            d["stroke_width"] = stroke_width
+        if glow_color is not None:
+            d["glow_color"] = glow_color
+            d["glow_radius"] = glow_radius
+        if gradient is not None:
+            d["gradient"] = gradient
+        self._queue(d)
 
-    def circle(self, cx: float, cy: float, r: float, fill: str) -> None:
+    def circle(self, cx: float, cy: float, r: float, fill: str,
+              stroke: "str | None" = None,
+              stroke_width: float = 1.0,
+              glow_color: "str | None" = None,
+              glow_radius: float = 0.0) -> None:
         """Draw a filled circle.
 
         Args:
@@ -145,8 +170,20 @@ class RenderContext:
             cy: Center Y in logical pixels
             r: Radius in logical pixels
             fill: Fill color as hex string; supports 8-digit hex (#rrggbbaa) for alpha
+            stroke: Outline color as hex string; omit for no stroke.
+            stroke_width: Outline width in pixels (default 1.0).
+            glow_color: Halo color as hex string; omit for no glow.
+            glow_radius: Halo radius in pixels — 0 = no glow (default). Rendered as
+                concentric rings with linear alpha falloff.
         """
-        self._queue({"type": "circle", "cx": cx, "cy": cy, "r": r, "fill": fill})
+        d: dict = {"type": "circle", "cx": cx, "cy": cy, "r": r, "fill": fill}
+        if stroke is not None:
+            d["stroke"] = stroke
+            d["stroke_width"] = stroke_width
+        if glow_color is not None:
+            d["glow_color"] = glow_color
+            d["glow_radius"] = glow_radius
+        self._queue(d)
 
     def arc(self, cx: float, cy: float, r: float,
             start_angle: float, end_angle: float, fill: str) -> None:
@@ -155,6 +192,27 @@ class RenderContext:
         Example pie slice: arc(cx, cy, r, 0, math.pi * 0.5, fill="#ff0000")"""
         self._queue({"type": "arc", "cx": cx, "cy": cy, "r": r,
                      "start_angle": start_angle, "end_angle": end_angle, "fill": fill})
+
+    def arc_ring(self, cx: float, cy: float, r: float,
+                 start_angle: float, end_angle: float,
+                 color: str, stroke_width: float = 2.0) -> None:
+        """Draw a stroked arc ring (hollow donut arc). Distinct from arc() (filled pie).
+
+        Angles in radians, clockwise from east — same convention as arc().
+        Full circle: start_angle=0, end_angle=6.2832 (2*pi).
+
+        Args:
+            cx: Center X in logical pixels
+            cy: Center Y in logical pixels
+            r: Ring radius in logical pixels
+            start_angle: Start angle in radians (0 = east, clockwise)
+            end_angle: End angle in radians
+            color: Stroke color as hex string; supports 8-digit #rrggbbaa alpha
+            stroke_width: Stroke width in pixels (default 2.0)
+        """
+        self._queue({"type": "arc_ring", "cx": cx, "cy": cy, "r": r,
+                     "start_angle": start_angle, "end_angle": end_angle,
+                     "color": color, "stroke_width": stroke_width})
 
     def text(self, x: float, y: float, text: str, size: float, color: str,
              monospace: bool = False, bold: bool = False,
