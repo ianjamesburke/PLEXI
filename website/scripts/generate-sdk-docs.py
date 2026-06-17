@@ -10,10 +10,23 @@ Set SDK_SOURCE env var to override SDK path. Defaults to ../../sdk/python/plexi_
 import ast
 import os
 import sys
+import tomllib
 from pathlib import Path
 from typing import Optional
 
-VERIFIED_VERSION = "0.0.669"
+
+def read_cargo_version() -> str:
+    """Single source of truth: the workspace Cargo.toml [package].version.
+
+    Read fresh on every generation so the SDK docs can never drift from the
+    shipped binary (the old hardcoded constant silently went stale).
+    """
+    cargo_toml = Path(__file__).parent.parent.parent / "Cargo.toml"
+    with cargo_toml.open("rb") as f:
+        return tomllib.load(f)["package"]["version"]
+
+
+VERIFIED_VERSION = read_cargo_version()
 
 # Methods removed from the public API — excluded from generated docs.
 EXCLUDED_METHODS: set[str] = {"on_app_spawned"}

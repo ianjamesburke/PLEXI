@@ -14,6 +14,12 @@ The trap: `ctx.theme.muted` is `#6c7086`, only ~2.6:1 against `ctx.theme.bg` (`#
 
 ---
 
+## [egui · theme] New presets must pass the WCAG contrast test
+
+`text_on_is_legible_on_every_preset_accent_and_danger` in `src/ui/theme.rs` runs against every entry in `preset_names()` and asserts ≥3:1 WCAG contrast ratio on both `accent` and `danger` fills. Add any new preset to `preset_names()`, `canonical_preset_name()`, and `preset_colors()` — if the accent or danger color is mid-luminance, verify `text_on()` returns a legible color before adding.
+
+---
+
 ## [cargo · ship] Changing target-dir causes silent install failures
 
 All repo worktrees share a single build cache via `[build] target-dir` in `.cargo/config.toml` (or `CARGO_TARGET_DIR`). `scripts/install.sh` resolves the bundle path by calling `cargo metadata` at install time so it always points at the canonical target directory.

@@ -1,7 +1,7 @@
 ---
 title: File Explorer
 description: Browse your filesystem without leaving Plexi.
-verified_version: "0.0.689"
+verified_version: "0.1.5"
 order: 8
 ---
 
@@ -42,7 +42,6 @@ Use `Shift+↑` and `Shift+↓` to extend the current selection, or `⌘A` to se
 | Copy selected items | `⌘C` |
 | Cut selected items | `⌘X` |
 | Paste into current folder | `⌘V` |
-| Duplicate selected items | `⌘D` |
 | Move selected items to trash | `⌘Backspace` |
 | Reveal selected items with the system opener | `⌘Enter` |
 | Open selected items with default app | `⌘O` |

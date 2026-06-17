@@ -50,9 +50,11 @@ cargo test --bin plexi
 
 Record pass/fail counts and the module filters used. New `AppRequest`/`HostEffect` handlers must have a `HostHarness` test (`src/testing/mod.rs`) — written first, per repo discipline.
 
-## Step 3 — UI & App Evidence: Scenes
+## Step 3 — UI & App Evidence: Scenes and AppHarness
 
-**TOML scene files are the one way to test observable behavior** — host UI, host apps, portals, and real PGAP app processes. The runner (`src/scenes.rs`) executes them on `PlexiUiHarness`: fully headless wgpu Metal rendering, real child processes through the production launch path.
+### Host UI — TOML scenes
+
+**TOML scene files are the one way to test observable host UI behavior** — overlays, widgets, portals, and real PGAP app processes through the production launch path. The runner (`src/scenes.rs`) executes them on `PlexiUiHarness`: fully headless wgpu Metal rendering.
 
 ```bash
 just scene tests/scenes/<name>.toml              # run one scene; PNGs + SceneReport JSON to /tmp/plexi-scenes
@@ -60,7 +62,7 @@ just scene <file> /tmp/out 0                     # state-only: skip screenshot s
 cargo test --bin plexi scene_suite               # all committed scenes (suite = true)
 ```
 
-For a new or changed overlay/widget/pane type/app: **add a committed scene file** under `tests/scenes/` — it is automatically a regression test. Scenes that spawn real app processes set `suite = false` and run via `just scene`.
+For a new or changed overlay/widget/pane type: **add a committed scene file** under `tests/scenes/` — it is automatically a regression test. Scenes that spawn real app processes set `suite = false` and run via `just scene`.
 
 ```toml
 size = [1280.0, 800.0]
@@ -76,6 +78,30 @@ shot = "balls.png"
 ```
 
 For scene DSL reference (verbs, assertions, SceneReport format), see `docs/TESTING.md`.
+
+### Python PGAP apps — AppHarness PNG renders
+
+**For `apps/` and `sdk/python/` changes, use `AppHarness` for headless PNG validation.** No running host or display required — it pipes draw commands to `plexi --render` via stdin and returns PNG bytes.
+
+```python
+from plexi_sdk.testing import AppHarness, render_draw_commands
+
+# Full app test — spawns the app subprocess, drives it over PGAP protocol
+with AppHarness("apps/my_app/app.py", width=800, height=600) as h:
+    h.run(1)                             # step one render frame
+    h.key("enter")                       # inject a key event
+    h.run(1)                             # re-render
+    h.save_snapshot("/tmp/snap.png")     # write PNG to disk for visual inspection
+    h.assert_pixel(10, 10, "#1e1e2e")   # pixel assertion with default tolerance=4
+    h.assert_no_overlap()               # assert no rects clip each other
+
+# Direct render — when you already have a draw command list
+png = render_draw_commands(cmds, width=800, height=600)
+```
+
+**Every Python app ships with at least one `AppHarness` test** in `tests/apps/<app_name>_test.py`. It must: run one frame, call `save_snapshot`, and assert at least one pixel or `assert_no_overlap`. This is the done condition for visual layout — not "it ran without crashing."
+
+**Read every generated PNG with the Read tool** and confirm it shows the intended state (not an empty pane, error tile, or clipped element). A screenshot nobody looked at is not evidence.
 
 ## Step 4 — Inspect the Screenshots
 

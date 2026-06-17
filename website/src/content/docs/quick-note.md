@@ -1,19 +1,19 @@
 ---
 title: Quick Note
 description: A scratch overlay for capturing thoughts without leaving your layout.
-verified_version: "0.0.689"
+verified_version: "0.1.5"
 order: 2
 ---
 
-Quick Note is a scratch overlay that opens over your current layout with a single shortcut. Type a note, commit it, and it's saved to your backlog — or dismiss without committing and nothing is written.
+Quick Note is a scratch overlay that opens over your current layout with a single shortcut. Type a note, commit it, and it's saved to your notes inbox — or dismiss without committing and nothing is written.
 
 ## Opening Quick Note
 
-Press `⌘0` from anywhere inside Plexi. The overlay opens full-screen on top of your current layout. Press `⌘0` again (or `Escape`) to dismiss — your layout underneath is unchanged.
+Press `⌘0` from anywhere inside Plexi. The overlay opens full-screen on top of your current layout. Press `Escape` to dismiss — your layout underneath is unchanged.
 
 ## Committing a Note
 
-Press `Enter` to commit. Plexi writes the note to your backlog (in your profile directory) and closes the overlay. Dismissing without committing discards the text — uncommitted content is not saved across Plexi restarts.
+Press `Enter` to commit. Plexi writes the note to your notes inbox (`notes/inbox/` in your active channel profile directory) and closes the overlay. Dismissing without committing discards the text — uncommitted content is not saved across Plexi restarts.
 
 ## Use Cases
 

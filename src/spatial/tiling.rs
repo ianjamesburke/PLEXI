@@ -1010,18 +1010,19 @@ pub(crate) fn paint_portal_minimap(
                 continue;
             }
 
-            let line_alpha: u8 = if pane.focused { 51 } else { 25 };
-            let line_alpha: u8 = if !pane.active {
-                (line_alpha as f32 * 0.3) as u8
+            // Standardized icon alpha: 200 focused / 60 unfocused, dimmed to 30% for inactive panes.
+            let icon_alpha: u8 = if pane.focused { 200 } else { 100 };
+            let icon_alpha: u8 = if !pane.active {
+                (icon_alpha as f32 * 0.3) as u8
             } else {
-                line_alpha
+                icon_alpha
             };
 
             // Title label (OSC title or app name) at top of pane
             let mut content_top = content_area.min.y;
             if let Some(ref title) = pane.title {
                 if cell.width() > 25.0 && cell.height() > 14.0 {
-                    let title_alpha: u8 = if pane.focused { 102 } else { 51 };
+                    let title_alpha: u8 = if pane.focused { 130 } else { 80 };
                     let title_color = egui::Color32::from_rgba_unmultiplied(
                         colors.text_dim.r(),
                         colors.text_dim.g(),
@@ -1060,13 +1061,13 @@ pub(crate) fn paint_portal_minimap(
                         colors.text_dim.r(),
                         colors.text_dim.g(),
                         colors.text_dim.b(),
-                        line_alpha / 2,
+                        icon_alpha / 2,
                     );
                     let accent_dim = egui::Color32::from_rgba_unmultiplied(
                         colors.accent.r(),
                         colors.accent.g(),
                         colors.accent.b(),
-                        line_alpha,
+                        icon_alpha,
                     );
 
                     // Centered grid of small squares (widget-like feel)
@@ -1114,20 +1115,20 @@ pub(crate) fn paint_portal_minimap(
                         colors.text_dim.r(),
                         colors.text_dim.g(),
                         colors.text_dim.b(),
-                        (line_alpha as u32 * 2).min(255) as u8,
+                        (icon_alpha as u32 * 3 / 2).min(255) as u8,
                     );
                     let fill = egui::Color32::from_rgba_unmultiplied(
                         colors.text_dim.r(),
                         colors.text_dim.g(),
                         colors.text_dim.b(),
-                        (line_alpha / 2).max(8),
+                        (icon_alpha / 4).max(8),
                     );
                     // Accent text rules — the defining cue of the document glyph.
                     let rule = egui::Color32::from_rgba_unmultiplied(
                         colors.accent.r(),
                         colors.accent.g(),
                         colors.accent.b(),
-                        if pane.focused { 220 } else { 150 },
+                        icon_alpha.saturating_add(60),
                     );
 
                     // Sheet body (folded corner masked out via two polygons).
@@ -1154,7 +1155,7 @@ pub(crate) fn paint_portal_minimap(
                             colors.text_dim.r(),
                             colors.text_dim.g(),
                             colors.text_dim.b(),
-                            line_alpha,
+                            icon_alpha / 2,
                         ),
                         egui::Stroke::new(1.0, outline),
                     ));
@@ -1192,13 +1193,13 @@ pub(crate) fn paint_portal_minimap(
                         colors.text_dim.r(),
                         colors.text_dim.g(),
                         colors.text_dim.b(),
-                        line_alpha * 2,
+                        icon_alpha,
                     );
                     let accent_fill = egui::Color32::from_rgba_unmultiplied(
                         colors.accent.r(),
                         colors.accent.g(),
                         colors.accent.b(),
-                        if pane.focused { 80 } else { 50 },
+                        icon_alpha / 2,
                     );
 
                     for r in 0..2u32 {
@@ -1225,17 +1226,12 @@ pub(crate) fn paint_portal_minimap(
                 PaneKind::Terminal => {
                     // Centered ">_" prompt symbol
                     let font_size =
-                        (draw_area.width().min(draw_area.height()) * 0.58).clamp(10.0, 30.0);
-                    let prompt_alpha = if pane.focused {
-                        line_alpha * 2
-                    } else {
-                        line_alpha
-                    };
+                        (draw_area.width().min(draw_area.height()) * 0.70).clamp(10.0, 36.0);
                     let prompt_color = egui::Color32::from_rgba_unmultiplied(
-                        colors.text_dim.r(),
-                        colors.text_dim.g(),
-                        colors.text_dim.b(),
-                        prompt_alpha,
+                        colors.text_primary.r(),
+                        colors.text_primary.g(),
+                        colors.text_primary.b(),
+                        icon_alpha,
                     );
                     painter.text(
                         draw_area.center(),

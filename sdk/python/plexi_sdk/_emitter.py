@@ -1788,7 +1788,7 @@ class Emitter:
         capture), the old Pipe is closed before the new one is created —
         prevents OSError on the reader thread's recv() from a stale socket.
 
-        Requires ``audio.in`` capability. Raises ``CapabilityDeniedError``
+        Requires ``audio.record`` capability. Raises ``CapabilityDeniedError``
         only when the gate fires synchronously at the wire layer; the
         usual TCC mic-permission denial surfaces async on the first frame
         attempt as an ``AudioCaptureError`` event.

@@ -23,15 +23,7 @@ Phase 3 of the ship pipeline. Manages the test loop and all rejection paths.
 
 **Testing notification routing:** If the env var `PM_PANE_ID` is set (injected by PM when it dispatches this skill), route the `--choice "Talk to Claude"` action to that pane so the user replies in the PM pane. Otherwise default to `$PLEXI_PANE_ID`.
 
-> **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
-
-> **Pane status title.** Runs in the same dispatched pane (named `#<n>`, or `#<n1>+<n2>` for a bundle). Update the title at each stage so the PM reads state from `plexi pane list` instead of capturing content:
-> ```bash
-> plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"
-> ```
-> **The status word must never contain a digit** (the PM maps panes to issues via `grep -oE '[0-9]+'` — a PR number in the suffix would corrupt the census). States this skill sets: `validate`, `needs-you` (waiting on the user — the PM surfaces this), `fixing`, `blocked`.
->
-> **Pane slots.** Source `.agents/skills/_lib/pipeline-slots.sh` and publish `pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" <status> <testing-summary> <last-error>` at every status change.
+> **Labels are live state — never the Ship Log.** Pane: `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"` — no digit in status (PM census uses `grep -oE '[0-9]+'`). States: `validate`, `needs-you`, `fixing`, `blocked`. Source `.agents/skills/_lib/pipeline-slots.sh`; call `pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" <status> <summary> <error>` at every status change.
 
 ---
 
@@ -445,33 +437,14 @@ Issue re-labeled ready for next attempt
 
 ## Diff-Review Testing Block (default)
 
-Still run Step 2b (automated quality checks) unless the diff is exclusively cosmetic/style. Then surface:
+Still run Step 2b unless the diff is exclusively cosmetic/style. Then surface the Step 3 testing block with these changes:
+- Header: `[TESTING] PR #<n> — <title> (diff review only)` (no attempt count)
+- After PR line: add `No binary install was run; validation is limited to the diff and Gemini review.`
+- Pass criteria label: `Pass criteria:` (drop "from Done When")
+- Pass criteria text: `<observable change visible in diff>`
+- Fail criteria text: `<what would look wrong>`
 
-```
-[TESTING] PR #<n> — <title> (diff review only)
-PR: <pr-url>
-
-Issue #<issue-number>: <ISSUE_TITLE>
-What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
-
-No binary install was run; validation is limited to the diff and Gemini review.
-
-Test evidence (from implementation, when present):
-<test counts + render PNG path + conclusion line from the Ship Log Test evidence block>
-
-Gemini review (gemini-2.5-pro):
-<AI_FINDINGS verbatim>
-
-Pass criteria:
-- <observable change visible in diff>
-
-Fail criteria:
-- <what would look wrong>
-
-Reply: "pass" | "fail: <description>" | "modify: <change>"
-```
-
-Before firing the notification, flip pane status the same as the install path:
+Flip pane status the same as the install path before notifying:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the diff-review [TESTING] block, then reply pass/fail/modify." ""

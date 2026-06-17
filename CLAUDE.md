@@ -61,6 +61,10 @@ Before making architectural decisions, read [`NORTH_STAR.md`](NORTH_STAR.md) for
 
 Feature branch naming: `feature/<issue-number>-short-description`. Never push directly to `main` or `beta`.
 
+## Git Commit Rules
+
+Never add `Co-Authored-By: Claude ...` trailers to commit messages in any form.
+
 ## GitHub Issues
 
 **Always use the `/create-issue` skill to create issues.** It owns the full labeling convention (type, priority, area, load, blocking relationships, triage state) and enforces North Star / PRM alignment. Never create issues manually or with ad-hoc labels.
@@ -214,7 +218,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 
 **Full reference: [`docs/TESTING.md`](docs/TESTING.md).** The rule: observable state (pane tree, app UI, pixels) → TOML scene in `tests/scenes/` (`just scene <file>`, runner `src/scenes.rs`); return value or internal invariant → Rust test (`HostHarness` in `src/testing/mod.rs` for host logic, plain `#[test]` for pure logic). `PlexiUiHarness` (`src/ui_tests.rs`) is the headless engine under scenes — wgpu Metal, no display, drives real PGAP app processes. The `/testing` skill owns pre-push evidence.
 
-**Active (epic #2162):** `cargo test --bin plexi` is wired into the ship cycle. The `/testing` skill (mandatory in implement-issue/implement-stint before push for any `src/` change) classifies the diff, runs harness tests, and writes a `**Test evidence:**` block into the Ship Log. validate-pr reads that block in Step 1a to decide install vs. diff-review; a `Conclusion: install skippable — full coverage` result skips binary install entirely.
+**Active (epic #2162):** `cargo test --bin plexi` is wired into the ship cycle. The `/testing` skill (mandatory in implement-issue/implement-stint before push for any `src/` or `apps/` change) classifies the diff, runs the matching harness (host: `HostHarness`; host-ui: scenes; Python apps: `AppHarness` PNG renders), and writes a `**Test evidence:**` block into the Ship Log. validate-pr reads that block in Step 1a to decide install vs. diff-review; a `Conclusion: install skippable — full coverage` result skips binary install entirely. For full harness usage and the AppHarness PNG snapshot API, see the `/testing` skill.
 
 ## Implementation Discipline (no half-refactors)
 
