@@ -265,6 +265,14 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     perms.set_mode(perms.mode() | 0o111);
     std::fs::set_permissions(&main_path, perms)?;
 
+    // tests/test_app.py — a working AppHarness example co-located with the app
+    // so agents learn the test pattern from the scaffold, not from docs.
+    let tests_dir = app_dir.join("tests");
+    std::fs::create_dir_all(&tests_dir)?;
+    let test_template = include_str!("../../sdk/python/plexi_sdk/templates/test_app_init.py");
+    let test_py = test_template.replace("__DISPLAY_NAME__", &to_title_case(name));
+    std::fs::write(tests_dir.join("test_app.py"), test_py)?;
+
     Ok(())
 }
 
@@ -1624,6 +1632,33 @@ mod scaffold_marketplace_tests {
     #[test]
     fn stable_python_scaffold_omits_marketplace_placeholder() {
         assert_no_placeholder(&manifest_for(scaffold_python_app));
+    }
+
+    #[test]
+    fn python_scaffold_writes_appharness_test() {
+        let dir = TempDir::new().unwrap();
+        let app_dir = dir.path().join("myapp");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        scaffold_python_app(&app_dir, "myapp").unwrap();
+
+        let test_path = app_dir.join("tests").join("test_app.py");
+        assert!(
+            test_path.is_file(),
+            "python scaffold must write tests/test_app.py"
+        );
+        let test_src = std::fs::read_to_string(&test_path).unwrap();
+        assert!(
+            test_src.contains("AppHarness"),
+            "generated test must exemplify AppHarness"
+        );
+        assert!(
+            test_src.contains("assert_no_overlap"),
+            "generated test must assert no layout overlap"
+        );
+        assert!(
+            !test_src.contains("__DISPLAY_NAME__"),
+            "generated test must substitute the display-name placeholder"
+        );
     }
 
     #[test]
