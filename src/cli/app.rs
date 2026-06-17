@@ -214,6 +214,7 @@ pub fn app_init(
                     );
                     println!("  Open with: plexi app open {}", app_dir.display());
                 }
+                println!("  Test with: plexi app test {}", app_dir.display());
             }
             0
         }
