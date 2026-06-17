@@ -4,6 +4,16 @@
 
 ---
 
+## [sdk · python] Canvas apps bypass the host's WCAG contrast check — pick text colors deliberately
+
+The host enforces readable contrast for its own chrome: `Colors::text_on()` and the tests in `src/ui/theme.rs` guarantee ≥3:1 (chips) / ≥4.5:1 (sidebar body) for every host-drawn label. **Canvas apps draw with raw `ctx.text(color=...)` and get none of that** — whatever hex the app passes is what renders, no auto-correction.
+
+The trap: `ctx.theme.muted` is `#6c7086`, only ~2.6:1 against `ctx.theme.bg` (`#1e1e2e`) — it fails WCAG for body text. Leaning on `muted` for labels/values (and worse, `dim(muted, a)`, which drops alpha and makes it dimmer still) produces a dashboard that looks washed-out and is genuinely hard to read. `dim()` is for **fills/tracks/glows, never text**.
+
+**Rule for canvas apps:** primary values and labels use `ctx.theme.fg` (`#cdd6f4`, high contrast). Secondary captions use a deliberately-chosen readable subtext (e.g. `#a6adc8`, ~3.7:1 on bg), not `muted`. Reserve `muted` for the faintest tertiary marks only. Reserve hues (`accent`/`success`/`warning`/`red`) for fills, bars, and dial heat — colored *text* on `surface`/`bg` is usually <3:1 and should be avoided for anything that must be read.
+
+---
+
 ## [cargo · ship] Changing target-dir causes silent install failures
 
 All repo worktrees share a single build cache via `[build] target-dir` in `.cargo/config.toml` (or `CARGO_TARGET_DIR`). `scripts/install.sh` resolves the bundle path by calling `cargo metadata` at install time so it always points at the canonical target directory.
