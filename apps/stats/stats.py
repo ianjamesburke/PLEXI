@@ -47,7 +47,9 @@ TILES_H = 70.0
 ROW_H = 30.0
 DIAL_MIN_H = 180.0
 DIAL_MAX_R = 240.0   # the dial keeps growing with the pane up to this radius
-MAX_CONTEXTS = 10
+TOP_CONTEXTS = 4     # named rows; the rest collapse into one "Other" row
+CONTEXT_ROWS = TOP_CONTEXTS + 1  # fixed row count so the layout never jumps
+OTHER_COLOR = "#585b70"          # neutral track colour for the "Other" bucket
 
 
 # ── Data layer ───────────────────────────────────────────────────────────────
@@ -190,6 +192,8 @@ class Metrics:
         self.avg_daily_secs = 0.0
         self.peak_hour_label = "—"
         self.contexts: "list[dict]" = []
+        self.other_secs = 0.0
+        self.other_count = 0
         self.wave: "list[tuple[int, str]]" = [(0, TEXT_SOFT)] * WAVE_BUCKETS
         self.wave_peak = 1
         self.now_frac = 0.0          # fraction of the clock day elapsed (now marker)
@@ -257,7 +261,10 @@ class Metrics:
         ctx_color = {name: CONTEXT_PALETTE[i % len(CONTEXT_PALETTE)]
                      for i, (name, _) in enumerate(ranked)}
         m.contexts = [{"label": name, "secs": secs, "color": ctx_color[name]}
-                      for name, secs in ranked[:MAX_CONTEXTS]]
+                      for name, secs in ranked[:TOP_CONTEXTS]]
+        rest = ranked[TOP_CONTEXTS:]
+        m.other_count = len(rest)
+        m.other_secs = sum(secs for _, secs in rest)
 
         # Waveform: amplitude = switch count, colour = dominant context that bucket.
         m.wave_peak = max(wave_count) or 1
@@ -417,31 +424,43 @@ def _draw_tiles(ctx, m: "Metrics", x, y, w, h) -> None:
 
 def _draw_contexts(ctx, m: "Metrics", x, y, w) -> None:
     ctx.text(x, y, "TOP CONTEXTS", size=TEXT_HINT, color=TEXT_SOFT, bold=True)
-    if not m.contexts:
-        return
     name_w = w * 0.46          # generous room for context names
     time_w = 56.0
     bar_x = x + name_w
     bar_w = w - name_w - time_w
     bar_h = 13.0
-    top = max(c["secs"] for c in m.contexts)
-    for i, c in enumerate(m.contexts):
+
+    # Always render TOP_CONTEXTS named rows + one "Other" row so the section
+    # height is constant — the layout never jumps as the day's mix changes.
+    rows = list(m.contexts)
+    if m.other_secs > 0 or m.other_count > 0:
+        rows.append({"label": f"Other ({m.other_count})", "secs": m.other_secs,
+                     "color": OTHER_COLOR, "other": True})
+    top = max((r["secs"] for r in rows), default=0.0)
+
+    for i in range(CONTEXT_ROWS):
         ry = y + SPACE_LG + i * ROW_H
+        if i >= len(rows):
+            continue
+        c = rows[i]
+        is_other = c.get("other", False)
         cyy = ry + bar_h / 2
-        rank_color = RANK_COLORS[i] if i < 3 else TEXT_SOFT
-        ctx.text(x, cyy, f"{i + 1}", size=TEXT_CAPTION, color=rank_color,
+        rank_color = RANK_COLORS[i] if i < 3 and not is_other else TEXT_SOFT
+        marker = "·" if is_other else f"{i + 1}"
+        ctx.text(x, cyy, marker, size=TEXT_CAPTION, color=rank_color,
                  bold=True, align="left_center")
         ctx.text(x + SPACE_LG, cyy, c["label"], size=TEXT_CAPTION,
-                 color=ctx.theme.fg, bold=True, align="left_center",
-                 max_width=name_w - SPACE_LG - SPACE_SM)
+                 color=TEXT_SOFT if is_other else ctx.theme.fg, bold=True,
+                 align="left_center", max_width=name_w - SPACE_LG - SPACE_SM)
         ctx.rect(bar_x, ry, bar_w, bar_h, ctx.theme.surface, radius=bar_h / 2)
         frac = c["secs"] / top if top else 0.0
         if frac > 0:
             fw = max(bar_h, bar_w * frac)
+            glow = (not is_other) and i < 3
             ctx.rect(bar_x, ry, fw, bar_h, "#00000000",
                      gradient={"from": dim(c["color"], 160), "to": c["color"], "dir": "h"},
-                     glow_color=c["color"] if i < 3 else None,
-                     glow_radius=5.0 if i < 3 else 0.0)
+                     glow_color=c["color"] if glow else None,
+                     glow_radius=5.0 if glow else 0.0)
         ctx.text(x + w, cyy, _fmt_secs(c["secs"]),
                  size=TEXT_CAPTION, color=TEXT_SOFT, align="right_center")
 
@@ -468,7 +487,7 @@ class StatsApp(App):
             return
         pad = SPACE_LG
         inner_w = w - 2 * pad
-        contexts_h = SPACE_LG + max(1, len(m.contexts)) * ROW_H
+        contexts_h = SPACE_LG + CONTEXT_ROWS * ROW_H  # fixed → layout never jumps
         # Dial is the hero; it absorbs leftover vertical space (and is capped
         # inside _draw_dial so it never overruns its slot).
         bottom = y + h - SPACE_LG
