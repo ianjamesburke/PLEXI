@@ -62,6 +62,16 @@ impl PlexiApp {
                 self.update_available = Some(version);
             }
         }
+        if let Some(ref rx) = self.update_install_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.update_installing = false;
+                if let Err(ref e) = result {
+                    log::warn!("ui: one-click update failed: {e}");
+                }
+                // result logged; modal stays open so user sees outcome via update_available clearing
+                drop(result);
+            }
+        }
         self.drain_pty_events();
 
         // Update the global pane context snapshot so that AiQuery dispatches

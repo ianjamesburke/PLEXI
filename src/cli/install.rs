@@ -467,11 +467,16 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
     }
 }
 
-/// `plexi update` — download and install the latest Plexi release from GitHub.
-/// Only supports main channel. Alpha (dev) and PR builds must use `just install`.
-/// Beta builds require a channel-renamed bundle that can't yet be produced without
-/// the install script, so they are also unsupported here.
-pub fn self_update_cli() -> i32 {
+/// Core update logic, callable from both the CLI and the GUI one-click button.
+///
+/// `from_gui` — when `true`, the caller is the changelog modal running inside the
+/// live Plexi process.  The function skips the `PLEXI_RUNNING` env-var check and
+/// uses the relaunch-script path unconditionally (the app *is* running).
+/// When `false` (CLI), the env-var check is used instead.
+///
+/// Returns `Ok(human_readable_message)` on success and `Err(error_message)` on
+/// failure so callers can surface the outcome appropriately.
+pub fn run_self_update(from_gui: bool) -> Result<String, String> {
     use std::io::Read;
 
     // Detect channel from binary name (mirrors config_dir_name in config.rs).
@@ -504,11 +509,15 @@ pub fn self_update_cli() -> i32 {
     let display = format!("Plexi{cap}");
     let bundle_id = format!("com.ianjamesburke.plexi{suffix}");
     log::info!("cli: self-update channel={channel} suffix={suffix} display={display}");
+    if from_gui {
+        log::info!("ui: one-click update triggered from changelog modal");
+    }
 
     if binary_name.contains("alpha") || binary_name.contains("pr-") {
-        eprintln!("Self-update is not available for dev builds.");
-        eprintln!("Update from source: git pull && just install");
-        return 1;
+        return Err(
+            "Self-update is not available for dev builds.\nUpdate from source: git pull && just install"
+                .to_string(),
+        );
     }
 
     let current_version = env!("CARGO_PKG_VERSION");
@@ -529,36 +538,31 @@ pub fn self_update_cli() -> i32 {
         Ok(r) => match r.into_string() {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("error: failed to read release response: {e}");
-                return 1;
+                return Err(format!("error: failed to read release response: {e}"));
             }
         },
         Err(e) => {
-            eprintln!("error: failed to fetch release info: {e}");
-            return 1;
+            return Err(format!("error: failed to fetch release info: {e}"));
         }
     };
 
     let release: serde_json::Value = match serde_json::from_str(&release_body) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("error: failed to parse release response: {e}");
-            return 1;
+            return Err(format!("error: failed to parse release response: {e}"));
         }
     };
 
     let tag_name = match release["tag_name"].as_str() {
         Some(t) => t.to_string(),
         None => {
-            eprintln!("error: release has no tag_name");
-            return 1;
+            return Err("error: release has no tag_name".to_string());
         }
     };
 
     let latest_version = tag_name.trim_start_matches('v');
     if latest_version == current_version {
-        println!("Already up to date (v{current_version}).");
-        return 0;
+        return Ok(format!("Already up to date (v{current_version})."));
     }
     println!("Latest:  {tag_name}");
 
@@ -574,9 +578,9 @@ pub fn self_update_cli() -> i32 {
     {
         Some(url) => url.to_string(),
         None => {
-            eprintln!("error: no asset named {asset_name} in release {tag_name}");
-            eprintln!("Check: https://github.com/ianjamesburke/PLEXI/releases/tag/{tag_name}");
-            return 1;
+            return Err(format!(
+                "error: no asset named {asset_name} in release {tag_name}\nCheck: https://github.com/ianjamesburke/PLEXI/releases/tag/{tag_name}"
+            ));
         }
     };
 
@@ -585,8 +589,9 @@ pub fn self_update_cli() -> i32 {
     let current_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("error: could not determine current binary path: {e}");
-            return 1;
+            return Err(format!(
+                "error: could not determine current binary path: {e}"
+            ));
         }
     };
     let app_bundle = current_exe
@@ -599,9 +604,10 @@ pub fn self_update_cli() -> i32 {
         Some(p) => p,
         None => {
             log::info!("cli: self-update skipped — not a bundle install");
-            println!("Self-update requires a bundled .app installation.");
-            println!("For a dev install, update from source: git pull && just install");
-            return 0;
+            return Ok(
+                "Self-update requires a bundled .app installation.\nFor a dev install, update from source: git pull && just install"
+                    .to_string(),
+            );
         }
     };
 
@@ -614,8 +620,7 @@ pub fn self_update_cli() -> i32 {
     {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("error: failed to download {asset_name}: {e}");
-            return 1;
+            return Err(format!("error: failed to download {asset_name}: {e}"));
         }
     };
 
@@ -623,25 +628,21 @@ pub fn self_update_cli() -> i32 {
     let tmp_dir = std::env::temp_dir().join("plexi-update");
     let _ = std::fs::remove_dir_all(&tmp_dir);
     if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
-        eprintln!("error: failed to create temp dir: {e}");
-        return 1;
+        return Err(format!("error: failed to create temp dir: {e}"));
     }
     let zip_path = tmp_dir.join(&asset_name);
     let mut zip_file = match std::fs::File::create(&zip_path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("error: failed to create temp file: {e}");
-            return 1;
+            return Err(format!("error: failed to create temp file: {e}"));
         }
     };
     let mut buf = Vec::new();
     if let Err(e) = download_resp.into_reader().read_to_end(&mut buf) {
-        eprintln!("error: failed to download file: {e}");
-        return 1;
+        return Err(format!("error: failed to download file: {e}"));
     }
     if let Err(e) = std::io::Write::write_all(&mut zip_file, &buf) {
-        eprintln!("error: failed to write download to disk: {e}");
-        return 1;
+        return Err(format!("error: failed to write download to disk: {e}"));
     }
     drop(zip_file);
 
@@ -658,22 +659,19 @@ pub fn self_update_cli() -> i32 {
     match unzip_out {
         Ok(out) if out.status.success() => {}
         Ok(out) => {
-            eprintln!(
+            return Err(format!(
                 "error: unzip failed: {}",
                 String::from_utf8_lossy(&out.stderr)
-            );
-            return 1;
+            ));
         }
         Err(e) => {
-            eprintln!("error: failed to run unzip: {e}");
-            return 1;
+            return Err(format!("error: failed to run unzip: {e}"));
         }
     }
 
     let extracted_app = extract_dir.join("Plexi.app");
     if !extracted_app.is_dir() {
-        eprintln!("error: Plexi.app not found in downloaded archive");
-        return 1;
+        return Err("error: Plexi.app not found in downloaded archive".to_string());
     }
 
     // Replace the installed app bundle. Write to a temp path first so that
@@ -691,17 +689,14 @@ pub fn self_update_cli() -> i32 {
     match cp_stage {
         Ok(out) if out.status.success() => {}
         Ok(out) => {
-            eprintln!(
-                "error: failed to stage new app (permission denied?): {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            eprintln!("Run with sudo if /Applications is not user-writable.");
             let _ = std::fs::remove_dir_all(&tmp_dir);
-            return 1;
+            return Err(format!(
+                "error: failed to stage new app (permission denied?): {}\nRun with sudo if /Applications is not user-writable.",
+                String::from_utf8_lossy(&out.stderr)
+            ));
         }
         Err(e) => {
-            eprintln!("error: failed to run cp: {e}");
-            return 1;
+            return Err(format!("error: failed to run cp: {e}"));
         }
     }
 
@@ -712,13 +707,12 @@ pub fn self_update_cli() -> i32 {
         log::info!("cli: self-update patching bundle for channel={channel}");
         let plist = staging.join("Contents/Info.plist");
         if !plist.exists() {
-            eprintln!(
-                "error: Info.plist not found in staged bundle at {}",
-                plist.display()
-            );
             let _ = std::fs::remove_dir_all(&staging);
             let _ = std::fs::remove_dir_all(&tmp_dir);
-            return 1;
+            return Err(format!(
+                "error: Info.plist not found in staged bundle at {}",
+                plist.display()
+            ));
         }
         let plist_str = plist.to_string_lossy();
         for (key, val) in [
@@ -733,19 +727,17 @@ pub fn self_update_cli() -> i32 {
             match plutil_out {
                 Ok(out) if out.status.success() => {}
                 Ok(out) => {
-                    eprintln!(
+                    let _ = std::fs::remove_dir_all(&staging);
+                    let _ = std::fs::remove_dir_all(&tmp_dir);
+                    return Err(format!(
                         "error: plutil -replace {key} failed: {}",
                         String::from_utf8_lossy(&out.stderr)
-                    );
-                    let _ = std::fs::remove_dir_all(&staging);
-                    let _ = std::fs::remove_dir_all(&tmp_dir);
-                    return 1;
+                    ));
                 }
                 Err(e) => {
-                    eprintln!("error: failed to run plutil: {e}");
                     let _ = std::fs::remove_dir_all(&staging);
                     let _ = std::fs::remove_dir_all(&tmp_dir);
-                    return 1;
+                    return Err(format!("error: failed to run plutil: {e}"));
                 }
             }
         }
@@ -755,17 +747,18 @@ pub fn self_update_cli() -> i32 {
         let new_bin = macos_dir.join(binary_name);
         if old_bin.exists() && old_bin != new_bin {
             if let Err(e) = std::fs::rename(&old_bin, &new_bin) {
-                eprintln!("error: failed to rename binary in bundle: {e}");
                 let _ = std::fs::remove_dir_all(&staging);
                 let _ = std::fs::remove_dir_all(&tmp_dir);
-                return 1;
+                return Err(format!("error: failed to rename binary in bundle: {e}"));
             }
         }
     }
 
     // When running inside Plexi the bundle can't be replaced while the app is live.
     // Write a relaunch script, launch it detached, trigger app quit, and exit.
-    if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
+    // `from_gui` replaces the PLEXI_RUNNING env-var check — if called from the GUI,
+    // the app is definitionally running.
+    if from_gui || std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
         let app_display_name = app_bundle
             .file_stem()
             .and_then(|n| n.to_str())
@@ -783,9 +776,8 @@ pub fn self_update_cli() -> i32 {
         );
         let script_path = tmp_dir.join("plexi-relaunch.sh");
         if let Err(e) = std::fs::write(&script_path, &script) {
-            eprintln!("error: failed to write relaunch script: {e}");
             let _ = std::fs::remove_dir_all(&staging);
-            return 1;
+            return Err(format!("error: failed to write relaunch script: {e}"));
         }
         #[cfg(unix)]
         {
@@ -802,36 +794,32 @@ pub fn self_update_cli() -> i32 {
         {
             Ok(_) => {}
             Err(e) => {
-                eprintln!("error: failed to launch relaunch script: {e}");
                 let _ = std::fs::remove_dir_all(&staging);
-                return 1;
+                return Err(format!("error: failed to launch relaunch script: {e}"));
             }
         }
-        println!("Plexi will restart to apply the update.");
         let _ = std::process::Command::new("osascript")
             .args([
                 "-e",
                 &format!("tell application \"{app_display_name}\" to quit"),
             ])
             .status();
-        return 0;
+        return Ok("Plexi will restart to apply the update.".to_string());
     }
 
     if let Err(e) = std::fs::remove_dir_all(&app_bundle) {
-        eprintln!("error: failed to remove old app bundle: {e}");
-        eprintln!("Run with sudo if /Applications is not user-writable.");
         let _ = std::fs::remove_dir_all(&staging);
         let _ = std::fs::remove_dir_all(&tmp_dir);
-        return 1;
+        return Err(format!(
+            "error: failed to remove old app bundle: {e}\nRun with sudo if /Applications is not user-writable."
+        ));
     }
     if let Err(e) = std::fs::rename(&staging, &app_bundle) {
-        eprintln!("error: failed to move new app into place: {e}");
-        eprintln!(
-            "Staged bundle is at {}. Move it manually to {}.",
+        return Err(format!(
+            "error: failed to move new app into place: {e}\nStaged bundle is at {}. Move it manually to {}.",
             staging.display(),
             app_bundle.display()
-        );
-        return 1;
+        ));
     }
 
     // Re-symlink the CLI binary at /usr/local/bin/plexi{suffix} (non-fatal if missing).
@@ -855,6 +843,19 @@ pub fn self_update_cli() -> i32 {
     }
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    println!("Installed v{latest_version}. Restart Plexi to apply.");
-    0
+    Ok(format!("Installed v{latest_version}. Restart Plexi to apply."))
+}
+
+/// `plexi update` — thin CLI wrapper around `run_self_update`.
+pub fn self_update_cli() -> i32 {
+    match run_self_update(false) {
+        Ok(msg) => {
+            println!("{msg}");
+            0
+        }
+        Err(msg) => {
+            eprintln!("{msg}");
+            1
+        }
+    }
 }
