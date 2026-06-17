@@ -978,58 +978,22 @@ impl ProcessApp {
         resource_id: Option<String>,
         duration: crate::broker::GrantDuration,
     ) -> Result<String, crate::broker::Decision> {
-        use crate::broker::{Decision, PermissionRequest, TargetType};
-        let targets: Vec<String> = if event_names.is_empty() {
-            vec![format!("{publisher_app_id}::*")]
-        } else {
-            event_names
-                .iter()
-                .map(|n| format!("{publisher_app_id}::{n}"))
-                .collect()
-        };
-        let mut strictest = Decision::Allow;
-        for target in &targets {
-            let req = PermissionRequest::new(
-                subscriber_type,
-                subscriber_id,
-                TargetType::AppEventStream,
-                target,
-                Some(&self.workspace_root),
-            );
-            match self.grant_store.evaluate(&req, self.posture.as_ref()) {
-                Decision::Allow => {}
-                Decision::Deny => strictest = Decision::Deny,
-                Decision::Ask => {
-                    if strictest != Decision::Deny {
-                        strictest = Decision::Ask;
-                    }
-                }
-            }
-        }
-        if strictest != Decision::Allow {
-            log::info!(
-                "ProcessApp[{}]: subscription to '{publisher_app_id}' events for \
-                 {subscriber_type:?} '{subscriber_id}' blocked by broker ({})",
-                self.type_id,
-                strictest.as_str()
-            );
-            return Err(strictest);
-        }
-        let subscription_id = format!("sub-{}", uuid::Uuid::new_v4());
-        let record = crate::host::app_timeline::SubscriptionRecord {
-            subscription_id: subscription_id.clone(),
+        // Delegate to the shared host subscription core so the per-app and
+        // host-level (CLI/MCP) paths use one broker-gated implementation.
+        crate::host::event_subscriptions::evaluate_and_record_subscription(
+            &self.grant_store,
+            self.posture.as_ref(),
+            &self.workspace_root,
+            &self.app_timeline,
+            publisher_app_id,
             subscriber_type,
-            subscriber_id: subscriber_id.to_string(),
-            app_id: publisher_app_id.to_string(),
+            subscriber_id,
             event_names,
             payload_mode,
             trigger_mode,
             resource_id,
             duration,
-            created_at: event_log::now_timestamp(),
-        };
-        self.app_timeline.lock().unwrap().add_subscription(record);
-        Ok(subscription_id)
+        )
     }
 
     /// Request rollback of an undo checkpoint. Gated through the unified

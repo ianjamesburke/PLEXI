@@ -1,0 +1,141 @@
+//! `plexi events` — subscribe to app event streams from a terminal pane.
+//!
+//! The lowest-common-denominator agent transport: any process that can read
+//! subprocess stdout can subscribe. Both subcommands open the host socket,
+//! send one control line, and stream newline-delimited JSON back:
+//!
+//! - `subscribe` keeps the connection open and prints a `subscribed` ack line
+//!   followed by one line per delivered event, until interrupted.
+//! - `list` prints the apps' declared streams once and exits.
+//!
+//! Identity is host-stamped from `PLEXI_PANE_ID`; there is deliberately no flag
+//! to set the subscriber identity, so a CLI agent cannot spoof another.
+
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+
+/// Connect to the running host's command socket. Mirrors the connect/cleanup
+/// behaviour of `send_to_socket`, but returns the live stream so the caller can
+/// stream NDJSON responses back.
+fn connect_socket() -> Result<UnixStream, i32> {
+    let socket_path = match std::env::var("PLEXI_SOCKET") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+            return Err(1);
+        }
+    };
+    match UnixStream::connect(&socket_path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+            let _ = std::fs::remove_file(&socket_path);
+            eprintln!("error: Plexi is not responding (stale socket removed). Is Plexi running?");
+            Err(1)
+        }
+        Err(e) => {
+            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
+            Err(1)
+        }
+    }
+}
+
+fn from_pane_id() -> Option<u64> {
+    std::env::var("PLEXI_PANE_ID").ok()?.parse().ok()
+}
+
+/// Send one control line and stream every NDJSON line the host returns to
+/// stdout until the connection closes. Returns the process exit code.
+fn stream_control_line(payload: serde_json::Value) -> i32 {
+    let mut stream = match connect_socket() {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let line = format!("{payload}\n");
+    if let Err(e) = stream.write_all(line.as_bytes()) {
+        eprintln!("error: could not write to socket: {e}");
+        return 1;
+    }
+    let _ = stream.flush();
+    log::info!("events: sent control line type={}", payload["type"]);
+    let reader = BufReader::new(stream);
+    let stdout = std::io::stdout();
+    for line in reader.lines() {
+        match line {
+            Ok(line) => {
+                let mut out = stdout.lock();
+                if writeln!(out, "{line}").is_err() {
+                    return 0; // downstream consumer went away
+                }
+                let _ = out.flush();
+            }
+            Err(e) => {
+                eprintln!("error: reading event stream: {e}");
+                return 1;
+            }
+        }
+    }
+    0
+}
+
+/// `plexi events subscribe <app_id> <stream>` — stream deliveries as NDJSON.
+pub fn events_subscribe_cli(
+    app_id: &str,
+    stream: Option<&str>,
+    all: bool,
+    payload: &str,
+    trigger: &str,
+    resource: Option<&str>,
+) -> i32 {
+    let event_names: Vec<String> = match (all, stream) {
+        (true, _) => vec![],
+        (false, Some(s)) => vec![s.to_string()],
+        (false, None) => {
+            eprintln!(
+                "error: specify a stream name (e.g. `plexi events subscribe {app_id} probe.tick`) \
+                 or pass --all to subscribe to every stream"
+            );
+            return 2;
+        }
+    };
+    let payload_mode = payload_mode_json(payload);
+    let trigger_mode = trigger_mode_json(trigger);
+    let req = serde_json::json!({
+        "type": "events_subscribe",
+        "app_id": app_id,
+        "event_names": event_names,
+        "payload_mode": payload_mode,
+        "trigger_mode": trigger_mode,
+        "resource_id": resource,
+        "from_pane_id": from_pane_id(),
+    });
+    stream_control_line(req)
+}
+
+/// `plexi events list` — print declared streams once and exit.
+pub fn events_list_cli(json: bool) -> i32 {
+    let req = serde_json::json!({
+        "type": "events_list",
+        "json": json,
+    });
+    stream_control_line(req)
+}
+
+/// Map the CLI `--payload` value to the wire `PayloadMode` (snake_case serde).
+fn payload_mode_json(s: &str) -> &'static str {
+    match s {
+        "off" => "off",
+        "summary" => "summary",
+        "state-ref" => "state_ref",
+        _ => "full",
+    }
+}
+
+/// Map the CLI `--trigger` value to the wire `TriggerMode` (snake_case serde).
+fn trigger_mode_json(s: &str) -> &'static str {
+    match s {
+        "never" => "never",
+        "ambient" => "ambient",
+        "ask" => "ask",
+        _ => "conversation",
+    }
+}
