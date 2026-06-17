@@ -44,7 +44,7 @@ TEXT_SOFT = "#a6adc8"  # readable secondary text (~3.7:1 on bg); never use theme
 
 # Section heights (logical px).
 TILES_H = 70.0
-ROW_H = 26.0
+ROW_H = 30.0
 DIAL_MIN_H = 180.0
 DIAL_MAX_R = 240.0   # the dial keeps growing with the pane up to this radius
 MAX_CONTEXTS = 10
@@ -192,11 +192,15 @@ class Metrics:
         self.contexts: "list[dict]" = []
         self.wave: "list[tuple[int, str]]" = [(0, TEXT_SOFT)] * WAVE_BUCKETS
         self.wave_peak = 1
-        self.day_frac = 0.0          # fraction of the 4 AM-day elapsed (now marker)
+        self.now_frac = 0.0          # fraction of the clock day elapsed (now marker)
+        self.is_today = True
+        self.selected_date = None    # date of the day window being shown
+        self.day_offset = 0
 
     @classmethod
-    def load(cls, events_path: "Path | None") -> "Metrics":
+    def load(cls, events_path: "Path | None", day_offset: int = 0) -> "Metrics":
         m = cls()
+        m.day_offset = max(0, day_offset)
         if not events_path:
             return m
         events = _parse_focus_events(events_path)
@@ -207,8 +211,13 @@ class Metrics:
 
         now = datetime.now(timezone.utc)
         now_local = now.astimezone()
-        day_start = _day_start(now_local)
-        m.day_frac = min(1.0, max(0.0, (now_local - day_start).total_seconds() / 86400.0))
+        # Window = the 4 AM-anchored day, shifted back by day_offset.
+        day_start = _day_start(now_local) - timedelta(days=m.day_offset)
+        day_end = day_start + timedelta(days=1)
+        m.is_today = m.day_offset == 0
+        m.selected_date = _logical_date(day_start + timedelta(hours=DAY_START_HOUR))
+        midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        m.now_frac = min(1.0, max(0.0, (now_local - midnight).total_seconds() / 86400.0))
         bucket_secs = 86400.0 / WAVE_BUCKETS
 
         idle = [False]
@@ -224,9 +233,9 @@ class Metrics:
             local = ev["_ts"].astimezone()
             if secs > 0:
                 active_dates.add(_logical_date(local))
-            if local < day_start:
+            if local < day_start or local >= day_end:
                 continue
-            # Within today's 4 AM-anchored window.
+            # Within the selected 4 AM-anchored window.
             m.switches_today += 1
             label = _context_label(ev)
             offset = (local - day_start).total_seconds()
@@ -297,23 +306,30 @@ def _momentum(ctx, m: "Metrics") -> "tuple[str, str]":
 
 
 def _draw_dial(ctx, m: "Metrics", x, y, w, h) -> None:
-    """Hero: a circular activity clock for today.
+    """Hero: a circular activity clock for the selected day.
 
-    Angle = time of day (4 AM at top, clockwise). Radial amplitude = pane-switch
+    Angle = clock time (12 AM at top, clockwise). Radial amplitude = pane-switch
     velocity in that slice. Colour = the context you were in. A bright needle
-    marks the current time. Hub = today's focus total; the inner ring fills
-    toward a typical day. Grows with its container up to DIAL_MAX_R.
+    marks the current time (today only). Hub = the day's focus total; the inner
+    ring fills toward a typical day. Grows with its container up to DIAL_MAX_R.
     """
     accent = ctx.theme.accent
-    cap_h = 34.0                 # caption strip (rank + momentum) under the circle
+    cap_h = 30.0                 # caption strip (momentum) under the circle
     ch = h - cap_h
     cx = x + w / 2
     cy = y + ch / 2
-    outer = max(48.0, min(w / 2, ch / 2, DIAL_MAX_R) - 20.0)  # room for tick labels
+    outer = max(48.0, min(w / 2, ch / 2, DIAL_MAX_R) - 22.0)  # room for tick labels
     amp = outer * 0.42
     r0 = outer - amp
-    base = math.pi / 2  # -base = top → 4 AM at top
+    base = math.pi / 2  # -base = top → 12 AM at top
     n = len(m.wave)
+    # Bucket i covers the day from DAY_START_HOUR; map it to its clock angle so
+    # midnight sits at the top regardless of the 4 AM data window.
+    bucket_secs = 86400.0 / n
+
+    def clock_ang(i: float) -> float:
+        clock_secs = (DAY_START_HOUR * 3600 + i * bucket_secs) % 86400.0
+        return -base + clock_secs / 86400.0 * math.tau
 
     # Smooth the switch counts into a flowing amplitude (3-bucket moving average),
     # compressed so frequent-but-small bursts stay visible next to big spikes.
@@ -332,7 +348,7 @@ def _draw_dial(ctx, m: "Metrics", x, y, w, h) -> None:
         if a <= 0:
             continue
         color = m.wave[i][1]
-        ang = -base + (i + 0.5) / n * math.tau
+        ang = clock_ang(i + 0.5)
         rr = r0 + amp * (min(1.0, a / peak) ** 0.6)
         ctx.line(cx + math.cos(ang) * r0, cy + math.sin(ang) * r0,
                  cx + math.cos(ang) * rr, cy + math.sin(ang) * rr,
@@ -345,35 +361,34 @@ def _draw_dial(ctx, m: "Metrics", x, y, w, h) -> None:
     if frac > 0:
         ctx.arc_ring(cx, cy, pr, -base, -base + math.tau * frac, accent, stroke_width=3.0)
 
-    # "Now" needle — a bright clock hand from the hub to the rim at the current time.
-    nang = -base + m.day_frac * math.tau
-    ctx.line(cx + math.cos(nang) * (pr - 2.0), cy + math.sin(nang) * (pr - 2.0),
-             cx + math.cos(nang) * (outer + 4.0), cy + math.sin(nang) * (outer + 4.0),
-             color=ctx.theme.fg, width=2.5)
-    ctx.circle(cx + math.cos(nang) * (outer + 4.0), cy + math.sin(nang) * (outer + 4.0),
-               3.5, ctx.theme.fg)
+    # "Now" needle — a bright clock hand at the current time (today only).
+    if m.is_today:
+        nang = -base + m.now_frac * math.tau
+        ctx.line(cx + math.cos(nang) * (pr - 2.0), cy + math.sin(nang) * (pr - 2.0),
+                 cx + math.cos(nang) * (outer + 4.0), cy + math.sin(nang) * (outer + 4.0),
+                 color=ctx.theme.fg, width=2.5)
+        ctx.circle(cx + math.cos(nang) * (outer + 4.0), cy + math.sin(nang) * (outer + 4.0),
+                   3.5, ctx.theme.fg)
 
-    # Quarter-day ticks (4 AM at top, clockwise).
-    lr = outer + 13.0
-    for tfrac, lbl in ((0.0, "4a"), (0.25, "10a"), (0.5, "4p"), (0.75, "10p")):
+    # Quarter-day ticks (12 AM at top, clockwise).
+    lr = outer + 12.0
+    for tfrac, lbl in ((0.0, "12a"), (0.25, "6a"), (0.5, "12p"), (0.75, "6p")):
         ang = -base + tfrac * math.tau
         ctx.text(cx + lr * math.cos(ang), cy + lr * math.sin(ang), lbl,
                  size=TEXT_HINT, color=TEXT_SOFT, align="center_center")
 
-    # Hub: today's focus total — the headline the clock measures.
+    # Hub: the day's focus total — the headline the clock measures.
     num_size = max(22.0, min(r0 * 0.52, 40.0))
     ctx.text(cx, cy - num_size * 0.26, _fmt_secs(m.active_secs), size=num_size,
              color=ctx.theme.fg, bold=True, align="center_center")
-    ctx.text(cx, cy + num_size * 0.62, "focused today", size=TEXT_HINT,
-             color=TEXT_SOFT, align="center_center")
+    ctx.text(cx, cy + num_size * 0.62, "focused today" if m.is_today else "focused",
+             size=TEXT_HINT, color=TEXT_SOFT, align="center_center")
 
-    # Caption: today vs a typical day + lifetime total.
-    ry = y + ch + 2.0
+    # Caption: this day vs a typical day.
+    ry = y + ch + 12.0
     mom_text, mom_color = _momentum(ctx, m)
     ctx.text(cx, ry, mom_text, size=TEXT_CAPTION, color=mom_color,
              bold=True, align="center_center")
-    ctx.text(cx, ry + 15.0, f"{_fmt_secs(m.lifetime_secs)} focused all-time",
-             size=TEXT_HINT, color=TEXT_SOFT, align="center_center")
 
 
 def _draw_tile(ctx, x, y, w, h, value, label, color) -> None:
@@ -435,7 +450,8 @@ class StatsApp(App):
 
     async def on_init(self) -> None:
         self.events_path = _resolve_events_path()
-        self.m = Metrics.load(self.events_path)
+        self.day_offset = 0
+        self.m = Metrics.load(self.events_path, self.day_offset)
         self.emit.info(
             f"stats: loaded data={self.m.has_data} "
             f"active_today={int(self.m.active_secs)}s switches={self.m.switches_today} "
@@ -464,27 +480,48 @@ class StatsApp(App):
         cur += TILES_H + SPACE_LG
         _draw_contexts(ctx, m, x + pad, cur, inner_w)
 
-    def on_render(self, ctx) -> None:
+    def _subtitle(self) -> str:
         m = self.m
-        if m.has_data:
-            now = datetime.now().astimezone()
-            subtitle = f"{now:%A, %B} {now.day}"
-        else:
-            subtitle = "no data"
+        if not m.has_data or m.selected_date is None:
+            return "no data"
+        d = m.selected_date
+        label = f"{d:%A, %B} {d.day}"
+        if m.day_offset == 1:
+            return f"{label} · yesterday"
+        if m.day_offset > 1:
+            return f"{label} · {m.day_offset} days ago"
+        return label
+
+    def on_render(self, ctx) -> None:
         ctx.render(Column(
             [
-                AppBar(title="Stats", subtitle=subtitle),
+                AppBar(title="Stats", subtitle=self._subtitle()),
                 Canvas(draw=self._draw, grow=True),
-                FooterKeys([("r", "refresh"), ("esc", "close")]),
+                FooterKeys([("←/→", "day"), ("t", "today"),
+                            ("r", "refresh"), ("esc", "close")]),
             ],
             padding=0, gap=0,
         ))
 
+    def _reload(self) -> None:
+        self.m = Metrics.load(self.events_path, self.day_offset)
+        self.emit.info(f"stats: day_offset={self.day_offset}")
+        self.emit.schedule_render(0)
+
     def on_key(self, key: str, _mods: dict) -> None:
-        if key == "r":
-            self.m = Metrics.load(self.events_path)
-            self.emit.info("stats: refreshed")
-            self.emit.schedule_render(0)
+        if key == "left":
+            self.day_offset += 1            # older
+            self._reload()
+        elif key == "right":
+            if self.day_offset > 0:
+                self.day_offset -= 1        # newer
+                self._reload()
+        elif key == "t":
+            if self.day_offset != 0:
+                self.day_offset = 0
+                self._reload()
+        elif key == "r":
+            self._reload()
 
 
 if __name__ == "__main__":
