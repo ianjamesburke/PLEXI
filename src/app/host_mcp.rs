@@ -51,7 +51,7 @@ pub fn discovery() -> Option<&'static (u16, String)> {
 pub fn start_host_mcp_server(
     subscribe_tx: Sender<HostSubscribeRequest>,
     egui_ctx: egui::Context,
-) -> std::io::Result<()> {
+) -> std::io::Result<(u16, String)> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let token = uuid::Uuid::new_v4().to_string();
@@ -88,7 +88,7 @@ pub fn start_host_mcp_server(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
     log::info!("host_mcp: started on 127.0.0.1:{port}");
-    Ok(())
+    Ok((port, token))
 }
 
 fn tool_defs() -> serde_json::Value {
@@ -301,5 +301,169 @@ fn tool_subscribe_and_wait(
         None => Ok(format!(
             "{{\"timeout\":true,\"message\":\"no event within {timeout_secs}s\"}}"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    fn post(port: u16, token: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        let auth = match token {
+            Some(t) => format!("Authorization: Bearer {t}\r\n"),
+            None => String::new(),
+        };
+        let req = format!(
+            "POST /mcp HTTP/1.1\r\nHost: localhost\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        stream.flush().unwrap();
+        let mut resp = Vec::new();
+        let _ = stream.read_to_end(&mut resp);
+        let s = String::from_utf8_lossy(&resp);
+        let status = s
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|x| x.parse().ok())
+            .unwrap_or(0);
+        let start = s.find("\r\n\r\n").map(|i| i + 4).unwrap_or(resp.len());
+        (status, resp[start..].to_vec())
+    }
+
+    /// A test server whose subscribe channel is serviced by a granted service
+    /// bound to the global timeline (the production wiring, minus the UI loop).
+    fn start_test_server(grant_target: Option<&str>) -> (u16, String) {
+        use crate::broker::{
+            ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource,
+            ResourceScope, TargetType,
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<HostSubscribeRequest>();
+        let mut store = crate::broker::GrantStore::default();
+        if let Some(target) = grant_target {
+            store.record(GrantRecord {
+                actor_type: ActorType::Agent,
+                actor_id: MCP_SUBSCRIBER_ID.to_string(),
+                actor_scope: ActorScope::User,
+                workspace_root: None,
+                target_type: TargetType::AppEventStream,
+                target_id: target.to_string(),
+                resource_scope: ResourceScope::Global,
+                resource_id: None,
+                decision: Decision::Allow,
+                duration: GrantDuration::Session,
+                source: GrantSource::Session,
+                created_at: 0,
+                expires_at: None,
+            });
+        }
+        let svc = crate::host::event_subscriptions::HostSubscriptionService::new_for_test(
+            store,
+            crate::host::app_timeline::global(),
+        );
+        std::thread::spawn(move || {
+            while let Ok(req) = rx.recv() {
+                let reply = svc.handle_subscribe_request(&req);
+                let _ = req.reply.send(reply);
+            }
+        });
+        start_host_mcp_server(tx, egui::Context::default()).unwrap()
+    }
+
+    #[test]
+    fn no_auth_returns_401() {
+        let (port, _t) = start_test_server(None);
+        let (status, _) = post(port, None, br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+        assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn tools_list_exposes_subscription_tools() {
+        let (port, token) = start_test_server(None);
+        let (status, body) = post(
+            port,
+            Some(&token),
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let names: Vec<&str> = json["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(names.contains(&"list_event_streams"));
+        assert!(names.contains(&"subscribe_and_wait"));
+    }
+
+    /// End-to-end proof the MCP adapter is wired, not just that a host test can
+    /// route in-process: subscribe via the tool, emit on the timeline, and the
+    /// tool returns the event.
+    #[test]
+    fn subscribe_and_wait_delivers_emitted_event() {
+        use crate::app_protocol::{AppEventActor, EventStreamDecl};
+        use crate::host::app_timeline::EmittedEvent;
+        let app = "mcp-it-app";
+        let stream = "it.tick";
+        crate::host::app_timeline::global()
+            .lock()
+            .unwrap()
+            .declare_streams(
+                app,
+                vec![EventStreamDecl {
+                    name: stream.to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: None,
+                }],
+            )
+            .unwrap();
+        let (port, token) = start_test_server(Some(&format!("{app}::{stream}")));
+
+        // Emit shortly after the tool call begins its long-poll.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            crate::host::app_timeline::global()
+                .lock()
+                .unwrap()
+                .record_event(
+                    app,
+                    1,
+                    EmittedEvent {
+                        event: stream.to_string(),
+                        actor: AppEventActor::User,
+                        actor_id: None,
+                        caused_by: None,
+                        summary: "it tick 1".to_string(),
+                        resource_id: "it-session".to_string(),
+                        resource_scope: Some("document".to_string()),
+                        revision_after: "tick-1".to_string(),
+                        payload: Some(serde_json::json!({"count": 1})),
+                        state_ref: None,
+                        revision_before: None,
+                        rollback_token: None,
+                        changed_resources: vec![],
+                        suggested_trigger: None,
+                    },
+                )
+                .unwrap();
+        });
+
+        let call = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"subscribe_and_wait","arguments":{{"app_id":"{app}","stream":"{stream}","timeout_secs":5}}}}}}"#
+        );
+        let (status, body) = post(port, Some(&token), call.as_bytes());
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let text = json["result"]["content"][0]["text"].as_str().unwrap();
+        let event: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(event["event"], stream);
+        assert_eq!(event["summary"], "it tick 1");
+        assert_eq!(event["payload"]["count"], 1);
     }
 }

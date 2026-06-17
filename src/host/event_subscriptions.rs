@@ -174,6 +174,18 @@ impl HostSubscriptionService {
         }
     }
 
+    /// Construct a service with an explicit grant store + timeline for tests,
+    /// bypassing disk loading.
+    #[cfg(test)]
+    pub fn new_for_test(grant_store: GrantStore, timeline: Arc<Mutex<AppTimeline>>) -> Self {
+        Self {
+            grant_store,
+            posture: None,
+            workspace_root: PathBuf::from("/tmp/ws"),
+            timeline,
+        }
+    }
+
     /// Reload grants + posture from disk. Call before evaluating a fresh
     /// subscription so newly-granted permissions take effect without a host
     /// restart.
@@ -288,13 +300,14 @@ impl HostSubscriptionService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_protocol::EventStreamDecl;
+    use crate::app_protocol::{AppEventActor, EventStreamDecl};
     use crate::broker::{ActorScope, Decision, GrantRecord, GrantSource, ResourceScope};
+    use crate::host::app_timeline::EmittedEvent;
 
-    fn allow_grant(target_id: &str) -> GrantRecord {
+    fn allow_grant(actor_id: &str, target_id: &str) -> GrantRecord {
         GrantRecord {
             actor_type: ActorType::Agent,
-            actor_id: "pane:7".to_string(),
+            actor_id: actor_id.to_string(),
             actor_scope: ActorScope::User,
             workspace_root: None,
             target_type: TargetType::AppEventStream,
@@ -352,7 +365,7 @@ mod tests {
     fn subscribe_succeeds_with_grant() {
         let timeline = timeline_with_stream();
         let mut store = GrantStore::default();
-        store.record(allow_grant("event-probe::probe.tick"));
+        store.record(allow_grant("pane:7", "event-probe::probe.tick"));
         let res = evaluate_and_record_subscription(
             &store,
             None,
@@ -370,5 +383,159 @@ mod tests {
         let sub_id = res.expect("grant present, subscription should record");
         assert!(sub_id.starts_with("sub-"));
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
+    }
+
+    fn granted_service(timeline: Arc<Mutex<AppTimeline>>) -> HostSubscriptionService {
+        let mut store = GrantStore::default();
+        // Grant both the pane-derived (CLI) and override (MCP) identities.
+        store.record(allow_grant("pane:7", "event-probe::probe.tick"));
+        store.record(allow_grant("mcp:host", "event-probe::probe.tick"));
+        HostSubscriptionService::new_for_test(store, timeline)
+    }
+
+    fn subscribe_request(
+        event_names: Vec<String>,
+        payload_mode: PayloadMode,
+        override_id: Option<&str>,
+    ) -> (HostSubscribeRequest, std::sync::mpsc::Receiver<HostSubscribeReply>) {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let req = HostSubscribeRequest {
+            publisher_app_id: "event-probe".to_string(),
+            event_names,
+            payload_mode,
+            trigger_mode: TriggerMode::Conversation,
+            resource_id: None,
+            from_pane_id: Some(7),
+            subscriber_override: override_id.map(String::from),
+            reply: tx,
+        };
+        (req, rx)
+    }
+
+    fn probe_event(count: u64) -> EmittedEvent {
+        EmittedEvent {
+            event: "probe.tick".to_string(),
+            actor: AppEventActor::User,
+            actor_id: None,
+            caused_by: None,
+            summary: format!("Probe tick {count}"),
+            resource_id: "probe-session".to_string(),
+            resource_scope: Some("document".to_string()),
+            revision_after: format!("tick-{count}"),
+            payload: Some(serde_json::json!({ "count": count })),
+            state_ref: None,
+            revision_before: None,
+            rollback_token: None,
+            changed_resources: vec![],
+            suggested_trigger: Some(TriggerMode::Conversation),
+        }
+    }
+
+    /// `handle_subscribe_request` rejects a stream the app never declared,
+    /// before the broker is consulted.
+    #[test]
+    fn handle_request_rejects_undeclared_stream() {
+        let timeline = timeline_with_stream();
+        let svc = granted_service(Arc::clone(&timeline));
+        let (req, _rx) = subscribe_request(vec!["nope.stream".to_string()], PayloadMode::Full, None);
+        match svc.handle_subscribe_request(&req) {
+            HostSubscribeReply::Err { message } => assert!(message.contains("not declared")),
+            HostSubscribeReply::Ok { .. } => panic!("undeclared stream must be refused"),
+        }
+        assert!(timeline.lock().unwrap().subscriptions().is_empty());
+    }
+
+    /// A CLI subscriber (no override) is identified by its pane.
+    #[test]
+    fn handle_request_uses_pane_identity() {
+        let timeline = timeline_with_stream();
+        let svc = granted_service(Arc::clone(&timeline));
+        let (req, _rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
+        match svc.handle_subscribe_request(&req) {
+            HostSubscribeReply::Ok { subscriber_id, .. } => assert_eq!(subscriber_id, "pane:7"),
+            HostSubscribeReply::Err { message } => panic!("should subscribe: {message}"),
+        }
+    }
+
+    /// The MCP transport's host-stamped override identity is honoured.
+    #[test]
+    fn handle_request_honours_override_identity() {
+        let timeline = timeline_with_stream();
+        let svc = granted_service(Arc::clone(&timeline));
+        let (req, _rx) =
+            subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, Some("mcp:host"));
+        match svc.handle_subscribe_request(&req) {
+            HostSubscribeReply::Ok { subscriber_id, .. } => assert_eq!(subscriber_id, "mcp:host"),
+            HostSubscribeReply::Err { message } => panic!("should subscribe: {message}"),
+        }
+    }
+
+    /// End-to-end: subscribe (full payload) → emit → the delivery carries the
+    /// structured payload, then disconnect cleanup drops the subscription and
+    /// any queued deliveries.
+    #[test]
+    fn delivery_full_payload_then_disconnect_cleanup() {
+        let timeline = timeline_with_stream();
+        let svc = granted_service(Arc::clone(&timeline));
+        let (req, _rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
+        let (stype, sid) = match svc.handle_subscribe_request(&req) {
+            HostSubscribeReply::Ok {
+                subscriber_type,
+                subscriber_id,
+                ..
+            } => (subscriber_type, subscriber_id),
+            HostSubscribeReply::Err { message } => panic!("subscribe failed: {message}"),
+        };
+
+        timeline
+            .lock()
+            .unwrap()
+            .record_event("event-probe", 7, probe_event(3))
+            .expect("emit should record");
+
+        let deliveries = timeline.lock().unwrap().take_deliveries_for(stype, &sid);
+        assert_eq!(deliveries.len(), 1);
+        let d = &deliveries[0];
+        assert_eq!(d.event, "probe.tick");
+        assert_eq!(d.summary.as_deref(), Some("Probe tick 3"));
+        assert_eq!(d.payload, Some(serde_json::json!({ "count": 3 })));
+
+        // Disconnect: a second event re-queues, then clear_subscriber wipes it.
+        timeline
+            .lock()
+            .unwrap()
+            .record_event("event-probe", 7, probe_event(4))
+            .expect("emit should record");
+        assert_eq!(timeline.lock().unwrap().pending_delivery_count(), 1);
+        let (subs, drops) = timeline.lock().unwrap().clear_subscriber(stype, &sid);
+        assert_eq!(subs, 1);
+        assert_eq!(drops, 1);
+        assert!(timeline.lock().unwrap().subscriptions().is_empty());
+    }
+
+    /// `PayloadMode::Summary` delivers the summary but withholds the payload.
+    #[test]
+    fn delivery_summary_mode_withholds_payload() {
+        let timeline = timeline_with_stream();
+        let svc = granted_service(Arc::clone(&timeline));
+        let (req, _rx) =
+            subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Summary, None);
+        let (stype, sid) = match svc.handle_subscribe_request(&req) {
+            HostSubscribeReply::Ok {
+                subscriber_type,
+                subscriber_id,
+                ..
+            } => (subscriber_type, subscriber_id),
+            HostSubscribeReply::Err { message } => panic!("subscribe failed: {message}"),
+        };
+        timeline
+            .lock()
+            .unwrap()
+            .record_event("event-probe", 7, probe_event(1))
+            .expect("emit should record");
+        let deliveries = timeline.lock().unwrap().take_deliveries_for(stype, &sid);
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].summary.as_deref(), Some("Probe tick 1"));
+        assert_eq!(deliveries[0].payload, None);
     }
 }

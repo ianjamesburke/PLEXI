@@ -176,3 +176,15 @@ workspace-local apps) and in `app init` (to decide where to scaffold). In those 
 ## `just pr-install` must run from the feature worktree
 
 `scripts/install.sh` derives `REPO_ROOT` from `${BASH_SOURCE[0]}/..`. Running from the repo root resolves to alpha's working tree, so `rsync -a apps/dev/` syncs alpha's `apps/dev/` — missing any apps that only exist on the feature branch. Always `cd worktrees/feature/<branch> && just pr-install <N>`.
+
+---
+
+## CLI event subscriptions stream over a long-lived socket; deliveries poll the global timeline · host · events
+
+`plexi events subscribe` cannot use the normal one-shot request → response-file socket path (`send_to_socket`): it needs the connection held open while the host pushes many NDJSON lines over time. `handle_socket_connection` (`src/app/mod.rs`) intercepts control messages by their JSON `type` (`events_subscribe`/`events_list`) **before** `AppRequest` parsing, since those are not `AppRequest` variants. The grant check + identity resolution run on the UI thread (it owns the grant store) via a dedicated in-memory channel (`event_subscribe_rx`, drained in `drain_event_subscribe_channel`); the connection thread then streams deliveries by polling `app_timeline::global()` directly — the UI thread is never in the streaming hot loop. Disconnect is detected by a reader thread draining the (otherwise silent) input side: on EOF it flips a flag so an idle subscription with no events still tears down and `clear_subscriber` fires.
+
+**Subscriber identity is host-stamped, never client-supplied.** CLI = `pane:<PLEXI_PANE_ID>`; the host MCP server = `mcp:host` (via `HostSubscribeRequest::subscriber_override`, set by trusted transport code, not a tool arg). There is deliberately no CLI/MCP flag to set the subscriber id.
+
+## Two MCP servers share one HTTP/JSON-RPC envelope · host · mcp
+
+`src/mcp_http.rs` owns the `POST /mcp` framing, bearer auth, body-size guard, and response writer. Both the per-app bridge (`process_app::mcp_server`) and the host event server (`app::host_mcp`) call `read_json_rpc_request` / `write_http_response`. The host server is a singleton started in `PlexiApp::new`; its `(port, token)` is stored in a `OnceLock` (`host_mcp::discovery`) so `make_backend_settings` can inject `PLEXI_HOST_MCP_PORT`/`PLEXI_HOST_MCP_TOKEN` into every pane PTY. `start_host_mcp_server` also **returns** the `(port, token)` so tests (which start several servers) bind to the right one instead of reading the first-wins `OnceLock`.
