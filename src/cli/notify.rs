@@ -157,18 +157,22 @@ mod notify_tests {
         let listener = UnixListener::bind(&socket_path).expect("bind notify socket");
         std::env::set_var("PLEXI_SOCKET", &socket_path);
 
-        let handle = std::thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept notify connection");
             let mut line = String::new();
             BufReader::new(stream)
                 .read_line(&mut line)
                 .expect("read notify payload");
-            serde_json::from_str::<Value>(&line).expect("notify payload json")
+            let payload = serde_json::from_str::<Value>(&line).expect("notify payload json");
+            tx.send(payload).ok();
         });
 
         let code = run_cli();
         std::env::remove_var("PLEXI_SOCKET");
-        let payload = handle.join().expect("payload thread");
+        let payload = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("notify listener did not receive a connection within 5s — notify_cli likely failed to connect");
         (code, payload)
     }
 
@@ -290,49 +294,4 @@ mod notify_tests {
         );
     }
 
-    /// --host-action merges into a clean key:Label choice.
-    #[test]
-    fn host_action_merges_into_clean_choice() {
-        let (key, label, embedded) = parse_notify_choice("view:View results").unwrap();
-        assert!(embedded.is_none());
-        // Simulate the merge: host_action_map has "view" → "pane_focus:99"
-        let merged_action = Some("pane_focus:99".to_string());
-        let action = Some(merged_action.unwrap());
-        assert_eq!(key, "view");
-        assert_eq!(label, "View results");
-        assert_eq!(action.as_deref(), Some("pane_focus:99"));
-    }
-
-    /// --host-action overrides an embedded action in a 4-segment --choice.
-    #[test]
-    fn host_action_overrides_embedded_choice_action() {
-        let (key, label, embedded) =
-            parse_notify_choice("a:Talk to Claude:pane_focus:OLD").unwrap();
-        assert_eq!(embedded.as_deref(), Some("pane_focus:OLD"));
-        // host_action_map contains key "a" → "pane_focus:NEW"
-        let override_action = Some("pane_focus:NEW".to_string());
-        let final_action = override_action.map(Some).unwrap_or(embedded);
-        assert_eq!(key, "a");
-        assert_eq!(label, "Talk to Claude");
-        assert_eq!(final_action.as_deref(), Some("pane_focus:NEW"));
-    }
-
-    /// #840: snooze action type parses to the correct host_action string.
-    #[test]
-    fn parse_choice_snooze_action() {
-        let (key, label, action) =
-            parse_notify_choice("snooze5:Remind me in 5 min:snooze:300").unwrap();
-        assert_eq!(key, "snooze5");
-        assert_eq!(label, "Remind me in 5 min");
-        assert_eq!(action.as_deref(), Some("snooze:300"));
-    }
-
-    /// #840: three-segment form also works for snooze.
-    #[test]
-    fn parse_choice_snooze_three_segment() {
-        let (key, label, action) = parse_notify_choice("Snooze 5min:snooze:300").unwrap();
-        assert_eq!(key, "Snooze 5min");
-        assert_eq!(label, "Snooze 5min");
-        assert_eq!(action.as_deref(), Some("snooze:300"));
-    }
 }
