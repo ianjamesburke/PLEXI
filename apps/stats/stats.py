@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Stats — an activity dashboard for your work.
 
-Reads Plexi focus events and renders a character dial (level + earned rank),
-stat tiles, top contexts, and a circular activity waveform whose amplitude is
-your pane-switch velocity through the day and whose colour is the context you
-were in. Built on the native canvas primitives — see docs/sdk-v2.md.
+Reads Plexi focus events and renders a circular activity clock — a 24h dial
+whose amplitude is your pane-switch velocity through the day and whose colour
+is the context you were in, with today's focus total at the centre — plus stat
+tiles and a top-contexts list. Built on the native canvas primitives — see
+docs/sdk-v2.md.
 
 Data notes (what is and isn't accurately measured):
   * Every focus change is one `focus_changed` event with a microsecond
@@ -41,25 +42,12 @@ RANK_COLORS = ["#f9e2af", "#bac2de", "#fab387"]  # 1st / 2nd / 3rd
 CONTEXT_PALETTE = ["#89b4fa", "#a6e3a1", "#f9e2af", "#cba6f7", "#fab387", "#94e2d5"]
 TEXT_SOFT = "#a6adc8"  # readable secondary text (~3.7:1 on bg); never use theme.muted for text
 
-# Earned rank titles by level threshold (light RPG flavor).
-RANK_TITLES = [
-    (1, "Novice"), (5, "Apprentice"), (10, "Adept"),
-    (20, "Expert"), (35, "Master"), (55, "Grandmaster"),
-]
-
 # Section heights (logical px).
 TILES_H = 70.0
-ROW_H = 27.0
-DIAL_MIN_H = 170.0
-MAX_CONTEXTS = 4
-
-
-def _rank_title(level: int) -> str:
-    title = RANK_TITLES[0][1]
-    for threshold, name in RANK_TITLES:
-        if level >= threshold:
-            title = name
-    return title
+ROW_H = 26.0
+DIAL_MIN_H = 180.0
+DIAL_MAX_R = 240.0   # the dial keeps growing with the pane up to this radius
+MAX_CONTEXTS = 10
 
 
 # ── Data layer ───────────────────────────────────────────────────────────────
@@ -188,19 +176,6 @@ def _counted_duration(ev: dict, idle_stream: "list[bool]") -> float:
     return raw
 
 
-def _level_for(xp_secs: float) -> "tuple[int, float, float]":
-    """Triangular XP curve: level n costs n hours. Returns (level, into, need)."""
-    hours = xp_secs / 3600.0
-    level = 0
-    need_total = 0.0
-    while need_total + (level + 1) <= hours:
-        level += 1
-        need_total += level
-    into = (hours - need_total) * 3600.0
-    need = (level + 1) * 3600.0
-    return max(1, level), into, need
-
-
 # ── Metrics ──────────────────────────────────────────────────────────────────
 
 class Metrics:
@@ -208,9 +183,6 @@ class Metrics:
         self.has_data = False
         self.active_secs = 0.0       # focus time since today's 4 AM
         self.lifetime_secs = 0.0
-        self.level = 1
-        self.xp_into = 0.0
-        self.xp_need = 3600.0
         self.streak_days = 0
         self.switches_today = 0
         self.contexts_today = 0
@@ -220,6 +192,7 @@ class Metrics:
         self.contexts: "list[dict]" = []
         self.wave: "list[tuple[int, str]]" = [(0, TEXT_SOFT)] * WAVE_BUCKETS
         self.wave_peak = 1
+        self.day_frac = 0.0          # fraction of the 4 AM-day elapsed (now marker)
 
     @classmethod
     def load(cls, events_path: "Path | None") -> "Metrics":
@@ -235,6 +208,7 @@ class Metrics:
         now = datetime.now(timezone.utc)
         now_local = now.astimezone()
         day_start = _day_start(now_local)
+        m.day_frac = min(1.0, max(0.0, (now_local - day_start).total_seconds() / 86400.0))
         bucket_secs = 86400.0 / WAVE_BUCKETS
 
         idle = [False]
@@ -265,7 +239,6 @@ class Metrics:
                 hourly[local.hour] += secs
                 by_ctx[label] = by_ctx.get(label, 0.0) + secs
 
-        m.level, m.xp_into, m.xp_need = _level_for(m.lifetime_secs)
         m.active_days = len(active_dates)
         m.avg_daily_secs = m.lifetime_secs / max(1, m.active_days)
         m.contexts_today = len(by_ctx)
@@ -324,18 +297,19 @@ def _momentum(ctx, m: "Metrics") -> "tuple[str, str]":
 
 
 def _draw_dial(ctx, m: "Metrics", x, y, w, h) -> None:
-    """Hero: a circular activity waveform around your character.
+    """Hero: a circular activity clock for today.
 
     Angle = time of day (4 AM at top, clockwise). Radial amplitude = pane-switch
-    velocity in that slice. Colour = the context you were in. Hub = level number;
-    rank + momentum sit in a caption below. Scales with its container.
+    velocity in that slice. Colour = the context you were in. A bright needle
+    marks the current time. Hub = today's focus total; the inner ring fills
+    toward a typical day. Grows with its container up to DIAL_MAX_R.
     """
     accent = ctx.theme.accent
     cap_h = 34.0                 # caption strip (rank + momentum) under the circle
     ch = h - cap_h
     cx = x + w / 2
     cy = y + ch / 2
-    outer = max(48.0, min(w / 2, ch / 2, 150.0) - 20.0)  # leave room for tick labels
+    outer = max(48.0, min(w / 2, ch / 2, DIAL_MAX_R) - 20.0)  # room for tick labels
     amp = outer * 0.42
     r0 = outer - amp
     base = math.pi / 2  # -base = top → 4 AM at top
@@ -364,32 +338,42 @@ def _draw_dial(ctx, m: "Metrics", x, y, w, h) -> None:
                  cx + math.cos(ang) * rr, cy + math.sin(ang) * rr,
                  color=color, width=sw)
 
-    # Inner level-progress ring.
+    # Inner ring: progress toward a typical day's focus.
     pr = r0 - 7.0
-    frac = m.xp_into / max(1.0, m.xp_need)
+    frac = min(1.0, m.active_secs / m.avg_daily_secs) if m.avg_daily_secs > 0 else 0.0
     ctx.arc_ring(cx, cy, pr, 0, math.tau, dim(accent, 40), stroke_width=3.0)
     if frac > 0:
         ctx.arc_ring(cx, cy, pr, -base, -base + math.tau * frac, accent, stroke_width=3.0)
 
+    # "Now" needle — a bright clock hand from the hub to the rim at the current time.
+    nang = -base + m.day_frac * math.tau
+    ctx.line(cx + math.cos(nang) * (pr - 2.0), cy + math.sin(nang) * (pr - 2.0),
+             cx + math.cos(nang) * (outer + 4.0), cy + math.sin(nang) * (outer + 4.0),
+             color=ctx.theme.fg, width=2.5)
+    ctx.circle(cx + math.cos(nang) * (outer + 4.0), cy + math.sin(nang) * (outer + 4.0),
+               3.5, ctx.theme.fg)
+
     # Quarter-day ticks (4 AM at top, clockwise).
-    lr = outer + 11.0
+    lr = outer + 13.0
     for tfrac, lbl in ((0.0, "4a"), (0.25, "10a"), (0.5, "4p"), (0.75, "10p")):
         ang = -base + tfrac * math.tau
         ctx.text(cx + lr * math.cos(ang), cy + lr * math.sin(ang), lbl,
                  size=TEXT_HINT, color=TEXT_SOFT, align="center_center")
 
-    # Hub: just the level number, big and legible.
-    num_size = max(30.0, min(r0 * 1.1, 60.0))
-    ctx.text(cx, cy, str(m.level), size=num_size, color=ctx.theme.fg,
-             bold=True, align="center_center")
+    # Hub: today's focus total — the headline the clock measures.
+    num_size = max(22.0, min(r0 * 0.52, 40.0))
+    ctx.text(cx, cy - num_size * 0.26, _fmt_secs(m.active_secs), size=num_size,
+             color=ctx.theme.fg, bold=True, align="center_center")
+    ctx.text(cx, cy + num_size * 0.62, "focused today", size=TEXT_HINT,
+             color=TEXT_SOFT, align="center_center")
 
-    # Caption: earned rank + today's momentum.
+    # Caption: today vs a typical day + lifetime total.
     ry = y + ch + 2.0
-    ctx.text(cx, ry, _rank_title(m.level).upper(), size=TEXT_CAPTION,
-             color=accent, bold=True, align="center_center")
     mom_text, mom_color = _momentum(ctx, m)
-    ctx.text(cx, ry + 15.0, mom_text, size=TEXT_HINT, color=mom_color,
-             align="center_center")
+    ctx.text(cx, ry, mom_text, size=TEXT_CAPTION, color=mom_color,
+             bold=True, align="center_center")
+    ctx.text(cx, ry + 15.0, f"{_fmt_secs(m.lifetime_secs)} focused all-time",
+             size=TEXT_HINT, color=TEXT_SOFT, align="center_center")
 
 
 def _draw_tile(ctx, x, y, w, h, value, label, color) -> None:
@@ -407,9 +391,9 @@ def _draw_tiles(ctx, m: "Metrics", x, y, w, h) -> None:
     gap = SPACE_SM
     tw = (w - gap * 3) / 4
     tiles = [
-        (_fmt_secs(m.active_secs), "Active", ctx.theme.accent),
         (f"{m.streak_days}d", "Streak", ctx.theme.warning),
         (str(m.contexts_today), "Contexts", ctx.theme.success),
+        (str(m.switches_today), "Switches", ctx.theme.accent),
         (m.peak_hour_label, "Peak Hour", ctx.theme.red),
     ]
     for i, (val, lbl, color) in enumerate(tiles):
@@ -453,9 +437,9 @@ class StatsApp(App):
         self.events_path = _resolve_events_path()
         self.m = Metrics.load(self.events_path)
         self.emit.info(
-            f"stats: loaded data={self.m.has_data} level={self.m.level} "
+            f"stats: loaded data={self.m.has_data} "
             f"active_today={int(self.m.active_secs)}s switches={self.m.switches_today} "
-            f"contexts={self.m.contexts_today}")
+            f"contexts={self.m.contexts_today} lifetime={int(self.m.lifetime_secs)}s")
         if self.m.has_data:
             self.emit.status_summary(f"{_fmt_secs(self.m.active_secs)} active")
 
@@ -484,7 +468,7 @@ class StatsApp(App):
         m = self.m
         if m.has_data:
             now = datetime.now().astimezone()
-            subtitle = f"{now:%a, %b} {now.day} · {m.switches_today} pane switches today"
+            subtitle = f"{now:%A, %B} {now.day}"
         else:
             subtitle = "no data"
         ctx.render(Column(
