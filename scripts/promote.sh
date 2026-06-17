@@ -128,12 +128,15 @@ main_commit=$(git -C "$MAIN_TREE" rev-parse HEAD)
 if git -C "$MAIN_TREE" tag -l "v$version" | grep -q "v$version"; then
     tagged_commit=$(git -C "$MAIN_TREE" rev-list -n 1 "v$version")
     if [[ "$tagged_commit" != "$main_commit" ]]; then
-        echo "info: tag v$version points at an older commit — run 'just bump && just promote main' to cut a release."
-    else
-        echo "Tag v$version is at main HEAD — run 'just release' to push the tag and trigger CI."
+        echo "info: tag v$version points at an older commit — re-tagging at main HEAD..."
+        git tag -f "v$version" "$main_commit"
     fi
+    echo "Pushing tag v$version → triggers release CI..."
+    git push origin "v$version"
 else
-    echo "info: no tag for v$version yet — run 'just bump && just promote main' to cut a release."
+    echo "No tag for v$version yet — running just bump..."
+    (cd "$ALPHA_TREE" && just bump)
+    git push origin "v$version"
 fi
 
 if [[ "$do_install" == "install" || "$do_install" == "true" ]]; then
