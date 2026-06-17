@@ -75,6 +75,22 @@ impl Default for GradientDir {
     }
 }
 
+/// Horizontal alignment for a `Shortcuts` row within its `max_width`.
+/// Defaults to `Center` so app footers read as centered without extra work.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub enum ShortcutsAlign {
+    #[serde(rename = "left")]
+    Left,
+    #[serde(rename = "center")]
+    Center,
+}
+
+impl Default for ShortcutsAlign {
+    fn default() -> Self {
+        Self::Center
+    }
+}
+
 /// Linear gradient fill descriptor for `Rect`. Replaces the solid fill when present.
 ///
 /// Corner radius is not applied to the mesh — the gradient rect has sharp corners.
@@ -346,6 +362,8 @@ pub enum RenderCommand {
         max_width: f32,
         pairs: Vec<ShortcutPair>,
         font_size: f32,
+        #[serde(default)]
+        align: ShortcutsAlign,
     },
 
     /// Multiple text segments rendered horizontally with host-measured layout.

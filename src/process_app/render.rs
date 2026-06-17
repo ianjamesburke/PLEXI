@@ -916,9 +916,10 @@ pub(crate) fn render_draw_commands(
                 max_width,
                 pairs,
                 font_size,
+                align,
             } => {
                 render_shortcuts(
-                    ui, origin, clip, *x, *y, *max_width, pairs, *font_size, colors,
+                    ui, origin, clip, *x, *y, *max_width, pairs, *font_size, align, colors,
                 );
             }
 
@@ -1426,6 +1427,7 @@ pub(crate) fn render_shortcuts(
     max_width: f32,
     pairs: &[crate::app_protocol::ShortcutPair],
     font_size: f32,
+    align: &crate::protocol::commands::ShortcutsAlign,
     colors: &Colors,
 ) {
     use crate::ui::style;
@@ -1490,7 +1492,20 @@ pub(crate) fn render_shortcuts(
     let pair_gap: f32 = 16.0;
     let row_h = chip_h + 4.0; // matches FooterKeys ROW_H aesthetic
 
-    let mut cursor_x = x;
+    // Center the row within `max_width` when it fits on a single line.
+    // Multi-line rows fall back to left alignment (centering wrapped lines
+    // individually would need a second pass; footers rarely wrap).
+    let single_line_w: f32 = laid.iter().map(|lp| lp.total_w).sum::<f32>()
+        + pair_gap * (laid.len().saturating_sub(1) as f32);
+    let start_x = if *align == crate::protocol::commands::ShortcutsAlign::Center
+        && single_line_w <= max_width
+    {
+        x + (max_width - single_line_w) / 2.0
+    } else {
+        x
+    };
+
+    let mut cursor_x = start_x;
     let mut cursor_y = y;
     let mut on_line_first = true;
 
@@ -2005,6 +2020,16 @@ pub(crate) fn render_layout_node(
     log::debug!("render_layout_node: painted layout tree at pane ({pane_x}, {pane_y})");
 }
 
+/// Glow intensity scale. Glow reads as a subtle halo, not a bloom: the
+/// caller's `glow_color` alpha is multiplied by this so a fully-opaque glow
+/// color still renders gently. Tuned for tasteful defaults across apps.
+const GLOW_ALPHA_SCALE: f32 = 0.40;
+
+fn scale_alpha(c: egui::Color32, scale: f32) -> egui::Color32 {
+    let a = (c.a() as f32 * scale).round().clamp(0.0, 255.0) as u8;
+    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
+
 /// Paint a soft glow halo behind a rect using epaint `RectShape` with `blur_width`.
 fn paint_rect_glow(
     painter: &egui::Painter,
@@ -2012,8 +2037,9 @@ fn paint_rect_glow(
     glow_radius: f32,
     glow_color: egui::Color32,
 ) {
+    let glow = scale_alpha(glow_color, GLOW_ALPHA_SCALE);
     let expanded = rect.expand(glow_radius);
-    let shape = egui::epaint::RectShape::filled(expanded, glow_radius, glow_color)
+    let shape = egui::epaint::RectShape::filled(expanded, glow_radius, glow)
         .with_blur_width(glow_radius * 2.0);
     painter.add(egui::Shape::Rect(shape));
 }
@@ -2028,11 +2054,12 @@ fn paint_circle_glow(
     glow_color: egui::Color32,
 ) {
     const RINGS: usize = 8;
+    let base_alpha = glow_color.a() as f32 * GLOW_ALPHA_SCALE;
     let ring_w = glow_radius / RINGS as f32;
     for i in 0..RINGS {
         let t = i as f32 / RINGS as f32;
         let ring_r = r + glow_radius * t;
-        let alpha = ((1.0 - t) * glow_color.a() as f32) as u8;
+        let alpha = ((1.0 - t) * base_alpha) as u8;
         let color = egui::Color32::from_rgba_unmultiplied(
             glow_color.r(),
             glow_color.g(),

@@ -88,6 +88,12 @@ def _event_duration(ev: dict) -> float:
 
 
 def _resolve_events_path() -> "Path | None":
+    # Explicit override (testing / cross-channel demos): point at any events.jsonl.
+    override = os.environ.get("PLEXI_STATS_EVENTS", "")
+    if override:
+        p = Path(override).expanduser()
+        if p.exists():
+            return p
     sock = os.environ.get("PLEXI_SOCKET", "")
     if sock:
         p = Path(sock).parent / "events.jsonl"

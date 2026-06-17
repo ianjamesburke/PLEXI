@@ -430,7 +430,8 @@ class RenderContext:
                      "gap": gap, "align": align})
 
     def shortcuts(self, x: float, y: float, max_width: float,
-                  pairs: "list[tuple]", font_size: float = 11.0) -> None:
+                  pairs: "list[tuple]", font_size: float = 11.0,
+                  align: str = "center") -> None:
         """Render a multi-group shortcut row with host-measured layout.
 
         The host owns ALL geometry: chip widths from real font metrics,
@@ -438,6 +439,10 @@ class RenderContext:
         when the next group would exceed `max_width`. SDK callers send
         one DrawCommand and trust the result — no Python width math,
         no truncation, no overflow.
+
+        `align` is "center" (default) or "left". A centered row is
+        horizontally centered within `max_width` when it fits on one
+        line; it falls back to left alignment when it must wrap.
 
         `pairs` is a list of `(keys, description)` tuples where `keys`
         is either a single string or a list of strings (multi-key
@@ -463,7 +468,7 @@ class RenderContext:
             wire_pairs.append({"keys": wire_keys, "description": desc or ""})
         self._queue({"type": "shortcuts", "x": x, "y": y,
                      "max_width": max_width, "pairs": wire_pairs,
-                     "font_size": font_size})
+                     "font_size": font_size, "align": align})
 
     async def measure_text(self, text: str, font_size: float,
                            monospace: bool = False) -> "tuple[float, float]":
