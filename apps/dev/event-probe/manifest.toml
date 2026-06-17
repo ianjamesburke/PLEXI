@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "event-probe"
+type = "app"
+name = "Event Probe"
+entry = "main.py"
+version = "0.1.0"
+description = "POC: declares one event stream and emits ticks for subscription testing"
+watch = true
+
+[app.capabilities]
+capabilities = []
+
+[launch]
