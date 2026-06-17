@@ -70,6 +70,11 @@ pub(crate) enum FocusLayer {
     /// so the modal renders in step 2 of `update()` with exclusive keyboard
     /// ownership — before `dispatch_app_key_events` can steal Escape.
     CapabilityModal,
+    /// Host event-subscription consent modal. Promoted when a CLI/MCP agent's
+    /// subscribe request hit the broker's `Ask` decision and is parked in
+    /// `pending_event_consents`, so the Allow/Always/Deny modal owns the
+    /// keyboard before `dispatch_app_key_events` can steal Enter/Escape.
+    EventConsent,
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
     /// Notes inbox triage overlay: shows inbox notes one at a time for keep/trash/action.
@@ -271,6 +276,7 @@ impl PlexiApp {
                 | Some(FocusLayer::TextInput)
                 | Some(FocusLayer::ContextCloseConfirm)
                 | Some(FocusLayer::CapabilityModal)
+                | Some(FocusLayer::EventConsent)
                 | Some(FocusLayer::NotesPicker)
                 | Some(FocusLayer::NotesTriage)
         )
@@ -986,6 +992,23 @@ impl PlexiApp {
             log::info!("capability_modal: focus released — prompt queue drained");
             self.focus_stack
                 .retain(|l| *l != FocusLayer::CapabilityModal);
+        }
+    }
+
+    /// Promote/release the host event-consent modal layer to mirror
+    /// `pending_event_consents`. A parked CLI/MCP subscribe consent must own the
+    /// keyboard so Enter/Esc resolve it instead of leaking to the focused pane.
+    pub(crate) fn sync_event_consent_focus(&mut self) {
+        let should_own = !self.pending_event_consents.is_empty();
+        let has_layer = self.focus_stack.contains(&FocusLayer::EventConsent);
+        let is_top = matches!(self.focus_stack.last(), Some(FocusLayer::EventConsent));
+        if should_own && !is_top {
+            self.focus_stack.retain(|l| *l != FocusLayer::EventConsent);
+            log::info!("event_consent: focus captured — subscribe consent awaiting decision");
+            self.push_focus_layer(FocusLayer::EventConsent);
+        } else if !should_own && has_layer {
+            log::info!("event_consent: focus released — consent queue drained");
+            self.focus_stack.retain(|l| *l != FocusLayer::EventConsent);
         }
     }
 

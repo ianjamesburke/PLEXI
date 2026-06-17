@@ -93,6 +93,7 @@ impl PlexiApp {
         self.sync_cli_setup_prompt_focus();
         self.sync_text_input_focus();
         self.sync_capability_modal_focus();
+        self.sync_event_consent_focus();
 
         let _ = ctx; // ctx is unused in the preamble itself; parameter reserved for future use
     }

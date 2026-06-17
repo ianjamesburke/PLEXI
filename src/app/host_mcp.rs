@@ -252,14 +252,18 @@ fn tool_subscribe_and_wait(
         .map_err(|_| "host not accepting subscriptions".to_string())?;
     egui_ctx.request_repaint();
 
-    let (subscriber_type, subscriber_id) = match reply_rx.recv_timeout(Duration::from_secs(5)) {
+    // A first-time MCP subscribe under default `Ask` posture blocks here until
+    // the user answers the host consent modal. Kept short enough that the
+    // consent wait plus the long-poll stay under common MCP client timeouts;
+    // once the user picks "Always" the grant persists and this is instant.
+    let (subscriber_type, subscriber_id) = match reply_rx.recv_timeout(Duration::from_secs(30)) {
         Ok(HostSubscribeReply::Ok {
             subscriber_type,
             subscriber_id,
             ..
         }) => (subscriber_type, subscriber_id),
         Ok(HostSubscribeReply::Err { message }) => return Err(message),
-        Err(_) => return Err("subscribe timed out".to_string()),
+        Err(_) => return Err("subscribe consent timed out".to_string()),
     };
 
     // Long-poll the global timeline for the next delivery.
@@ -368,8 +372,10 @@ mod tests {
         );
         std::thread::spawn(move || {
             while let Ok(req) = rx.recv() {
-                let reply = svc.handle_subscribe_request(&req);
-                let _ = req.reply.send(reply);
+                // Pre-granted in these tests, so classify answers immediately;
+                // an `Ask` would return a parked consent we have no UI to
+                // resolve, so it is dropped (the transport sees a closed reply).
+                let _ = svc.classify_subscribe_request(req);
             }
         });
         start_host_mcp_server(tx, egui::Context::default()).unwrap()

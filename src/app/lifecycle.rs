@@ -141,9 +141,10 @@ impl PlexiApp {
         }
         self.host_subscriptions.reload(&crate::config::config_dir());
         for req in requests {
-            let reply = self.host_subscriptions.handle_subscribe_request(&req);
-            if req.reply.send(reply).is_err() {
-                log::warn!("events: subscribe reply channel closed before delivery");
+            // `Allow`/`Deny`/undeclared answer the transport inline; `Ask`
+            // returns a parked consent we surface as a host modal next frame.
+            if let Some(consent) = self.host_subscriptions.classify_subscribe_request(req) {
+                self.pending_event_consents.push_back(consent);
             }
         }
     }

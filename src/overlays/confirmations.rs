@@ -344,6 +344,91 @@ impl PlexiApp {
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
+    /// Host event-subscription consent modal. Surfaces the front parked
+    /// [`PendingEventConsent`](crate::host::event_subscriptions::PendingEventConsent):
+    /// a CLI/MCP agent's subscribe request the broker answered with `Ask`. The
+    /// subscriber identity shown is host-stamped — it is never taken from the
+    /// user's choice. Enter allows once, `A` allows always (persists a grant),
+    /// Esc/Deny refuses. Resolving the consent fires the transport's reply.
+    pub(crate) fn draw_event_consent_modal(&mut self, ctx: &egui::Context) {
+        use crate::host::event_subscriptions::ConsentChoice;
+        let (subscriber, target) = match self.pending_event_consents.front() {
+            Some(c) => (c.subscriber_id.clone(), c.target_label()),
+            None => return,
+        };
+        let colors = self.colors;
+        let actions = [
+            crate::ui::dialog::DialogAction::new(
+                "allow_once",
+                "Allow once",
+                crate::ui::button::ButtonKind::Primary,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Enter"],
+                "allow once",
+                egui::Modifiers::NONE,
+                egui::Key::Enter,
+            )),
+            crate::ui::dialog::DialogAction::new(
+                "allow_always",
+                "Always",
+                crate::ui::button::ButtonKind::Secondary,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["A"],
+                "always",
+                egui::Modifiers::NONE,
+                egui::Key::A,
+            )),
+            crate::ui::dialog::DialogAction::new(
+                "deny",
+                "Deny",
+                crate::ui::button::ButtonKind::Danger,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Esc"],
+                "deny",
+                egui::Modifiers::NONE,
+                egui::Key::Escape,
+            )),
+        ];
+        let response = crate::ui::dialog::ActionModal::new(
+            "event_consent_overlay",
+            "Event subscription request",
+            &actions,
+        )
+        .width(super::MODAL_WIDTH)
+        .show(ctx, &colors, |ui| {
+            crate::ui::typography::caption(ui, format!("{subscriber} wants to read:"), &colors);
+            crate::ui::typography::caption(ui, target, &colors);
+        });
+
+        let choice = if response.selected == Some("allow_once") {
+            Some(ConsentChoice::AllowOnce)
+        } else if response.selected == Some("allow_always") {
+            Some(ConsentChoice::AllowAlways)
+        } else if response.dismissed || response.selected == Some("deny") {
+            Some(ConsentChoice::Deny)
+        } else {
+            None
+        };
+
+        if let Some(choice) = choice {
+            if let Some(consent) = self.pending_event_consents.pop_front() {
+                let config_dir = crate::config::config_dir();
+                self.host_subscriptions
+                    .resolve_consent(consent, choice, &config_dir);
+            }
+        }
+    }
+
+    pub(crate) fn event_consent_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app::app_trait::KeyDisposition {
+        crate::app::app_trait::KeyDisposition::Consumed
+    }
+
     fn draw_triple_tap_overlay(&self, ctx: &egui::Context, id: &str, count: u8, label: &str) {
         crate::ui::toast::ToastShell::bottom(id).show(ctx, &self.colors, |ui| {
             ui.horizontal(|ui| {

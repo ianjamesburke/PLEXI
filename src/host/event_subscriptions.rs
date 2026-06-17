@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::app_protocol::{PayloadMode, TriggerMode};
 use crate::broker::{
-    ActorType, Decision, GrantDuration, GrantStore, PermissionPosture, PermissionRequest,
-    TargetType,
+    ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
+    PermissionPosture, PermissionRequest, ResourceScope, TargetType,
 };
 use crate::host::app_timeline::{AppTimeline, SubscriptionRecord};
 use crate::host::event_log;
@@ -49,16 +49,63 @@ pub fn evaluate_and_record_subscription(
     resource_id: Option<String>,
     duration: GrantDuration,
 ) -> Result<String, Decision> {
-    let targets: Vec<String> = if event_names.is_empty() {
+    let decision = evaluate_subscription(
+        grant_store,
+        posture,
+        workspace_root,
+        publisher_app_id,
+        subscriber_type,
+        subscriber_id,
+        &event_names,
+    );
+    if decision != Decision::Allow {
+        log::info!(
+            "event_subscriptions: subscription to '{publisher_app_id}' events for \
+             {subscriber_type:?} '{subscriber_id}' blocked by broker ({})",
+            decision.as_str()
+        );
+        return Err(decision);
+    }
+    Ok(record_subscription(
+        timeline,
+        publisher_app_id,
+        subscriber_type,
+        subscriber_id,
+        event_names,
+        payload_mode,
+        trigger_mode,
+        resource_id,
+        duration,
+    ))
+}
+
+/// The broker target ids a subscription touches: one `"<app>::<event>"` per
+/// requested event, or a single `"<app>::*"` when subscribing to every stream.
+fn subscription_targets(publisher_app_id: &str, event_names: &[String]) -> Vec<String> {
+    if event_names.is_empty() {
         vec![format!("{publisher_app_id}::*")]
     } else {
         event_names
             .iter()
             .map(|n| format!("{publisher_app_id}::{n}"))
             .collect()
-    };
+    }
+}
+
+/// Run the broker over every target a subscription touches and return the
+/// strictest decision (`Deny` > `Ask` > `Allow`). Records nothing — callers
+/// decide what to do with the verdict (record on `Allow`, prompt on `Ask`).
+pub fn evaluate_subscription(
+    grant_store: &GrantStore,
+    posture: Option<&PermissionPosture>,
+    workspace_root: &Path,
+    publisher_app_id: &str,
+    subscriber_type: ActorType,
+    subscriber_id: &str,
+    event_names: &[String],
+) -> Decision {
     let mut strictest = Decision::Allow;
-    for target in &targets {
+    for target in &subscription_targets(publisher_app_id, event_names) {
         let req = PermissionRequest::new(
             subscriber_type,
             subscriber_id,
@@ -76,14 +123,24 @@ pub fn evaluate_and_record_subscription(
             }
         }
     }
-    if strictest != Decision::Allow {
-        log::info!(
-            "event_subscriptions: subscription to '{publisher_app_id}' events for \
-             {subscriber_type:?} '{subscriber_id}' blocked by broker ({})",
-            strictest.as_str()
-        );
-        return Err(strictest);
-    }
+    strictest
+}
+
+/// Add a subscription to `timeline` and return its id. Performs no broker check
+/// — the caller has already established consent (a unanimous `Allow` grant or an
+/// interactive user approval).
+#[allow(clippy::too_many_arguments)]
+pub fn record_subscription(
+    timeline: &Arc<Mutex<AppTimeline>>,
+    publisher_app_id: &str,
+    subscriber_type: ActorType,
+    subscriber_id: &str,
+    event_names: Vec<String>,
+    payload_mode: PayloadMode,
+    trigger_mode: TriggerMode,
+    resource_id: Option<String>,
+    duration: GrantDuration,
+) -> String {
     let subscription_id = format!("sub-{}", uuid::Uuid::new_v4());
     let record = SubscriptionRecord {
         subscription_id: subscription_id.clone(),
@@ -102,7 +159,7 @@ pub fn evaluate_and_record_subscription(
          '{subscriber_id}' -> '{publisher_app_id}' (payload={payload_mode:?}, trigger={trigger_mode:?})"
     );
     timeline.lock().unwrap().add_subscription(record);
-    Ok(subscription_id)
+    subscription_id
 }
 
 /// An in-memory subscribe request handed from a transport's connection thread
@@ -126,6 +183,48 @@ pub struct HostSubscribeRequest {
     /// `mcp:host`), never sourced from an untrusted client argument.
     pub subscriber_override: Option<String>,
     pub reply: SyncSender<HostSubscribeReply>,
+}
+
+/// A subscribe request the broker answered with `Ask`: it needs an explicit
+/// user decision before the subscription is recorded. The UI thread parks one
+/// of these (holding the transport's live `reply` channel) and surfaces a host
+/// consent modal; [`HostSubscriptionService::resolve_consent`] answers it.
+///
+/// Identity is already host-stamped here — the modal shows it, it is never
+/// taken from the user's click.
+pub struct PendingEventConsent {
+    pub subscriber_type: ActorType,
+    pub subscriber_id: String,
+    pub publisher_app_id: String,
+    /// Empty = all of the app's declared streams.
+    pub event_names: Vec<String>,
+    pub payload_mode: PayloadMode,
+    pub trigger_mode: TriggerMode,
+    pub resource_id: Option<String>,
+    reply: SyncSender<HostSubscribeReply>,
+}
+
+impl PendingEventConsent {
+    /// Human-readable target for the consent modal: `"<app> :: <events>"`.
+    pub fn target_label(&self) -> String {
+        let streams = if self.event_names.is_empty() {
+            "* (all streams)".to_string()
+        } else {
+            self.event_names.join(", ")
+        };
+        format!("{} :: {streams}", self.publisher_app_id)
+    }
+}
+
+/// The user's answer to a [`PendingEventConsent`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsentChoice {
+    /// Record the subscription for this connection only; ask again next time.
+    AllowOnce,
+    /// Record a persistent `Allow` grant, then subscribe.
+    AllowAlways,
+    /// Refuse; the transport gets a permission-denied error.
+    Deny,
 }
 
 /// The UI thread's answer to a [`HostSubscribeRequest`].
@@ -194,36 +293,6 @@ impl HostSubscriptionService {
         self.posture = PermissionPosture::load_from_config(config_dir);
     }
 
-    /// Subscribe a non-app actor to `publisher_app_id`'s streams. Broker-gated
-    /// exactly like the app path. Session-scoped: the subscription is dropped
-    /// when the transport disconnects (via [`Self::clear_subscriber`]).
-    #[allow(clippy::too_many_arguments)]
-    pub fn subscribe(
-        &self,
-        publisher_app_id: &str,
-        subscriber_type: ActorType,
-        subscriber_id: &str,
-        event_names: Vec<String>,
-        payload_mode: PayloadMode,
-        trigger_mode: TriggerMode,
-        resource_id: Option<String>,
-    ) -> Result<String, Decision> {
-        evaluate_and_record_subscription(
-            &self.grant_store,
-            self.posture.as_ref(),
-            &self.workspace_root,
-            &self.timeline,
-            publisher_app_id,
-            subscriber_type,
-            subscriber_id,
-            event_names,
-            payload_mode,
-            trigger_mode,
-            resource_id,
-            GrantDuration::Session,
-        )
-    }
-
     /// Derive the trusted subscriber identity for a transport connection from
     /// the host-stamped pane id. CLI/MCP agents are `Agent`-typed; the id is
     /// namespaced by pane so it never collides with the assistant
@@ -237,51 +306,200 @@ impl HostSubscriptionService {
         (ActorType::Agent, id)
     }
 
-    /// Resolve identity, validate the requested streams are declared, run the
-    /// broker check, and record the subscription. The single host entry point
-    /// both transports' UI-thread handlers call.
-    pub fn handle_subscribe_request(&self, req: &HostSubscribeRequest) -> HostSubscribeReply {
+    /// Resolve host-stamped identity, validate the requested streams are
+    /// declared, and run the broker check. The single host entry point both
+    /// transports' UI-thread drain calls. Consumes the request so a deferred
+    /// `Ask` can move the live `reply` channel into the returned
+    /// [`PendingEventConsent`].
+    ///
+    /// - `Allow` → record the subscription and send `Ok` on `req.reply` now.
+    /// - `Deny` / undeclared stream → send `Err` on `req.reply` now.
+    /// - `Ask` → record nothing, send nothing; return `Some(consent)` for the
+    ///   caller to park and surface a consent modal. The reply fires later from
+    ///   [`Self::resolve_consent`].
+    ///
+    /// Returns `None` whenever the request was answered immediately.
+    pub fn classify_subscribe_request(
+        &self,
+        req: HostSubscribeRequest,
+    ) -> Option<PendingEventConsent> {
         let (subscriber_type, subscriber_id) = match &req.subscriber_override {
             Some(id) => (ActorType::Agent, id.clone()),
             None => Self::resolve_cli_subscriber(req.from_pane_id),
         };
         // Reject undeclared streams before involving the broker so the client
         // gets a precise error instead of a generic permission denial.
-        let undeclared: Vec<&String> = req
+        let undeclared: Vec<String> = req
             .event_names
             .iter()
             .filter(|n| !self.stream_is_declared(&req.publisher_app_id, n))
+            .cloned()
             .collect();
         if !undeclared.is_empty() {
-            return HostSubscribeReply::Err {
+            let _ = req.reply.send(HostSubscribeReply::Err {
                 message: format!(
                     "app '{}' has not declared stream(s): {}",
                     req.publisher_app_id,
-                    undeclared
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    undeclared.join(", ")
                 ),
-            };
+            });
+            return None;
         }
-        match self.subscribe(
+        let decision = evaluate_subscription(
+            &self.grant_store,
+            self.posture.as_ref(),
+            &self.workspace_root,
             &req.publisher_app_id,
             subscriber_type,
             &subscriber_id,
-            req.event_names.clone(),
-            req.payload_mode,
-            req.trigger_mode,
-            req.resource_id.clone(),
-        ) {
-            Ok(subscription_id) => HostSubscribeReply::Ok {
+            &req.event_names,
+        );
+        match decision {
+            Decision::Allow => {
+                let subscription_id = record_subscription(
+                    &self.timeline,
+                    &req.publisher_app_id,
+                    subscriber_type,
+                    &subscriber_id,
+                    req.event_names,
+                    req.payload_mode,
+                    req.trigger_mode,
+                    req.resource_id,
+                    GrantDuration::Session,
+                );
+                let _ = req.reply.send(HostSubscribeReply::Ok {
+                    subscription_id,
+                    subscriber_type,
+                    subscriber_id,
+                });
+                None
+            }
+            Decision::Deny => {
+                let _ = req.reply.send(HostSubscribeReply::Err {
+                    message: "blocked by broker: deny".to_string(),
+                });
+                None
+            }
+            Decision::Ask => {
+                log::info!(
+                    "event_subscriptions: subscription to '{}' for {subscriber_type:?} \
+                     '{subscriber_id}' awaiting user consent",
+                    req.publisher_app_id
+                );
+                Some(PendingEventConsent {
+                    subscriber_type,
+                    subscriber_id,
+                    publisher_app_id: req.publisher_app_id,
+                    event_names: req.event_names,
+                    payload_mode: req.payload_mode,
+                    trigger_mode: req.trigger_mode,
+                    resource_id: req.resource_id,
+                    reply: req.reply,
+                })
+            }
+        }
+    }
+
+    /// Answer a parked [`PendingEventConsent`] with the user's decision. On
+    /// `AllowAlways`, persist an `Allow` grant for every target so future
+    /// subscribes pass without prompting; on `AllowOnce`, record only the
+    /// session subscription. Fires the transport's reply either way. If the
+    /// transport already gave up (its `reply` receiver dropped), the freshly
+    /// recorded subscription is rolled back so no orphan accumulates deliveries.
+    pub fn resolve_consent(
+        &mut self,
+        consent: PendingEventConsent,
+        choice: ConsentChoice,
+        config_dir: &Path,
+    ) {
+        if choice == ConsentChoice::Deny {
+            log::info!(
+                "event_subscriptions: user denied subscription for {:?} '{}' -> '{}'",
+                consent.subscriber_type,
+                consent.subscriber_id,
+                consent.publisher_app_id
+            );
+            let _ = consent.reply.send(HostSubscribeReply::Err {
+                message: "subscription denied by user".to_string(),
+            });
+            return;
+        }
+
+        if choice == ConsentChoice::AllowAlways {
+            let created_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            for target in subscription_targets(&consent.publisher_app_id, &consent.event_names) {
+                self.grant_store.record(GrantRecord {
+                    actor_type: consent.subscriber_type,
+                    actor_id: consent.subscriber_id.clone(),
+                    actor_scope: ActorScope::User,
+                    workspace_root: None,
+                    target_type: TargetType::AppEventStream,
+                    target_id: target,
+                    resource_scope: ResourceScope::Global,
+                    resource_id: None,
+                    decision: Decision::Allow,
+                    duration: GrantDuration::Always,
+                    source: GrantSource::User,
+                    created_at,
+                    expires_at: None,
+                });
+            }
+            self.grant_store.save();
+            // Keep the in-memory store consistent with disk for later evals.
+            self.reload(config_dir);
+            log::info!(
+                "event_subscriptions: user granted ALWAYS to {:?} '{}' -> '{}'",
+                consent.subscriber_type,
+                consent.subscriber_id,
+                consent.publisher_app_id
+            );
+        }
+
+        let subscription_id = record_subscription(
+            &self.timeline,
+            &consent.publisher_app_id,
+            consent.subscriber_type,
+            &consent.subscriber_id,
+            consent.event_names.clone(),
+            consent.payload_mode,
+            consent.trigger_mode,
+            consent.resource_id.clone(),
+            GrantDuration::Session,
+        );
+        if consent
+            .reply
+            .send(HostSubscribeReply::Ok {
                 subscription_id,
-                subscriber_type,
-                subscriber_id,
-            },
-            Err(decision) => HostSubscribeReply::Err {
-                message: format!("blocked by broker: {}", decision.as_str()),
-            },
+                subscriber_type: consent.subscriber_type,
+                subscriber_id: consent.subscriber_id.clone(),
+            })
+            .is_err()
+        {
+            let (subs, drops) = self
+                .timeline
+                .lock()
+                .unwrap()
+                .clear_subscriber(consent.subscriber_type, &consent.subscriber_id);
+            log::warn!(
+                "event_subscriptions: consented subscriber '{}' already disconnected; \
+                 rolled back {subs} subscription(s), {drops} queued delivery(ies)",
+                consent.subscriber_id
+            );
+        } else {
+            log::info!(
+                "event_subscriptions: user allowed ({}) subscription for {:?} '{}' -> '{}'",
+                if choice == ConsentChoice::AllowAlways {
+                    "always"
+                } else {
+                    "once"
+                },
+                consent.subscriber_type,
+                consent.subscriber_id,
+                consent.publisher_app_id
+            );
         }
     }
 
@@ -431,14 +649,15 @@ mod tests {
         }
     }
 
-    /// `handle_subscribe_request` rejects a stream the app never declared,
+    /// `classify_subscribe_request` rejects a stream the app never declared,
     /// before the broker is consulted.
     #[test]
     fn handle_request_rejects_undeclared_stream() {
         let timeline = timeline_with_stream();
         let svc = granted_service(Arc::clone(&timeline));
-        let (req, _rx) = subscribe_request(vec!["nope.stream".to_string()], PayloadMode::Full, None);
-        match svc.handle_subscribe_request(&req) {
+        let (req, rx) = subscribe_request(vec!["nope.stream".to_string()], PayloadMode::Full, None);
+        assert!(svc.classify_subscribe_request(req).is_none());
+        match rx.recv().unwrap() {
             HostSubscribeReply::Err { message } => assert!(message.contains("not declared")),
             HostSubscribeReply::Ok { .. } => panic!("undeclared stream must be refused"),
         }
@@ -450,8 +669,9 @@ mod tests {
     fn handle_request_uses_pane_identity() {
         let timeline = timeline_with_stream();
         let svc = granted_service(Arc::clone(&timeline));
-        let (req, _rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
-        match svc.handle_subscribe_request(&req) {
+        let (req, rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
+        assert!(svc.classify_subscribe_request(req).is_none());
+        match rx.recv().unwrap() {
             HostSubscribeReply::Ok { subscriber_id, .. } => assert_eq!(subscriber_id, "pane:7"),
             HostSubscribeReply::Err { message } => panic!("should subscribe: {message}"),
         }
@@ -462,12 +682,85 @@ mod tests {
     fn handle_request_honours_override_identity() {
         let timeline = timeline_with_stream();
         let svc = granted_service(Arc::clone(&timeline));
-        let (req, _rx) =
+        let (req, rx) =
             subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, Some("mcp:host"));
-        match svc.handle_subscribe_request(&req) {
+        assert!(svc.classify_subscribe_request(req).is_none());
+        match rx.recv().unwrap() {
             HostSubscribeReply::Ok { subscriber_id, .. } => assert_eq!(subscriber_id, "mcp:host"),
             HostSubscribeReply::Err { message } => panic!("should subscribe: {message}"),
         }
+    }
+
+    /// Default `Ask` posture parks a consent instead of recording or erroring.
+    /// `AllowOnce` then records the subscription and replies `Ok` with the
+    /// host-stamped identity — no grant is persisted.
+    #[test]
+    fn consent_allow_once_records_session_subscription() {
+        let timeline = timeline_with_stream();
+        // No grant + no posture → broker default Ask.
+        let mut svc =
+            HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
+        let (req, rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
+        let consent = svc
+            .classify_subscribe_request(req)
+            .expect("Ask must park a consent, not answer inline");
+        assert_eq!(consent.subscriber_id, "pane:7");
+        assert!(timeline.lock().unwrap().subscriptions().is_empty());
+
+        svc.resolve_consent(consent, ConsentChoice::AllowOnce, Path::new("/tmp/ws"));
+        match rx.recv().unwrap() {
+            HostSubscribeReply::Ok { subscriber_id, .. } => assert_eq!(subscriber_id, "pane:7"),
+            HostSubscribeReply::Err { message } => panic!("allow-once should subscribe: {message}"),
+        }
+        assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
+    }
+
+    /// `Deny` answers the transport with a permission error and records nothing.
+    #[test]
+    fn consent_deny_refuses_and_records_nothing() {
+        let timeline = timeline_with_stream();
+        let mut svc =
+            HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
+        let (req, rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
+        let consent = svc.classify_subscribe_request(req).expect("Ask must park a consent");
+        svc.resolve_consent(consent, ConsentChoice::Deny, Path::new("/tmp/ws"));
+        match rx.recv().unwrap() {
+            HostSubscribeReply::Err { message } => assert!(message.contains("denied by user")),
+            HostSubscribeReply::Ok { .. } => panic!("deny must refuse"),
+        }
+        assert!(timeline.lock().unwrap().subscriptions().is_empty());
+    }
+
+    /// `AllowAlways` persists an `Allow` grant: a fresh service over the same
+    /// profile dir subscribes without prompting (classify answers inline).
+    #[test]
+    fn consent_allow_always_persists_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let timeline = timeline_with_stream();
+        let mut svc = HostSubscriptionService::new(
+            dir.path(),
+            PathBuf::from("/tmp/ws"),
+            Arc::clone(&timeline),
+        );
+        let (req, rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
+        let consent = svc.classify_subscribe_request(req).expect("Ask must park a consent");
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
+        assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+
+        // Fresh service over the same profile dir: the persisted grant makes the
+        // next subscribe pass inline (no parked consent).
+        let svc2 = HostSubscriptionService::new(
+            dir.path(),
+            PathBuf::from("/tmp/ws"),
+            Arc::clone(&timeline),
+        );
+        let (req2, rx2) =
+            subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
+        assert!(
+            svc2.classify_subscribe_request(req2).is_none(),
+            "persisted ALWAYS grant must answer inline, not re-prompt"
+        );
+        assert!(matches!(rx2.recv().unwrap(), HostSubscribeReply::Ok { .. }));
     }
 
     /// End-to-end: subscribe (full payload) → emit → the delivery carries the
@@ -477,8 +770,9 @@ mod tests {
     fn delivery_full_payload_then_disconnect_cleanup() {
         let timeline = timeline_with_stream();
         let svc = granted_service(Arc::clone(&timeline));
-        let (req, _rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
-        let (stype, sid) = match svc.handle_subscribe_request(&req) {
+        let (req, rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
+        assert!(svc.classify_subscribe_request(req).is_none());
+        let (stype, sid) = match rx.recv().unwrap() {
             HostSubscribeReply::Ok {
                 subscriber_type,
                 subscriber_id,
@@ -518,9 +812,10 @@ mod tests {
     fn delivery_summary_mode_withholds_payload() {
         let timeline = timeline_with_stream();
         let svc = granted_service(Arc::clone(&timeline));
-        let (req, _rx) =
+        let (req, rx) =
             subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Summary, None);
-        let (stype, sid) = match svc.handle_subscribe_request(&req) {
+        assert!(svc.classify_subscribe_request(req).is_none());
+        let (stype, sid) = match rx.recv().unwrap() {
             HostSubscribeReply::Ok {
                 subscriber_type,
                 subscriber_id,

@@ -366,6 +366,11 @@ pub struct PlexiApp {
     /// in `drain_event_subscribe_channel`.
     event_subscribe_rx:
         std::sync::mpsc::Receiver<crate::host::event_subscriptions::HostSubscribeRequest>,
+    /// Subscribe requests the broker answered with `Ask`, parked for an explicit
+    /// user decision. The front entry is surfaced as the host event-consent
+    /// modal; [`FocusLayer::EventConsent`] is promoted while this is non-empty.
+    pub(crate) pending_event_consents:
+        std::collections::VecDeque<crate::host::event_subscriptions::PendingEventConsent>,
     /// Last (window_id, tile_id) pair that was logged as a FocusChanged event.
     /// Uses stable window_id (u64) not a vector index so removals don't corrupt it.
     /// Compared at end of each frame to detect genuine focus transitions.
@@ -572,8 +577,11 @@ fn handle_events_subscribe(
     }
     egui_ctx.request_repaint();
 
+    // Generous wait: a first-time subscribe under the broker's default `Ask`
+    // posture blocks here until the user answers the host consent modal. A
+    // pre-granted subscribe replies near-instantly.
     let (subscriber_type, subscriber_id, subscription_id) =
-        match reply_rx.recv_timeout(Duration::from_secs(5)) {
+        match reply_rx.recv_timeout(Duration::from_secs(120)) {
             Ok(HostSubscribeReply::Ok {
                 subscription_id,
                 subscriber_type,
@@ -591,7 +599,7 @@ fn handle_events_subscribe(
                 let _ = writeln!(
                     write_half,
                     "{}",
-                    serde_json::json!({"type": "error", "message": "subscribe timed out"})
+                    serde_json::json!({"type": "error", "message": "subscribe consent timed out"})
                 );
                 return;
             }
@@ -1166,6 +1174,7 @@ impl PlexiApp {
                     pane_ipc_rx,
                     host_subscriptions,
                     event_subscribe_rx,
+                    pending_event_consents: std::collections::VecDeque::new(),
                     last_logged_focus: None,
                     focus_started_at: None,
                     last_system_theme: None,
@@ -1407,6 +1416,7 @@ impl PlexiApp {
             pane_ipc_rx,
             host_subscriptions,
             event_subscribe_rx,
+            pending_event_consents: std::collections::VecDeque::new(),
             last_logged_focus: None,
             focus_started_at: None,
             last_system_theme: None,
@@ -1624,6 +1634,7 @@ impl PlexiApp {
                 pane_ipc_rx,
                 host_subscriptions,
                 event_subscribe_rx,
+                pending_event_consents: std::collections::VecDeque::new(),
                 last_logged_focus: None,
                 focus_started_at: None,
                 last_system_theme: None,
@@ -1969,6 +1980,7 @@ impl eframe::App for PlexiApp {
                         self.context_close_confirm_handle_key(ctx)
                     }
                     Some(FocusLayer::CapabilityModal) => self.capability_modal_handle_key(ctx),
+                    Some(FocusLayer::EventConsent) => self.event_consent_handle_key(ctx),
                     Some(FocusLayer::NotesPicker) => {
                         self.notes_picker_handle_key(ctx);
                         crate::app::app_trait::KeyDisposition::Passthrough
@@ -2014,6 +2026,9 @@ impl eframe::App for PlexiApp {
                     Some(FocusLayer::CapabilityModal) => {
                         self.draw_capability_modal(ctx);
                     }
+                    Some(FocusLayer::EventConsent) => {
+                        self.draw_event_consent_modal(ctx);
+                    }
                     Some(FocusLayer::NotesPicker) => {
                         self.draw_notes_picker(ctx);
                     }
@@ -2035,6 +2050,7 @@ impl eframe::App for PlexiApp {
                 self.sync_cli_setup_prompt_focus();
                 self.sync_text_input_focus();
                 self.sync_capability_modal_focus();
+                self.sync_event_consent_focus();
                 disposition
             } // end else (non-preempted path)
         } else {
