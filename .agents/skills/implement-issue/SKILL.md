@@ -28,21 +28,9 @@ Pipeline: pipeline:open-pr + ready set — invoking /open-pr inline
 
 This skill is not complete when the branch is merely pushed. Completion includes invoking `/open-pr` inline in the same pane and letting the pipeline continue to validation.
 
-> **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
+> **Labels are live state — never the Ship Log.** Pane: `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"` — no digit in status word (PM census uses `grep -oE '[0-9]+'`). States: `impl`, `pushed`, `noop`, `blocked`. Source `.agents/skills/_lib/pipeline-slots.sh`; call `pipeline_slots_set implement <n> "" <status> "" ""` at each boundary.
 
-> **Pane status title.** This skill runs in a dispatched pane named `#<n>` (or `#<n1>+<n2>` for a bundle). At each phase boundary, update the pane title with the current stage so the project-manager can read state from `plexi pane list` instead of capturing pane content. The call is:
-> ```bash
-> plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"
-> ```
-> Use the exact issue-number prefix the pane already has (`#<n1>+<n2>` for a bundle). **The status word must never contain a digit** — the PM maps panes to issues with `grep -oE '[0-9]+'` on the title, so a PR number in the suffix would corrupt the census. States this skill sets: `impl`, `pushed`, `noop`, `blocked`.
-
-> **Stint timing is mandatory.** This skill opens linked stint work with `stint start <task-id>`. Do not close stint tasks here; `/merge-pr` runs `stint done <task-id>` after the PR merges and alpha is verified. Use `stint start --help` / `stint done --help` for exact flags instead of manually editing timing fields.
-
-> **Pane slots.** Publish pipeline state with the shared helper whenever phase, issue, PR, status, testing instructions, or last error changes:
-> ```bash
-> . .agents/skills/_lib/pipeline-slots.sh
-> pipeline_slots_set implement <issue-number> "" working "" ""
-> ```
+> **Stint timing.** `stint start <task-id>` in this skill; `stint done` runs in `/merge-pr` after merge.
 
 ---
 

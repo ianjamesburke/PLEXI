@@ -22,15 +22,7 @@ PR: <url>
 Pipeline: pipeline:validate + ready set — invoking /validate-pr inline
 ```
 
-> **Labels are the live state.** Ship Log is audit trail only.
-
-> **Pane status title.** Update so the PM reads state from `plexi pane list`:
-> ```bash
-> plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"
-> ```
-> States this skill sets: `pr-open`.
->
-> **Pane slots.** Source `.agents/skills/_lib/pipeline-slots.sh` and publish `pipeline_slots_set open-pr <issue> <pr> <status> "" ""` at phase boundaries.
+> **Labels are live state — never the Ship Log.** Pane: `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"` — no digit in status. State: `pr-open`. Source `_lib/pipeline-slots.sh`; call `pipeline_slots_set open-pr <issue> <pr> <status> "" ""` at phase boundaries.
 
 ---
 
