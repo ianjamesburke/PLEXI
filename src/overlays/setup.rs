@@ -132,6 +132,15 @@ impl PlexiApp {
                         .color(colors.text_dim)
                         .italics(),
                     );
+                    ui.add_space(style::SPACE_MD);
+                    ui.label(
+                        RichText::new(
+                            "Brand new to Plexi? Press Command+N to open a new pane, \
+                             then type plexi demo.",
+                        )
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.text_dim),
+                    );
                     ui.add_space(style::SPACE_XL);
 
                     // Each entry: (chip groups for one combo, description).
@@ -164,15 +173,7 @@ impl PlexiApp {
                     }
 
                     ui.add_space(style::SPACE_XL);
-                    ui.label(
-                        RichText::new(
-                            "Brand new to Plexi? Press Command+N to open a new pane, \
-                             then type plexi demo.",
-                        )
-                        .size(style::TEXT_CAPTION)
-                        .color(colors.text_dim),
-                    );
-                    ui.add_space(style::SPACE_SM);
+
                     ui.hyperlink_to(
                         RichText::new("Read the docs at plexiapp.com/docs")
                             .size(style::TEXT_CAPTION)
