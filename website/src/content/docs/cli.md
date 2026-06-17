@@ -378,6 +378,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `list` | Show all installed apps with their versions |
 | `render` | Render an app headlessly (JSON frame tree by default, or PNG with --png) |
 | `check` | Check a local app with manifest, SDK, and render-size checks |
+| `test` | Run an app's AppHarness tests with `uv run pytest tests/` |
 | `info` | Show details about an installed app: id, name, version, and available tools |
 | `init` | Create a new app from a template |
 | `validate` | Check a Plexi app directory or .plexipkg package for errors before publishing or installing |
@@ -461,6 +462,17 @@ This is the compiler-like gate for generated Plexi apps. It checks the manifest,
 | `<path>` | string | no | Local app directory to check (default: current directory) Default: `.`. |
 | `--size` | string (repeatable) | no | Render size to check as WxH. Repeat to override the default matrix |
 | `--png-dir` | string | no | Write PNG snapshots for each checked size into this directory |
+
+### `plexi app test`
+
+Run an app's AppHarness tests with `uv run pytest tests/`.
+
+Runs the Python tests in the app's `tests/` directory (the `tests/test_app.py` scaffolded by `plexi app init`). AppHarness spawns the app as a real subprocess and checks it renders without overlap; see `plexi_sdk/testing.py`. Exits nonzero on failure so CI can gate on it.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | no | App directory to test (default: current directory) Default: `.`. |
+| `--snapshot` | flag | no | Update stored snapshots instead of comparing against them |
 
 ### `plexi app info`
 
