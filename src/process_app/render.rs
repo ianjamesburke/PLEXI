@@ -85,15 +85,43 @@ pub(crate) fn render_draw_commands(
                 h,
                 fill,
                 radius,
+                stroke,
+                stroke_width,
+                glow_color,
+                glow_radius,
+                gradient,
             } => {
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, *h),
                 );
-                let color = parse_color(fill).unwrap_or(colors.bg_active);
-                ui.painter()
-                    .with_clip_rect(clip)
-                    .rect_filled(rect, *radius, color);
+                let painter = ui.painter().with_clip_rect(clip);
+                // 1. Glow behind fill
+                if let Some(gc) = glow_color.as_deref().filter(|_| *glow_radius > 0.0) {
+                    if let Some(glow) = parse_color(gc) {
+                        paint_rect_glow(&painter, rect, *glow_radius, glow);
+                    }
+                }
+                // 2. Fill: gradient mesh or solid color
+                if let Some(grad) = gradient {
+                    let color_from = parse_color(&grad.from).unwrap_or(colors.bg_active);
+                    let color_to = parse_color(&grad.to).unwrap_or(colors.bg_active);
+                    paint_gradient_rect(&painter, rect, color_from, color_to, &grad.dir);
+                } else {
+                    let color = parse_color(fill).unwrap_or(colors.bg_active);
+                    painter.rect_filled(rect, *radius, color);
+                }
+                // 3. Stroke on top
+                if let Some(sc) = stroke.as_deref() {
+                    if let Some(stroke_color) = parse_color(sc) {
+                        painter.rect_stroke(
+                            rect,
+                            *radius,
+                            egui::Stroke::new(*stroke_width, stroke_color),
+                            egui::StrokeKind::Middle,
+                        );
+                    }
+                }
             }
 
             RenderCommand::Text {
@@ -290,12 +318,28 @@ pub(crate) fn render_draw_commands(
                 );
             }
 
-            RenderCommand::Circle { cx, cy, r, fill } => {
+            RenderCommand::Circle { cx, cy, r, fill, stroke, stroke_width, glow_color, glow_radius } => {
                 let center = egui::pos2(origin.x + cx, origin.y + cy);
+                let painter = ui.painter().with_clip_rect(clip);
+                // 1. Glow behind fill (concentric rings)
+                if let Some(gc) = glow_color.as_deref().filter(|_| *glow_radius > 0.0) {
+                    if let Some(glow) = parse_color(gc) {
+                        paint_circle_glow(&painter, center, *r, *glow_radius, glow);
+                    }
+                }
+                // 2. Fill
                 let color = parse_color(fill).unwrap_or(colors.accent);
-                ui.painter()
-                    .with_clip_rect(clip)
-                    .circle_filled(center, *r, color);
+                painter.circle_filled(center, *r, color);
+                // 3. Stroke on top
+                if let Some(sc) = stroke.as_deref() {
+                    if let Some(stroke_color) = parse_color(sc) {
+                        painter.circle_stroke(
+                            center,
+                            *r,
+                            egui::Stroke::new(*stroke_width, stroke_color),
+                        );
+                    }
+                }
             }
 
             RenderCommand::Arc {
@@ -321,6 +365,36 @@ pub(crate) fn render_draw_commands(
                     closed: true,
                     fill: color,
                     stroke: egui::epaint::PathStroke::NONE,
+                });
+                ui.painter().with_clip_rect(clip).add(shape);
+            }
+
+            RenderCommand::ArcRing {
+                cx,
+                cy,
+                r,
+                start_angle,
+                end_angle,
+                color,
+                stroke_width,
+            } => {
+                let stroke_color = parse_color(color).unwrap_or(colors.accent);
+                let center = egui::pos2(origin.x + cx, origin.y + cy);
+                let span = (end_angle - start_angle).abs();
+                // ~1 point per 3 degrees (π/60 rad); min 4, max 256
+                let steps = ((r * span / (std::f32::consts::PI / 60.0)) as usize)
+                    .max(4)
+                    .min(256);
+                let mut points = Vec::with_capacity(steps + 1);
+                for i in 0..=steps {
+                    let t = start_angle + (end_angle - start_angle) * i as f32 / steps as f32;
+                    points.push(egui::pos2(center.x + r * t.cos(), center.y + r * t.sin()));
+                }
+                let shape = egui::Shape::Path(egui::epaint::PathShape {
+                    points,
+                    closed: false,
+                    fill: egui::Color32::TRANSPARENT,
+                    stroke: egui::epaint::PathStroke::new(*stroke_width, stroke_color),
                 });
                 ui.painter().with_clip_rect(clip).add(shape);
             }
@@ -842,9 +916,10 @@ pub(crate) fn render_draw_commands(
                 max_width,
                 pairs,
                 font_size,
+                align,
             } => {
                 render_shortcuts(
-                    ui, origin, clip, *x, *y, *max_width, pairs, *font_size, colors,
+                    ui, origin, clip, *x, *y, *max_width, pairs, *font_size, align, colors,
                 );
             }
 
@@ -1352,6 +1427,7 @@ pub(crate) fn render_shortcuts(
     max_width: f32,
     pairs: &[crate::app_protocol::ShortcutPair],
     font_size: f32,
+    align: &crate::protocol::commands::ShortcutsAlign,
     colors: &Colors,
 ) {
     use crate::ui::style;
@@ -1416,7 +1492,20 @@ pub(crate) fn render_shortcuts(
     let pair_gap: f32 = 16.0;
     let row_h = chip_h + 4.0; // matches FooterKeys ROW_H aesthetic
 
-    let mut cursor_x = x;
+    // Center the row within `max_width` when it fits on a single line.
+    // Multi-line rows fall back to left alignment (centering wrapped lines
+    // individually would need a second pass; footers rarely wrap).
+    let single_line_w: f32 = laid.iter().map(|lp| lp.total_w).sum::<f32>()
+        + pair_gap * (laid.len().saturating_sub(1) as f32);
+    let start_x = if *align == crate::protocol::commands::ShortcutsAlign::Center
+        && single_line_w <= max_width
+    {
+        x + (max_width - single_line_w) / 2.0
+    } else {
+        x
+    };
+
+    let mut cursor_x = start_x;
     let mut cursor_y = y;
     let mut on_line_first = true;
 
@@ -1929,6 +2018,86 @@ pub(crate) fn render_layout_node(
     );
 
     log::debug!("render_layout_node: painted layout tree at pane ({pane_x}, {pane_y})");
+}
+
+/// Glow intensity scale. Glow reads as a subtle halo, not a bloom: the
+/// caller's `glow_color` alpha is multiplied by this so a fully-opaque glow
+/// color still renders gently. Tuned for tasteful defaults across apps.
+const GLOW_ALPHA_SCALE: f32 = 0.22;
+
+fn scale_alpha(c: egui::Color32, scale: f32) -> egui::Color32 {
+    let a = (c.a() as f32 * scale).round().clamp(0.0, 255.0) as u8;
+    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
+
+/// Paint a soft glow halo behind a rect using epaint `RectShape` with `blur_width`.
+fn paint_rect_glow(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    glow_radius: f32,
+    glow_color: egui::Color32,
+) {
+    let glow = scale_alpha(glow_color, GLOW_ALPHA_SCALE);
+    let expanded = rect.expand(glow_radius);
+    let shape = egui::epaint::RectShape::filled(expanded, glow_radius, glow)
+        .with_blur_width(glow_radius * 2.0);
+    painter.add(egui::Shape::Rect(shape));
+}
+
+/// Paint a concentric-circle glow halo behind a circle.
+/// Draws 8 rings from `r` to `r + glow_radius` with linearly decreasing alpha.
+fn paint_circle_glow(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    r: f32,
+    glow_radius: f32,
+    glow_color: egui::Color32,
+) {
+    const RINGS: usize = 8;
+    let base_alpha = glow_color.a() as f32 * GLOW_ALPHA_SCALE;
+    let ring_w = glow_radius / RINGS as f32;
+    for i in 0..RINGS {
+        let t = i as f32 / RINGS as f32;
+        let ring_r = r + glow_radius * t;
+        let alpha = ((1.0 - t) * base_alpha) as u8;
+        let color = egui::Color32::from_rgba_unmultiplied(
+            glow_color.r(),
+            glow_color.g(),
+            glow_color.b(),
+            alpha,
+        );
+        painter.circle_stroke(center, ring_r, egui::Stroke::new(ring_w, color));
+    }
+}
+
+/// Paint a linear gradient fill for a rect using a 4-vertex colored mesh.
+/// The gradient is always sharp-cornered (corner radius not applied to the mesh).
+fn paint_gradient_rect(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    from: egui::Color32,
+    to: egui::Color32,
+    dir: &crate::protocol::commands::GradientDir,
+) {
+    use crate::protocol::commands::GradientDir;
+    let (tl, tr, br, bl) = match dir {
+        GradientDir::Horizontal => (from, to, to, from),
+        GradientDir::Vertical => (from, from, to, to),
+    };
+    // WHITE_UV (0.0, 0.0) maps to the white pixel in the font atlas —
+    // the correct UV for solid-color mesh vertices with the default texture.
+    let white_uv = egui::pos2(0.0, 0.0);
+    let mut mesh = egui::Mesh::default();
+    mesh.vertices
+        .push(egui::epaint::Vertex { pos: rect.left_top(),     uv: white_uv, color: tl });
+    mesh.vertices
+        .push(egui::epaint::Vertex { pos: rect.right_top(),    uv: white_uv, color: tr });
+    mesh.vertices
+        .push(egui::epaint::Vertex { pos: rect.right_bottom(), uv: white_uv, color: br });
+    mesh.vertices
+        .push(egui::epaint::Vertex { pos: rect.left_bottom(),  uv: white_uv, color: bl });
+    mesh.indices = vec![0, 1, 2, 0, 2, 3];
+    painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
 }
 
 /// Parse a hex color string like `"#1e1e2e"` into Color32.

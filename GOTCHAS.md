@@ -4,6 +4,16 @@
 
 ---
 
+## [sdk · python] Canvas apps bypass the host's WCAG contrast check — pick text colors deliberately
+
+The host enforces readable contrast for its own chrome: `Colors::text_on()` and the tests in `src/ui/theme.rs` guarantee ≥3:1 (chips) / ≥4.5:1 (sidebar body) for every host-drawn label. **Canvas apps draw with raw `ctx.text(color=...)` and get none of that** — whatever hex the app passes is what renders, no auto-correction.
+
+The trap: `ctx.theme.muted` is `#6c7086`, only ~2.6:1 against `ctx.theme.bg` (`#1e1e2e`) — it fails WCAG for body text. Leaning on `muted` for labels/values (and worse, `dim(muted, a)`, which drops alpha and makes it dimmer still) produces a dashboard that looks washed-out and is genuinely hard to read. `dim()` is for **fills/tracks/glows, never text**.
+
+**Rule for canvas apps:** primary values and labels use `ctx.theme.fg` (`#cdd6f4`, high contrast). Secondary captions use a deliberately-chosen readable subtext (e.g. `#a6adc8`, ~3.7:1 on bg), not `muted`. Reserve `muted` for the faintest tertiary marks only. Reserve hues (`accent`/`success`/`warning`/`red`) for fills, bars, and dial heat — colored *text* on `surface`/`bg` is usually <3:1 and should be avoided for anything that must be read.
+
+---
+
 ## [egui · theme] New presets must pass the WCAG contrast test
 
 `text_on_is_legible_on_every_preset_accent_and_danger` in `src/ui/theme.rs` runs against every entry in `preset_names()` and asserts ≥3:1 WCAG contrast ratio on both `accent` and `danger` fills. Add any new preset to `preset_names()`, `canonical_preset_name()`, and `preset_colors()` — if the accent or danger color is mid-luminance, verify `text_on()` returns a legible color before adding.

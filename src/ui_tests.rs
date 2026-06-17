@@ -345,6 +345,123 @@ mod tests {
         })
     }
 
+    /// Stint 0207: render the four new canvas styling primitives (rect gradient,
+    /// rect glow + stroke, circle glow + stroke, arc_ring) directly through
+    /// `render_draw_commands` and save a PNG for visual inspection.
+    /// File written to /tmp/plexi_canvas_primitives.png.
+    #[test]
+    fn screenshot_canvas_primitives() {
+        use crate::protocol::commands::{Gradient, GradientDir, RenderCommand};
+
+        let commands = vec![
+            // Dark backdrop so glows are visible.
+            RenderCommand::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 440.0,
+                h: 320.0,
+                fill: "#11111b".to_string(),
+                radius: 0.0,
+                stroke: None,
+                stroke_width: 1.0,
+                glow_color: None,
+                glow_radius: 0.0,
+                gradient: None,
+            },
+            // 1. Horizontal gradient fill.
+            RenderCommand::Rect {
+                x: 24.0,
+                y: 24.0,
+                w: 180.0,
+                h: 80.0,
+                fill: "#000000".to_string(),
+                radius: 8.0,
+                stroke: None,
+                stroke_width: 1.0,
+                glow_color: None,
+                glow_radius: 0.0,
+                gradient: Some(Gradient {
+                    from: "#f38ba8".to_string(),
+                    to: "#89b4fa".to_string(),
+                    dir: GradientDir::Horizontal,
+                }),
+            },
+            // 2. Glow + stroke rect.
+            RenderCommand::Rect {
+                x: 24.0,
+                y: 128.0,
+                w: 180.0,
+                h: 80.0,
+                fill: "#1e1e2e".to_string(),
+                radius: 10.0,
+                stroke: Some("#a6e3a1".to_string()),
+                stroke_width: 2.0,
+                glow_color: Some("#a6e3a1".to_string()),
+                glow_radius: 18.0,
+                gradient: None,
+            },
+            // 3. Glow + stroke circle.
+            RenderCommand::Circle {
+                cx: 320.0,
+                cy: 80.0,
+                r: 38.0,
+                fill: "#cba6f7".to_string(),
+                stroke: Some("#ffffff".to_string()),
+                stroke_width: 2.0,
+                glow_color: Some("#cba6f7".to_string()),
+                glow_radius: 22.0,
+            },
+            // 4. Arc ring (three-quarter sweep).
+            RenderCommand::ArcRing {
+                cx: 320.0,
+                cy: 210.0,
+                r: 42.0,
+                start_angle: 0.0,
+                end_angle: std::f32::consts::PI * 1.5,
+                color: "#fab387".to_string(),
+                stroke_width: 7.0,
+            },
+        ];
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(440.0, 320.0))
+            .build_ui(move |ui| {
+                let colors =
+                    crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
+                let mut commonmark = egui_commonmark::CommonMarkCache::default();
+                let audio: std::collections::HashMap<String, f32> = Default::default();
+                let mut image_cache = crate::process_app::image_cache::ImageCache::new();
+                let ws = std::env::temp_dir();
+                let mut lv_off = std::collections::HashMap::new();
+                let mut lv_sel = std::collections::HashMap::new();
+                let mut events = Vec::new();
+                let mut te_buf = std::collections::HashMap::new();
+                let mut te_focus = crate::render::components::TextEditFocusCtx::new();
+                let rect = ui.max_rect();
+                crate::process_app::render::render_draw_commands(
+                    ui,
+                    rect,
+                    &commands,
+                    &colors,
+                    &mut commonmark,
+                    &audio,
+                    &mut image_cache,
+                    &ws,
+                    false,
+                    &mut lv_off,
+                    &mut lv_sel,
+                    &mut events,
+                    &mut te_buf,
+                    &mut te_focus,
+                );
+            });
+        harness.run();
+        let img = harness.render().expect("render failed");
+        img.save("/tmp/plexi_canvas_primitives.png")
+            .expect("save failed");
+        println!("Screenshot saved to /tmp/plexi_canvas_primitives.png");
+    }
+
     /// Render the initial empty state and save a screenshot for visual inspection.
     /// File written to /tmp/plexi_init.png.
     #[test]

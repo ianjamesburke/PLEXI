@@ -1,64 +1,69 @@
 #!/usr/bin/env python3
-"""Stats — usage dashboard showing active time, visits, and project treemap."""
+"""Stats — an activity dashboard for your work.
+
+Reads Plexi focus events and renders a circular activity clock — a 24h dial
+whose amplitude is your pane-switch velocity through the day and whose colour
+is the context you were in, with today's focus total at the centre — plus stat
+tiles and a top-contexts list. Built on the native canvas primitives — see
+docs/sdk-v2.md.
+
+Data notes (what is and isn't accurately measured):
+  * Every focus change is one `focus_changed` event with a microsecond
+    `timestamp` and an integer `duration_secs` (1-second resolution). Switch
+    counts and timing are exact — that is what drives the waveform amplitude.
+  * "Focus time" is the sum of focus dwell. Dwell can't see idle-at-keyboard,
+    so very long single-pane spans (e.g. a pane left focused overnight) are
+    treated as idle and clamped. Focus time is therefore approximate; switch
+    velocity is not.
+"""
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from plexi_sdk import App, dim
 from plexi_sdk.ui import (
-    Column, AppBar, FooterKeys, Component,
-    TEXT_HINT, TEXT_CAPTION, TEXT_BODY,
+    AppBar, Canvas, Column, FooterKeys,
+    RADIUS_MD,
+    SPACE_SM, SPACE_LG,
+    TEXT_HINT, TEXT_CAPTION, TEXT_HEADING,
 )
 
-PALETTE = [
-    "#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af",
-    "#cba6f7", "#94e2d5", "#fab387", "#74c7ec",
-]
-
-STATS_BAR_H = 34.0
-TIMELINE_H = 50.0
-MIN_CELL_W = 60.0
-MIN_CELL_H = 40.0
-IDLE_THRESHOLD_SECS = 15 * 60
-IDLE_CLAMP_SECS = 60
 HOME = str(Path.home())
-UNKNOWN_CONTEXT = "Unknown"
+DAY_START_HOUR = 4              # a "day" runs 4 AM → 4 AM, not midnight
+IDLE_THRESHOLD_SECS = 15 * 60  # a single focus span longer than this is treated as idle
+IDLE_CLAMP_SECS = 60
+WAVE_BUCKETS = 120             # angular resolution of the activity waveform (~12 min each)
+
+RANK_COLORS = ["#f9e2af", "#bac2de", "#fab387"]  # 1st / 2nd / 3rd
+CONTEXT_PALETTE = ["#89b4fa", "#a6e3a1", "#f9e2af", "#cba6f7", "#fab387", "#94e2d5"]
+TEXT_SOFT = "#a6adc8"  # readable secondary text (~3.7:1 on bg); never use theme.muted for text
+
+# Section heights (logical px).
+TILES_H = 70.0
+ROW_H = 30.0
+DIAL_MIN_H = 180.0
+DIAL_MAX_R = 240.0   # the dial keeps growing with the pane up to this radius
+TOP_CONTEXTS = 4     # named rows; the rest collapse into one "Other" row
+CONTEXT_ROWS = TOP_CONTEXTS + 1  # fixed row count so the layout never jumps
+OTHER_COLOR = "#585b70"          # neutral track colour for the "Other" bucket
 
 
-def _shorten(path: str) -> str:
-    if path.startswith("context:"):
-        return path.removeprefix("context:")
-    if path == HOME:
-        return "~"
-    if path.startswith(HOME + "/"):
-        return "~" + path[len(HOME):]
-    return path
+# ── Data layer ───────────────────────────────────────────────────────────────
 
-
-def _clean_text(value: object) -> str | None:
+def _clean_text(value: object) -> "str | None":
     if not isinstance(value, str):
         return None
     value = value.strip()
-    if not value or value == "(none)":
+    if not value or value in ("(none)", "Default"):
         return None
     return value
 
 
-def _project_root(path: str | None) -> str | None:
-    if not path:
-        return None
-    parts = Path(path).parts
-    if "GitHub" in parts:
-        idx = parts.index("GitHub")
-        if idx + 1 < len(parts):
-            return str(Path(*parts[:idx + 2]))
-    return path
-
-
-def _project_label(path: str | None) -> str:
+def _project_label(path: "str | None") -> str:
     if not path:
         return "No CWD"
     if path == HOME:
@@ -68,36 +73,24 @@ def _project_label(path: str | None) -> str:
         idx = parts.index("GitHub")
         if idx + 1 < len(parts):
             return parts[idx + 1]
-    name = Path(path).name
-    return name or _shorten(path)
+    return Path(path).name or path
 
 
-def _cwd_label(path: str) -> str:
-    if path == HOME:
-        return "~"
-    name = Path(path).name
-    return name or _shorten(path)
-
-
-def _event_context_identity(ev: dict) -> tuple[str, str]:
-    context_root = _clean_text(ev.get("context_root"))
-    if context_root:
-        root = _project_root(context_root) or context_root
-        return root, _project_label(root)
-
-    context_name = _clean_text(ev.get("context_name"))
-    if context_name:
-        return f"context:{context_name}", context_name
-
-    cwd = _clean_text(ev.get("cwd"))
-    root = _project_root(cwd)
+def _context_label(ev: dict) -> str:
+    """Prefer the Plexi context name; fall back to the working directory."""
+    name = _clean_text(ev.get("context_name"))
+    if name:
+        return name
+    root = _clean_text(ev.get("context_root"))
     if root:
-        return root, _project_label(root)
+        return _project_label(root)
+    cwd = _clean_text(ev.get("cwd"))
+    if cwd:
+        return _project_label(cwd)
+    return "Untitled"
 
-    return "context:unknown", UNKNOWN_CONTEXT
 
-
-def _fmt_duration(secs: float) -> str:
+def _fmt_secs(secs: float) -> str:
     h = int(secs) // 3600
     m = (int(secs) % 3600) // 60
     if h > 0:
@@ -105,107 +98,35 @@ def _fmt_duration(secs: float) -> str:
     return f"{m}m"
 
 
-def _event_duration(ev: dict, key: str = "duration_secs") -> float:
+def _event_duration(ev: dict) -> float:
     try:
-        return max(0.0, float(ev.get(key, 0) or 0))
+        return max(0.0, float(ev.get("duration_secs", 0) or 0))
     except (TypeError, ValueError):
         return 0.0
 
 
-def _event_ts(ev: dict) -> datetime:
-    ts = ev.get("_ts")
-    if isinstance(ts, datetime):
-        return ts
-    return datetime.min.replace(tzinfo=timezone.utc)
+def _day_start(local_dt: datetime) -> datetime:
+    start = local_dt.replace(hour=DAY_START_HOUR, minute=0, second=0, microsecond=0)
+    if local_dt.hour < DAY_START_HOUR:
+        start -= timedelta(days=1)
+    return start
 
 
-def _normalize_focus_events(events: list[dict]) -> tuple[list[dict], dict[str, float | int]]:
-    normalized: list[dict] = []
-    stats: dict[str, float | int] = {
-        "raw_secs": 0.0,
-        "counted_secs": 0.0,
-        "clamped_secs": 0.0,
-        "skipped_secs": 0.0,
-        "counted_events": 0,
-        "clamped_events": 0,
-        "skipped_events": 0,
-    }
-    idle_stream = False
-
-    for ev in sorted(events, key=_event_ts):
-        raw = _event_duration(ev)
-        reason = ev.get("reason") or ""
-        counted = raw
-        idle_state = "active"
-        clamped = 0.0
-        skipped = 0.0
-
-        if reason == "pane_switch" and raw < IDLE_THRESHOLD_SECS:
-            idle_stream = False
-        elif raw >= IDLE_THRESHOLD_SECS:
-            if idle_stream:
-                counted = 0.0
-                skipped = raw
-                idle_state = "skipped"
-            else:
-                counted = min(raw, float(IDLE_CLAMP_SECS))
-                clamped = max(0.0, raw - counted)
-                idle_state = "clamped"
-                idle_stream = True
-        elif idle_stream and reason != "pane_switch":
-            counted = 0.0
-            skipped = raw
-            idle_state = "skipped"
-
-        normalized_ev = dict(ev)
-        normalized_ev["_raw_duration_secs"] = raw
-        normalized_ev["_clamped_secs"] = clamped
-        normalized_ev["_skipped_secs"] = skipped
-        normalized_ev["_idle_state"] = idle_state
-        normalized_ev["duration_secs"] = counted
-        normalized.append(normalized_ev)
-
-        stats["raw_secs"] = float(stats["raw_secs"]) + raw
-        stats["counted_secs"] = float(stats["counted_secs"]) + counted
-        stats["clamped_secs"] = float(stats["clamped_secs"]) + clamped
-        stats["skipped_secs"] = float(stats["skipped_secs"]) + skipped
-        if counted > 0:
-            stats["counted_events"] = int(stats["counted_events"]) + 1
-        if clamped > 0:
-            stats["clamped_events"] = int(stats["clamped_events"]) + 1
-        if skipped > 0:
-            stats["skipped_events"] = int(stats["skipped_events"]) + 1
-
-    return normalized, stats
+def _logical_date(local_dt: datetime):
+    """Calendar date of the 4 AM-anchored day this timestamp belongs to."""
+    return (local_dt - timedelta(hours=DAY_START_HOUR)).date()
 
 
-def _timeline_fractions(
-    ts: datetime,
-    counted_secs: float,
-    raw_secs: float,
-    idle_state: str,
-    start_window: datetime,
-) -> tuple[float, float, float, float]:
-    raw_start = ts - timedelta(seconds=raw_secs)
-    raw_end = ts
-    if idle_state == "clamped":
-        counted_start = raw_start
-        counted_end = raw_start + timedelta(seconds=counted_secs)
-    else:
-        counted_start = ts - timedelta(seconds=counted_secs)
-        counted_end = ts
-
-    def frac(moment: datetime) -> float:
-        return max(0.0, min(1.0, (moment - start_window).total_seconds() / 86400.0))
-
-    return frac(raw_start), frac(raw_end), frac(counted_start), frac(counted_end)
-
-
-def _resolve_events_path() -> Path | None:
+def _resolve_events_path() -> "Path | None":
+    # Explicit override (testing / cross-channel demos): point at any events.jsonl.
+    override = os.environ.get("PLEXI_STATS_EVENTS", "")
+    if override:
+        p = Path(override).expanduser()
+        if p.exists():
+            return p
     sock = os.environ.get("PLEXI_SOCKET", "")
     if sock:
-        profile_dir = Path(sock).parent
-        p = profile_dir / "events.jsonl"
+        p = Path(sock).parent / "events.jsonl"
         if p.exists():
             return p
     candidates = sorted(Path.home().glob(".plexi*/events.jsonl"),
@@ -213,8 +134,7 @@ def _resolve_events_path() -> Path | None:
     return candidates[0] if candidates else None
 
 
-def _parse_events(path: Path, hours: int = 24) -> list[dict]:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+def _parse_focus_events(path: Path) -> "list[dict]":
     events = []
     try:
         with open(path, encoding="utf-8") as f:
@@ -228,497 +148,417 @@ def _parse_events(path: Path, hours: int = 24) -> list[dict]:
                     continue
                 if ev.get("kind") != "focus_changed":
                     continue
-                ts_str = ev.get("timestamp", "")
                 try:
-                    ts = datetime.fromisoformat(ts_str)
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
+                    ts = datetime.fromisoformat(ev.get("timestamp", ""))
                 except ValueError:
                     continue
-                if ts >= cutoff:
-                    ev["_ts"] = ts
-                    events.append(ev)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                ev["_ts"] = ts
+                events.append(ev)
     except OSError:
         pass
     return events
 
 
-class TreeNode:
-    __slots__ = ("path", "label", "self_duration", "total_duration", "visits",
-                 "children", "color_index")
-
-    def __init__(self, path: str, label: str):
-        self.path = path
-        self.label = label
-        self.self_duration = 0.0
-        self.total_duration = 0.0
-        self.visits = 0
-        self.children: list[TreeNode] = []
-        self.color_index = 0
-
-
-def _build_tree(events: list[dict]) -> TreeNode:
-    by_context: dict[str, tuple[str, float, int]] = {}
-    by_context_cwd: dict[tuple[str, str], tuple[str, float, int]] = {}
-
-    for ev in events:
-        context_path, context_label = _event_context_identity(ev)
-        cwd = _clean_text(ev.get("cwd"))
-        dur = ev.get("duration_secs", 0)
-        prev_context = by_context.get(context_path, (context_label, 0.0, 0))
-        by_context[context_path] = (
-            context_label,
-            prev_context[1],
-            prev_context[2] + 1,
-        )
-
-        if cwd:
-            leaf_key = (context_path, cwd)
-            prev_leaf = by_context_cwd.get(leaf_key, (_cwd_label(cwd), 0.0, 0))
-            by_context_cwd[leaf_key] = (
-                prev_leaf[0],
-                prev_leaf[1] + dur,
-                prev_leaf[2] + 1,
-            )
-        else:
-            by_context[context_path] = (
-                context_label,
-                prev_context[1] + dur,
-                prev_context[2] + 1,
-            )
-
-    root = TreeNode("contexts", "Contexts")
-    context_nodes: dict[str, TreeNode] = {}
-
-    for context_path, (context_label, dur, visits) in sorted(by_context.items()):
-        node = TreeNode(context_path, context_label)
-        node.self_duration = dur
-        node.visits = visits
-        root.children.append(node)
-        context_nodes[context_path] = node
-
-    for (context_path, cwd), (label, dur, visits) in sorted(by_context_cwd.items()):
-        parent = context_nodes.get(context_path)
-        if not parent:
-            continue
-        node = TreeNode(cwd, label)
-        node.self_duration = dur
-        node.visits = visits
-        parent.children.append(node)
-
-    def rollup(n: TreeNode) -> float:
-        child_total = sum(rollup(c) for c in n.children)
-        n.total_duration = n.self_duration + child_total
-        n.children.sort(key=lambda c: c.total_duration, reverse=True)
-        return n.total_duration
-
-    rollup(root)
-
-    for i, child in enumerate(root.children):
-        _assign_colors(child, i)
-
-    return root
-
-
-def _assign_colors(node: TreeNode, base_index: int) -> None:
-    node.color_index = base_index
-    for child in node.children:
-        _assign_colors(child, base_index)
-
-
-def _squarify(items: list[tuple[TreeNode, float]], rect: tuple[float, float, float, float]) -> list[tuple[TreeNode, float, float, float, float]]:
-    if not items:
-        return []
-    x, y, w, h = rect
-    if w <= 0 or h <= 0:
-        return []
-
-    total = sum(v for _, v in items)
-    if total <= 0:
-        return []
-
-    result: list[tuple[TreeNode, float, float, float, float]] = []
-
-    remaining = list(items)
-    rx, ry, rw, rh = x, y, w, h
-
-    while remaining:
-        rem_total = sum(v for _, v in remaining)
-        if rem_total <= 0:
-            break
-
-        short_side = min(rw, rh)
-        if short_side <= 0:
-            break
-
-        row: list[tuple[TreeNode, float]] = []
-        row_area = 0.0
-        best_ratio = float("inf")
-
-        for node, val in remaining:
-            test_row = row + [(node, val)]
-            test_area = row_area + val
-            area_frac = (test_area / rem_total) * rw * rh
-            long_side = area_frac / short_side if short_side > 0 else 0
-
-            worst = 0.0
-            for _, rv in test_row:
-                cell_frac = rv / test_area if test_area > 0 else 0
-                cell_long = long_side * cell_frac
-                cell_short = area_frac / long_side if long_side > 0 else 0
-                if cell_long > 0 and cell_short > 0:
-                    ratio = max(cell_long / cell_short, cell_short / cell_long)
-                    worst = max(worst, ratio)
-
-            if worst <= best_ratio:
-                row = test_row
-                row_area = test_area
-                best_ratio = worst
-            else:
-                break
-
-        row_frac = row_area / rem_total if rem_total > 0 else 0
-        if rw >= rh:
-            row_w = rw * row_frac
-            cy = ry
-            for node, val in row:
-                cell_frac = val / row_area if row_area > 0 else 0
-                cell_h = rh * cell_frac
-                result.append((node, rx, cy, row_w, cell_h))
-                cy += cell_h
-            rx += row_w
-            rw -= row_w
-        else:
-            row_h = rh * row_frac
-            cx = rx
-            for node, val in row:
-                cell_frac = val / row_area if row_area > 0 else 0
-                cell_w = rw * cell_frac
-                result.append((node, cx, ry, cell_w, row_h))
-                cx += cell_w
-            ry += row_h
-            rh -= row_h
-
-        remaining = remaining[len(row):]
-
-    return result
-
-
-class _StatsCanvas(Component):
-    """Canvas component that renders treemap, stats bar, and timeline strip."""
-
-    def __init__(self, app: "StatsApp") -> None:
-        self._app = app
-
-    def is_grow(self) -> bool:
-        return True
-
-    def measure(self, _avail_w: float) -> float:
+def _counted_duration(ev: dict, idle_stream: "list[bool]") -> float:
+    """Idle-aware dwell: long spans after the first are dropped as away-time."""
+    raw = _event_duration(ev)
+    reason = ev.get("reason") or ""
+    if reason == "pane_switch" and raw < IDLE_THRESHOLD_SECS:
+        idle_stream[0] = False
+        return raw
+    if raw >= IDLE_THRESHOLD_SECS:
+        if idle_stream[0]:
+            return 0.0
+        idle_stream[0] = True
+        return float(IDLE_CLAMP_SECS)
+    if idle_stream[0] and reason != "pane_switch":
         return 0.0
+    return raw
 
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        app = self._app
-        # Store canvas y-offset so on_click can translate global coords
-        app._canvas_y = y
 
-        if not app.root or not app.view_root:
-            ctx.text(x + w / 2 - 80, y + h / 2, "No events found",
-                     size=TEXT_BODY, color=ctx.theme.muted)
-            if app.events_path:
-                ctx.text(x + w / 2 - 120, y + h / 2 + 24,
-                         f"Path: {app.events_path}", size=TEXT_HINT, color=ctx.theme.muted)
-            else:
-                ctx.text(x + w / 2 - 120, y + h / 2 + 24,
-                         "No events.jsonl found", size=TEXT_HINT, color=ctx.theme.muted)
-            return
+# ── Metrics ──────────────────────────────────────────────────────────────────
 
-        vr = app.view_root
+class Metrics:
+    def __init__(self) -> None:
+        self.has_data = False
+        self.active_secs = 0.0       # focus time since today's 4 AM
+        self.lifetime_secs = 0.0
+        self.streak_days = 0
+        self.switches_today = 0
+        self.contexts_today = 0
+        self.active_days = 0
+        self.avg_daily_secs = 0.0
+        self.peak_hour_label = "—"
+        self.contexts: "list[dict]" = []
+        self.other_secs = 0.0
+        self.other_count = 0
+        self.wave: "list[tuple[int, str]]" = [(0, TEXT_SOFT)] * WAVE_BUCKETS
+        self.wave_peak = 1
+        self.now_frac = 0.0          # fraction of the clock day elapsed (now marker)
+        self.is_today = True
+        self.selected_date = None    # date of the day window being shown
+        self.day_offset = 0
 
-        # treemap region (above stats bar and timeline)
-        treemap_h = h - STATS_BAR_H - TIMELINE_H
-        if treemap_h < 10:
-            treemap_h = 10
+    @classmethod
+    def load(cls, events_path: "Path | None", day_offset: int = 0) -> "Metrics":
+        """Parse the log from disk, then compute. Use compute() for in-memory scrubs."""
+        events = _parse_focus_events(events_path) if events_path else []
+        events.sort(key=lambda e: e["_ts"])
+        return cls.compute(events, day_offset)
 
-        children = vr.children if vr.children else [vr]
-        items = [(c, c.total_duration) for c in children if c.total_duration > 0]
-        app.cells = _squarify(items, (x, y, w, treemap_h))
+    @classmethod
+    def compute(cls, events: "list[dict]", day_offset: int = 0) -> "Metrics":
+        """Recompute metrics for the selected day from already-parsed events.
 
-        for node, cx, cy, cw, ch in app.cells:
-            draw_x = max(x, cx + 1)
-            draw_y = max(y, cy + 1)
-            draw_r = min(x + w, cx + max(0, cw - 1))
-            draw_b = min(y + treemap_h, cy + max(0, ch - 1))
-            draw_w = max(0.0, draw_r - draw_x)
-            draw_h = max(0.0, draw_b - draw_y)
-            if draw_w <= 0 or draw_h <= 0:
-                continue
+        Parsing the (potentially large) log is the only expensive step, so the
+        app parses once and calls this on every day-scrub — file size stays a
+        startup cost, not a per-keypress one. `events` must be sorted by `_ts`.
+        """
+        m = cls()
+        m.day_offset = max(0, day_offset)
+        if not events:
+            return m
+        m.has_data = True
 
-            color = PALETTE[node.color_index % len(PALETTE)]
-            is_highlighted = app.highlight_path and node.path == app.highlight_path
-            fill = color if not is_highlighted else "#ffffff"
-            ctx.rect(draw_x, draw_y, draw_w, draw_h,
-                     fill=dim(fill, 180 if not is_highlighted else 255), radius=3.0)
-
-            if draw_w >= MIN_CELL_W and draw_h >= MIN_CELL_H:
-                parent_label = _shorten(os.path.dirname(node.path))
-                if parent_label and parent_label != _shorten(vr.path):
-                    ctx.text(draw_x + 5, draw_y + draw_h - 14 - TEXT_BODY - TEXT_HINT - 2,
-                             parent_label, size=TEXT_HINT, color=dim(ctx.theme.fg, 100))
-
-                ctx.text(draw_x + 5, draw_y + draw_h - 14 - TEXT_BODY,
-                         node.label, size=TEXT_BODY, color=ctx.theme.fg, bold=True)
-                ctx.text(draw_x + 5, draw_y + draw_h - 14,
-                         _fmt_duration(node.total_duration), size=TEXT_CAPTION,
-                         color=dim(ctx.theme.fg, 180))
-
-                if node.visits > 0:
-                    ctx.text(draw_x + draw_w - 40, draw_y + 5,
-                             f"{node.visits}x", size=TEXT_HINT, color=dim(ctx.theme.fg, 100))
-
-        # stats bar
-        stats_y = y + treemap_h
-        ctx.rect(x, stats_y, w, STATS_BAR_H, fill=ctx.theme.surface)
-        ctx.line(x, stats_y, x + w, stats_y, color=dim(ctx.theme.muted, 60), width=1.0)
-        ctx.line(x, stats_y + STATS_BAR_H, x + w, stats_y + STATS_BAR_H,
-                 color=dim(ctx.theme.muted, 60), width=1.0)
-
-        stats_text_y = stats_y + (STATS_BAR_H - TEXT_CAPTION) / 2
-        quarter = w / 4
-        compact = w < 620
-        active_label = f"{_fmt_duration(app.total_time)} {'act' if compact else 'active'}"
-        idle_label = f"{_fmt_duration(app.idle_skipped_time)} {'idle' if compact else 'idle skipped'}"
-        clamped_label = f"{_fmt_duration(app.idle_clamped_time)} {'clamp' if compact else 'clamped'}"
-        visits_label = (
-            f"{app.total_visits}v · {app.total_projects}p"
-            if compact
-            else f"{app.total_visits} visits · {app.total_projects} projects"
-        )
-        ctx.text(x + quarter * 0.5, stats_text_y,
-                 active_label,
-                 size=TEXT_CAPTION, color=ctx.theme.accent, bold=True, align="center_center")
-        ctx.text(x + quarter * 1.5, stats_text_y,
-                 idle_label,
-                 size=TEXT_CAPTION, color=ctx.theme.muted, bold=True, align="center_center")
-        ctx.text(x + quarter * 2.5, stats_text_y,
-                 clamped_label,
-                 size=TEXT_CAPTION, color=ctx.theme.warning, bold=True, align="center_center")
-        ctx.text(x + quarter * 3.5, stats_text_y,
-                 visits_label,
-                 size=TEXT_CAPTION, color=ctx.theme.success, bold=True, align="center_center")
-
-        # timeline strip
-        tl_y = stats_y + STATS_BAR_H
-        ctx.rect(x, tl_y, w, TIMELINE_H, fill=ctx.theme.bg_darkest)
-
-        bar_y = tl_y + 4
-        bar_h = TIMELINE_H - 20
-        idle_y = bar_y + bar_h * 0.58
-        idle_h = max(4.0, bar_h * 0.32)
-        for raw_start, raw_end, start_frac, end_frac, _, _, color_idx, state in app.timeline:
-            if state in {"clamped", "skipped"} and raw_end > raw_start:
-                bx = x + raw_start * w
-                bw = max(2.0, (raw_end - raw_start) * w)
-                fill = ctx.theme.warning if state == "clamped" else ctx.theme.muted
-                ctx.rect(bx, idle_y, bw, idle_h, fill=dim(fill, 90), radius=2.0)
-            if end_frac <= start_frac:
-                continue
-            bx = x + start_frac * w
-            bw = max(2.0, (end_frac - start_frac) * w)
-            color = PALETTE[color_idx % len(PALETTE)]
-            ctx.rect(bx, bar_y, bw, bar_h, fill=dim(color, 200), radius=2.0)
-
-        # hour markers (dynamic, aligned to rolling 24h window)
-        marker_y = tl_y + TIMELINE_H - 14
         now = datetime.now(timezone.utc)
-        start_time = now - timedelta(hours=24)
-        labels: list[tuple[float, str]] = []
-        for tick in range(7):
-            frac = tick / 6
-            t = start_time + timedelta(hours=24 * frac)
-            if tick == 6:
-                lbl = "now"
-            else:
-                hr = t.astimezone().hour
-                suffix = "a" if hr < 12 else "p"
-                h12 = hr % 12 or 12
-                lbl = f"{h12}{suffix}"
-            labels.append((frac, lbl))
-        for frac, lbl in labels:
-            mx = x + frac * w
-            ctx.text(mx, marker_y, lbl, size=TEXT_HINT,
-                     color=dim(ctx.theme.muted, 120), align="center_center")
+        now_local = now.astimezone()
+        # Window = the 4 AM-anchored day, shifted back by day_offset.
+        day_start = _day_start(now_local) - timedelta(days=m.day_offset)
+        day_end = day_start + timedelta(days=1)
+        m.is_today = m.day_offset == 0
+        m.selected_date = _logical_date(day_start + timedelta(hours=DAY_START_HOUR))
+        midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        m.now_frac = min(1.0, max(0.0, (now_local - midnight).total_seconds() / 86400.0))
+        bucket_secs = 86400.0 / WAVE_BUCKETS
 
-        app.highlight_path = None
+        idle = [False]
+        by_ctx: "dict[str, float]" = {}
+        active_dates: "set" = set()
+        hourly = [0.0] * 24
+        wave_count = [0] * WAVE_BUCKETS
+        wave_ctx: "list[dict[str, float]]" = [dict() for _ in range(WAVE_BUCKETS)]
+
+        for ev in events:
+            secs = _counted_duration(ev, idle)
+            m.lifetime_secs += secs
+            local = ev["_ts"].astimezone()
+            if secs > 0:
+                active_dates.add(_logical_date(local))
+            if local < day_start or local >= day_end:
+                continue
+            # Within the selected 4 AM-anchored window.
+            m.switches_today += 1
+            label = _context_label(ev)
+            offset = (local - day_start).total_seconds()
+            if 0 <= offset < 86400.0:
+                b = min(WAVE_BUCKETS - 1, int(offset / bucket_secs))
+                wave_count[b] += 1
+                wave_ctx[b][label] = wave_ctx[b].get(label, 0.0) + max(secs, 1.0)
+            if secs > 0:
+                m.active_secs += secs
+                hourly[local.hour] += secs
+                by_ctx[label] = by_ctx.get(label, 0.0) + secs
+
+        m.active_days = len(active_dates)
+        m.avg_daily_secs = m.lifetime_secs / max(1, m.active_days)
+        m.contexts_today = len(by_ctx)
+
+        # Rank contexts by today's focus and assign each a stable colour.
+        ranked = sorted(by_ctx.items(), key=lambda kv: kv[1], reverse=True)
+        ctx_color = {name: CONTEXT_PALETTE[i % len(CONTEXT_PALETTE)]
+                     for i, (name, _) in enumerate(ranked)}
+        m.contexts = [{"label": name, "secs": secs, "color": ctx_color[name]}
+                      for name, secs in ranked[:TOP_CONTEXTS]]
+        rest = ranked[TOP_CONTEXTS:]
+        m.other_count = len(rest)
+        m.other_secs = sum(secs for _, secs in rest)
+
+        # Waveform: amplitude = switch count, colour = dominant context that bucket.
+        m.wave_peak = max(wave_count) or 1
+        wave = []
+        for b in range(WAVE_BUCKETS):
+            if wave_ctx[b]:
+                dom = max(wave_ctx[b].items(), key=lambda kv: kv[1])[0]
+                color = ctx_color.get(dom, TEXT_SOFT)
+            else:
+                color = TEXT_SOFT
+            wave.append((wave_count[b], color))
+        m.wave = wave
+
+        # Streak: consecutive 4 AM-days ending today (or yesterday).
+        today = _logical_date(now_local)
+        d = today if today in active_dates else today - timedelta(days=1)
+        while d in active_dates:
+            m.streak_days += 1
+            d -= timedelta(days=1)
+
+        if any(hourly):
+            peak = max(range(24), key=lambda h: hourly[h])
+            ampm = "AM" if peak < 12 else "PM"
+            h12 = peak % 12 or 12
+            nxt = (peak + 1) % 12 or 12
+            m.peak_hour_label = f"{h12}–{nxt} {ampm}"
+        return m
+
+
+# ── Rendering ────────────────────────────────────────────────────────────────
+#
+# Contrast rule: text uses ctx.theme.fg (high contrast) or TEXT_SOFT (readable
+# subtext). theme.muted (#6c7086) is ~2.6:1 on bg and fails WCAG — never use it
+# for text. dim()/hues are for fills, tracks, and the waveform only.
+
+def _momentum(ctx, m: "Metrics") -> "tuple[str, str]":
+    """Today vs a typical active day. Returns (text, color)."""
+    if m.active_days <= 1 or m.avg_daily_secs <= 0:
+        return "building your baseline", TEXT_SOFT
+    pct = (m.active_secs / m.avg_daily_secs - 1.0) * 100.0
+    if pct >= 10:
+        return f"+{pct:.0f}% vs a typical day", ctx.theme.success
+    if pct <= -10:
+        return f"{pct:.0f}% vs a typical day", ctx.theme.warning
+    return "on pace with a typical day", TEXT_SOFT
+
+
+def _draw_dial(ctx, m: "Metrics", x, y, w, h) -> None:
+    """Hero: a circular activity clock for the selected day.
+
+    Angle = clock time (12 AM at top, clockwise). Radial amplitude = pane-switch
+    velocity in that slice. Colour = the context you were in. A bright needle
+    marks the current time (today only). Hub = the day's focus total; the inner
+    ring fills toward a typical day. Grows with its container up to DIAL_MAX_R.
+    """
+    accent = ctx.theme.accent
+    cap_h = 30.0                 # caption strip (momentum) under the circle
+    ch = h - cap_h
+    cx = x + w / 2
+    cy = y + ch / 2
+    outer = max(48.0, min(w / 2, ch / 2, DIAL_MAX_R) - 22.0)  # room for tick labels
+    amp = outer * 0.42
+    r0 = outer - amp
+    base = math.pi / 2  # -base = top → 12 AM at top
+    n = len(m.wave)
+    # Bucket i covers the day from DAY_START_HOUR; map it to its clock angle so
+    # midnight sits at the top regardless of the 4 AM data window.
+    bucket_secs = 86400.0 / n
+
+    def clock_ang(i: float) -> float:
+        clock_secs = (DAY_START_HOUR * 3600 + i * bucket_secs) % 86400.0
+        return -base + clock_secs / 86400.0 * math.tau
+
+    # Smooth the switch counts into a flowing amplitude (3-bucket moving average),
+    # compressed so frequent-but-small bursts stay visible next to big spikes.
+    counts = [c for c, _ in m.wave]
+    smooth = [(counts[(i - 1) % n] + counts[i] + counts[(i + 1) % n]) / 3.0
+              for i in range(n)]
+    peak = max(smooth) or 1.0
+
+    # Visible baseline band the waveform rises from (keeps the ring continuous).
+    sw = max(2.5, math.tau * r0 / n * 1.6)
+    ctx.arc_ring(cx, cy, r0, 0, math.tau, dim(accent, 70), stroke_width=max(3.0, sw))
+
+    # Waveform spokes — wide enough to touch, coloured by the dominant context.
+    for i in range(n):
+        a = smooth[i]
+        if a <= 0:
+            continue
+        color = m.wave[i][1]
+        ang = clock_ang(i + 0.5)
+        rr = r0 + amp * (min(1.0, a / peak) ** 0.6)
+        ctx.line(cx + math.cos(ang) * r0, cy + math.sin(ang) * r0,
+                 cx + math.cos(ang) * rr, cy + math.sin(ang) * rr,
+                 color=color, width=sw)
+
+    # Inner ring: progress toward a typical day's focus.
+    pr = r0 - 7.0
+    frac = min(1.0, m.active_secs / m.avg_daily_secs) if m.avg_daily_secs > 0 else 0.0
+    ctx.arc_ring(cx, cy, pr, 0, math.tau, dim(accent, 40), stroke_width=3.0)
+    if frac > 0:
+        ctx.arc_ring(cx, cy, pr, -base, -base + math.tau * frac, accent, stroke_width=3.0)
+
+    # "Now" needle — a bright clock hand at the current time (today only).
+    if m.is_today:
+        nang = -base + m.now_frac * math.tau
+        ctx.line(cx + math.cos(nang) * (pr - 2.0), cy + math.sin(nang) * (pr - 2.0),
+                 cx + math.cos(nang) * (outer + 4.0), cy + math.sin(nang) * (outer + 4.0),
+                 color=ctx.theme.fg, width=2.5)
+        ctx.circle(cx + math.cos(nang) * (outer + 4.0), cy + math.sin(nang) * (outer + 4.0),
+                   3.5, ctx.theme.fg)
+
+    # Quarter-day ticks (12 AM at top, clockwise).
+    lr = outer + 12.0
+    for tfrac, lbl in ((0.0, "12a"), (0.25, "6a"), (0.5, "12p"), (0.75, "6p")):
+        ang = -base + tfrac * math.tau
+        ctx.text(cx + lr * math.cos(ang), cy + lr * math.sin(ang), lbl,
+                 size=TEXT_HINT, color=TEXT_SOFT, align="center_center")
+
+    # Hub: the day's focus total — the headline the clock measures.
+    num_size = max(22.0, min(r0 * 0.52, 40.0))
+    ctx.text(cx, cy - num_size * 0.26, _fmt_secs(m.active_secs), size=num_size,
+             color=ctx.theme.fg, bold=True, align="center_center")
+    ctx.text(cx, cy + num_size * 0.62, "focused today" if m.is_today else "focused",
+             size=TEXT_HINT, color=TEXT_SOFT, align="center_center")
+
+    # Caption: this day vs a typical day.
+    ry = y + ch + 12.0
+    mom_text, mom_color = _momentum(ctx, m)
+    ctx.text(cx, ry, mom_text, size=TEXT_CAPTION, color=mom_color,
+             bold=True, align="center_center")
+
+
+def _draw_tile(ctx, x, y, w, h, value, label, color) -> None:
+    ctx.rect(x, y, w, h, ctx.theme.surface, radius=RADIUS_MD)
+    cxx = x + w / 2
+    ctx.text(cxx, y + h * 0.34, value, size=TEXT_HEADING, color=ctx.theme.fg,
+             bold=True, align="center_center")
+    uw = w * 0.34
+    ctx.rect(cxx - uw / 2, y + h * 0.56, uw, 2.0, color, radius=1.0)
+    ctx.text(cxx, y + h * 0.74, label.upper(), size=TEXT_HINT, color=TEXT_SOFT,
+             bold=True, align="center_center")
+
+
+def _draw_tiles(ctx, m: "Metrics", x, y, w, h) -> None:
+    gap = SPACE_SM
+    tw = (w - gap * 3) / 4
+    tiles = [
+        (f"{m.streak_days}d", "Streak", ctx.theme.warning),
+        (str(m.contexts_today), "Contexts", ctx.theme.success),
+        (str(m.switches_today), "Switches", ctx.theme.accent),
+        (m.peak_hour_label, "Peak Hour", ctx.theme.red),
+    ]
+    for i, (val, lbl, color) in enumerate(tiles):
+        _draw_tile(ctx, x + i * (tw + gap), y, tw, h, val, lbl, color)
+
+
+def _draw_contexts(ctx, m: "Metrics", x, y, w) -> None:
+    ctx.text(x, y, "TOP CONTEXTS", size=TEXT_HINT, color=TEXT_SOFT, bold=True)
+    name_w = w * 0.46          # generous room for context names
+    time_w = 56.0
+    bar_x = x + name_w
+    bar_w = w - name_w - time_w
+    bar_h = 13.0
+
+    # Always render TOP_CONTEXTS named rows + one "Other" row so the section
+    # height is constant — the layout never jumps as the day's mix changes.
+    rows = list(m.contexts)
+    if m.other_secs > 0 or m.other_count > 0:
+        rows.append({"label": f"Other ({m.other_count})", "secs": m.other_secs,
+                     "color": OTHER_COLOR, "other": True})
+    top = max((r["secs"] for r in rows), default=0.0)
+
+    for i in range(CONTEXT_ROWS):
+        ry = y + SPACE_LG + i * ROW_H
+        if i >= len(rows):
+            continue
+        c = rows[i]
+        is_other = c.get("other", False)
+        cyy = ry + bar_h / 2
+        rank_color = RANK_COLORS[i] if i < 3 and not is_other else TEXT_SOFT
+        marker = "·" if is_other else f"{i + 1}"
+        ctx.text(x, cyy, marker, size=TEXT_CAPTION, color=rank_color,
+                 bold=True, align="left_center")
+        ctx.text(x + SPACE_LG, cyy, c["label"], size=TEXT_CAPTION,
+                 color=TEXT_SOFT if is_other else ctx.theme.fg, bold=True,
+                 align="left_center", max_width=name_w - SPACE_LG - SPACE_SM)
+        ctx.rect(bar_x, ry, bar_w, bar_h, ctx.theme.surface, radius=bar_h / 2)
+        frac = c["secs"] / top if top else 0.0
+        if frac > 0:
+            fw = max(bar_h, bar_w * frac)
+            glow = (not is_other) and i < 3
+            ctx.rect(bar_x, ry, fw, bar_h, "#00000000",
+                     gradient={"from": dim(c["color"], 160), "to": c["color"], "dir": "h"},
+                     glow_color=c["color"] if glow else None,
+                     glow_radius=5.0 if glow else 0.0)
+        ctx.text(x + w, cyy, _fmt_secs(c["secs"]),
+                 size=TEXT_CAPTION, color=TEXT_SOFT, align="right_center")
 
 
 class StatsApp(App):
 
+    def _read_events(self) -> None:
+        """Parse the log from disk once; day-scrubs recompute from this cache."""
+        self._events = _parse_focus_events(self.events_path) if self.events_path else []
+        self._events.sort(key=lambda e: e["_ts"])
+
     async def on_init(self) -> None:
-        self.root: TreeNode | None = None
-        self.view_root: TreeNode | None = None
-        self.view_stack: list[TreeNode] = []
-        self.cells: list[tuple[TreeNode, float, float, float, float]] = []
-        self.timeline: list[tuple[float, float, float, float, str, str, int, str]] = []
-        self.total_time = 0.0
-        self.raw_time = 0.0
-        self.idle_skipped_time = 0.0
-        self.idle_clamped_time = 0.0
-        self.total_visits = 0
-        self.total_projects = 0
-        self.events_path: Path | None = None
-        self.highlight_path: str | None = None
-        self._canvas_y: float = 0.0
-        self._canvas = _StatsCanvas(self)
-        self._load()
-        self.emit.info("stats: initialized")
-
-    def _load(self) -> None:
         self.events_path = _resolve_events_path()
-        if not self.events_path:
-            self.emit.warn("stats: no events.jsonl found")
-            self.root = None
-            self.view_root = None
-            self.view_stack = []
-            self.timeline = []
-            self.total_time = 0.0
-            self.raw_time = 0.0
-            self.idle_skipped_time = 0.0
-            self.idle_clamped_time = 0.0
-            self.total_visits = 0
-            self.total_projects = 0
-            return
-
-        events = _parse_events(self.events_path)
-        self.emit.info(f"stats: loaded {len(events)} focus events from {self.events_path}")
-        normalized_events, idle_stats = _normalize_focus_events(events)
-        counted_events = [ev for ev in normalized_events if _event_duration(ev) > 0]
+        self.day_offset = 0
+        self._read_events()
+        self.m = Metrics.compute(self._events, self.day_offset)
         self.emit.info(
-            "stats: normalized focus events "
-            f"raw={len(events)} counted={idle_stats['counted_events']} "
-            f"clamped={idle_stats['clamped_events']} skipped={idle_stats['skipped_events']} "
-            f"raw_secs={idle_stats['raw_secs']:.0f} "
-            f"counted_secs={idle_stats['counted_secs']:.0f} "
-            f"clamped_secs={idle_stats['clamped_secs']:.0f} "
-            f"skipped_secs={idle_stats['skipped_secs']:.0f}"
-        )
+            f"stats: loaded data={self.m.has_data} "
+            f"active_today={int(self.m.active_secs)}s switches={self.m.switches_today} "
+            f"contexts={self.m.contexts_today} lifetime={int(self.m.lifetime_secs)}s")
+        if self.m.has_data:
+            self.emit.status_summary(f"{_fmt_secs(self.m.active_secs)} active")
 
-        self.root = _build_tree(counted_events)
-        self.view_root = self.root
-        self.view_stack = []
+    def _draw(self, ctx, x, y, w, h) -> None:
+        ctx.rect(x, y, w, h, ctx.theme.bg)
+        m = self.m
+        if not m.has_data:
+            ctx.text(x + w / 2, y + h / 2, "No focus events yet",
+                     size=TEXT_HEADING, color=TEXT_SOFT, align="center_center")
+            return
+        pad = SPACE_LG
+        inner_w = w - 2 * pad
+        contexts_h = SPACE_LG + CONTEXT_ROWS * ROW_H  # fixed → layout never jumps
+        # Dial is the hero; it absorbs leftover vertical space (and is capped
+        # inside _draw_dial so it never overruns its slot).
+        bottom = y + h - SPACE_LG
+        cur = y + SPACE_SM
+        dial_h = max(DIAL_MIN_H, bottom - cur - TILES_H - contexts_h - 2 * SPACE_LG)
+        _draw_dial(ctx, m, x + pad, cur, inner_w, dial_h)
+        cur += dial_h + SPACE_LG
+        _draw_tiles(ctx, m, x + pad, cur, inner_w, TILES_H)
+        cur += TILES_H + SPACE_LG
+        _draw_contexts(ctx, m, x + pad, cur, inner_w)
 
-        self.total_time = float(idle_stats["counted_secs"])
-        self.raw_time = float(idle_stats["raw_secs"])
-        self.idle_clamped_time = float(idle_stats["clamped_secs"])
-        self.idle_skipped_time = float(idle_stats["skipped_secs"])
-        self.total_visits = int(idle_stats["counted_events"])
-        self.total_projects = len({_event_context_identity(ev)[0] for ev in counted_events})
-
-        now = datetime.now(timezone.utc)
-        start_window = now - timedelta(hours=24)
-        self.timeline = []
-        context_colors = {}
-        if self.root:
-            context_colors = {child.path: i for i, child in enumerate(self.root.children)}
-        for ev in normalized_events:
-            ts = ev["_ts"]
-            dur = _event_duration(ev)
-            raw_dur = _event_duration(ev, "_raw_duration_secs")
-            cwd = _clean_text(ev.get("cwd")) or ""
-            context_path, _ = _event_context_identity(ev)
-            idle_state = str(ev.get("_idle_state") or "active")
-            raw_start_frac, raw_end_frac, start_frac, end_frac = _timeline_fractions(
-                ts,
-                dur,
-                raw_dur,
-                idle_state,
-                start_window,
-            )
-            color_idx = context_colors.get(context_path, 0)
-            self.timeline.append((
-                raw_start_frac,
-                raw_end_frac,
-                start_frac,
-                end_frac,
-                context_path,
-                cwd,
-                color_idx,
-                idle_state,
-            ))
-
-        self.emit.status_summary(f"{_fmt_duration(self.total_time)} active")
+    def _subtitle(self) -> str:
+        m = self.m
+        if not m.has_data or m.selected_date is None:
+            return "no data"
+        d = m.selected_date
+        label = f"{d:%A, %B} {d.day}"
+        if m.day_offset == 1:
+            return f"{label} · yesterday"
+        if m.day_offset > 1:
+            return f"{label} · {m.day_offset} days ago"
+        return label
 
     def on_render(self, ctx) -> None:
-        subtitle = (
-            f"{_fmt_duration(self.total_time)} active · "
-            f"{_fmt_duration(self.idle_skipped_time)} idle skipped · "
-            f"{self.total_visits} visits"
-        )
         ctx.render(Column(
             [
-                AppBar(title="Stats", subtitle=subtitle),
-                self._canvas,
-                FooterKeys([("r", "refresh"), ("esc", "back"), ("click", "drill down")]),
+                AppBar(title="Stats", subtitle=self._subtitle()),
+                Canvas(draw=self._draw, grow=True),
+                FooterKeys([("←/→", "day"), ("t", "today"),
+                            ("r", "refresh"), ("esc", "close")]),
             ],
-            padding=0,
-            gap=0,
+            padding=0, gap=0,
         ))
 
-    def on_escape(self):
-        if self.view_stack:
-            self.view_root = self.view_stack.pop()
-            self.emit.info(f"stats: navigated up to {self.view_root.path}")
-            self.emit.schedule_render(0)
-            return True
-        return False
+    def _recompute(self) -> None:
+        """In-memory: pick a different day from the cached events (no disk read)."""
+        self.m = Metrics.compute(self._events, self.day_offset)
+        self.emit.info(f"stats: day_offset={self.day_offset}")
+        self.emit.schedule_render(0)
 
     def on_key(self, key: str, _mods: dict) -> None:
-        if key == "r":
-            self._load()
-            self.emit.info("stats: refreshed")
-            self.emit.schedule_render(0)
-        elif key == "backspace":
-            if self.view_stack:
-                self.view_root = self.view_stack.pop()
-                self.emit.info(f"stats: navigated up to {self.view_root.path}")
-                self.emit.schedule_render(0)
-
-    def on_click(self, x: float, y: float, _button: str) -> None:
-        w = self.w
-        # Translate global y to canvas-local y
-        local_y = y - self._canvas_y
-
-        # Determine timeline bounds in canvas-local space
-        canvas_h = self.h - self._canvas_y
-        # canvas renders: treemap then stats bar then timeline at the bottom
-        tl_local_y = canvas_h - TIMELINE_H
-
-        if local_y >= tl_local_y:
-            bar_local_y = tl_local_y + 4
-            bar_h = TIMELINE_H - 20
-            if bar_local_y <= local_y <= bar_local_y + bar_h:
-                frac = x / w if w > 0 else 0
-                for _, _, start_frac, end_frac, context_path, cwd, _, state in self.timeline:
-                    if state == "skipped":
-                        continue
-                    if start_frac <= frac <= end_frac:
-                        if self.view_root and self.view_root.path == context_path and cwd:
-                            self.highlight_path = cwd
-                        else:
-                            self.highlight_path = context_path
-                        self.emit.info(f"stats: highlighted {self.highlight_path}")
-                        self.emit.schedule_render(0)
-                        break
-            return
-
-        # Treemap cells are stored with global coordinates from canvas render
-        for node, cx, cy, cw, ch in self.cells:
-            if cx <= x <= cx + cw and cy <= y <= cy + ch:
-                if node.children and self.view_root is not None:
-                    self.view_stack.append(self.view_root)
-                    self.view_root = node
-                    self.emit.info(f"stats: drilled into {node.path}")
-                    self.emit.schedule_render(0)
-                break
+        if key == "left":
+            self.day_offset += 1            # older
+            self._recompute()
+        elif key == "right":
+            if self.day_offset > 0:
+                self.day_offset -= 1        # newer
+                self._recompute()
+        elif key == "t":
+            if self.day_offset != 0:
+                self.day_offset = 0
+                self._recompute()
+        elif key == "r":
+            self._read_events()             # re-read disk for new events
+            self._recompute()
+            self.emit.info("stats: refreshed from disk")
 
 
 if __name__ == "__main__":

@@ -52,7 +52,9 @@ app open [TYPE_ID]       Open an installed app. Flags: -d, -l, -u, -r, --tab, --
 app open --mcp CMD...    Wrap a stdio MCP server in a Plexi pane.
 app open --cli BINARY    Wrap a CLI tool with a Plexi UI.
 app init NAME            Scaffold a new app. --lang python (default), --global, --no-open,
-                         --from PANE_ID.
+                         --from PANE_ID. Before building a canvas/on_render app, read
+                         docs/sdk-v2.md for the drawing API (rect stroke/glow/gradient,
+                         circle glow, arc_ring, theme tokens).
 app install [SPEC]       Install from path, github:owner/repo, or --pack core.
                          No args = install from .plexi/apps.toml. --version SEMVER to pin.
 app uninstall ID         Remove an installed app.

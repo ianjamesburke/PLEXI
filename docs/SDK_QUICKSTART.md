@@ -64,7 +64,7 @@ class CounterApp(App):
 CounterApp().run()
 ```
 
-Use `on_render(ctx)` only for games, animations, realtime visualizations, or other pixel-control apps. Never override both `view()` and `on_render(ctx)`.
+Use `on_render(ctx)` only for games, animations, realtime visualizations, or other pixel-control apps. Never override both `view()` and `on_render(ctx)`. For the full canvas drawing API (rect stroke/glow/gradient, circle glow, arc_ring, theme tokens), see [`docs/sdk-v2.md`](sdk-v2.md#canvas-drawing-reference-games-animation-data-viz).
 
 ## 3. Manifest
 

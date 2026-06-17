@@ -60,6 +60,48 @@ impl Default for TextAlign {
     }
 }
 
+/// Direction for a linear gradient fill.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub enum GradientDir {
+    #[serde(rename = "h")]
+    Horizontal,
+    #[serde(rename = "v")]
+    Vertical,
+}
+
+impl Default for GradientDir {
+    fn default() -> Self {
+        Self::Horizontal
+    }
+}
+
+/// Horizontal alignment for a `Shortcuts` row within its `max_width`.
+/// Defaults to `Center` so app footers read as centered without extra work.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub enum ShortcutsAlign {
+    #[serde(rename = "left")]
+    Left,
+    #[serde(rename = "center")]
+    Center,
+}
+
+impl Default for ShortcutsAlign {
+    fn default() -> Self {
+        Self::Center
+    }
+}
+
+/// Linear gradient fill descriptor for `Rect`. Replaces the solid fill when present.
+///
+/// Corner radius is not applied to the mesh — the gradient rect has sharp corners.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct Gradient {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub dir: GradientDir,
+}
+
 /// Render primitives — go to `pending_frame` → drawn to screen.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -82,6 +124,12 @@ pub enum RenderCommand {
     PopClip,
 
     /// Fill a rectangle.
+    ///
+    /// Optional styling (all default to "no effect"):
+    /// - `stroke` / `stroke_width`: outline with the given hex color and pixel width.
+    /// - `glow_color` / `glow_radius`: soft halo painted behind the fill.
+    /// - `gradient`: linear fill (`from`/`to` hex, `dir` "h" or "v") that replaces the solid fill.
+    ///   Corner radius is not applied to the gradient mesh (it is always sharp-cornered).
     Rect {
         x: f32,
         y: f32,
@@ -90,6 +138,16 @@ pub enum RenderCommand {
         fill: String,
         #[serde(default)]
         radius: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stroke: Option<String>,
+        #[serde(default = "default_stroke_width")]
+        stroke_width: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        glow_color: Option<String>,
+        #[serde(default)]
+        glow_radius: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gradient: Option<Gradient>,
     },
     /// Draw text at a position.
     ///
@@ -141,11 +199,22 @@ pub enum RenderCommand {
         width: f32,
     },
     /// Draw a filled circle. Alpha is supported via 8-digit hex fill (#rrggbbaa).
+    ///
+    /// Optional styling: `stroke`/`stroke_width` outline the circle; `glow_color`/`glow_radius`
+    /// paint a soft halo behind the fill using concentric rings with linear alpha falloff.
     Circle {
         cx: f32,
         cy: f32,
         r: f32,
         fill: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stroke: Option<String>,
+        #[serde(default = "default_stroke_width")]
+        stroke_width: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        glow_color: Option<String>,
+        #[serde(default)]
+        glow_radius: f32,
     },
 
     /// Draw a filled arc / pie slice.
@@ -158,6 +227,22 @@ pub enum RenderCommand {
         start_angle: f32,
         end_angle: f32,
         fill: String,
+    },
+
+    /// Draw a stroked arc ring (hollow donut arc). Distinct from `Arc` (filled pie).
+    ///
+    /// `start_angle` / `end_angle` in radians, clockwise from east — same convention as `Arc`.
+    /// `color` is the stroke hex color (supports 8-digit `#rrggbbaa` alpha).
+    /// `stroke_width` defaults to 2.0 pixels.
+    ArcRing {
+        cx: f32,
+        cy: f32,
+        r: f32,
+        start_angle: f32,
+        end_angle: f32,
+        color: String,
+        #[serde(default = "default_arc_ring_width")]
+        stroke_width: f32,
     },
 
     /// High-level scrollable list — host handles layout and scrolling.
@@ -277,6 +362,8 @@ pub enum RenderCommand {
         max_width: f32,
         pairs: Vec<ShortcutPair>,
         font_size: f32,
+        #[serde(default)]
+        align: ShortcutsAlign,
     },
 
     /// Multiple text segments rendered horizontally with host-measured layout.
@@ -1785,6 +1872,10 @@ fn is_false(b: &bool) -> bool {
 
 fn default_stroke_width() -> f32 {
     1.0
+}
+
+fn default_arc_ring_width() -> f32 {
+    2.0
 }
 
 fn default_http_method() -> String {
