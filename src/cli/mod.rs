@@ -327,7 +327,7 @@ pub use context_cli::{
     context_push_cli, context_set_root_cli, context_zoom_cli, context_zoom_out_cli,
 };
 pub use demo::demo_cli;
-pub use events::{events_list_cli, events_subscribe_cli};
+pub use events::{events_list_cli, events_mcp_config_cli, events_subscribe_cli};
 pub use doctor::doctor_cli;
 pub use install::{
     install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,

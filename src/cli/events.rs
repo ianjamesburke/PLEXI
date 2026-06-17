@@ -120,6 +120,42 @@ pub fn events_list_cli(json: bool) -> i32 {
     stream_control_line(req)
 }
 
+/// `plexi events mcp-config` — print the host MCP server config block.
+pub fn events_mcp_config_cli() -> i32 {
+    let port = std::env::var("PLEXI_HOST_MCP_PORT").ok();
+    let token = std::env::var("PLEXI_HOST_MCP_TOKEN").ok();
+    let (port, token) = match (port, token) {
+        (Some(p), Some(t)) if !p.is_empty() && !t.is_empty() => (p, t),
+        _ => {
+            eprintln!(
+                "error: PLEXI_HOST_MCP_PORT / PLEXI_HOST_MCP_TOKEN not set — run this inside a \
+                 Plexi terminal pane on a build with the host event MCP server"
+            );
+            return 1;
+        }
+    };
+    let config = serde_json::json!({
+        "mcpServers": {
+            "plexi-events": {
+                "type": "http",
+                "url": format!("http://127.0.0.1:{port}/mcp"),
+                "headers": { "Authorization": format!("Bearer {token}") }
+            }
+        }
+    });
+    match serde_json::to_string_pretty(&config) {
+        Ok(s) => {
+            println!("{s}");
+            log::info!("events: printed host MCP config for port {port}");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: could not serialize MCP config: {e}");
+            1
+        }
+    }
+}
+
 /// Map the CLI `--payload` value to the wire `PayloadMode` (snake_case serde).
 fn payload_mode_json(s: &str) -> &'static str {
     match s {

@@ -121,6 +121,10 @@ pub struct HostSubscribeRequest {
     /// Pane id stamped by the host PTY env (`PLEXI_PANE_ID`), forwarded by the
     /// transport. Host-trusted: the CLI cannot pass a subscriber identity flag.
     pub from_pane_id: Option<u64>,
+    /// Transport-supplied subscriber id, used instead of the pane-derived one.
+    /// Set only by trusted host transport code (e.g. the host MCP server uses
+    /// `mcp:host`), never sourced from an untrusted client argument.
+    pub subscriber_override: Option<String>,
     pub reply: SyncSender<HostSubscribeReply>,
 }
 
@@ -225,7 +229,10 @@ impl HostSubscriptionService {
     /// broker check, and record the subscription. The single host entry point
     /// both transports' UI-thread handlers call.
     pub fn handle_subscribe_request(&self, req: &HostSubscribeRequest) -> HostSubscribeReply {
-        let (subscriber_type, subscriber_id) = Self::resolve_cli_subscriber(req.from_pane_id);
+        let (subscriber_type, subscriber_id) = match &req.subscriber_override {
+            Some(id) => (ActorType::Agent, id.clone()),
+            None => Self::resolve_cli_subscriber(req.from_pane_id),
+        };
         // Reject undeclared streams before involving the broker so the client
         // gets a precise error instead of a generic permission denial.
         let undeclared: Vec<&String> = req

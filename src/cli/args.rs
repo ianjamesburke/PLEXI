@@ -297,6 +297,13 @@ pub enum EventsCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Print the host event MCP server config for an MCP-aware agent.
+    ///
+    /// Emits a `mcpServers` JSON block pointing at this instance's host MCP
+    /// server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a
+    /// Claude Code or Codex agent in this pane can subscribe to app events
+    /// natively over MCP.
+    McpConfig,
 }
 
 #[derive(Subcommand)]

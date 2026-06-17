@@ -16,6 +16,7 @@ mod config;
 mod features;
 mod file_browser;
 mod host;
+mod mcp_http;
 mod media;
 mod notes;
 mod overlays;
@@ -897,6 +898,9 @@ fn main() -> eframe::Result {
                         )),
                         EventsCmd::List { json } => {
                             std::process::exit(cli::events_list_cli(json))
+                        }
+                        EventsCmd::McpConfig => {
+                            std::process::exit(cli::events_mcp_config_cli())
                         }
                     },
                     Commands::CompleteOpen { prefix } => {

@@ -3,6 +3,7 @@ pub mod app_trait;
 mod canvas_bindings;
 mod dispatch;
 mod focus;
+pub mod host_mcp;
 pub mod host_version;
 mod lifecycle;
 pub mod marketplace;
@@ -558,6 +559,7 @@ fn handle_events_subscribe(
         trigger_mode,
         resource_id,
         from_pane_id,
+        subscriber_override: None,
         reply: reply_tx,
     };
     if subscribe_tx.send(req).is_err() {
@@ -823,13 +825,20 @@ impl PlexiApp {
         let (event_subscribe_tx, event_subscribe_rx) = std::sync::mpsc::channel::<
             crate::host::event_subscriptions::HostSubscribeRequest,
         >();
-        spawn_socket_listener(pane_ipc_tx, event_subscribe_tx, cc.egui_ctx.clone());
+        spawn_socket_listener(
+            pane_ipc_tx,
+            event_subscribe_tx.clone(),
+            cc.egui_ctx.clone(),
+        );
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
             crate::config::active_workspace_root()
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
             crate::host::app_timeline::global(),
         );
+        if let Err(e) = host_mcp::start_host_mcp_server(event_subscribe_tx, cc.egui_ctx.clone()) {
+            log::warn!("host_mcp: failed to start event MCP server: {e}");
+        }
 
         // One-time migration: remove the legacy file-queue directory if it
         // still exists from a previous install. Notify commands now travel
@@ -1704,6 +1713,13 @@ impl PlexiApp {
             .to_string_lossy()
             .into_owned();
         env.insert("PLEXI_SOCKET".into(), socket);
+        // Host-level event MCP server discovery (stint 0214). Lets an MCP-aware
+        // agent in this pane configure the Plexi host MCP server without a
+        // wrapper subprocess.
+        if let Some((port, token)) = host_mcp::discovery() {
+            env.insert("PLEXI_HOST_MCP_PORT".into(), port.to_string());
+            env.insert("PLEXI_HOST_MCP_TOKEN".into(), token.clone());
+        }
         env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
         env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
         env.insert(
