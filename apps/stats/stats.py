@@ -17,7 +17,7 @@ from pathlib import Path
 from plexi_sdk import App, dim
 from plexi_sdk.ui import (
     AppBar, Canvas, Column, FooterKeys,
-    RADIUS_SM, RADIUS_MD,
+    RADIUS_MD,
     SPACE_SM, SPACE_MD, SPACE_LG, SPACE_XL,
     TEXT_HINT, TEXT_CAPTION, TEXT_HEADING, TEXT_TITLE,
 )
@@ -26,13 +26,27 @@ HOME = str(Path.home())
 IDLE_THRESHOLD_SECS = 15 * 60
 IDLE_CLAMP_SECS = 60
 RANK_COLORS = ["#f9e2af", "#bac2de", "#fab387"]  # 1st / 2nd / 3rd
-QUEST_PALETTE = ["#89b4fa", "#a6e3a1", "#f9e2af", "#cba6f7", "#fab387", "#94e2d5"]
+PROJECT_PALETTE = ["#89b4fa", "#a6e3a1", "#f9e2af", "#cba6f7", "#fab387", "#94e2d5"]
+
+# Earned rank titles by level threshold (light RPG flavor).
+RANK_TITLES = [
+    (1, "Novice"), (5, "Apprentice"), (10, "Adept"),
+    (20, "Expert"), (35, "Master"), (55, "Grandmaster"),
+]
 
 # Section heights (logical px).
-HERO_H = 92.0
+HERO_H = 96.0
 TILES_H = 86.0
 ROW_H = 26.0
-STRIP_H = 70.0
+CLOCK_MIN_H = 130.0
+
+
+def _rank_title(level: int) -> str:
+    title = RANK_TITLES[0][1]
+    for threshold, name in RANK_TITLES:
+        if level >= threshold:
+            title = name
+    return title
 
 
 # ── Data layer ───────────────────────────────────────────────────────────────
@@ -176,6 +190,8 @@ class Metrics:
         self.peak_hour_label = "—"
         self.projects: "list[dict]" = []
         self.hourly = [0.0] * 24
+        self.active_days = 0
+        self.avg_daily_secs = 0.0
 
     @classmethod
     def load(cls, events_path: "Path | None") -> "Metrics":
@@ -209,11 +225,12 @@ class Metrics:
                 m.session_count += 1
                 m.hourly[local.hour] += secs
                 _, label = _project_identity(ev)
-                p = by_project.setdefault(label, {"label": label, "secs": 0.0, "visits": 0})
+                p = by_project.setdefault(label, {"label": label, "secs": 0.0})
                 p["secs"] += secs
-                p["visits"] += 1
 
         m.level, m.xp_into, m.xp_need = _level_for(m.lifetime_secs)
+        m.active_days = len(active_dates)
+        m.avg_daily_secs = m.lifetime_secs / max(1, m.active_days)
 
         # streak: consecutive local dates ending today (or yesterday).
         today = now.astimezone().date()
@@ -224,7 +241,7 @@ class Metrics:
 
         ranked = sorted(by_project.values(), key=lambda p: p["secs"], reverse=True)[:6]
         for i, p in enumerate(ranked):
-            p["color"] = QUEST_PALETTE[i % len(QUEST_PALETTE)]
+            p["color"] = PROJECT_PALETTE[i % len(PROJECT_PALETTE)]
         m.projects = ranked
 
         if any(m.hourly):
@@ -238,44 +255,44 @@ class Metrics:
 
 # ── Rendering ────────────────────────────────────────────────────────────────
 
-def _xp_bar(ctx, x, y, w, h, frac, color) -> None:
-    ctx.rect(x, y, w, h, dim(color, 30), radius=h / 2)
-    if frac <= 0:
-        return
-    fill_w = max(h, w * min(1.0, frac))
-    ctx.rect(x, y, fill_w, h, "#00000000",
-             gradient={"from": dim(color, 150), "to": color, "dir": "h"},
-             glow_color=color, glow_radius=7.0)
+def _momentum(ctx, m: "Metrics") -> "tuple[str, str]":
+    """Today vs a typical active day. Returns (text, color)."""
+    if m.active_days <= 1 or m.avg_daily_secs <= 0:
+        return "building your baseline", ctx.theme.muted
+    pct = (m.active_secs / m.avg_daily_secs - 1.0) * 100.0
+    if pct >= 10:
+        return f"+{pct:.0f}% vs a typical day", ctx.theme.success
+    if pct <= -10:
+        return f"{pct:.0f}% vs a typical day", ctx.theme.warning
+    return "on pace with a typical day", ctx.theme.muted
 
 
-def _draw_hero(ctx, m: "Metrics", x, y, w, h) -> None:
+def _draw_hero(ctx, m: "Metrics", x, y, h) -> None:
+    """Character card: rank medallion + earned title + today's momentum."""
     frac = m.xp_into / max(1.0, m.xp_need)
     accent = ctx.theme.accent
-    r = min(h * 0.40, 36.0)
+    r = min(h * 0.42, 38.0)
     cx = x + SPACE_LG + r
     cy = y + h / 2
 
-    # Level badge: glowing disc + XP ring.
-    ctx.circle(cx, cy, r - 4, dim(accent, 40), glow_color=accent, glow_radius=16.0)
-    ctx.arc_ring(cx, cy, r, 0, math.tau, dim(accent, 50), stroke_width=5.0)
+    # Rank medallion: crisp disc + progress ring (no glow — keep the number legible).
+    ctx.circle(cx, cy, r - 5, dim(accent, 26))
+    ctx.arc_ring(cx, cy, r, 0, math.tau, dim(accent, 45), stroke_width=6.0)
     if frac > 0:
         ctx.arc_ring(cx, cy, r, -math.pi / 2, -math.pi / 2 + math.tau * frac,
-                     accent, stroke_width=5.0)
+                     accent, stroke_width=6.0)
     ctx.text(cx, cy, str(m.level), size=TEXT_TITLE, color=ctx.theme.fg,
              bold=True, align="center_center")
 
-    tx = cx + r + SPACE_LG
-    bar_w = x + w - tx - SPACE_XL
-    ctx.text(tx, y + SPACE_SM, f"LEVEL {m.level}",
+    tx = cx + r + SPACE_XL
+    ctx.text(tx, y + SPACE_SM, _rank_title(m.level),
              size=TEXT_HEADING, color=ctx.theme.fg, bold=True)
-    bar_y = y + h * 0.46
-    _xp_bar(ctx, tx, bar_y, bar_w, 12.0, frac, accent)
-    ctx.text(tx, bar_y + 18.0,
-             f"{int(m.xp_into // 60)} / {int(m.xp_need // 60)} min focused",
-             size=TEXT_HINT, color=ctx.theme.muted)
+    mom_text, mom_color = _momentum(ctx, m)
+    ctx.text(tx, y + h * 0.45, mom_text, size=TEXT_CAPTION, color=mom_color, bold=True)
     mins_left = max(0, int((m.xp_need - m.xp_into) // 60))
-    ctx.text(tx + bar_w, bar_y + 18.0, f"{mins_left}m to next level",
-             size=TEXT_HINT, color=accent, align="right_top")
+    ctx.text(tx, y + h * 0.72,
+             f"{_fmt_secs(m.lifetime_secs)} all-time  ·  Level {m.level + 1} in {mins_left}m",
+             size=TEXT_HINT, color=ctx.theme.muted)
 
 
 def _draw_tile(ctx, x, y, w, h, value, label, sub, color) -> None:
@@ -328,37 +345,55 @@ def _draw_projects(ctx, m: "Metrics", x, y, w) -> None:
             ctx.rect(bar_x, ry, fw, bar_h, "#00000000",
                      gradient={"from": dim(p["color"], 150), "to": p["color"], "dir": "h"},
                      glow_color=p["color"] if i < 3 else None,
-                     glow_radius=6.0 if i < 3 else 0.0)
-        ctx.text(bar_x + bar_w + SPACE_SM, cy, _fmt_secs(p["secs"]),
-                 size=TEXT_CAPTION, color=ctx.theme.muted, align="left_center")
-        ctx.text(x + w, cy, f"{p['visits']}v", size=TEXT_HINT,
-                 color=dim(ctx.theme.muted, 150), align="right_center")
+                     glow_radius=5.0 if i < 3 else 0.0)
+        ctx.text(x + w, cy, _fmt_secs(p["secs"]),
+                 size=TEXT_CAPTION, color=ctx.theme.muted, align="right_center")
 
 
-def _draw_activity(ctx, m: "Metrics", x, y, w, h) -> None:
-    ctx.text(x, y, "ACTIVITY (24H)", size=TEXT_HINT, color=ctx.theme.muted, bold=True)
-    strip_y = y + SPACE_LG
-    strip_h = h - SPACE_LG - 16.0
-    ctx.rect(x, strip_y, w, strip_h, ctx.theme.bg_darkest, radius=RADIUS_SM)
-    cell_w = w / 24.0
+def _draw_clock(ctx, m: "Metrics", x, y, w, h) -> None:
+    """24-hour radial dial: midnight at top, each hour heat-coloured by focus."""
+    ctx.text(x, y, "ACTIVITY · 24H CLOCK", size=TEXT_HINT,
+             color=ctx.theme.muted, bold=True)
+    accent = ctx.theme.accent
+    top = y + SPACE_LG
+    avail_h = h - SPACE_LG
+    cx = x + w / 2
+    cy = top + avail_h / 2
+    sw = 13.0
+    r = min(avail_h / 2 - 14.0, w / 2 - 14.0, 58.0)
+    seg = math.tau / 24.0
+    gap = seg * 0.14
     peak = max(m.hourly) or 1.0
-    for hour, secs in enumerate(m.hourly):
+    base = math.pi / 2  # +y is down, so -pi/2 is top → midnight at top
+
+    for hour in range(24):
+        a0 = -base + hour * seg + gap / 2
+        a1 = -base + (hour + 1) * seg - gap / 2
+        secs = m.hourly[hour]
         if secs <= 0:
-            continue
-        frac = secs / peak
-        fh = max(3.0, strip_h * frac)
-        fx = x + hour * cell_w
-        fy = strip_y + strip_h - fh
-        color = ctx.theme.accent if frac > 0.66 else (
-            ctx.theme.success if frac > 0.33 else dim(ctx.theme.muted, 170))
-        ctx.rect(fx + 1.5, fy, cell_w - 3.0, fh, color, radius=2.0,
-                 glow_color=color if frac > 0.66 else None,
-                 glow_radius=7.0 if frac > 0.66 else 0.0)
-    tick_y = strip_y + strip_h + 3.0
-    for step in range(0, 25, 6):
-        lbl = "now" if step == 24 else f"{step:02d}"
-        ctx.text(x + step * cell_w, tick_y, lbl, size=TEXT_HINT,
-                 color=dim(ctx.theme.muted, 120), align="center_top")
+            ctx.arc_ring(cx, cy, r, a0, a1, dim(ctx.theme.muted, 26), stroke_width=sw)
+        else:
+            alpha = int(70 + 185 * min(1.0, secs / peak))
+            ctx.arc_ring(cx, cy, r, a0, a1, dim(accent, alpha), stroke_width=sw)
+
+    # Hour ticks at the quarters.
+    lr = r + sw / 2 + 9.0
+    for hh, lbl in ((0, "00"), (6, "06"), (12, "12"), (18, "18")):
+        ang = -base + hh * seg
+        ctx.text(cx + lr * math.cos(ang), cy + lr * math.sin(ang), lbl,
+                 size=TEXT_HINT, color=dim(ctx.theme.muted, 140), align="center_center")
+
+    # "now" marker dot on the ring.
+    now = datetime.now().astimezone()
+    nowf = now.hour + now.minute / 60.0
+    ang = -base + nowf * seg
+    ctx.circle(cx + r * math.cos(ang), cy + r * math.sin(ang), 4.0, ctx.theme.fg)
+
+    # Centre focal: today's total.
+    ctx.text(cx, cy - 7.0, _fmt_secs(m.active_secs), size=TEXT_CAPTION,
+             color=ctx.theme.fg, bold=True, align="center_center")
+    ctx.text(cx, cy + 9.0, "today", size=TEXT_HINT,
+             color=ctx.theme.muted, align="center_center")
 
 
 class StatsApp(App):
@@ -382,14 +417,15 @@ class StatsApp(App):
             return
         pad = SPACE_MD
         cur = y + SPACE_SM
-        _draw_hero(ctx, m, x + pad, cur, w - 2 * pad, HERO_H)
+        _draw_hero(ctx, m, x + pad, cur, HERO_H)
         cur += HERO_H + SPACE_SM
         _draw_tiles(ctx, m, x + pad, cur, w - 2 * pad, TILES_H)
         cur += TILES_H + SPACE_MD
         projects_h = SPACE_LG + max(1, len(m.projects)) * ROW_H + SPACE_SM
         _draw_projects(ctx, m, x + pad, cur, w - 2 * pad)
         cur += projects_h + SPACE_SM
-        _draw_activity(ctx, m, x + pad, cur, w - 2 * pad, STRIP_H)
+        clock_h = max(CLOCK_MIN_H, (y + h) - cur - SPACE_SM)
+        _draw_clock(ctx, m, x + pad, cur, w - 2 * pad, clock_h)
 
     def on_render(self, ctx) -> None:
         m = self.m

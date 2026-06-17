@@ -2023,7 +2023,7 @@ pub(crate) fn render_layout_node(
 /// Glow intensity scale. Glow reads as a subtle halo, not a bloom: the
 /// caller's `glow_color` alpha is multiplied by this so a fully-opaque glow
 /// color still renders gently. Tuned for tasteful defaults across apps.
-const GLOW_ALPHA_SCALE: f32 = 0.40;
+const GLOW_ALPHA_SCALE: f32 = 0.22;
 
 fn scale_alpha(c: egui::Color32, scale: f32) -> egui::Color32 {
     let a = (c.a() as f32 * scale).round().clamp(0.0, 255.0) as u8;
