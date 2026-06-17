@@ -113,8 +113,11 @@
 .prose li > p { margin-bottom: 0; }
 .prose blockquote { margin: 0 0 16px; padding-left: 16px; }
 .prose table { margin-bottom: 18px; width: 100%; border-collapse: collapse; }
-.prose th { padding: 9px 13px; }
-.prose td { padding: 9px 13px; }
+.prose th { padding: 9px 13px; text-align: left; }
+.prose td { padding: 9px 13px; vertical-align: top; }
+/* Keep flag/path tokens (e.g. `--name`, `-n`) intact — never break mid-token,
+   which is what made the CLI reference cells look cut off and inconsistent. */
+.prose td code, .prose th code { white-space: nowrap; }
 .prose pre { margin-bottom: 18px; }
 .prose hr { margin: 36px 0; }
 

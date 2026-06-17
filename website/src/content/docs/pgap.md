@@ -1,7 +1,7 @@
 ---
 title: PGAP
 description: The Plexi Generic App Protocol — how apps communicate with the host.
-verified_version: "0.0.689"
+verified_version: "0.1.5"
 order: 3
 ---
 
@@ -21,7 +21,7 @@ The host owns the render loop. Each frame tick, the host asks each app pane for 
 
 ## Message Types
 
-Messages flow in both directions. Key app→host types: `Render` (draw commands for the current tick), `Notify` (push a notification), `Log` (emit a log line), `SecretGet` (request a secret value). Key host→app types: `Init` (startup context including granted capabilities), `Key`/`Mouse` (input events), `Rect` (pane dimensions), `SecretValue` (secret response).
+Messages flow in both directions. Key app→host types: `RenderCommand` (draw commands for the current tick), `Notify` (push a notification), `Log` (emit a log line), `SecretGet` (request a secret value). Key host→app types: `Init` (startup context including granted capabilities), `Render` (request draw commands for the next frame), `Key`/`Mouse` (input events), `Resize` (pane dimensions), `SecretValue` (secret response).
 
 This is a non-exhaustive summary. The full schema is in `sdk/protocol/pgap.schema.json`.
 

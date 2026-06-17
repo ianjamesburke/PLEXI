@@ -1,7 +1,7 @@
 ---
 title: "Emitter"
 description: "Host commands, notifications, HTTP, secrets, and device APIs"
-verified_version: "0.0.669"
+verified_version: "0.1.5"
 ---
 
 # Emitter
@@ -362,6 +362,223 @@ Args:
 
 ---
 
+### `list_panes`
+
+```python
+async def list_panes(context_id: 'int | None' = None) -> 'list[dict]'
+```
+
+List all open panes. Requires the ``panes.read`` capability.
+
+Returns the same JSON array `plexi pane list` prints: one object per
+pane with ``id``, ``title``, ``type``, ``context_id``, ``cwd``, etc.
+
+Args:
+    context_id: When set, only panes in this context are returned.
+
+Raises ``CapabilityDeniedError`` if the manifest doesn't declare
+``panes.read``.
+
+---
+
+### `get_pane_info`
+
+```python
+async def get_pane_info(pane_id: int) -> dict
+```
+
+Query info for a specific pane. Requires the ``panes.read`` capability.
+
+Returns the same JSON object `plexi pane info` prints.
+
+Raises ``CapabilityDeniedError`` if the manifest doesn't declare
+``panes.read``.
+
+---
+
+### `get_pane_state`
+
+```python
+async def get_pane_state(pane_id: int) -> dict
+```
+
+Query the last-rendered UI state of a pane. Requires ``panes.read``.
+
+For app panes the host answers with a ``frame`` array of
+RenderCommands; for terminal panes a simple status object.
+
+Raises ``CapabilityDeniedError`` if the manifest doesn't declare
+``panes.read``.
+
+---
+
+### `capture_pane`
+
+```python
+async def capture_pane(pane_id: int, lines: int = 50, full_output: bool = False, from_cursor: 'int | None' = None) -> 'list[str]'
+```
+
+Read the last ``lines`` lines of a terminal pane's scrollback.
+Requires the ``panes.read`` capability.
+
+Args:
+    pane_id: Target terminal pane.
+    lines: Number of lines from the end of the scrollback.
+    full_output: Preserve trailing empty lines (default strips them).
+    from_cursor: When set, capture from this saved cursor position.
+
+Raises ``CapabilityDeniedError`` if the manifest doesn't declare
+``panes.read``.
+
+---
+
+### `send_to_pane`
+
+```python
+def send_to_pane(pane_id: int, text: str) -> None
+```
+
+Write ``text`` to a terminal pane's PTY stdin. Requires the
+``panes.control`` capability. ``\n`` (literal backslash-n) is
+interpreted as Enter.
+
+Fire-and-forget — capability denial drops with a host log line.
+
+---
+
+### `key_pane`
+
+```python
+def key_pane(pane_id: int, key: str) -> None
+```
+
+Deliver a synthetic key event to any pane. Requires the
+``panes.control`` capability.
+
+Args:
+    pane_id: Target pane.
+    key: Single char ("h"), named key ("enter", "escape", "up",
+         "down", "left", "right", "space", "backspace"), or chord
+         ("ctrl+c", "ctrl+d").
+
+Fire-and-forget — capability denial drops with a host log line.
+
+---
+
+### `focus_pane`
+
+```python
+def focus_pane(pane_id: int) -> None
+```
+
+Move UI focus to a pane. Requires the ``panes.control`` capability.
+
+Fire-and-forget — capability denial drops with a host log line.
+
+---
+
+### `close_pane`
+
+```python
+def close_pane(pane_id: int) -> None
+```
+
+Close a pane. Requires the ``panes.control`` capability.
+
+Fire-and-forget — capability denial drops with a host log line.
+
+---
+
+### `set_pane_title`
+
+```python
+def set_pane_title(pane_id: int, name: str) -> None
+```
+
+Set the title shown on a pane's tab. Requires the
+``panes.control`` capability.
+
+Fire-and-forget — capability denial drops with a host log line.
+
+---
+
+### `set_pip_status`
+
+```python
+def set_pip_status(status: str) -> None
+```
+
+Report this app's own pip status (the pane activity dot).
+
+``status`` is one of ``"green"``, ``"yellow"``, or ``"red"``. The host
+stamps the app's own pane id, so an app can only ever set its own pip.
+No capability required — fire-and-forget. An unknown status is dropped
+with a warning rather than raising.
+
+---
+
+### `send_app_action`
+
+```python
+def send_app_action(pane_id: int, action: str, args: 'list[str] | None' = None) -> None
+```
+
+Dispatch a semantic action to an app pane. Requires the
+``panes.control`` capability. The host delivers
+``PlexiEvent::Action`` to the target app.
+
+Args:
+    pane_id: Target app pane.
+    action: Action name, e.g. "refresh", "navigate-to".
+    args: Optional extra arguments.
+
+Fire-and-forget — capability denial drops with a host log line.
+
+---
+
+### `list_permissions`
+
+```python
+async def list_permissions() -> dict
+```
+
+List permission state across apps. Requires ``permissions.manage``.
+
+Returns ``{"permissions": [...], "running": [...]}`` — one row per
+stored `permissions.toml` entry plus one row per live capability of a
+running app with no stored entry. Each row has ``app_id``,
+``workspace``, ``capability``, ``state`` ("green"|"yellow"|"red"),
+``stored``, ``sensitive``, and ``description``.
+
+Raises ``CapabilityDeniedError`` if the host denies
+``permissions.manage``.
+
+---
+
+### `set_permission`
+
+```python
+async def set_permission(app_id: str, capability: str, state: str, workspace: 'str | None' = None) -> dict
+```
+
+Set the stored permission state for an (app, workspace, capability)
+triple. Requires ``permissions.manage``.
+
+Args:
+    app_id: Target app id.
+    capability: Capability string, e.g. "panes.read".
+    state: One of "green" (allow), "yellow" (ask), "red" (block).
+    workspace: Workspace root the entry applies to. When omitted, the
+        workspace of a running app with ``app_id`` is used; fails if
+        no such app is running.
+
+Returns ``{"ok": True}``. Raises ``CapabilityDeniedError`` if the
+host denies ``permissions.manage``, and ``RuntimeError`` when the
+host replies with any other error (unknown capability/state strings
+fail closed).
+
+---
+
 ### `query_context_state`
 
 ```python
@@ -507,6 +724,31 @@ def schedule_render(after_ms: int = 16) -> None
 Ask the host to send a new Render event after `after_ms` milliseconds.
 Call from a canvas app's on_render(ctx) to sustain a game or animation loop.
 16 ms ≈ 60 fps.  32 ms ≈ 30 fps.
+
+---
+
+### `set_scheduler_mode`
+
+```python
+def set_scheduler_mode(mode: str, fps: int | None = None) -> None
+```
+
+Declare how the host should schedule recurring renders.
+
+Modes:
+  - ``"idle"``: no recurring renders
+  - ``"scheduled"``: app emits schedule_render manually
+  - ``"continuous"``: host renders at ``fps`` after each FrameDone
+
+---
+
+### `continuous`
+
+```python
+def continuous(fps: int = 60) -> None
+```
+
+Render continuously at ``fps``. Intended for animations/games.
 
 ---
 
@@ -685,6 +927,67 @@ routes it to the handler registered via ``@app.tool(…)``.
 
 ---
 
+### `declare_event_streams`
+
+```python
+def declare_event_streams(streams: 'list[dict]') -> None
+```
+
+Declare the named event streams this app may emit on.
+
+Each entry must have:
+  - ``name`` (str): stream name, e.g. ``"move.played"``.
+  - ``schema`` (dict): JSON Schema object describing the payload.
+  - ``description`` (str, optional): when this event fires.
+
+Streams MUST be declared before any ``emit_event`` referencing them
+is accepted — the host rejects events on undeclared streams.
+
+---
+
+### `emit_event`
+
+```python
+def emit_event(event: str, actor: str, summary: str, resource_id: str, revision_after: str, payload: 'dict | None' = None, state_ref: 'str | None' = None, revision_before: 'str | None' = None, rollback_token: 'str | None' = None, changed_resources: 'list[str] | None' = None, suggested_trigger: 'str | None' = None, resource_scope: 'str | None' = None, actor_id: 'str | None' = None) -> None
+```
+
+Emit a semantic app event into the host timeline.
+
+Required:
+  - ``event``: a stream name previously declared via
+    ``declare_event_streams``.
+  - ``actor``: one of ``"user" | "agent" | "app" | "system"``.
+  - ``summary``: one-line human-readable description.
+  - ``resource_id``: document/game/pane/app-instance id.
+  - ``revision_after``: revision identifier after the change.
+
+Optional: ``payload`` (must match the declared schema),
+``state_ref``, ``revision_before``, ``rollback_token`` (presence
+makes the event reversible — the host creates an undo checkpoint),
+``changed_resources``, ``suggested_trigger`` (one of
+``"never" | "conversation" | "ambient" | "ask"``),
+``resource_scope`` (e.g. ``"document"``/``"game"``; defaults to
+``"pane"``), ``actor_id`` (defaults to this app's id).
+
+Fire-and-forget — malformed events are rejected and logged by the
+host, never recorded.
+
+---
+
+### `rollback_verify_result`
+
+```python
+def rollback_verify_result(checkpoint_id: str, current_revision: str) -> None
+```
+
+Answer a ``rollback_verify`` question with the resource's current
+revision. Normally sent automatically by the SDK from
+``App.on_rollback_verify`` — call directly only when answering
+asynchronously. ``current_revision`` may be empty to report
+"unknown" (the host then blocks the rollback).
+
+---
+
 ### `list_midi_devices`
 
 ```python
@@ -854,7 +1157,7 @@ If ``pipe_id`` is already registered (i.e. the app is restarting
 capture), the old Pipe is closed before the new one is created —
 prevents OSError on the reader thread's recv() from a stale socket.
 
-Requires ``audio.in`` capability. Raises ``CapabilityDeniedError``
+Requires ``audio.record`` capability. Raises ``CapabilityDeniedError``
 only when the gate fires synchronously at the wire layer; the
 usual TCC mic-permission denial surfaces async on the first frame
 attempt as an ``AudioCaptureError`` event.
