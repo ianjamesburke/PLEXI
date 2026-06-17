@@ -1011,7 +1011,7 @@ pub(crate) fn paint_portal_minimap(
             }
 
             // Standardized icon alpha: 200 focused / 60 unfocused, dimmed to 30% for inactive panes.
-            let icon_alpha: u8 = if pane.focused { 200 } else { 60 };
+            let icon_alpha: u8 = if pane.focused { 200 } else { 100 };
             let icon_alpha: u8 = if !pane.active {
                 (icon_alpha as f32 * 0.3) as u8
             } else {
