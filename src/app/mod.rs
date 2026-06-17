@@ -350,6 +350,9 @@ pub struct PlexiApp {
     /// Latest available version string, set after the background check resolves.
     /// `None` means either the check hasn't completed or we're already current.
     pub(crate) update_available: Option<String>,
+    /// One-click update install state, driven by the changelog modal button.
+    pub(crate) update_install_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    pub(crate) update_installing: bool,
     /// Receiver for AppRequests sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
     pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::AppRequest>,
@@ -896,6 +899,8 @@ impl PlexiApp {
                     click_flash: None,
                     update_rx: Some(update_rx),
                     update_available: None,
+                    update_install_rx: None,
+                    update_installing: false,
                     pane_ipc_rx,
                     last_logged_focus: None,
                     focus_started_at: None,
@@ -1133,6 +1138,8 @@ impl PlexiApp {
             click_flash: None,
             update_rx: Some(update_rx),
             update_available: None,
+            update_install_rx: None,
+            update_installing: false,
             pane_ipc_rx,
             last_logged_focus: None,
             focus_started_at: None,
@@ -1338,6 +1345,8 @@ impl PlexiApp {
                 show_completions_banner: false,
                 update_rx: None,
                 update_available: None,
+                update_install_rx: None,
+                update_installing: false,
                 pane_ipc_rx,
                 last_logged_focus: None,
                 focus_started_at: None,

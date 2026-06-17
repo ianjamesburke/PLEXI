@@ -291,21 +291,45 @@ impl PlexiApp {
                         .inner_margin(egui::Margin::symmetric(12, 8))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
+                                let label_text = if self.update_installing {
+                                    "Updating — Plexi will restart shortly...".to_string()
+                                } else {
+                                    format!("v{latest} is available")
+                                };
                                 ui.label(
-                                    RichText::new(format!(
-                                        "Run plexi update to upgrade to v{latest}"
-                                    ))
-                                    .size(style::TEXT_HINT)
-                                    .color(self.colors.accent),
+                                    RichText::new(label_text)
+                                        .size(style::TEXT_HINT)
+                                        .color(self.colors.accent),
                                 );
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        crate::ui::button::copy_button(
-                                            ui,
-                                            egui::Id::new("update_banner_copy"),
-                                            "plexi update",
-                                        );
+                                        if self.update_installing {
+                                            ui.label(
+                                                RichText::new("installing...")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_dim),
+                                            );
+                                        } else {
+                                            let btn = egui::Button::new(
+                                                RichText::new(format!("Update to v{latest}"))
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_on(self.colors.accent)),
+                                            )
+                                            .fill(self.colors.accent)
+                                            .corner_radius(egui::CornerRadius::same(4));
+                                            if ui.add(btn).clicked() {
+                                                self.update_installing = true;
+                                                let (tx, rx) = std::sync::mpsc::channel();
+                                                self.update_install_rx = Some(rx);
+                                                let latest_clone = latest.clone();
+                                                std::thread::spawn(move || {
+                                                    log::info!("ui: one-click update to v{latest_clone} started");
+                                                    let result = crate::cli::install::run_self_update(true);
+                                                    let _ = tx.send(result);
+                                                });
+                                            }
+                                        }
                                     },
                                 );
                             });
