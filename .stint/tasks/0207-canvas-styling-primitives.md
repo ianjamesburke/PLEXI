@@ -1,9 +1,11 @@
 ---
 id: "0207"
 title: "Canvas styling primitives the SDK should have offered"
-status: in-progress
+status: done
 estimate: "2h"
+actual: "335m"
 started_at: "2026-06-17T01:21:25Z"
+completed_at: "2026-06-17T06:56:22Z"
 blocked_by: []
 gh_issue: []
 area:
@@ -13,6 +15,7 @@ tags:
   - "v1"
   - "sdk"
 ---
+
 
 
 Add the canvas drawing primitives that app authors (and their agents) reach for but the SDK does not yet provide. Seeded from the Stats app redesign: building real visual polish (glows, bordered cards, gradient bars, RPG flair) required hacking around missing primitives with stacked alpha rects and four-line borders. The exact final set is determined by a design experiment (4 independent agents each built the Stats UI against the current SDK and reported what they hacked around); the recurring wishes across those agents are the real gaps and get folded into Scope below before implementation.
