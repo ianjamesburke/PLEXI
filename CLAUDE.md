@@ -61,6 +61,10 @@ Before making architectural decisions, read [`NORTH_STAR.md`](NORTH_STAR.md) for
 
 Feature branch naming: `feature/<issue-number>-short-description`. Never push directly to `main` or `beta`.
 
+## Git Commit Rules
+
+Never add `Co-Authored-By: Claude ...` trailers to commit messages in any form.
+
 ## GitHub Issues
 
 **Always use the `/create-issue` skill to create issues.** It owns the full labeling convention (type, priority, area, load, blocking relationships, triage state) and enforces North Star / PRM alignment. Never create issues manually or with ad-hoc labels.
