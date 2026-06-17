@@ -533,6 +533,10 @@ fn main() -> eframe::Result {
                                     png_dir.as_deref(),
                                 ));
                             }
+                            AppCmd::Test { path, snapshot } => {
+                                log::info!("app_test:cli: path={path} snapshot={snapshot}");
+                                std::process::exit(cli::app_test_cli(&path, snapshot));
+                            }
                             AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
                             AppCmd::Validate { path } => {
                                 log::info!("app_validate:cli: path={path}");

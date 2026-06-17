@@ -439,6 +439,20 @@ pub enum AppCmd {
         #[arg(long, value_hint = ValueHint::DirPath)]
         png_dir: Option<String>,
     },
+    /// Run an app's AppHarness tests with `uv run pytest tests/`.
+    ///
+    /// Runs the Python tests in the app's `tests/` directory (the
+    /// `tests/test_app.py` scaffolded by `plexi app init`). AppHarness spawns
+    /// the app as a real subprocess and checks it renders without overlap; see
+    /// `plexi_sdk/testing.py`. Exits nonzero on failure so CI can gate on it.
+    Test {
+        /// App directory to test (default: current directory)
+        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
+        path: String,
+        /// Update stored snapshots instead of comparing against them.
+        #[arg(long)]
+        snapshot: bool,
+    },
     /// Show details about an installed app: id, name, version, and available tools.
     Info { id: String },
     /// Create a new app from a template.

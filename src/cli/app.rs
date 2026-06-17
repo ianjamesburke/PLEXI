@@ -224,6 +224,44 @@ pub fn app_init(
     }
 }
 
+/// `plexi app test [<app-path>]` — run an app's AppHarness tests via
+/// `uv run pytest tests/` inside the app directory. Streams pytest output live
+/// and returns its exit code so CI and ship scripts can gate on it.
+pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
+    let app_dir = std::path::Path::new(path);
+    let tests_dir = app_dir.join("tests");
+    if !tests_dir.is_dir() {
+        log::warn!("app_test:cli: no tests/ dir at {}", tests_dir.display());
+        eprintln!(
+            "error: no tests/ directory in {} — expected {}",
+            app_dir.display(),
+            app_dir.join("tests").join("test_app.py").display()
+        );
+        eprintln!("  `plexi app init` scaffolds tests/test_app.py for new apps.");
+        return 1;
+    }
+
+    log::info!(
+        "app_test:cli: running `uv run pytest tests/` in {} (snapshot={snapshot})",
+        app_dir.display()
+    );
+
+    let mut cmd = std::process::Command::new("uv");
+    cmd.args(["run", "pytest", "tests/"]).current_dir(app_dir);
+    if snapshot {
+        cmd.env("PLEXI_UPDATE_SNAPSHOTS", "1");
+    }
+
+    match cmd.status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => {
+            log::error!("app_test:cli: failed to spawn uv: {e}");
+            eprintln!("error: could not run `uv run pytest` ({e}). Is uv installed?");
+            1
+        }
+    }
+}
+
 /// Commented-out `[marketplace]` section appended to every scaffolded manifest so
 /// authors know publishing is one uncomment away. The host validator reads a
 /// top-level `[marketplace]` section (see `read_marketplace_manifest` in
