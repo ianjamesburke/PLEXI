@@ -1,9 +1,11 @@
 ---
 id: "0211"
 title: "plexi app test CLI subcommand"
-status: in-progress
+status: done
 estimate: "1h"
+actual: "35m"
 started_at: "2026-06-17T16:36:31Z"
+completed_at: "2026-06-17T17:10:48Z"
 blocked_by:
   - 210
 gh_issue: []
@@ -15,6 +17,7 @@ tags:
   - "testing"
   - "tooling"
 ---
+
 
 
 Agents and developers have no first-class way to run Python app tests. They must know to call `uv run pytest tests/` manually. A `plexi app test` subcommand makes the test runner discoverable via `plexi app --help` and gives the CLI a consistent entry point for the AppHarness flow.

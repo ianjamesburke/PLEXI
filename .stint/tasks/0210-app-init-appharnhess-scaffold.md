@@ -1,9 +1,11 @@
 ---
 id: "0210"
 title: "plexi app init scaffolds AppHarness test"
-status: in-progress
+status: done
 estimate: "1h"
+actual: "45m"
 started_at: "2026-06-17T16:26:43Z"
+completed_at: "2026-06-17T17:10:48Z"
 blocked_by: []
 gh_issue: []
 area:
@@ -15,6 +17,7 @@ tags:
   - "testing"
   - "tooling"
 ---
+
 
 
 `plexi app init <name>` currently produces a manifest and `app.py` but no test file. An agent starting on a new app has no example of AppHarness and re-derives the pattern from docs each time.
