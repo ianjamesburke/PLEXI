@@ -219,11 +219,13 @@ bump bump="patch":
 
 # Promote to the next channel. Auto-detects current branch and prompts.
 # Run just bump before promoting if you haven't already.
-#   just promote        — detects alpha→beta or beta→main and confirms
-#   just promote beta   — skip prompt, promote alpha→beta
-#   just promote main   — skip prompt, promote beta→main
-promote to="":
-    bash scripts/promote.sh "{{to}}"
+#   just promote              — detects alpha→beta or beta→main and confirms
+#   just promote beta         — skip prompt, promote alpha→beta
+#   just promote main         — skip prompt, promote beta→main
+#   just promote beta install — promote and install the target channel
+#   just promote main install — promote and install the target channel
+promote to="" install="":
+    bash scripts/promote.sh "{{to}}" "{{install}}"
 
 # Push the version tag for the current Cargo.toml version and trigger the GitHub Actions release.
 # Run this only when you want a binary release — promote to main first.

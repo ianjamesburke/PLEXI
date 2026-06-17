@@ -48,6 +48,7 @@ check_pushed() {
 
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 to="${1:-}"
+do_install="${2:-}"
 
 if [[ -z "$to" ]]; then
     case "$current_branch" in
@@ -93,10 +94,12 @@ promote_alpha_to_beta() {
 if [[ "$to" == "beta" ]]; then
     promote_alpha_to_beta
 
-    version=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
-    echo ""
-    echo "Installing beta (v$version)..."
-    (cd "$BETA_TREE" && just install)
+    if [[ "$do_install" == "install" || "$do_install" == "true" ]]; then
+        version=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
+        echo ""
+        echo "Installing beta (v$version)..."
+        (cd "$BETA_TREE" && just install)
+    fi
     exit 0
 fi
 
@@ -131,6 +134,12 @@ if git -C "$MAIN_TREE" tag -l "v$version" | grep -q "v$version"; then
     fi
 else
     echo "info: no tag for v$version yet — run 'just bump && just promote main' to cut a release."
+fi
+
+if [[ "$do_install" == "install" || "$do_install" == "true" ]]; then
+    echo ""
+    echo "Installing main (v$version)..."
+    (cd "$MAIN_TREE" && just install)
 fi
 
 echo ""
