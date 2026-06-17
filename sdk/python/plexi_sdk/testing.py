@@ -170,7 +170,7 @@ def decode_png(png_bytes: bytes) -> tuple[int, int, bytes]:
         elif filter_byte == 2:  # Up
             out = bytearray(line)
             if row > 0:
-                prev = raw_rgba[(row - 1) * stride: row * stride]
+                prev: bytes | bytearray = raw_rgba[(row - 1) * stride: row * stride]
                 for i in range(stride):
                     out[i] = (out[i] + prev[i]) & 0xFF
             raw_rgba[row * stride: (row + 1) * stride] = out
