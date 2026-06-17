@@ -203,14 +203,23 @@ class Metrics:
 
     @classmethod
     def load(cls, events_path: "Path | None", day_offset: int = 0) -> "Metrics":
+        """Parse the log from disk, then compute. Use compute() for in-memory scrubs."""
+        events = _parse_focus_events(events_path) if events_path else []
+        events.sort(key=lambda e: e["_ts"])
+        return cls.compute(events, day_offset)
+
+    @classmethod
+    def compute(cls, events: "list[dict]", day_offset: int = 0) -> "Metrics":
+        """Recompute metrics for the selected day from already-parsed events.
+
+        Parsing the (potentially large) log is the only expensive step, so the
+        app parses once and calls this on every day-scrub — file size stays a
+        startup cost, not a per-keypress one. `events` must be sorted by `_ts`.
+        """
         m = cls()
         m.day_offset = max(0, day_offset)
-        if not events_path:
-            return m
-        events = _parse_focus_events(events_path)
         if not events:
             return m
-        events.sort(key=lambda e: e["_ts"])
         m.has_data = True
 
         now = datetime.now(timezone.utc)
@@ -467,10 +476,16 @@ def _draw_contexts(ctx, m: "Metrics", x, y, w) -> None:
 
 class StatsApp(App):
 
+    def _read_events(self) -> None:
+        """Parse the log from disk once; day-scrubs recompute from this cache."""
+        self._events = _parse_focus_events(self.events_path) if self.events_path else []
+        self._events.sort(key=lambda e: e["_ts"])
+
     async def on_init(self) -> None:
         self.events_path = _resolve_events_path()
         self.day_offset = 0
-        self.m = Metrics.load(self.events_path, self.day_offset)
+        self._read_events()
+        self.m = Metrics.compute(self._events, self.day_offset)
         self.emit.info(
             f"stats: loaded data={self.m.has_data} "
             f"active_today={int(self.m.active_secs)}s switches={self.m.switches_today} "
@@ -522,25 +537,28 @@ class StatsApp(App):
             padding=0, gap=0,
         ))
 
-    def _reload(self) -> None:
-        self.m = Metrics.load(self.events_path, self.day_offset)
+    def _recompute(self) -> None:
+        """In-memory: pick a different day from the cached events (no disk read)."""
+        self.m = Metrics.compute(self._events, self.day_offset)
         self.emit.info(f"stats: day_offset={self.day_offset}")
         self.emit.schedule_render(0)
 
     def on_key(self, key: str, _mods: dict) -> None:
         if key == "left":
             self.day_offset += 1            # older
-            self._reload()
+            self._recompute()
         elif key == "right":
             if self.day_offset > 0:
                 self.day_offset -= 1        # newer
-                self._reload()
+                self._recompute()
         elif key == "t":
             if self.day_offset != 0:
                 self.day_offset = 0
-                self._reload()
+                self._recompute()
         elif key == "r":
-            self._reload()
+            self._read_events()             # re-read disk for new events
+            self._recompute()
+            self.emit.info("stats: refreshed from disk")
 
 
 if __name__ == "__main__":
