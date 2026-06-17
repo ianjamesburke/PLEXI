@@ -3,9 +3,9 @@ schema_version = 1
 [app]
 id = "stats"
 type = "app"
-name = "Plexi Stats"
-version = "0.1.0"
-description = "Gaming-style dashboard showing directory time, visits, and activity timeline from Plexi focus events."
+name = "Stats"
+version = "0.2.0"
+description = "Activity dashboard: focus level, time, streak, top projects, and a 24h heatmap from Plexi focus events."
 entry = "stats.py"
 
 [app.capabilities]
