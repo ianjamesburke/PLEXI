@@ -32,7 +32,7 @@ pub fn demo_cli() -> i32 {
     key(&format!("{CMD}D"), "split right");
     let mut right_pane_id = 0;
     let after_right_split = match poll_event(&events_path, start_offset, |kind, obj| {
-        capture_pane_split(kind, obj, &mut right_pane_id)
+        capture_pane_split(kind, obj, "horizontal", &mut right_pane_id)
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
@@ -47,7 +47,7 @@ pub fn demo_cli() -> i32 {
     key(&format!("{CMD}+Shift+D"), "split below");
     let mut lower_pane_id = 0;
     let after_lower_split = match poll_event(&events_path, after_right_split, |kind, obj| {
-        capture_pane_split(kind, obj, &mut lower_pane_id)
+        capture_pane_split(kind, obj, "vertical", &mut lower_pane_id)
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
@@ -107,7 +107,7 @@ pub fn demo_cli() -> i32 {
     eprintln!();
     let mut balls_pane_id = 0;
     let after_app_split = match poll_event(&events_path, after_close, |kind, obj| {
-        capture_pane_split(kind, obj, &mut balls_pane_id)
+        capture_pane_split(kind, obj, "horizontal", &mut balls_pane_id)
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
@@ -120,6 +120,11 @@ pub fn demo_cli() -> i32 {
                 .is_some_and(|id| id == "balls")
         {
             return false;
+        }
+        // Capture from app_spawned so the pane_id is always the pane Balls actually ran in,
+        // regardless of which split the user had focused when they opened the palette.
+        if let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) {
+            balls_pane_id = id;
         }
         true
     }) {
@@ -165,7 +170,7 @@ pub fn demo_cli() -> i32 {
             && obj
                 .get("name")
                 .and_then(|v| v.as_str())
-                .is_some_and(|name| name == "Demo")
+                .is_some_and(|name| name.trim().eq_ignore_ascii_case("demo"))
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
@@ -196,9 +201,9 @@ pub fn demo_cli() -> i32 {
         "The new terminal should be focused after the split.",
     ]);
     key(&format!("{CMD}+Shift+D"), "split below");
-    let mut note_terminal_pane_id = 0;
+    let mut _note_terminal_pane_id = 0;
     let after_file_split = match poll_event(&events_path, after_file, |kind, obj| {
-        capture_pane_split(kind, obj, &mut note_terminal_pane_id)
+        capture_pane_split(kind, obj, "vertical", &mut _note_terminal_pane_id)
     }) {
         Ok(offset) => offset,
         Err(e) => return watch_error(&events_path, e),
@@ -214,13 +219,6 @@ pub fn demo_cli() -> i32 {
     let mut scratch_note_path = String::new();
     let after_scratch_open = match poll_event(&events_path, after_file_split, |kind, obj| {
         if kind != "scratchpad_opened" {
-            return false;
-        }
-        if !obj
-            .get("pane_id")
-            .and_then(|v| v.as_u64())
-            .is_some_and(|id| id == note_terminal_pane_id)
-        {
             return false;
         }
         if let Some(path) = obj.get("path").and_then(|v| v.as_str()) {
@@ -397,12 +395,20 @@ fn file_offset(path: &std::path::Path) -> Option<u64> {
     std::fs::metadata(path).map(|m| m.len()).ok()
 }
 
-fn capture_pane_split(kind: &str, obj: &serde_json::Value, out: &mut u64) -> bool {
-    if kind == "pane_split" {
-        if let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) {
-            *out = id;
-            return true;
-        }
+fn capture_pane_split(kind: &str, obj: &serde_json::Value, direction: &str, out: &mut u64) -> bool {
+    if kind != "pane_split" {
+        return false;
+    }
+    if !obj
+        .get("direction")
+        .and_then(|v| v.as_str())
+        .is_some_and(|d| d == direction)
+    {
+        return false;
+    }
+    if let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) {
+        *out = id;
+        return true;
     }
     false
 }
