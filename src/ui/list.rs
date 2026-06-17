@@ -411,6 +411,10 @@ impl<'a> ListRow<'a> {
             self.pane_pips.is_some() && text_metrics.secondary_center_y.is_none();
         let chip_center_y = if has_compact_pips {
             text_metrics.primary_center_y - COMPACT_METADATA_CHIP_OFFSET_Y
+        } else if text_metrics.secondary_center_y.is_some() {
+            // Two-line row: center the chip on the row, not on the title alone
+            // (primary_center_y sits in the upper half when a subtitle is present).
+            rect.center().y
         } else {
             text_metrics.primary_center_y
         };
