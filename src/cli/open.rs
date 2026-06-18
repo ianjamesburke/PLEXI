@@ -360,6 +360,14 @@ pub fn open_cli(
         return open_app_by_path(&abs_path, layout, from_pane_id);
     }
 
+    // A `.wasm` file is a sandboxed component app launched through the same
+    // path-spawn flow as a local app dir (the run primitive, G6).
+    if resolved.extension().and_then(|e| e.to_str()) == Some("wasm") && resolved.is_file() {
+        let abs_path = resolved.to_string_lossy().to_string();
+        log::info!("open:cli: detected .wasm component, opening from path={abs_path}");
+        return open_app_by_path(&abs_path, layout, from_pane_id);
+    }
+
     let layout_str = layout.unwrap_or("overlay");
     pane_new_cli(
         None,

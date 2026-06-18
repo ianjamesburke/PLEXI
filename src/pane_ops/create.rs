@@ -1101,6 +1101,25 @@ impl PlexiApp {
         let app_dir = PathBuf::from(app_path);
         log::info!("launch_app_by_path_with_layout: path={app_path}");
 
+        // A `.wasm` file is a sandboxed component app (the run primitive, G6),
+        // not a manifest-backed process app. Route it to the wasmtime path.
+        if app_dir.extension().and_then(|e| e.to_str()) == Some("wasm") {
+            let app_id = app_dir
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("wasm")
+                .to_string();
+            let workspace_root = workspace_root_override.unwrap_or_else(|| {
+                app_dir
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
+            });
+            return self
+                .open_wasm_app_pane(&app_id, &app_dir, workspace_root)
+                .map(|_| ());
+        }
+
         let installed = match self.registry.load_app(&app_dir) {
             Ok(a) => a,
             Err(e) => {

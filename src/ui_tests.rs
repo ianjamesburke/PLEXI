@@ -485,6 +485,34 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_init.png");
     }
 
+    /// G6 — the run primitive's routing: a `.wasm` path handed to the shared
+    /// path-launch entry point (the same call the `app open <path>` socket
+    /// handler makes) must spawn an `AppRuntime::Wasm` pane, not attempt a
+    /// manifest/process launch.
+    #[test]
+    fn wasm_path_launch_opens_wasm_pane() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wasm-fixtures/sysmon.wasm");
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        h.with_app_mut(|app| {
+            app.launch_app_by_path_with_layout(
+                &fixture.to_string_lossy(),
+                Some("split_v".to_string()),
+                None,
+                &[],
+            )
+        })
+        .expect("wasm launch should succeed");
+        h.step();
+        let has_wasm = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values()
+                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
+        });
+        assert!(has_wasm, "a .wasm path launch should produce an AppRuntime::Wasm pane");
+    }
+
     /// Subcontext portal whose child context holds a `text-editor` pane: the
     /// minimap must render the document glyph (accent text rules, folded corner)
     /// instead of the generic app grid, with a status pip sized to match the
