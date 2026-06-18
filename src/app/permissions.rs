@@ -419,6 +419,13 @@ pub struct PermissionStore {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WasmInstallGrantSummary {
+    pub required_granted: usize,
+    pub optional_granted: usize,
+    pub optional_deferred: usize,
+}
+
 impl Default for PermissionStore {
     fn default() -> Self {
         Self {
@@ -772,6 +779,46 @@ impl PermissionStore {
         }
 
         (granted, blocked)
+    }
+
+    /// Persist install-review decisions for manifest-declared raw WASM
+    /// capabilities in the current workspace. Required capabilities are
+    /// approved by the install confirmation itself. Optional capabilities are
+    /// either approved or explicitly left Yellow so non-sensitive optional
+    /// capabilities are not silently granted by the default unset behavior.
+    pub fn apply_wasm_install_review(
+        &mut self,
+        app_id: &str,
+        workspace_root: &Path,
+        required: &[String],
+        optional: &[String],
+        selected_optional: &HashSet<String>,
+    ) -> WasmInstallGrantSummary {
+        for capability_id in required {
+            self.set_wasm(
+                app_id,
+                workspace_root,
+                capability_id,
+                PermissionState::Green,
+            );
+        }
+
+        let mut optional_granted = 0;
+        for capability_id in optional {
+            let optional_state = if selected_optional.contains(capability_id) {
+                optional_granted += 1;
+                PermissionState::Green
+            } else {
+                PermissionState::Yellow
+            };
+            self.set_wasm(app_id, workspace_root, capability_id, optional_state);
+        }
+
+        WasmInstallGrantSummary {
+            required_granted: required.len(),
+            optional_granted,
+            optional_deferred: optional.len().saturating_sub(optional_granted),
+        }
     }
 }
 
@@ -1449,6 +1496,84 @@ mod tests {
         assert!(granted.contains("ui:theme"));
         assert!(!granted.contains("fs:read:/unset"));
         assert!(blocked.contains("net:fetch:block.example"));
+    }
+
+    #[test]
+    fn wasm_install_review_persists_required_and_deferred_optional() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let mut store = PermissionStore::load_or_default(tmp.path());
+        let required = vec!["state:read-write".to_string()];
+        let optional = vec![
+            "ai.query".to_string(),
+            "net:fetch:api.example.com".to_string(),
+        ];
+
+        let summary = store.apply_wasm_install_review(
+            "wasm-app",
+            workspace.path(),
+            &required,
+            &optional,
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            summary,
+            WasmInstallGrantSummary {
+                required_granted: 1,
+                optional_granted: 0,
+                optional_deferred: 2,
+            }
+        );
+        assert_eq!(
+            store.get_wasm("wasm-app", workspace.path(), "state:read-write"),
+            Some(PermissionState::Green)
+        );
+        assert_eq!(
+            store.get_wasm("wasm-app", workspace.path(), "ai.query"),
+            Some(PermissionState::Yellow)
+        );
+        assert_eq!(
+            store.get_wasm("wasm-app", workspace.path(), "net:fetch:api.example.com"),
+            Some(PermissionState::Yellow)
+        );
+    }
+
+    #[test]
+    fn wasm_install_review_can_persist_optional_grants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let mut store = PermissionStore::load_or_default(tmp.path());
+        let optional = vec![
+            "ai.query".to_string(),
+            "net:fetch:api.example.com".to_string(),
+        ];
+        let selected = HashSet::from(["net:fetch:api.example.com".to_string()]);
+
+        let summary = store.apply_wasm_install_review(
+            "wasm-app",
+            workspace.path(),
+            &[],
+            &optional,
+            &selected,
+        );
+
+        assert_eq!(
+            summary,
+            WasmInstallGrantSummary {
+                required_granted: 0,
+                optional_granted: 1,
+                optional_deferred: 1,
+            }
+        );
+        assert_eq!(
+            store.get_wasm("wasm-app", workspace.path(), "ai.query"),
+            Some(PermissionState::Yellow)
+        );
+        assert_eq!(
+            store.get_wasm("wasm-app", workspace.path(), "net:fetch:api.example.com"),
+            Some(PermissionState::Green)
+        );
     }
 
     #[test]

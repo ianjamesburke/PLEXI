@@ -110,7 +110,9 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   install trust sheet classify WASM packages, and the WASM POC manifests use the
   registry schema. `[app.capabilities.wasm]` required/optional raw capability
   review metadata is validated and displayed during package/install review.
-  Install-time optional grant selection remains future work.
+  Interactive installs persist workspace-scoped required and selected optional
+  raw WASM decisions after install succeeds; `--yes` defers optional grants.
+  Raw `.wasm` ephemeral review remains future work.
 
 ## Key facts discovered (load-bearing for the build)
 
