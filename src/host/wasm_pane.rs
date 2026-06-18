@@ -405,11 +405,17 @@ impl LiveWasmPane {
     }
 
     /// True while the app is alive (no fatal error, has not asked to close).
+    // Consumed only by the cfg(test) scene runner today; retained as the
+    // pane-liveness accessor for the host status surface.
+    #[allow(dead_code)]
     pub fn is_running(&self) -> bool {
         self.error.is_none() && !self.inner.wants_close()
     }
 
     /// Text content of the most recently rendered view, for scene assertions.
+    // Reads `last_text` (written every frame in `ui`); keep non-cfg(test) so
+    // that field stays live in the production build.
+    #[allow(dead_code)]
     pub fn last_render_text(&self) -> &str {
         &self.last_text
     }
