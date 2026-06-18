@@ -102,7 +102,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   session `ai.query` grant, dispatches through the injected `AiBroker` on a
   worker, and routes event declarations/emits into `AppTimeline`. Tools and
   WASM subscribe/delivery imports remain future work.
-- **Lane F — manifest-backed WASM apps + remembered scoped grants: PARTIAL.**
+- **Lane F — manifest-backed WASM apps + remembered scoped grants: DONE for current surfaces.**
   `[app] type = "wasm"` manifests now load through the registry/path launch
   surfaces, use persistent per-app/per-workspace WASM state, derive explicit
   link-time host grants from manifest capabilities, and restore/persist raw
@@ -111,8 +111,11 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   registry schema. `[app.capabilities.wasm]` required/optional raw capability
   review metadata is validated and displayed during package/install review.
   Interactive installs persist workspace-scoped required and selected optional
-  raw WASM decisions after install succeeds; `--yes` defers optional grants.
-  Raw `.wasm` ephemeral review remains future work.
+  raw WASM decisions after install succeeds; `--yes` defers optional grants. Raw
+  `.wasm` launches inspect required link-time imports, fail closed without
+  remembered Green decisions, and `plexi app open ./x.wasm` prompts once and
+  remembers approved imports for the path scope. A native GUI pre-launch review
+  overlay for non-CLI raw launches remains a polish follow-up.
 
 ## Key facts discovered (load-bearing for the build)
 

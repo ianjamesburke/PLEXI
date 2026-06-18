@@ -283,7 +283,7 @@ Apps launched with `plexi run` without `--persist` get a temp-scoped namespace t
 
 ## Capability System  🟡 PARTIAL
 
-> **Status:** link-time gating ships — an ungranted import is not linked into the module, so the app physically cannot call it. Session-time escalation via `request-capability` also ships for focused WASM panes: user decisions enqueue `capability-granted`/`capability-denied`, audit `PermissionDecision`, and widen runtime fs/net access only for recognized scoped strings. **Not built:** persistent install review / remembered grants. Ephemeral runs still auto-grant imported interfaces at link time (`wasm_app.rs:462`).
+> **Status:** link-time gating ships — an ungranted import is not linked into the module, so the app physically cannot call it. Session-time escalation via `request-capability` also ships for focused WASM panes: user decisions enqueue `capability-granted`/`capability-denied`, audit `PermissionDecision`, and widen runtime fs/net access only for recognized scoped strings. Install-time review and remembered grants now persist raw WASM decisions. Raw `.wasm` launches no longer auto-grant imported host interfaces; `plexi app open ./x.wasm` reviews and remembers required link-time imports before launching.
 
 Every import the app can call is a capability. The manifest declares required and optional capabilities. The host only links the imports that match granted capabilities. If `net:fetch` is not granted, the import does not exist in the linked module — the app cannot call it. This is enforced at the WASM link layer, not at runtime.
 
@@ -1213,13 +1213,13 @@ Each lane below is independently shippable (one PR), independently testable (a `
 
 **Done condition:** `host::wasm_pane::tests` covers denied `ai-query` without broker calls, granted streaming/final AI response, declared event emission into the timeline, and undeclared event rejection.
 
-### Lane F — Manifest-backed WASM apps + remembered scoped grants 🟡 PARTIAL
+### Lane F — Manifest-backed WASM apps + remembered scoped grants ✅ DONE for current surfaces
 
-**Problem:** direct `.wasm` launches are still ephemeral and import-derived. A real sandboxed app needs a manifest-backed path: explicit runtime type, persistent state, explicit link-time host grants, and remembered user decisions for scoped runtime capabilities.
+**Problem:** direct `.wasm` launches were ephemeral and import-derived. A real sandboxed app needs a manifest-backed path: explicit runtime type, persistent state, explicit link-time host grants, and remembered user decisions for scoped runtime capabilities.
 
-**Shipped:** `manifest.toml` now accepts `[app] type = "wasm"`. Registry/path launches route those manifests through wasmtime instead of `ProcessApp`, use persistent per-app/per-workspace WASM state, derive link-time grants from manifest capabilities (`pipe.open`, `audio.playback`, `gpu.render`), and restore raw scoped WASM decisions from `permissions.toml`. The WASM capability modal now offers once/always allow/deny; always decisions persist raw ids such as `fs:read:<path>`, `fs:write:<path>`, `net:fetch:<host>`, and `ai.query`. `.plexipkg` validation and install trust sheets classify WASM packages, display required vs. optional raw WASM review metadata, and can pre-seed workspace-scoped required/selected optional raw decisions during install.
+**Shipped:** `manifest.toml` now accepts `[app] type = "wasm"`. Registry/path launches route those manifests through wasmtime instead of `ProcessApp`, use persistent per-app/per-workspace WASM state, derive link-time grants from manifest capabilities (`pipe.open`, `audio.playback`, `gpu.render`), and restore raw scoped WASM decisions from `permissions.toml`. The WASM capability modal now offers once/always allow/deny; always decisions persist raw ids such as `fs:read:<path>`, `fs:write:<path>`, `net:fetch:<host>`, and `ai.query`. `.plexipkg` validation and install trust sheets classify WASM packages, display required vs. optional raw WASM review metadata, and can pre-seed workspace-scoped required/selected optional raw decisions during install. Direct raw `.wasm` launch now inspects required link-time imports (`state:read-write`, `pipe.open`, `gpu.render`, `audio.playback`), fails closed without remembered Green decisions, and the CLI launch path prompts once and remembers approvals for the path scope.
 
-**Still future:** replacing raw `.wasm` ephemeral auto-grants with a review prompt.
+**Still future:** a native GUI pre-launch review overlay for raw `.wasm` launches that bypass the CLI prompt.
 
 **Done condition:** `app::permissions::tests` covers raw WASM permission persistence and sensitive unset withholding; `app::registry::tests::manifest_with_type_wasm_loads` covers manifest parsing; `host::wasm_pane::tests` remains green.
 
@@ -1240,5 +1240,5 @@ These remain explicitly out of scope until the parity lanes land — they are la
 | C | Real fs/net effects | ✅ Done — scoped fs + worker-backed HTTP | M |
 | D | Capability grant flow + runtime enforcement | ✅ Done — session prompts + scoped runtime enforcement; persisted install review lives in Lane F | M |
 | E | `ai-query` + app events → existing broker | ✅ Done — AI query + timeline emit; subscribe imports/tools remain future | M |
-| F | Manifest-backed WASM apps + remembered scoped grants | 🟡 Partial — manifest launch, persistent state, package review, and install-time selected raw decisions done; raw `.wasm` ephemeral review remains future | M |
+| F | Manifest-backed WASM apps + remembered scoped grants | ✅ Done for current surfaces — manifest launch, persistent state, package review, install-time selected raw decisions, and CLI-reviewed raw `.wasm` link imports ship; GUI pre-launch review remains a polish follow-up | M |
 | G8/G9/G10 | Python compat, cloud, payment | Large standalone missions; supersede-Python is a v3 outcome | L each |

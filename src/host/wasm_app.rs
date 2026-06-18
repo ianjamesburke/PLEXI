@@ -46,12 +46,31 @@ pub use types::{
 // host interface is linked only when granted. An app whose component imports an
 // ungranted interface fails to instantiate — link-time gating, fail-fast.
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Grants {
     pub state: bool,
     pub pipes: bool,
     pub gpu: bool,
     pub audio: bool,
+}
+
+impl Grants {
+    pub fn capability_ids(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        if self.state {
+            ids.push("state:read-write".to_string());
+        }
+        if self.pipes {
+            ids.push("pipe.open".to_string());
+        }
+        if self.gpu {
+            ids.push("gpu.render".to_string());
+        }
+        if self.audio {
+            ids.push("audio.playback".to_string());
+        }
+        ids
+    }
 }
 
 // ─── State store (G5) ──────────────────────────────────────────────────────
@@ -415,10 +434,8 @@ pub struct WasmApp {
 }
 
 /// Derive the capability grants a component needs from the interfaces it
-/// imports. Used by the ephemeral `run` path, where there is no manifest or
-/// grant prompt yet: a locally-run component is trusted to receive exactly the
-/// host interfaces it declares. `load` (explicit grants) remains the
-/// capability-enforcing entry used by gates and installed apps.
+/// imports. Callers use this for pre-link review; instantiation still goes
+/// through `load_with_grants` once the required imports have been approved.
 fn grants_from_component(engine: &Engine, component: &Component) -> Grants {
     let mut grants = Grants::default();
     for (name, _) in component.component_type().imports(engine) {
@@ -444,10 +461,17 @@ impl WasmApp {
         Ok((engine, component))
     }
 
-    /// Load for an ephemeral `plexi run`: grants are derived from the
-    /// component's declared imports rather than passed in. The WASM sandbox
-    /// still contains the app; this only decides which host interfaces are
-    /// linked before the capability-prompt UI exists.
+    /// Inspect a component's imported host interfaces without instantiating it.
+    /// Raw `.wasm` launches use this to review link-time grants before loading.
+    pub fn inspect_required_grants(path: &Path) -> wasmtime::Result<Grants> {
+        let (engine, component) = Self::engine_and_component(path)?;
+        Ok(grants_from_component(&engine, &component))
+    }
+
+    /// Load for tests and fixtures that intentionally bypass the launch review
+    /// path. Production raw `.wasm` launches should inspect and review imports,
+    /// then call `load_with_grants`.
+    #[cfg(test)]
     pub fn load_ephemeral_run(
         app_id: impl Into<String>,
         path: &Path,
@@ -660,6 +684,21 @@ mod tests {
 
     fn empty_snapshot() -> StateSnapshot {
         StateSnapshot { entries: vec![] }
+    }
+
+    #[test]
+    fn inspect_required_grants_maps_component_imports() -> wasmtime::Result<()> {
+        let grants = WasmApp::inspect_required_grants(&audio_fixture())?;
+
+        assert_eq!(
+            grants.capability_ids(),
+            vec![
+                "state:read-write".to_string(),
+                "pipe.open".to_string(),
+                "audio.playback".to_string()
+            ]
+        );
+        Ok(())
     }
 
     fn host_ctx_with_pipes() -> HostCtx {

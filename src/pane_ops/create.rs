@@ -438,13 +438,31 @@ impl PlexiApp {
 
         let store = StateStore::ephemeral();
         let snapshot = store.snapshot();
-        let app = WasmApp::load_ephemeral_run(app_id, wasm_path, store)
-            .map_err(|e| format!("load {}: {e}", wasm_path.display()))?;
         let permission_store =
             crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir());
-        let empty_declared = std::collections::HashSet::new();
+        let required_grants = WasmApp::inspect_required_grants(wasm_path)
+            .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
+        let required_caps = required_grants.capability_ids();
+        let declared: std::collections::HashSet<String> = required_caps.iter().cloned().collect();
         let (remembered_grants, remembered_blocks) =
-            permission_store.build_wasm_permission_sets(app_id, &workspace_root, &empty_declared);
+            permission_store.build_wasm_permission_sets(app_id, &workspace_root, &declared);
+        let missing: Vec<String> = required_caps
+            .iter()
+            .filter(|cap| !remembered_grants.contains(*cap))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            log::warn!(
+                "app::{app_id}: raw wasm launch requires review for {missing:?} path={}",
+                wasm_path.display()
+            );
+            return Err(format!(
+                "raw WASM launch requires review for: {}",
+                missing.join(", ")
+            ));
+        }
+        let app = WasmApp::load_with_grants(app_id, wasm_path, store, required_grants)
+            .map_err(|e| format!("load {}: {e}", wasm_path.display()))?;
         self.open_wasm_app_instance(
             app_id,
             app,

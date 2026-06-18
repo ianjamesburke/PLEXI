@@ -313,6 +313,34 @@ fn resolve(path: &str) -> PathBuf {
     }
 }
 
+fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
+    let app_id = wasm_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("wasm");
+    let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let grants = crate::host::wasm_app::WasmApp::inspect_required_grants(wasm_path)
+        .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
+    let mut store =
+        crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir());
+    for capability_id in grants.capability_ids() {
+        store.set_wasm(
+            app_id,
+            &workspace_root,
+            &capability_id,
+            crate::app::permissions::PermissionState::Green,
+        );
+    }
+    store.save();
+    log::info!(
+        "scene: preapproved raw wasm grants app={} path={} workspace={}",
+        app_id,
+        wasm_path.display(),
+        workspace_root.display()
+    );
+    Ok(())
+}
+
 impl SceneRunner {
     fn exec(&mut self, step: &Step, shots: &mut Vec<String>) -> Result<Option<String>, String> {
         match step {
@@ -328,9 +356,11 @@ impl SceneRunner {
                 Ok(None)
             }
             Step::OpenWasm { open_wasm, args } => {
+                let wasm_path = resolve(open_wasm);
+                preapprove_wasm_scene_grants(&wasm_path)?;
                 let pane_id = self
                     .h
-                    .open_wasm_at_with_args(&resolve(open_wasm), args.clone())?;
+                    .open_wasm_at_with_args(&wasm_path, args.clone())?;
                 self.last_app_pane = Some(pane_id);
                 self.h.step();
                 Ok(Some(format!("pane {pane_id}")))
