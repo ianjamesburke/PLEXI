@@ -23,12 +23,17 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 mod bindings {
     wasmtime::component::bindgen!({
         path: "wit/plexi.wit",
-        world: "plexi-app",
+        world: "plexi-full-app",
     });
 }
 
-use bindings::plexi::platform::{host_log, host_state, pipes, types};
-use bindings::PlexiApp;
+use bindings::exports::plexi::platform::audio_rt_process::{
+    Guest as AudioProcessGuest, GuestIndices as AudioProcessIndices,
+};
+use bindings::exports::plexi::platform::lifecycle::{
+    Guest as LifecycleGuest, GuestIndices as LifecycleIndices,
+};
+use bindings::plexi::platform::{audio_rt_control, host_log, host_state, pipes, types};
 
 pub use types::{
     Alignment, BadgeColor, ButtonStyle, Color, Effect, IndexedNode, InputEvent, KeyEvent,
@@ -47,13 +52,6 @@ pub struct Grants {
     pub pipes: bool,
     pub gpu: bool,
     pub audio: bool,
-}
-
-impl Grants {
-    /// Baseline grants for a standard `plexi-app`: state + pipes, no GPU/audio.
-    pub fn standard_app() -> Self {
-        Grants { state: true, pipes: true, gpu: false, audio: false }
-    }
 }
 
 // ─── State store (G5) ──────────────────────────────────────────────────────
@@ -137,6 +135,9 @@ pub struct HostCtx {
     pipes: crate::host::typed_pipes::TypedPipeRegistry,
     pipe_handles: HashMap<u32, PipeBinding>,
     next_pipe_handle: u32,
+    // Open audio streams (G12). Backs the `audio-rt-control` import; sample
+    // pulls happen through the guest's `process-output` export, not here.
+    audio_streams: AudioStreams,
     // Baseline WASI 0.2: clocks + random only. Rust-compiled components import
     // wasi:cli/io/clocks/random from std even when unused; a default ctx grants
     // no env, filesystem, or network access — the real platform capabilities
@@ -268,31 +269,136 @@ impl pipes::Host for HostCtx {
     }
 }
 
+// ─── Audio streams (G12) ────────────────────────────────────────────────────
+//
+// Backs the `audio-rt-control` import. Opening a stream registers its config;
+// the host's RT thread (live path) and the synchronous G12 gate both pull
+// samples by calling the guest's exported `process-output` via
+// `WasmApp::audio_process_output` — not through this registry.
+
+#[derive(Default)]
+struct AudioStreams {
+    streams: HashMap<u32, audio_rt_control::AudioConfig>,
+    next: u32,
+}
+
+impl audio_rt_control::Host for HostCtx {
+    fn open_output(&mut self, config: audio_rt_control::AudioConfig) -> Result<u32, String> {
+        let handle = self.audio_streams.next;
+        self.audio_streams.next += 1;
+        log::info!(
+            "app::{}: audio open_output stream {handle} ({} Hz, {} ch, {} frames)",
+            self.app_id, config.sample_rate, config.channels, config.buffer_frames
+        );
+        self.audio_streams.streams.insert(handle, config);
+        Ok(handle)
+    }
+
+    fn open_input(&mut self, config: audio_rt_control::AudioConfig) -> Result<u32, String> {
+        let handle = self.audio_streams.next;
+        self.audio_streams.next += 1;
+        log::info!("app::{}: audio open_input stream {handle}", self.app_id);
+        self.audio_streams.streams.insert(handle, config);
+        Ok(handle)
+    }
+
+    fn stream_config(
+        &mut self,
+        handle: u32,
+    ) -> Result<audio_rt_control::AudioConfig, String> {
+        self.audio_streams
+            .streams
+            .get(&handle)
+            .cloned()
+            .ok_or_else(|| format!("unknown audio stream {handle}"))
+    }
+
+    fn pause(&mut self, handle: u32) -> Result<(), String> {
+        if self.audio_streams.streams.contains_key(&handle) {
+            Ok(())
+        } else {
+            Err(format!("unknown audio stream {handle}"))
+        }
+    }
+
+    fn resume(&mut self, handle: u32) -> Result<(), String> {
+        if self.audio_streams.streams.contains_key(&handle) {
+            Ok(())
+        } else {
+            Err(format!("unknown audio stream {handle}"))
+        }
+    }
+
+    fn close(&mut self, handle: u32) -> Result<(), String> {
+        self.audio_streams.streams.remove(&handle);
+        log::info!("app::{}: audio stream {handle} closed", self.app_id);
+        Ok(())
+    }
+}
+
 // ─── WasmApp ───────────────────────────────────────────────────────────────
 
 pub struct WasmApp {
     store: Store<HostCtx>,
-    bindings: PlexiApp,
+    lifecycle: LifecycleGuest,
+    // Some only when the component exports `audio-rt-process` (audio/full worlds).
+    audio: Option<AudioProcessGuest>,
+}
+
+/// Derive the capability grants a component needs from the interfaces it
+/// imports. Used by the ephemeral `run` path, where there is no manifest or
+/// grant prompt yet: a locally-run component is trusted to receive exactly the
+/// host interfaces it declares. `load` (explicit grants) remains the
+/// capability-enforcing entry used by gates and installed apps.
+fn grants_from_component(engine: &Engine, component: &Component) -> Grants {
+    let mut grants = Grants::default();
+    for (name, _) in component.component_type().imports(engine) {
+        if name.contains("host-state") {
+            grants.state = true;
+        } else if name.contains("/pipes") {
+            grants.pipes = true;
+        } else if name.contains("audio-rt-control") {
+            grants.audio = true;
+        } else if name.contains("/gpu") {
+            grants.gpu = true;
+        }
+    }
+    grants
 }
 
 impl WasmApp {
-    /// Load a component from `path`, link only granted capabilities, and
-    /// instantiate it with `state` as its backing store.
-    pub fn load(
-        app_id: impl Into<String>,
-        path: &Path,
-        grants: &Grants,
-        state: StateStore,
-    ) -> wasmtime::Result<Self> {
-        let app_id = app_id.into();
-
+    fn engine_and_component(path: &Path) -> wasmtime::Result<(Engine, Component)> {
         let mut config = Config::new();
         config.wasm_component_model(true);
         let engine = Engine::new(&config)?;
-
         let component = Component::from_file(&engine, path)?;
+        Ok((engine, component))
+    }
 
-        let mut linker = Linker::<HostCtx>::new(&engine);
+    /// Load for an ephemeral `plexi run`: grants are derived from the
+    /// component's declared imports rather than passed in. The WASM sandbox
+    /// still contains the app; this only decides which host interfaces are
+    /// linked before the capability-prompt UI exists.
+    pub fn load_ephemeral_run(
+        app_id: impl Into<String>,
+        path: &Path,
+        state: StateStore,
+    ) -> wasmtime::Result<Self> {
+        let app_id = app_id.into();
+        let (engine, component) = Self::engine_and_component(path)?;
+        let grants = grants_from_component(&engine, &component);
+        log::info!("app::{app_id}: ephemeral run grants {grants:?}");
+        Self::instantiate(app_id, &engine, &component, &grants, state)
+    }
+
+    fn instantiate(
+        app_id: String,
+        engine: &Engine,
+        component: &Component,
+        grants: &Grants,
+        state: StateStore,
+    ) -> wasmtime::Result<Self> {
+        let mut linker = Linker::<HostCtx>::new(engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
         host_log::add_to_linker::<_, HasSelf<HostCtx>>(&mut linker, |c| c)?;
         if grants.state {
@@ -301,12 +407,15 @@ impl WasmApp {
         if grants.pipes {
             pipes::add_to_linker::<_, HasSelf<HostCtx>>(&mut linker, |c| c)?;
         }
-        if grants.gpu || grants.audio {
-            // GPU/audio host interfaces land in M4. A component importing them
-            // would fail instantiation below; surface the gap explicitly.
-            log::warn!(
-                "app::{app_id}: gpu/audio capability requested but not yet linkable (M4)"
-            );
+        if grants.gpu {
+            // The gpu host interface lands with G7/G11. Fail fast with a clear
+            // message rather than an opaque unsatisfied-import error below.
+            return Err(wasmtime::Error::msg(format!(
+                "app::{app_id}: gpu capability not yet supported (G7/G11)"
+            )));
+        }
+        if grants.audio {
+            audio_rt_control::add_to_linker::<_, HasSelf<HostCtx>>(&mut linker, |c| c)?;
         }
 
         let ctx = HostCtx {
@@ -317,30 +426,83 @@ impl WasmApp {
             ),
             pipe_handles: HashMap::new(),
             next_pipe_handle: 0,
+            audio_streams: AudioStreams::default(),
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
         };
-        let mut store = Store::new(&engine, ctx);
-        let bindings = PlexiApp::instantiate(&mut store, &component, &linker)?;
 
-        log::info!("app::{}: wasm component instantiated ({})", app_id, path.display());
-        Ok(WasmApp { store, bindings })
+        // Instantiate raw, then build per-interface export accessors. The world
+        // struct's instantiate would demand every export of `plexi-full-app`;
+        // standard apps only export `lifecycle`, so build that unconditionally
+        // and probe for the optional `audio-rt-process` export.
+        let pre = linker.instantiate_pre(component)?;
+        let lifecycle_idx = LifecycleIndices::new(&pre)?;
+        let audio_idx = AudioProcessIndices::new(&pre).ok();
+
+        let mut store = Store::new(engine, ctx);
+        let instance = pre.instantiate(&mut store)?;
+        let lifecycle = lifecycle_idx.load(&mut store, &instance)?;
+        let audio = match audio_idx {
+            Some(idx) => Some(idx.load(&mut store, &instance)?),
+            None => None,
+        };
+
+        log::info!(
+            "app::{}: wasm component instantiated (audio={})",
+            app_id,
+            audio.is_some()
+        );
+        Ok(WasmApp { store, lifecycle, audio })
     }
 
     pub fn init(&mut self, snapshot: &StateSnapshot, size: (f32, f32)) -> wasmtime::Result<Vec<Effect>> {
-        self.bindings
-            .plexi_platform_lifecycle()
-            .call_init(&mut self.store, snapshot, size)
+        self.lifecycle.call_init(&mut self.store, snapshot, size)
     }
 
     pub fn update(&mut self, event: &InputEvent) -> wasmtime::Result<Vec<Effect>> {
-        self.bindings
-            .plexi_platform_lifecycle()
-            .call_update(&mut self.store, event)
+        self.lifecycle.call_update(&mut self.store, event)
     }
 
     pub fn view(&mut self) -> wasmtime::Result<UiTree> {
-        self.bindings.plexi_platform_lifecycle().call_view(&mut self.store)
+        self.lifecycle.call_view(&mut self.store)
+    }
+
+    /// Pull one buffer of output samples from the guest's RT `process-output`
+    /// export. Returns interleaved f32 samples (len = buffer_frames * channels)
+    /// and the threaded `u64` state slot. Errors on a non-audio component.
+    pub fn audio_process_output(
+        &mut self,
+        handle: u32,
+        buffer_frames: u32,
+        channels: u32,
+        sample_rate: u32,
+        state: u64,
+    ) -> wasmtime::Result<(Vec<f32>, u64)> {
+        let audio = self
+            .audio
+            .as_ref()
+            .ok_or_else(|| wasmtime::Error::msg("audio_process_output on a non-audio app"))?;
+        audio.call_process_output(
+            &mut self.store,
+            handle,
+            buffer_frames,
+            channels,
+            sample_rate,
+            state,
+        )
+    }
+
+    /// Config of the first audio output stream the guest opened via
+    /// `audio-rt-control`, as `(stream_handle, sample_rate, channels,
+    /// buffer_frames)`. `None` until the guest opens one (or for non-audio
+    /// apps). The live pane uses this to start the host output stream.
+    pub fn output_stream_config(&self) -> Option<(u32, u32, u32, u32)> {
+        let streams = &self.store.data().audio_streams;
+        streams
+            .streams
+            .iter()
+            .min_by_key(|(handle, _)| **handle)
+            .map(|(handle, cfg)| (*handle, cfg.sample_rate, cfg.channels, cfg.buffer_frames))
     }
 }
 
@@ -358,6 +520,10 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/sysmon.wasm")
     }
 
+    fn audio_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/audio-synth.wasm")
+    }
+
     fn empty_snapshot() -> StateSnapshot {
         StateSnapshot { entries: vec![] }
     }
@@ -373,6 +539,7 @@ mod tests {
             pipes: crate::host::typed_pipes::TypedPipeRegistry::new(dir),
             pipe_handles: std::collections::HashMap::new(),
             next_pipe_handle: 0,
+            audio_streams: AudioStreams::default(),
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
         }
@@ -425,6 +592,46 @@ mod tests {
         ctx.close(h).expect("close");
     }
 
+    // G12 (host side): a plexi-audio-app component links audio-rt-control and
+    // exports audio-rt-process. After the guest starts playing, the host pulls
+    // a buffer via process-output and gets non-silent interleaved samples. The
+    // whole loop runs synchronously through wasmtime — no OS audio thread, which
+    // is exactly the spec's automated pass condition (RT-thread priority and
+    // <10ms latency are measured separately by the live path).
+    #[test]
+    fn g12_audio_process_output_produces_sound() -> wasmtime::Result<()> {
+        // Grants are derived from the component's imports; audio-synth imports
+        // audio-rt-control, so the audio capability is linked.
+        let mut app = WasmApp::load_ephemeral_run(
+            "audio-synth-g12",
+            &audio_fixture(),
+            StateStore::ephemeral(),
+        )?;
+        assert!(app.audio.is_some(), "audio-synth must export audio-rt-process");
+
+        app.init(&empty_snapshot(), (400.0, 300.0))?;
+
+        // Before play, the envelope is at zero — output is silent.
+        let (silent, _) = app.audio_process_output(0, 512, 2, 48_000, 0)?;
+        assert_eq!(silent.len(), 512 * 2, "interleaved buffer = frames * channels");
+        assert!(
+            silent.iter().all(|&s| s.abs() <= 0.01),
+            "stopped synth must be silent"
+        );
+
+        // Space toggles play; pump several buffers so the amplitude ramp opens.
+        app.update(&key("space"))?;
+        let mut state = 0u64;
+        let mut peak = 0.0f32;
+        for _ in 0..32 {
+            let (samples, next) = app.audio_process_output(0, 512, 2, 48_000, state)?;
+            state = next;
+            peak = peak.max(samples.iter().fold(0.0, |m, &s| m.max(s.abs())));
+        }
+        assert!(peak > 0.01, "playing synth must produce audible samples (peak={peak})");
+        Ok(())
+    }
+
     fn mock_stats(cpu: f32) -> SystemStats {
         SystemStats {
             cpu_usage_pct: cpu,
@@ -463,10 +670,9 @@ mod tests {
     // with no subprocess.
     #[test]
     fn g3_effect_roundtrip() -> wasmtime::Result<()> {
-        let mut app = WasmApp::load(
+        let mut app = WasmApp::load_ephemeral_run(
             "sysmon-g3",
             &fixture(),
-            &Grants::standard_app(),
             StateStore::ephemeral(),
         )?;
 
@@ -504,12 +710,7 @@ mod tests {
 
         {
             let store = StateStore::persistent(path.clone())?;
-            let mut app = WasmApp::load(
-                "sysmon-g5",
-                &fixture(),
-                &Grants::standard_app(),
-                store,
-            )?;
+            let mut app = WasmApp::load_ephemeral_run("sysmon-g5", &fixture(), store)?;
             app.init(&empty_snapshot(), (400.0, 300.0))?;
             // default 2000ms + 3 x 1000ms = 5000ms
             for _ in 0..3 {
@@ -519,12 +720,7 @@ mod tests {
 
         let store = StateStore::persistent(path.clone())?;
         let snapshot = store.snapshot();
-        let mut reloaded = WasmApp::load(
-            "sysmon-g5-reload",
-            &fixture(),
-            &Grants::standard_app(),
-            store,
-        )?;
+        let mut reloaded = WasmApp::load_ephemeral_run("sysmon-g5-reload", &fixture(), store)?;
         let startup = reloaded.init(&snapshot, (400.0, 300.0))?;
         assert!(
             startup

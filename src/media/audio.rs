@@ -214,6 +214,138 @@ pub fn start_playback(request: PlaybackRequest) -> Result<PlaybackSession, Audio
     Ok(PlaybackSession { _phantom: () })
 }
 
+// ─── Real-time output stream (WASM audio, G12) ────────────────────────────────
+//
+// A pull-based output stream for synthesised audio. The producer (the host UI
+// thread, which owns the wasmtime Store) tops up a lock-free `ArrayQueue<f32>`
+// ring by calling the guest's `process-output`; the cpal output callback (RT
+// thread) pops interleaved f32 samples from the same ring. The RT thread never
+// touches the Store and never locks — an empty ring yields silence, never a
+// stall. This is the live counterpart to the synchronous G12 gate.
+
+use crossbeam_queue::ArrayQueue;
+
+/// Handle owning a live output stream. Drop to stop playback.
+#[cfg(not(test))]
+pub struct OutputSession {
+    _stream: SendStream,
+    /// Config the device actually negotiated. The producer must synthesise at
+    /// these values, not the requested ones, or pitch/throughput will drift.
+    pub sample_rate: u32,
+    pub channels: u32,
+}
+
+/// Open the default output device, negotiate the nearest config to the request,
+/// and start a callback that drains `ring`. Returns the negotiated config so the
+/// caller can synthesise at the right rate/channel count.
+#[cfg(not(test))]
+pub fn start_output_stream(
+    requested_sample_rate: u32,
+    requested_channels: u16,
+    ring: Arc<ArrayQueue<f32>>,
+) -> Result<OutputSession, AudioError> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or(AudioError::NoDevicesAvailable)?;
+
+    let supported = pick_output_config(&device, requested_sample_rate, requested_channels)?;
+    let sample_format = supported.sample_format();
+    if sample_format != cpal::SampleFormat::F32 {
+        // CoreAudio is natively f32; other formats would need conversion in the
+        // RT callback. Fail clearly rather than emit garbage.
+        return Err(AudioError::Cpal(format!(
+            "unsupported output sample format: {sample_format:?}"
+        )));
+    }
+    let sample_rate = supported.sample_rate();
+    let channels = supported.channels();
+    let config = cpal::StreamConfig {
+        channels,
+        sample_rate,
+        buffer_size: cpal::BufferSize::Default,
+    };
+    let err_fn = |e| log::warn!("audio: output stream error: {e}");
+
+    let stream = device
+        .build_output_stream(
+            &config,
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                // RT thread: pop pre-rendered samples; underrun → silence.
+                for s in data.iter_mut() {
+                    *s = ring.pop().unwrap_or(0.0);
+                }
+            },
+            err_fn,
+            None,
+        )
+        .map_err(|e| AudioError::Cpal(format!("build_output_stream: {e}")))?;
+    stream
+        .play()
+        .map_err(|e| AudioError::Cpal(format!("output stream.play: {e}")))?;
+    log::info!("audio: output stream playing ({sample_rate} Hz, {channels} ch)");
+
+    Ok(OutputSession {
+        _stream: SendStream { _stream: stream },
+        sample_rate,
+        channels: channels as u32,
+    })
+}
+
+#[cfg(not(test))]
+fn pick_output_config(
+    device: &cpal::Device,
+    rate: u32,
+    channels: u16,
+) -> Result<cpal::SupportedStreamConfig, AudioError> {
+    let configs = device
+        .supported_output_configs()
+        .map_err(|e| AudioError::Cpal(format!("supported_output_configs: {e}")))?;
+
+    // Prefer a range that supports the requested channel count, then the one
+    // whose sample-rate window is nearest the request.
+    let mut best: Option<(u32, cpal::SupportedStreamConfigRange)> = None;
+    for range in configs {
+        let min = range.min_sample_rate();
+        let max = range.max_sample_rate();
+        let clamped = rate.clamp(min, max);
+        let channel_penalty = if range.channels() == channels { 0 } else { 100_000 };
+        let dist = clamped.abs_diff(rate) + channel_penalty;
+        if best.as_ref().map_or(true, |(d, _)| dist < *d) {
+            best = Some((dist, range));
+        }
+    }
+    let range = best
+        .ok_or_else(|| AudioError::Cpal("device has no supported output configs".to_owned()))?
+        .1;
+    let chosen = rate.clamp(range.min_sample_rate(), range.max_sample_rate());
+    Ok(range.with_sample_rate(chosen))
+}
+
+/// Test stub — output playback touches CoreAudio, which is unavailable in CI.
+/// Returns a no-op session reporting the requested config so producer code can
+/// be exercised without hardware.
+#[cfg(test)]
+pub struct OutputSession {
+    pub sample_rate: u32,
+    pub channels: u32,
+}
+
+#[cfg(test)]
+pub fn start_output_stream(
+    requested_sample_rate: u32,
+    requested_channels: u16,
+    _ring: Arc<ArrayQueue<f32>>,
+) -> Result<OutputSession, AudioError> {
+    log::info!(
+        "audio(mock): start_output_stream rate={requested_sample_rate} ch={requested_channels}"
+    );
+    Ok(OutputSession {
+        sample_rate: requested_sample_rate,
+        channels: requested_channels as u32,
+    })
+}
+
 // ─── Device trait ────────────────────────────────────────────────────────────
 
 pub trait AudioDevice: Send + Sync {

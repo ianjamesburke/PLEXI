@@ -9,9 +9,13 @@
 // same queue, so the loop converges within one tick. No async runtime.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crossbeam_queue::ArrayQueue;
+
 use crate::app::app_trait::KeyDisposition;
+use crate::media::audio::{start_output_stream, OutputSession};
 use crate::ui::theme::Colors;
 
 use super::wasm_app::{
@@ -69,6 +73,21 @@ struct Timer {
     next_fire_ms: u64,
 }
 
+/// Live RT-audio output for an audio-world app. The host UI thread tops up
+/// `ring` from the guest's `process-output`; the cpal callback owned by
+/// `_session` drains it on the audio thread. Negotiated `sample_rate`/`channels`
+/// come from the device and may differ from what the guest requested — the
+/// guest is driven at the negotiated values so pitch stays correct.
+struct AudioOut {
+    ring: Arc<ArrayQueue<f32>>,
+    _session: OutputSession,
+    handle: u32,
+    sample_rate: u32,
+    channels: u32,
+    buffer_frames: u32,
+    state: u64,
+}
+
 pub struct WasmPane {
     app: WasmApp,
     stats: Box<dyn SystemStatsSource>,
@@ -77,6 +96,7 @@ pub struct WasmPane {
     wants_close: bool,
     pending_title: Option<String>,
     pending_status: Option<String>,
+    audio: Option<AudioOut>,
 }
 
 impl WasmPane {
@@ -89,6 +109,7 @@ impl WasmPane {
             wants_close: false,
             pending_title: None,
             pending_status: None,
+            audio: None,
         }
     }
 
@@ -104,7 +125,11 @@ impl WasmPane {
         for e in effects {
             self.exec(e, now_ms);
         }
-        self.drain(now_ms)
+        self.drain(now_ms)?;
+        // The guest opens its audio stream during init; start the host output
+        // and prime the ring once it has.
+        self.start_audio();
+        self.pump_audio()
     }
 
     /// Enqueue an external input event for the next `tick`.
@@ -116,7 +141,74 @@ impl WasmPane {
     /// elapsed milliseconds since the pane started.
     pub fn tick(&mut self, now_ms: u64) -> wasmtime::Result<()> {
         self.fire_timers(now_ms);
-        self.drain(now_ms)
+        self.drain(now_ms)?;
+        self.pump_audio()
+    }
+
+    /// True once a live audio output stream is running. The live pane uses this
+    /// to keep requesting repaints so the ring stays topped up.
+    pub fn has_audio(&self) -> bool {
+        self.audio.is_some()
+    }
+
+    /// Start the host output stream if the guest opened one and it isn't running
+    /// yet. A device failure is logged and leaves the pane silent — never fatal.
+    fn start_audio(&mut self) {
+        if self.audio.is_some() {
+            return;
+        }
+        let Some((handle, rate, channels, buffer_frames)) = self.app.output_stream_config() else {
+            return;
+        };
+        // Ring holds ~8 buffers so a stalled UI thread doesn't underrun audibly.
+        let capacity = (buffer_frames.max(1) * channels.max(1) * 8) as usize;
+        let ring = Arc::new(ArrayQueue::new(capacity));
+        match start_output_stream(rate, channels as u16, Arc::clone(&ring)) {
+            Ok(session) => {
+                let sample_rate = session.sample_rate;
+                let channels = session.channels;
+                log::info!(
+                    "wasm audio: output stream started (stream {handle}, {sample_rate} Hz, {channels} ch)"
+                );
+                self.audio = Some(AudioOut {
+                    ring,
+                    _session: session,
+                    handle,
+                    sample_rate,
+                    channels,
+                    buffer_frames,
+                    state: 0,
+                });
+            }
+            Err(e) => log::warn!("wasm audio: output stream failed, pane stays silent: {e}"),
+        }
+    }
+
+    /// Top up the audio ring from the guest's `process-output` while it has room
+    /// for at least one more buffer. Runs on the UI thread (which owns the
+    /// Store); the cpal callback only pops, so the RT thread never re-enters
+    /// wasmtime.
+    fn pump_audio(&mut self) -> wasmtime::Result<()> {
+        let Some(audio) = self.audio.as_mut() else {
+            return Ok(());
+        };
+        let frame_samples = (audio.buffer_frames * audio.channels) as usize;
+        while audio.ring.capacity() - audio.ring.len() >= frame_samples {
+            let (samples, next) = self.app.audio_process_output(
+                audio.handle,
+                audio.buffer_frames,
+                audio.channels,
+                audio.sample_rate,
+                audio.state,
+            )?;
+            audio.state = next;
+            for s in samples {
+                if audio.ring.push(s).is_err() {
+                    break;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn view(&mut self) -> wasmtime::Result<UiTree> {
@@ -326,9 +418,13 @@ impl LiveWasmPane {
             );
         }
 
-        // Schedule the next repaint for the earliest pending timer so polling
-        // apps refresh on time without busy-looping.
-        if let Some(deadline) = self.inner.next_deadline_ms() {
+        // An audio app must keep topping up its sample ring, so repaint at
+        // audio cadence regardless of timers. Otherwise schedule the next
+        // repaint for the earliest pending timer so polling apps refresh on
+        // time without busy-looping.
+        if self.inner.has_audio() {
+            ui.ctx().request_repaint_after(Duration::from_millis(15));
+        } else if let Some(deadline) = self.inner.next_deadline_ms() {
             ui.ctx()
                 .request_repaint_after(Duration::from_millis(deadline.saturating_sub(now)));
         }
@@ -416,7 +512,7 @@ fn printable_key(key: egui::Key) -> bool {
 mod tests {
     use super::*;
     use crate::host::wasm_app::{
-        Grants, KeyEvent, Modifiers, StateSnapshot, StateStore, UiNodeData, WasmApp,
+        KeyEvent, Modifiers, StateSnapshot, StateStore, UiNodeData, WasmApp,
     };
     use std::path::PathBuf;
 
@@ -444,13 +540,8 @@ mod tests {
     }
 
     fn pane(cpu: f32) -> WasmPane {
-        let app = WasmApp::load(
-            "sysmon-pane",
-            &fixture(),
-            &Grants::standard_app(),
-            StateStore::ephemeral(),
-        )
-        .expect("load");
+        let app = WasmApp::load_ephemeral_run("sysmon-pane", &fixture(), StateStore::ephemeral())
+            .expect("load");
         WasmPane::new(app, Box::new(FakeStats { cpu }))
     }
 

@@ -433,12 +433,12 @@ impl PlexiApp {
         wasm_path: &std::path::Path,
         workspace_root: PathBuf,
     ) -> Result<PaneId, String> {
-        use crate::host::wasm_app::{Grants, StateStore, WasmApp};
+        use crate::host::wasm_app::{StateStore, WasmApp};
         use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
 
         let store = StateStore::ephemeral();
         let snapshot = store.snapshot();
-        let app = WasmApp::load(app_id, wasm_path, &Grants::standard_app(), store)
+        let app = WasmApp::load_ephemeral_run(app_id, wasm_path, store)
             .map_err(|e| format!("load {}: {e}", wasm_path.display()))?;
         let live = LiveWasmPane::new(
             WasmPane::new(app, Box::new(SysinfoStats::new())),

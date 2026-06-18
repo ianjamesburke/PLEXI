@@ -230,7 +230,7 @@ fn render_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::wasm_app::{Grants, InputEvent, StateSnapshot, StateStore, SystemStats, WasmApp};
+    use crate::host::wasm_app::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmApp};
     use std::path::PathBuf;
 
     fn fixture() -> PathBuf {
@@ -242,12 +242,7 @@ mod tests {
     // spurious actions.
     #[test]
     fn renders_sysmon_tree_headless() -> wasmtime::Result<()> {
-        let mut app = WasmApp::load(
-            "sysmon-render",
-            &fixture(),
-            &Grants::standard_app(),
-            StateStore::ephemeral(),
-        )?;
+        let mut app = WasmApp::load_ephemeral_run("sysmon-render", &fixture(), StateStore::ephemeral())?;
         app.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0))?;
         app.update(&InputEvent::SystemStatsResult(SystemStats {
             cpu_usage_pct: 42.0,
