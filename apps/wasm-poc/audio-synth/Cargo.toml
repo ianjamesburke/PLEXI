@@ -1,0 +1,23 @@
+[package]
+name = "audio-synth"
+version = "0.1.0"
+edition = "2021"
+
+# RT audio POC. Targets plexi-audio-app world (exports audio-rt-process).
+# process-output is called by the host from its OS audio thread at RT priority.
+# Also opens a binary pipe to stream interleaved f32 waveform samples to any
+# connected visualiser pane — demonstrates Plexi Pipes from WASM.
+# Build: cargo component build --target wasm32-wasip2
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.28"
+
+[package.metadata.component]
+package = "plexi:audio-synth"
+
+[package.metadata.component.target]
+path = "wit"
+world = "plexi-audio-app"
