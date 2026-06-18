@@ -844,7 +844,11 @@ impl PlexiApp {
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
             crate::host::app_timeline::global(),
         );
-        if let Err(e) = host_mcp::start_host_mcp_server(event_subscribe_tx, cc.egui_ctx.clone()) {
+        if let Err(e) = host_mcp::start_host_mcp_server(
+            event_subscribe_tx,
+            cc.egui_ctx.clone(),
+            &crate::config::config_dir(),
+        ) {
             log::warn!("host_mcp: failed to start event MCP server: {e}");
         }
 

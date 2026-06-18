@@ -16,6 +16,12 @@
 //! env as `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`, so an agent in a pane
 //! can configure this server without a wrapper subprocess.
 //!
+//! Persistence: the `(port, token)` is stored in `config_dir/host_mcp.json` and
+//! reused on every launch. This makes the server install-once — an agent runs
+//! `plexi events mcp-config` a single time, bakes the URL + bearer into a static
+//! MCP client config, and it keeps resolving across Plexi restarts instead of
+//! breaking when a fresh port/token is rolled each boot.
+//!
 //! Identity: subscriptions are recorded under the host-stamped id `mcp:host`
 //! (set by this trusted transport, never from a tool argument), so an MCP client
 //! cannot spoof another subscriber.
@@ -23,6 +29,7 @@
 use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
 use crate::mcp_http::{read_json_rpc_request, write_http_response, RequestOutcome};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -44,17 +51,97 @@ pub fn discovery() -> Option<&'static (u16, String)> {
     DISCOVERY.get()
 }
 
+/// The persisted host-MCP identity (`config_dir/host_mcp.json`). Survives
+/// restarts so a baked MCP client config keeps working — see the module docs.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HostMcpIdentity {
+    port: u16,
+    token: String,
+}
+
+fn identity_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("host_mcp.json")
+}
+
+/// Load the persisted `(port, token)` if the file exists and parses. A corrupt
+/// file is logged and ignored so the next launch re-rolls a fresh identity
+/// rather than failing to start the transport.
+fn load_identity(config_dir: &Path) -> Option<HostMcpIdentity> {
+    let path = identity_path(config_dir);
+    let bytes = std::fs::read(&path).ok()?;
+    match serde_json::from_slice::<HostMcpIdentity>(&bytes) {
+        Ok(id) => Some(id),
+        Err(e) => {
+            log::warn!("host_mcp: ignoring unparseable {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Atomically persist `(port, token)` with owner-only permissions — the file
+/// carries a bearer secret. Best-effort: a write failure only means the next
+/// launch re-rolls the identity, so it is logged rather than propagated.
+fn save_identity(config_dir: &Path, port: u16, token: &str) {
+    let path = identity_path(config_dir);
+    let tmp = path.with_extension("json.tmp");
+    let body = match serde_json::to_vec_pretty(&HostMcpIdentity {
+        port,
+        token: token.to_string(),
+    }) {
+        Ok(b) => b,
+        Err(e) => {
+            log::warn!("host_mcp: could not serialize identity: {e}");
+            return;
+        }
+    };
+    if let Err(e) = std::fs::write(&tmp, &body) {
+        log::warn!("host_mcp: could not write {}: {e}", tmp.display());
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        log::warn!("host_mcp: could not finalize {}: {e}", path.display());
+    }
+}
+
 /// Start the host MCP server. `subscribe_tx` routes subscribe requests to the
 /// UI thread (which owns the grant store); `egui_ctx` is woken so the UI drains
-/// the subscribe channel promptly even while idle. Idempotent at the discovery
-/// level — the first successful bind wins.
+/// the subscribe channel promptly even while idle. `config_dir` is the profile
+/// dir where the `(port, token)` identity is persisted across restarts.
+/// Idempotent at the discovery level — the first successful bind wins.
 pub fn start_host_mcp_server(
     subscribe_tx: Sender<HostSubscribeRequest>,
     egui_ctx: egui::Context,
+    config_dir: &Path,
 ) -> std::io::Result<(u16, String)> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let persisted = load_identity(config_dir);
+    // Reuse the persisted token so a baked `Authorization: Bearer` keeps
+    // authenticating; generate one only on first launch.
+    let token = persisted
+        .as_ref()
+        .map(|id| id.token.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    // Reuse the persisted port so a static MCP URL keeps resolving. Fall back to
+    // an OS-assigned port if it is taken (e.g. another channel grabbed it while
+    // this instance was down) and re-persist whatever we actually bound.
+    let listener = match persisted.as_ref().map(|id| id.port) {
+        Some(p) => TcpListener::bind(("127.0.0.1", p)).or_else(|e| {
+            log::warn!(
+                "host_mcp: persisted port {p} unavailable ({e}); falling back to an ephemeral port"
+            );
+            TcpListener::bind("127.0.0.1:0")
+        })?,
+        None => TcpListener::bind("127.0.0.1:0")?,
+    };
     let port = listener.local_addr()?.port();
-    let token = uuid::Uuid::new_v4().to_string();
+
+    save_identity(config_dir, port, &token);
+
     let _ = DISCOVERY.set((port, token.clone()));
     let token_arc = std::sync::Arc::new(token.clone());
 
@@ -378,7 +465,34 @@ mod tests {
                 let _ = svc.classify_subscribe_request(req);
             }
         });
-        start_host_mcp_server(tx, egui::Context::default()).unwrap()
+        // Each test server gets an isolated profile dir so its persisted
+        // identity never collides with a sibling test's port/token.
+        let dir = tempfile::tempdir().unwrap();
+        start_host_mcp_server(tx, egui::Context::default(), dir.path()).unwrap()
+    }
+
+    #[test]
+    fn identity_round_trips_through_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        save_identity(dir.path(), 4242, "tok-abc");
+        let loaded = load_identity(dir.path()).expect("identity file written");
+        assert_eq!(loaded.port, 4242);
+        assert_eq!(loaded.token, "tok-abc");
+    }
+
+    #[test]
+    fn restart_reuses_persisted_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel::<HostSubscribeRequest>();
+        let (port1, token1) =
+            start_host_mcp_server(tx.clone(), egui::Context::default(), dir.path()).unwrap();
+        // A second boot against the same profile dir must reuse the token so a
+        // baked `Authorization: Bearer` keeps authenticating across restarts.
+        let (_port2, token2) =
+            start_host_mcp_server(tx, egui::Context::default(), dir.path()).unwrap();
+        assert_eq!(token1, token2, "token must persist across restarts");
+        assert_eq!(load_identity(dir.path()).unwrap().token, token1);
+        assert!(port1 > 0);
     }
 
     #[test]
