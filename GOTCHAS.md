@@ -4,6 +4,19 @@
 
 ---
 
+## [egui · sdk] WASM apps and Python apps speak DIFFERENT key dialects
+
+The host has two key-input translation paths and they are NOT the same:
+
+- **Python/process apps** (`src/process_app/mod.rs::handle_key`) send the raw egui debug name — `"ArrowUp"`, `"Escape"` — and the Python SDK normalizes it. Letters/punctuation arrive shift-resolved via `Event::Text`.
+- **WASM apps** (`src/host/wasm_pane.rs::handle_key`) have no SDK normalization layer — the guest matches the wire string **literally**. So the host must emit the canonical short form directly: `up`/`down`/`left`/`right`, `space`, `enter`, `escape`, lowercase letters/digits, literal punctuation. `canonical_key_name()` is the single source of truth — that table IS the contract.
+
+**The trap (shipped in #2291, fixed after):** the WASM path originally reused the Python pattern — `format!("{key:?}").to_lowercase()` → `"arrowup"` — but the WASM POCs match `"up"`. No arrow ever matched. Worse, `handle_key` only forwarded `pressed: true` and delivered letters press-only via `Event::Text`, so hold-to-move games (bevy-pong) never saw key release and paddles stuck. Both bugs lived in the **egui→guest translation layer, which had zero test coverage** — every gate test called `push_input(key("w"))` directly, bypassing `handle_key`.
+
+**Rules for WASM input:** forward both press AND release edges (the WIT `key-event.pressed` field exists for exactly this); collapse OS auto-repeat to clean edges; reserve Cmd-chords for host shortcuts. Test the translation with `translate_key_event()` unit tests, not just direct `push_input`. Shift-resolved text composition is deliberately deferred to a future text-input channel — games get raw `base-key + shift-flag`.
+
+---
+
 ## [sdk · python] Canvas apps bypass the host's WCAG contrast check — pick text colors deliberately
 
 The host enforces readable contrast for its own chrome: `Colors::text_on()` and the tests in `src/ui/theme.rs` guarantee ≥3:1 (chips) / ≥4.5:1 (sidebar body) for every host-drawn label. **Canvas apps draw with raw `ctx.text(color=...)` and get none of that** — whatever hex the app passes is what renders, no auto-correction.

@@ -510,43 +510,30 @@ impl LiveWasmPane {
         }
     }
 
-    /// Translate egui key input into guest `InputEvent::Key`s. Mirrors the
-    /// printable-vs-named split in `process_app::mod` so that letters, digits,
-    /// and punctuation arrive as their OS-resolved character (via `Event::Text`)
-    /// and named keys (escape, enter, arrows) arrive lowercased. Cmd-modified
-    /// chords are reserved for host shortcuts and never reach the app.
+    /// Translate egui key input into guest `InputEvent::Key`s and enqueue them.
+    ///
+    /// WASM guests match key names literally — there is no SDK normalization
+    /// layer as there is for Python apps — so the host emits the canonical short
+    /// dialect via [`canonical_key_name`] (`up`/`down`/`left`/`right`, `space`,
+    /// `enter`, `escape`, lowercase letters/digits, literal punctuation). Both
+    /// press and release edges are forwarded so apps can track held state (a game
+    /// paddle, a key being held down); OS auto-repeat is collapsed and Cmd-chords
+    /// are reserved for host shortcuts. See [`translate_key_event`].
     pub fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
         let mut consumed = false;
         for event in &input.events {
             match event {
-                egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                    if (!printable_key(*key) || modifiers.ctrl) && !modifiers.command {
-                        self.inner.push_input(InputEvent::Key(KeyEvent {
-                            key: format!("{key:?}").to_lowercase(),
-                            modifiers: Modifiers {
-                                ctrl: modifiers.ctrl,
-                                shift: modifiers.shift,
-                                alt: modifiers.alt,
-                                meta: modifiers.command,
-                            },
-                            pressed: true,
-                        }));
+                egui::Event::Key { .. } => {
+                    if let Some(ke) = translate_key_event(event) {
+                        self.inner.push_input(InputEvent::Key(ke));
                     }
                     consumed = true;
                 }
-                egui::Event::Text(text) => {
-                    for ch in text.chars() {
-                        if ch.is_control() {
-                            continue;
-                        }
-                        self.inner.push_input(InputEvent::Key(KeyEvent {
-                            key: ch.to_string(),
-                            modifiers: Modifiers { ctrl: false, shift: false, alt: false, meta: false },
-                            pressed: true,
-                        }));
-                    }
-                    consumed = true;
-                }
+                // Text composition (shift-resolved characters, IME) is reserved
+                // for a future text-input channel; game/command apps consume the
+                // raw key edges above. Swallow so stray text never leaks to host
+                // handlers while a WASM pane is focused.
+                egui::Event::Text(_) => consumed = true,
                 _ => {}
             }
         }
@@ -580,20 +567,78 @@ fn first_surface_dims(tree: &UiTree) -> Option<(u32, u32)> {
     })
 }
 
-/// Whether an egui key produces an `Event::Text` at the OS level (letters,
-/// digits, punctuation). For these the `Event::Text` arm delivers the
-/// shift-resolved character, so the `Event::Key` arm is suppressed to avoid a
-/// double delivery. Canonical source: `process_app::mod` (same set).
-fn printable_key(key: egui::Key) -> bool {
+/// Canonical guest key name for an egui key — the single source of truth for the
+/// WASM key dialect. Navigation and whitespace keys get short names
+/// (`up`/`down`/`left`/`right`, `space`, `enter`, `escape`, …); digits and
+/// punctuation get their literal character; letters and any unmapped key fall
+/// back to the lowercased egui name (which is the bare character for letters).
+/// Guests match these strings directly, so this table IS the contract.
+fn canonical_key_name(key: egui::Key) -> String {
     use egui::Key::*;
-    matches!(
-        key,
-        A | B | C | D | E | F | G | H | I | J | K | L | M | N | O | P | Q | R | S | T | U | V | W
-            | X | Y | Z
-            | Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9
-            | Minus | Equals | OpenBracket | CloseBracket | Backslash | Semicolon | Quote
-            | Backtick | Comma | Period | Slash | Plus
-    )
+    match key {
+        ArrowUp => "up".into(),
+        ArrowDown => "down".into(),
+        ArrowLeft => "left".into(),
+        ArrowRight => "right".into(),
+        Space => "space".into(),
+        Enter => "enter".into(),
+        Escape => "escape".into(),
+        Tab => "tab".into(),
+        Backspace => "backspace".into(),
+        Delete => "delete".into(),
+        Home => "home".into(),
+        End => "end".into(),
+        PageUp => "pageup".into(),
+        PageDown => "pagedown".into(),
+        Insert => "insert".into(),
+        Num0 => "0".into(),
+        Num1 => "1".into(),
+        Num2 => "2".into(),
+        Num3 => "3".into(),
+        Num4 => "4".into(),
+        Num5 => "5".into(),
+        Num6 => "6".into(),
+        Num7 => "7".into(),
+        Num8 => "8".into(),
+        Num9 => "9".into(),
+        Minus => "-".into(),
+        Equals => "=".into(),
+        Plus => "+".into(),
+        OpenBracket => "[".into(),
+        CloseBracket => "]".into(),
+        Backslash => "\\".into(),
+        Semicolon => ";".into(),
+        Quote => "'".into(),
+        Backtick => "`".into(),
+        Comma => ",".into(),
+        Period => ".".into(),
+        Slash => "/".into(),
+        other => format!("{other:?}").to_lowercase(),
+    }
+}
+
+/// Translate a single egui event into a guest key edge, or `None` when it
+/// carries nothing the guest should see: a non-key event, OS auto-repeat
+/// (collapsed so a physical press fires once), or a Cmd-chord (reserved for host
+/// shortcuts). Both press and release edges are returned so apps can track held
+/// state — this is what makes hold-to-move game input work.
+fn translate_key_event(event: &egui::Event) -> Option<KeyEvent> {
+    let egui::Event::Key { key, pressed, repeat, modifiers, .. } = event else {
+        return None;
+    };
+    if modifiers.command || *repeat {
+        return None;
+    }
+    Some(KeyEvent {
+        key: canonical_key_name(*key),
+        modifiers: Modifiers {
+            ctrl: modifiers.ctrl,
+            shift: modifiers.shift,
+            alt: modifiers.alt,
+            meta: modifiers.command,
+        },
+        pressed: *pressed,
+    })
 }
 
 #[cfg(test)]
@@ -769,6 +814,107 @@ mod tests {
         assert!(
             cy_after < cy_before - 20.0,
             "left paddle moved up after 60 W frames: {cy_before} -> {cy_after}"
+        );
+        Ok(())
+    }
+
+    // ── Key translation contract (egui → guest) ───────────────────────────────
+    //
+    // These lock the host's egui→guest key dialect. WASM guests match these
+    // strings literally (no SDK normalization layer), so the host must emit the
+    // clean short form and forward both press and release edges.
+
+    fn key_edge(k: &str, pressed: bool) -> InputEvent {
+        InputEvent::Key(KeyEvent {
+            key: k.to_string(),
+            modifiers: Modifiers { ctrl: false, shift: false, alt: false, meta: false },
+            pressed,
+        })
+    }
+
+    fn egui_key(key: egui::Key, pressed: bool, repeat: bool, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed, repeat, modifiers }
+    }
+
+    // Regression: arrows previously arrived as egui Debug names ("arrowup"),
+    // which no guest matches. They must use the canonical short form.
+    #[test]
+    fn canonical_names_use_short_form() {
+        assert_eq!(canonical_key_name(egui::Key::ArrowUp), "up");
+        assert_eq!(canonical_key_name(egui::Key::ArrowDown), "down");
+        assert_eq!(canonical_key_name(egui::Key::ArrowLeft), "left");
+        assert_eq!(canonical_key_name(egui::Key::ArrowRight), "right");
+        assert_eq!(canonical_key_name(egui::Key::Space), "space");
+        assert_eq!(canonical_key_name(egui::Key::Enter), "enter");
+        assert_eq!(canonical_key_name(egui::Key::Escape), "escape");
+        assert_eq!(canonical_key_name(egui::Key::W), "w");
+        assert_eq!(canonical_key_name(egui::Key::Num1), "1");
+        assert_eq!(canonical_key_name(egui::Key::Minus), "-");
+    }
+
+    // Regression: handle_key only emitted pressed:true, so held-control apps
+    // (games) never saw the release and the paddle stuck. Both edges translate.
+    #[test]
+    fn both_press_and_release_edges_translate() {
+        let down = translate_key_event(&egui_key(egui::Key::W, true, false, egui::Modifiers::NONE))
+            .expect("press forwarded");
+        assert_eq!((down.key.as_str(), down.pressed), ("w", true));
+
+        let up = translate_key_event(&egui_key(egui::Key::W, false, false, egui::Modifiers::NONE))
+            .expect("release forwarded");
+        assert_eq!((up.key.as_str(), up.pressed), ("w", false));
+    }
+
+    // Arrow press translates to a short-name key edge end to end.
+    #[test]
+    fn arrow_press_translates_to_short_name() {
+        let ev = translate_key_event(&egui_key(egui::Key::ArrowRight, true, false, egui::Modifiers::NONE))
+            .expect("arrow forwarded");
+        assert_eq!((ev.key.as_str(), ev.pressed), ("right", true));
+    }
+
+    // OS auto-repeat is collapsed to clean press/release edges so discrete
+    // actions fire once per physical press.
+    #[test]
+    fn auto_repeat_is_collapsed() {
+        let repeat = translate_key_event(&egui_key(egui::Key::ArrowRight, true, true, egui::Modifiers::NONE));
+        assert!(repeat.is_none(), "auto-repeat must not reach the guest");
+    }
+
+    // Cmd-chords are reserved for host shortcuts and never reach the guest.
+    #[test]
+    fn cmd_chords_are_reserved_for_host() {
+        let cmd = translate_key_event(&egui_key(egui::Key::N, true, false, egui::Modifiers::COMMAND));
+        assert!(cmd.is_none(), "Cmd-chords are host shortcuts, not guest input");
+    }
+
+    // End-to-end: a held control moves the paddle, and releasing it stops the
+    // paddle. Only possible if release edges flow through to the guest.
+    #[test]
+    fn pong_paddle_stops_on_release() -> wasmtime::Result<()> {
+        let mut p = pong_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0)?;
+        let start = left_paddle_centroid_y(&p.read_surface().expect("readback"));
+
+        let mut t = 0u64;
+        p.push_input(key_edge("w", true));
+        for _ in 0..30 {
+            t += 16;
+            p.tick(t)?;
+        }
+        let held = left_paddle_centroid_y(&p.read_surface().expect("readback"));
+
+        p.push_input(key_edge("w", false));
+        for _ in 0..30 {
+            t += 16;
+            p.tick(t)?;
+        }
+        let after_release = left_paddle_centroid_y(&p.read_surface().expect("readback"));
+
+        assert!(held < start - 10.0, "paddle moved up while W held: {start} -> {held}");
+        assert!(
+            (after_release - held).abs() < 3.0,
+            "paddle held position after W released: {held} -> {after_release}"
         );
         Ok(())
     }
