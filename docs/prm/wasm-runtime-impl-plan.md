@@ -66,7 +66,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     infra), `LiveWasmPane::{is_running,last_render_text}` (G4 scene inspectors).
     Real code, test-reachable only; clears when `--persist` and a host-side wasm
     pane inspector land in M4. No `#[allow]` used.
-- **M4: not started.** Plan below.
+- **M4: IN PROGRESS.** Pipes host-side wired; gpu/audio worlds remain. Plan below.
 
 ## Key facts discovered (load-bearing for the build)
 
@@ -121,13 +121,28 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   3. `plexi run ./x.wasm` CLI (ephemeral temp namespace, deleted on close).
   4. G4 scene/screenshot test; G6 CLI + scene (open → populate → `q` closes, no namespace).
 - **M4 — Surface/GPU + RT audio + pipes (G7, G11, G12, G13)**
-  1. `surface-node`: allocate wgpu texture, send `surface-ready`, expose `gpu` import
-     (WebGPU-aligned: pipelines from WGSL, buffers, render/compute passes) on host wgpu device.
-  2. RT audio: `audio-rt-control` import + `audio-rt-process` export called from the OS audio
-     thread; u64 state threading; <10ms latency.
-  3. Pipes: expose `TypedPipeRegistry` via the `pipes` WIT import end-to-end.
-  4. Gates: G7 (bevy-pong surface), G11 (GPU render pass <2ms), G12 (audio non-silent <10ms),
-     G13 (pipe roundtrip + overrun drop without crash).
+  - DONE (commit `c165eba6`) **pipes host side**: `HostCtx` owns a per-app
+    `TypedPipeRegistry` + handle map; `open`/`send-binary`/`send-json`/`close`/
+    `is-connected` implemented; binary sends push the lock-free ring and report
+    overrun as `Err` (no block/panic); registry `Drop` closes pipes on Store
+    drop. Two host-side tests (`g13_pipes_open_send_overrun_close`,
+    `g13_json_pipe_validation`). The full guest round-trip is below (needs the
+    audio world).
+  - REMAINING — the multi-world binding + device bridges (a distinct effort;
+    the current `WasmApp` is hardcoded to the `plexi-app` bindgen type, so the
+    first task is generalizing the loader over worlds, or a parallel type):
+    1. Bind `plexi-audio-app`: `audio-rt-control` import (open-output/open-input
+       record stream config) + `audio-rt-process` export. **G12**: call
+       `process-output` from a host-harness test, assert non-silent samples when
+       playing; the live OS audio thread (RT priority, <10ms) is the manual leg.
+    2. **G13 guest round-trip**: with audio-synth bound, drive `process-output`
+       and assert a `TestPipeListener` receives the waveform frames it pushes
+       through the now-wired pipes (host side already proven above).
+    3. Bind `plexi-gpu-app`: `surface-node` lifecycle + `surface-ready`; the
+       `gpu` import (WebGPU-aligned — WGSL pipelines, buffers, render/compute
+       passes) on the host wgpu device shared with `egui-wgpu`. **G7**
+       (pixel-buffer surface scene) then **G11** (GPU render pass <2ms).
+    4. Gates: G7, G11, G12, G13-guest.
 - **M5 — one PR `wasm-rebuild` → alpha + `just install`** for end-to-end manual test.
 
 ## Done definition
