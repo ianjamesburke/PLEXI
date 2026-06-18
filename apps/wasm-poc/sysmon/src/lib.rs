@@ -216,6 +216,59 @@ impl Sysmon {
 
 // ── Lifecycle implementation ──────────────────────────────────────────────────
 
+// Pure state transitions — no host imports on these paths (except the +/- arms,
+// which persist through host-state). Kept free functions on Sysmon so they can
+// be unit-tested directly without a host (G2).
+impl Sysmon {
+    fn startup_effects(&self) -> Vec<Effect> {
+        vec![
+            Effect::GetSystemStats,
+            Effect::SetTimer(TimerEffect { id: TIMER_POLL, delay_ms: self.poll_interval_ms, repeat: true }),
+        ]
+    }
+
+    fn handle(&mut self, event: InputEvent) -> Vec<Effect> {
+        match event {
+            InputEvent::SystemStatsResult(stats) => {
+                self.stats = Some(stats);
+                vec![]
+            }
+
+            InputEvent::TimerFired(TIMER_POLL) => vec![Effect::GetSystemStats],
+
+            InputEvent::Key(key) if key.key == "q" || key.key == "escape" => {
+                vec![Effect::CloseSelf]
+            }
+
+            InputEvent::Key(key) if key.key == "+" || key.key == "=" => {
+                self.poll_interval_ms = (self.poll_interval_ms + 1000).min(30_000);
+                self.persist_interval();
+                self.retimer_effects()
+            }
+
+            InputEvent::Key(key) if key.key == "-" => {
+                self.poll_interval_ms = self.poll_interval_ms.saturating_sub(1000).max(1000);
+                self.persist_interval();
+                self.retimer_effects()
+            }
+
+            _ => vec![],
+        }
+    }
+
+    fn retimer_effects(&self) -> Vec<Effect> {
+        vec![
+            Effect::CancelTimer(TIMER_POLL),
+            Effect::SetTimer(TimerEffect { id: TIMER_POLL, delay_ms: self.poll_interval_ms, repeat: true }),
+            Effect::GetSystemStats,
+        ]
+    }
+
+    fn persist_interval(&self) {
+        let _ = host_state::set(POLL_INTERVAL_KEY, &self.poll_interval_ms.to_le_bytes().to_vec());
+    }
+}
+
 struct Component;
 
 static mut APP: Option<Sysmon> = None;
@@ -228,60 +281,14 @@ fn app() -> &'static mut Sysmon {
 impl Guest for Component {
     fn init(state: StateSnapshot, _size: (f32, f32)) -> Vec<Effect> {
         let sysmon = Sysmon::new(&state);
-        host_log::info(&format!(
-            "sysmon: init poll_interval_ms={}",
-            sysmon.poll_interval_ms
-        ));
-        let poll_ms = sysmon.poll_interval_ms;
+        host_log::info(&format!("sysmon: init poll_interval_ms={}", sysmon.poll_interval_ms));
+        let effects = sysmon.startup_effects();
         unsafe { APP = Some(sysmon); }
-
-        vec![
-            Effect::GetSystemStats,
-            Effect::SetTimer(TimerEffect { id: TIMER_POLL, delay_ms: poll_ms, repeat: true }),
-        ]
+        effects
     }
 
     fn update(event: InputEvent) -> Vec<Effect> {
-        match event {
-            InputEvent::SystemStatsResult(stats) => {
-                host_log::debug(&format!("sysmon: cpu={:.1}%", stats.cpu_usage_pct));
-                app().stats = Some(stats);
-                vec![]
-            }
-
-            InputEvent::TimerFired(TIMER_POLL) => {
-                vec![Effect::GetSystemStats]
-            }
-
-            InputEvent::Key(key) if key.key == "q" || key.key == "escape" => {
-                vec![Effect::CloseSelf]
-            }
-
-            // + / - to adjust poll interval
-            InputEvent::Key(key) if key.key == "+" || key.key == "=" => {
-                let ms = (app().poll_interval_ms + 1000).min(30_000);
-                app().poll_interval_ms = ms;
-                let _ = host_state::set(POLL_INTERVAL_KEY, &ms.to_le_bytes().to_vec());
-                vec![
-                    Effect::CancelTimer(TIMER_POLL),
-                    Effect::SetTimer(TimerEffect { id: TIMER_POLL, delay_ms: ms, repeat: true }),
-                    Effect::GetSystemStats,
-                ]
-            }
-
-            InputEvent::Key(key) if key.key == "-" => {
-                let ms = (app().poll_interval_ms.saturating_sub(1000)).max(1000);
-                app().poll_interval_ms = ms;
-                let _ = host_state::set(POLL_INTERVAL_KEY, &ms.to_le_bytes().to_vec());
-                vec![
-                    Effect::CancelTimer(TIMER_POLL),
-                    Effect::SetTimer(TimerEffect { id: TIMER_POLL, delay_ms: ms, repeat: true }),
-                    Effect::GetSystemStats,
-                ]
-            }
-
-            _ => vec![],
-        }
+        app().handle(event)
     }
 
     fn view() -> UiTree {
@@ -309,4 +316,71 @@ fn fmt_uptime(secs: u64) -> String {
     if d > 0 { format!("{}d {}h {}m", d, h, m) }
     else if h > 0 { format!("{}h {}m", h, m) }
     else { format!("{}m", m) }
+}
+
+// ── G2: pure-function unit tests ──────────────────────────────────────────────
+// init/update/view logic is testable without a host, a process, or network.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty() -> StateSnapshot {
+        StateSnapshot { entries: vec![] }
+    }
+
+    fn mock_stats(cpu: f32) -> SystemStats {
+        SystemStats {
+            cpu_usage_pct: cpu,
+            memory_used_bytes: 8u64 << 30,
+            memory_total_bytes: 16u64 << 30,
+            disk_read_bps: 0,
+            disk_write_bps: 0,
+            net_rx_bps: 0,
+            net_tx_bps: 0,
+            uptime_secs: 0,
+            load_avg_one_min: 0.0,
+        }
+    }
+
+    fn tree_text(tree: &UiTree) -> String {
+        tree.nodes
+            .iter()
+            .filter_map(|n| match &n.data {
+                UiNodeData::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn default_poll_interval_is_2s() {
+        assert_eq!(Sysmon::new(&empty()).poll_interval_ms, DEFAULT_POLL_MS);
+    }
+
+    #[test]
+    fn timer_fired_requests_stats() {
+        let mut app = Sysmon::new(&empty());
+        let effects = app.handle(InputEvent::TimerFired(TIMER_POLL));
+        assert!(effects.iter().any(|e| matches!(e, Effect::GetSystemStats)));
+    }
+
+    #[test]
+    fn stats_result_updates_view() {
+        let mut app = Sysmon::new(&empty());
+        app.handle(InputEvent::SystemStatsResult(mock_stats(42.0)));
+        let tree = app.build_tree();
+        assert!(tree_text(&tree).contains("42.0%"), "view should show CPU 42.0%");
+    }
+
+    #[test]
+    fn startup_sets_timer_at_persisted_interval() {
+        let snap = StateSnapshot {
+            entries: vec![(POLL_INTERVAL_KEY.to_string(), 5000u32.to_le_bytes().to_vec())],
+        };
+        let effects = Sysmon::new(&snap).startup_effects();
+        assert!(effects
+            .iter()
+            .any(|e| matches!(e, Effect::SetTimer(t) if t.delay_ms == 5000)));
+    }
 }
