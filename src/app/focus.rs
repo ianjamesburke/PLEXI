@@ -1032,6 +1032,7 @@ impl PlexiApp {
             Some(crate::host::pane::Pane::App(app_pane)) => match &app_pane.runtime {
                 crate::host::pane::AppRuntime::Process(proc) => !proc.pending_prompts.is_empty(),
                 crate::host::pane::AppRuntime::Builtin(_) => false,
+                crate::host::pane::AppRuntime::Wasm(_) => false,
             },
             _ => false,
         }

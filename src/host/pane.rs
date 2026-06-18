@@ -274,6 +274,10 @@ impl TerminalPane {
 pub enum AppRuntime {
     Process(Box<crate::process_app::ProcessApp>),
     Builtin(Box<dyn App>),
+    /// A sandboxed WASM component app driven by the synchronous effect loop.
+    /// Neither a subprocess nor a native in-process builtin — it runs inside a
+    /// per-pane `wasmtime::Store`.
+    Wasm(Box<crate::host::wasm_pane::LiveWasmPane>),
 }
 
 impl AppRuntime {
@@ -281,6 +285,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.ui(ui, ctx),
             AppRuntime::Builtin(app) => app.ui(ui, ctx),
+            AppRuntime::Wasm(app) => app.ui(ui, ctx.colors),
         }
     }
 
@@ -291,6 +296,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.handle_key(input),
             AppRuntime::Builtin(app) => app.handle_key(input),
+            AppRuntime::Wasm(app) => app.handle_key(input),
         }
     }
 
@@ -298,6 +304,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.take_pending_commands(),
             AppRuntime::Builtin(app) => app.take_pending_commands(),
+            AppRuntime::Wasm(_) => vec![],
         }
     }
 
@@ -305,6 +312,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.keyboard_capture(),
             AppRuntime::Builtin(app) => app.keyboard_capture(),
+            AppRuntime::Wasm(_) => false,
         }
     }
 
@@ -312,6 +320,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.wants_close(),
             AppRuntime::Builtin(app) => app.wants_close(),
+            AppRuntime::Wasm(app) => app.wants_close(),
         }
     }
 
@@ -319,6 +328,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.queue_outbound_event(event),
             AppRuntime::Builtin(app) => app.queue_outbound_event(event),
+            AppRuntime::Wasm(_) => {}
         }
     }
 
@@ -326,6 +336,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.sync_cwd(new_cwd),
             AppRuntime::Builtin(app) => app.sync_cwd(new_cwd),
+            AppRuntime::Wasm(_) => {}
         }
     }
 
@@ -333,6 +344,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.type_id(),
             AppRuntime::Builtin(app) => app.type_id(),
+            AppRuntime::Wasm(_) => "wasm",
         }
     }
 
@@ -340,6 +352,9 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.serialize_state(),
             AppRuntime::Builtin(app) => app.serialize_state(),
+            // WASM app state is persisted host-side via the file-backed
+            // StateStore, not through workspace JSON.
+            AppRuntime::Wasm(_) => None,
         }
     }
 
@@ -347,6 +362,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.display_name(),
             AppRuntime::Builtin(app) => app.display_name(),
+            AppRuntime::Wasm(app) => app.display_name(),
         }
     }
 
@@ -355,6 +371,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.rename_seed(),
             AppRuntime::Builtin(app) => app.rename_seed(),
+            AppRuntime::Wasm(_) => None,
         }
     }
 
@@ -363,6 +380,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.on_pane_renamed(name),
             AppRuntime::Builtin(app) => app.on_pane_renamed(name),
+            AppRuntime::Wasm(_) => {}
         }
     }
 
@@ -371,6 +389,9 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.background_tick(),
             AppRuntime::Builtin(_) => {}
+            // Timers advance only while the pane renders (visible). Background
+            // ticking for off-screen WASM panes is deferred.
+            AppRuntime::Wasm(_) => {}
         }
     }
 
@@ -381,6 +402,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.needs_background_tick(),
             AppRuntime::Builtin(_) => false,
+            AppRuntime::Wasm(_) => false,
         }
     }
 
@@ -390,6 +412,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.nav_stack_depth(),
             AppRuntime::Builtin(_) => 0,
+            AppRuntime::Wasm(_) => 0,
         }
     }
 
@@ -399,6 +422,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.nav_top_title(),
             AppRuntime::Builtin(_) => None,
+            AppRuntime::Wasm(_) => None,
         }
     }
 
@@ -408,6 +432,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => app.nav_back_view_id(),
             AppRuntime::Builtin(_) => String::new(),
+            AppRuntime::Wasm(_) => String::new(),
         }
     }
 
@@ -423,6 +448,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Process(app) => serde_json::to_value(&app.frame).ok(),
             AppRuntime::Builtin(_) => None,
+            AppRuntime::Wasm(_) => None,
         }
     }
 }

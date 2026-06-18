@@ -176,6 +176,18 @@ impl PlexiUiHarness {
         })
     }
 
+    /// Open a sandboxed WASM component app from a `.wasm` file. The app id is
+    /// derived from the file stem. Returns the new pane id.
+    pub fn open_wasm_at(&mut self, wasm_path: &Path) -> Result<PaneId, String> {
+        let app_id = wasm_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("wasm")
+            .to_string();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        self.with_app_mut(|app| app.open_wasm_app_pane(&app_id, wasm_path, cwd))
+    }
+
     /// Step frames until the real app process behind `pane_id` commits its
     /// first rendered frame (FrameDone observed), sleeping between steps to
     /// give the child process wall-clock time. Fails with the app's recent
@@ -471,6 +483,34 @@ mod tests {
         h.save_screenshot("/tmp/plexi_init.png")
             .expect("render failed");
         println!("Screenshot saved to /tmp/plexi_init.png");
+    }
+
+    /// G6 — the run primitive's routing: a `.wasm` path handed to the shared
+    /// path-launch entry point (the same call the `app open <path>` socket
+    /// handler makes) must spawn an `AppRuntime::Wasm` pane, not attempt a
+    /// manifest/process launch.
+    #[test]
+    fn wasm_path_launch_opens_wasm_pane() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wasm-fixtures/sysmon.wasm");
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        h.with_app_mut(|app| {
+            app.launch_app_by_path_with_layout(
+                &fixture.to_string_lossy(),
+                Some("split_v".to_string()),
+                None,
+                &[],
+            )
+        })
+        .expect("wasm launch should succeed");
+        h.step();
+        let has_wasm = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values()
+                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
+        });
+        assert!(has_wasm, "a .wasm path launch should produce an AppRuntime::Wasm pane");
     }
 
     /// Subcontext portal whose child context holds a `text-editor` pane: the

@@ -63,7 +63,7 @@ interface types {
         net-rx-bps: u64,
         net-tx-bps: u64,
         uptime-secs: u64,
-        load-avg-1m: f32,
+        load-avg-one-min: f32,
     }
 
     // Surface events from the host after allocating / resizing a GPU texture.
@@ -110,7 +110,7 @@ interface types {
         pipe-message(pipe-message-event),
         pipe-peer-connected(u32),
         pipe-closed(u32),
-        pipe-error(u32, string),
+        pipe-error(tuple<u32, string>),
 
         // Capability
         capability-granted(string),
@@ -218,7 +218,7 @@ interface types {
         column(column-node),
         progress-bar(progress-bar-node),
         badge(badge-node),
-        list(list-node),
+        list-view(list-node),
         scroll(scroll-node),
         padding(padding-node),
         divider,
@@ -338,7 +338,7 @@ interface gpu {
 
     record binding-entry {
         binding: u32,
-        resource: binding-resource,
+        resource-ref: binding-resource,
     }
 
     // ── Render pass ───────────────────────────────────────────────────────────
@@ -421,7 +421,7 @@ interface gpu {
 
 interface audio-rt-control {
 
-    enum audio-format { f32, i16 }
+    enum audio-format { float32, int16 }
 
     record audio-config {
         sample-rate: u32,       // e.g. 44100, 48000
@@ -499,7 +499,7 @@ interface pipes {
 
     type pipe-handle = u32;
     enum pipe-type { binary, json }
-    enum pipe-direction { in_, out, duplex }
+    enum pipe-direction { %in, out, duplex }
 
     // Open a pipe. For binary pipes, the host allocates a socket and starts
     // a drain thread; this mirrors TypedPipeRegistry::open_binary.
@@ -543,41 +543,41 @@ interface lifecycle {
 
 // Standard app — UI, effects, pipes, state.
 world plexi-app {
-    import plexi:platform/host-state@0.2.0;
-    import plexi:platform/host-log@0.2.0;
-    import plexi:platform/pipes@0.2.0;
-    export plexi:platform/lifecycle@0.2.0;
+    import host-state;
+    import host-log;
+    import pipes;
+    export lifecycle;
 }
 
 // GPU app — adds direct render/compute pipeline access.
 // Declare "gpu:render" in manifest capabilities.
 world plexi-gpu-app {
-    import plexi:platform/host-state@0.2.0;
-    import plexi:platform/host-log@0.2.0;
-    import plexi:platform/pipes@0.2.0;
-    import plexi:platform/gpu@0.2.0;
-    export plexi:platform/lifecycle@0.2.0;
+    import host-state;
+    import host-log;
+    import pipes;
+    import gpu;
+    export lifecycle;
 }
 
 // Audio app — adds RT audio control + process callback.
 // Declare "audio:rt" in manifest capabilities.
 // process-output / process-input are called by the host from its RT thread.
 world plexi-audio-app {
-    import plexi:platform/host-state@0.2.0;
-    import plexi:platform/host-log@0.2.0;
-    import plexi:platform/pipes@0.2.0;
-    import plexi:platform/audio-rt-control@0.2.0;
-    export plexi:platform/lifecycle@0.2.0;
-    export plexi:platform/audio-rt-process@0.2.0;
+    import host-state;
+    import host-log;
+    import pipes;
+    import audio-rt-control;
+    export lifecycle;
+    export audio-rt-process;
 }
 
 // Full — GPU + audio + pipes. For DAW, video editors, games with audio.
 world plexi-full-app {
-    import plexi:platform/host-state@0.2.0;
-    import plexi:platform/host-log@0.2.0;
-    import plexi:platform/pipes@0.2.0;
-    import plexi:platform/gpu@0.2.0;
-    import plexi:platform/audio-rt-control@0.2.0;
-    export plexi:platform/lifecycle@0.2.0;
-    export plexi:platform/audio-rt-process@0.2.0;
+    import host-state;
+    import host-log;
+    import pipes;
+    import gpu;
+    import audio-rt-control;
+    export lifecycle;
+    export audio-rt-process;
 }

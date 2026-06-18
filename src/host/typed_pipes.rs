@@ -305,6 +305,17 @@ impl TypedPipeRegistry {
             None => false,
         }
     }
+
+    /// Unix socket path backing a binary pipe, for a peer/visualiser to connect
+    /// to as a client. `None` for unknown or JSON pipes. Test-only: production
+    /// peer routing hands the path to the connecting pane through PGAP wiring.
+    #[cfg(test)]
+    pub fn binary_socket_path(&self, pipe_id: &str) -> Option<String> {
+        match self.pipes.get(pipe_id) {
+            Some(PipeEntry::Binary(b)) => Some(b.socket_path.clone()),
+            _ => None,
+        }
+    }
 }
 
 impl Drop for TypedPipeRegistry {

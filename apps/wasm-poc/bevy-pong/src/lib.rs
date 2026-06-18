@@ -20,16 +20,14 @@ wit_bindgen::generate!({
 
 use bytemuck::{Pod, Zeroable};
 use plexi::platform::gpu::{
-    self, BindingEntry, BindingResource, BufferUsage, ComputePassDesc, DrawCall,
-    RenderPassDesc, RenderPipelineDesc, TextureFormat, VertexAttr,
+    self, BufferUsage, DrawCall, RenderPassDesc, RenderPipelineDesc, TextureFormat, VertexAttr,
 };
 use plexi::platform::host_log;
 use plexi::platform::pipes::{self, PipeDirection, PipeType};
+use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::types::{
-    alignment::Alignment, column_node::ColumnNode, effect::Effect, indexed_node::IndexedNode,
-    input_event::InputEvent, key_event::KeyEvent, state_snapshot::StateSnapshot,
-    surface_event::SurfaceEvent, surface_node::SurfaceNode, text_node::TextNode,
-    timer_effect::TimerEffect, ui_node_data::UiNodeData, ui_tree::UiTree,
+    Alignment, ColumnNode, Effect, IndexedNode, InputEvent, KeyEvent, StateSnapshot, SurfaceEvent,
+    SurfaceNode, TextNode, TimerEffect, UiNodeData, UiTree,
 };
 
 // ── WGSL ──────────────────────────────────────────────────────────────────────
@@ -176,7 +174,7 @@ impl Pong {
             blend_alpha: true,
         };
         self.pipeline = Some(
-            gpu::create_render_pipeline("pong", PONG_WGSL, desc)
+            gpu::create_render_pipeline("pong", PONG_WGSL, &desc)
                 .expect("create_render_pipeline")
         );
 
@@ -267,20 +265,18 @@ impl Pong {
         // Ball
         instances.push(Instance::from_px(self.ball.x - BALL_SIZE / 2.0, self.ball.y - BALL_SIZE / 2.0, BALL_SIZE, BALL_SIZE, cw, ch, PINK));
 
-        let bytes = bytemuck::cast_slice(&instances);
-        gpu::write_buffer(buf, 0, bytes.to_vec()).expect("write_buffer");
+        let bytes: &[u8] = bytemuck::cast_slice(&instances);
+        gpu::write_buffer(buf, 0, bytes).expect("write_buffer");
 
-        let bind_group = gpu::create_bind_group(pipeline, vec![
-            BindingEntry { binding: 0, resource: BindingResource::Buffer(buf) },
-        ]).expect("create_bind_group");
-
-        gpu::submit_render_pass(RenderPassDesc {
+        // Per-object data flows through the instance-rate vertex buffer; the
+        // shader declares no bind groups, so none are set.
+        gpu::submit_render_pass(&RenderPassDesc {
             target: view,
             clear_color: None, // background is the first instance
             pipeline,
             vertex_buffer: Some(buf),
             index_buffer: None,
-            bind_groups: vec![(0, bind_group)],
+            bind_groups: vec![],
             draws: vec![DrawCall {
                 vertices: 6,
                 instances: instances.len() as u32,
@@ -288,8 +284,6 @@ impl Pong {
                 first_instance: 0,
             }],
         }).expect("submit_render_pass");
-
-        gpu::destroy_bind_group(bind_group);
     }
 
     // ── View ─────────────────────────────────────────────────────────────────
@@ -342,7 +336,7 @@ impl Pong {
 
 struct Component;
 static mut GAME: Option<Pong> = None;
-fn game() -> &'static mut Pong { unsafe { GAME.as_mut().unwrap() } }
+fn game() -> &'static mut Pong { unsafe { (*core::ptr::addr_of_mut!(GAME)).as_mut().unwrap() } }
 
 impl Guest for Component {
     fn init(_state: StateSnapshot, _size: (f32, f32)) -> Vec<Effect> {

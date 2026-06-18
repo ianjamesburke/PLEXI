@@ -12,7 +12,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = "0.28"
+wit-bindgen = "0.41"
 bytemuck = { version = "1", features = ["derive"] }
 
 [package.metadata.component]
@@ -21,3 +21,5 @@ package = "plexi:bevy-pong"
 [package.metadata.component.target]
 path = "wit"
 world = "plexi-gpu-app"
+
+[workspace]

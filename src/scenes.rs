@@ -72,6 +72,8 @@ pub enum Step {
     },
     /// Open the built-in file browser at a repo-relative (or absolute) dir.
     OpenFileBrowser { open_file_browser: String },
+    /// Launch a sandboxed WASM component app from a repo-relative `.wasm` file.
+    OpenWasm { open_wasm: String },
     /// Press a key combo, e.g. "cmd+b", "enter", "ctrl+shift+p".
     Key { key: String },
     /// Toggle the host sidebar.
@@ -273,6 +275,7 @@ fn step_label(step: &Step) -> String {
         Step::OpenFileBrowser { open_file_browser } => {
             format!("open_file_browser {open_file_browser}")
         }
+        Step::OpenWasm { open_wasm } => format!("open_wasm {open_wasm}"),
         Step::Key { key } => format!("key {key}"),
         Step::Sidebar { sidebar } => format!("sidebar {sidebar}"),
         Step::SwitchContext { switch_context } => format!("switch_context {switch_context}"),
@@ -312,6 +315,12 @@ impl SceneRunner {
                 self.h.open_file_browser(resolve(open_file_browser));
                 self.h.step();
                 Ok(None)
+            }
+            Step::OpenWasm { open_wasm } => {
+                let pane_id = self.h.open_wasm_at(&resolve(open_wasm))?;
+                self.last_app_pane = Some(pane_id);
+                self.h.step();
+                Ok(Some(format!("pane {pane_id}")))
             }
             Step::Key { key } => {
                 // Bare printable character — not a named key or modifier chord.
@@ -465,6 +474,14 @@ impl SceneRunner {
                             pane_id,
                             lifecycle: format!("{:?}", p.lifecycle.state()).to_lowercase(),
                             tree: serde_json::to_value(&p.frame).unwrap_or(serde_json::Value::Null),
+                        });
+                    }
+                    if let AppRuntime::Wasm(w) = &app_pane.runtime {
+                        return Some(AppState {
+                            pane_id,
+                            lifecycle: if w.is_running() { "running" } else { "exited" }
+                                .to_string(),
+                            tree: serde_json::Value::String(w.last_render_text().to_string()),
                         });
                     }
                 }
