@@ -504,6 +504,12 @@ impl WasmApp {
             .min_by_key(|(handle, _)| **handle)
             .map(|(handle, cfg)| (*handle, cfg.sample_rate, cfg.channels, cfg.buffer_frames))
     }
+
+    /// Socket path of a binary pipe the guest opened, for a peer to connect to.
+    #[cfg(test)]
+    pub fn pipe_socket_path(&self, pipe_id: &str) -> Option<String> {
+        self.store.data().pipes.binary_socket_path(pipe_id)
+    }
 }
 
 // ─── Gate tests (G3 effect roundtrip, G5 state persistence) ────────────────
@@ -629,6 +635,62 @@ mod tests {
             peak = peak.max(samples.iter().fold(0.0, |m, &s| m.max(s.abs())));
         }
         assert!(peak > 0.01, "playing synth must produce audible samples (peak={peak})");
+        Ok(())
+    }
+
+    // G13 (guest round-trip): the real audio-synth component, driven through
+    // wasmtime, opens its `waveform-out` binary pipe in init and pushes a
+    // decimated waveform preview from `process-output` on every RT buffer. A
+    // peer connects to the unix socket as a client and must receive the frames
+    // intact (u32-BE length prefix + payload) — proving the full guest→ring→
+    // drain-thread→socket path, not just the host-side primitives.
+    #[test]
+    fn g13_guest_roundtrip_waveform_pipe() -> wasmtime::Result<()> {
+        use std::io::Read;
+        use std::os::unix::net::UnixStream;
+
+        let mut app = WasmApp::load_ephemeral_run(
+            "audio-synth-g13",
+            &audio_fixture(),
+            StateStore::ephemeral(),
+        )?;
+        // init opens the audio output stream + the waveform binary pipe (Out).
+        app.init(&empty_snapshot(), (400.0, 300.0))?;
+
+        let sock = app
+            .pipe_socket_path("waveform-out")
+            .expect("guest opened the waveform-out binary pipe in init");
+
+        // A visualiser peer connects as the socket client and reads framed bytes.
+        let mut client = UnixStream::connect(&sock).expect("connect to waveform socket");
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set read timeout");
+
+        // Play, then pump RT buffers. Each process-output pushes one decimated
+        // 256-byte preview frame (1024 samples / 16 * 4 bytes) into the ring.
+        app.update(&key("space"))?;
+        let mut state = 0u64;
+        for _ in 0..16 {
+            let (_, next) = app.audio_process_output(0, 512, 2, 48_000, state)?;
+            state = next;
+        }
+
+        // Read several frames off the socket; each must be a complete 256-byte
+        // length-prefixed frame, and the playing synth must carry real samples.
+        let mut any_nonzero = false;
+        for _ in 0..4 {
+            let mut len_buf = [0u8; 4];
+            client.read_exact(&mut len_buf).expect("read frame length");
+            let len = u32::from_be_bytes(len_buf) as usize;
+            assert_eq!(len, 256, "decimated preview = 1024 samples / 16 * 4 bytes");
+            let mut payload = vec![0u8; len];
+            client.read_exact(&mut payload).expect("read frame payload");
+            any_nonzero |= payload
+                .chunks_exact(4)
+                .any(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs() > 0.0);
+        }
+        assert!(any_nonzero, "playing synth waveform frames must carry non-zero samples");
         Ok(())
     }
 
