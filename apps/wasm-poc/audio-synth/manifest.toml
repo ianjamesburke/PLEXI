@@ -1,17 +1,14 @@
-schema_version = "2"
+schema_version = 1
+
+[app]
 id = "com.plexi.audio-synth"
-version = "0.1.0"
+type = "wasm"
 name = "Synth"
-description = "Additive sine oscillator. RT audio POC — proves audio-rt-control, process-output callback, and Plexi Pipes waveform streaming."
+entry = "target/wasm32-wasip1/release/audio_synth.wasm"
+version = "0.1.0"
+description = "Additive sine oscillator. RT audio POC proving audio output and Plexi Pipes waveform streaming."
 
-[runtime]
-target = "wasm32-wasip2"
-execution = "local"
-python_compat = false
+[app.capabilities]
+capabilities = ["audio.playback", "pipe.open"]
 
-[capabilities]
-required = ["audio:rt", "pipes:open", "state:read-write"]
-optional = []
-
-[payment]
-model = "free"
+[launch]

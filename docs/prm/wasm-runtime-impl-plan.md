@@ -106,8 +106,9 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   `[app] type = "wasm"` manifests now load through the registry/path launch
   surfaces, use persistent per-app/per-workspace WASM state, derive explicit
   link-time host grants from manifest capabilities, and restore/persist raw
-  scoped WASM decisions in `permissions.toml`. Package validation/trust-sheet
-  display and required-vs-optional install review remain future work.
+  scoped WASM decisions in `permissions.toml`. `.plexipkg` validation and the
+  install trust sheet classify WASM packages, and the WASM POC manifests use the
+  registry schema. Required-vs-optional install review remains future work.
 
 ## Key facts discovered (load-bearing for the build)
 

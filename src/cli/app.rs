@@ -627,6 +627,13 @@ fn run_install_gate(report: &crate::app::package::PackageReport, assume_yes: boo
     }
 }
 
+fn is_valid_app_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
 /// `plexi app inspect <path>` — validate a local app dir or `.plexipkg` file
 /// and print the trust sheet without installing anything (stint 0016).
 pub fn app_inspect_cli(path: &str) -> i32 {
@@ -741,17 +748,10 @@ pub fn app_install_with_pin(
         }
     };
     let app_id = match app_section.get("id").and_then(|v| v.as_str()) {
-        Some(id)
-            if !id.is_empty()
-                && id
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
-        {
-            id.to_string()
-        }
+        Some(id) if is_valid_app_id(id) => id.to_string(),
         _ => {
             eprintln!("error: manifest.toml is missing a valid [app].id");
-            eprintln!("  (IDs must be non-empty and contain only alphanumeric characters, dashes, or underscores)");
+            eprintln!("  (IDs must be non-empty and contain only alphanumeric characters, dots, dashes, or underscores)");
             return 1;
         }
     };
@@ -1408,6 +1408,22 @@ mod app_install_workspace_tests {
     }
 
     #[test]
+    fn install_accepts_reverse_dns_app_id() {
+        let src = TempDir::new().unwrap();
+        let app_id = "com.plexi.test-install";
+        write_valid_manifest(src.path(), app_id);
+        let path = src.path().to_string_lossy().to_string();
+
+        let code =
+            super::app_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
+
+        let dest = crate::app::registry::apps_dir().join(app_id);
+        let _ = std::fs::remove_dir_all(&dest);
+
+        assert_eq!(code, 0, "reverse-DNS app ids must install cleanly");
+    }
+
+    #[test]
     fn install_fails_on_missing_manifest_not_workspace_error() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().to_string_lossy().to_string();
@@ -1546,6 +1562,29 @@ mod app_inspect_tests {
         std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();
         let code = super::app_inspect_cli(&dir.path().to_string_lossy());
         assert_eq!(code, 0, "valid app dir must inspect cleanly");
+    }
+
+    #[test]
+    fn inspect_wasm_manifest_returns_0() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"com.plexi.inspect-wasm\"\n\
+             type = \"wasm\"\n\
+             name = \"Inspect WASM\"\n\
+             entry = \"app.wasm\"\n\
+             version = \"0.1.0\"\n\
+             description = \"Test\"\n\n\
+             [app.capabilities]\n\
+             capabilities = [\"gpu.render\"]\n\n\
+             [launch]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("app.wasm"), b"\0asm").unwrap();
+        let code = super::app_inspect_cli(&dir.path().to_string_lossy());
+        assert_eq!(code, 0, "valid wasm app dir must inspect cleanly");
     }
 
     #[test]
