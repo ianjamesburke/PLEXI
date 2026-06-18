@@ -66,8 +66,8 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     infra), `LiveWasmPane::{is_running,last_render_text}` (G4 scene inspectors).
     Real code, test-reachable only; clears when `--persist` and a host-side wasm
     pane inspector land in M4. No `#[allow]` used.
-- **M4: IN PROGRESS.** Pipes host-side + audio (G12) wired via world
-  generalization; gpu world (G7/G11) and the G13 guest round-trip remain. Plan below.
+- **M4: IN PROGRESS.** Pipes (G13 host + guest round-trip) and audio (G12) wired
+  via world generalization; only the gpu world (G7/G11) remains. Plan below.
 
 ## Key facts discovered (load-bearing for the build)
 
@@ -143,17 +143,22 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     grants from the component's imports (`load_ephemeral_run`); gpu world fails
     fast. `audio-synth.wasm` fixture + recipe. Live device output is the manual
     leg (`just install`).
+  - DONE (commit `cfd59e31`) **G13 guest round-trip**: the real audio-synth
+    component, driven through wasmtime, opens its `waveform-out` binary pipe in
+    init and pushes a decimated 256-byte preview from `process-output` each RT
+    buffer; a peer connects to the unix socket as a client and receives the
+    frames intact (u32-BE length-prefixed). Proves the full guest -> lock-free
+    ring -> drain thread -> socket path. Test-only `binary_socket_path` /
+    `WasmApp::pipe_socket_path` accessors back the listener harness.
+    (`g13_guest_roundtrip_waveform_pipe`).
   - REMAINING:
-    1. **G13 guest round-trip**: drive audio-synth's `process-output` and assert a
-       `TestPipeListener` receives the waveform frames it pushes through the
-       now-wired pipes (both host sides proven; needs a listener harness).
-    2. Bind `plexi-gpu-app`: `surface-node` lifecycle + `surface-ready`; the
+    1. Bind `plexi-gpu-app`: `surface-node` lifecycle + `surface-ready`; the
        `gpu` import (WebGPU-aligned — WGSL pipelines, buffers, render/compute
        passes) on the host wgpu device shared with `egui-wgpu`. **G7**
        (pixel-buffer surface scene) then **G11** (GPU render pass <2ms). The
        loader already links `gpu` per-grant — only the host `gpu::Host` impl and
        surface wiring remain.
-    3. Gates: G7, G11, G13-guest.
+    2. Gates: G7, G11.
 - **M5 — one PR `wasm-rebuild` → alpha + `just install`** for end-to-end manual test.
 
 ## Done definition
