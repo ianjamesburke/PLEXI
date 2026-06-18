@@ -464,7 +464,7 @@ pub enum AppCmd {
     List,
     /// Render an app headlessly (JSON frame tree by default, or PNG with --png).
     Render {
-        /// App id, app directory, or .moss source file to render
+        /// App id or local path to render (e.g. "snake" or "./my-app")
         app: String,
         /// Image dimensions as WxH (e.g. 500x500)
         #[arg(long, default_value = "800x600")]

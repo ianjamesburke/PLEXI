@@ -970,7 +970,7 @@ pub fn app_list() -> i32 {
 }
 
 /// `plexi app render <app> --size WxH [--state state.json] [--output path] [--png]`
-/// Renders an app headlessly. `app` may be an installed app ID, app directory, or .moss source file.
+/// Renders an app headlessly. `app` may be an installed app ID or a local directory path.
 /// Default output: JSON frame tree. With --png: PNG image.
 pub fn app_render(
     app: &str,
@@ -1011,14 +1011,13 @@ pub fn app_render(
     };
 
     // Resolve (app_id, bin_path): path argument takes priority over registry lookup.
-    // A path is detected by prefix, existing filesystem entry, or a direct .moss source file.
-    let app_path = std::path::Path::new(app);
-    let is_moss_source = app_path.extension().and_then(|ext| ext.to_str()) == Some("moss");
-    let (app_id, app_bin) = if app_path.components().count() > 1
-        || app_path.exists()
-        || is_moss_source
+    // A path is detected by prefix (./  ../  /) or by existing as a directory.
+    // Path: more than one component (./foo, ../foo, /abs/path) OR an existing directory.
+    // Using components() instead of prefix checks is portable across platforms.
+    let (app_id, app_bin) = if std::path::Path::new(app).components().count() > 1
+        || std::path::Path::new(app).is_dir()
     {
-        let resolved = match app_path.canonicalize() {
+        let app_dir = match std::path::Path::new(app).canonicalize() {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("app_render: could not resolve '{app}': {e}");
@@ -1026,66 +1025,52 @@ pub fn app_render(
                 return 1;
             }
         };
-        if resolved.extension().and_then(|ext| ext.to_str()) == Some("moss") {
-            let app_id = resolved
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("moss-app")
-                .to_string();
-            log::info!(
-                "app_render[{app_id}]: loaded Moss source from '{}'",
-                resolved.display()
-            );
-            (app_id, resolved)
-        } else {
-            let app_dir = resolved;
-            if !app_dir.is_dir() {
-                eprintln!("error: '{app}' is not a directory — expected an app directory containing manifest.toml");
-                return 1;
-            }
-            let manifest_path = app_dir.join("manifest.toml");
-            let manifest_str = match std::fs::read_to_string(&manifest_path) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::warn!("app_render: no manifest.toml in {}: {e}", app_dir.display());
-                    eprintln!("error: no manifest.toml in {}: {e}", app_dir.display());
-                    eprintln!(
+        if !app_dir.is_dir() {
+            eprintln!("error: '{app}' is not a directory — expected an app directory containing manifest.toml");
+            return 1;
+        }
+        let manifest_path = app_dir.join("manifest.toml");
+        let manifest_str = match std::fs::read_to_string(&manifest_path) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("app_render: no manifest.toml in {}: {e}", app_dir.display());
+                eprintln!("error: no manifest.toml in {}: {e}", app_dir.display());
+                eprintln!(
                     "  Is this a Plexi app directory? Run `plexi app init <name>` to scaffold one."
                 );
-                    return 1;
-                }
-            };
-            let manifest: crate::app::registry::AppManifest = match toml::from_str(&manifest_str) {
-                Ok(m) => m,
-                Err(e) => {
-                    log::warn!(
-                        "app_render: invalid manifest.toml in {}: {e}",
-                        app_dir.display()
-                    );
-                    eprintln!("error: invalid manifest.toml: {e}");
-                    return 1;
-                }
-            };
-            if manifest.schema_version > crate::app::registry::MANIFEST_SCHEMA_VERSION {
-                eprintln!(
+                return 1;
+            }
+        };
+        let manifest: crate::app::registry::AppManifest = match toml::from_str(&manifest_str) {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!(
+                    "app_render: invalid manifest.toml in {}: {e}",
+                    app_dir.display()
+                );
+                eprintln!("error: invalid manifest.toml: {e}");
+                return 1;
+            }
+        };
+        if manifest.schema_version > crate::app::registry::MANIFEST_SCHEMA_VERSION {
+            eprintln!(
                 "error: manifest.toml schema_version {} is newer than supported (max {}); update Plexi to render this app",
                 manifest.schema_version,
                 crate::app::registry::MANIFEST_SCHEMA_VERSION
             );
-                return 1;
-            }
-            let entry = app_dir.join(&manifest.app.entry);
-            if !entry.exists() {
-                eprintln!(
-                    "error: app entry '{}' not found in {}",
-                    manifest.app.entry,
-                    app_dir.display()
-                );
-                return 1;
-            }
-            log::info!("app_render[{}]: loaded from path '{app}'", manifest.app.id);
-            (manifest.app.id, entry)
+            return 1;
         }
+        let entry = app_dir.join(&manifest.app.entry);
+        if !entry.exists() {
+            eprintln!(
+                "error: app entry '{}' not found in {}",
+                manifest.app.entry,
+                app_dir.display()
+            );
+            return 1;
+        }
+        log::info!("app_render[{}]: loaded from path '{app}'", manifest.app.id);
+        (manifest.app.id, entry)
     } else {
         // ID-based: registry lookup
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));

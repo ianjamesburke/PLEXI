@@ -347,17 +347,16 @@ pub fn open_cli(
         eprintln!("warning: 'plexi app open terminal' is deprecated, use 'plexi pane new' instead");
     }
 
-    // If type_id looks like a path to an app directory or Moss source, open by path.
+    // If type_id looks like a path to an app directory (contains manifest.toml), open by path.
     let path = std::path::Path::new(type_id);
     let resolved = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir().unwrap_or_default().join(path)
     };
-    let is_moss_source = resolved.extension().and_then(|ext| ext.to_str()) == Some("moss");
-    if resolved.join("manifest.toml").exists() || (resolved.is_file() && is_moss_source) {
+    if resolved.join("manifest.toml").exists() {
         let abs_path = resolved.to_string_lossy().to_string();
-        log::info!("open:cli: detected app path, opening from path={abs_path}");
+        log::info!("open:cli: detected path with manifest.toml, opening from path={abs_path}");
         return open_app_by_path(&abs_path, layout, from_pane_id);
     }
 

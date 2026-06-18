@@ -444,7 +444,6 @@ impl ProcessApp {
 
         // .py entries are launched via python3 directly — no shebang or executable bit required.
         let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
-        let is_moss = bin_path.extension().and_then(|e| e.to_str()) == Some("moss");
         let py_exe: Option<std::ffi::OsString> = if is_python {
             // Prefer the per-app venv Python when it exists (D2: per-app venv via uv).
             let venv_python = bin_path
@@ -476,14 +475,6 @@ impl ProcessApp {
             log::info!("ProcessApp[{type_id}]: launching .py entry via {:?}", py);
             let mut c = std::process::Command::new(py);
             c.arg(bin_path);
-            c
-        } else if is_moss {
-            log::info!(
-                "ProcessApp[{type_id}]: launching .moss entry via moss plexi-run {}",
-                bin_path.display()
-            );
-            let mut c = std::process::Command::new("moss");
-            c.arg("plexi-run").arg(bin_path);
             c
         } else {
             std::process::Command::new(bin_path)
