@@ -16,6 +16,7 @@
 // optimization; it does not change which gates pass.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use crate::host::wasm_app::bindings::plexi::platform::gpu as wit;
 
@@ -53,13 +54,11 @@ impl GpuDevice {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        let adapter = pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            },
-        ))
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
         .ok_or("no wgpu adapter available for the gpu capability")?;
 
         let (device, queue) = pollster::block_on(adapter.request_device(
@@ -99,7 +98,11 @@ impl GpuDevice {
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("plexi-surface"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -110,7 +113,15 @@ impl GpuDevice {
             view_formats: &[],
         });
         let handle = self.next();
-        self.textures.insert(handle, GpuTexture { texture, width, height, format });
+        self.textures.insert(
+            handle,
+            GpuTexture {
+                texture,
+                width,
+                height,
+                format,
+            },
+        );
         handle
     }
 
@@ -118,13 +129,20 @@ impl GpuDevice {
     /// image for compositing or pixel assertions. Errors for non-RGBA8 formats.
     pub fn read_texture(&self, handle: u64) -> Result<image::RgbaImage, String> {
         let tex = self.textures.get(&handle).ok_or("unknown texture handle")?;
-        if !matches!(tex.format, wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb) {
+        if !matches!(
+            tex.format,
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
+        ) {
             return Err("read_texture only supports rgba8 surfaces".to_string());
         }
         let (w, h) = (tex.width, tex.height);
         // copy_texture_to_buffer needs bytes_per_row aligned to 256.
         let unpadded = w * 4;
         let padded = unpadded.div_ceil(256) * 256;
+        let tight_bytes = unpadded as u64 * h as u64;
+        let padded_bytes = padded as u64 * h as u64;
+        let total_start = Instant::now();
+        let encode_start = Instant::now();
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("plexi-surface-readback"),
             size: (padded * h) as u64,
@@ -133,7 +151,9 @@ impl GpuDevice {
         });
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("plexi-readback") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("plexi-readback"),
+            });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &tex.texture,
@@ -149,33 +169,51 @@ impl GpuDevice {
                     rows_per_image: Some(h),
                 },
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         self.queue.submit(Some(encoder.finish()));
+        let encode_submit_us = encode_start.elapsed().as_micros();
 
+        let map_start = Instant::now();
         let slice = buf.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
         self.device.poll(wgpu::Maintain::Wait);
-        let data = slice.get_mapped_range();
+        let map_wait_us = map_start.elapsed().as_micros();
 
-        let mut out = image::RgbaImage::new(w, h);
-        for y in 0..h {
-            let row = &data[(y * padded) as usize..(y * padded + unpadded) as usize];
-            for x in 0..w {
-                let p = (x * 4) as usize;
-                out.put_pixel(x, y, image::Rgba([row[p], row[p + 1], row[p + 2], row[p + 3]]));
-            }
-        }
+        let pack_start = Instant::now();
+        let data = slice.get_mapped_range();
+        let out = pack_rgba_rows(&data, w, h, padded)?;
+        let pack_us = pack_start.elapsed().as_micros();
         drop(data);
         buf.unmap();
+        log::info!(
+            "wasm gpu readback: texture={handle} size={}x{} bytes={} padded_bytes={} encode_submit_us={} map_wait_us={} pack_us={} total_us={}",
+            w,
+            h,
+            tight_bytes,
+            padded_bytes,
+            encode_submit_us,
+            map_wait_us,
+            pack_us,
+            total_start.elapsed().as_micros()
+        );
         Ok(out)
     }
 
     // ── WIT-facing operations ────────────────────────────────────────────────
 
     pub fn create_surface_view(&mut self, texture: u64) -> Result<u64, String> {
-        let tex = self.textures.get(&texture).ok_or("unknown texture handle")?;
-        let view = tex.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let tex = self
+            .textures
+            .get(&texture)
+            .ok_or("unknown texture handle")?;
+        let view = tex
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let handle = self.next();
         self.views.insert(handle, view);
         Ok(handle)
@@ -209,7 +247,9 @@ impl GpuDevice {
         });
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("plexi-buf-readback") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("plexi-buf-readback"),
+            });
         encoder.copy_buffer_to_buffer(src, offset, &staging, 0, size);
         self.queue.submit(Some(encoder.finish()));
         let slice = staging.slice(..);
@@ -237,8 +277,15 @@ impl GpuDevice {
             view_formats: &[],
         });
         let handle = self.next();
-        self.textures
-            .insert(handle, GpuTexture { texture, width: desc.width, height: desc.height, format });
+        self.textures.insert(
+            handle,
+            GpuTexture {
+                texture,
+                width: desc.width,
+                height: desc.height,
+                format,
+            },
+        );
         Ok(handle)
     }
 
@@ -314,12 +361,22 @@ impl GpuDevice {
             });
 
         let handle = self.next();
-        self.pipelines
-            .insert(handle, GpuPipeline { render: Some(pipeline), compute: None });
+        self.pipelines.insert(
+            handle,
+            GpuPipeline {
+                render: Some(pipeline),
+                compute: None,
+            },
+        );
         Ok(handle)
     }
 
-    pub fn create_compute_pipeline(&mut self, label: &str, wgsl: &str, entry: &str) -> Result<u64, String> {
+    pub fn create_compute_pipeline(
+        &mut self,
+        label: &str,
+        wgsl: &str,
+        entry: &str,
+    ) -> Result<u64, String> {
         let module = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -337,8 +394,13 @@ impl GpuDevice {
                 cache: None,
             });
         let handle = self.next();
-        self.pipelines
-            .insert(handle, GpuPipeline { render: None, compute: Some(pipeline) });
+        self.pipelines.insert(
+            handle,
+            GpuPipeline {
+                render: None,
+                compute: Some(pipeline),
+            },
+        );
         Ok(handle)
     }
 
@@ -347,7 +409,10 @@ impl GpuDevice {
         pipeline: u64,
         bindings: &[wit::BindingEntry],
     ) -> Result<u64, String> {
-        let pl = self.pipelines.get(&pipeline).ok_or("unknown pipeline handle")?;
+        let pl = self
+            .pipelines
+            .get(&pipeline)
+            .ok_or("unknown pipeline handle")?;
         let layout = match (&pl.render, &pl.compute) {
             (Some(r), _) => r.get_bind_group_layout(0),
             (_, Some(c)) => c.get_bind_group_layout(0),
@@ -368,7 +433,10 @@ impl GpuDevice {
                         return Err("texture bindings not yet supported".to_string());
                     }
                 };
-                Ok(wgpu::BindGroupEntry { binding: b.binding, resource })
+                Ok(wgpu::BindGroupEntry {
+                    binding: b.binding,
+                    resource,
+                })
             })
             .collect::<Result<_, String>>()?;
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -382,7 +450,10 @@ impl GpuDevice {
     }
 
     pub fn submit_render_pass(&mut self, pass: wit::RenderPassDesc) -> Result<(), String> {
-        let view = self.views.get(&pass.target).ok_or("unknown surface view handle")?;
+        let view = self
+            .views
+            .get(&pass.target)
+            .ok_or("unknown surface view handle")?;
         let pipeline = self
             .pipelines
             .get(&pass.pipeline)
@@ -415,14 +486,19 @@ impl GpuDevice {
 
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("plexi-render-pass") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("plexi-render-pass"),
+            });
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("plexi-render-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
                     resolve_target: None,
-                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -464,7 +540,9 @@ impl GpuDevice {
             .collect::<Result<_, String>>()?;
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("plexi-compute-pass") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("plexi-compute-pass"),
+            });
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("plexi-compute-pass"),
@@ -488,7 +566,9 @@ impl GpuDevice {
         let (w, h) = (s.width.min(d.width), s.height.min(d.height));
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("plexi-copy-texture") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("plexi-copy-texture"),
+            });
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &s.texture,
@@ -502,7 +582,11 @@ impl GpuDevice {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         self.queue.submit(Some(encoder.finish()));
         Ok(())
@@ -526,26 +610,74 @@ impl GpuDevice {
     }
 }
 
+fn pack_rgba_rows(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    padded_bytes_per_row: u32,
+) -> Result<image::RgbaImage, String> {
+    let unpadded = width
+        .checked_mul(4)
+        .ok_or_else(|| format!("rgba row too wide: {width}"))?;
+    let expected_len = padded_bytes_per_row as usize * height as usize;
+    if data.len() < expected_len {
+        return Err(format!(
+            "readback buffer too small: got {} bytes, expected at least {expected_len}",
+            data.len()
+        ));
+    }
+    let mut packed = Vec::with_capacity(unpadded as usize * height as usize);
+    for y in 0..height {
+        let row_start = padded_bytes_per_row as usize * y as usize;
+        let row_end = row_start + unpadded as usize;
+        packed.extend_from_slice(&data[row_start..row_end]);
+    }
+    image::RgbaImage::from_raw(width, height, packed)
+        .ok_or_else(|| format!("failed to build rgba image {width}x{height} from readback"))
+}
+
 // ── WIT type mappers ─────────────────────────────────────────────────────────
 
 fn map_buffer_usage(u: wit::BufferUsage) -> wgpu::BufferUsages {
     let mut out = wgpu::BufferUsages::empty();
-    if u.contains(wit::BufferUsage::VERTEX) { out |= wgpu::BufferUsages::VERTEX; }
-    if u.contains(wit::BufferUsage::INDEX) { out |= wgpu::BufferUsages::INDEX; }
-    if u.contains(wit::BufferUsage::UNIFORM) { out |= wgpu::BufferUsages::UNIFORM; }
-    if u.contains(wit::BufferUsage::STORAGE) { out |= wgpu::BufferUsages::STORAGE; }
-    if u.contains(wit::BufferUsage::COPY_SRC) { out |= wgpu::BufferUsages::COPY_SRC; }
-    if u.contains(wit::BufferUsage::COPY_DST) { out |= wgpu::BufferUsages::COPY_DST; }
+    if u.contains(wit::BufferUsage::VERTEX) {
+        out |= wgpu::BufferUsages::VERTEX;
+    }
+    if u.contains(wit::BufferUsage::INDEX) {
+        out |= wgpu::BufferUsages::INDEX;
+    }
+    if u.contains(wit::BufferUsage::UNIFORM) {
+        out |= wgpu::BufferUsages::UNIFORM;
+    }
+    if u.contains(wit::BufferUsage::STORAGE) {
+        out |= wgpu::BufferUsages::STORAGE;
+    }
+    if u.contains(wit::BufferUsage::COPY_SRC) {
+        out |= wgpu::BufferUsages::COPY_SRC;
+    }
+    if u.contains(wit::BufferUsage::COPY_DST) {
+        out |= wgpu::BufferUsages::COPY_DST;
+    }
     out
 }
 
 fn map_texture_usage(u: wit::TextureUsage) -> wgpu::TextureUsages {
     let mut out = wgpu::TextureUsages::empty();
-    if u.contains(wit::TextureUsage::TEXTURE_BINDING) { out |= wgpu::TextureUsages::TEXTURE_BINDING; }
-    if u.contains(wit::TextureUsage::STORAGE_BINDING) { out |= wgpu::TextureUsages::STORAGE_BINDING; }
-    if u.contains(wit::TextureUsage::RENDER_ATTACHMENT) { out |= wgpu::TextureUsages::RENDER_ATTACHMENT; }
-    if u.contains(wit::TextureUsage::COPY_SRC) { out |= wgpu::TextureUsages::COPY_SRC; }
-    if u.contains(wit::TextureUsage::COPY_DST) { out |= wgpu::TextureUsages::COPY_DST; }
+    if u.contains(wit::TextureUsage::TEXTURE_BINDING) {
+        out |= wgpu::TextureUsages::TEXTURE_BINDING;
+    }
+    if u.contains(wit::TextureUsage::STORAGE_BINDING) {
+        out |= wgpu::TextureUsages::STORAGE_BINDING;
+    }
+    if u.contains(wit::TextureUsage::RENDER_ATTACHMENT) {
+        out |= wgpu::TextureUsages::RENDER_ATTACHMENT;
+    }
+    if u.contains(wit::TextureUsage::COPY_SRC) {
+        out |= wgpu::TextureUsages::COPY_SRC;
+    }
+    if u.contains(wit::TextureUsage::COPY_DST) {
+        out |= wgpu::TextureUsages::COPY_DST;
+    }
     out
 }
 
@@ -571,4 +703,25 @@ fn map_vertex_format(s: &str) -> Result<wgpu::VertexFormat, String> {
         "sint32" => wgpu::VertexFormat::Sint32,
         other => return Err(format!("unsupported vertex format '{other}'")),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pack_rgba_rows;
+
+    #[test]
+    fn pack_rgba_rows_strips_row_padding() {
+        let row0 = [1, 2, 3, 4, 5, 6, 7, 8, 99, 99, 99, 99];
+        let row1 = [9, 10, 11, 12, 13, 14, 15, 16, 88, 88, 88, 88];
+        let mut data = Vec::new();
+        data.extend_from_slice(&row0);
+        data.extend_from_slice(&row1);
+
+        let img = pack_rgba_rows(&data, 2, 2, 12).expect("pack rows");
+
+        assert_eq!(
+            img.as_raw(),
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        );
+    }
 }

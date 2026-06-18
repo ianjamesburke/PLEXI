@@ -440,16 +440,17 @@ impl PlexiApp {
         let snapshot = store.snapshot();
         let app = WasmApp::load_ephemeral_run(app_id, wasm_path, store)
             .map_err(|e| format!("load {}: {e}", wasm_path.display()))?;
-        let live = LiveWasmPane::new(
-            WasmPane::new(app, Box::new(SysinfoStats::new())),
-            app_id,
-            snapshot,
-        );
-
         let active = self.active_window;
         let share = Self::share_ratio_from_fraction(app_id, None);
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(app_id, None, None, share);
+        let mut live = LiveWasmPane::new(
+            WasmPane::new(app, Box::new(SysinfoStats::new())),
+            app_id,
+            snapshot,
+        );
+        live.set_pane_id(new_id);
+
         let linked_pane_id = self.focused_terminal_id(active);
         self.windows[active].panes.insert(
             new_id,

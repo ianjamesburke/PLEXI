@@ -76,6 +76,12 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   lanes A (GPU readback perf), B (UI interaction), C (fs/net effects),
   D (capability grant flow), E (`ai-query` + app events), then deferred
   gates G8/G9/G10.
+- **Lane A — GPU surface readback perf bounded pass: DONE.** `read_texture`
+  now logs encode/submit, map wait, row-pack, total time, dimensions, and byte
+  counts; padded readback rows are packed with row-level copies into
+  `RgbaImage::from_raw` instead of per-pixel `put_pixel`; egui texture upload
+  timing is logged in `LiveWasmPane`. Async/zero-copy composition remains future
+  work.
 - **Lane B — UI interaction: DONE.** `ui-action` / `ui-value-change` are WIT
   input events; `LiveWasmPane` routes renderer actions/value changes through the
   existing queue/drain path; `apps/wasm-poc/counter` + `counter.wasm` cover the
@@ -84,6 +90,18 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   return scoped result events; `http-fetch` runs through `NetService` on a
   worker thread and queues `http-response`; host tests cover granted read,
   denied read, write round-trip, mock HTTP, and denied-host 403.
+- **Lane D — capability grant flow + runtime enforcement: DONE.**
+  `request-capability` now uses session grants/blocks or a focused WASM
+  capability modal, decisions enqueue `capability-granted` /
+  `capability-denied`, emit `PermissionDecision`, and widen runtime access only
+  for scoped `fs:read:<path>`, `fs:write:<path>`, and `net:fetch:<host>`
+  strings. Persistent install review / remembered grants remain future work.
+- **Lane E — agentic surface (`ai-query` + app events): DONE.** WIT now
+  exposes `ai-query`, `ai-stream-chunk`, `ai-response`,
+  `declare-event-streams`, and `emit-event`; `WasmPane` gates AI on the
+  session `ai.query` grant, dispatches through the injected `AiBroker` on a
+  worker, and routes event declarations/emits into `AppTimeline`. Tools and
+  WASM subscribe/delivery imports remain future work.
 
 ## Key facts discovered (load-bearing for the build)
 

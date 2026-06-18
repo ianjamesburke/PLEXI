@@ -1,0 +1,16 @@
+schema_version = "1"
+id = "com.plexi.counter"
+name = "Counter"
+entry = "target/wasm32-wasip1/release/counter.wasm"
+runtime = "wasm"
+
+[app]
+id = "com.plexi.counter"
+type = "wasm"
+name = "Counter"
+entry = "target/wasm32-wasip1/release/counter.wasm"
+
+[app.capabilities]
+
+[launch]
+command = "counter"

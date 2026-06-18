@@ -541,6 +541,10 @@ impl WasmApp {
         self.lifecycle.call_update(&mut self.store, event)
     }
 
+    pub fn app_id(&self) -> &str {
+        &self.store.data().app_id
+    }
+
     pub fn view(&mut self) -> wasmtime::Result<UiTree> {
         self.lifecycle.call_view(&mut self.store)
     }

@@ -79,14 +79,14 @@ impl PlexiApp {
         }
     }
 
-    /// Capability / secret consent modal for the focused ProcessApp pane.
+    /// Capability / secret consent modal for the focused app pane.
     /// Called from step 2 of `update()` so it holds exclusive keyboard
     /// ownership before `dispatch_app_key_events` runs.
     pub(crate) fn draw_capability_modal(&mut self, ctx: &egui::Context) {
         let active = self.active_window;
         let colors = self.colors;
 
-        // Resolve focused pane id — bail if it's not a ProcessApp.
+        // Resolve focused pane id — bail if it's not an app pane.
         // Use find_pane_in_tile so we traverse through any Container wrapper that
         // egui_tiles may have inserted around a bare-pane root after first render.
         let pane_id = {
@@ -100,6 +100,17 @@ impl PlexiApp {
                 None => return,
             }
         };
+
+        if let Some(crate::host::pane::Pane::App(pane)) =
+            self.windows[active].panes.get_mut(&pane_id)
+        {
+            if let crate::host::pane::AppRuntime::Wasm(wasm) = &mut pane.runtime {
+                if wasm.has_pending_capability_prompt() {
+                    wasm.draw_capability_modal(ctx, &colors);
+                }
+                return;
+            }
+        }
 
         // Take fields out of the ProcessApp, call the modal, put them back.
         // Two separate borrows so Rust doesn't see a conflict.

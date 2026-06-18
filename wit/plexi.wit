@@ -48,10 +48,39 @@ interface types {
 
     enum mouse-button { left, right, middle }
 
+    record ui-action-event {
+        handler-id: string,
+    }
+
+    record ui-value-change-event {
+        handler-id: string,
+        value: string,
+    }
+
     record http-response {
         status: u16,
         headers: list<tuple<string, string>>,
         body: list<u8>,
+    }
+
+    record ai-message {
+        role: string,
+        content: string,
+    }
+
+    record ai-stream-chunk-event {
+        request-id: string,
+        delta: string,
+        reasoning: option<string>,
+        done: bool,
+    }
+
+    record ai-response-event {
+        request-id: string,
+        content: option<string>,
+        tokens-in: u32,
+        tokens-out: u32,
+        error: option<string>,
     }
 
     record system-stats {
@@ -89,6 +118,8 @@ interface types {
         // User input
         key(key-event),
         mouse(mouse-event),
+        ui-action(ui-action-event),
+        ui-value-change(ui-value-change-event),
         resize(size),
         focus-gained,
         focus-lost,
@@ -101,6 +132,10 @@ interface types {
         file-read-result(result<list<u8>, string>),
         file-write-result(result<_, string>),
         http-response(http-response),
+        ai-stream-chunk(ai-stream-chunk-event),
+        ai-response(ai-response-event),
+        declare-event-streams-result(result<list<string>, string>),
+        emit-event-result(result<u64, string>),
 
         // GPU surface lifecycle
         surface-ready(surface-event),
@@ -133,6 +168,40 @@ interface types {
         body: option<list<u8>>,
     }
 
+    record ai-query-effect {
+        request-id: string,
+        model-tier: string,
+        system: string,
+        messages: list<ai-message>,
+    }
+
+    record event-stream-decl {
+        name: string,
+        schema-json: string,
+        description: option<string>,
+    }
+
+    record declare-event-streams-effect {
+        streams: list<event-stream-decl>,
+    }
+
+    record emit-event-effect {
+        event: string,
+        actor: string,
+        actor-id: option<string>,
+        caused-by: option<string>,
+        summary: string,
+        resource-id: string,
+        resource-scope: option<string>,
+        revision-after: string,
+        payload-json: option<string>,
+        state-ref: option<string>,
+        revision-before: option<string>,
+        rollback-token: option<string>,
+        changed-resources: list<string>,
+        suggested-trigger: option<string>,
+    }
+
     record timer-effect {
         id: u32,
         delay-ms: u32,
@@ -143,6 +212,9 @@ interface types {
         file-read(file-read-effect),
         file-write(file-write-effect),
         http-fetch(http-fetch-effect),
+        ai-query(ai-query-effect),
+        declare-event-streams(declare-event-streams-effect),
+        emit-event(emit-event-effect),
         set-timer(timer-effect),
         cancel-timer(u32),
         get-system-stats,

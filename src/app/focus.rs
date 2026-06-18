@@ -974,10 +974,10 @@ impl PlexiApp {
         }
     }
 
-    /// Push/pop `FocusLayer::CapabilityModal` based on whether the focused
-    /// ProcessApp pane has pending prompts. Called every frame (both before
-    /// and after the overlay render block) so the layer tracks prompt state
-    /// without polling lag.
+    /// Push/pop `FocusLayer::CapabilityModal` based on whether the focused app
+    /// pane has pending prompts. Called every frame (both before and after the
+    /// overlay render block) so the layer tracks prompt state without polling
+    /// lag.
     pub(crate) fn sync_capability_modal_focus(&mut self) {
         let should_own = self.focused_pane_has_pending_prompts();
         let has_layer = self.focus_stack.contains(&FocusLayer::CapabilityModal);
@@ -1012,7 +1012,7 @@ impl PlexiApp {
         }
     }
 
-    /// Returns true when the focused ProcessApp pane has at least one pending prompt.
+    /// Returns true when the focused app pane has at least one pending prompt.
     ///
     /// `win.focused_pane` holds a `TileId`. After egui_tiles renders a bare-pane
     /// root for the first time it wraps that tile in a Container, so the stored
@@ -1032,7 +1032,7 @@ impl PlexiApp {
             Some(crate::host::pane::Pane::App(app_pane)) => match &app_pane.runtime {
                 crate::host::pane::AppRuntime::Process(proc) => !proc.pending_prompts.is_empty(),
                 crate::host::pane::AppRuntime::Builtin(_) => false,
-                crate::host::pane::AppRuntime::Wasm(_) => false,
+                crate::host::pane::AppRuntime::Wasm(wasm) => wasm.has_pending_capability_prompt(),
             },
             _ => false,
         }
