@@ -780,9 +780,55 @@ pub fn wasm_capability_requires_consent(capability_id: &str) -> bool {
         || capability_id.starts_with("fs:read:")
         || capability_id.starts_with("fs:write:")
         || capability_id.starts_with("net:fetch:")
-        || capability_id.starts_with("audio:record")
-        || capability_id.starts_with("spawn-child")
-        || capability_id.starts_with("open-pane")
+        || capability_id == "audio:record"
+        || capability_id.starts_with("audio:record:")
+        || capability_id == "spawn-child"
+        || capability_id.starts_with("spawn-child:")
+        || capability_id == "open-pane"
+        || capability_id.starts_with("open-pane:")
+}
+
+pub fn validate_wasm_capability_id(capability_id: &str) -> Result<(), String> {
+    if capability_id == "ai.query"
+        || capability_id == "state:read-write"
+        || capability_id.starts_with("fs:read:")
+        || capability_id.starts_with("fs:write:")
+        || capability_id.starts_with("net:fetch:")
+        || capability_id == "audio:record"
+        || capability_id.starts_with("audio:record:")
+        || capability_id == "spawn-child"
+        || capability_id.starts_with("spawn-child:")
+        || capability_id == "open-pane"
+        || capability_id.starts_with("open-pane:")
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "unknown raw WASM capability '{capability_id}' — expected ai.query, state:read-write, fs:read:<path>, fs:write:<path>, net:fetch:<host>, audio:record, spawn-child, or open-pane"
+        ))
+    }
+}
+
+pub fn wasm_capability_description(capability_id: &str) -> &'static str {
+    if capability_id == "ai.query" {
+        "Make AI calls through the Plexi broker"
+    } else if capability_id == "state:read-write" {
+        "Read and write app state through the host store"
+    } else if capability_id.starts_with("fs:read:") {
+        "Read files at the scoped path"
+    } else if capability_id.starts_with("fs:write:") {
+        "Write files at the scoped path"
+    } else if capability_id.starts_with("net:fetch:") {
+        "Fetch from the scoped network host"
+    } else if capability_id == "audio:record" || capability_id.starts_with("audio:record:") {
+        "Capture microphone audio"
+    } else if capability_id == "spawn-child" || capability_id.starts_with("spawn-child:") {
+        "Spawn a child process"
+    } else if capability_id == "open-pane" || capability_id.starts_with("open-pane:") {
+        "Open a new pane"
+    } else {
+        "Unknown WASM capability"
+    }
 }
 
 #[cfg(test)]
@@ -1403,5 +1449,32 @@ mod tests {
         assert!(granted.contains("ui:theme"));
         assert!(!granted.contains("fs:read:/unset"));
         assert!(blocked.contains("net:fetch:block.example"));
+    }
+
+    #[test]
+    fn wasm_capability_review_ids_validate_current_forms() {
+        for capability_id in [
+            "ai.query",
+            "state:read-write",
+            "fs:read:{workspace}",
+            "fs:write:/tmp/project",
+            "net:fetch:api.github.com",
+            "audio:record",
+            "spawn-child",
+            "open-pane",
+        ] {
+            validate_wasm_capability_id(capability_id)
+                .unwrap_or_else(|e| panic!("{capability_id} should validate: {e}"));
+            assert_ne!(
+                wasm_capability_description(capability_id),
+                "Unknown WASM capability"
+            );
+        }
+    }
+
+    #[test]
+    fn wasm_capability_review_ids_reject_unknown_forms() {
+        let err = validate_wasm_capability_id("net:dial:api.github.com").unwrap_err();
+        assert!(err.contains("unknown raw WASM capability"));
     }
 }

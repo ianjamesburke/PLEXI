@@ -486,37 +486,83 @@ pub fn print_trust_sheet(
     report: &crate::app::package::PackageReport,
     label: crate::app::package::TrustLabel,
 ) {
-    println!("id:           {}", report.id);
-    println!("name:         {}", report.name);
-    println!("version:      {}", report.version);
-    println!("entry:        {}", report.entry);
-    println!(
-        "runtime:      {} — {}",
-        report.runtime.as_str(),
-        label.display_str()
-    );
-    println!(
-        "files:        {} ({})",
-        report.file_count,
-        human_size(report.total_size)
-    );
-    if report.capabilities.is_empty() {
-        println!("capabilities: (none)");
-    } else {
-        println!("capabilities:");
-        for cap in &report.capabilities {
-            let sensitive = if cap.is_sensitive() {
-                " [sensitive]"
-            } else {
-                ""
-            };
-            println!("  {:<18}{}{sensitive}", cap.as_str(), cap.description());
-        }
+    for line in trust_sheet_lines(report, label) {
+        println!("{line}");
+    }
+}
+
+fn trust_sheet_lines(
+    report: &crate::app::package::PackageReport,
+    label: crate::app::package::TrustLabel,
+) -> Vec<String> {
+    let mut lines = vec![
+        format!("id:           {}", report.id),
+        format!("name:         {}", report.name),
+        format!("version:      {}", report.version),
+        format!("entry:        {}", report.entry),
+        format!(
+            "runtime:      {} — {}",
+            report.runtime.as_str(),
+            label.display_str()
+        ),
+        format!(
+            "files:        {} ({})",
+            report.file_count,
+            human_size(report.total_size)
+        ),
+    ];
+    if report.capabilities.is_empty()
+        && report.wasm_required_capabilities.is_empty()
+        && report.wasm_optional_capabilities.is_empty()
+    {
+        lines.push("capabilities: (none)".to_string());
+    } else if !report.capabilities.is_empty() {
+        lines.push("capabilities:".to_string());
+        push_capability_rows(&mut lines, &report.capabilities);
+    }
+    if !report.wasm_required_capabilities.is_empty() {
+        lines.push("wasm required capabilities:".to_string());
+        push_wasm_capability_rows(&mut lines, &report.wasm_required_capabilities);
+    }
+    if !report.wasm_optional_capabilities.is_empty() {
+        lines.push("wasm optional capabilities:".to_string());
+        push_wasm_capability_rows(&mut lines, &report.wasm_optional_capabilities);
     }
     if report.requires_plexi_min.is_some() || report.requires_plexi_max.is_some() {
         let min = report.requires_plexi_min.as_deref().unwrap_or("any");
         let max = report.requires_plexi_max.as_deref().unwrap_or("any");
-        println!("requires:     Plexi {min} .. {max}");
+        lines.push(format!("requires:     Plexi {min} .. {max}"));
+    }
+    lines
+}
+
+fn push_capability_rows(lines: &mut Vec<String>, caps: &[crate::app::permissions::Capability]) {
+    for cap in caps {
+        let sensitive = if cap.is_sensitive() {
+            " [sensitive]"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "  {:<18}{}{sensitive}",
+            cap.as_str(),
+            cap.description()
+        ));
+    }
+}
+
+fn push_wasm_capability_rows(lines: &mut Vec<String>, caps: &[String]) {
+    for cap in caps {
+        let sensitive = if crate::app::permissions::wasm_capability_requires_consent(cap) {
+            " [sensitive]"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "  {:<28}{}{sensitive}",
+            cap,
+            crate::app::permissions::wasm_capability_description(cap)
+        ));
     }
 }
 
@@ -1436,7 +1482,7 @@ mod app_install_workspace_tests {
 
 #[cfg(test)]
 mod install_confirm_tests {
-    use super::{confirm_install, human_size, InstallConfirm};
+    use super::{confirm_install, human_size, trust_sheet_lines, InstallConfirm};
     use crate::app::package::{PackageReport, PackageRuntime, TrustLabel};
     use std::io::Cursor;
 
@@ -1448,6 +1494,8 @@ mod install_confirm_tests {
             runtime: PackageRuntime::Python,
             entry: "main.py".to_string(),
             capabilities: Vec::new(),
+            wasm_required_capabilities: Vec::new(),
+            wasm_optional_capabilities: Vec::new(),
             file_count: 2,
             total_size: 64,
             requires_plexi_min: None,
@@ -1534,6 +1582,25 @@ mod install_confirm_tests {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2.0 KB");
         assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");
+    }
+
+    #[test]
+    fn trust_sheet_lists_wasm_required_and_optional_capabilities() {
+        let mut r = report();
+        r.runtime = PackageRuntime::Wasm;
+        r.entry = "app.wasm".to_string();
+        r.wasm_required_capabilities = vec!["state:read-write".to_string()];
+        r.wasm_optional_capabilities = vec!["ai.query".to_string()];
+
+        let lines = trust_sheet_lines(&r, TrustLabel::WasmComponent);
+        assert!(lines
+            .iter()
+            .any(|line| line == "wasm required capabilities:"));
+        assert!(lines.iter().any(|line| line.contains("state:read-write")));
+        assert!(lines
+            .iter()
+            .any(|line| line == "wasm optional capabilities:"));
+        assert!(lines.iter().any(|line| line.contains("ai.query")));
     }
 }
 

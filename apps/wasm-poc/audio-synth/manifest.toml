@@ -11,4 +11,8 @@ description = "Additive sine oscillator. RT audio POC proving audio output and P
 [app.capabilities]
 capabilities = ["audio.playback", "pipe.open"]
 
+[app.capabilities.wasm]
+required = ["state:read-write"]
+optional = []
+
 [launch]

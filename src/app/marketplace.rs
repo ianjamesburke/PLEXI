@@ -924,6 +924,8 @@ mod tests {
             runtime: crate::app::package::PackageRuntime::Python,
             entry: "main.py".to_string(),
             capabilities: vec![],
+            wasm_required_capabilities: vec![],
+            wasm_optional_capabilities: vec![],
             file_count: 3,
             total_size: 1024,
             requires_plexi_min: None,

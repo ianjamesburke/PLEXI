@@ -11,4 +11,8 @@ description = "CPU, memory, disk, and network stats POC for the Plexi WASM runti
 [app.capabilities]
 capabilities = []
 
+[app.capabilities.wasm]
+required = ["state:read-write"]
+optional = []
+
 [launch]

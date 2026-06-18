@@ -108,7 +108,9 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   link-time host grants from manifest capabilities, and restore/persist raw
   scoped WASM decisions in `permissions.toml`. `.plexipkg` validation and the
   install trust sheet classify WASM packages, and the WASM POC manifests use the
-  registry schema. Required-vs-optional install review remains future work.
+  registry schema. `[app.capabilities.wasm]` required/optional raw capability
+  review metadata is validated and displayed during package/install review.
+  Install-time optional grant selection remains future work.
 
 ## Key facts discovered (load-bearing for the build)
 

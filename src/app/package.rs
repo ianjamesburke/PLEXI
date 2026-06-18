@@ -85,6 +85,12 @@ pub enum PackageError {
         valid = Capability::all_str_values().join(", ")
     )]
     UnknownCapability { value: String, path: PathBuf },
+    #[error("unknown raw WASM capability '{value}' in {path}: {message}")]
+    UnknownWasmCapability {
+        value: String,
+        path: PathBuf,
+        message: String,
+    },
     #[error(
         "sha256 mismatch for '{path}': PACKAGE.toml says {expected}, actual content is {actual}"
     )]
@@ -212,6 +218,8 @@ pub struct PackageReport {
     pub runtime: PackageRuntime,
     pub entry: String,
     pub capabilities: Vec<Capability>,
+    pub wasm_required_capabilities: Vec<String>,
+    pub wasm_optional_capabilities: Vec<String>,
     pub file_count: usize,
     pub total_size: u64,
     /// Declared `[requires].plexi_min` — minimum host version, if any.
@@ -313,6 +321,14 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
         &manifest.app.capabilities.capabilities,
         &app_dir.join("manifest.toml"),
     )?;
+    let wasm_required_capabilities = parse_wasm_capabilities(
+        &manifest.app.capabilities.wasm.required,
+        &app_dir.join("manifest.toml"),
+    )?;
+    let wasm_optional_capabilities = parse_wasm_capabilities(
+        &manifest.app.capabilities.wasm.optional,
+        &app_dir.join("manifest.toml"),
+    )?;
 
     let files = collect_files(app_dir)?;
     let total_size = files.iter().map(|(_, size)| size).sum();
@@ -329,6 +345,8 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
         runtime: PackageRuntime::from_manifest(manifest.app.manifest_type, &entry),
         entry,
         capabilities,
+        wasm_required_capabilities,
+        wasm_optional_capabilities,
         file_count: files.len(),
         total_size,
         requires_plexi_min,
@@ -387,6 +405,22 @@ fn parse_capabilities(
             })
         })
         .collect()
+}
+
+fn parse_wasm_capabilities(
+    strings: &[String],
+    source_path: &Path,
+) -> Result<Vec<String>, PackageError> {
+    for value in strings {
+        if let Err(message) = crate::app::permissions::validate_wasm_capability_id(value) {
+            return Err(PackageError::UnknownWasmCapability {
+                value: value.clone(),
+                path: source_path.to_path_buf(),
+                message,
+            });
+        }
+    }
+    Ok(strings.to_vec())
 }
 
 /// Recursively collect every regular file under `root` as
@@ -1053,6 +1087,8 @@ mod tests {
                 PackageRuntime::Native => "bin/app".to_string(),
             },
             capabilities: Vec::new(),
+            wasm_required_capabilities: Vec::new(),
+            wasm_optional_capabilities: Vec::new(),
             file_count: 2,
             total_size: 100,
             requires_plexi_min: None,
@@ -1119,7 +1155,11 @@ mod tests {
              version = \"0.1.0\"\n\
              description = \"A WASM app\"\n\n\
              [app.capabilities]\n\
-             capabilities = [\"gpu.render\", \"pipe.open\"]\n\n\
+             capabilities = [\"gpu.render\", \"pipe.open\"]\n\
+             \n\
+             [app.capabilities.wasm]\n\
+             required = [\"state:read-write\"]\n\
+             optional = [\"ai.query\"]\n\n\
              [launch]\n",
         )
         .unwrap();
@@ -1131,12 +1171,60 @@ mod tests {
             report.capabilities,
             vec![Capability::GpuRender, Capability::PipeOpen]
         );
+        assert_eq!(
+            report.wasm_required_capabilities,
+            vec!["state:read-write".to_string()]
+        );
+        assert_eq!(
+            report.wasm_optional_capabilities,
+            vec!["ai.query".to_string()]
+        );
 
         let out = work.path().join("pkg-wasm-0.1.0.plexipkg");
         let path = build_package(&app_dir, Some(&out)).unwrap();
         let package_report = validate_package(&path).unwrap();
         assert_eq!(package_report.runtime, PackageRuntime::Wasm);
         assert_eq!(package_report.entry, "app.wasm");
+        assert_eq!(
+            package_report.wasm_required_capabilities,
+            vec!["state:read-write".to_string()]
+        );
+        assert_eq!(
+            package_report.wasm_optional_capabilities,
+            vec!["ai.query".to_string()]
+        );
+    }
+
+    #[test]
+    fn unknown_wasm_review_capability_is_hard_error() {
+        let work = TempDir::new().unwrap();
+        let app_dir = work.path().join("app");
+        fs::create_dir(&app_dir).unwrap();
+        fs::write(
+            app_dir.join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"pkg-wasm-bad-review-cap\"\n\
+             type = \"wasm\"\n\
+             name = \"Bad WASM App\"\n\
+             entry = \"app.wasm\"\n\
+             version = \"0.1.0\"\n\
+             description = \"A WASM app\"\n\n\
+             [app.capabilities]\n\
+             capabilities = []\n\
+             \n\
+             [app.capabilities.wasm]\n\
+             required = [\"net:dial:example.com\"]\n\n\
+             [launch]\n",
+        )
+        .unwrap();
+        fs::write(app_dir.join("app.wasm"), b"\0asm").unwrap();
+
+        let err = validate_dir(&app_dir).unwrap_err();
+        assert!(
+            matches!(err, PackageError::UnknownWasmCapability { ref value, .. } if value == "net:dial:example.com"),
+            "expected UnknownWasmCapability, got: {err}"
+        );
     }
 
     #[test]

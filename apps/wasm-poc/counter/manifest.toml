@@ -11,4 +11,8 @@ description = "Counter POC for typed WASM UI actions."
 [app.capabilities]
 capabilities = []
 
+[app.capabilities.wasm]
+required = []
+optional = []
+
 [launch]
