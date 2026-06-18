@@ -1,0 +1,23 @@
+[package]
+name = "sysmon"
+version = "0.1.0"
+edition = "2021"
+
+# Builds to a WASM Component targeting the Plexi platform world.
+# Requires: cargo component (https://github.com/bytecodealliance/cargo-component)
+#   cargo install cargo-component
+#   cargo component build --target wasm32-wasip2
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# wit-bindgen generates Rust bindings from wit/world.wit at build time.
+wit-bindgen = "0.28"
+
+[package.metadata.component]
+package = "plexi:sysmon"
+
+[package.metadata.component.target]
+path = "wit"
+world = "plexi-app"

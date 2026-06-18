@@ -1,0 +1,17 @@
+schema_version = "2"
+id = "com.plexi.sysmon"
+version = "0.1.0"
+name = "System Monitor"
+description = "CPU, memory, disk, and network stats. POC for the Plexi v2 WASM runtime."
+
+[runtime]
+target = "wasm32-wasip2"
+execution = "local"
+python_compat = false
+
+[capabilities]
+required = ["state:read-write"]
+optional = []
+
+[payment]
+model = "free"
