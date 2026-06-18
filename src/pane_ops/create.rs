@@ -1030,16 +1030,72 @@ impl PlexiApp {
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
     ) -> Result<(), String> {
-        let app_dir = PathBuf::from(app_path);
-        log::info!("launch_app_by_path_with_layout: path={app_path}");
+        let app_path = PathBuf::from(app_path);
+        log::info!(
+            "launch_app_by_path_with_layout: path={}",
+            app_path.display()
+        );
 
+        if app_path.extension().and_then(|ext| ext.to_str()) == Some("moss") {
+            let moss_path = app_path.canonicalize().map_err(|e| {
+                format!(
+                    "failed to resolve Moss app at '{}': {e}",
+                    app_path.display()
+                )
+            })?;
+            let stem = moss_path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("moss-app");
+            let app_id = format!("moss-{stem}");
+            let display_name = stem.to_string();
+            let layout_hint = layout.or_else(|| Some("overlay".to_string()));
+            let cwd = self
+                .resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            let workspace_root = workspace_root_override.unwrap_or_else(|| {
+                moss_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| cwd.clone())
+            });
+            return match crate::process_app::ProcessApp::launch(
+                app_id.clone(),
+                display_name,
+                &moss_path,
+                &cwd,
+                args,
+                workspace_root,
+                std::collections::HashSet::new(),
+                false,
+                None,
+            ) {
+                Ok(process) => {
+                    self.open_process_app_pane(&app_id, process, cwd, None, layout_hint.as_deref());
+                    Ok(())
+                }
+                Err(e) => {
+                    log::warn!("launch_app_by_path_with_layout: Moss launch failed: {e}");
+                    Err(format!(
+                        "failed to launch Moss app at '{}': {e}",
+                        moss_path.display()
+                    ))
+                }
+            };
+        }
+
+        let app_dir = app_path;
         let installed = match self.registry.load_app(&app_dir) {
             Ok(a) => a,
             Err(e) => {
                 log::warn!(
-                    "launch_app_by_path_with_layout: failed to load manifest at {app_path}: {e}"
+                    "launch_app_by_path_with_layout: failed to load manifest at {}: {e}",
+                    app_dir.display()
                 );
-                return Err(format!("failed to load app at '{app_path}': {e}"));
+                return Err(format!(
+                    "failed to load app at '{}': {e}",
+                    app_dir.display()
+                ));
             }
         };
 
@@ -1075,7 +1131,8 @@ impl PlexiApp {
                 let group = installed.launch.join_group.clone();
                 let watch = installed.manifest.watch.unwrap_or(false);
                 log::info!(
-                    "launch_app_by_path_with_layout: launched '{app_id}' from {app_path} group={group:?}"
+                    "launch_app_by_path_with_layout: launched '{app_id}' from {} group={group:?}",
+                    app_dir.display()
                 );
                 let watch_dir = app_dir.clone();
                 let new_pane_id = self.open_process_app_pane(
@@ -1097,7 +1154,10 @@ impl PlexiApp {
                 Ok(())
             }
             Err(e) => {
-                log::error!("launch_app_by_path_with_layout: failed to launch '{app_id}' from {app_path}: {e}");
+                log::error!(
+                    "launch_app_by_path_with_layout: failed to launch '{app_id}' from {}: {e}",
+                    app_dir.display()
+                );
                 Err(format!("failed to launch '{app_id}': {e}"))
             }
         }

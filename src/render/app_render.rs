@@ -50,8 +50,8 @@ fn spawn_and_collect_frame(
 ) -> Result<Vec<RenderCommand>, String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    // Mirror the env setup from ProcessApp::launch so Python apps can import plexi_sdk.
-    // .py entries are launched via python3 — no shebang or execute bit required (mirrors ProcessApp::launch).
+    // Mirror the env setup from ProcessApp::launch so app render handles the
+    // same entry file types as the GUI host.
     const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
     let bundle_contents = std::env::current_exe().ok().and_then(|exe| {
         exe.parent()
@@ -68,6 +68,7 @@ fn spawn_and_collect_frame(
         .as_ref()
         .map(|c| c.join("Resources").join("sdk").join("python"));
     let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
+    let is_moss = bin_path.extension().and_then(|e| e.to_str()) == Some("moss");
     let mut cmd = if is_python {
         let venv_python = bin_path
             .parent()
@@ -86,6 +87,14 @@ fn spawn_and_collect_frame(
         log::info!("app_render[{app_id}]: launching .py entry via {:?}", py);
         let mut c = Command::new(py);
         c.arg(bin_path);
+        c
+    } else if is_moss {
+        log::info!(
+            "app_render[{app_id}]: launching .moss entry via moss plexi-run {}",
+            bin_path.display()
+        );
+        let mut c = Command::new("moss");
+        c.arg("plexi-run").arg(bin_path);
         c
     } else {
         Command::new(bin_path)
