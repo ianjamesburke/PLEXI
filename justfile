@@ -22,6 +22,14 @@ web:
 test:
     cargo test
 
+# Rebuild the WASM POC components and refresh the committed test fixtures the
+# host runtime gate tests load (G3/G5 etc). Run after changing any
+# apps/wasm-poc/* source. Requires cargo-component + the wasm32-wasip2 target.
+# Note: cargo-component emits the adapted component under the wasip1 path.
+wasm-fixtures:
+    cd apps/wasm-poc/sysmon && cargo component build --release --target wasm32-wasip2
+    cp target/wasm32-wasip1/release/sysmon.wasm tests/wasm-fixtures/sysmon.wasm
+
 # Generate an HTML line-coverage report and open it in the browser.
 # Requires: cargo install cargo-llvm-cov && rustup component add llvm-tools-preview
 coverage:

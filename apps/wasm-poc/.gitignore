@@ -1,2 +1,2 @@
-# cargo-component regenerates this on every build; the crates use the wit_bindgen macro instead
-src/bindings.rs
+# cargo-component regenerates this each build; crates use the wit_bindgen macro instead
+**/src/bindings.rs

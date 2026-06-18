@@ -15,7 +15,19 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     `wit-bindgen` 0.41. `wasm-tools validate` exits 0 for all three.
   - Single-sourced platform WIT: each POC `wit/world.wit` is a symlink to `wit/plexi.wit`.
   - sysmon has 4 pure-function tests (`cargo test`, no host) — commit `df3e74fc`.
-- **M2-M4: not started.** Plan below.
+- **M2 — Host wasmtime integration (G3, G5): DONE.**
+  - `src/host/wasm_app.rs`: `wasmtime` 43 + `wasmtime-wasi` 43; `bindgen!` the
+    `plexi-app` world; host imports `host-log` (→ `log::app::<id>`), `host-state`
+    (→ file-backed `StateStore`), `pipes` (stub until M4). Baseline WASI 0.2
+    (clocks+random, no env/fs/net) linked so Rust-std components instantiate.
+  - Capability linker: `host-log` always linked; `host-state`/`pipes` linked
+    only when granted (`Grants`). Ungranted import → instantiation fails.
+  - `WasmApp::{load,init,update,view,snapshot}` — synchronous Elm effect loop.
+  - G3 `g3_effect_roundtrip` + G5 `g5_state_persists_across_reload` pass against
+    a committed 124 KB release fixture `tests/wasm-fixtures/sysmon.wasm`
+    (regenerate via `just wasm-fixtures`). Full `cargo test --bin plexi`: 1243+2
+    pass. New module symbols are test-only until M3 wires `AppRuntime::Wasm`.
+- **M3-M4: not started.** Plan below.
 
 ## Key facts discovered (load-bearing for the build)
 
