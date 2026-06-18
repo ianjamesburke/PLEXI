@@ -226,6 +226,13 @@ impl WasmApp {
         if grants.pipes {
             pipes::add_to_linker::<_, HasSelf<HostCtx>>(&mut linker, |c| c)?;
         }
+        if grants.gpu || grants.audio {
+            // GPU/audio host interfaces land in M4. A component importing them
+            // would fail instantiation below; surface the gap explicitly.
+            log::warn!(
+                "app::{app_id}: gpu/audio capability requested but not yet linkable (M4)"
+            );
+        }
 
         let ctx = HostCtx {
             app_id: app_id.clone(),
@@ -254,11 +261,6 @@ impl WasmApp {
 
     pub fn view(&mut self) -> wasmtime::Result<UiTree> {
         self.bindings.plexi_platform_lifecycle().call_view(&mut self.store)
-    }
-
-    /// Current backing-store snapshot (host-side; does not call the guest).
-    pub fn snapshot(&self) -> StateSnapshot {
-        self.store.data().state.snapshot()
     }
 }
 

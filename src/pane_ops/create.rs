@@ -420,6 +420,74 @@ impl PlexiApp {
         log::info!("app::{app_id}: launch-failed tile inserted as pane {new_id}");
     }
 
+    /// Open a sandboxed WASM component app in a new pane (the `run` primitive,
+    /// G6). Loads `wasm_path` into a per-pane `wasmtime::Store`, links only the
+    /// standard grants, and drives it through the synchronous effect loop.
+    /// State is ephemeral — the namespace lives only as long as the pane, per
+    /// the spec's default `run` lifecycle (`--persist` is a later addition).
+    /// Returns the new pane id, or an error string if the component fails to
+    /// load or instantiate (surfaced to the caller rather than crashing).
+    pub(crate) fn open_wasm_app_pane(
+        &mut self,
+        app_id: &str,
+        wasm_path: &std::path::Path,
+        workspace_root: PathBuf,
+    ) -> Result<PaneId, String> {
+        use crate::host::wasm_app::{Grants, StateStore, WasmApp};
+        use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
+
+        let store = StateStore::ephemeral();
+        let snapshot = store.snapshot();
+        let app = WasmApp::load(app_id, wasm_path, &Grants::standard_app(), store)
+            .map_err(|e| format!("load {}: {e}", wasm_path.display()))?;
+        let live = LiveWasmPane::new(
+            WasmPane::new(app, Box::new(SysinfoStats::new())),
+            app_id,
+            snapshot,
+        );
+
+        let active = self.active_window;
+        let share = Self::share_ratio_from_fraction(app_id, None);
+        let (new_id, share, vertical, new_pane_first) =
+            self.open_pane_layout(app_id, None, None, share);
+        let linked_pane_id = self.focused_terminal_id(active);
+        self.windows[active].panes.insert(
+            new_id,
+            Pane::App(Box::new(crate::host::pane::AppPane {
+                pip_status: None,
+                id: new_id,
+                runtime: crate::host::pane::AppRuntime::Wasm(Box::new(live)),
+                workspace_root,
+                permissions: crate::app::permissions::AppPermissions::default(),
+                manifest_id: app_id.to_string(),
+                name: app_id.to_string(),
+                pane_group: None,
+                linked_pane_id,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+            })),
+        );
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+            app_id: app_id.to_string(),
+            type_id: "wasm".to_string(),
+            pane_id: new_id,
+            timestamp: crate::host::event_log::now_timestamp(),
+        });
+        log::info!("wasm::{app_id}: spawned pane {new_id} from {}", wasm_path.display());
+
+        if self.windows[active].focused_pane.is_none() {
+            let ctx = &mut self.windows[active];
+            let root_tile = ctx.tree.tiles.insert_pane(new_id);
+            ctx.tree.root = Some(root_tile);
+            ctx.focused_pane = Some(root_tile);
+            return Ok(new_id);
+        }
+        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first, false);
+        Ok(new_id)
+    }
+
     /// Reload the `ProcessApp` inside the AppPane at `pane_id` (#83).
     ///
     /// Sends `Shutdown` to the existing subprocess (via `Drop` on the old

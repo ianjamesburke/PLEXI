@@ -176,6 +176,18 @@ impl PlexiUiHarness {
         })
     }
 
+    /// Open a sandboxed WASM component app from a `.wasm` file. The app id is
+    /// derived from the file stem. Returns the new pane id.
+    pub fn open_wasm_at(&mut self, wasm_path: &Path) -> Result<PaneId, String> {
+        let app_id = wasm_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("wasm")
+            .to_string();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        self.with_app_mut(|app| app.open_wasm_app_pane(&app_id, wasm_path, cwd))
+    }
+
     /// Step frames until the real app process behind `pane_id` commits its
     /// first rendered frame (FrameDone observed), sleeping between steps to
     /// give the child process wall-clock time. Fails with the app's recent

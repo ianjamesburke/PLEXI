@@ -2688,6 +2688,7 @@ impl eframe::App for PlexiApp {
                                     pa.pipe_registry.lock().unwrap().has_reader(&pipe_id)
                                 }
                                 crate::host::pane::AppRuntime::Builtin(_) => false,
+                                crate::host::pane::AppRuntime::Wasm(_) => false,
                             })
                             .unwrap_or(false);
                         if is_reader {
@@ -2885,6 +2886,7 @@ impl eframe::App for PlexiApp {
                                     pa.type_id == originator_type_id
                                 }
                                 crate::host::pane::AppRuntime::Builtin(_) => false,
+                                crate::host::pane::AppRuntime::Wasm(_) => false,
                             })
                             .unwrap_or(false);
                         if matches {
@@ -3872,6 +3874,7 @@ fn register_directed_pipe_on_target(pane: &mut crate::host::pane::Pane, pipe_id:
         crate::host::pane::Pane::App(app) => match &app.runtime {
             crate::host::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
             crate::host::pane::AppRuntime::Builtin(_) => None,
+            crate::host::pane::AppRuntime::Wasm(_) => None,
         },
         crate::host::pane::Pane::Terminal(_) | crate::host::pane::Pane::Portal(_) => None,
     };

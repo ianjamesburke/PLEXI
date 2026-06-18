@@ -165,6 +165,7 @@ fn drain_pipe_frame(app: &PlexiApp, sender_pane_id: u64, pipe_id: &str) -> Optio
             crate::host::pane::Pane::App(p) => match &p.runtime {
                 crate::host::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
                 crate::host::pane::AppRuntime::Builtin(_) => None,
+                crate::host::pane::AppRuntime::Wasm(_) => None,
             },
             _ => None,
         };

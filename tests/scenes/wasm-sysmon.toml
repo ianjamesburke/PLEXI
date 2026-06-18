@@ -1,0 +1,26 @@
+# G4 — WASM scene-graph render. Opens the sysmon component (the committed
+# release fixture) through the live host: wasmtime load -> init -> synchronous
+# effect loop (GetSystemStats) -> view tree -> egui render. Asserts the pane is
+# running and the rendered content shows the monitor header and CPU/memory
+# rows, then captures a screenshot. suite = true — no external process, fully
+# hermetic. Run with `just scene tests/scenes/wasm-sysmon.toml`.
+size = [900.0, 640.0]
+suite = true
+
+[[steps]]
+open_wasm = "tests/wasm-fixtures/sysmon.wasm"
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "System Monitor" }
+
+[[steps]]
+assert = { tree_contains = "CPU" }
+
+[[steps]]
+assert = { tree_contains = "Mem" }
+
+[[steps]]
+shot = "wasm-sysmon.png"
