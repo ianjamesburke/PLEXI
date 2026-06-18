@@ -27,7 +27,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     a committed 124 KB release fixture `tests/wasm-fixtures/sysmon.wasm`
     (regenerate via `just wasm-fixtures`). Full `cargo test --bin plexi`: 1243+2
     pass. New module symbols are test-only until M3 wires `AppRuntime::Wasm`.
-- **M3 — Rendering + run primitive (G4, G6): IN PROGRESS.**
+- **M3 — Rendering + run primitive (G4, G6): DONE.**
   - DONE `src/host/wasm_render.rs` (commit `9a205577`): arena `UiTree` -> egui
     renderer for every `ui-node-data` variant (GPU surface is a labelled
     placeholder until M4); depth-capped; interactions collected into
@@ -38,19 +38,34 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     close/title/status surfacing, queue converges per `tick`. 4 driver tests
     pass against the sysmon fixture (init stats, poll refresh, `q` close, `=`
     retime to 5000ms).
-  - REMAINING (the live integration; clears the forward-reference warnings):
-    1. Production `SystemStatsSource` (add `sysinfo`) — `SysinfoStats`.
-    2. `AppRuntime::Wasm(Box<WasmPane>)` variant + the ~19 match arms in
-       `src/host/pane.rs` (the only external match is a non-exhaustive `if let`
-       in `context_state.rs:93`, so no break there).
-    3. A spawn/construction path for a WASM-app pane (model on the existing
-       `Pane::App` builtin spawn).
-    4. Live `ui()`: translate egui `InputState` -> `InputEvent`, call
-       `tick(now_ms)` (now = elapsed since pane start), render `view()` via
-       `render_ui_tree`; `handle_key` consume; `wants_close` -> close.
-    5. `plexi run ./x.wasm` CLI (ephemeral temp `StateStore`, deleted on close).
-    6. Gates: G4 scene/screenshot test; G6 CLI + scene (open -> populate -> `q`
-       closes, no persisted namespace).
+  - DONE live integration (commits `bd56ddfb` wiring+G4, `6d051875` G6):
+    1. `SysinfoStats` (added `sysinfo`) — production `SystemStatsSource`
+       (cpu/mem/uptime/load; disk/net bps are 0 pending interval-delta tracking).
+    2. `AppRuntime::Wasm(Box<LiveWasmPane>)` variant + all `pane.rs` arms; the
+       five external exhaustive matches (`focus.rs`, `app/mod.rs` x3,
+       `notification_image.rs`) gained a `Wasm` arm mirroring `Builtin`.
+    3. `LiveWasmPane` (in `wasm_pane.rs`): the live adapter — owns the monotonic
+       clock, lazy `init` on first frame, egui key translation (printable-vs-named
+       split mirroring `process_app`), per-frame `tick`+`view`+`render_ui_tree`,
+       timer-scheduled repaints (`request_repaint_after` off `next_deadline_ms`),
+       and fatal-error capture (a bad app shows an error in place, never crashes
+       the host).
+    4. `open_wasm_app_pane` (`pane_ops/create.rs`): ephemeral spawn path, one
+       `wasmtime::Store` per pane.
+    5. Run primitive: `.wasm` paths route through the existing `app open <path>`
+       -> `spawn_pane{path}` socket flow; `launch_app_by_path_with_layout`
+       detects the `.wasm` extension and calls `open_wasm_app_pane`. No new
+       top-level command (`plexi run` is the project-command runner; `plexi app
+       open ./x.wasm` is the launch surface). State is ephemeral; `--persist` is
+       deferred to M4.
+    6. Gates: **G4** `tests/scenes/wasm-sysmon.toml` (live render of the sysmon
+       fixture, asserts running + content + screenshot). **G6**
+       `ui_tests::wasm_path_launch_opens_wasm_pane` (the shared launch entry
+       produces an `AppRuntime::Wasm` pane). Both green; full suite 1249 pass.
+  - Transient warnings (non-test build only): `StateStore::persistent` (G5
+    infra), `LiveWasmPane::{is_running,last_render_text}` (G4 scene inspectors).
+    Real code, test-reachable only; clears when `--persist` and a host-side wasm
+    pane inspector land in M4. No `#[allow]` used.
 - **M4: not started.** Plan below.
 
 ## Key facts discovered (load-bearing for the build)
