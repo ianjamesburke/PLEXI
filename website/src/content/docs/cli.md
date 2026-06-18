@@ -879,6 +879,49 @@ Delete a named pane slot
 | `<name>` | string | yes | Slot name |
 | `<pane_id>` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
 
+## `plexi events`
+
+Subscribe to a Plexi app's event streams and receive brokered deliveries.
+
+Apps declare named event streams (e.g. `probe.tick`) and emit events on them. `plexi events subscribe <app_id> <stream>` opens a long-lived connection and prints one JSON line per delivered event to stdout (NDJSON) until interrupted. Subscriptions are brokered: the host stamps your identity from the pane you run in and checks permission before any event is delivered.
+
+| Subcommand | Description |
+|---|---|
+| `subscribe` | Subscribe to an app's event stream and print delivered events as NDJSON |
+| `list` | List event streams currently declared by running apps |
+| `mcp-config` | Print the host event MCP server config for an MCP-aware agent |
+
+### `plexi events subscribe`
+
+Subscribe to an app's event stream and print delivered events as NDJSON.
+
+Opens a long-lived connection to the running Plexi instance and streams one JSON object per line to stdout: first a `subscribed` acknowledgement, then one line per delivered event. Runs until interrupted (Ctrl-C), at which point the host drops the subscription and its queued deliveries.
+
+Example: plexi events subscribe event-probe probe.tick --payload full
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<app_id>` | string | yes | App id that publishes the stream (e.g. `event-probe`) |
+| `<stream>` | string | no | Stream name to subscribe to (e.g. `probe.tick`). Omit with --all to subscribe to every stream the app declares |
+| `--all` | flag | no | Subscribe to all of the app's declared streams instead of one |
+| `--payload` | string | no | How much of each event to deliver: off, summary, full, or state-ref Default: `full`. |
+| `--trigger` | string | no | Trigger mode recorded on the subscription: never, conversation, ambient, or ask Default: `conversation`. |
+| `--resource` | string | no | Only deliver events for this resource id (document/game/pane). Omit for any |
+
+### `plexi events list`
+
+List event streams currently declared by running apps
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Output as JSON instead of a human-readable table |
+
+### `plexi events mcp-config`
+
+Print the host event MCP server config for an MCP-aware agent.
+
+Emits a `mcpServers` JSON block pointing at this instance's host MCP server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a Claude Code or Codex agent in this pane can subscribe to app events natively over MCP.
+
 ## `plexi notify`
 
 Send a notification to the Plexi UI

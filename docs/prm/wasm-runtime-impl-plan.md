@@ -67,7 +67,23 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     Real code, test-reachable only; clears when `--persist` and a host-side wasm
     pane inspector land in M4. No `#[allow]` used.
 - **M4: DONE.** Pipes (G13 host + guest round-trip), audio (G12), and gpu
-  (G7/G11) all wired via world generalization. Details below. Next is M5.
+  (G7/G11) all wired via world generalization. Details below.
+- **M5 — one PR `wasm-rebuild` → alpha + `just install`: DONE.** Landed as
+  PR #2291 (gates G1–G7, G11–G13) + #2292 (key release / canonical key names).
+  alpha at `9da192d8`. **In-scope gates complete.** What comes next (parity
+  with Python, perf, agentic) is articulated in the
+  [Next Steps section of `wasm-runtime.md`](wasm-runtime.md#next-steps-2026-06-18):
+  lanes A (GPU readback perf), B (UI interaction), C (fs/net effects),
+  D (capability grant flow), E (`ai-query` + app events), then deferred
+  gates G8/G9/G10.
+- **Lane B — UI interaction: DONE.** `ui-action` / `ui-value-change` are WIT
+  input events; `LiveWasmPane` routes renderer actions/value changes through the
+  existing queue/drain path; `apps/wasm-poc/counter` + `counter.wasm` cover the
+  typed-node button path.
+- **Lane C — real fs / net effects: DONE.** `file-read` / `file-write` now
+  return scoped result events; `http-fetch` runs through `NetService` on a
+  worker thread and queues `http-response`; host tests cover granted read,
+  denied read, write round-trip, mock HTTP, and denied-host 403.
 
 ## Key facts discovered (load-bearing for the build)
 
@@ -171,7 +187,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     the game; `w` + 60 ticks moves the left paddle up (observable in the
     surface). No pixel buffer crosses the WASM boundary (no render-to-texture
     effect exists — apps issue gpu commands only).
-- **M5 — one PR `wasm-rebuild` → alpha + `just install`** for end-to-end manual test.
+- ~~**M5 — one PR `wasm-rebuild` → alpha + `just install`** for end-to-end manual test.~~ **DONE** (PR #2291 + #2292, alpha `9da192d8`).
 
 ## Done definition
 

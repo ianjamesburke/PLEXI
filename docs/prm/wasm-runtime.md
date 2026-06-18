@@ -1,9 +1,40 @@
 # Plexi WASM Runtime — Full Architecture Specification
 
-Status: greenfield specification. This document describes the destination architecture, not an incremental plan.
-Last updated: 2026-06-17.
+Status: **partially implemented** (was: greenfield specification). This document describes the destination architecture. As of 2026-06-18 the runtime core has landed on `alpha` via PR #2291 + #2292.
+Last updated: 2026-06-18.
+
+**Reading convention (added 2026-06-18):** ~~Struck-through text~~ marks what is **shipped and gate-verified** on `alpha`. Plain text is **not built yet**. Sections that are partly done carry an inline **🟡 PARTIAL** / **⬜ NOT BUILT** callout naming the exact gap. The honest one-line summary: the runtime is **demo-complete, not app-complete** — every subsystem works in isolation (gates pass), but the breadth of host effects a real app needs (fs/net, UI interaction, capability prompts, agentic calls) is still stubbed. See [Implementation Status](#implementation-status-2026-06-18) below and [Next Steps](#next-steps-2026-06-18) at the end.
 
 This spec is the authoritative description of the Plexi v2 runtime. It supersedes all prior WASM/WASI planning fragments, the PGAP v2 design notes, and the "Surface node" placeholder in the app-framework PRM. It does not touch the v1 release path (S1–S6 in `app-framework-marketplace.md`) — those sprints remain the correct near-term sequence.
+
+---
+
+## Implementation Status (2026-06-18)
+
+| Subsystem | Gate | Status |
+|---|---|---|
+| WIT interface compiles | G1 | ✅ shipped |
+| Pure-function lifecycle (`init`/`update`/`view`) | G2 | ✅ shipped |
+| Effect round-trip mechanism | G3 | ✅ shipped (mechanism only — most effect *variants* are stubbed, see below) |
+| UINode tree → egui rendering | G4 | ✅ shipped |
+| State persistence (primitive KV) | G5 | ✅ shipped (🟡 `cas()`/CRDT/sync **not built**) |
+| Run primitive (ephemeral `app open ./x.wasm`) | G6 | ✅ shipped |
+| Surface-node lifecycle (Bevy Pong) | G7 | ✅ shipped (🟡 per-frame **synchronous GPU readback** — choppy; see Next Steps lane A) |
+| Python compat | G8 | ⬜ deferred mission |
+| Cloud execution | G9 | ⬜ deferred mission |
+| HTTP 402 payment | G10 | ⬜ deferred mission |
+| GPU render pass | G11 | ✅ shipped |
+| RT audio callback | G12 | ✅ shipped |
+| Pipes round-trip | G13 | ✅ shipped |
+
+**Not yet built (the app-completeness gap, beyond the deferred gates):**
+
+- **Some effect variants are still stubbed or missing.** `file-read`/`file-write` and `http-fetch` now round-trip with scoped runtime enforcement (`wasm_pane.rs:462-554`). Remaining variants such as `file-list`/`file-watch`, `websocket-open`, `open-pane`, `audio-record`, `spawn-child`, `clipboard-*`, `notify`, and `payment-request` are not complete. `get-system-stats`, `set-timer`/`cancel-timer`, `set-title`/`set-status`, and `close-self` also round-trip.
+- **UI interaction is wired.** Button clicks, submitted text inputs, list selections, and text-input changes are produced by the renderer (`wasm_render.rs:22-26`) and routed as typed `ui-action` / `ui-value-change` events through the guest `update()` loop (`wasm_pane.rs:273-299`, `wasm_pane.rs:525-542`).
+- **Input is keyboard-only.** `mouse`, `resize`, `focus-gained`/`focus-lost` are in the WIT but never enqueued. The surface never learns it was resized.
+- **Capability enforcement is link-time only.** Grants auto-derive from imports and auto-grant in ephemeral run (`wasm_app.rs:462`). No grant review sheet, no inline prompt, no runtime denial, no path/host scoping, no escalation (`request-capability` only logs).
+- **No agentic / subscribe surface.** The WIT has no `ai-query`, `emit-event`, `declare-event-streams`, or subscribe import. WASM apps cannot make LLM calls or participate in the app-event subscription system that Python apps use. (The host machinery — `LiveAiBroker`, ledger, consent UI, event timeline — already exists on the Python side; only the WIT bindings + linker wiring are missing.)
+- **`ProcessApp`/PGAP is NOT removed.** The ["What is removed"](#what-is-removed) list below is aspirational — Python apps still run on the v1 path alongside WASM. Supersession is a v3 outcome, after G8 (Python compat) lands.
 
 ---
 
@@ -54,7 +85,7 @@ These planes are not layers in a call stack — they are independent systems. Th
 
 ---
 
-## The App Model
+## ~~The App Model~~ ✅ SHIPPED
 
 A Plexi v2 app is a WASM Component that implements two functions:
 
@@ -85,7 +116,9 @@ That is the entire contract. The app cannot do anything else. It cannot open fil
 
 ---
 
-## Effect System
+## Effect System  🟡 PARTIAL
+
+> **Status:** the round-trip *mechanism* ships (G3 ✅). **Implemented variants:** `get-system-stats`, `set-timer`/`cancel-timer`, `set-title`/`set-status`, `close-self`, `file-read`, `file-write`, and `http-fetch`. **Stubbed or missing:** `file-list`/`file-watch`, `websocket-open`, `open-pane`, `audio-record`, `spawn-child`, `clipboard-*`, `notify`, `payment-request`, `request-capability`. The input-event variants `mouse`/`resize`/`focus-*`/`capability-granted`/`capability-denied`/`payment-complete` are defined in WIT but never enqueued.
 
 Effects are how apps reach outside the WASM sandbox. An effect is a typed request the app returns from `update()`. The host executes effects against the capability grants and returns results on the next `update()` call.
 
@@ -155,7 +188,9 @@ No callbacks, no async/await visible to the app. The app is always a synchronous
 
 ---
 
-## UI Node Tree
+## ~~UI Node Tree~~ ✅ SHIPPED
+
+> **Status:** all node variants render to egui (G4 ✅). Button/text-input/list interactions are mapped to typed `input-event` variants and delivered to `update()` in the same frame (Lane B ✅).
 
 PGAP (newline-delimited JSON UI trees) is replaced by a typed tree defined in WIT. The host owns the component implementations — a `button-node` always renders as a Plexi button. Apps cannot bypass the design system except through `surface-node`.
 
@@ -206,7 +241,9 @@ Each node carries: a stable `key` for diffing, style overrides within the design
 
 ---
 
-## State Plane
+## State Plane  🟡 PARTIAL
+
+> **Status:** the primitive get/set/delete/list-prefix store ships and persists across restarts (G5 ✅). **Not built:** `cas()`, CRDT merge, and `state-sync` snapshots / SpacetimeDB sync.
 
 The host owns a CRDT key-value store, namespaced per app instance. The app does not serialize state to disk — it writes to the store through the `state` import, and the host persists it.
 
@@ -244,7 +281,9 @@ Apps launched with `plexi run` without `--persist` get a temp-scoped namespace t
 
 ---
 
-## Capability System
+## Capability System  🟡 PARTIAL
+
+> **Status:** link-time gating ships — an ungranted import is not linked into the module, so the app physically cannot call it. **Not built:** the grant *flow* (install review sheet, ephemeral inline prompt, mid-session escalation via `request-capability`), path/host scope enforcement, and any runtime denial. Ephemeral runs currently auto-grant whatever the component imports (`wasm_app.rs:462`). Building the grant flow is Next Steps lane D.
 
 Every import the app can call is a capability. The manifest declares required and optional capabilities. The host only links the imports that match granted capabilities. If `net:fetch` is not granted, the import does not exist in the linked module — the app cannot call it. This is enforced at the WASM link layer, not at runtime.
 
@@ -280,7 +319,9 @@ Network capabilities are host-scoped. `net:fetch:api.github.com` grants only tha
 
 ---
 
-## The Run Primitive
+## The Run Primitive  🟡 PARTIAL
+
+> **Status:** local ephemeral launch of a local `.wasm` file ships via `plexi app open ./x.wasm` (G6 ✅). **Not built:** registry resolution (`@publisher/app`), content-addressed bundle cache, Ed25519 signature verification, the 402 payment check, and cloud / preferred-local execution routing. Steps 1–5 in the flow below are aspirational.
 
 ```
 plexi run @publisher/app-name[@version] [--persist] [args...]
@@ -329,7 +370,9 @@ plexi run @publisher/app-name[@version] [--persist] [args...]
 
 ---
 
-## Execution Locations
+## Execution Locations  🟡 PARTIAL (local only)
+
+> **Status:** **Local (wasmtime embedded)** ships — one `Store` per pane, direct function calls. **Cloud** and **Mobile** are not built (G9 deferred).
 
 The host does not care where the WASM process runs. It calls WIT interface functions and receives UINode trees. The execution location is resolved at launch from the manifest and available resources.
 
@@ -369,7 +412,7 @@ The mobile pane model collapses to stack-based navigation on phone (one pane vis
 
 ---
 
-## Wire Protocol (Cloud Mode)
+## Wire Protocol (Cloud Mode)  ⬜ NOT BUILT (G9 deferred)
 
 The wire protocol is derived from the WIT definitions, not hand-written. `wit-bindgen` generates the serialization layer; a binary transport wraps it.
 
@@ -407,7 +450,7 @@ msgpack. Not JSON. JSON is available in debug mode (set by manifest `[dev] wire-
 
 ---
 
-## Registry Architecture
+## Registry Architecture  ⬜ NOT BUILT
 
 The registry is a content-addressed CDN backed by a metadata store. Apps are identified by their content hash, not their name. Names are aliases that resolve to hashes.
 
@@ -474,7 +517,7 @@ wire_format = "json"                # debug only; omit in release
 
 ---
 
-## HTTP 402 Payment Gate
+## HTTP 402 Payment Gate  ⬜ NOT BUILT (G10 deferred)
 
 The 402 integration is at the registry fetch layer, not the app layer. Apps do not implement payment logic.
 
@@ -509,7 +552,7 @@ The registry takes a platform cut and remits the remainder to the publisher. The
 
 ---
 
-## Python Compatibility Layer
+## Python Compatibility Layer  ⬜ NOT BUILT (G8 deferred)
 
 Python apps must continue to work through the v1 → v2 transition. CPython 3.12 compiles to WASM (wasm32-wasip1/wasip2). The compat layer wraps it.
 
@@ -540,7 +583,9 @@ The compat shim is removed at the v3 boundary, after the Core 9 apps have been m
 
 ---
 
-## Host Changes
+## Host Changes  🟡 PARTIAL
+
+> **Status:** "What is added" — embedded wasmtime, WIT layer, scene graph, link-time capability gating — ships. **"What is removed" has NOT happened:** the PGAP parser, subprocess plumbing, and `ProcessApp` are all still present and running v1 apps. WASM landed *alongside* v1, not as a replacement (supersession is a v3 outcome after G8). Cloud-runtime and registry clients are not built.
 
 ### What is removed
 
@@ -567,7 +612,9 @@ The compat shim is removed at the v3 boundary, after the Core 9 apps have been m
 
 ---
 
-## Security Model
+## Security Model  🟡 PARTIAL
+
+> **Status:** the sandbox boundary (per-instance isolated linear memory, no syscalls) and link-time capability enforcement ship. **Not built:** publisher Ed25519 signature verification, the root-key transparency log, and the ephemeral-run unverified-publisher warning (all depend on the registry).
 
 ### Sandbox boundary
 
@@ -629,7 +676,7 @@ Each gate is a concrete, runnable test — not a design criterion. Every gate mu
 
 Reference implementations for gates G1–G5 are in `apps/wasm-poc/`. Reference WIT is in `wit/plexi.wit`.
 
-### G1 — WIT interface compiles
+### ~~G1 — WIT interface compiles~~ ✅ SHIPPED
 
 **What it proves:** The WIT definitions in `wit/plexi.wit` are syntactically and semantically valid. App crates can generate bindings from them.
 
@@ -644,7 +691,7 @@ cargo component build --target wasm32-wasip2
 
 ---
 
-### G2 — Pure function unit tests
+### ~~G2 — Pure function unit tests~~ ✅ SHIPPED
 
 **What it proves:** `init()`, `update()`, and `view()` are pure functions that can be tested without a host, without a process, without network.
 
@@ -670,7 +717,9 @@ fn stats_result_updates_view() {
 
 ---
 
-### G3 — Effect system round-trip
+### ~~G3 — Effect system round-trip~~ ✅ SHIPPED (mechanism only)
+
+> 🟡 The round-trip *mechanism* is shipped and tested. Filesystem read/write and HTTP fetch now round-trip; notify, spawn, clipboard, payment, and other broader variants remain stubbed or missing — see [Effect System](#effect-system) callout.
 
 **What it proves:** The host correctly executes effects returned from `update()` and delivers results as the next `input-event`.
 
@@ -691,7 +740,9 @@ assert!(tree_text_contains(&tree, "55.0%"));
 
 ---
 
-### G4 — UINode tree renders correctly (sysmon)
+### ~~G4 — UINode tree renders correctly (sysmon)~~ ✅ SHIPPED
+
+> Rendering and typed-node interaction both ship. Button clicks, submitted inputs, list selections, and text changes are routed to guest `update()` as `ui-action` / `ui-value-change` events (Lane B ✅).
 
 **What it proves:** The host scene graph correctly maps the typed UINode tree from `view()` to egui widgets. The structural diff only repaints changed nodes.
 
@@ -715,7 +766,9 @@ snapshot = "sysmon-render-expected.png"
 
 ---
 
-### G5 — State persists across restarts
+### ~~G5 — State persists across restarts~~ ✅ SHIPPED (primitive KV)
+
+> 🟡 The primitive get/set/delete/list-prefix store persists across restarts. `cas()`, CRDT merge, and `state-sync` (SpacetimeDB) are **not built**.
 
 **What it proves:** The CRDT state store persists data written by effects across app restarts. `init()` receives the previous state snapshot.
 
@@ -741,7 +794,9 @@ assert!(effects.iter().any(|e| matches!(e, Effect::SetTimer(t) if t.delay_ms == 
 
 ---
 
-### G6 — Run primitive: ephemeral launch
+### ~~G6 — Run primitive: ephemeral launch~~ ✅ SHIPPED
+
+> Note: the launch surface is `plexi app open ./x.wasm` (not a new `plexi run` command — `plexi run` is the project-command runner). Registry resolution / payment / signature steps in [The Run Primitive](#the-run-primitive) flow are **not built**.
 
 **What it proves:** `plexi run ./sysmon.wasm` opens a pane, runs the app, and the pane title and content are correct. Pane closes when the app exits.
 
@@ -757,7 +812,9 @@ plexi run ./apps/wasm-poc/sysmon/target/wasm32-wasip2/debug/sysmon.wasm
 
 ---
 
-### G7 — Surface-node lifecycle (Bevy Pong)
+### ~~G7 — Surface-node lifecycle (Bevy Pong)~~ ✅ SHIPPED
+
+> 🟡 Surface lifecycle + input ship. But the live pane reads the surface back each frame via a **synchronous `device.poll(Wait)` + per-pixel copy + egui re-upload** (`wasm_gpu.rs:158-168`) — this is the choppy-framerate root cause (Next Steps lane A). The gate only times the GPU *submit*, not the readback, so it stays green despite the stall.
 
 **What it proves:** `surface-node` allocates correctly, the host sends `surface-ready`, and pixel-buffer rendering round-trips through `render-to-texture` effects. Input events reach the app and affect game state.
 
@@ -788,7 +845,7 @@ snapshot = "bevy-pong-running.png"
 
 ---
 
-### G8 — Python compat: existing stats app unchanged
+### G8 — Python compat: existing stats app unchanged  ⬜ NOT BUILT (deferred mission)
 
 **What it proves:** `apps/stats/stats.py` runs on the v2 runtime with `python_compat = true` and produces visually identical output to the v1 runtime.
 
@@ -810,7 +867,7 @@ image-diff stats-v1.png stats-v2.png --max-delta 2
 
 ---
 
-### G9 — Cloud execution: identical output
+### G9 — Cloud execution: identical output  ⬜ NOT BUILT (deferred mission)
 
 **What it proves:** An app with `execution = "cloud"` in its manifest produces the same output as the same app with `execution = "local"`. The wire protocol introduces no observable difference.
 
@@ -831,7 +888,7 @@ image-diff sysmon-local.png sysmon-cloud.png --max-delta 0
 
 ---
 
-### G10 — 402 payment gate
+### G10 — 402 payment gate  ⬜ NOT BUILT (deferred mission)
 
 **What it proves:** A registry response with HTTP 402 triggers the Plexi payment flow. After payment, the app opens normally. Without payment, the app does not open.
 
@@ -869,7 +926,9 @@ G1–G5 are pure host/runtime unit and integration tests — no binary install, 
 
 ---
 
-## GPU Render-Pass Interface
+## ~~GPU Render-Pass Interface~~ ✅ SHIPPED (G11)
+
+> 🟡 The command interface (create-*/submit-render-pass/submit-compute-pass) ships and runs the render pass <2ms. The remaining perf issue is in the *surface composite* path, not the render pass — see G7 callout and Next Steps lane A.
 
 Reference implementation: `apps/wasm-poc/bevy-pong/` (world: `plexi-gpu-app`).
 
@@ -908,7 +967,7 @@ Apps supply WGSL source strings. The host compiles them at `create-render-pipeli
 
 Apps do not need to ship precompiled shader binaries. The WGSL source is portable — the same string runs on Metal (macOS), Vulkan (Linux), and DX12 (Windows) without modification.
 
-### Verification gate G11 — GPU render pass
+### ~~Verification gate G11 — GPU render pass~~ ✅ SHIPPED
 
 **What it proves:** The `gpu` interface compiles, the pipeline is created from WGSL, and the render pass executes on the host's GPU. bevy-pong renders at 60fps with zero pixel buffer copies.
 
@@ -941,7 +1000,7 @@ max = 2.0    # 60fps = 16.6ms budget; GPU path should use < 2ms
 
 ---
 
-## Real-Time Audio Interface
+## ~~Real-Time Audio Interface~~ ✅ SHIPPED (G12)
 
 Reference implementation: `apps/wasm-poc/audio-synth/` (world: `plexi-audio-app`).
 
@@ -1005,7 +1064,7 @@ wasmtime with Cranelift JIT compiles `process-output` to native machine code at 
 
 All comfortably within budget. The 10-15% JIT overhead shrinks the effective headroom slightly but does not break the latency model.
 
-### Verification gate G12 — RT audio callback
+### ~~Verification gate G12 — RT audio callback~~ ✅ SHIPPED
 
 **What it proves:** `audio-rt-control::open-output` succeeds, the host calls `process-output` at RT thread priority, and the audio-synth produces audible output with < 10ms latency.
 
@@ -1025,7 +1084,7 @@ assert!(samples.iter().any(|&s| s.abs() > 0.01), "should produce audio");
 
 ---
 
-## Typed Pipes Integration
+## ~~Typed Pipes Integration~~ ✅ SHIPPED (G13)
 
 Reference implementations: `apps/wasm-poc/bevy-pong/` (JSON score pipe) and `apps/wasm-poc/audio-synth/` (binary waveform pipe + JSON metadata pipe).
 
@@ -1066,7 +1125,7 @@ Two apps communicating through shared memory or a file creates coupling and no t
 | Sensor stream → dashboard | Binary (packed floats) | Out → In |
 | Chat pane → TTS synth | JSON (text events) | Out → In |
 
-### Verification gate G13 — Pipes round-trip
+### ~~Verification gate G13 — Pipes round-trip~~ ✅ SHIPPED
 
 **What it proves:** A WASM app opens a binary pipe, pushes frames, and a peer pane receives them. The ArrayQueue ring correctly drops frames on overrun without crashing.
 
@@ -1093,7 +1152,7 @@ assert!(result.is_err() || result.is_ok(), "overrun must not panic");
 
 ---
 
-## Worlds Summary
+## ~~Worlds Summary~~ ✅ SHIPPED
 
 | World | Use case | GPU | Audio RT | Pipes |
 |---|---|---|---|---|
@@ -1103,3 +1162,78 @@ assert!(result.is_err() || result.is_ok(), "overrun must not panic");
 | `plexi-full-app` | DAW, video editor, GPU audio | yes | yes | yes |
 
 All four worlds share the same `lifecycle`, `host-state`, `host-log`, and `pipes` imports. The choice of world is declared in `manifest.toml` under `[runtime] world`. The host selects the wasmtime linker configuration accordingly.
+
+---
+
+## Next Steps (2026-06-18)
+
+The gate scoreboard (G1–G7, G11–G13 green) proves each subsystem works in isolation. It does **not** prove a real app can be built on the runtime — that is the gap this section closes. Ordering is by leverage: fix what's felt and what's silently broken first, then reach parity with Python, then turn on agentic, then the deferred infra gates.
+
+Each lane below is independently shippable (one PR), independently testable (a `HostHarness`/`PlexiUiHarness` test is the done-condition), and does not touch `ProcessApp`/PGAP.
+
+### Lane A — GPU surface readback perf (the choppy framerate)
+
+**Problem:** the live pane composites the guest surface every frame via a synchronous `device.poll(wgpu::Maintain::Wait)` + per-pixel `RgbaImage` copy + egui texture re-upload (`wasm_gpu.rs:158-168`, `wasm_pane.rs:473-486`). That CPU-blocks on GPU completion for ~690 KB/frame at 480×360. The G7/G11 gates only time the GPU *submit*, so they stay green while the user sees stutter.
+
+**Steps:**
+1. **Observe first** (per systematic-debugging): add `log::info!` frame timers around submit / poll-wait / copy / egui-upload in the surface path; confirm against the live bevy-pong build which stage dominates.
+2. Replace the blocking readback with either (a) async buffer map polled across frames, (b) a double/triple-buffered staging ring so frame N reads while N+1 renders, or — best — (c) composite the guest texture directly into egui via a shared `wgpu` texture (the "zero-copy via egui's shared device" future-optimization the impl-plan already names at `wasm-runtime-impl-plan.md:164`), eliminating the CPU round-trip entirely.
+3. Drop the per-pixel loop; upload the texture region in one call.
+
+**Done condition:** a frame-time assertion on the *composite* path (not just submit) in the bevy-pong scene shows < 16 ms steady-state; the Bevy perf-monitor app (below) reads stable 60fps.
+
+**Byproduct — Bevy perf-monitor app:** the instrumentation in step 1 is exactly a perf HUD. Ship a small `apps/wasm-poc/perf-hud` (or a debug overlay toggle) that surfaces frame time / submit / readback / tick-cost. This is the debugging tool requested and it doubles as the regression guard for this lane.
+
+### ~~Lane B — Wire UI interaction~~ ✅ DONE
+
+**Problem:** button clicks and text-input changes were produced by the renderer (`wasm_render.rs:22-26`) then logged-and-dropped. Every interactive non-game WASM app was a static picture.
+
+**Shipped:** `wit/plexi.wit` now defines `ui-action` and `ui-value-change` input events. `LiveWasmPane` maps collected `actions` / `value_changes` to those events and drains them through the existing queue. `apps/wasm-poc/counter` proves a typed-node button can mutate guest state.
+
+**Done condition:** `host::wasm_pane::tests::ui_button_click_updates_guest_view` clicks a `button-node` in a headless egui render path and asserts the guest's `update()` ran and `view()` changed.
+
+### ~~Lane C — Real fs / net effects~~ ✅ DONE
+
+**Problem:** `file-read`/`file-write`/`http-fetch` were declared but stubbed. No real tool app works without them. The impl-plan already specifies the shape: "long effects (http-fetch) run on a worker thread and post their result event back" (`wasm-runtime-impl-plan.md:101`).
+
+**Shipped:** `file-read` and `file-write` resolve through canonicalized fs roots and reject out-of-scope paths with error results. `http-fetch` validates the URL host against explicit net host grants, runs through the existing `NetService` seam on a worker thread, and queues `http-response` back into the guest update loop. Denied net hosts return a 403 response-style event.
+
+**Done condition:** `host::wasm_pane::tests` covers granted read, out-of-scope read error, write round-trip, mock `http-fetch` round-trip, and denied-host 403.
+
+### Lane D — Capability grant flow + runtime enforcement
+
+**Problem:** link-time gating works, but grants auto-derive from imports and ephemeral runs auto-grant everything (`wasm_app.rs:462`). No review sheet, no inline prompt, no escalation, no scope enforcement — the security story the spec sells (link-time + prompts) is half-built.
+
+**Steps:** build the grant UI on the host UI kit (`docs/prm/host-ui-kit.md`) — install review sheet + ephemeral inline prompt; wire `request-capability` → prompt → `capability-granted`/`capability-denied` event; enforce path/host scope at effect-execution time; reuse the existing consent/audit ledger (`event_log.rs`). This is shared machinery the Python path already has — generalize, don't duplicate.
+
+**Done condition:** scene test shows the prompt; `HostHarness` asserts a denied capability yields the denied event and the effect does not execute.
+
+### Lane E — Agentic surface: `ai-query` + app events (the "subscribe services" ask)
+
+**Problem:** the WIT has no `ai-query`, `emit-event`, `declare-event-streams`, or subscribe import — WASM apps cannot make LLM calls or join the app-event subscription system that drives agents (`docs/prm/undo-and-app-events.md`, `permissions-broker.md`). The host side already exists: `LiveAiBroker` (`src/plexi_ai/broker.rs`), cost ledger, consent UI, event timeline. Only the WIT bindings + linker wiring are missing.
+
+**Steps:**
+1. Add `ai-query` effect + `ai-stream-chunk`/`ai-response` input-events to `wit/plexi.wit`; route the effect to `LiveAiBroker` (model-tier, system, messages, tools), stream chunks back, append to the ledger — mirror `process_app/routing.rs:1062-1125`.
+2. Add `declare-event-streams` + `emit-event` effects; route to the timeline so agents can subscribe (`target_type=app_event_stream`).
+3. Gate both behind the `ai.query` / event capabilities via Lane D's flow.
+
+**Done condition:** a WASM POC issues `ai-query` and renders the streamed response; a `HostHarness` test asserts the broker was called with the granted capability and denied without it.
+
+### Deferred infra gates (after A–E)
+
+These remain explicitly out of scope until the parity lanes land — they are large, standalone missions, not polish:
+
+- **G8 — Python compat shim.** CPython-in-WASM (~40 MB shared bundle) so `apps/stats/stats.py` runs unmodified on v2. This is the prerequisite for actually *removing* `ProcessApp` and superseding the Python runtime (a v3 boundary event).
+- **G9 — Cloud execution.** Standalone cloud wasmtime + WebSocket wire protocol (msgpack frames derived from WIT) + transparent reconnect/state-sync.
+- **G10 — 402 payment gate.** Registry 402 interception at manifest fetch → payment flow → session-token-gated bundle access. Depends on the registry (currently NOT BUILT) and signature verification.
+
+### Sequencing summary
+
+| Lane | What | Why first | Size |
+|---|---|---|---|
+| A | GPU surface readback perf + perf-HUD app | What the user felt; clean root cause | S–M |
+| B | Wire UI interaction | ✅ Done — typed-node interactions reach guest update | S |
+| C | Real fs/net effects | ✅ Done — scoped fs + worker-backed HTTP | M |
+| D | Capability grant flow + runtime enforcement | Completes the security model the spec sells | M |
+| E | `ai-query` + app events → existing broker | The "subscribe services" / agentic ask | M |
+| G8/G9/G10 | Python compat, cloud, payment | Large standalone missions; supersede-Python is a v3 outcome | L each |
