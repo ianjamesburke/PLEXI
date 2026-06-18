@@ -1,0 +1,574 @@
+// GPU host backend for the WASM runtime (G7 surface lifecycle, G11 render pass).
+//
+// The `gpu` WIT import is a WebGPU-aligned subset of wgpu. WASM apps issue GPU
+// command descriptors (pipelines, buffers, bind groups, render/compute passes)
+// across the component boundary; the host executes them against a real wgpu
+// device. No framebuffer data crosses the boundary — only command descriptors.
+//
+// Surface nodes: the host allocates a wgpu texture (`alloc_surface`), hands the
+// guest its opaque handle via a `surface-ready` event, and the guest renders
+// into it through `submit-render-pass`. The host reads the texture back
+// (`read_texture`) to composite it into egui (the live leg) or to assert pixels
+// (the gate leg).
+//
+// The device is dedicated/headless (mirrors `render/app_render.rs`). Zero-copy
+// display via egui's shared wgpu device + `register_native_texture` is a future
+// optimization; it does not change which gates pass.
+
+use std::collections::HashMap;
+
+use crate::host::wasm_app::bindings::plexi::platform::gpu as wit;
+
+/// A texture the host owns, with its view, format, and dimensions.
+struct GpuTexture {
+    texture: wgpu::Texture,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+}
+
+struct GpuPipeline {
+    render: Option<wgpu::RenderPipeline>,
+    compute: Option<wgpu::ComputePipeline>,
+}
+
+/// Owns a wgpu device and the opaque-handle registries the `gpu` import refers
+/// to. One per app with the gpu capability granted; lives inside `HostCtx`.
+pub struct GpuDevice {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    next_handle: u64,
+    buffers: HashMap<u64, wgpu::Buffer>,
+    textures: HashMap<u64, GpuTexture>,
+    views: HashMap<u64, wgpu::TextureView>,
+    pipelines: HashMap<u64, GpuPipeline>,
+    bind_groups: HashMap<u64, wgpu::BindGroup>,
+}
+
+impl GpuDevice {
+    /// Acquire a headless wgpu device. Errors if no adapter is available
+    /// (e.g. CI without a GPU) so the caller can fail the gpu grant cleanly.
+    pub fn new() -> Result<Self, String> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(
+            &wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            },
+        ))
+        .ok_or("no wgpu adapter available for the gpu capability")?;
+
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("plexi-wasm-gpu"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_defaults(),
+                memory_hints: Default::default(),
+            },
+            None,
+        ))
+        .map_err(|e| format!("failed to acquire wgpu device: {e}"))?;
+
+        Ok(Self {
+            device,
+            queue,
+            next_handle: 1,
+            buffers: HashMap::new(),
+            textures: HashMap::new(),
+            views: HashMap::new(),
+            pipelines: HashMap::new(),
+            bind_groups: HashMap::new(),
+        })
+    }
+
+    fn next(&mut self) -> u64 {
+        let h = self.next_handle;
+        self.next_handle += 1;
+        h
+    }
+
+    // ── Host-side surface management (not part of the WIT trait) ──────────────
+
+    /// Allocate a surface texture for a `surface-node`. Returns the opaque
+    /// texture handle the host sends to the guest in a `surface-ready` event.
+    pub fn alloc_surface(&mut self, width: u32, height: u32) -> u64 {
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("plexi-surface"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let handle = self.next();
+        self.textures.insert(handle, GpuTexture { texture, width, height, format });
+        handle
+    }
+
+    /// Read a texture (typically a surface) back to a tightly-packed RGBA8
+    /// image for compositing or pixel assertions. Errors for non-RGBA8 formats.
+    pub fn read_texture(&self, handle: u64) -> Result<image::RgbaImage, String> {
+        let tex = self.textures.get(&handle).ok_or("unknown texture handle")?;
+        if !matches!(tex.format, wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb) {
+            return Err("read_texture only supports rgba8 surfaces".to_string());
+        }
+        let (w, h) = (tex.width, tex.height);
+        // copy_texture_to_buffer needs bytes_per_row aligned to 256.
+        let unpadded = w * 4;
+        let padded = unpadded.div_ceil(256) * 256;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("plexi-surface-readback"),
+            size: (padded * h) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("plexi-readback") });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = buf.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+        let data = slice.get_mapped_range();
+
+        let mut out = image::RgbaImage::new(w, h);
+        for y in 0..h {
+            let row = &data[(y * padded) as usize..(y * padded + unpadded) as usize];
+            for x in 0..w {
+                let p = (x * 4) as usize;
+                out.put_pixel(x, y, image::Rgba([row[p], row[p + 1], row[p + 2], row[p + 3]]));
+            }
+        }
+        drop(data);
+        buf.unmap();
+        Ok(out)
+    }
+
+    // ── WIT-facing operations ────────────────────────────────────────────────
+
+    pub fn create_surface_view(&mut self, texture: u64) -> Result<u64, String> {
+        let tex = self.textures.get(&texture).ok_or("unknown texture handle")?;
+        let view = tex.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let handle = self.next();
+        self.views.insert(handle, view);
+        Ok(handle)
+    }
+
+    pub fn create_buffer(&mut self, label: &str, size: u64, usage: wit::BufferUsage) -> u64 {
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: map_buffer_usage(usage),
+            mapped_at_creation: false,
+        });
+        let handle = self.next();
+        self.buffers.insert(handle, buffer);
+        handle
+    }
+
+    pub fn write_buffer(&mut self, handle: u64, offset: u64, data: &[u8]) -> Result<(), String> {
+        let buffer = self.buffers.get(&handle).ok_or("unknown buffer handle")?;
+        self.queue.write_buffer(buffer, offset, data);
+        Ok(())
+    }
+
+    pub fn read_buffer(&self, handle: u64, offset: u64, size: u64) -> Result<Vec<u8>, String> {
+        let src = self.buffers.get(&handle).ok_or("unknown buffer handle")?;
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("plexi-buffer-readback"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("plexi-buf-readback") });
+        encoder.copy_buffer_to_buffer(src, offset, &staging, 0, size);
+        self.queue.submit(Some(encoder.finish()));
+        let slice = staging.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+        let out = slice.get_mapped_range().to_vec();
+        staging.unmap();
+        Ok(out)
+    }
+
+    pub fn create_texture(&mut self, label: &str, desc: wit::TextureDesc) -> Result<u64, String> {
+        let format = map_texture_format(desc.format);
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: desc.width,
+                height: desc.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: desc.mip_levels.max(1),
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: map_texture_usage(desc.usage),
+            view_formats: &[],
+        });
+        let handle = self.next();
+        self.textures
+            .insert(handle, GpuTexture { texture, width: desc.width, height: desc.height, format });
+        Ok(handle)
+    }
+
+    pub fn create_render_pipeline(
+        &mut self,
+        label: &str,
+        wgsl: &str,
+        desc: wit::RenderPipelineDesc,
+    ) -> Result<u64, String> {
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+            });
+
+        let attrs: Vec<wgpu::VertexAttribute> = desc
+            .attrs
+            .iter()
+            .map(|a| {
+                Ok(wgpu::VertexAttribute {
+                    format: map_vertex_format(&a.format)?,
+                    offset: a.offset as u64,
+                    shader_location: a.location,
+                })
+            })
+            .collect::<Result<_, String>>()?;
+
+        // Per-instance vertex buffer (the POC pattern: corners from
+        // vertex_index, per-object data from instance-rate attributes).
+        let buffers: Vec<wgpu::VertexBufferLayout> = if attrs.is_empty() {
+            vec![]
+        } else {
+            vec![wgpu::VertexBufferLayout {
+                array_stride: desc.vertex_stride as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &attrs,
+            }]
+        };
+
+        let blend = if desc.blend_alpha {
+            Some(wgpu::BlendState::ALPHA_BLENDING)
+        } else {
+            None
+        };
+
+        let pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some(&desc.vs_entry),
+                    compilation_options: Default::default(),
+                    buffers: &buffers,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some(&desc.fs_entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: map_texture_format(desc.output_format),
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
+        let handle = self.next();
+        self.pipelines
+            .insert(handle, GpuPipeline { render: Some(pipeline), compute: None });
+        Ok(handle)
+    }
+
+    pub fn create_compute_pipeline(&mut self, label: &str, wgsl: &str, entry: &str) -> Result<u64, String> {
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+            });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: None,
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        let handle = self.next();
+        self.pipelines
+            .insert(handle, GpuPipeline { render: None, compute: Some(pipeline) });
+        Ok(handle)
+    }
+
+    pub fn create_bind_group(
+        &mut self,
+        pipeline: u64,
+        bindings: &[wit::BindingEntry],
+    ) -> Result<u64, String> {
+        let pl = self.pipelines.get(&pipeline).ok_or("unknown pipeline handle")?;
+        let layout = match (&pl.render, &pl.compute) {
+            (Some(r), _) => r.get_bind_group_layout(0),
+            (_, Some(c)) => c.get_bind_group_layout(0),
+            _ => return Err("pipeline has no stages".to_string()),
+        };
+        let entries: Vec<wgpu::BindGroupEntry> = bindings
+            .iter()
+            .map(|b| {
+                let resource = match &b.resource_ref {
+                    wit::BindingResource::Buffer(h) => {
+                        let buffer = self.buffers.get(h).ok_or("unknown buffer in binding")?;
+                        buffer.as_entire_binding()
+                    }
+                    wit::BindingResource::Texture(h) => {
+                        // Texture bindings need a long-lived view; not exercised
+                        // by the current POCs. Reject clearly until needed.
+                        let _ = h;
+                        return Err("texture bindings not yet supported".to_string());
+                    }
+                };
+                Ok(wgpu::BindGroupEntry { binding: b.binding, resource })
+            })
+            .collect::<Result<_, String>>()?;
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("plexi-bind-group"),
+            layout: &layout,
+            entries: &entries,
+        });
+        let handle = self.next();
+        self.bind_groups.insert(handle, bind_group);
+        Ok(handle)
+    }
+
+    pub fn submit_render_pass(&mut self, pass: wit::RenderPassDesc) -> Result<(), String> {
+        let view = self.views.get(&pass.target).ok_or("unknown surface view handle")?;
+        let pipeline = self
+            .pipelines
+            .get(&pass.pipeline)
+            .and_then(|p| p.render.as_ref())
+            .ok_or("unknown render pipeline handle")?;
+        let vbuf = match pass.vertex_buffer {
+            Some(h) => Some(self.buffers.get(&h).ok_or("unknown vertex buffer handle")?),
+            None => None,
+        };
+        let groups: Vec<(u32, &wgpu::BindGroup)> = pass
+            .bind_groups
+            .iter()
+            .map(|(idx, h)| {
+                self.bind_groups
+                    .get(h)
+                    .map(|bg| (*idx, bg))
+                    .ok_or_else(|| "unknown bind group handle".to_string())
+            })
+            .collect::<Result<_, String>>()?;
+
+        let load = match pass.clear_color {
+            Some((r, g, b, a)) => wgpu::LoadOp::Clear(wgpu::Color {
+                r: r as f64,
+                g: g as f64,
+                b: b as f64,
+                a: a as f64,
+            }),
+            None => wgpu::LoadOp::Load,
+        };
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("plexi-render-pass") });
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("plexi-render-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rpass.set_pipeline(pipeline);
+            for (idx, bg) in &groups {
+                rpass.set_bind_group(*idx, *bg, &[]);
+            }
+            if let Some(vbuf) = vbuf {
+                rpass.set_vertex_buffer(0, vbuf.slice(..));
+            }
+            for d in &pass.draws {
+                rpass.draw(
+                    d.first_vertex..d.first_vertex + d.vertices,
+                    d.first_instance..d.first_instance + d.instances,
+                );
+            }
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    pub fn submit_compute_pass(&mut self, pass: wit::ComputePassDesc) -> Result<(), String> {
+        let pipeline = self
+            .pipelines
+            .get(&pass.pipeline)
+            .and_then(|p| p.compute.as_ref())
+            .ok_or("unknown compute pipeline handle")?;
+        let groups: Vec<(u32, &wgpu::BindGroup)> = pass
+            .bind_groups
+            .iter()
+            .map(|(idx, h)| {
+                self.bind_groups
+                    .get(h)
+                    .map(|bg| (*idx, bg))
+                    .ok_or_else(|| "unknown bind group handle".to_string())
+            })
+            .collect::<Result<_, String>>()?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("plexi-compute-pass") });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("plexi-compute-pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(pipeline);
+            for (idx, bg) in &groups {
+                cpass.set_bind_group(*idx, *bg, &[]);
+            }
+            for d in &pass.dispatches {
+                cpass.dispatch_workgroups(d.x, d.y, d.z);
+            }
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    pub fn copy_texture(&mut self, src: u64, dst: u64) -> Result<(), String> {
+        let s = self.textures.get(&src).ok_or("unknown src texture")?;
+        let d = self.textures.get(&dst).ok_or("unknown dst texture")?;
+        let (w, h) = (s.width.min(d.width), s.height.min(d.height));
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("plexi-copy-texture") });
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &s.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &d.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(encoder.finish()));
+        Ok(())
+    }
+
+    pub fn destroy_buffer(&mut self, handle: u64) {
+        self.buffers.remove(&handle);
+    }
+
+    pub fn destroy_texture(&mut self, handle: u64) {
+        self.textures.remove(&handle);
+        self.views.remove(&handle);
+    }
+
+    pub fn destroy_pipeline(&mut self, handle: u64) {
+        self.pipelines.remove(&handle);
+    }
+
+    pub fn destroy_bind_group(&mut self, handle: u64) {
+        self.bind_groups.remove(&handle);
+    }
+}
+
+// ── WIT type mappers ─────────────────────────────────────────────────────────
+
+fn map_buffer_usage(u: wit::BufferUsage) -> wgpu::BufferUsages {
+    let mut out = wgpu::BufferUsages::empty();
+    if u.contains(wit::BufferUsage::VERTEX) { out |= wgpu::BufferUsages::VERTEX; }
+    if u.contains(wit::BufferUsage::INDEX) { out |= wgpu::BufferUsages::INDEX; }
+    if u.contains(wit::BufferUsage::UNIFORM) { out |= wgpu::BufferUsages::UNIFORM; }
+    if u.contains(wit::BufferUsage::STORAGE) { out |= wgpu::BufferUsages::STORAGE; }
+    if u.contains(wit::BufferUsage::COPY_SRC) { out |= wgpu::BufferUsages::COPY_SRC; }
+    if u.contains(wit::BufferUsage::COPY_DST) { out |= wgpu::BufferUsages::COPY_DST; }
+    out
+}
+
+fn map_texture_usage(u: wit::TextureUsage) -> wgpu::TextureUsages {
+    let mut out = wgpu::TextureUsages::empty();
+    if u.contains(wit::TextureUsage::TEXTURE_BINDING) { out |= wgpu::TextureUsages::TEXTURE_BINDING; }
+    if u.contains(wit::TextureUsage::STORAGE_BINDING) { out |= wgpu::TextureUsages::STORAGE_BINDING; }
+    if u.contains(wit::TextureUsage::RENDER_ATTACHMENT) { out |= wgpu::TextureUsages::RENDER_ATTACHMENT; }
+    if u.contains(wit::TextureUsage::COPY_SRC) { out |= wgpu::TextureUsages::COPY_SRC; }
+    if u.contains(wit::TextureUsage::COPY_DST) { out |= wgpu::TextureUsages::COPY_DST; }
+    out
+}
+
+fn map_texture_format(f: wit::TextureFormat) -> wgpu::TextureFormat {
+    match f {
+        wit::TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
+        wit::TextureFormat::Rgba8Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+        wit::TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+        wit::TextureFormat::R32Float => wgpu::TextureFormat::R32Float,
+        wit::TextureFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+    }
+}
+
+fn map_vertex_format(s: &str) -> Result<wgpu::VertexFormat, String> {
+    Ok(match s {
+        "float32" => wgpu::VertexFormat::Float32,
+        "float32x2" => wgpu::VertexFormat::Float32x2,
+        "float32x3" => wgpu::VertexFormat::Float32x3,
+        "float32x4" => wgpu::VertexFormat::Float32x4,
+        "uint32" => wgpu::VertexFormat::Uint32,
+        "uint32x2" => wgpu::VertexFormat::Uint32x2,
+        "uint32x4" => wgpu::VertexFormat::Uint32x4,
+        "sint32" => wgpu::VertexFormat::Sint32,
+        other => return Err(format!("unsupported vertex format '{other}'")),
+    })
+}

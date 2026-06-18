@@ -22,5 +22,6 @@ pub mod services;
 pub mod shell;
 pub mod typed_pipes;
 pub mod wasm_app;
+pub mod wasm_gpu;
 pub mod wasm_pane;
 pub mod wasm_render;

@@ -19,9 +19,17 @@ use crate::media::audio::{start_output_stream, OutputSession};
 use crate::ui::theme::Colors;
 
 use super::wasm_app::{
-    Effect, InputEvent, KeyEvent, Modifiers, StateSnapshot, SystemStats, UiTree, WasmApp,
+    Effect, InputEvent, KeyEvent, Modifiers, StateSnapshot, SurfaceEvent, SystemStats, UiNodeData,
+    UiTree, WasmApp,
 };
-use super::wasm_render::render_ui_tree;
+use super::wasm_render::render_ui_tree_with_surface;
+
+/// A GPU surface the host allocated for the guest's `surface-node`.
+struct SurfaceState {
+    handle: u64,
+    width: u32,
+    height: u32,
+}
 
 /// Source of system metrics for the `get-system-stats` effect. Production uses
 /// a sysinfo-backed implementation; tests use a fake with fixed values.
@@ -97,6 +105,7 @@ pub struct WasmPane {
     pending_title: Option<String>,
     pending_status: Option<String>,
     audio: Option<AudioOut>,
+    surface: Option<SurfaceState>,
 }
 
 impl WasmPane {
@@ -110,6 +119,7 @@ impl WasmPane {
             pending_title: None,
             pending_status: None,
             audio: None,
+            surface: None,
         }
     }
 
@@ -129,7 +139,10 @@ impl WasmPane {
         // The guest opens its audio stream during init; start the host output
         // and prime the ring once it has.
         self.start_audio();
-        self.pump_audio()
+        self.pump_audio()?;
+        // If the guest's view declares a surface-node, allocate its GPU texture
+        // and deliver `surface-ready` so it can set up its pipeline and render.
+        self.ensure_surface(now_ms)
     }
 
     /// Enqueue an external input event for the next `tick`.
@@ -142,7 +155,8 @@ impl WasmPane {
     pub fn tick(&mut self, now_ms: u64) -> wasmtime::Result<()> {
         self.fire_timers(now_ms);
         self.drain(now_ms)?;
-        self.pump_audio()
+        self.pump_audio()?;
+        self.ensure_surface(now_ms)
     }
 
     /// True once a live audio output stream is running. The live pane uses this
@@ -209,6 +223,42 @@ impl WasmPane {
             }
         }
         Ok(())
+    }
+
+    /// Allocate the GPU surface and deliver `surface-ready` the first time the
+    /// guest's view declares a surface-node. Idempotent: a no-op once allocated
+    /// or when the app has no gpu capability.
+    fn ensure_surface(&mut self, now_ms: u64) -> wasmtime::Result<()> {
+        if self.surface.is_some() || !self.app.has_gpu() {
+            return Ok(());
+        }
+        let tree = self.app.view()?;
+        let Some((width, height)) = first_surface_dims(&tree) else {
+            return Ok(());
+        };
+        let Some(handle) = self.app.alloc_surface(width, height) else {
+            return Ok(());
+        };
+        log::info!("wasm gpu: surface allocated {width}x{height} (texture {handle})");
+        self.surface = Some(SurfaceState { handle, width, height });
+        self.queue.push_back(InputEvent::SurfaceReady(SurfaceEvent {
+            texture_handle: handle,
+            width,
+            height,
+        }));
+        self.drain(now_ms)
+    }
+
+    /// Read the current surface texture back to an RGBA image, if a surface is
+    /// allocated. Used to composite into egui (live) and assert pixels (gates).
+    pub fn read_surface(&self) -> Option<image::RgbaImage> {
+        let s = self.surface.as_ref()?;
+        self.app.read_surface(s.handle)
+    }
+
+    /// Surface dimensions, if allocated.
+    pub fn surface_size(&self) -> Option<(u32, u32)> {
+        self.surface.as_ref().map(|s| (s.width, s.height))
     }
 
     pub fn view(&mut self) -> wasmtime::Result<UiTree> {
@@ -329,6 +379,9 @@ pub struct LiveWasmPane {
     /// Concatenated text of the last rendered view tree. Lets the headless
     /// scene runner assert on rendered content without re-entering the guest.
     last_text: String,
+    /// egui texture holding the most recent GPU surface readback, re-uploaded
+    /// each frame so the guest's render is composited into the pane.
+    surface_tex: Option<egui::TextureHandle>,
 }
 
 impl LiveWasmPane {
@@ -343,6 +396,7 @@ impl LiveWasmPane {
             pending_init: Some(snapshot),
             error: None,
             last_text: String::new(),
+            surface_tex: None,
         }
     }
 
@@ -406,7 +460,27 @@ impl LiveWasmPane {
             }
         };
         self.last_text = collect_tree_text(&tree);
-        let result = render_ui_tree(ui, &tree, colors);
+        // Composite the guest's GPU render: pull the surface back and re-upload
+        // it as an egui texture (the live leg's one host-side blit).
+        if let Some((w, h)) = self.inner.surface_size() {
+            if let Some(img) = self.inner.read_surface() {
+                let color = egui::ColorImage::from_rgba_unmultiplied(
+                    [w as usize, h as usize],
+                    img.as_raw(),
+                );
+                match &mut self.surface_tex {
+                    Some(tex) => tex.set(color, egui::TextureOptions::LINEAR),
+                    none => {
+                        *none = Some(ui.ctx().load_texture(
+                            format!("wasm-surface-{}", self.spawn_name),
+                            color,
+                            egui::TextureOptions::LINEAR,
+                        ));
+                    }
+                }
+            }
+        }
+        let result = render_ui_tree_with_surface(ui, &tree, colors, self.surface_tex.as_ref());
         if !result.actions.is_empty() || !result.value_changes.is_empty() {
             // The current WIT `input-event` has no generic action/value case;
             // the in-scope POCs drive interaction via keys. Surface rather than
@@ -481,7 +555,6 @@ impl LiveWasmPane {
 /// Join every text node in a view tree into a single string (newline-joined),
 /// preserving arena order. Used for headless content assertions.
 fn collect_tree_text(tree: &UiTree) -> String {
-    use super::wasm_app::UiNodeData;
     tree.nodes
         .iter()
         .filter_map(|n| match &n.data {
@@ -490,6 +563,15 @@ fn collect_tree_text(tree: &UiTree) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Dimensions of the first `surface-node` in the tree, if any. The host uses
+/// these to allocate the backing GPU texture.
+fn first_surface_dims(tree: &UiTree) -> Option<(u32, u32)> {
+    tree.nodes.iter().find_map(|n| match &n.data {
+        UiNodeData::Surface(s) => Some((s.width, s.height)),
+        _ => None,
+    })
 }
 
 /// Whether an egui key produces an `Event::Text` at the OS level (letters,
@@ -615,6 +697,73 @@ mod tests {
         assert_eq!(p.timers.len(), 1);
         assert_eq!(p.timers[0].delay_ms, 5000);
         assert_eq!(p.timers[0].next_fire_ms, 5100);
+        Ok(())
+    }
+
+    // ── G7: surface-node lifecycle + input (Bevy Pong) ────────────────────────
+
+    fn pong_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/bevy-pong.wasm")
+    }
+
+    fn pong_pane() -> WasmPane {
+        let app = WasmApp::load_ephemeral_run("bevy-pong", &pong_fixture(), StateStore::ephemeral())
+            .expect("load pong (gpu device required)");
+        WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+    }
+
+    // Bright (white paddle) pixels in the left paddle column [21,28].
+    fn left_paddle_centroid_y(img: &image::RgbaImage) -> f32 {
+        let (mut sum, mut count) = (0.0f32, 0u32);
+        for y in 0..img.height() {
+            for x in 21..29u32 {
+                let p = img.get_pixel(x, y);
+                if p[0] > 150 && p[1] > 150 && p[2] > 180 {
+                    sum += y as f32;
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 0, "no white paddle pixels found in left column");
+        sum / count as f32
+    }
+
+    // G7: the guest declares a surface-node; the host allocates the GPU texture
+    // and delivers surface-ready, the guest sets up its pipeline and renders the
+    // game into it. Pressing 'w' and advancing the tick timer moves the left
+    // paddle up — observable as the white paddle's centroid rising in the
+    // read-back surface. Proves surface lifecycle + input + real GPU rendering.
+    #[test]
+    fn g7_surface_lifecycle_and_input() -> wasmtime::Result<()> {
+        let mut p = pong_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0)?;
+
+        // Surface allocated and the guest rendered game objects into it.
+        let (w, h) = p.surface_size().expect("surface allocated after init");
+        assert_eq!((w, h), (480, 320), "surface sized to the guest's surface-node");
+        let before = p.read_surface().expect("surface readback");
+        let bright = before
+            .pixels()
+            .filter(|px| px[0] as u32 + px[1] as u32 + px[2] as u32 > 480)
+            .count();
+        assert!(bright > 100, "rendered surface shows game objects (paddles/ball)");
+
+        let cy_before = left_paddle_centroid_y(&before);
+
+        // Hold 'w' (left paddle up) and fire 60 tick frames.
+        p.push_input(key("w"));
+        let mut t = 0u64;
+        for _ in 0..61 {
+            t += 16; // TICK_MS
+            p.tick(t)?;
+        }
+        let after = p.read_surface().expect("surface readback");
+        let cy_after = left_paddle_centroid_y(&after);
+
+        assert!(
+            cy_after < cy_before - 20.0,
+            "left paddle moved up after 60 W frames: {cy_before} -> {cy_after}"
+        );
         Ok(())
     }
 }

@@ -26,10 +26,17 @@ pub struct RenderResult {
     pub value_changes: Vec<(String, String)>,
 }
 
-pub fn render_ui_tree(ui: &mut egui::Ui, tree: &UiTree, colors: &Colors) -> RenderResult {
+/// Render a view tree, compositing `surface_tex` into the first surface-node
+/// (the guest's GPU output). Pass `None` to draw a placeholder instead.
+pub fn render_ui_tree_with_surface(
+    ui: &mut egui::Ui,
+    tree: &UiTree,
+    colors: &Colors,
+    surface_tex: Option<&egui::TextureHandle>,
+) -> RenderResult {
     let index: HashMap<u32, &IndexedNode> = tree.nodes.iter().map(|n| (n.id, n)).collect();
     let mut out = RenderResult::default();
-    render_node(ui, &index, tree.root, colors, &mut out, 0);
+    render_node(ui, &index, tree.root, colors, &mut out, 0, surface_tex);
     out
 }
 
@@ -52,6 +59,7 @@ fn render_node(
     colors: &Colors,
     out: &mut RenderResult,
     depth: u32,
+    surface_tex: Option<&egui::TextureHandle>,
 ) {
     if depth > MAX_DEPTH {
         return;
@@ -108,7 +116,7 @@ fn render_node(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = r.gap;
                 for child in &r.children {
-                    render_node(ui, index, *child, colors, out, depth + 1);
+                    render_node(ui, index, *child, colors, out, depth + 1, surface_tex);
                 }
             });
         }
@@ -119,7 +127,7 @@ fn render_node(
                 |ui| {
                     ui.spacing_mut().item_spacing.y = c.gap;
                     for child in &c.children {
-                        render_node(ui, index, *child, colors, out, depth + 1);
+                        render_node(ui, index, *child, colors, out, depth + 1, surface_tex);
                     }
                 },
             );
@@ -166,7 +174,7 @@ fn render_node(
                         if selected {
                             ui.visuals_mut().override_text_color = Some(colors.accent);
                         }
-                        render_node(ui, index, *item_id, colors, out, depth + 1);
+                        render_node(ui, index, *item_id, colors, out, depth + 1, surface_tex);
                     })
                     .response
                     .interact(egui::Sense::click());
@@ -185,7 +193,7 @@ fn render_node(
                 egui::ScrollArea::vertical()
             };
             area.show(ui, |ui| {
-                render_node(ui, index, s.child, colors, out, depth + 1);
+                render_node(ui, index, s.child, colors, out, depth + 1, surface_tex);
             });
         }
 
@@ -198,7 +206,7 @@ fn render_node(
                     bottom: p.bottom as i8,
                 })
                 .show(ui, |ui| {
-                    render_node(ui, index, p.child, colors, out, depth + 1);
+                    render_node(ui, index, p.child, colors, out, depth + 1, surface_tex);
                 });
         }
 
@@ -210,19 +218,32 @@ fn render_node(
             ui.add_space(*px);
         }
 
-        // GPU surfaces are allocated and presented in M4; until then draw a
-        // labelled placeholder so the layout reserves the right footprint.
+        // GPU surface: composite the guest's render (read back into an egui
+        // texture by the live pane). Without one (e.g. no gpu grant), draw a
+        // labelled placeholder so the layout still reserves the footprint.
         UiNodeData::Surface(s) => {
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(s.width as f32, s.height as f32), egui::Sense::hover());
-            ui.painter().rect_filled(rect, style::RADIUS_MD, colors.bg_active);
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "GPU surface (M4)",
-                egui::FontId::proportional(style::TEXT_CAPTION),
-                colors.text_dim,
-            );
+            match surface_tex {
+                Some(tex) => {
+                    ui.painter().image(
+                        tex.id(),
+                        rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+                None => {
+                    ui.painter().rect_filled(rect, style::RADIUS_MD, colors.bg_active);
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "GPU surface",
+                        egui::FontId::proportional(style::TEXT_CAPTION),
+                        colors.text_dim,
+                    );
+                }
+            }
         }
     }
 }
@@ -266,7 +287,7 @@ mod tests {
         let mut captured = RenderResult::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                captured = render_ui_tree(ui, &tree, &colors);
+                captured = render_ui_tree_with_surface(ui, &tree, &colors, None);
             });
         });
 

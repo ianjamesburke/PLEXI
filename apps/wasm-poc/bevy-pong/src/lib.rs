@@ -20,8 +20,7 @@ wit_bindgen::generate!({
 
 use bytemuck::{Pod, Zeroable};
 use plexi::platform::gpu::{
-    self, BindingEntry, BindingResource, BufferUsage, DrawCall,
-    RenderPassDesc, RenderPipelineDesc, TextureFormat, VertexAttr,
+    self, BufferUsage, DrawCall, RenderPassDesc, RenderPipelineDesc, TextureFormat, VertexAttr,
 };
 use plexi::platform::host_log;
 use plexi::platform::pipes::{self, PipeDirection, PipeType};
@@ -269,17 +268,15 @@ impl Pong {
         let bytes: &[u8] = bytemuck::cast_slice(&instances);
         gpu::write_buffer(buf, 0, bytes).expect("write_buffer");
 
-        let bind_group = gpu::create_bind_group(pipeline, &[
-            BindingEntry { binding: 0, resource_ref: BindingResource::Buffer(buf) },
-        ]).expect("create_bind_group");
-
+        // Per-object data flows through the instance-rate vertex buffer; the
+        // shader declares no bind groups, so none are set.
         gpu::submit_render_pass(&RenderPassDesc {
             target: view,
             clear_color: None, // background is the first instance
             pipeline,
             vertex_buffer: Some(buf),
             index_buffer: None,
-            bind_groups: vec![(0, bind_group)],
+            bind_groups: vec![],
             draws: vec![DrawCall {
                 vertices: 6,
                 instances: instances.len() as u32,
@@ -287,8 +284,6 @@ impl Pong {
                 first_instance: 0,
             }],
         }).expect("submit_render_pass");
-
-        gpu::destroy_bind_group(bind_group);
     }
 
     // ── View ─────────────────────────────────────────────────────────────────

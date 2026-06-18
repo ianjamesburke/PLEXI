@@ -20,7 +20,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 // The crate itself is named `plexi`; bindgen also generates a top-level `plexi`
 // module from the `plexi:platform` package. Nest the generated code so the two
 // never collide at a use-path.
-mod bindings {
+pub mod bindings {
     wasmtime::component::bindgen!({
         path: "wit/plexi.wit",
         world: "plexi-full-app",
@@ -33,11 +33,11 @@ use bindings::exports::plexi::platform::audio_rt_process::{
 use bindings::exports::plexi::platform::lifecycle::{
     Guest as LifecycleGuest, GuestIndices as LifecycleIndices,
 };
-use bindings::plexi::platform::{audio_rt_control, host_log, host_state, pipes, types};
+use bindings::plexi::platform::{audio_rt_control, gpu, host_log, host_state, pipes, types};
 
 pub use types::{
     Alignment, BadgeColor, ButtonStyle, Color, Effect, IndexedNode, InputEvent, KeyEvent,
-    Modifiers, StateSnapshot, SystemStats, UiNodeData, UiTree,
+    Modifiers, StateSnapshot, SurfaceEvent, SystemStats, UiNodeData, UiTree,
 };
 
 // ─── Capability grants ─────────────────────────────────────────────────────
@@ -138,6 +138,10 @@ pub struct HostCtx {
     // Open audio streams (G12). Backs the `audio-rt-control` import; sample
     // pulls happen through the guest's `process-output` export, not here.
     audio_streams: AudioStreams,
+    // wgpu backend for the `gpu` import (G7/G11). Some only when the gpu
+    // capability is granted; surface textures, buffers, pipelines, and bind
+    // groups live in its handle registries.
+    gpu: Option<crate::host::wasm_gpu::GpuDevice>,
     // Baseline WASI 0.2: clocks + random only. Rust-compiled components import
     // wasi:cli/io/clocks/random from std even when unused; a default ctx grants
     // no env, filesystem, or network access — the real platform capabilities
@@ -336,6 +340,71 @@ impl audio_rt_control::Host for HostCtx {
     }
 }
 
+// ─── gpu import (G7/G11) ─────────────────────────────────────────────────────
+//
+// Delegates every WIT call to the per-app `GpuDevice`. The device is present
+// only when the gpu capability was granted (link-time), so a missing device is
+// an internal invariant violation rather than an app error.
+
+impl HostCtx {
+    fn gpu_mut(&mut self) -> Result<&mut crate::host::wasm_gpu::GpuDevice, String> {
+        self.gpu.as_mut().ok_or_else(|| "gpu capability not initialized".to_string())
+    }
+}
+
+impl gpu::Host for HostCtx {
+    fn create_surface_view(&mut self, handle: u64) -> Result<u64, String> {
+        self.gpu_mut()?.create_surface_view(handle)
+    }
+    fn create_buffer(&mut self, label: String, size: u64, usage: gpu::BufferUsage) -> Result<u64, String> {
+        Ok(self.gpu_mut()?.create_buffer(&label, size, usage))
+    }
+    fn write_buffer(&mut self, handle: u64, offset: u64, data: Vec<u8>) -> Result<(), String> {
+        self.gpu_mut()?.write_buffer(handle, offset, &data)
+    }
+    fn read_buffer(&mut self, handle: u64, offset: u64, size: u64) -> Result<Vec<u8>, String> {
+        self.gpu_mut()?.read_buffer(handle, offset, size)
+    }
+    fn destroy_buffer(&mut self, handle: u64) {
+        if let Ok(g) = self.gpu_mut() { g.destroy_buffer(handle); }
+    }
+    fn create_texture(&mut self, label: String, desc: gpu::TextureDesc) -> Result<u64, String> {
+        self.gpu_mut()?.create_texture(&label, desc)
+    }
+    fn destroy_texture(&mut self, handle: u64) {
+        if let Ok(g) = self.gpu_mut() { g.destroy_texture(handle); }
+    }
+    fn create_render_pipeline(
+        &mut self,
+        label: String,
+        wgsl: String,
+        desc: gpu::RenderPipelineDesc,
+    ) -> Result<u64, String> {
+        self.gpu_mut()?.create_render_pipeline(&label, &wgsl, desc)
+    }
+    fn create_compute_pipeline(&mut self, label: String, wgsl: String, entry: String) -> Result<u64, String> {
+        self.gpu_mut()?.create_compute_pipeline(&label, &wgsl, &entry)
+    }
+    fn destroy_pipeline(&mut self, handle: u64) {
+        if let Ok(g) = self.gpu_mut() { g.destroy_pipeline(handle); }
+    }
+    fn create_bind_group(&mut self, pipeline: u64, bindings: Vec<gpu::BindingEntry>) -> Result<u64, String> {
+        self.gpu_mut()?.create_bind_group(pipeline, &bindings)
+    }
+    fn destroy_bind_group(&mut self, handle: u64) {
+        if let Ok(g) = self.gpu_mut() { g.destroy_bind_group(handle); }
+    }
+    fn submit_render_pass(&mut self, pass: gpu::RenderPassDesc) -> Result<(), String> {
+        self.gpu_mut()?.submit_render_pass(pass)
+    }
+    fn submit_compute_pass(&mut self, pass: gpu::ComputePassDesc) -> Result<(), String> {
+        self.gpu_mut()?.submit_compute_pass(pass)
+    }
+    fn copy_texture(&mut self, src: u64, dst: u64) -> Result<(), String> {
+        self.gpu_mut()?.copy_texture(src, dst)
+    }
+}
+
 // ─── WasmApp ───────────────────────────────────────────────────────────────
 
 pub struct WasmApp {
@@ -407,13 +476,17 @@ impl WasmApp {
         if grants.pipes {
             pipes::add_to_linker::<_, HasSelf<HostCtx>>(&mut linker, |c| c)?;
         }
-        if grants.gpu {
-            // The gpu host interface lands with G7/G11. Fail fast with a clear
-            // message rather than an opaque unsatisfied-import error below.
-            return Err(wasmtime::Error::msg(format!(
-                "app::{app_id}: gpu capability not yet supported (G7/G11)"
-            )));
-        }
+        let gpu_device = if grants.gpu {
+            gpu::add_to_linker::<_, HasSelf<HostCtx>>(&mut linker, |c| c)?;
+            // Acquire the wgpu device eagerly: a missing adapter must fail the
+            // load, not surface as an opaque error on the first draw.
+            Some(
+                crate::host::wasm_gpu::GpuDevice::new()
+                    .map_err(|e| wasmtime::Error::msg(format!("app::{app_id}: {e}")))?,
+            )
+        } else {
+            None
+        };
         if grants.audio {
             audio_rt_control::add_to_linker::<_, HasSelf<HostCtx>>(&mut linker, |c| c)?;
         }
@@ -427,6 +500,7 @@ impl WasmApp {
             pipe_handles: HashMap::new(),
             next_pipe_handle: 0,
             audio_streams: AudioStreams::default(),
+            gpu: gpu_device,
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
         };
@@ -510,6 +584,24 @@ impl WasmApp {
     pub fn pipe_socket_path(&self, pipe_id: &str) -> Option<String> {
         self.store.data().pipes.binary_socket_path(pipe_id)
     }
+
+    /// True when the gpu capability was granted (the app declares a surface).
+    pub fn has_gpu(&self) -> bool {
+        self.store.data().gpu.is_some()
+    }
+
+    /// Allocate a surface texture for a `surface-node`. Returns the opaque
+    /// handle to deliver to the guest in a `surface-ready` event, or `None` if
+    /// the app has no gpu capability.
+    pub fn alloc_surface(&mut self, width: u32, height: u32) -> Option<u64> {
+        self.store.data_mut().gpu.as_mut().map(|g| g.alloc_surface(width, height))
+    }
+
+    /// Read a surface texture back to an RGBA image for compositing into egui
+    /// (the live leg) or pixel assertions (the gate leg).
+    pub fn read_surface(&self, handle: u64) -> Option<image::RgbaImage> {
+        self.store.data().gpu.as_ref().and_then(|g| g.read_texture(handle).ok())
+    }
 }
 
 // ─── Gate tests (G3 effect roundtrip, G5 state persistence) ────────────────
@@ -546,6 +638,7 @@ mod tests {
             pipe_handles: std::collections::HashMap::new(),
             next_pipe_handle: 0,
             audio_streams: AudioStreams::default(),
+            gpu: None,
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
         }
@@ -691,6 +784,102 @@ mod tests {
                 .any(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs() > 0.0);
         }
         assert!(any_nonzero, "playing synth waveform frames must carry non-zero samples");
+        Ok(())
+    }
+
+    // G11 (host side): the gpu import compiles a WGSL pipeline, binds a uniform,
+    // and executes a render pass on the real wgpu device. We clear a surface to
+    // black, draw a fullscreen triangle whose color comes from a uniform buffer,
+    // read the surface back, and assert the pixels are that color — proving the
+    // full create-pipeline / create-bind-group / submit-render-pass / readback
+    // path against an actual GPU. No pixel buffer crosses the WASM boundary.
+    const UNIFORM_WGSL: &str = r#"
+struct U { color: vec4<f32> }
+@group(0) @binding(0) var<uniform> u: U;
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
+    var p = array<vec2<f32>, 3>(vec2(-1.0, -3.0), vec2(-1.0, 1.0), vec2(3.0, 1.0));
+    return vec4(p[vi], 0.0, 1.0);
+}
+@fragment
+fn fs_main() -> @location(0) vec4<f32> { return u.color; }
+"#;
+
+    fn gpu_ctx() -> HostCtx {
+        let device = crate::host::wasm_gpu::GpuDevice::new().expect("wgpu device");
+        let mut ctx = host_ctx_with_pipes();
+        ctx.gpu = Some(device);
+        ctx
+    }
+
+    #[test]
+    fn g11_gpu_render_pass_executes_on_device() -> Result<(), String> {
+        use gpu::Host;
+        let mut ctx = gpu_ctx();
+
+        let surface = ctx.gpu.as_mut().unwrap().alloc_surface(64, 64);
+        let view = ctx.create_surface_view(surface)?;
+
+        // Green uniform color (RGBA f32).
+        let ubuf = ctx.create_buffer(
+            "color".to_string(),
+            16,
+            gpu::BufferUsage::UNIFORM | gpu::BufferUsage::COPY_DST,
+        )?;
+        let green: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+        let green_bytes: Vec<u8> = green.iter().flat_map(|f| f.to_le_bytes()).collect();
+        ctx.write_buffer(ubuf, 0, green_bytes)?;
+
+        let pipeline = ctx.create_render_pipeline(
+            "uniform".to_string(),
+            UNIFORM_WGSL.to_string(),
+            gpu::RenderPipelineDesc {
+                vs_entry: "vs_main".to_string(),
+                fs_entry: "fs_main".to_string(),
+                vertex_stride: 0,
+                attrs: vec![],
+                output_format: gpu::TextureFormat::Rgba8Unorm,
+                blend_alpha: false,
+            },
+        )?;
+        let bind = ctx.create_bind_group(
+            pipeline,
+            vec![gpu::BindingEntry {
+                binding: 0,
+                resource_ref: gpu::BindingResource::Buffer(ubuf),
+            }],
+        )?;
+
+        let pass = gpu::RenderPassDesc {
+            target: view,
+            clear_color: Some((0.0, 0.0, 0.0, 1.0)),
+            pipeline,
+            vertex_buffer: None,
+            index_buffer: None,
+            bind_groups: vec![(0, bind)],
+            draws: vec![gpu::DrawCall {
+                vertices: 3,
+                instances: 1,
+                first_vertex: 0,
+                first_instance: 0,
+            }],
+        };
+        // G11 frame-time budget: encoding + submitting the pass must be well
+        // under 2ms (GPU execution itself is async on the device).
+        let start = std::time::Instant::now();
+        ctx.submit_render_pass(pass)?;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_secs_f32() * 1000.0 < 2.0,
+            "render pass submit should be < 2ms, was {elapsed:?}"
+        );
+
+        let img = ctx.gpu.as_ref().unwrap().read_texture(surface)?;
+        let px = img.get_pixel(32, 32);
+        assert!(
+            px[0] < 40 && px[1] > 200 && px[2] < 40,
+            "surface should be the uniform green, got {px:?}"
+        );
         Ok(())
     }
 
