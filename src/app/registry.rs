@@ -159,6 +159,8 @@ pub struct AppManifestApp {
 pub enum ManifestType {
     /// Standard draw-canvas app. Host renders whatever the app draws.
     App,
+    /// WASM component app. Host loads the manifest entry through wasmtime.
+    Wasm,
 }
 
 /// Newtype for `[launch] notification_scope` in manifest.toml. Deserialises
@@ -644,6 +646,14 @@ impl AppRegistry {
     /// Launch an app process for the given id.
     pub fn launch_process(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<ProcessApp> {
         let installed = self.apps.get(id)?;
+        if installed.manifest.manifest_type != ManifestType::App {
+            log::warn!(
+                "AppRegistry: '{}' is type={:?}; refusing process launch",
+                id,
+                installed.manifest.manifest_type
+            );
+            return None;
+        }
         let perms = installed.manifest.capabilities.to_permissions();
         let caps = perms.capabilities.clone();
         let keyboard_capture = installed.launch.keyboard_capture;
@@ -1006,6 +1016,19 @@ entry = "run.sh"
     }
 
     #[test]
+    fn manifest_with_type_wasm_loads() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app_with_type(global.path(), "wasm-app", "Wasm", "wasm");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let entry = registry
+            .get("wasm-app")
+            .expect("type=wasm manifest should load");
+        assert_eq!(entry.manifest.manifest_type, ManifestType::Wasm);
+    }
+
+    #[test]
     fn manifest_missing_type_field_errors() {
         // No `type` field — must fail to parse. Required field, no
         // `serde(default)`. Discipline matches `schema_version`.
@@ -1027,8 +1050,8 @@ entry = "run.sh"
 
     #[test]
     fn manifest_with_unknown_type_errors() {
-        // `type = "wizard"` — must fail to parse. Only `app` is valid; `agent`
-        // and other values should not silently fall back.
+        // `type = "wizard"` — must fail to parse. Only registered runtime
+        // types should be accepted; other values must not silently fall back.
         let raw = r#"
 schema_version = 1
 

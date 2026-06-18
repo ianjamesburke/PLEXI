@@ -102,6 +102,12 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   session `ai.query` grant, dispatches through the injected `AiBroker` on a
   worker, and routes event declarations/emits into `AppTimeline`. Tools and
   WASM subscribe/delivery imports remain future work.
+- **Lane F — manifest-backed WASM apps + remembered scoped grants: PARTIAL.**
+  `[app] type = "wasm"` manifests now load through the registry/path launch
+  surfaces, use persistent per-app/per-workspace WASM state, derive explicit
+  link-time host grants from manifest capabilities, and restore/persist raw
+  scoped WASM decisions in `permissions.toml`. Package validation/trust-sheet
+  display and required-vs-optional install review remain future work.
 
 ## Key facts discovered (load-bearing for the build)
 

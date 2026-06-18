@@ -32,7 +32,7 @@ This spec is the authoritative description of the Plexi v2 runtime. It supersede
 - **Some effect variants are still stubbed or missing.** `file-read`/`file-write`, `http-fetch`, `ai-query`, `declare-event-streams`, and `emit-event` now round-trip through host services. Remaining variants such as `file-list`/`file-watch`, `websocket-open`, `open-pane`, `audio-record`, `spawn-child`, `clipboard-*`, `notify`, and `payment-request` are not complete. `get-system-stats`, `set-timer`/`cancel-timer`, `set-title`/`set-status`, and `close-self` also round-trip.
 - **UI interaction is wired.** Button clicks, submitted text inputs, list selections, and text-input changes are produced by the renderer (`wasm_render.rs:22-26`) and routed as typed `ui-action` / `ui-value-change` events through the guest `update()` loop (`wasm_pane.rs:273-299`, `wasm_pane.rs:525-542`).
 - **Input is keyboard-only.** `mouse`, `resize`, `focus-gained`/`focus-lost` are in the WIT but never enqueued. The surface never learns it was resized.
-- **Capability prompts are session-scoped.** `request-capability` now prompts the focused WASM pane, answers with `capability-granted`/`capability-denied`, audits `HostEvent::PermissionDecision`, and applies scoped fs/net runtime grants. Persistent install review / remembered grants are not built.
+- **Capability prompts can be remembered for manifest-backed WASM apps.** `request-capability` now prompts the focused WASM pane, answers with `capability-granted`/`capability-denied`, audits `HostEvent::PermissionDecision`, and applies scoped fs/net runtime grants. Manifest-backed WASM apps launched through `type = "wasm"` use persistent state and can save raw scoped WASM decisions in `permissions.toml`; the package/install trust sheet is still future work.
 - **Agentic surface is partial.** WASM apps can call `ai-query` through `AiBroker` after a session `ai.query` grant and can declare/emit app events into `AppTimeline`. Subscribe/delivery imports are still not exposed to WASM, and `ai-query` tools are deferred.
 - **`ProcessApp`/PGAP is NOT removed.** The ["What is removed"](#what-is-removed) list below is aspirational — Python apps still run on the v1 path alongside WASM. Supersession is a v3 outcome, after G8 (Python compat) lands.
 
@@ -1213,6 +1213,16 @@ Each lane below is independently shippable (one PR), independently testable (a `
 
 **Done condition:** `host::wasm_pane::tests` covers denied `ai-query` without broker calls, granted streaming/final AI response, declared event emission into the timeline, and undeclared event rejection.
 
+### Lane F — Manifest-backed WASM apps + remembered scoped grants 🟡 PARTIAL
+
+**Problem:** direct `.wasm` launches are still ephemeral and import-derived. A real sandboxed app needs a manifest-backed path: explicit runtime type, persistent state, explicit link-time host grants, and remembered user decisions for scoped runtime capabilities.
+
+**Shipped:** `manifest.toml` now accepts `[app] type = "wasm"`. Registry/path launches route those manifests through wasmtime instead of `ProcessApp`, use persistent per-app/per-workspace WASM state, derive link-time grants from manifest capabilities (`pipe.open`, `audio.playback`, `gpu.render`), and restore raw scoped WASM decisions from `permissions.toml`. The WASM capability modal now offers once/always allow/deny; always decisions persist raw ids such as `fs:read:<path>`, `fs:write:<path>`, `net:fetch:<host>`, and `ai.query`.
+
+**Still future:** local package validation/trust-sheet display for the existing WASM POC manifest shape, required-vs-optional WASM capability review before install, and replacing raw `.wasm` ephemeral auto-grants with a review prompt.
+
+**Done condition:** `app::permissions::tests` covers raw WASM permission persistence and sensitive unset withholding; `app::registry::tests::manifest_with_type_wasm_loads` covers manifest parsing; `host::wasm_pane::tests` remains green.
+
 ### Deferred infra gates (after A–E)
 
 These remain explicitly out of scope until the parity lanes land — they are large, standalone missions, not polish:
@@ -1230,4 +1240,5 @@ These remain explicitly out of scope until the parity lanes land — they are la
 | C | Real fs/net effects | ✅ Done — scoped fs + worker-backed HTTP | M |
 | D | Capability grant flow + runtime enforcement | ✅ Done — session prompts + scoped runtime enforcement; persistent install review remains future | M |
 | E | `ai-query` + app events → existing broker | ✅ Done — AI query + timeline emit; subscribe imports/tools remain future | M |
+| F | Manifest-backed WASM apps + remembered scoped grants | 🟡 Partial — manifest launch, persistent state, and raw remembered decisions done; package trust sheet remains future | M |
 | G8/G9/G10 | Python compat, cloud, payment | Large standalone missions; supersede-Python is a v3 outcome | L each |

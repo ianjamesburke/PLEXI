@@ -72,10 +72,6 @@ impl StateStore {
 
     /// Open (or create) a persistent store at `path`. Existing contents are
     /// loaded; a missing file starts empty.
-    // The installed-app flow that wires this (explicit grants + per-app state
-    // file) is deferred; only the ephemeral `plexi run` path is live today, so
-    // the G5 gate is the sole caller until then.
-    #[allow(dead_code)]
     pub fn persistent(path: PathBuf) -> std::io::Result<Self> {
         let data = if path.exists() {
             let bytes = std::fs::read(&path)?;
@@ -461,6 +457,20 @@ impl WasmApp {
         let (engine, component) = Self::engine_and_component(path)?;
         let grants = grants_from_component(&engine, &component);
         log::info!("app::{app_id}: ephemeral run grants {grants:?}");
+        Self::instantiate(app_id, &engine, &component, &grants, state)
+    }
+
+    /// Load an installed/manifest-backed component with explicit host-interface
+    /// grants derived from the manifest and remembered user decisions.
+    pub fn load_with_grants(
+        app_id: impl Into<String>,
+        path: &Path,
+        state: StateStore,
+        grants: Grants,
+    ) -> wasmtime::Result<Self> {
+        let app_id = app_id.into();
+        let (engine, component) = Self::engine_and_component(path)?;
+        log::info!("app::{app_id}: manifest wasm grants {grants:?}");
         Self::instantiate(app_id, &engine, &component, &grants, state)
     }
 
