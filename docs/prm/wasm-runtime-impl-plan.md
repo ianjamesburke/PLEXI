@@ -27,7 +27,31 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     a committed 124 KB release fixture `tests/wasm-fixtures/sysmon.wasm`
     (regenerate via `just wasm-fixtures`). Full `cargo test --bin plexi`: 1243+2
     pass. New module symbols are test-only until M3 wires `AppRuntime::Wasm`.
-- **M3-M4: not started.** Plan below.
+- **M3 — Rendering + run primitive (G4, G6): IN PROGRESS.**
+  - DONE `src/host/wasm_render.rs` (commit `9a205577`): arena `UiTree` -> egui
+    renderer for every `ui-node-data` variant (GPU surface is a labelled
+    placeholder until M4); depth-capped; interactions collected into
+    `RenderResult`. Headless test renders the real sysmon tree without panic.
+  - DONE `src/host/wasm_pane.rs` (commit `975c1a7d`): `WasmPane`, the
+    synchronous effect-loop driver over `WasmApp` — queued input, ms-timers off
+    frame time, `get-system-stats` via a pluggable `SystemStatsSource`,
+    close/title/status surfacing, queue converges per `tick`. 4 driver tests
+    pass against the sysmon fixture (init stats, poll refresh, `q` close, `=`
+    retime to 5000ms).
+  - REMAINING (the live integration; clears the forward-reference warnings):
+    1. Production `SystemStatsSource` (add `sysinfo`) — `SysinfoStats`.
+    2. `AppRuntime::Wasm(Box<WasmPane>)` variant + the ~19 match arms in
+       `src/host/pane.rs` (the only external match is a non-exhaustive `if let`
+       in `context_state.rs:93`, so no break there).
+    3. A spawn/construction path for a WASM-app pane (model on the existing
+       `Pane::App` builtin spawn).
+    4. Live `ui()`: translate egui `InputState` -> `InputEvent`, call
+       `tick(now_ms)` (now = elapsed since pane start), render `view()` via
+       `render_ui_tree`; `handle_key` consume; `wants_close` -> close.
+    5. `plexi run ./x.wasm` CLI (ephemeral temp `StateStore`, deleted on close).
+    6. Gates: G4 scene/screenshot test; G6 CLI + scene (open -> populate -> `q`
+       closes, no persisted namespace).
+- **M4: not started.** Plan below.
 
 ## Key facts discovered (load-bearing for the build)
 
