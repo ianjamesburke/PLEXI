@@ -66,8 +66,8 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     infra), `LiveWasmPane::{is_running,last_render_text}` (G4 scene inspectors).
     Real code, test-reachable only; clears when `--persist` and a host-side wasm
     pane inspector land in M4. No `#[allow]` used.
-- **M4: IN PROGRESS.** Pipes (G13 host + guest round-trip) and audio (G12) wired
-  via world generalization; only the gpu world (G7/G11) remains. Plan below.
+- **M4: DONE.** Pipes (G13 host + guest round-trip), audio (G12), and gpu
+  (G7/G11) all wired via world generalization. Details below. Next is M5.
 
 ## Key facts discovered (load-bearing for the build)
 
@@ -151,14 +151,26 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     ring -> drain thread -> socket path. Test-only `binary_socket_path` /
     `WasmApp::pipe_socket_path` accessors back the listener harness.
     (`g13_guest_roundtrip_waveform_pipe`).
-  - REMAINING:
-    1. Bind `plexi-gpu-app`: `surface-node` lifecycle + `surface-ready`; the
-       `gpu` import (WebGPU-aligned — WGSL pipelines, buffers, render/compute
-       passes) on the host wgpu device shared with `egui-wgpu`. **G7**
-       (pixel-buffer surface scene) then **G11** (GPU render pass <2ms). The
-       loader already links `gpu` per-grant — only the host `gpu::Host` impl and
-       surface wiring remain.
-    2. Gates: G7, G11.
+  - DONE (commit `4a533868`) **gpu (G7/G11)**: `src/host/wasm_gpu.rs`
+    `GpuDevice` owns a headless wgpu device + handle registries (buffers,
+    textures, views, pipelines, bind groups) and maps the WebGPU-aligned WIT
+    surface to wgpu (create-*/submit-render-pass/submit-compute-pass/
+    copy-texture, plus host-side `alloc_surface` + `read_texture` RGBA8
+    readback). `gpu::Host for HostCtx` delegates to it; the loader links `gpu`
+    per-grant and acquires the device eagerly (missing adapter fails the load).
+    `WasmPane` runs the surface lifecycle: a `surface-node` in the guest's view
+    triggers texture allocation + a `surface-ready` event; the live pane reads
+    the surface back each frame and composites it into egui (one host-side
+    blit — zero-copy via egui's shared device is a future optimization).
+    bevy-pong dropped its vestigial bind group (binding-less shader; instance
+    data flows through the vertex buffer) and ships as the `bevy-pong.wasm`
+    fixture. **G11** (`g11_gpu_render_pass_executes_on_device`): compiles WGSL,
+    binds a uniform, runs a render pass <2ms, readback shows the uniform color.
+    **G7** (`g7_surface_lifecycle_and_input`): the real bevy-pong component runs
+    end to end on Metal — surface-ready -> setup_gpu -> render -> readback shows
+    the game; `w` + 60 ticks moves the left paddle up (observable in the
+    surface). No pixel buffer crosses the WASM boundary (no render-to-texture
+    effect exists — apps issue gpu commands only).
 - **M5 — one PR `wasm-rebuild` → alpha + `just install`** for end-to-end manual test.
 
 ## Done definition
