@@ -68,3 +68,6 @@ sdk/python/*.egg-info/
 # MemPalace per-project files (issue #185)
 mempalace.yaml
 entities.json
+
+# Stint task graph (local only)
+.stint/
