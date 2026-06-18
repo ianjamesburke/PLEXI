@@ -1006,7 +1006,7 @@ impl PlexiApp {
                     } else {
                         (active, self.windows[active].focused_pane)
                     };
-                    launch_result = self.launch_app_by_path_with_layout(
+                    launch_result = self.launch_app_by_path_with_layout_no_review_modal(
                         &app_path.to_string_lossy(),
                         spec.layout.clone(),
                         spec.workspace_root.clone(),

@@ -2,7 +2,7 @@
 
 use super::PendingNotification;
 use super::PlexiApp;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub(crate) const FOCUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15 * 60);
@@ -75,6 +75,9 @@ pub(crate) enum FocusLayer {
     /// `pending_event_consents`, so the Allow/Always/Deny modal owns the
     /// keyboard before `dispatch_app_key_events` can steal Enter/Escape.
     EventConsent,
+    /// Pre-launch review for raw `.wasm` path opens. Promoted before the pane is
+    /// spawned so link-time host imports are remembered before wasmtime links.
+    RawWasmReview,
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
     /// Notes inbox triage overlay: shows inbox notes one at a time for keep/trash/action.
@@ -94,6 +97,15 @@ pub(crate) struct ContextCloseState {
     pub context_id: u64,
     pub context_name: String,
     pub items: Vec<ContextCloseItem>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PendingRawWasmLaunch {
+    pub app_id: String,
+    pub wasm_path: PathBuf,
+    pub workspace_root: PathBuf,
+    pub missing_capabilities: Vec<String>,
+    pub launch_args: Vec<String>,
 }
 
 impl PlexiApp {
@@ -277,6 +289,7 @@ impl PlexiApp {
                 | Some(FocusLayer::ContextCloseConfirm)
                 | Some(FocusLayer::CapabilityModal)
                 | Some(FocusLayer::EventConsent)
+                | Some(FocusLayer::RawWasmReview)
                 | Some(FocusLayer::NotesPicker)
                 | Some(FocusLayer::NotesTriage)
         )
@@ -1009,6 +1022,20 @@ impl PlexiApp {
         } else if !should_own && has_layer {
             log::info!("event_consent: focus released — consent queue drained");
             self.focus_stack.retain(|l| *l != FocusLayer::EventConsent);
+        }
+    }
+
+    pub(crate) fn sync_raw_wasm_review_focus(&mut self) {
+        let should_own = !self.pending_raw_wasm_launches.is_empty();
+        let has_layer = self.focus_stack.contains(&FocusLayer::RawWasmReview);
+        let is_top = matches!(self.focus_stack.last(), Some(FocusLayer::RawWasmReview));
+        if should_own && !is_top {
+            self.focus_stack.retain(|l| *l != FocusLayer::RawWasmReview);
+            log::info!("raw_wasm_review: focus captured - launch review awaiting decision");
+            self.push_focus_layer(FocusLayer::RawWasmReview);
+        } else if !should_own && has_layer {
+            log::info!("raw_wasm_review: focus released - review queue drained");
+            self.focus_stack.retain(|l| *l != FocusLayer::RawWasmReview);
         }
     }
 

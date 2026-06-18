@@ -491,10 +491,11 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_init.png");
     }
 
-    /// Raw `.wasm` paths must fail closed until their link-time host imports
-    /// have a remembered review decision.
+    /// Raw `.wasm` paths queue a host pre-launch review before spawning. The
+    /// underlying launch path still fails closed until the modal persists the
+    /// required link-time import grants.
     #[test]
-    fn wasm_path_launch_requires_review_before_spawning() {
+    fn wasm_path_launch_queues_review_before_spawning() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
         let config_dir = tempfile::tempdir().expect("temp config dir");
@@ -510,9 +511,13 @@ mod tests {
             )
         });
 
-        let err = result.expect_err("unreviewed wasm launch should fail closed");
-        assert!(err.contains("raw WASM launch requires review"), "{err}");
+        result.expect("unreviewed wasm launch should queue review");
         h.step();
+        let queued = h.with_app(|app| app.pending_raw_wasm_launches.len());
+        assert_eq!(queued, 1, "raw .wasm path launch should queue one review");
+        let has_review_focus =
+            h.with_app(|app| matches!(app.focus_stack.last(), Some(FocusLayer::RawWasmReview)));
+        assert!(has_review_focus, "raw WASM review should own focus");
         let has_wasm = h.with_app(|app| {
             app.windows[app.active_window]
                 .panes
@@ -522,6 +527,21 @@ mod tests {
         assert!(
             !has_wasm,
             "unreviewed .wasm path launch must not spawn a WASM pane"
+        );
+
+        h.harness().press_key(egui::Key::Enter);
+        h.step();
+        let queued = h.with_app(|app| app.pending_raw_wasm_launches.len());
+        assert_eq!(queued, 0, "approval should drain the raw WASM review queue");
+        let has_wasm = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values()
+                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
+        });
+        assert!(
+            has_wasm,
+            "approving raw WASM review should spawn an AppRuntime::Wasm pane"
         );
     }
 

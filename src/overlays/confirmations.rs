@@ -440,6 +440,109 @@ impl PlexiApp {
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
+    pub(crate) fn draw_raw_wasm_review_modal(&mut self, ctx: &egui::Context) {
+        let Some(review) = self.pending_raw_wasm_launches.front().cloned() else {
+            return;
+        };
+        let colors = self.colors;
+        let actions = [
+            crate::ui::dialog::DialogAction::new(
+                "allow",
+                "Allow and remember",
+                crate::ui::button::ButtonKind::Primary,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Enter"],
+                "allow",
+                egui::Modifiers::NONE,
+                egui::Key::Enter,
+            )),
+            crate::ui::dialog::DialogAction::new(
+                "deny",
+                "Deny",
+                crate::ui::button::ButtonKind::Danger,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Esc"],
+                "deny",
+                egui::Modifiers::NONE,
+                egui::Key::Escape,
+            )),
+        ];
+        let response = crate::ui::dialog::ActionModal::new(
+            "raw_wasm_review_overlay",
+            "Raw WASM import review",
+            &actions,
+        )
+        .width(super::MODAL_WIDTH)
+        .show(ctx, &colors, |ui| {
+            crate::ui::typography::caption(
+                ui,
+                format!("{} requests host imports:", review.app_id),
+                &colors,
+            );
+            for capability in &review.missing_capabilities {
+                crate::ui::typography::caption(ui, format!("- {capability}"), &colors);
+            }
+            crate::ui::typography::caption(
+                ui,
+                format!("Path: {}", review.wasm_path.display()),
+                &colors,
+            );
+        });
+
+        if response.selected == Some("allow") {
+            let Some(review) = self.pending_raw_wasm_launches.pop_front() else {
+                return;
+            };
+            let mut store = crate::app::permissions::PermissionStore::load_or_default(
+                &crate::config::config_dir(),
+            );
+            for capability in &review.missing_capabilities {
+                store.set_wasm(
+                    &review.app_id,
+                    &review.workspace_root,
+                    capability,
+                    crate::app::permissions::PermissionState::Green,
+                );
+            }
+            store.save();
+            log::info!(
+                "raw_wasm_review: approved {} imports for app_id={} path={}",
+                review.missing_capabilities.len(),
+                review.app_id,
+                review.wasm_path.display()
+            );
+            if let Err(err) = self.open_wasm_app_pane(
+                &review.app_id,
+                &review.wasm_path,
+                review.workspace_root,
+                review.launch_args,
+            ) {
+                log::warn!(
+                    "raw_wasm_review: approved launch failed for app_id={} path={}: {err}",
+                    review.app_id,
+                    review.wasm_path.display()
+                );
+            }
+        } else if response.dismissed || response.selected == Some("deny") {
+            if let Some(review) = self.pending_raw_wasm_launches.pop_front() {
+                log::info!(
+                    "raw_wasm_review: denied app_id={} path={}",
+                    review.app_id,
+                    review.wasm_path.display()
+                );
+            }
+        }
+    }
+
+    pub(crate) fn raw_wasm_review_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app::app_trait::KeyDisposition {
+        crate::app::app_trait::KeyDisposition::Consumed
+    }
+
     fn draw_triple_tap_overlay(&self, ctx: &egui::Context, id: &str, count: u8, label: &str) {
         crate::ui::toast::ToastShell::bottom(id).show(ctx, &self.colors, |ui| {
             ui.horizontal(|ui| {

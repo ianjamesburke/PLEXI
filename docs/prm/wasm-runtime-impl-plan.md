@@ -95,7 +95,8 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   capability modal, decisions enqueue `capability-granted` /
   `capability-denied`, emit `PermissionDecision`, and widen runtime access only
   for scoped `fs:read:<path>`, `fs:write:<path>`, and `net:fetch:<host>`
-  strings. Persistent install review / remembered grants remain future work.
+  strings. Remembered install/package grants now live in Lane F; Lane D remains
+  the session enforcement layer.
 - **Lane E — agentic surface (`ai-query` + app events): DONE.** WIT now
   exposes `ai-query`, `ai-stream-chunk`, `ai-response`,
   `declare-event-streams`, and `emit-event`; `WasmPane` gates AI on the
@@ -114,8 +115,9 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   raw WASM decisions after install succeeds; `--yes` defers optional grants. Raw
   `.wasm` launches inspect required link-time imports, fail closed without
   remembered Green decisions, and `plexi app open ./x.wasm` prompts once and
-  remembers approved imports for the path scope. A native GUI pre-launch review
-  overlay for non-CLI raw launches remains a polish follow-up.
+  remembers approved imports for the path scope. Native GUI path launches queue
+  a pre-launch review modal, persist approved imports, then replay the same
+  fail-closed launch path.
 
 ## Key facts discovered (load-bearing for the build)
 
@@ -126,7 +128,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
 - **App runtime enum:** `AppRuntime` in `src/host/pane.rs` (`Process(Box<ProcessApp>)` /
   `Builtin(Box<dyn App>)`). Add a third variant `Wasm(Box<WasmApp>)`; fan out its methods
   (`ui`, `handle_key`, `take_pending_commands`, ...) like the existing arms. **ProcessApp/PGAP
-  stay untouched** — WasmApp lands alongside v1.
+  stay untouched**. WasmApp lands as a parallel runtime, not a PGAP replacement.
 - **Host deps present:** egui 0.31 + eframe(wgpu) + `wgpu = "24"` (metal) + `egui-wgpu` 0.31
   (→ GPU/surface path for M4), `crossbeam-queue` 0.3 (→ pipes ArrayQueue, already used by
   `src/host/typed_pipes.rs`). **No tokio** — effects execute synchronously, not async.

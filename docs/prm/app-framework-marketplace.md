@@ -1,11 +1,11 @@
 # Plexi App Framework + Marketplace PRM
 
 Status: canonical planning source for the v1 app-platform release path.
-Last updated: 2026-06-10.
+Last updated: 2026-06-18.
 
 This PRM defines the path from "Plexi can run apps" to "Plexi is an app platform." For v1 it owns app authoring, app packaging, marketplace trust, hosted marketplace install, paid-app planning, and Plexi AI subscription planning.
 
-MCPUI interop, WASM/WASI, `Surface`, and Bevy are v2 runtime lanes. They must fit the same app contract, but they do not block the v1 release.
+PGAP/Python and WASM are parallel app runtimes under one app contract. PGAP remains the native, simple authoring path for reviewed local apps. WASM is the sandbox and performance path for apps that need stronger isolation, typed host imports, or direct GPU surfaces. MCPUI interop, `Surface` polish, and Bevy remain v2 lanes that fit the same app contract; they do not block the v1 release.
 
 For those areas, this file supersedes older roadmap fragments, SDK overhaul plans, marketplace notes, and MCPUI future-enhancement docs. Superseded docs should be removed instead of kept as parallel history.
 
@@ -17,7 +17,7 @@ Finish Plexi as a platform in the order that makes the product usable and defens
 2. App permissions and packages are clear enough that a user can make an informed install decision.
 3. Local package/install works before hosted marketplace work.
 4. Hosted registry, paid apps, revenue share, and Plexi AI subscription arrive after the local app framework is stable.
-5. MCPUI, WASM/WASI, and Bevy are planned as v2 runtime lanes that fit under the same app contract instead of replacing it.
+5. PGAP/Python and WASM are supported as different runtimes under one app contract; MCPUI and Bevy fit beside them instead of replacing them.
 
 The local-first rule stays intact. Installed apps and user data live on disk. Hosted services may sell apps, review submissions, and broker AI calls, but they must not become required for running installed apps.
 
@@ -86,16 +86,17 @@ These are code facts as of 2026-06-09. Re-check before starting an implementatio
 - `plexi app publish` is a stub.
 - The legacy PGAP Assistant now lives as a developer reference app in `apps/dev/assistant-pgap/manifest.toml`. The host-native Assistant is the product path; the PGAP app remains useful for SDK and capability experiments.
 - MCPUI is not implemented in the runtime. It is a v2 runtime lane.
-- WASM/WASI is not an app runtime yet. It is a v2 runtime lane.
-- Bevy has no first implementation path until `Surface` and the WASM lane exist. It is a v2 runtime lane.
+- WASM is an app runtime for component-model apps. It supports typed lifecycle functions, host-mediated effects, persistent state, raw capability review, package trust classification, and scoped remembered grants. It is still not app-complete: more host effects, subscribe/delivery imports, GPU readback cleanup, Python compat, cloud execution, and payment gates remain separate work.
+- Bevy has a first path through WASM + `Surface`, but serious Bevy app authoring still waits on stronger `Surface` ergonomics and GPU readback cleanup.
 
 ## Product Decisions
 
 - PGAP remains Plexi's native app protocol.
+- WASM remains a first-class sandbox/performance runtime, not a forced replacement for PGAP.
 - SDK v2 is the canonical authoring path. A normal app implements `view()` and returns L1 UI. `on_render(ctx)` is for games, realtime canvases, visualizations, and other explicit pixel-control apps.
 - `Raw` stays as an escape hatch. It is not the default path for generated apps.
 - MCPUI is a v2 interop lane. First export Plexi apps as MCPUI resources. Later host MCPUI apps in Plexi through WebView panes.
-- WASM/WASI is the v2 third-party sandbox and performance lane.
+- WASM is the third-party sandbox and performance runtime. It shares packaging, trust labels, capability review, and app identity with PGAP apps.
 - Bevy targets WASM + `Surface` in v2. Native Bevy embedding is not the first path.
 - Marketplace trust cannot launch while apps have ambient host control through inherited environment and CLI subprocesses.
 - Python marketplace apps are reviewed native processes until WASM ships. Do not describe them as sandboxed.
@@ -121,13 +122,13 @@ The trust and packaging foundation is finished when:
 - Packages can be validated before install.
 - Package validation checks manifest fields, runtime, capabilities, package contents, generated metadata, and obvious bypass patterns.
 - Install screens show runtime trust labels and declared capabilities before the user proceeds.
-- Python apps are labeled as reviewed native processes; WASM apps are labeled as sandboxed only after the WASM runtime exists.
+- Python apps are labeled as reviewed native processes. WASM apps are labeled as sandboxed when they run through the enforced WASM runtime path with scoped grants.
 
 The marketplace plan is finished when:
 
 - A user can install a free local app package.
 - A publisher can validate a package before submission.
-- A reviewed app shows capabilities and trust labels before install.
+- A reviewed app shows capabilities, runtime type, and trust labels before install.
 - Hosted registry, publisher accounts, submission review, paid apps, revenue share, and Plexi AI subscription are specified.
 - Remote registry and payment work are not prerequisites for the local app framework.
 
@@ -245,13 +246,19 @@ Then, before cutting v1:
 - Verify install, upgrade, channel isolation, local package install, hosted marketplace install, and trust-label wording.
 - Keep `docs/SECURITY_MODEL.md`, `docs/PGAP_REFERENCE.md`, `docs/sdk-v2.md`, website docs, and README aligned.
 
-### v2 Runtime Lanes
+### Runtime Lanes
 
 PGAP/Python remains the simple path:
 
 - best for small tools, agents, local workflows, and first-party references
 - fastest path for AI-generated apps
 - reviewed native process trust label until WASM exists
+
+WASM is the sandbox/performance path:
+
+- best for untrusted third-party code, games, realtime media, and portable non-Python apps
+- typed host imports and link-time capability gating
+- sandboxed WASM trust label when the app uses the enforced WASM runtime path
 
 Raw/canvas remains the escape hatch:
 
@@ -268,9 +275,9 @@ MCPUI lane:
 
 WASM/WASI lane:
 
-- add WASM runtime before claiming strong sandboxing for third-party paid apps
-- map Plexi capabilities to WASI grants
-- use the same app manifest and package trust labels
+- keep expanding host-effect parity and typed imports
+- map Plexi capabilities to WASI grants where WASI is introduced
+- use the same app manifest, package trust labels, and install review flow
 - keep the same L1 UI contract where possible
 
 Bevy lane:

@@ -25,7 +25,8 @@ pub mod text_editor_app;
 #[cfg(test)]
 pub(crate) use focus::FocusLogOutcome;
 pub(crate) use focus::{
-    ContextCloseState, FocusLayer, FocusSegmentReason, FOCUS_HEARTBEAT_INTERVAL,
+    ContextCloseState, FocusLayer, FocusSegmentReason, PendingRawWasmLaunch,
+    FOCUS_HEARTBEAT_INTERVAL,
 };
 pub(crate) use notification_image::NotificationImageState;
 #[cfg(test)]
@@ -373,6 +374,8 @@ pub struct PlexiApp {
     /// modal; [`FocusLayer::EventConsent`] is promoted while this is non-empty.
     pub(crate) pending_event_consents:
         std::collections::VecDeque<crate::host::event_subscriptions::PendingEventConsent>,
+    /// Raw `.wasm` path launches waiting for explicit link-time import review.
+    pub(crate) pending_raw_wasm_launches: std::collections::VecDeque<PendingRawWasmLaunch>,
     /// Last (window_id, tile_id) pair that was logged as a FocusChanged event.
     /// Uses stable window_id (u64) not a vector index so removals don't corrupt it.
     /// Compared at end of each frame to detect genuine focus transitions.
@@ -1191,6 +1194,7 @@ impl PlexiApp {
                     host_subscriptions,
                     event_subscribe_rx,
                     pending_event_consents: std::collections::VecDeque::new(),
+                    pending_raw_wasm_launches: std::collections::VecDeque::new(),
                     last_logged_focus: None,
                     focus_started_at: None,
                     last_system_theme: None,
@@ -1433,6 +1437,7 @@ impl PlexiApp {
             host_subscriptions,
             event_subscribe_rx,
             pending_event_consents: std::collections::VecDeque::new(),
+            pending_raw_wasm_launches: std::collections::VecDeque::new(),
             last_logged_focus: None,
             focus_started_at: None,
             last_system_theme: None,
@@ -1651,6 +1656,7 @@ impl PlexiApp {
                 host_subscriptions,
                 event_subscribe_rx,
                 pending_event_consents: std::collections::VecDeque::new(),
+                pending_raw_wasm_launches: std::collections::VecDeque::new(),
                 last_logged_focus: None,
                 focus_started_at: None,
                 last_system_theme: None,
@@ -1875,6 +1881,7 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
     use crate::app::app_trait::AppCommand;
     match cmd {
         AppCommand::SpawnApp { .. }
+        | AppCommand::OpenAppPath { .. }
         | AppCommand::SpawnPane { .. }
         | AppCommand::RequestLinkedTerminal { .. }
         | AppCommand::RunInLinkedTerminal { .. }
@@ -1892,6 +1899,7 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
     use crate::app::app_trait::AppCommand;
     match cmd {
         AppCommand::SpawnApp { .. } => "SpawnApp",
+        AppCommand::OpenAppPath { .. } => "OpenAppPath",
         AppCommand::SpawnPane { .. } => "SpawnPane",
         AppCommand::RequestLinkedTerminal { .. } => "RequestLinkedTerminal",
         AppCommand::RunInLinkedTerminal { .. } => "RunInLinkedTerminal",
@@ -1997,6 +2005,7 @@ impl eframe::App for PlexiApp {
                     }
                     Some(FocusLayer::CapabilityModal) => self.capability_modal_handle_key(ctx),
                     Some(FocusLayer::EventConsent) => self.event_consent_handle_key(ctx),
+                    Some(FocusLayer::RawWasmReview) => self.raw_wasm_review_handle_key(ctx),
                     Some(FocusLayer::NotesPicker) => {
                         self.notes_picker_handle_key(ctx);
                         crate::app::app_trait::KeyDisposition::Passthrough
@@ -2045,6 +2054,9 @@ impl eframe::App for PlexiApp {
                     Some(FocusLayer::EventConsent) => {
                         self.draw_event_consent_modal(ctx);
                     }
+                    Some(FocusLayer::RawWasmReview) => {
+                        self.draw_raw_wasm_review_modal(ctx);
+                    }
                     Some(FocusLayer::NotesPicker) => {
                         self.draw_notes_picker(ctx);
                     }
@@ -2067,6 +2079,7 @@ impl eframe::App for PlexiApp {
                 self.sync_text_input_focus();
                 self.sync_capability_modal_focus();
                 self.sync_event_consent_focus();
+                self.sync_raw_wasm_review_focus();
                 disposition
             } // end else (non-preempted path)
         } else {
@@ -2180,6 +2193,13 @@ impl eframe::App for PlexiApp {
                                 a.runtime.queue_outbound_event(event);
                             }
                         }
+                    }
+                }
+                AppCommand::OpenAppPath { path, layout, args } => {
+                    if let Err(err) =
+                        self.launch_app_by_path_with_layout(&path, layout, None, &args)
+                    {
+                        log::warn!("app_cmd: OpenAppPath failed for path={path:?}: {err}");
                     }
                 }
                 AppCommand::SpawnPane {

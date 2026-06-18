@@ -26,9 +26,9 @@ Software was built for human interaction first. Every interface, every workflow,
 
 The whole paradigm needs to be re-imagined. Not for AI alone — for collaboration. Getting the most out of a human and the most out of an AI requires software that can act as a garden: a living, modular, breathing protocol where both participants can tend the environment, hand off control naturally, and grow interfaces that fit the individual using them. Not a universal UI. A personal one, shaped by use.
 
-Plexi is built for that model from the ground up. At the core is a tiling layout with three pane types — terminal (PTY), app (PGAP process), and agent (LLM loop). Apps don't share memory or state with the host; they communicate over a typed protocol with explicit capability grants. A PGAP app can render UI, play audio, open a browser, query an LLM, read your filesystem — but only through host APIs you granted, and only in the scope you granted. Every decision is logged. Python apps are native subprocesses until the WASM runtime provides process isolation.
+Plexi is built for that model from the ground up. At the core is a tiling layout with app panes and terminal panes; AI is an app capability, not a separate pane type. Apps do not share memory or state with the host. PGAP/Python apps speak the native JSON protocol as reviewed local processes. WASM apps speak the typed component-model runtime with link-time host imports. Both use explicit capability grants, scoped decisions, and audit logs. Python apps remain native subprocesses unless they move to the WASM compatibility path.
 
-The protocol — PGAP, Plexi Generic App Protocol — is the key abstraction. Any process that speaks newline-delimited JSON can be a Plexi app. The Python SDK wraps it, but the protocol is the primitive. This means apps are portable, auditable, and replaceable — and agents can invoke them, wire them together, and build new ones without leaving the environment.
+The app contract is the key abstraction. PGAP is the native protocol: any process that speaks newline-delimited JSON can be a Plexi app. WASM is the sandbox/performance runtime: any component that implements the WIT lifecycle can be a Plexi app. This means apps are portable, auditable, and replaceable, and agents can invoke them, wire them together, and build new ones without leaving the environment.
 
 Everything persists on disk in formats that will still open in 100 years. Your app state, your permissions log, your agent transcripts — all plain files on your machine. If Plexi disappeared tomorrow, your data and your apps would still be there. That is not a feature. That is the founding constraint.
 
@@ -86,7 +86,7 @@ Ephemeral pane manager: panes that are alive but not in the active tiling layout
 
 ### Phase 4 — The Platform *(medium term)*
 
-WASM app runtime with WASI capability mapping. Same UiNode tree protocol, different transport: shared memory IPC instead of JSON over pipes. True process sandboxing via WASM. `Surface { id }` node for direct GPU rendering (games, real-time visualizations). This is the performance tier: apps that need 60fps with hundreds of objects target WASM; apps that need simplicity target Python. Both ship to the same marketplace.
+WASM app runtime with WASI capability mapping. Same app contract, different runtime: typed component-model calls instead of PGAP JSON over stdio. True process sandboxing via WASM. `Surface { id }` node for direct GPU rendering (games, real-time visualizations). This is the performance tier: apps that need 60fps with hundreds of objects target WASM; apps that need simplicity target PGAP/Python. Both ship to the same marketplace.
 
 App marketplace: `plexi app dev` (hot-reload local development), `plexi app publish` (package + upload), `plexi app install <name>` from registry. Submission review flow. Revenue sharing for app authors. v1 starts with reviewed native-process apps and blunt trust labels. v2 adds WASM apps under the same install flow once the sandbox is real.
 

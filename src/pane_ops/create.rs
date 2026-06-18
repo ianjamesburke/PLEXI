@@ -14,7 +14,7 @@ use crate::host::pane::{Pane, TerminalPane};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::{Tile, TileId, Tree};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Instantiate a builtin `App` by id, checked before the process registry.
@@ -473,6 +473,71 @@ impl PlexiApp {
             None,
             launch_args,
         )
+    }
+
+    fn review_or_open_raw_wasm_app_pane(
+        &mut self,
+        app_id: &str,
+        wasm_path: &std::path::Path,
+        workspace_root: PathBuf,
+        launch_args: Vec<String>,
+    ) -> Result<(), String> {
+        let permission_store =
+            crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir());
+        let required_grants = crate::host::wasm_app::WasmApp::inspect_required_grants(wasm_path)
+            .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
+        let required_caps = required_grants.capability_ids();
+        let declared: HashSet<String> = required_caps.iter().cloned().collect();
+        let (remembered_grants, remembered_blocks) =
+            permission_store.build_wasm_permission_sets(app_id, &workspace_root, &declared);
+
+        let blocked: Vec<String> = required_caps
+            .iter()
+            .filter(|cap| remembered_blocks.contains(*cap))
+            .cloned()
+            .collect();
+        if !blocked.is_empty() {
+            log::warn!(
+                "raw_wasm_review: launch blocked by remembered denial app_id={app_id} path={} blocked={blocked:?}",
+                wasm_path.display()
+            );
+            return Err(format!(
+                "raw WASM launch blocked by remembered denial for: {}",
+                blocked.join(", ")
+            ));
+        }
+
+        let missing: Vec<String> = required_caps
+            .iter()
+            .filter(|cap| !remembered_grants.contains(*cap))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return self
+                .open_wasm_app_pane(app_id, wasm_path, workspace_root, launch_args)
+                .map(|_| ());
+        }
+
+        let already_pending = self.pending_raw_wasm_launches.iter().any(|pending| {
+            pending.app_id == app_id
+                && pending.wasm_path == wasm_path
+                && pending.workspace_root == workspace_root
+        });
+        if !already_pending {
+            log::info!(
+                "raw_wasm_review: queued app_id={app_id} path={} missing={missing:?}",
+                wasm_path.display()
+            );
+            self.pending_raw_wasm_launches
+                .push_back(crate::app::PendingRawWasmLaunch {
+                    app_id: app_id.to_string(),
+                    wasm_path: wasm_path.to_path_buf(),
+                    workspace_root,
+                    missing_capabilities: missing,
+                    launch_args,
+                });
+        }
+        Ok(())
     }
 
     fn open_wasm_app_instance(
@@ -1238,6 +1303,39 @@ impl PlexiApp {
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
     ) -> Result<(), String> {
+        self.launch_app_by_path_with_layout_inner(
+            app_path,
+            layout,
+            workspace_root_override,
+            args,
+            true,
+        )
+    }
+
+    pub(crate) fn launch_app_by_path_with_layout_no_review_modal(
+        &mut self,
+        app_path: &str,
+        layout: Option<String>,
+        workspace_root_override: Option<std::path::PathBuf>,
+        args: &[String],
+    ) -> Result<(), String> {
+        self.launch_app_by_path_with_layout_inner(
+            app_path,
+            layout,
+            workspace_root_override,
+            args,
+            false,
+        )
+    }
+
+    fn launch_app_by_path_with_layout_inner(
+        &mut self,
+        app_path: &str,
+        layout: Option<String>,
+        workspace_root_override: Option<std::path::PathBuf>,
+        args: &[String],
+        queue_raw_wasm_review: bool,
+    ) -> Result<(), String> {
         let app_dir = PathBuf::from(app_path);
         log::info!("launch_app_by_path_with_layout: path={app_path}");
 
@@ -1255,6 +1353,14 @@ impl PlexiApp {
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| PathBuf::from("."))
             });
+            if queue_raw_wasm_review {
+                return self.review_or_open_raw_wasm_app_pane(
+                    &app_id,
+                    &app_dir,
+                    workspace_root,
+                    args.to_vec(),
+                );
+            }
             return self
                 .open_wasm_app_pane(&app_id, &app_dir, workspace_root, args.to_vec())
                 .map(|_| ());
