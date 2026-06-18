@@ -121,6 +121,32 @@ impl PlexiApp {
         while let Ok(cmd) = self.pane_ipc_rx.try_recv() {
             self.handle_pane_ipc_request(cmd);
         }
+        self.drain_event_subscribe_channel();
+    }
+
+    /// Service CLI/MCP subscribe requests routed from socket connection threads.
+    /// The UI thread owns the grant store, so identity resolution + the broker
+    /// check happen here; the connection thread streams deliveries afterward.
+    /// Grants are reloaded from disk first so a just-granted permission applies
+    /// without a host restart.
+    fn drain_event_subscribe_channel(&mut self) {
+        // Pull all pending requests before touching the grant store so the
+        // reload happens at most once per frame regardless of request count.
+        let mut requests = Vec::new();
+        while let Ok(req) = self.event_subscribe_rx.try_recv() {
+            requests.push(req);
+        }
+        if requests.is_empty() {
+            return;
+        }
+        self.host_subscriptions.reload(&crate::config::config_dir());
+        for req in requests {
+            // `Allow`/`Deny`/undeclared answer the transport inline; `Ask`
+            // returns a parked consent we surface as a host modal next frame.
+            if let Some(consent) = self.host_subscriptions.classify_subscribe_request(req) {
+                self.pending_event_consents.push_back(consent);
+            }
+        }
     }
 
     /// Handle a single pane-IPC `AppRequest`. Shared by the socket drain above

@@ -10,6 +10,7 @@ pub mod context;
 pub mod context_state;
 pub mod effect;
 pub mod event_log;
+pub mod event_subscriptions;
 pub mod hot_reload;
 pub mod keys;
 pub mod launch_failed;

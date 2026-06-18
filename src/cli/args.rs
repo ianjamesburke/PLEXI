@@ -122,6 +122,18 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: PaneCmd,
     },
+    /// Subscribe to a Plexi app's event streams and receive brokered deliveries.
+    ///
+    /// Apps declare named event streams (e.g. `probe.tick`) and emit events on them.
+    /// `plexi events subscribe <app_id> <stream>` opens a long-lived connection and
+    /// prints one JSON line per delivered event to stdout (NDJSON) until interrupted.
+    /// Subscriptions are brokered: the host stamps your identity from the pane you run
+    /// in and checks permission before any event is delivered.
+    #[command(next_help_heading = "Events")]
+    Events {
+        #[command(subcommand)]
+        cmd: EventsCmd,
+    },
     /// Send a notification to the Plexi UI.
     Notify {
         /// Notification title (required)
@@ -248,6 +260,50 @@ pub enum Commands {
     /// List run completions (hidden, used by shell completions)
     #[command(hide = true, name = "_complete-run")]
     CompleteRun,
+}
+
+#[derive(Subcommand)]
+pub enum EventsCmd {
+    /// Subscribe to an app's event stream and print delivered events as NDJSON.
+    ///
+    /// Opens a long-lived connection to the running Plexi instance and streams
+    /// one JSON object per line to stdout: first a `subscribed` acknowledgement,
+    /// then one line per delivered event. Runs until interrupted (Ctrl-C), at
+    /// which point the host drops the subscription and its queued deliveries.
+    ///
+    /// Example: plexi events subscribe event-probe probe.tick --payload full
+    Subscribe {
+        /// App id that publishes the stream (e.g. `event-probe`).
+        app_id: String,
+        /// Stream name to subscribe to (e.g. `probe.tick`). Omit with --all to
+        /// subscribe to every stream the app declares.
+        stream: Option<String>,
+        /// Subscribe to all of the app's declared streams instead of one.
+        #[arg(long, conflicts_with = "stream")]
+        all: bool,
+        /// How much of each event to deliver: off, summary, full, or state-ref.
+        #[arg(long, default_value = "full", value_parser = ["off", "summary", "full", "state-ref"])]
+        payload: String,
+        /// Trigger mode recorded on the subscription: never, conversation, ambient, or ask.
+        #[arg(long, default_value = "conversation", value_parser = ["never", "conversation", "ambient", "ask"])]
+        trigger: String,
+        /// Only deliver events for this resource id (document/game/pane). Omit for any.
+        #[arg(long)]
+        resource: Option<String>,
+    },
+    /// List event streams currently declared by running apps.
+    List {
+        /// Output as JSON instead of a human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the host event MCP server config for an MCP-aware agent.
+    ///
+    /// Emits a `mcpServers` JSON block pointing at this instance's host MCP
+    /// server (read from `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`), so a
+    /// Claude Code or Codex agent in this pane can subscribe to app events
+    /// natively over MCP.
+    McpConfig,
 }
 
 #[derive(Subcommand)]

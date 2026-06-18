@@ -18,8 +18,8 @@
 //! without a matching token are rejected with HTTP 401 before any body is read.
 
 use crate::app::registry::McpTool;
+use crate::mcp_http::{read_json_rpc_request, write_http_response, RequestOutcome};
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -130,82 +130,11 @@ fn handle_connection(
         .peer_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut write_stream = stream;
+    let mut write_stream = stream.try_clone()?;
 
-    // Read HTTP request line (e.g. "POST /mcp HTTP/1.1")
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
-        return Ok(());
-    }
-
-    // Only handle POST /mcp (exact path match)
-    let mut req_parts = request_line.split_whitespace();
-    let method = req_parts.next().unwrap_or("").to_string();
-    let path = req_parts.next().unwrap_or("").to_string();
-    let is_post_mcp = method == "POST" && path == "/mcp";
-
-    // Read headers — collect Content-Length and Authorization.
-    let mut content_length: usize = 0;
-    let mut auth_ok = false;
-    let expected_auth = format!("bearer {}", token.to_lowercase());
-    loop {
-        let mut header = String::new();
-        match reader.read_line(&mut header)? {
-            0 => return Ok(()),
-            _ => {
-                let trimmed = header.trim_end_matches(|c| c == '\r' || c == '\n');
-                if trimmed.is_empty() {
-                    break; // blank line = end of headers
-                }
-                let lower = trimmed.to_lowercase();
-                if let Some(rest) = lower.strip_prefix("content-length:") {
-                    content_length = rest.trim().parse().unwrap_or(0);
-                }
-                if let Some(rest) = lower.strip_prefix("authorization:") {
-                    auth_ok = rest.trim() == expected_auth;
-                }
-            }
-        }
-    }
-
-    // Reject unauthenticated requests before reading the body.
-    if !auth_ok {
-        log::warn!("mcp_server: auth rejected peer={peer} method={method} path={path}");
-        write_http_response(&mut write_stream, 401, b"{\"error\":\"unauthorized\"}")?;
-        return Ok(());
-    }
-
-    if !is_post_mcp || content_length == 0 {
-        write_http_response(
-            &mut write_stream,
-            405,
-            b"{\"error\":\"method not allowed\"}",
-        )?;
-        return Ok(());
-    }
-
-    // Cap body size to prevent OOM from a crafted Content-Length header.
-    const MAX_BODY: usize = 10 * 1024 * 1024; // 10 MB
-    if content_length > MAX_BODY {
-        write_http_response(&mut write_stream, 413, b"{\"error\":\"payload too large\"}")?;
-        return Ok(());
-    }
-    // Read body (content_length bytes)
-    let mut buf = vec![0u8; content_length];
-    {
-        use std::io::Read;
-        reader.read_exact(&mut buf)?;
-    }
-    let body = buf;
-
-    let json: serde_json::Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!("mcp_server: invalid JSON body: {e}");
-            write_http_response(&mut write_stream, 400, b"{\"error\":\"invalid json\"}")?;
-            return Ok(());
-        }
+    let json = match read_json_rpc_request(&stream, token)? {
+        RequestOutcome::Json(v) => v,
+        RequestOutcome::Handled => return Ok(()),
     };
 
     let id = json.get("id").cloned().unwrap_or(serde_json::Value::Null);
@@ -317,24 +246,6 @@ fn handle_connection(
     let body_bytes = serde_json::to_vec(&response_body).unwrap_or_else(|_| b"{}".to_vec());
     write_http_response(&mut write_stream, 200, &body_bytes)?;
     Ok(())
-}
-
-fn write_http_response(stream: &mut impl Write, status: u16, body: &[u8]) -> std::io::Result<()> {
-    let status_text = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        405 => "Method Not Allowed",
-        413 => "Payload Too Large",
-        _ => "Error",
-    };
-    write!(
-        stream,
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    )?;
-    stream.write_all(body)?;
-    stream.flush()
 }
 
 fn generate_call_id() -> String {

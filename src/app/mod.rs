@@ -3,6 +3,7 @@ pub mod app_trait;
 mod canvas_bindings;
 mod dispatch;
 mod focus;
+pub mod host_mcp;
 pub mod host_version;
 mod lifecycle;
 pub mod marketplace;
@@ -356,6 +357,20 @@ pub struct PlexiApp {
     /// Receiver for AppRequests sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
     pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::AppRequest>,
+    /// Host-owned event subscription core shared by the CLI NDJSON transport and
+    /// the host MCP server. Resolves subscriber identity, runs the broker check,
+    /// and records subscriptions in the global timeline.
+    pub(crate) host_subscriptions: crate::host::event_subscriptions::HostSubscriptionService,
+    /// Receiver for CLI/MCP subscribe requests routed from socket connection
+    /// threads to the UI thread (which owns the grant store). Drained each frame
+    /// in `drain_event_subscribe_channel`.
+    event_subscribe_rx:
+        std::sync::mpsc::Receiver<crate::host::event_subscriptions::HostSubscribeRequest>,
+    /// Subscribe requests the broker answered with `Ask`, parked for an explicit
+    /// user decision. The front entry is surfaced as the host event-consent
+    /// modal; [`FocusLayer::EventConsent`] is promoted while this is non-empty.
+    pub(crate) pending_event_consents:
+        std::collections::VecDeque<crate::host::event_subscriptions::PendingEventConsent>,
     /// Last (window_id, tile_id) pair that was logged as a FocusChanged event.
     /// Uses stable window_id (u64) not a vector index so removals don't corrupt it.
     /// Compared at end of each frame to detect genuine focus transitions.
@@ -410,9 +425,11 @@ fn handle_socket_line(
 
 fn spawn_socket_listener(
     tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
+    subscribe_tx: std::sync::mpsc::Sender<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >,
     egui_ctx: egui::Context,
 ) {
-    use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
 
     let path = crate::config::config_dir().join("notify.sock");
@@ -435,20 +452,257 @@ fn spawn_socket_listener(
                 }
             };
             let tx = tx.clone();
+            let subscribe_tx = subscribe_tx.clone();
             let egui_ctx = egui_ctx.clone();
             std::thread::spawn(move || {
-                let reader = BufReader::new(stream);
-                for line in reader.lines() {
-                    let Ok(line) = line else { break };
-                    let line = line.trim().to_owned();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    handle_socket_line(&line, &tx, &egui_ctx);
-                }
+                handle_socket_connection(stream, tx, subscribe_tx, egui_ctx);
             });
         }
     });
+}
+
+/// Per-connection handler. Most connections are one-shot `AppRequest` lines.
+/// Event-stream control messages (`events_subscribe`, `events_list`) are
+/// intercepted before `AppRequest` parsing because they keep the socket open
+/// and stream NDJSON back — a transport the normal request/response-file path
+/// does not support.
+fn handle_socket_connection(
+    stream: std::os::unix::net::UnixStream,
+    tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
+    subscribe_tx: std::sync::mpsc::Sender<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >,
+    egui_ctx: egui::Context,
+) {
+    use std::io::{BufRead, BufReader};
+    // A writable clone so a streaming handler can push NDJSON back while the
+    // BufReader owns the read side.
+    let write_half = match stream.try_clone() {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("pane_ipc: try_clone failed: {e}");
+            return;
+        }
+    };
+    let reader = BufReader::new(stream);
+    let mut lines = reader.lines();
+    let Some(Ok(first)) = lines.next() else {
+        return;
+    };
+    let first = first.trim().to_owned();
+    if first.is_empty() {
+        return;
+    }
+    // Intercept event-stream control messages. These share the `type`-tagged
+    // JSON shape but are not `AppRequest` variants, so anything else falls
+    // through to the normal one-shot path.
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first) {
+        match val.get("type").and_then(|t| t.as_str()) {
+            Some("events_subscribe") => {
+                handle_events_subscribe(write_half, lines, val, &subscribe_tx, &egui_ctx);
+                return;
+            }
+            Some("events_list") => {
+                handle_events_list(write_half, &val);
+                return;
+            }
+            _ => {}
+        }
+    }
+    // Normal path: first line plus any remaining lines as AppRequests.
+    handle_socket_line(&first, &tx, &egui_ctx);
+    for line in lines {
+        let Ok(line) = line else { break };
+        let line = line.trim().to_owned();
+        if line.is_empty() {
+            continue;
+        }
+        handle_socket_line(&line, &tx, &egui_ctx);
+    }
+}
+
+/// Stream one app's event deliveries to a CLI subscriber as NDJSON. Routes the
+/// subscribe round-trip through the UI thread (`subscribe_tx`) for identity +
+/// broker check, acks, then polls the global timeline and writes one JSON line
+/// per delivery until the client disconnects, then clears the subscription.
+fn handle_events_subscribe(
+    mut write_half: std::os::unix::net::UnixStream,
+    remaining: std::io::Lines<std::io::BufReader<std::os::unix::net::UnixStream>>,
+    val: serde_json::Value,
+    subscribe_tx: &std::sync::mpsc::Sender<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >,
+    egui_ctx: &egui::Context,
+) {
+    use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let app_id = val["app_id"].as_str().unwrap_or_default().to_string();
+    let event_names: Vec<String> = val["event_names"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let payload_mode = serde_json::from_value(val["payload_mode"].clone())
+        .unwrap_or(crate::app_protocol::PayloadMode::Full);
+    let trigger_mode = serde_json::from_value(val["trigger_mode"].clone())
+        .unwrap_or(crate::app_protocol::TriggerMode::Conversation);
+    let resource_id = val["resource_id"].as_str().map(String::from);
+    let from_pane_id = val["from_pane_id"].as_u64();
+
+    let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<HostSubscribeReply>(1);
+    let req = HostSubscribeRequest {
+        publisher_app_id: app_id.clone(),
+        event_names,
+        payload_mode,
+        trigger_mode,
+        resource_id,
+        from_pane_id,
+        subscriber_override: None,
+        reply: reply_tx,
+    };
+    if subscribe_tx.send(req).is_err() {
+        let _ = writeln!(
+            write_half,
+            "{}",
+            serde_json::json!({"type": "error", "message": "host not accepting subscriptions"})
+        );
+        return;
+    }
+    egui_ctx.request_repaint();
+
+    // Generous wait: a first-time subscribe under the broker's default `Ask`
+    // posture blocks here until the user answers the host consent modal. A
+    // pre-granted subscribe replies near-instantly.
+    let (subscriber_type, subscriber_id, subscription_id) =
+        match reply_rx.recv_timeout(Duration::from_secs(120)) {
+            Ok(HostSubscribeReply::Ok {
+                subscription_id,
+                subscriber_type,
+                subscriber_id,
+            }) => (subscriber_type, subscriber_id, subscription_id),
+            Ok(HostSubscribeReply::Err { message }) => {
+                let _ = writeln!(
+                    write_half,
+                    "{}",
+                    serde_json::json!({"type": "error", "message": message})
+                );
+                return;
+            }
+            Err(_) => {
+                let _ = writeln!(
+                    write_half,
+                    "{}",
+                    serde_json::json!({"type": "error", "message": "subscribe consent timed out"})
+                );
+                return;
+            }
+        };
+
+    let ack = serde_json::json!({
+        "type": "subscribed",
+        "subscription_id": subscription_id,
+        "app_id": app_id,
+    });
+    if writeln!(write_half, "{ack}").is_err() {
+        return;
+    }
+    let _ = write_half.flush();
+    log::info!(
+        "events: streaming subscription {subscription_id} for {subscriber_type:?} '{subscriber_id}' -> '{app_id}'"
+    );
+
+    // Detect client disconnect: a reader thread drains the (otherwise silent)
+    // input side and flips the flag on EOF, so an idle subscription with no
+    // events still tears down promptly when the CLI exits.
+    let disconnected = Arc::new(AtomicBool::new(false));
+    {
+        let flag = Arc::clone(&disconnected);
+        std::thread::spawn(move || {
+            for _ in remaining {}
+            flag.store(true, Ordering::Relaxed);
+        });
+    }
+
+    let timeline = crate::host::app_timeline::global();
+    loop {
+        if disconnected.load(Ordering::Relaxed) {
+            break;
+        }
+        let deliveries = timeline
+            .lock()
+            .unwrap()
+            .take_deliveries_for(subscriber_type, &subscriber_id);
+        for d in deliveries {
+            let line = serde_json::json!({
+                "type": "event",
+                "subscription_id": d.subscription_id,
+                "app_id": d.app_id,
+                "event": d.event,
+                "event_id": d.event_id,
+                "resource_id": d.resource_id,
+                "trigger_mode": d.trigger_mode,
+                "summary": d.summary,
+                "payload": d.payload,
+                "state_ref": d.state_ref,
+                "created_at": d.created_at,
+            });
+            if writeln!(write_half, "{line}").is_err() {
+                disconnected.store(true, Ordering::Relaxed);
+                break;
+            }
+            let _ = write_half.flush();
+        }
+        if disconnected.load(Ordering::Relaxed) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+
+    let (subs, drops) = timeline
+        .lock()
+        .unwrap()
+        .clear_subscriber(subscriber_type, &subscriber_id);
+    log::info!(
+        "events: subscriber '{subscriber_id}' disconnected; cleared {subs} subscription(s), \
+         dropped {drops} queued delivery(ies)"
+    );
+}
+
+/// Answer `events_list`: write the declared `(app_id, stream)` pairs and close.
+/// Pure discovery — no grant check, no identity, no streaming.
+fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serde_json::Value) {
+    use std::io::Write;
+    let json_mode = val["json"].as_bool().unwrap_or(false);
+    let streams = crate::host::app_timeline::global()
+        .lock()
+        .unwrap()
+        .all_declared_streams();
+    log::info!("events: list requested ({} stream(s) declared)", streams.len());
+    if json_mode {
+        let arr: Vec<serde_json::Value> = streams
+            .iter()
+            .map(|(a, s)| serde_json::json!({"app_id": a, "stream": s}))
+            .collect();
+        let _ = writeln!(
+            write_half,
+            "{}",
+            serde_json::json!({"type": "streams", "streams": arr})
+        );
+    } else if streams.is_empty() {
+        let _ = writeln!(write_half, "No event streams declared by running apps.");
+    } else {
+        for (app_id, stream) in &streams {
+            let _ = writeln!(write_half, "{app_id}  {stream}");
+        }
+    }
+    let _ = write_half.flush();
 }
 
 impl PlexiApp {
@@ -576,7 +830,27 @@ impl PlexiApp {
 
         let (pane_ipc_tx, pane_ipc_rx) =
             std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
-        spawn_socket_listener(pane_ipc_tx, cc.egui_ctx.clone());
+        let (event_subscribe_tx, event_subscribe_rx) = std::sync::mpsc::channel::<
+            crate::host::event_subscriptions::HostSubscribeRequest,
+        >();
+        spawn_socket_listener(
+            pane_ipc_tx,
+            event_subscribe_tx.clone(),
+            cc.egui_ctx.clone(),
+        );
+        let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
+            &crate::config::config_dir(),
+            crate::config::active_workspace_root()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default()),
+            crate::host::app_timeline::global(),
+        );
+        if let Err(e) = host_mcp::start_host_mcp_server(
+            event_subscribe_tx,
+            cc.egui_ctx.clone(),
+            &crate::config::config_dir(),
+        ) {
+            log::warn!("host_mcp: failed to start event MCP server: {e}");
+        }
 
         // One-time migration: remove the legacy file-queue directory if it
         // still exists from a previous install. Notify commands now travel
@@ -902,6 +1176,9 @@ impl PlexiApp {
                     update_install_rx: None,
                     update_installing: false,
                     pane_ipc_rx,
+                    host_subscriptions,
+                    event_subscribe_rx,
+                    pending_event_consents: std::collections::VecDeque::new(),
                     last_logged_focus: None,
                     focus_started_at: None,
                     last_system_theme: None,
@@ -1141,6 +1418,9 @@ impl PlexiApp {
             update_install_rx: None,
             update_installing: false,
             pane_ipc_rx,
+            host_subscriptions,
+            event_subscribe_rx,
+            pending_event_consents: std::collections::VecDeque::new(),
             last_logged_focus: None,
             focus_started_at: None,
             last_system_theme: None,
@@ -1211,6 +1491,14 @@ impl PlexiApp {
         let features = crate::features::FeatureFlags::from_config(&config);
         let (pane_ipc_tx, pane_ipc_rx) =
             std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
+        let (_event_subscribe_tx, event_subscribe_rx) = std::sync::mpsc::channel::<
+            crate::host::event_subscriptions::HostSubscribeRequest,
+        >();
+        let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
+            &crate::config::config_dir(),
+            std::env::current_dir().unwrap_or_default(),
+            crate::host::app_timeline::global(),
+        );
         (
             Self {
                 pty_event_rx: rx,
@@ -1348,6 +1636,9 @@ impl PlexiApp {
                 update_install_rx: None,
                 update_installing: false,
                 pane_ipc_rx,
+                host_subscriptions,
+                event_subscribe_rx,
+                pending_event_consents: std::collections::VecDeque::new(),
                 last_logged_focus: None,
                 focus_started_at: None,
                 last_system_theme: None,
@@ -1437,6 +1728,13 @@ impl PlexiApp {
             .to_string_lossy()
             .into_owned();
         env.insert("PLEXI_SOCKET".into(), socket);
+        // Host-level event MCP server discovery (stint 0214). Lets an MCP-aware
+        // agent in this pane configure the Plexi host MCP server without a
+        // wrapper subprocess.
+        if let Some((port, token)) = host_mcp::discovery() {
+            env.insert("PLEXI_HOST_MCP_PORT".into(), port.to_string());
+            env.insert("PLEXI_HOST_MCP_TOKEN".into(), token.clone());
+        }
         env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
         env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
         env.insert(
@@ -1686,6 +1984,7 @@ impl eframe::App for PlexiApp {
                         self.context_close_confirm_handle_key(ctx)
                     }
                     Some(FocusLayer::CapabilityModal) => self.capability_modal_handle_key(ctx),
+                    Some(FocusLayer::EventConsent) => self.event_consent_handle_key(ctx),
                     Some(FocusLayer::NotesPicker) => {
                         self.notes_picker_handle_key(ctx);
                         crate::app::app_trait::KeyDisposition::Passthrough
@@ -1731,6 +2030,9 @@ impl eframe::App for PlexiApp {
                     Some(FocusLayer::CapabilityModal) => {
                         self.draw_capability_modal(ctx);
                     }
+                    Some(FocusLayer::EventConsent) => {
+                        self.draw_event_consent_modal(ctx);
+                    }
                     Some(FocusLayer::NotesPicker) => {
                         self.draw_notes_picker(ctx);
                     }
@@ -1752,6 +2054,7 @@ impl eframe::App for PlexiApp {
                 self.sync_cli_setup_prompt_focus();
                 self.sync_text_input_focus();
                 self.sync_capability_modal_focus();
+                self.sync_event_consent_focus();
                 disposition
             } // end else (non-preempted path)
         } else {

@@ -24,7 +24,7 @@ use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionRequest, ResourceScope, TargetType,
 };
-use crate::host::app_timeline::{AppTimeline, SubscriptionRecord};
+use crate::host::app_timeline::AppTimeline;
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest};
 use crate::plexi_ai::turn_loop::TurnDelta;
 use crate::plexi_ai::CancelToken;
@@ -349,26 +349,18 @@ impl AssistantApp {
             log::info!("assistant: already subscribed to '{target}'");
             return;
         }
-        let subscription_id = format!("assistant-sub-{}", uuid::Uuid::new_v4());
-        self.timeline
-            .lock()
-            .unwrap()
-            .add_subscription(SubscriptionRecord {
-                subscription_id: subscription_id.clone(),
-                subscriber_type: ActorType::Agent,
-                subscriber_id: ASSISTANT_ACTOR_ID.to_string(),
-                app_id: app.to_string(),
-                event_names: if event == "*" {
-                    Vec::new()
-                } else {
-                    vec![event.to_string()]
-                },
-                payload_mode: PayloadMode::Full,
-                trigger_mode: TriggerMode::Conversation,
-                resource_id: None,
-                duration: GrantDuration::Session,
-                created_at: crate::host::event_log::now_timestamp(),
-            });
+        let event_names = if event == "*" { Vec::new() } else { vec![event.to_string()] };
+        let subscription_id = crate::host::event_subscriptions::record_subscription(
+            &self.timeline,
+            app,
+            ActorType::Agent,
+            ASSISTANT_ACTOR_ID,
+            event_names,
+            PayloadMode::Full,
+            TriggerMode::Conversation,
+            None,
+            GrantDuration::Session,
+        );
         log::info!("assistant: subscribed to '{target}' ({subscription_id})");
         self.live_subs.push((target, subscription_id));
     }
@@ -629,14 +621,16 @@ impl AssistantApp {
                     let _ = reply.send(ok(format!("already subscribed to {target}")));
                     return;
                 }
-                let req = PermissionRequest::new(
+                let event_names = if event == "*" { Vec::new() } else { vec![event.clone()] };
+                match crate::host::event_subscriptions::evaluate_subscription(
+                    &self.grant_store,
+                    None,
+                    &self.workspace_root,
+                    &app,
                     ActorType::Agent,
                     ASSISTANT_ACTOR_ID,
-                    TargetType::AppEventStream,
-                    &target,
-                    Some(&self.workspace_root),
-                );
-                match self.grant_store.evaluate(&req, None) {
+                    &event_names,
+                ) {
                     Decision::Allow => {
                         self.subscribe_stream(&app, &event);
                         self.audit
@@ -1944,6 +1938,38 @@ mod tests {
         assert_eq!(emit_move(&timeline, AppEventActor::User, None, None), 1);
         app.pump_turn_io();
         assert_eq!(event_rows(&app), 1, "one event row, not duplicates");
+    }
+
+    /// A granted assistant subscribe records a timeline `SubscriptionRecord`
+    /// stamped with the assistant's identity — the same shape the CLI/MCP
+    /// transports produce, now that all three share `record_subscription`.
+    #[test]
+    fn subscribe_stream_records_assistant_subscription_shape() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_app_with_timeline(ws.path(), timeline.clone());
+        app.subscribe_stream("chess", "move.played");
+
+        let guard = timeline.lock().unwrap();
+        let subs = guard.subscriptions();
+        assert_eq!(subs.len(), 1);
+        let record = &subs[0];
+        assert_eq!(record.subscriber_type, ActorType::Agent);
+        assert_eq!(record.subscriber_id, ASSISTANT_ACTOR_ID);
+        assert_eq!(record.app_id, "chess");
+        assert_eq!(record.event_names, vec!["move.played".to_string()]);
+
+        // `*` subscribes to all declared streams → empty event_names.
+        drop(guard);
+        app.subscribe_stream("chess", "*");
+        let guard = timeline.lock().unwrap();
+        let star = guard
+            .subscriptions()
+            .iter()
+            .find(|r| r.event_names.is_empty())
+            .expect("`*` subscribe must record an all-streams subscription");
+        assert_eq!(star.app_id, "chess");
+        assert_eq!(star.subscriber_id, ASSISTANT_ACTOR_ID);
     }
 
     #[test]

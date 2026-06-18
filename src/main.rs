@@ -16,6 +16,7 @@ mod config;
 mod features;
 mod file_browser;
 mod host;
+mod mcp_http;
 mod media;
 mod notes;
 mod overlays;
@@ -217,7 +218,8 @@ fn main() -> eframe::Result {
         .collect();
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd,
-        HookAction, LicenseCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd, SecretCmd,
+        EventsCmd, HookAction, LicenseCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd,
+        SecretCmd,
         UpdateCmd, WorkspaceCmd,
     };
     use clap::Parser;
@@ -878,6 +880,29 @@ fn main() -> eframe::Result {
                             }
                         }
                     }
+                    Commands::Events { cmd } => match cmd {
+                        EventsCmd::Subscribe {
+                            app_id,
+                            stream,
+                            all,
+                            payload,
+                            trigger,
+                            resource,
+                        } => std::process::exit(cli::events_subscribe_cli(
+                            &app_id,
+                            stream.as_deref(),
+                            all,
+                            &payload,
+                            &trigger,
+                            resource.as_deref(),
+                        )),
+                        EventsCmd::List { json } => {
+                            std::process::exit(cli::events_list_cli(json))
+                        }
+                        EventsCmd::McpConfig => {
+                            std::process::exit(cli::events_mcp_config_cli())
+                        }
+                    },
                     Commands::CompleteOpen { prefix } => {
                         std::process::exit(cli::complete_open_cli(&prefix));
                     }
