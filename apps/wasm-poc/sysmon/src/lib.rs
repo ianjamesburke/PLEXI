@@ -13,12 +13,10 @@ wit_bindgen::generate!({
     path: "wit/world.wit",
 });
 
+use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::types::{
-    alignment::Alignment, badge_color::BadgeColor, button_style::ButtonStyle, color::Color,
-    effect::Effect, indexed_node::IndexedNode, input_event::InputEvent,
-    progress_bar_node::ProgressBarNode, row_node::RowNode, column_node::ColumnNode,
-    system_stats::SystemStats, text_node::TextNode, timer_effect::TimerEffect,
-    ui_node_data::UiNodeData, ui_tree::UiTree, state_snapshot::StateSnapshot,
+    Alignment, Color, ColumnNode, Effect, IndexedNode, InputEvent, ProgressBarNode, RowNode,
+    StateSnapshot, SystemStats, TextNode, TimerEffect, UiNodeData, UiTree,
 };
 use plexi::platform::{host_log, host_state};
 
@@ -224,7 +222,7 @@ static mut APP: Option<Sysmon> = None;
 
 fn app() -> &'static mut Sysmon {
     // Safety: single-threaded WASM, no concurrent access.
-    unsafe { APP.as_mut().unwrap() }
+    unsafe { (*core::ptr::addr_of_mut!(APP)).as_mut().unwrap() }
 }
 
 impl Guest for Component {

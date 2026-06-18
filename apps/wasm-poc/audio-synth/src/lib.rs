@@ -19,17 +19,15 @@ wit_bindgen::generate!({
     path: "wit/world.wit",
 });
 
+use exports::plexi::platform::audio_rt_process;
+use exports::plexi::platform::lifecycle::Guest;
 use plexi::platform::audio_rt_control::{self, AudioConfig, AudioFormat};
-use plexi::platform::audio_rt_process;
 use plexi::platform::host_log;
 use plexi::platform::host_state;
 use plexi::platform::pipes::{self, PipeDirection, PipeType};
 use plexi::platform::types::{
-    alignment::Alignment, badge_color::BadgeColor, badge_node::BadgeNode,
-    column_node::ColumnNode, effect::Effect, indexed_node::IndexedNode,
-    input_event::InputEvent, key_event::KeyEvent, row_node::RowNode,
-    state_snapshot::StateSnapshot, text_node::TextNode, timer_effect::TimerEffect,
-    ui_node_data::UiNodeData, ui_tree::UiTree,
+    Alignment, BadgeColor, BadgeNode, ColumnNode, Effect, IndexedNode, InputEvent, KeyEvent,
+    RowNode, StateSnapshot, TextNode, TimerEffect, UiNodeData, UiTree,
 };
 
 // ── Note table ────────────────────────────────────────────────────────────────
@@ -216,7 +214,7 @@ impl Synth {
 
 struct Component;
 static mut SYNTH: Option<Synth> = None;
-fn synth() -> &'static mut Synth { unsafe { SYNTH.as_mut().unwrap() } }
+fn synth() -> &'static mut Synth { unsafe { (*core::ptr::addr_of_mut!(SYNTH)).as_mut().unwrap() } }
 
 impl Guest for Component {
     fn init(state: StateSnapshot, _size: (f32, f32)) -> Vec<Effect> {
@@ -231,7 +229,7 @@ impl Guest for Component {
             sample_rate: SAMPLE_RATE,
             channels: CHANNELS,
             buffer_frames: BUFFER_FRAMES,
-            format: AudioFormat::F32,
+            format: AudioFormat::Float32,
         }) {
             Ok(handle) => {
                 synth().stream = Some(handle);
@@ -309,14 +307,14 @@ impl Guest for Component {
 
 impl audio_rt_process::Guest for Component {
     fn process_output(
-        handle: u32,
+        _handle: u32,
         buffer_frames: u32,
         channels: u32,
         sample_rate: u32,
         state: u64,
     ) -> (Vec<f32>, u64) {
         let mut phase = f32::from_bits(state as u32);
-        let s = unsafe { SYNTH.as_mut().unwrap() };
+        let s = unsafe { (*core::ptr::addr_of_mut!(SYNTH)).as_mut().unwrap() };
 
         let freq = s.freq();
         let wave = s.wave;
@@ -354,10 +352,10 @@ impl audio_rt_process::Guest for Component {
                 .step_by(8 * channels as usize)
                 .flat_map(|&f| f.to_le_bytes())
                 .collect();
-            let _ = pipes::send_binary(pipe_h, preview);
+            let _ = pipes::send_binary(pipe_h, &preview);
         }
 
-        let new_state = (phase.to_bits() as u64);
+        let new_state = phase.to_bits() as u64;
         (out, new_state)
     }
 
