@@ -515,6 +515,7 @@ impl App for TextEditorApp {
         let min_rows = ((ui.available_height() / row_height).floor() as usize).max(1);
 
         egui::ScrollArea::vertical()
+            .id_salt(egui::Id::new("text_editor_scroll").with(&self.path))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 // egui's caret is hidden (transparent, non-blinking) and
