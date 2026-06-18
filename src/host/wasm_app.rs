@@ -120,9 +120,23 @@ impl StateStore {
 
 // ─── Host context (store data) ─────────────────────────────────────────────
 
+/// A pipe the guest opened, keyed by the `pipe-handle` it was given. Holds the
+/// registry id and kind so sends route to the right backing (binary ring vs.
+/// JSON validation).
+struct PipeBinding {
+    id: String,
+    binary: bool,
+}
+
 pub struct HostCtx {
     app_id: String,
     state: StateStore,
+    // Per-app typed-pipe registry backing the `pipes` import (G13). Binary
+    // pipes get a unix socket + drain thread; the registry's Drop closes them
+    // when the pane (and its Store) is dropped.
+    pipes: crate::host::typed_pipes::TypedPipeRegistry,
+    pipe_handles: HashMap<u32, PipeBinding>,
+    next_pipe_handle: u32,
     // Baseline WASI 0.2: clocks + random only. Rust-compiled components import
     // wasi:cli/io/clocks/random from std even when unused; a default ctx grants
     // no env, filesystem, or network access — the real platform capabilities
@@ -170,26 +184,87 @@ impl host_state::Host for HostCtx {
     }
 }
 
+impl HostCtx {
+    fn pipe_id(&self, handle: u32) -> Result<&PipeBinding, String> {
+        self.pipe_handles
+            .get(&handle)
+            .ok_or_else(|| format!("unknown pipe handle {handle}"))
+    }
+}
+
 impl pipes::Host for HostCtx {
     fn open(
         &mut self,
-        _id: String,
-        _kind: pipes::PipeType,
-        _direction: pipes::PipeDirection,
+        id: String,
+        kind: pipes::PipeType,
+        direction: pipes::PipeDirection,
     ) -> Result<u32, String> {
-        Err("pipes are not wired until M4".to_string())
+        use crate::host::typed_pipes::PipeDirection as Dir;
+        let dir = match direction {
+            pipes::PipeDirection::In => Dir::In,
+            pipes::PipeDirection::Out => Dir::Out,
+            pipes::PipeDirection::Duplex => Dir::Duplex,
+        };
+        let binary = matches!(kind, pipes::PipeType::Binary);
+        if binary {
+            self.pipes
+                .open_binary(id.clone(), dir)
+                .map_err(|e| e.to_string())?;
+        } else {
+            self.pipes
+                .open_json(id.clone(), dir)
+                .map_err(|e| e.to_string())?;
+        }
+        let handle = self.next_pipe_handle;
+        self.next_pipe_handle += 1;
+        self.pipe_handles.insert(handle, PipeBinding { id: id.clone(), binary });
+        log::info!("app::{}: opened {} pipe '{id}' -> handle {handle}", self.app_id, if binary { "binary" } else { "json" });
+        Ok(handle)
     }
-    fn send_binary(&mut self, _handle: u32, _payload: Vec<u8>) -> Result<(), String> {
-        Err("pipes are not wired until M4".to_string())
+
+    fn send_binary(&mut self, handle: u32, payload: Vec<u8>) -> Result<(), String> {
+        let binding = self.pipe_id(handle)?;
+        if !binding.binary {
+            return Err(format!("pipe handle {handle} is a json pipe"));
+        }
+        let ring = self
+            .pipes
+            .binary_ring(&binding.id)
+            .ok_or_else(|| format!("pipe '{}' has no binary ring", binding.id))?;
+        // Lock-free push; a full ring means the peer is behind — drop the frame
+        // (RT-safe, best-effort) and report overrun to the guest.
+        ring.push(payload)
+            .map_err(|_| "pipe ring full (overrun)".to_string())
     }
-    fn send_json(&mut self, _handle: u32, _json: String) -> Result<(), String> {
-        Err("pipes are not wired until M4".to_string())
+
+    fn send_json(&mut self, handle: u32, json: String) -> Result<(), String> {
+        let (id, binary) = {
+            let b = self.pipe_id(handle)?;
+            (b.id.clone(), b.binary)
+        };
+        if binary {
+            return Err(format!("pipe handle {handle} is a binary pipe"));
+        }
+        let value = serde_json::from_str::<serde_json::Value>(&json)
+            .map_err(|e| format!("invalid json: {e}"))?;
+        self.pipes.send_json(&id, value).map_err(|e| e.to_string())
     }
-    fn close(&mut self, _handle: u32) -> Result<(), String> {
-        Err("pipes are not wired until M4".to_string())
+
+    fn close(&mut self, handle: u32) -> Result<(), String> {
+        let binding = self
+            .pipe_handles
+            .remove(&handle)
+            .ok_or_else(|| format!("unknown pipe handle {handle}"))?;
+        self.pipes.close(&binding.id);
+        Ok(())
     }
-    fn is_connected(&mut self, _handle: u32) -> bool {
-        false
+
+    fn is_connected(&mut self, handle: u32) -> bool {
+        match self.pipe_handles.get(&handle) {
+            Some(b) if b.binary => !self.pipes.drain_failed(&b.id),
+            Some(b) => self.pipes.has_reader(&b.id),
+            None => false,
+        }
     }
 }
 
@@ -237,6 +312,11 @@ impl WasmApp {
         let ctx = HostCtx {
             app_id: app_id.clone(),
             state,
+            pipes: crate::host::typed_pipes::TypedPipeRegistry::new(
+                crate::config::config_dir().join("pipes"),
+            ),
+            pipe_handles: HashMap::new(),
+            next_pipe_handle: 0,
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
         };
@@ -280,6 +360,69 @@ mod tests {
 
     fn empty_snapshot() -> StateSnapshot {
         StateSnapshot { entries: vec![] }
+    }
+
+    fn host_ctx_with_pipes() -> HostCtx {
+        // Unix socket paths must be < ~104 bytes (SUN_LEN); the macOS
+        // /var/folders temp dir + a UUID socket name overflows it, so use a
+        // short /tmp path for the bind to succeed.
+        let dir = PathBuf::from("/tmp").join(format!("plpipe{}", std::process::id()));
+        HostCtx {
+            app_id: "pipes-test".to_string(),
+            state: StateStore::ephemeral(),
+            pipes: crate::host::typed_pipes::TypedPipeRegistry::new(dir),
+            pipe_handles: std::collections::HashMap::new(),
+            next_pipe_handle: 0,
+            wasi: WasiCtxBuilder::new().build(),
+            table: ResourceTable::new(),
+        }
+    }
+
+    // G13 (host side): the pipes import is backed by TypedPipeRegistry. A binary
+    // pipe opens, accepts frames into the lock-free ring, rejects json-on-binary,
+    // and reports overrun (full ring) as an error instead of panicking/blocking.
+    #[test]
+    fn g13_pipes_open_send_overrun_close() {
+        use pipes::{Host, PipeDirection, PipeType};
+        let mut ctx = host_ctx_with_pipes();
+
+        let h = ctx
+            .open("waveform-out".to_string(), PipeType::Binary, PipeDirection::Out)
+            .expect("open binary");
+        assert!(ctx.is_connected(h), "freshly opened pipe is healthy");
+        ctx.send_binary(h, vec![1, 2, 3, 4]).expect("first frame fits");
+
+        // No peer is draining the ring, so it fills at capacity; further pushes
+        // must return an overrun error — never panic, never block.
+        let mut overran = false;
+        for _ in 0..1024 {
+            if ctx.send_binary(h, vec![0u8; 64]).is_err() {
+                overran = true;
+                break;
+            }
+        }
+        assert!(overran, "a full ring must surface overrun as Err");
+
+        // json send on a binary pipe is rejected.
+        assert!(ctx.send_json(h, "{}".to_string()).is_err());
+        ctx.close(h).expect("close");
+        assert!(!ctx.is_connected(h), "closed handle is not connected");
+        assert!(ctx.send_binary(h, vec![0]).is_err(), "send after close errors");
+    }
+
+    // A json pipe round-trips through validation: valid json is accepted,
+    // malformed json and binary-on-json are rejected.
+    #[test]
+    fn g13_json_pipe_validation() {
+        use pipes::{Host, PipeDirection, PipeType};
+        let mut ctx = host_ctx_with_pipes();
+        let h = ctx
+            .open("score".to_string(), PipeType::Json, PipeDirection::Out)
+            .expect("open json");
+        ctx.send_json(h, r#"{"score":3}"#.to_string()).expect("valid json");
+        assert!(ctx.send_json(h, "{not json".to_string()).is_err());
+        assert!(ctx.send_binary(h, vec![0]).is_err(), "binary on json pipe errors");
+        ctx.close(h).expect("close");
     }
 
     fn mock_stats(cpu: f32) -> SystemStats {
