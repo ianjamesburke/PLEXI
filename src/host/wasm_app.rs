@@ -30,7 +30,10 @@ mod bindings {
 use bindings::plexi::platform::{host_log, host_state, pipes, types};
 use bindings::PlexiApp;
 
-pub use types::{Effect, InputEvent, StateSnapshot, SystemStats, UiNodeData, UiTree};
+pub use types::{
+    Alignment, BadgeColor, ButtonStyle, Color, Effect, IndexedNode, InputEvent, StateSnapshot,
+    SystemStats, UiNodeData, UiTree,
+};
 
 // ─── Capability grants ─────────────────────────────────────────────────────
 //
