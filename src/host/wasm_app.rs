@@ -482,12 +482,17 @@ impl WasmApp {
         }
         let gpu_device = if grants.gpu {
             gpu::add_to_linker::<_, HasSelf<HostCtx>>(&mut linker, |c| c)?;
-            // Acquire the wgpu device eagerly: a missing adapter must fail the
-            // load, not surface as an opaque error on the first draw.
-            Some(
-                crate::host::wasm_gpu::GpuDevice::new()
+            // Prefer eframe's shared device so the guest's surface lives where
+            // egui renders (zero-copy compositing). Headless/test processes
+            // have no shared state and fall back to a dedicated device; a
+            // missing adapter must fail the load, not surface on first draw.
+            Some(match crate::host::wasm_gpu::host_render_state() {
+                Some(rs) => {
+                    crate::host::wasm_gpu::GpuDevice::from_shared(rs.device.clone(), rs.queue.clone())
+                }
+                None => crate::host::wasm_gpu::GpuDevice::new()
                     .map_err(|e| wasmtime::Error::msg(format!("app::{app_id}: {e}")))?,
-            )
+            })
         } else {
             None
         };
@@ -609,6 +614,14 @@ impl WasmApp {
     /// (the live leg) or pixel assertions (the gate leg).
     pub fn read_surface(&self, handle: u64) -> Option<image::RgbaImage> {
         self.store.data().gpu.as_ref().and_then(|g| g.read_texture(handle).ok())
+    }
+    /// sRGB view of the surface texture for zero-copy egui compositing.
+    pub fn surface_srgb_view(&self, handle: u64) -> Option<wgpu::TextureView> {
+        self.store.data().gpu.as_ref().and_then(|g| g.surface_srgb_view(handle))
+    }
+    /// Surface readbacks performed by this app's device (capture path only).
+    pub fn surface_readbacks(&self) -> u64 {
+        self.store.data().gpu.as_ref().map_or(0, |g| g.readback_count())
     }
 }
 

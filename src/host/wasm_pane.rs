@@ -476,6 +476,17 @@ impl WasmPane {
         self.surface.as_ref().map(|s| (s.width, s.height))
     }
 
+    /// sRGB view of the live surface texture for zero-copy egui compositing.
+    pub fn surface_srgb_view(&self) -> Option<wgpu::TextureView> {
+        let s = self.surface.as_ref()?;
+        self.app.surface_srgb_view(s.handle)
+    }
+
+    /// Surface readbacks performed by this pane's device (capture path only).
+    pub fn surface_readbacks(&self) -> u64 {
+        self.app.surface_readbacks()
+    }
+
     pub fn view(&mut self) -> wasmtime::Result<UiTree> {
         self.app.view()
     }
@@ -1015,9 +1026,22 @@ pub struct LiveWasmPane {
     /// Concatenated text of the last rendered view tree. Lets the headless
     /// scene runner assert on rendered content without re-entering the guest.
     last_text: String,
-    /// egui texture holding the most recent GPU surface readback, re-uploaded
-    /// each frame so the guest's render is composited into the pane.
-    surface_tex: Option<egui::TextureHandle>,
+    /// egui texture id of the guest surface, registered once into the host's
+    /// shared renderer and sampled live (zero-copy). `None` until first present
+    /// or when no shared device exists (headless).
+    surface_id: Option<egui::TextureId>,
+    /// Dimensions backing `surface_id`; a change forces re-registration.
+    surface_dims: Option<(u32, u32)>,
+    /// Readback fallback: an egui texture re-uploaded each frame when no shared
+    /// wgpu device is available (eframe built without the wgpu backend). The
+    /// slow path the zero-copy registration replaces; kept for resilience.
+    fallback_tex: Option<egui::TextureHandle>,
+    /// Host-owned fixed-timestep pacing for the surface.
+    clock: super::wasm_frame::FrameClock,
+    /// Host-owned wall-clock metrics. Apps display these; they never invent FPS.
+    telemetry: super::wasm_frame::FrameTelemetry,
+    /// Wall-clock instant of the previous presented frame, for interval metrics.
+    last_present: Option<Instant>,
 }
 
 impl LiveWasmPane {
@@ -1032,7 +1056,12 @@ impl LiveWasmPane {
             pending_init: Some(snapshot),
             error: None,
             last_text: String::new(),
-            surface_tex: None,
+            surface_id: None,
+            surface_dims: None,
+            fallback_tex: None,
+            clock: super::wasm_frame::FrameClock::new(60),
+            telemetry: super::wasm_frame::FrameTelemetry::new(240),
+            last_present: None,
         }
     }
 
@@ -1178,36 +1207,58 @@ impl LiveWasmPane {
             }
         };
         self.last_text = collect_tree_text(&tree);
-        // Composite the guest's GPU render: pull the surface back and re-upload
-        // it as an egui texture (the live leg's one host-side blit).
-        if let Some((w, h)) = self.inner.surface_size() {
-            if let Some(img) = self.inner.read_surface() {
-                let upload_start = Instant::now();
-                let color = egui::ColorImage::from_rgba_unmultiplied(
-                    [w as usize, h as usize],
-                    img.as_raw(),
-                );
-                match &mut self.surface_tex {
-                    Some(tex) => tex.set(color, egui::TextureOptions::LINEAR),
-                    none => {
-                        *none = Some(ui.ctx().load_texture(
-                            format!("wasm-surface-{}", self.spawn_name),
-                            color,
-                            egui::TextureOptions::LINEAR,
-                        ));
+        // Composite the guest's GPU render zero-copy: register its surface
+        // texture into the host's shared egui renderer once and sample it live.
+        // The guest re-renders into the same texture every frame, so the
+        // registration stays valid — no readback, no per-frame upload. Headless
+        // contexts (no shared render state) draw the surface-node placeholder.
+        let present_start = Instant::now();
+        let surface_tid: Option<egui::TextureId> = match self.inner.surface_size() {
+            Some((w, h)) => match super::wasm_gpu::host_render_state() {
+                // Preferred: register the guest texture into egui's shared
+                // renderer once and sample it live. No readback, no upload.
+                Some(rs) => {
+                    if self.surface_id.is_none() || self.surface_dims != Some((w, h)) {
+                        if let Some(view) = self.inner.surface_srgb_view() {
+                            let mut renderer = rs.renderer.write();
+                            let id = renderer.register_native_texture(
+                                &rs.device,
+                                &view,
+                                wgpu::FilterMode::Linear,
+                            );
+                            if let Some(old) = self.surface_id.replace(id) {
+                                renderer.free_texture(&old);
+                            }
+                            self.surface_dims = Some((w, h));
+                        }
                     }
+                    self.surface_id
                 }
-                log::info!(
-                    "wasm gpu upload: surface={} size={}x{} bytes={} upload_us={}",
-                    self.spawn_name,
-                    w,
-                    h,
-                    img.as_raw().len(),
-                    upload_start.elapsed().as_micros()
-                );
-            }
-        }
-        let result = render_ui_tree_with_surface(ui, &tree, colors, self.surface_tex.as_ref());
+                // Fallback: no shared device, so read the surface back and
+                // re-upload it as an egui texture (the slow legacy path).
+                None => {
+                    if let Some(img) = self.inner.read_surface() {
+                        let color = egui::ColorImage::from_rgba_unmultiplied(
+                            [w as usize, h as usize],
+                            img.as_raw(),
+                        );
+                        match &mut self.fallback_tex {
+                            Some(tex) => tex.set(color, egui::TextureOptions::LINEAR),
+                            none => {
+                                *none = Some(ui.ctx().load_texture(
+                                    format!("wasm-surface-{}", self.spawn_name),
+                                    color,
+                                    egui::TextureOptions::LINEAR,
+                                ));
+                            }
+                        }
+                    }
+                    self.fallback_tex.as_ref().map(|t| t.id())
+                }
+            },
+            None => None,
+        };
+        let result = render_ui_tree_with_surface(ui, &tree, colors, surface_tid);
         match self.inner.apply_render_result(result, now) {
             Ok(true) => {
                 match self.inner.view() {
@@ -1226,10 +1277,42 @@ impl LiveWasmPane {
             }
         }
 
-        // An audio app must keep topping up its sample ring, so repaint at
-        // audio cadence regardless of timers. Otherwise schedule the next
-        // repaint for the earliest pending timer so polling apps refresh on
-        // time without busy-looping.
+        // Host-owned pacing + telemetry for surface apps: the clock advances by
+        // wall-clock time and records interval/present/dropped metrics. The
+        // guest never measures its own frame rate.
+        if self.inner.surface_size().is_some() {
+            let now_inst = Instant::now();
+            if let Some(prev) = self.last_present {
+                self.telemetry
+                    .record_frame(now_inst.saturating_duration_since(prev));
+            }
+            self.last_present = Some(now_inst);
+            let step = self.clock.advance(now_inst);
+            self.telemetry.record_dropped(step.dropped);
+            self.telemetry.record_present(present_start.elapsed());
+            // Sampled, not per-frame, so presentation logging never taxes the
+            // hot path the way the old per-frame readback/upload logs did.
+            if self.telemetry.frames().is_multiple_of(120) {
+                // `readbacks` should stay 0 on the zero-copy path; a climbing
+                // count means this pane is on the readback fallback.
+                log::info!(
+                    "wasm present: surface={} fps={:.0} p95_interval={:.1}ms p95_present={:.2}ms dropped={} readbacks={}",
+                    self.spawn_name,
+                    self.telemetry.fps(),
+                    self.telemetry.p95_interval_ms(),
+                    self.telemetry.p95_present_ms(),
+                    self.telemetry.dropped(),
+                    self.inner.surface_readbacks(),
+                );
+            }
+        }
+
+        // Schedule the next repaint from the soonest active cadence — egui
+        // coalesces multiple requests to the earliest. Surface apps pace at the
+        // host frame clock; audio tops up its ring; timers fire on deadline.
+        if self.inner.surface_size().is_some() {
+            ui.ctx().request_repaint_after(self.clock.target_interval());
+        }
         if self.inner.has_audio() {
             ui.ctx().request_repaint_after(Duration::from_millis(15));
         } else if let Some(deadline) = self.inner.next_deadline_ms() {
@@ -2085,6 +2168,48 @@ mod tests {
         assert!(
             cy_after < cy_before - 20.0,
             "left paddle moved up after 60 W frames: {cy_before} -> {cy_after}"
+        );
+        Ok(())
+    }
+
+    // ── Perf gate: presentation does zero readbacks ───────────────────────────
+    //
+    // The whole point of the zero-copy compositor is that steady presentation
+    // never reads the surface back to the CPU. This gate locks that invariant
+    // deterministically (no wall-clock timing, which was historically flaky):
+    //   1. the zero-copy sRGB view is obtainable (the compositing precondition),
+    //   2. a long run of steady ticks reads back exactly zero times,
+    //   3. the capture path is isolated — calling it reads back exactly once.
+    #[test]
+    fn perf_gate_presentation_reads_back_zero() -> wasmtime::Result<()> {
+        let mut p = pong_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0)?;
+
+        // Precondition for zero-copy compositing: the surface exposes an sRGB
+        // view egui can sample directly.
+        assert!(
+            p.surface_srgb_view().is_some(),
+            "surface must expose an sRGB view for zero-copy compositing"
+        );
+
+        // Drive 300 steady frames. The tick/present path must never read back.
+        let base = p.surface_readbacks();
+        for f in 0..300u64 {
+            p.tick(f * 16)?;
+        }
+        assert_eq!(
+            p.surface_readbacks() - base,
+            0,
+            "steady presentation must not read the surface back to the CPU"
+        );
+
+        // The capture path stays available and isolated: one call, one readback.
+        let before = p.surface_readbacks();
+        let _img = p.read_surface().expect("capture-path readback");
+        assert_eq!(
+            p.surface_readbacks() - before,
+            1,
+            "capture readback must be on-demand and isolated from the present path"
         );
         Ok(())
     }
