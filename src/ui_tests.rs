@@ -514,11 +514,11 @@ mod tests {
     }
 
     #[test]
-    fn bevy_breakout_palette_builtin_opens_wasm_pane() {
+    fn breakout_palette_builtin_opens_wasm_pane() {
         let _channel = crate::config::set_test_channel("pr-2300");
         let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
         h.step();
-        h.with_app_mut(|app| app.launch_builtin_by_id("bevy-breakout"));
+        h.with_app_mut(|app| app.launch_builtin_by_id("breakout"));
         h.step();
 
         let has_breakout = h.with_app(|app| {
@@ -526,7 +526,7 @@ mod tests {
                 matches!(
                     pane,
                     Pane::App(app_pane)
-                        if app_pane.manifest_id == "bevy-breakout"
+                        if app_pane.manifest_id == "breakout"
                             && matches!(app_pane.runtime, AppRuntime::Wasm(_))
                 )
             })

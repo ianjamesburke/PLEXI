@@ -1,8 +1,8 @@
 schema_version = "2"
-id = "com.plexi.bevy-breakout"
+id = "com.plexi.breakout"
 version = "0.1.0"
 name = "Breakout Benchmark"
-description = "Breakout-style GPU surface benchmark adapted from Bevy's showcase example."
+description = "Breakout-style GPU surface benchmark with a configurable brick count."
 
 [runtime]
 target = "wasm32-wasip2"

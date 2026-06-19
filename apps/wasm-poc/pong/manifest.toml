@@ -1,8 +1,8 @@
 schema_version = "2"
-id = "com.plexi.bevy-pong"
+id = "com.plexi.pong"
 version = "0.1.0"
 name = "Pong"
-description = "Pong — surface-node POC demonstrating Bevy rendering inside a Plexi pane."
+description = "Pong — surface-node POC demonstrating direct GPU rendering inside a Plexi pane."
 
 [runtime]
 target = "wasm32-wasip2"

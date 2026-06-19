@@ -1,6 +1,6 @@
-// Bevy Breakout benchmark - GPU render-pass POC for the Plexi v2 WASM runtime.
+// Breakout benchmark - GPU render-pass POC for the Plexi v2 WASM runtime.
 //
-// Adapted from Bevy's showcase Breakout example into Plexi's component/WASM
+// A classic Breakout layout ported into Plexi's component/WASM
 // surface runtime. It keeps the same core shape: paddle, ball, arena walls,
 // brick grid, collision response, and score. Rendering is through Plexi's GPU
 // import so the benchmark measures the host surface path with no framebuffer
@@ -211,7 +211,7 @@ impl Breakout {
             blend_alpha: true,
         };
         self.pipeline = Some(
-            gpu::create_render_pipeline("bevy-breakout", BREAKOUT_WGSL, &desc)
+            gpu::create_render_pipeline("breakout", BREAKOUT_WGSL, &desc)
                 .expect("create_render_pipeline"),
         );
         self.instance_buf = Some(
@@ -222,7 +222,7 @@ impl Breakout {
             )
             .expect("create_buffer"),
         );
-        host_log::info(&format!("bevy-breakout: GPU ready {}x{}", w, h));
+        host_log::info(&format!("breakout: GPU ready {}x{}", w, h));
     }
 
     fn reset_bricks(&mut self) {
@@ -540,7 +540,7 @@ impl Guest for Component {
         unsafe {
             GAME = Some(Breakout::new());
         }
-        host_log::info("bevy-breakout: init (GPU benchmark)");
+        host_log::info("breakout: init (GPU benchmark)");
         vec![
             Effect::SetTitle("Breakout Benchmark".to_string()),
             Effect::SetTimer(TimerEffect {

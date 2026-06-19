@@ -215,16 +215,16 @@ const BUILTIN_APPS: &[BuiltinPaletteApp] = &[
         gate: crate::release::ReleaseFeature::Assistant,
     },
     BuiltinPaletteApp {
-        id: "bevy-breakout",
+        id: "breakout",
         name: "Breakout Benchmark",
-        description: "WASM GPU surface benchmark adapted from Bevy Breakout",
+        description: "WASM GPU surface benchmark with configurable brick count",
         gate: crate::release::ReleaseFeature::WasmBenchmarks,
     },
 ];
 
-fn bevy_breakout_fixture_path() -> std::path::PathBuf {
+fn breakout_fixture_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/wasm-fixtures/bevy-breakout.wasm")
+        .join("tests/wasm-fixtures/breakout.wasm")
 }
 
 pub(crate) fn app_metadata_chips(
@@ -1280,16 +1280,16 @@ impl PlexiApp {
                     log::info!("assistant: palette launch blocked by stable release gate");
                 }
             }
-            "bevy-breakout" => {
+            "breakout" => {
                 if !crate::release::feature_enabled(crate::release::ReleaseFeature::WasmBenchmarks)
                 {
-                    log::info!("bevy-breakout: palette launch blocked by release gate");
+                    log::info!("breakout: palette launch blocked by release gate");
                     return;
                 }
-                let fixture = bevy_breakout_fixture_path();
+                let fixture = breakout_fixture_path();
                 if !fixture.is_file() {
                     log::error!(
-                        "bevy-breakout: fixture missing at {}; run `just wasm-fixtures`",
+                        "breakout: fixture missing at {}; run `just wasm-fixtures`",
                         fixture.display()
                     );
                     return;
@@ -1299,12 +1299,12 @@ impl PlexiApp {
                     .clone()
                     .or_else(dirs::home_dir)
                     .unwrap_or_else(|| std::path::PathBuf::from("."));
-                match self.open_wasm_app_pane("bevy-breakout", &fixture, workspace_root) {
+                match self.open_wasm_app_pane("breakout", &fixture, workspace_root) {
                     Ok(pane_id) => {
-                        log::info!("bevy-breakout: palette launched WASM pane {pane_id}");
+                        log::info!("breakout: palette launched WASM pane {pane_id}");
                     }
                     Err(e) => {
-                        log::error!("bevy-breakout: palette launch failed: {e}");
+                        log::error!("breakout: palette launch failed: {e}");
                     }
                 }
             }
@@ -1460,12 +1460,12 @@ mod tests {
     fn wasm_benchmark_builtin_is_palette_searchable_only_on_alpha_tier() {
         {
             let _guard = crate::config::set_test_channel("beta");
-            assert!(!builtin_palette_app_ids("breakout").contains(&"bevy-breakout"));
+            assert!(!builtin_palette_app_ids("breakout").contains(&"breakout"));
         }
         {
             let _guard = crate::config::set_test_channel("pr-2300");
-            assert!(builtin_palette_app_ids("breakout").contains(&"bevy-breakout"));
-            assert!(builtin_palette_app_ids("bevy").contains(&"bevy-breakout"));
+            assert!(builtin_palette_app_ids("breakout").contains(&"breakout"));
+            assert!(builtin_palette_app_ids("benchmark").contains(&"breakout"));
         }
     }
 

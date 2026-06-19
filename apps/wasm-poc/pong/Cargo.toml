@@ -1,10 +1,10 @@
 [package]
-name = "bevy-pong"
+name = "pong"
 version = "0.1.0"
 edition = "2021"
 
 # GPU path: pure WGSL via the gpu capability import — no pixel buffer copy,
-# no tiny-skia, no bevy dependency for the POC. The app sends draw commands
+# no tiny-skia, no game-engine dependency for the POC. The app sends draw commands
 # to the host's wgpu device; the host executes them at native GPU speed.
 # Build: cargo component build --target wasm32-wasip2 (world = plexi-gpu-app)
 
@@ -16,7 +16,7 @@ wit-bindgen = "0.41"
 bytemuck = { version = "1", features = ["derive"] }
 
 [package.metadata.component]
-package = "plexi:bevy-pong"
+package = "plexi:pong"
 
 [package.metadata.component.target]
 path = "wit"

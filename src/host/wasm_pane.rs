@@ -2097,26 +2097,26 @@ mod tests {
         Ok(())
     }
 
-    // ── G7: surface-node lifecycle + input (Bevy Pong) ────────────────────────
+    // ── G7: surface-node lifecycle + input (Pong) ────────────────────────
 
     fn pong_fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/bevy-pong.wasm")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/pong.wasm")
     }
 
     fn breakout_fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/bevy-breakout.wasm")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/breakout.wasm")
     }
 
     fn pong_pane() -> WasmPane {
         let app =
-            WasmApp::load_ephemeral_run("bevy-pong", &pong_fixture(), StateStore::ephemeral())
+            WasmApp::load_ephemeral_run("pong", &pong_fixture(), StateStore::ephemeral())
                 .expect("load pong (gpu device required)");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }
 
     fn breakout_pane() -> WasmPane {
         let app = WasmApp::load_ephemeral_run(
-            "bevy-breakout",
+            "breakout",
             &breakout_fixture(),
             StateStore::ephemeral(),
         )
@@ -2243,7 +2243,7 @@ mod tests {
         Ok(())
     }
 
-    // Breakout benchmark: the Bevy-inspired POC allocates a 900x600 surface,
+    // Breakout benchmark: the Breakout POC allocates a 900x600 surface,
     // draws the arena/brick grid/paddle/ball through the GPU import, and
     // responds to right-arrow input through the same guest update path.
     #[test]
