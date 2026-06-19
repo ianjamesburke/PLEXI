@@ -186,13 +186,46 @@ fn palette_command_matches(query: &str) -> Vec<PaletteCommand> {
         .collect()
 }
 
+#[cfg(test)]
+fn builtin_palette_app_ids(query: &str) -> Vec<&'static str> {
+    BUILTIN_APPS
+        .iter()
+        .filter(|entry| crate::release::feature_enabled(entry.gate))
+        .filter(|entry| {
+            query.is_empty()
+                || searchable_text(&[entry.name, entry.id, entry.description]).contains(query)
+        })
+        .map(|entry| entry.id)
+        .collect()
+}
+
+struct BuiltinPaletteApp {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    gate: crate::release::ReleaseFeature,
+}
+
 /// Builtin host apps surfaced in the palette alongside registry apps.
-const BUILTIN_APPS: &[(&str, &str, &str, crate::release::ReleaseFeature)] = &[(
-    "assistant",
-    "Assistant",
-    "Host-native AI chat for this workspace",
-    crate::release::ReleaseFeature::Assistant,
-)];
+const BUILTIN_APPS: &[BuiltinPaletteApp] = &[
+    BuiltinPaletteApp {
+        id: "assistant",
+        name: "Assistant",
+        description: "Host-native AI chat for this workspace",
+        gate: crate::release::ReleaseFeature::Assistant,
+    },
+    BuiltinPaletteApp {
+        id: "bevy-breakout",
+        name: "Breakout Benchmark",
+        description: "WASM GPU surface benchmark adapted from Bevy Breakout",
+        gate: crate::release::ReleaseFeature::WasmBenchmarks,
+    },
+];
+
+fn bevy_breakout_fixture_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/wasm-fixtures/bevy-breakout.wasm")
+}
 
 pub(crate) fn app_metadata_chips(
     running_in_background: bool,
@@ -697,16 +730,16 @@ impl PlexiApp {
             })
             .collect();
 
-        for &(id, name, description, gate) in BUILTIN_APPS {
-            if !crate::release::feature_enabled(gate) {
+        for app in BUILTIN_APPS {
+            if !crate::release::feature_enabled(app.gate) {
                 continue;
             }
-            let search_text = searchable_text(&[name, id, description]);
+            let search_text = searchable_text(&[app.name, app.id, app.description]);
             if query.is_empty() || search_text.contains(&query) {
                 entries.push(PaletteEntry::Builtin {
-                    id,
-                    name,
-                    description,
+                    id: app.id,
+                    name: app.name,
+                    description: app.description,
                     search_text,
                 });
             }
@@ -749,12 +782,8 @@ impl PlexiApp {
                 (None, Some(run)) => run.clone(),
                 (None, None) => "global script".to_string(),
             };
-            let search_text = searchable_text(&[
-                cmd.name.as_str(),
-                secondary.as_str(),
-                "run",
-                scope_word,
-            ]);
+            let search_text =
+                searchable_text(&[cmd.name.as_str(), secondary.as_str(), "run", scope_word]);
             if query.is_empty() || search_text.contains(&query) {
                 entries.push(PaletteEntry::UserCommand {
                     name: cmd.name.clone(),
@@ -1241,7 +1270,7 @@ impl PlexiApp {
     }
 
     /// Launch a host-native builtin palette entry by its id.
-    fn launch_builtin_by_id(&mut self, id: &str) {
+    pub(crate) fn launch_builtin_by_id(&mut self, id: &str) {
         log::info!("palette: launching builtin app '{id}'");
         match id {
             "assistant" => {
@@ -1249,6 +1278,34 @@ impl PlexiApp {
                     self.open_assistant_pane();
                 } else {
                     log::info!("assistant: palette launch blocked by stable release gate");
+                }
+            }
+            "bevy-breakout" => {
+                if !crate::release::feature_enabled(crate::release::ReleaseFeature::WasmBenchmarks)
+                {
+                    log::info!("bevy-breakout: palette launch blocked by release gate");
+                    return;
+                }
+                let fixture = bevy_breakout_fixture_path();
+                if !fixture.is_file() {
+                    log::error!(
+                        "bevy-breakout: fixture missing at {}; run `just wasm-fixtures`",
+                        fixture.display()
+                    );
+                    return;
+                }
+                let workspace_root = self
+                    .palette_workspace_root
+                    .clone()
+                    .or_else(dirs::home_dir)
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                match self.open_wasm_app_pane("bevy-breakout", &fixture, workspace_root) {
+                    Ok(pane_id) => {
+                        log::info!("bevy-breakout: palette launched WASM pane {pane_id}");
+                    }
+                    Err(e) => {
+                        log::error!("bevy-breakout: palette launch failed: {e}");
+                    }
                 }
             }
             other => log::warn!("palette: unknown builtin app id '{other}'"),
@@ -1296,9 +1353,7 @@ impl PlexiApp {
     /// true — the host never re-implements command execution.
     fn run_user_command(&mut self, name: &str, scope: crate::cli::UserCommandScope) {
         let cwd = self.palette_workspace_root.clone();
-        log::info!(
-            "palette: running user command '{name}' scope={scope:?} cwd={cwd:?}"
-        );
+        log::info!("palette: running user command '{name}' scope={scope:?} cwd={cwd:?}");
         self.windows[self.active_window].clear_zoom();
         self.ctx.memory_mut(|m| {
             if let Some(id) = m.focused() {
@@ -1398,6 +1453,19 @@ mod tests {
                 entry.search_text.to_lowercase(),
                 "palette command search text must be pre-lowercased"
             );
+        }
+    }
+
+    #[test]
+    fn wasm_benchmark_builtin_is_palette_searchable_only_on_alpha_tier() {
+        {
+            let _guard = crate::config::set_test_channel("beta");
+            assert!(!builtin_palette_app_ids("breakout").contains(&"bevy-breakout"));
+        }
+        {
+            let _guard = crate::config::set_test_channel("pr-2300");
+            assert!(builtin_palette_app_ids("breakout").contains(&"bevy-breakout"));
+            assert!(builtin_palette_app_ids("bevy").contains(&"bevy-breakout"));
         }
     }
 
