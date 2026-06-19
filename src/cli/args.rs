@@ -1377,6 +1377,37 @@ mod tests {
     }
 
     #[test]
+    fn app_open_path_accepts_trailing_launch_args() {
+        let cli = Cli::try_parse_from([
+            "plexi",
+            "app",
+            "open",
+            "tests/wasm-fixtures/breakout.wasm",
+            "--",
+            "--blocks",
+            "96",
+        ])
+        .unwrap();
+
+        let Some(Commands::App { cmd }) = cli.command else {
+            panic!("expected app command");
+        };
+        let AppCmd::Open {
+            type_id,
+            extra_args,
+            ..
+        } = cmd
+        else {
+            panic!("expected app open command");
+        };
+        assert_eq!(
+            type_id.as_deref(),
+            Some("tests/wasm-fixtures/breakout.wasm")
+        );
+        assert_eq!(extra_args, ["--blocks", "96"]);
+    }
+
+    #[test]
     fn app_init_does_not_open_by_default() {
         let cli = Cli::try_parse_from(["plexi", "app", "init", "counter"]).unwrap();
 

@@ -196,11 +196,11 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
     triggers texture allocation + a `surface-ready` event; the live pane reads
     the surface back each frame and composites it into egui (one host-side
     blit — zero-copy via egui's shared device is a future optimization).
-    bevy-pong dropped its vestigial bind group (binding-less shader; instance
-    data flows through the vertex buffer) and ships as the `bevy-pong.wasm`
+    pong dropped its vestigial bind group (binding-less shader; instance
+    data flows through the vertex buffer) and ships as the `pong.wasm`
     fixture. **G11** (`g11_gpu_render_pass_executes_on_device`): compiles WGSL,
     binds a uniform, runs a render pass <2ms, readback shows the uniform color.
-    **G7** (`g7_surface_lifecycle_and_input`): the real bevy-pong component runs
+    **G7** (`g7_surface_lifecycle_and_input`): the real pong component runs
     end to end on Metal — surface-ready -> setup_gpu -> render -> readback shows
     the game; `w` + 60 ticks moves the left paddle up (observable in the
     surface). No pixel buffer crosses the WASM boundary (no render-to-texture

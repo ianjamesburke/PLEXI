@@ -73,7 +73,12 @@ pub enum Step {
     /// Open the built-in file browser at a repo-relative (or absolute) dir.
     OpenFileBrowser { open_file_browser: String },
     /// Launch a sandboxed WASM component app from a repo-relative `.wasm` file.
-    OpenWasm { open_wasm: String },
+    /// `args` are forwarded to the guest's `init` as its argv.
+    OpenWasm {
+        open_wasm: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
     /// Press a key combo, e.g. "cmd+b", "enter", "ctrl+shift+p".
     Key { key: String },
     /// Toggle the host sidebar.
@@ -275,7 +280,13 @@ fn step_label(step: &Step) -> String {
         Step::OpenFileBrowser { open_file_browser } => {
             format!("open_file_browser {open_file_browser}")
         }
-        Step::OpenWasm { open_wasm } => format!("open_wasm {open_wasm}"),
+        Step::OpenWasm { open_wasm, args } => {
+            if args.is_empty() {
+                format!("open_wasm {open_wasm}")
+            } else {
+                format!("open_wasm {open_wasm} -- {}", args.join(" "))
+            }
+        }
         Step::Key { key } => format!("key {key}"),
         Step::Sidebar { sidebar } => format!("sidebar {sidebar}"),
         Step::SwitchContext { switch_context } => format!("switch_context {switch_context}"),
@@ -316,8 +327,10 @@ impl SceneRunner {
                 self.h.step();
                 Ok(None)
             }
-            Step::OpenWasm { open_wasm } => {
-                let pane_id = self.h.open_wasm_at(&resolve(open_wasm))?;
+            Step::OpenWasm { open_wasm, args } => {
+                let pane_id = self
+                    .h
+                    .open_wasm_at_with_args(&resolve(open_wasm), args.clone())?;
                 self.last_app_pane = Some(pane_id);
                 self.h.step();
                 Ok(Some(format!("pane {pane_id}")))

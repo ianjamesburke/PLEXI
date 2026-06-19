@@ -1,4 +1,4 @@
-// Bevy Pong — GPU render-pass POC for the Plexi v2 WASM runtime.
+// Pong — GPU render-pass POC for the Plexi v2 WASM runtime.
 //
 // Proves: gpu capability import, WGSL pipeline creation, per-frame render pass
 // submission, surface-node lifecycle, and native GPU performance from WASM.
@@ -187,7 +187,7 @@ impl Pong {
             ).expect("create_buffer")
         );
 
-        host_log::info(&format!("bevy-pong: GPU ready {}×{}", w, h));
+        host_log::info(&format!("pong: GPU ready {}×{}", w, h));
     }
 
     // ── Tick ─────────────────────────────────────────────────────────────────
@@ -339,14 +339,14 @@ static mut GAME: Option<Pong> = None;
 fn game() -> &'static mut Pong { unsafe { (*core::ptr::addr_of_mut!(GAME)).as_mut().unwrap() } }
 
 impl Guest for Component {
-    fn init(_state: StateSnapshot, _size: (f32, f32)) -> Vec<Effect> {
+    fn init(_state: StateSnapshot, _size: (f32, f32), _args: Vec<String>) -> Vec<Effect> {
         unsafe { GAME = Some(Pong::new()); }
-        host_log::info("bevy-pong: init (GPU path)");
+        host_log::info("pong: init (GPU path)");
 
         // Open a JSON pipe for score updates — a visualiser pane can connect.
         if let Ok(h) = pipes::open("pong-scores", PipeType::Json, PipeDirection::Out) {
             game().score_pipe = Some(h);
-            host_log::info("bevy-pong: score pipe open");
+            host_log::info("pong: score pipe open");
         }
 
         vec![

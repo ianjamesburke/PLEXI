@@ -6,6 +6,7 @@ pub mod file_handlers;
 mod focus;
 pub mod host_mcp;
 pub mod host_version;
+pub(crate) mod launch_spec;
 mod lifecycle;
 pub mod marketplace;
 pub(crate) mod notification_image;
@@ -716,6 +717,16 @@ impl PlexiApp {
         // healthy zero-frame idle apart from a genuine UI freeze.
         if let Ok(mut slot) = heartbeat_ctx.lock() {
             *slot = Some(cc.egui_ctx.clone());
+        }
+
+        // Register eframe's shared wgpu device so live WASM surfaces composite
+        // zero-copy (no per-frame readback). Absent only if eframe was built
+        // without the wgpu backend, in which case WASM GPU apps fall back to a
+        // dedicated device + readback path.
+        if let Some(render_state) = cc.wgpu_render_state.clone() {
+            crate::host::wasm_gpu::register_host_render_state(render_state);
+        } else {
+            log::warn!("no wgpu render state at startup; WASM surfaces use readback fallback");
         }
 
         #[cfg(target_os = "macos")]

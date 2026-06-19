@@ -1,8 +1,8 @@
 schema_version = "2"
-id = "com.plexi.bevy-pong"
+id = "com.plexi.breakout"
 version = "0.1.0"
-name = "Pong"
-description = "Pong — surface-node POC demonstrating Bevy rendering inside a Plexi pane."
+name = "Breakout Benchmark"
+description = "Breakout-style GPU surface benchmark with a configurable brick count."
 
 [runtime]
 target = "wasm32-wasip2"

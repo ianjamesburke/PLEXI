@@ -26,17 +26,17 @@ pub struct RenderResult {
     pub value_changes: Vec<(String, String)>,
 }
 
-/// Render a view tree, compositing `surface_tex` into the first surface-node
+/// Render a view tree, compositing `surface` into the first surface-node
 /// (the guest's GPU output). Pass `None` to draw a placeholder instead.
 pub fn render_ui_tree_with_surface(
     ui: &mut egui::Ui,
     tree: &UiTree,
     colors: &Colors,
-    surface_tex: Option<&egui::TextureHandle>,
+    surface: Option<egui::TextureId>,
 ) -> RenderResult {
     let index: HashMap<u32, &IndexedNode> = tree.nodes.iter().map(|n| (n.id, n)).collect();
     let mut out = RenderResult::default();
-    render_node(ui, &index, tree.root, colors, &mut out, 0, surface_tex);
+    render_node(ui, &index, tree.root, colors, &mut out, 0, surface);
     out
 }
 
@@ -59,7 +59,7 @@ fn render_node(
     colors: &Colors,
     out: &mut RenderResult,
     depth: u32,
-    surface_tex: Option<&egui::TextureHandle>,
+    surface: Option<egui::TextureId>,
 ) {
     if depth > MAX_DEPTH {
         return;
@@ -116,7 +116,7 @@ fn render_node(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = r.gap;
                 for child in &r.children {
-                    render_node(ui, index, *child, colors, out, depth + 1, surface_tex);
+                    render_node(ui, index, *child, colors, out, depth + 1, surface);
                 }
             });
         }
@@ -127,7 +127,7 @@ fn render_node(
                 |ui| {
                     ui.spacing_mut().item_spacing.y = c.gap;
                     for child in &c.children {
-                        render_node(ui, index, *child, colors, out, depth + 1, surface_tex);
+                        render_node(ui, index, *child, colors, out, depth + 1, surface);
                     }
                 },
             );
@@ -174,7 +174,7 @@ fn render_node(
                         if selected {
                             ui.visuals_mut().override_text_color = Some(colors.accent);
                         }
-                        render_node(ui, index, *item_id, colors, out, depth + 1, surface_tex);
+                        render_node(ui, index, *item_id, colors, out, depth + 1, surface);
                     })
                     .response
                     .interact(egui::Sense::click());
@@ -193,7 +193,7 @@ fn render_node(
                 egui::ScrollArea::vertical()
             };
             area.show(ui, |ui| {
-                render_node(ui, index, s.child, colors, out, depth + 1, surface_tex);
+                render_node(ui, index, s.child, colors, out, depth + 1, surface);
             });
         }
 
@@ -206,7 +206,7 @@ fn render_node(
                     bottom: p.bottom as i8,
                 })
                 .show(ui, |ui| {
-                    render_node(ui, index, p.child, colors, out, depth + 1, surface_tex);
+                    render_node(ui, index, p.child, colors, out, depth + 1, surface);
                 });
         }
 
@@ -224,10 +224,10 @@ fn render_node(
         UiNodeData::Surface(s) => {
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(s.width as f32, s.height as f32), egui::Sense::hover());
-            match surface_tex {
+            match surface {
                 Some(tex) => {
                     ui.painter().image(
-                        tex.id(),
+                        tex,
                         rect,
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                         egui::Color32::WHITE,
@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn renders_sysmon_tree_headless() -> wasmtime::Result<()> {
         let mut app = WasmApp::load_ephemeral_run("sysmon-render", &fixture(), StateStore::ephemeral())?;
-        app.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0))?;
+        app.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), &[])?;
         app.update(&InputEvent::SystemStatsResult(SystemStats {
             cpu_usage_pct: 42.0,
             memory_used_bytes: 8u64 << 30,

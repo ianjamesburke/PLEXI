@@ -604,7 +604,7 @@ interface pipes {
 interface lifecycle {
     use types.{ input-event, effect, ui-tree, state-snapshot };
 
-    init: func(state: state-snapshot, size: tuple<f32, f32>) -> list<effect>;
+    init: func(state: state-snapshot, size: tuple<f32, f32>, args: list<string>) -> list<effect>;
     update: func(event: input-event) -> list<effect>;
     // Pure — must not call any host imports. Host diffs output against prior tree.
     view: func() -> ui-tree;

@@ -1,5 +1,6 @@
 use super::pane::open_github_ephemeral;
 use super::send_to_socket;
+use crate::app::launch_spec::PaneLaunchSpec;
 use std::io;
 
 /// Poll a response file until it appears (or timeout). Shared by all spawn paths.
@@ -357,7 +358,7 @@ pub fn open_cli(
     if resolved.join("manifest.toml").exists() {
         let abs_path = resolved.to_string_lossy().to_string();
         log::info!("open:cli: detected path with manifest.toml, opening from path={abs_path}");
-        return open_app_by_path(&abs_path, layout, from_pane_id);
+        return open_app_by_path(&abs_path, args, layout, from_pane_id);
     }
 
     // A `.wasm` file is a sandboxed component app launched through the same
@@ -365,7 +366,7 @@ pub fn open_cli(
     if resolved.extension().and_then(|e| e.to_str()) == Some("wasm") && resolved.is_file() {
         let abs_path = resolved.to_string_lossy().to_string();
         log::info!("open:cli: detected .wasm component, opening from path={abs_path}");
-        return open_app_by_path(&abs_path, layout, from_pane_id);
+        return open_app_by_path(&abs_path, args, layout, from_pane_id);
     }
 
     let layout_str = layout.unwrap_or("overlay");
@@ -384,9 +385,23 @@ pub fn open_cli(
 }
 
 /// Open an app from a local directory path (replaces the old `app run` command).
-fn open_app_by_path(abs_path: &str, layout: Option<&str>, from_pane_id: Option<u64>) -> i32 {
+fn open_app_by_path(
+    abs_path: &str,
+    args: &[String],
+    layout: Option<&str>,
+    from_pane_id: Option<u64>,
+) -> i32 {
     let layout_str = layout.unwrap_or("overlay");
     let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
+    let spec = match PaneLaunchSpec::path(abs_path, args.to_vec()) {
+        Ok(spec) => spec
+            .with_layout(Some(layout_str.to_string()))
+            .with_from_pane_id(from_pane_id),
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
 
     if std::env::var("PLEXI_SOCKET").is_ok() {
         let id = uuid::Uuid::new_v4();
@@ -394,17 +409,19 @@ fn open_app_by_path(abs_path: &str, layout: Option<&str>, from_pane_id: Option<u
             .join(format!("spawn-pane-response-{id}.json"))
             .to_string_lossy()
             .into_owned();
-        let mut payload = serde_json::json!({
-            "type": "spawn_pane",
-            "type_id": "",
-            "path": abs_path,
-            "layout": layout_str,
-            "response_file": response_file,
+        let spec = spec.with_response_file(Some(response_file.clone()));
+        let payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
+            log::error!("open_app_by_path: failed to serialize spawn request: {e}");
+            serde_json::json!({
+                "type": "spawn_pane",
+                "type_id": "",
+                "path": abs_path,
+                "args": args,
+                "layout": layout_str,
+                "response_file": response_file,
+            })
         });
-        if let Some(pid) = from_pane_id {
-            payload["from_pane_id"] = serde_json::Value::Number(pid.into());
-        }
-        log::info!("open_app_by_path: sending via socket path={abs_path} layout={layout_str} from_pane_id={from_pane_id:?}");
+        log::info!("open_app_by_path: sending via socket path={abs_path} args={args:?} layout={layout_str} from_pane_id={from_pane_id:?}");
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -421,10 +438,14 @@ fn open_app_by_path(abs_path: &str, layout: Option<&str>, from_pane_id: Option<u
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let queue_payload = serde_json::json!({
-        "type_id": "",
-        "path": abs_path,
-        "layout": layout_str,
+    let queue_payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
+        log::error!("open_app_by_path: failed to serialize queued spawn request: {e}");
+        serde_json::json!({
+            "type_id": "",
+            "path": abs_path,
+            "args": args,
+            "layout": layout_str,
+        })
     });
     let file = queue_dir.join(format!("{ts}.json"));
     if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
@@ -497,6 +518,24 @@ mod open_cli_tests {
         assert_eq!(payload["type"], "spawn_pane");
         assert_eq!(payload["type_id"], "file_browser");
         assert_eq!(payload["layout"], "tab");
+    }
+
+    #[test]
+    fn wasm_path_open_forwards_launch_args() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wasm_path = dir.path().join("breakout.wasm");
+        std::fs::write(&wasm_path, b"\0asm").expect("write wasm stub");
+        let wasm_path_str = wasm_path.to_string_lossy().into_owned();
+        let args = vec!["--blocks".to_string(), "96".to_string()];
+
+        let (code, payload) =
+            capture_spawn_payload(|| open_cli(&wasm_path_str, &args, None, None, None));
+
+        assert_eq!(code, 0);
+        assert_eq!(payload["type"], "spawn_pane");
+        assert_eq!(payload["path"], wasm_path_str);
+        assert_eq!(payload["args"], serde_json::json!(["--blocks", "96"]));
     }
 }
 

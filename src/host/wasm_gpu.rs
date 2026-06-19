@@ -11,14 +11,36 @@
 // (`read_texture`) to composite it into egui (the live leg) or to assert pixels
 // (the gate leg).
 //
-// The device is dedicated/headless (mirrors `render/app_render.rs`). Zero-copy
-// display via egui's shared wgpu device + `register_native_texture` is a future
-// optimization; it does not change which gates pass.
+// Live panes run on the host's *shared* wgpu device (eframe's `RenderState`,
+// registered once at startup via [`register_host_render_state`]). That lets the
+// guest's surface texture be sampled directly by egui through
+// `register_native_texture` — no per-frame readback, no re-upload. Headless and
+// test contexts (no eframe) fall back to a dedicated device via [`GpuDevice::new`].
+// `read_texture` survives as the capture path for scene/pixel assertions only.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::host::wasm_app::bindings::plexi::platform::gpu as wit;
+
+/// The host's shared egui/wgpu render state, registered once at eframe startup.
+/// `None` in headless/test processes that never construct an eframe app.
+static HOST_RENDER_STATE: OnceLock<egui_wgpu::RenderState> = OnceLock::new();
+
+/// Register eframe's shared render state so live WASM surfaces can be composited
+/// zero-copy. Idempotent: a second registration is ignored with a warning.
+pub fn register_host_render_state(state: egui_wgpu::RenderState) {
+    if HOST_RENDER_STATE.set(state).is_err() {
+        log::warn!("host render state already registered; ignoring duplicate");
+    }
+}
+
+/// The shared render state, if the host shell registered one.
+pub fn host_render_state() -> Option<&'static egui_wgpu::RenderState> {
+    HOST_RENDER_STATE.get()
+}
 
 /// A texture the host owns, with its view, format, and dimensions.
 struct GpuTexture {
@@ -44,6 +66,10 @@ pub struct GpuDevice {
     views: HashMap<u64, wgpu::TextureView>,
     pipelines: HashMap<u64, GpuPipeline>,
     bind_groups: HashMap<u64, wgpu::BindGroup>,
+    /// Surface readbacks performed by this device. The live present path leaves
+    /// this at zero; only the capture path (`read_texture`) increments it. The
+    /// perf gate reads this per-device count so it is isolated from other tests.
+    readbacks: AtomicU64,
 }
 
 impl GpuDevice {
@@ -72,7 +98,14 @@ impl GpuDevice {
         ))
         .map_err(|e| format!("failed to acquire wgpu device: {e}"))?;
 
-        Ok(Self {
+        Ok(Self::from_shared(device, queue))
+    }
+
+    /// Build a device backed by host-provided wgpu handles. Live panes pass
+    /// eframe's shared `RenderState` device/queue so surface textures live on
+    /// the same device egui renders with, enabling zero-copy compositing.
+    pub fn from_shared(device: wgpu::Device, queue: wgpu::Queue) -> Self {
+        Self {
             device,
             queue,
             next_handle: 1,
@@ -81,7 +114,13 @@ impl GpuDevice {
             views: HashMap::new(),
             pipelines: HashMap::new(),
             bind_groups: HashMap::new(),
-        })
+            readbacks: AtomicU64::new(0),
+        }
+    }
+
+    /// Surface readbacks this device has performed (capture path only).
+    pub fn readback_count(&self) -> u64 {
+        self.readbacks.load(Ordering::Relaxed)
     }
 
     fn next(&mut self) -> u64 {
@@ -110,7 +149,9 @@ impl GpuDevice {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
+            // egui samples the surface through an sRGB view of these same bytes
+            // (see `surface_srgb_view`), reproducing the legacy readback look.
+            view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
         });
         let handle = self.next();
         self.textures.insert(
@@ -128,6 +169,7 @@ impl GpuDevice {
     /// Read a texture (typically a surface) back to a tightly-packed RGBA8
     /// image for compositing or pixel assertions. Errors for non-RGBA8 formats.
     pub fn read_texture(&self, handle: u64) -> Result<image::RgbaImage, String> {
+        self.readbacks.fetch_add(1, Ordering::Relaxed);
         let tex = self.textures.get(&handle).ok_or("unknown texture handle")?;
         if !matches!(
             tex.format,
@@ -190,7 +232,9 @@ impl GpuDevice {
         let pack_us = pack_start.elapsed().as_micros();
         drop(data);
         buf.unmap();
-        log::info!(
+        // Capture path only (scene/pixel assertions) — never the live present
+        // path — so this stays off `info` to keep hot-path logs clean.
+        log::debug!(
             "wasm gpu readback: texture={handle} size={}x{} bytes={} padded_bytes={} encode_submit_us={} map_wait_us={} pack_us={} total_us={}",
             w,
             h,
@@ -202,6 +246,19 @@ impl GpuDevice {
             total_start.elapsed().as_micros()
         );
         Ok(out)
+    }
+
+    /// An sRGB-reinterpreting view of a surface texture, for handing to egui's
+    /// renderer via `register_native_texture`. The guest renders into the base
+    /// `Rgba8Unorm` texture; egui samples the identical bytes as sRGB, matching
+    /// how the old readback→`ColorImage` path displayed them. Live present path.
+    pub fn surface_srgb_view(&self, handle: u64) -> Option<wgpu::TextureView> {
+        let tex = self.textures.get(&handle)?;
+        Some(tex.texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("plexi-surface-egui-srgb"),
+            format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+            ..Default::default()
+        }))
     }
 
     // ── WIT-facing operations ────────────────────────────────────────────────

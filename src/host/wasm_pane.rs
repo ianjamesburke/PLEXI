@@ -295,8 +295,9 @@ impl WasmPane {
         snapshot: &super::wasm_app::StateSnapshot,
         size: (f32, f32),
         now_ms: u64,
+        args: &[String],
     ) -> wasmtime::Result<()> {
-        let effects = self.app.init(snapshot, size)?;
+        let effects = self.app.init(snapshot, size, args)?;
         for e in effects {
             self.exec(e, now_ms);
         }
@@ -474,6 +475,17 @@ impl WasmPane {
     /// Surface dimensions, if allocated.
     pub fn surface_size(&self) -> Option<(u32, u32)> {
         self.surface.as_ref().map(|s| (s.width, s.height))
+    }
+
+    /// sRGB view of the live surface texture for zero-copy egui compositing.
+    pub fn surface_srgb_view(&self) -> Option<wgpu::TextureView> {
+        let s = self.surface.as_ref()?;
+        self.app.surface_srgb_view(s.handle)
+    }
+
+    /// Surface readbacks performed by this pane's device (capture path only).
+    pub fn surface_readbacks(&self) -> u64 {
+        self.app.surface_readbacks()
     }
 
     pub fn view(&mut self) -> wasmtime::Result<UiTree> {
@@ -1015,15 +1027,36 @@ pub struct LiveWasmPane {
     /// Concatenated text of the last rendered view tree. Lets the headless
     /// scene runner assert on rendered content without re-entering the guest.
     last_text: String,
-    /// egui texture holding the most recent GPU surface readback, re-uploaded
-    /// each frame so the guest's render is composited into the pane.
-    surface_tex: Option<egui::TextureHandle>,
+    /// egui texture id of the guest surface, registered once into the host's
+    /// shared renderer and sampled live (zero-copy). `None` until first present
+    /// or when no shared device exists (headless).
+    surface_id: Option<egui::TextureId>,
+    /// Dimensions backing `surface_id`; a change forces re-registration.
+    surface_dims: Option<(u32, u32)>,
+    /// Readback fallback: an egui texture re-uploaded each frame when no shared
+    /// wgpu device is available (eframe built without the wgpu backend). The
+    /// slow path the zero-copy registration replaces; kept for resilience.
+    fallback_tex: Option<egui::TextureHandle>,
+    /// Host-owned fixed-timestep pacing for the surface.
+    clock: super::wasm_frame::FrameClock,
+    /// Host-owned wall-clock metrics. Apps display these; they never invent FPS.
+    telemetry: super::wasm_frame::FrameTelemetry,
+    /// Wall-clock instant of the previous presented frame, for interval metrics.
+    last_present: Option<Instant>,
+    /// Launch arguments (`plexi app open <path> -- <args>`), forwarded to the
+    /// guest's `init` as its argv. Empty for palette/registry launches.
+    launch_args: Vec<String>,
 }
 
 impl LiveWasmPane {
     /// Build a live pane. `init` is deferred to the first `ui` call, when the
     /// egui region size is known. `snapshot` is the persisted state to restore.
-    pub fn new(inner: WasmPane, spawn_name: impl Into<String>, snapshot: StateSnapshot) -> Self {
+    pub fn new(
+        inner: WasmPane,
+        spawn_name: impl Into<String>,
+        snapshot: StateSnapshot,
+        launch_args: Vec<String>,
+    ) -> Self {
         LiveWasmPane {
             inner,
             started: Instant::now(),
@@ -1032,7 +1065,13 @@ impl LiveWasmPane {
             pending_init: Some(snapshot),
             error: None,
             last_text: String::new(),
-            surface_tex: None,
+            surface_id: None,
+            surface_dims: None,
+            fallback_tex: None,
+            clock: super::wasm_frame::FrameClock::new(60),
+            telemetry: super::wasm_frame::FrameTelemetry::new(240),
+            last_present: None,
+            launch_args,
         }
     }
 
@@ -1156,7 +1195,13 @@ impl LiveWasmPane {
         let now = self.now_ms();
 
         let stepped = if let Some(snapshot) = self.pending_init.take() {
-            self.inner.init(&snapshot, (size.x, size.y), now)
+            log::info!(
+                "app::{}: wasm init args={:?}",
+                self.spawn_name,
+                self.launch_args
+            );
+            self.inner
+                .init(&snapshot, (size.x, size.y), now, &self.launch_args)
         } else {
             self.inner.tick(now)
         };
@@ -1178,36 +1223,58 @@ impl LiveWasmPane {
             }
         };
         self.last_text = collect_tree_text(&tree);
-        // Composite the guest's GPU render: pull the surface back and re-upload
-        // it as an egui texture (the live leg's one host-side blit).
-        if let Some((w, h)) = self.inner.surface_size() {
-            if let Some(img) = self.inner.read_surface() {
-                let upload_start = Instant::now();
-                let color = egui::ColorImage::from_rgba_unmultiplied(
-                    [w as usize, h as usize],
-                    img.as_raw(),
-                );
-                match &mut self.surface_tex {
-                    Some(tex) => tex.set(color, egui::TextureOptions::LINEAR),
-                    none => {
-                        *none = Some(ui.ctx().load_texture(
-                            format!("wasm-surface-{}", self.spawn_name),
-                            color,
-                            egui::TextureOptions::LINEAR,
-                        ));
+        // Composite the guest's GPU render zero-copy: register its surface
+        // texture into the host's shared egui renderer once and sample it live.
+        // The guest re-renders into the same texture every frame, so the
+        // registration stays valid — no readback, no per-frame upload. Headless
+        // contexts (no shared render state) draw the surface-node placeholder.
+        let present_start = Instant::now();
+        let surface_tid: Option<egui::TextureId> = match self.inner.surface_size() {
+            Some((w, h)) => match super::wasm_gpu::host_render_state() {
+                // Preferred: register the guest texture into egui's shared
+                // renderer once and sample it live. No readback, no upload.
+                Some(rs) => {
+                    if self.surface_id.is_none() || self.surface_dims != Some((w, h)) {
+                        if let Some(view) = self.inner.surface_srgb_view() {
+                            let mut renderer = rs.renderer.write();
+                            let id = renderer.register_native_texture(
+                                &rs.device,
+                                &view,
+                                wgpu::FilterMode::Linear,
+                            );
+                            if let Some(old) = self.surface_id.replace(id) {
+                                renderer.free_texture(&old);
+                            }
+                            self.surface_dims = Some((w, h));
+                        }
                     }
+                    self.surface_id
                 }
-                log::info!(
-                    "wasm gpu upload: surface={} size={}x{} bytes={} upload_us={}",
-                    self.spawn_name,
-                    w,
-                    h,
-                    img.as_raw().len(),
-                    upload_start.elapsed().as_micros()
-                );
-            }
-        }
-        let result = render_ui_tree_with_surface(ui, &tree, colors, self.surface_tex.as_ref());
+                // Fallback: no shared device, so read the surface back and
+                // re-upload it as an egui texture (the slow legacy path).
+                None => {
+                    if let Some(img) = self.inner.read_surface() {
+                        let color = egui::ColorImage::from_rgba_unmultiplied(
+                            [w as usize, h as usize],
+                            img.as_raw(),
+                        );
+                        match &mut self.fallback_tex {
+                            Some(tex) => tex.set(color, egui::TextureOptions::LINEAR),
+                            none => {
+                                *none = Some(ui.ctx().load_texture(
+                                    format!("wasm-surface-{}", self.spawn_name),
+                                    color,
+                                    egui::TextureOptions::LINEAR,
+                                ));
+                            }
+                        }
+                    }
+                    self.fallback_tex.as_ref().map(|t| t.id())
+                }
+            },
+            None => None,
+        };
+        let result = render_ui_tree_with_surface(ui, &tree, colors, surface_tid);
         match self.inner.apply_render_result(result, now) {
             Ok(true) => {
                 match self.inner.view() {
@@ -1226,15 +1293,50 @@ impl LiveWasmPane {
             }
         }
 
-        // An audio app must keep topping up its sample ring, so repaint at
-        // audio cadence regardless of timers. Otherwise schedule the next
-        // repaint for the earliest pending timer so polling apps refresh on
-        // time without busy-looping.
+        // Host-owned pacing + telemetry for surface apps: the clock advances by
+        // wall-clock time and records interval/present/dropped metrics. The
+        // guest never measures its own frame rate.
+        if self.inner.surface_size().is_some() {
+            let now_inst = Instant::now();
+            if let Some(prev) = self.last_present {
+                self.telemetry
+                    .record_frame(now_inst.saturating_duration_since(prev));
+            }
+            self.last_present = Some(now_inst);
+            let step = self.clock.advance(now_inst);
+            self.telemetry.record_dropped(step.dropped);
+            self.telemetry.record_present(present_start.elapsed());
+            // Sampled, not per-frame, so presentation logging never taxes the
+            // hot path the way the old per-frame readback/upload logs did.
+            if self.telemetry.frames().is_multiple_of(120) {
+                // `readbacks` should stay 0 on the zero-copy path; a climbing
+                // count means this pane is on the readback fallback.
+                log::info!(
+                    "wasm present: surface={} fps={:.0} p95_interval={:.1}ms p95_present={:.2}ms dropped={} readbacks={}",
+                    self.spawn_name,
+                    self.telemetry.fps(),
+                    self.telemetry.p95_interval_ms(),
+                    self.telemetry.p95_present_ms(),
+                    self.telemetry.dropped(),
+                    self.inner.surface_readbacks(),
+                );
+            }
+        }
+
+        // Schedule the next repaint from the soonest active cadence — egui
+        // coalesces multiple requests to the earliest. Surface apps pace at the
+        // host frame clock; audio tops up its ring; timers fire on deadline.
+        let has_surface = self.inner.surface_size().is_some();
+        if has_surface {
+            ui.ctx().request_repaint_after(self.clock.target_interval());
+        }
         if self.inner.has_audio() {
             ui.ctx().request_repaint_after(Duration::from_millis(15));
-        } else if let Some(deadline) = self.inner.next_deadline_ms() {
-            ui.ctx()
-                .request_repaint_after(Duration::from_millis(deadline.saturating_sub(now)));
+        } else if !has_surface {
+            if let Some(deadline) = self.inner.next_deadline_ms() {
+                ui.ctx()
+                    .request_repaint_after(Duration::from_millis(deadline.saturating_sub(now)));
+            }
         }
     }
 
@@ -1603,7 +1705,7 @@ mod tests {
     #[test]
     fn init_resolves_first_stats() -> wasmtime::Result<()> {
         let mut p = pane(42.0);
-        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
         assert!(cpu_text(&p.view()?).contains("42.0%"));
         Ok(())
     }
@@ -1613,7 +1715,7 @@ mod tests {
     #[test]
     fn poll_timer_refreshes_stats() -> wasmtime::Result<()> {
         let mut p = pane(10.0);
-        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
         assert!(cpu_text(&p.view()?).contains("10.0%"));
 
         p.stats = Box::new(FakeStats { cpu: 88.0 });
@@ -1626,7 +1728,7 @@ mod tests {
     #[test]
     fn q_closes() -> wasmtime::Result<()> {
         let mut p = pane(5.0);
-        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
         assert!(!p.wants_close());
         p.push_input(key("q"));
         p.tick(10)?;
@@ -1639,7 +1741,7 @@ mod tests {
     #[test]
     fn equals_raises_poll_interval() -> wasmtime::Result<()> {
         let mut p = pane(7.0);
-        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
         for _ in 0..3 {
             p.push_input(key("="));
         }
@@ -1789,7 +1891,12 @@ mod tests {
 
     #[test]
     fn live_wasm_pane_reports_pending_capability_prompt_for_focus() {
-        let mut live = LiveWasmPane::new(pane(0.0), "wasm-test", StateSnapshot { entries: vec![] });
+        let mut live = LiveWasmPane::new(
+            pane(0.0),
+            "wasm-test",
+            StateSnapshot { entries: vec![] },
+            Vec::new(),
+        );
         assert!(!live.has_pending_capability_prompt());
         live.inner.exec(request_capability("fs:read:/tmp"), 0);
         assert!(live.has_pending_capability_prompt());
@@ -1990,7 +2097,7 @@ mod tests {
         use egui_kittest::kittest::Queryable;
 
         let mut p = counter_pane();
-        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
         assert!(tree_text(&p.view()?).contains("Count: 0"));
 
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
@@ -2014,16 +2121,26 @@ mod tests {
         Ok(())
     }
 
-    // ── G7: surface-node lifecycle + input (Bevy Pong) ────────────────────────
+    // ── G7: surface-node lifecycle + input (Pong) ────────────────────────
 
     fn pong_fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/bevy-pong.wasm")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/pong.wasm")
+    }
+
+    fn breakout_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/breakout.wasm")
     }
 
     fn pong_pane() -> WasmPane {
+        let app = WasmApp::load_ephemeral_run("pong", &pong_fixture(), StateStore::ephemeral())
+            .expect("load pong (gpu device required)");
+        WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+    }
+
+    fn breakout_pane() -> WasmPane {
         let app =
-            WasmApp::load_ephemeral_run("bevy-pong", &pong_fixture(), StateStore::ephemeral())
-                .expect("load pong (gpu device required)");
+            WasmApp::load_ephemeral_run("breakout", &breakout_fixture(), StateStore::ephemeral())
+                .expect("load breakout (gpu device required)");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }
 
@@ -2043,6 +2160,21 @@ mod tests {
         sum / count as f32
     }
 
+    fn breakout_paddle_centroid_x(img: &image::RgbaImage) -> f32 {
+        let (mut sum, mut count) = (0.0f32, 0u32);
+        for y in 520..550u32 {
+            for x in 0..img.width() {
+                let p = img.get_pixel(x, y);
+                if p[0] > 50 && p[1] > 80 && p[2] > 180 {
+                    sum += x as f32;
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 0, "no blue paddle pixels found in Breakout surface");
+        sum / count as f32
+    }
+
     // G7: the guest declares a surface-node; the host allocates the GPU texture
     // and delivers surface-ready, the guest sets up its pipeline and renders the
     // game into it. Pressing 'w' and advancing the tick timer moves the left
@@ -2051,7 +2183,7 @@ mod tests {
     #[test]
     fn g7_surface_lifecycle_and_input() -> wasmtime::Result<()> {
         let mut p = pong_pane();
-        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
 
         // Surface allocated and the guest rendered game objects into it.
         let (w, h) = p.surface_size().expect("surface allocated after init");
@@ -2085,6 +2217,130 @@ mod tests {
         assert!(
             cy_after < cy_before - 20.0,
             "left paddle moved up after 60 W frames: {cy_before} -> {cy_after}"
+        );
+        Ok(())
+    }
+
+    // ── Perf gate: presentation does zero readbacks ───────────────────────────
+    //
+    // The whole point of the zero-copy compositor is that steady presentation
+    // never reads the surface back to the CPU. This gate locks that invariant
+    // deterministically (no wall-clock timing, which was historically flaky):
+    //   1. the zero-copy sRGB view is obtainable (the compositing precondition),
+    //   2. a long run of steady ticks reads back exactly zero times,
+    //   3. the capture path is isolated — calling it reads back exactly once.
+    #[test]
+    fn perf_gate_presentation_reads_back_zero() -> wasmtime::Result<()> {
+        let mut p = pong_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
+
+        // Precondition for zero-copy compositing: the surface exposes an sRGB
+        // view egui can sample directly.
+        assert!(
+            p.surface_srgb_view().is_some(),
+            "surface must expose an sRGB view for zero-copy compositing"
+        );
+
+        // Drive 300 steady frames. The tick/present path must never read back.
+        let base = p.surface_readbacks();
+        for f in 0..300u64 {
+            p.tick(f * 16)?;
+        }
+        assert_eq!(
+            p.surface_readbacks() - base,
+            0,
+            "steady presentation must not read the surface back to the CPU"
+        );
+
+        // The capture path stays available and isolated: one call, one readback.
+        let before = p.surface_readbacks();
+        let _img = p.read_surface().expect("capture-path readback");
+        assert_eq!(
+            p.surface_readbacks() - before,
+            1,
+            "capture readback must be on-demand and isolated from the present path"
+        );
+        Ok(())
+    }
+
+    // Breakout benchmark: the Breakout POC allocates a 900x600 surface,
+    // draws the arena/brick grid/paddle/ball through the GPU import, and
+    // responds to right-arrow input through the same guest update path.
+    #[test]
+    fn breakout_surface_lifecycle_and_input() -> wasmtime::Result<()> {
+        let mut p = breakout_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (940.0, 700.0), 0, &[])?;
+
+        let (w, h) = p.surface_size().expect("surface allocated after init");
+        assert_eq!((w, h), (900, 600));
+
+        let before = p.read_surface().expect("surface readback");
+        let brick_pixels = before
+            .pixels()
+            .filter(|px| px[2] > 180 && px[0] > 90 && px[1] > 90)
+            .count();
+        assert!(
+            brick_pixels > 5_000,
+            "rendered Breakout surface should include the brick field"
+        );
+
+        let cx_before = breakout_paddle_centroid_x(&before);
+        p.push_input(key("right"));
+        let mut t = 0u64;
+        for _ in 0..45 {
+            t += 16;
+            p.tick(t)?;
+        }
+        let after = p.read_surface().expect("surface readback");
+        let cx_after = breakout_paddle_centroid_x(&after);
+
+        assert!(
+            cx_after > cx_before + 80.0,
+            "Breakout paddle moved right after held input: {cx_before} -> {cx_after}"
+        );
+        Ok(())
+    }
+
+    // Launch-arg path: `--blocks N` reaches the guest's `init` argv and resizes
+    // the brick grid (snapped to full rows of 8). The on-screen "Bricks N" count
+    // is the deterministic signal — proof the WASM argv plumbing is live
+    // end-to-end. Default is 5 rows (40); `--blocks 96` snaps to 12 rows (96);
+    // `--blocks 30` snaps to the nearest full row (4 rows -> 32).
+    #[test]
+    fn breakout_blocks_arg_resizes_grid() -> wasmtime::Result<()> {
+        let mut default_p = breakout_pane();
+        default_p.init(&StateSnapshot { entries: vec![] }, (940.0, 700.0), 0, &[])?;
+        assert!(
+            tree_text(&default_p.view()?).contains("Bricks 40"),
+            "default breakout grid is 5 rows x 8 cols = 40 bricks"
+        );
+        assert!(
+            !tree_text(&default_p.view()?).contains("FPS~"),
+            "Breakout must not display a guest-owned fake FPS counter"
+        );
+
+        let mut big_p = breakout_pane();
+        big_p.init(
+            &StateSnapshot { entries: vec![] },
+            (940.0, 700.0),
+            0,
+            &["--blocks".to_string(), "96".to_string()],
+        )?;
+        assert!(
+            tree_text(&big_p.view()?).contains("Bricks 96"),
+            "--blocks 96 -> 12 rows x 8 cols = 96 bricks"
+        );
+
+        let mut rounded_p = breakout_pane();
+        rounded_p.init(
+            &StateSnapshot { entries: vec![] },
+            (940.0, 700.0),
+            0,
+            &["--blocks".to_string(), "30".to_string()],
+        )?;
+        assert!(
+            tree_text(&rounded_p.view()?).contains("Bricks 32"),
+            "--blocks 30 snaps to the nearest full row: 4 rows x 8 cols = 32"
         );
         Ok(())
     }
@@ -2198,7 +2454,7 @@ mod tests {
     #[test]
     fn pong_paddle_stops_on_release() -> wasmtime::Result<()> {
         let mut p = pong_pane();
-        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
         let start = left_paddle_centroid_y(&p.read_surface().expect("readback"));
 
         let mut t = 0u64;

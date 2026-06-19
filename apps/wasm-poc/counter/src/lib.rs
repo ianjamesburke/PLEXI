@@ -119,7 +119,7 @@ fn app() -> &'static mut Counter {
 }
 
 impl Guest for Component {
-    fn init(_state: StateSnapshot, _size: (f32, f32)) -> Vec<Effect> {
+    fn init(_state: StateSnapshot, _size: (f32, f32), _args: Vec<String>) -> Vec<Effect> {
         host_log::info("counter: init");
         unsafe {
             APP = Some(Counter::new());

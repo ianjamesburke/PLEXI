@@ -19,7 +19,7 @@ This spec is the authoritative description of the Plexi v2 runtime. It supersede
 | UINode tree → egui rendering | G4 | ✅ shipped |
 | State persistence (primitive KV) | G5 | ✅ shipped (🟡 `cas()`/CRDT/sync **not built**) |
 | Run primitive (ephemeral `app open ./x.wasm`) | G6 | ✅ shipped |
-| Surface-node lifecycle (Bevy Pong) | G7 | ✅ shipped (🟡 per-frame **synchronous GPU readback** remains; row-copy optimization + timing instrumentation shipped in Lane A) |
+| Surface-node lifecycle (Pong) | G7 | ✅ shipped (🟡 per-frame **synchronous GPU readback** remains; row-copy optimization + timing instrumentation shipped in Lane A) |
 | Python compat | G8 | ⬜ deferred mission |
 | Cloud execution | G9 | ⬜ deferred mission |
 | HTTP 402 payment | G10 | ⬜ deferred mission |
@@ -812,7 +812,7 @@ plexi run ./apps/wasm-poc/sysmon/target/wasm32-wasip2/debug/sysmon.wasm
 
 ---
 
-### ~~G7 — Surface-node lifecycle (Bevy Pong)~~ ✅ SHIPPED
+### ~~G7 — Surface-node lifecycle (Pong)~~ ✅ SHIPPED
 
 > 🟡 Surface lifecycle + input ship. The live pane still reads the surface back each frame via a **synchronous `device.poll(Wait)` + egui re-upload**, but Lane A replaced the worst per-pixel CPU copy with row-level packing and added timing logs for encode/submit, map wait, pack, and upload. True zero-copy/shared-device compositing remains future work.
 
@@ -822,11 +822,11 @@ plexi run ./apps/wasm-poc/sysmon/target/wasm32-wasip2/debug/sysmon.wasm
 ```toml
 [[steps]]
 action = "open_wasm_app"
-path = "apps/wasm-poc/bevy-pong/target/wasm32-wasip2/debug/bevy_pong.wasm"
+path = "apps/wasm-poc/pong/target/wasm32-wasip2/debug/pong.wasm"
 
 [[steps]]
 action = "assert_log_contains"
-text = "bevy-pong: surface ready"
+text = "pong: surface ready"
 
 [[steps]]
 action = "inject_event"
@@ -838,7 +838,7 @@ count = 60    # 1 second at 60fps tick rate
 
 [[steps]]
 action = "assert_screenshot"
-snapshot = "bevy-pong-running.png"
+snapshot = "pong-running.png"
 ```
 
 **Pass condition:** Screenshot shows the ball and paddles. The left paddle has moved upward after 60 W-key frames. Host CPU stays < 5% at idle (pixel buffer path is SW; GPU path will improve this).
@@ -917,7 +917,7 @@ plexi run @mock/paid-tool
 | G4 | UINode rendering | Scene/screenshot | CI |
 | G5 | State persistence | Integration test | CI |
 | G6 | Run primitive | CLI + scene | Manual first, then CI |
-| G7 | Surface-node / Bevy Pong | Scene/screenshot | CI |
+| G7 | Surface-node / Pong | Scene/screenshot | CI |
 | G8 | Python compat | Screenshot diff | CI |
 | G9 | Cloud execution | Screenshot + latency | Manual first, then CI |
 | G10 | 402 payment | Mock registry | Manual |
@@ -930,7 +930,7 @@ G1–G5 are pure host/runtime unit and integration tests — no binary install, 
 
 > 🟡 The command interface (create-*/submit-render-pass/submit-compute-pass) ships and runs the render pass <2ms. The remaining perf issue is in the *surface composite* path, not the render pass — see G7 callout and Next Steps lane A.
 
-Reference implementation: `apps/wasm-poc/bevy-pong/` (world: `plexi-gpu-app`).
+Reference implementation: `apps/wasm-poc/pong/` (world: `plexi-gpu-app`).
 
 The `gpu` capability import exposes a WebGPU-aligned subset of wgpu to WASM modules. The app never touches pixel buffers — it issues GPU commands through the WIT interface; the host executes them against its wgpu device. The WASM/host boundary carries command descriptors, not framebuffer data.
 
@@ -969,18 +969,18 @@ Apps do not need to ship precompiled shader binaries. The WGSL source is portabl
 
 ### ~~Verification gate G11 — GPU render pass~~ ✅ SHIPPED
 
-**What it proves:** The `gpu` interface compiles, the pipeline is created from WGSL, and the render pass executes on the host's GPU. bevy-pong renders at 60fps with zero pixel buffer copies.
+**What it proves:** The `gpu` interface compiles, the pipeline is created from WGSL, and the render pass executes on the host's GPU. pong renders at 60fps with zero pixel buffer copies.
 
 **Test:** PlexiUiHarness scene:
 ```toml
 [[steps]]
 action = "open_wasm_app"
-path = "apps/wasm-poc/bevy-pong/target/wasm32-wasip2/debug/bevy_pong.wasm"
+path = "apps/wasm-poc/pong/target/wasm32-wasip2/debug/pong.wasm"
 world = "plexi-gpu-app"
 
 [[steps]]
 action = "assert_log_contains"
-text = "bevy-pong: GPU ready"
+text = "pong: GPU ready"
 
 [[steps]]
 action = "step_frames"
@@ -988,7 +988,7 @@ count = 120
 
 [[steps]]
 action = "assert_screenshot"
-snapshot = "bevy-pong-gpu.png"
+snapshot = "pong-gpu.png"
 
 [[steps]]
 action = "assert_metric"
@@ -1086,7 +1086,7 @@ assert!(samples.iter().any(|&s| s.abs() > 0.01), "should produce audio");
 
 ## ~~Typed Pipes Integration~~ ✅ SHIPPED (G13)
 
-Reference implementations: `apps/wasm-poc/bevy-pong/` (JSON score pipe) and `apps/wasm-poc/audio-synth/` (binary waveform pipe + JSON metadata pipe).
+Reference implementations: `apps/wasm-poc/pong/` (JSON score pipe) and `apps/wasm-poc/audio-synth/` (binary waveform pipe + JSON metadata pipe).
 
 The `pipes` import exposes the existing `TypedPipeRegistry` from `src/host/typed_pipes.rs` to WASM components through WIT. The underlying mechanism is unchanged — binary pipes use Unix domain sockets with u32-BE length-prefixed frames and a lock-free `ArrayQueue` ring. WASM apps open pipes through the WIT import; the host creates the socket and drain thread exactly as before.
 

@@ -10,6 +10,7 @@ pub enum ReleaseFeature {
     Assistant,
     AppWrappers,
     Marketplace,
+    WasmBenchmarks,
 }
 
 impl ReleaseFeature {
@@ -18,12 +19,14 @@ impl ReleaseFeature {
             Self::Assistant => "assistant",
             Self::AppWrappers => "app wrappers",
             Self::Marketplace => "marketplace",
+            Self::WasmBenchmarks => "WASM benchmarks",
         }
     }
 
     pub fn minimum_tier(self) -> ReleaseTier {
         match self {
             Self::Assistant | Self::AppWrappers | Self::Marketplace => ReleaseTier::Beta,
+            Self::WasmBenchmarks => ReleaseTier::Alpha,
         }
     }
 }
@@ -139,5 +142,21 @@ mod tests {
     fn alpha_tier_is_higher_than_beta_for_future_alpha_only_features() {
         assert!(ReleaseTier::Alpha > ReleaseTier::Beta);
         assert!(ReleaseTier::Beta > ReleaseTier::Stable);
+    }
+
+    #[test]
+    fn wasm_benchmarks_are_alpha_only() {
+        assert!(!feature_enabled_for_channel(
+            ReleaseFeature::WasmBenchmarks,
+            Some("beta")
+        ));
+        assert!(feature_enabled_for_channel(
+            ReleaseFeature::WasmBenchmarks,
+            Some("alpha")
+        ));
+        assert!(feature_enabled_for_channel(
+            ReleaseFeature::WasmBenchmarks,
+            Some("pr-2299")
+        ));
     }
 }

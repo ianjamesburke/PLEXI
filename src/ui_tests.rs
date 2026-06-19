@@ -34,7 +34,9 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::app::launch_spec::PaneLaunchSpec;
 use crate::app::PlexiApp;
+use crate::app_protocol::AppRequest;
 use crate::host::pane::{AppRuntime, Pane};
 use crate::spatial::tiling::PaneId;
 
@@ -176,16 +178,20 @@ impl PlexiUiHarness {
         })
     }
 
-    /// Open a sandboxed WASM component app from a `.wasm` file. The app id is
-    /// derived from the file stem. Returns the new pane id.
-    pub fn open_wasm_at(&mut self, wasm_path: &Path) -> Result<PaneId, String> {
+    /// Open a sandboxed WASM component app, forwarding `args` to the guest's
+    /// `init` as its argv (the same path as `plexi app open <path> -- <args>`).
+    pub fn open_wasm_at_with_args(
+        &mut self,
+        wasm_path: &Path,
+        args: Vec<String>,
+    ) -> Result<PaneId, String> {
         let app_id = wasm_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("wasm")
             .to_string();
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        self.with_app_mut(|app| app.open_wasm_app_pane(&app_id, wasm_path, cwd))
+        self.with_app_mut(|app| app.open_wasm_app_pane(&app_id, wasm_path, cwd, args))
     }
 
     /// Step frames until the real app process behind `pane_id` commits its
@@ -510,7 +516,117 @@ mod tests {
                 .values()
                 .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
         });
-        assert!(has_wasm, "a .wasm path launch should produce an AppRuntime::Wasm pane");
+        assert!(
+            has_wasm,
+            "a .wasm path launch should produce an AppRuntime::Wasm pane"
+        );
+    }
+
+    #[test]
+    fn spawn_pane_path_forwards_wasm_launch_args() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wasm-fixtures/breakout.wasm");
+        let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
+        h.with_app_mut(|app| {
+            app.handle_pane_ipc_request(AppRequest::SpawnPane {
+                type_id: String::new(),
+                layout: Some("split_v".to_string()),
+                args: vec!["--blocks".to_string(), "96".to_string()],
+                pipe_id: None,
+                from_pane_id: None,
+                request_id: None,
+                response_file: None,
+                ephemeral: false,
+                cwd: None,
+                no_focus: false,
+                path: Some(fixture.to_string_lossy().into_owned()),
+                workspace_root: None,
+                target_context: None,
+                name: None,
+            });
+        });
+        h.step();
+
+        let render_text = h
+            .with_app(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .values()
+                    .find_map(|pane| match pane {
+                        Pane::App(app_pane) => match &app_pane.runtime {
+                            AppRuntime::Wasm(wasm) => Some(wasm.last_render_text().to_string()),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+            })
+            .expect("spawn_pane path should create a WASM pane");
+        assert!(
+            render_text.contains("Bricks 96"),
+            "WASM argv should reach guest init through SpawnPane path launch, got: {render_text:?}"
+        );
+    }
+
+    #[test]
+    fn spawn_queue_path_forwards_wasm_launch_args() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wasm-fixtures/breakout.wasm");
+        let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
+        let queue_dir = crate::config::config_dir().join("spawn-queue");
+        std::fs::create_dir_all(&queue_dir).expect("create spawn queue");
+        let request = PaneLaunchSpec::path(fixture, vec!["--blocks".to_string(), "96".to_string()])
+            .expect("valid path launch")
+            .with_layout(Some("split_v".to_string()))
+            .to_spawn_pane_request();
+        let body = serde_json::to_string(&request).expect("serialize spawn request");
+        std::fs::write(queue_dir.join("wasm-args.json"), body).expect("write spawn queue file");
+        h.with_app_mut(|app| {
+            app.last_notify_poll = Instant::now() - Duration::from_secs(2);
+        });
+        h.step();
+
+        let render_text = h
+            .with_app(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .values()
+                    .find_map(|pane| match pane {
+                        Pane::App(app_pane) => match &app_pane.runtime {
+                            AppRuntime::Wasm(wasm) => Some(wasm.last_render_text().to_string()),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+            })
+            .expect("spawn queue should create a WASM pane");
+        assert!(
+            render_text.contains("Bricks 96"),
+            "queued WASM argv should reach guest init, got: {render_text:?}"
+        );
+    }
+
+    #[test]
+    fn breakout_palette_builtin_opens_wasm_pane() {
+        let _channel = crate::config::set_test_channel("pr-2300");
+        let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
+        h.step();
+        h.with_app_mut(|app| app.launch_builtin_by_id("breakout"));
+        h.step();
+
+        let has_breakout = h.with_app(|app| {
+            app.windows[app.active_window].panes.values().any(|pane| {
+                matches!(
+                    pane,
+                    Pane::App(app_pane)
+                        if app_pane.manifest_id == "breakout"
+                            && matches!(app_pane.runtime, AppRuntime::Wasm(_))
+                )
+            })
+        });
+        assert!(
+            has_breakout,
+            "Breakout palette builtin should open an AppRuntime::Wasm pane"
+        );
     }
 
     /// Subcontext portal whose child context holds a `text-editor` pane: the
@@ -1529,7 +1645,6 @@ mod tests {
     /// a trailing ellipsis rather than wrapping or overflowing the tab bar rect.
     #[test]
     fn tab_titles_truncate_to_single_line() {
-
         let mut h = PlexiUiHarness::new();
         h.step();
 
@@ -1569,7 +1684,8 @@ mod tests {
         });
 
         h.run_steps(2);
-        h.render().expect("tab bar with long title must render without panic");
+        h.render()
+            .expect("tab bar with long title must render without panic");
         h.save_screenshot("/tmp/plexi_tab_truncation.png")
             .expect("screenshot failed");
         println!("Screenshot saved to /tmp/plexi_tab_truncation.png");
