@@ -155,8 +155,6 @@ struct Breakout {
     last_hit_frame: u64,
 
     frames: u64,
-    ticks: u64,
-    fps_estimate: u32,
     node_id: u32,
 }
 
@@ -187,8 +185,6 @@ impl Breakout {
             brick_h: 0.0,
             last_hit_frame: 0,
             frames: 0,
-            ticks: 0,
-            fps_estimate: 60,
             node_id: 0,
         };
         game.reset_bricks();
@@ -274,11 +270,6 @@ impl Breakout {
     }
 
     fn tick(&mut self) {
-        self.ticks += 1;
-        if self.ticks % 60 == 0 {
-            self.fps_estimate = ((self.frames % 60) as u32).max(1);
-        }
-
         let direction = (self.right as i8 - self.left as i8) as f32;
         self.paddle_x = (self.paddle_x + direction * PADDLE_SPEED).clamp(
             WALL + PADDLE_PADDING + PADDLE_W / 2.0,
@@ -340,14 +331,8 @@ impl Breakout {
             if !brick.alive {
                 continue;
             }
-            let Some(side) = rect_collision(
-                self.ball,
-                BALL_SIZE / 2.0,
-                brick.x,
-                brick.y,
-                bw,
-                bh,
-            ) else {
+            let Some(side) = rect_collision(self.ball, BALL_SIZE / 2.0, brick.x, brick.y, bw, bh)
+            else {
                 continue;
             };
             brick.alive = false;
@@ -416,7 +401,13 @@ impl Breakout {
                     BRICK_COLOR
                 };
                 instances.push(Instance::from_px(
-                    brick.x, brick.y, self.brick_w, self.brick_h, cw, ch, color,
+                    brick.x,
+                    brick.y,
+                    self.brick_w,
+                    self.brick_h,
+                    cw,
+                    ch,
+                    color,
                 ));
             }
         }
@@ -479,12 +470,11 @@ impl Breakout {
             "title",
             UiNodeData::Text(TextNode {
                 text: format!(
-                    "Score {}   Lives {}   Bricks {}   GPU objects {}   FPS~{}",
+                    "Score {}   Lives {}   Bricks {}   GPU objects {}",
                     self.score,
                     self.lives,
                     alive,
-                    alive + 7,
-                    self.fps_estimate
+                    alive + 7
                 ),
                 size: Some(16.0),
                 bold: true,

@@ -1326,14 +1326,17 @@ impl LiveWasmPane {
         // Schedule the next repaint from the soonest active cadence — egui
         // coalesces multiple requests to the earliest. Surface apps pace at the
         // host frame clock; audio tops up its ring; timers fire on deadline.
-        if self.inner.surface_size().is_some() {
+        let has_surface = self.inner.surface_size().is_some();
+        if has_surface {
             ui.ctx().request_repaint_after(self.clock.target_interval());
         }
         if self.inner.has_audio() {
             ui.ctx().request_repaint_after(Duration::from_millis(15));
-        } else if let Some(deadline) = self.inner.next_deadline_ms() {
-            ui.ctx()
-                .request_repaint_after(Duration::from_millis(deadline.saturating_sub(now)));
+        } else if !has_surface {
+            if let Some(deadline) = self.inner.next_deadline_ms() {
+                ui.ctx()
+                    .request_repaint_after(Duration::from_millis(deadline.saturating_sub(now)));
+            }
         }
     }
 
@@ -2310,6 +2313,10 @@ mod tests {
         assert!(
             tree_text(&default_p.view()?).contains("Bricks 40"),
             "default breakout grid is 5 rows x 8 cols = 40 bricks"
+        );
+        assert!(
+            !tree_text(&default_p.view()?).contains("FPS~"),
+            "Breakout must not display a guest-owned fake FPS counter"
         );
 
         let mut big_p = breakout_pane();
