@@ -1195,7 +1195,13 @@ impl LiveWasmPane {
         let now = self.now_ms();
 
         let stepped = if let Some(snapshot) = self.pending_init.take() {
-            self.inner.init(&snapshot, (size.x, size.y), now, &self.launch_args)
+            log::info!(
+                "app::{}: wasm init args={:?}",
+                self.spawn_name,
+                self.launch_args
+            );
+            self.inner
+                .init(&snapshot, (size.x, size.y), now, &self.launch_args)
         } else {
             self.inner.tick(now)
         };
@@ -1882,8 +1888,12 @@ mod tests {
 
     #[test]
     fn live_wasm_pane_reports_pending_capability_prompt_for_focus() {
-        let mut live =
-            LiveWasmPane::new(pane(0.0), "wasm-test", StateSnapshot { entries: vec![] }, Vec::new());
+        let mut live = LiveWasmPane::new(
+            pane(0.0),
+            "wasm-test",
+            StateSnapshot { entries: vec![] },
+            Vec::new(),
+        );
         assert!(!live.has_pending_capability_prompt());
         live.inner.exec(request_capability("fs:read:/tmp"), 0);
         assert!(live.has_pending_capability_prompt());
@@ -2119,19 +2129,15 @@ mod tests {
     }
 
     fn pong_pane() -> WasmPane {
-        let app =
-            WasmApp::load_ephemeral_run("pong", &pong_fixture(), StateStore::ephemeral())
-                .expect("load pong (gpu device required)");
+        let app = WasmApp::load_ephemeral_run("pong", &pong_fixture(), StateStore::ephemeral())
+            .expect("load pong (gpu device required)");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }
 
     fn breakout_pane() -> WasmPane {
-        let app = WasmApp::load_ephemeral_run(
-            "breakout",
-            &breakout_fixture(),
-            StateStore::ephemeral(),
-        )
-        .expect("load breakout (gpu device required)");
+        let app =
+            WasmApp::load_ephemeral_run("breakout", &breakout_fixture(), StateStore::ephemeral())
+                .expect("load breakout (gpu device required)");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }
 

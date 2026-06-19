@@ -5,6 +5,7 @@ mod dispatch;
 mod focus;
 pub mod host_mcp;
 pub mod host_version;
+pub(crate) mod launch_spec;
 mod lifecycle;
 pub mod marketplace;
 pub(crate) mod notification_image;
