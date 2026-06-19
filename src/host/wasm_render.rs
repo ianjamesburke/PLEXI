@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn renders_sysmon_tree_headless() -> wasmtime::Result<()> {
         let mut app = WasmApp::load_ephemeral_run("sysmon-render", &fixture(), StateStore::ephemeral())?;
-        app.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0))?;
+        app.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), &[])?;
         app.update(&InputEvent::SystemStatsResult(SystemStats {
             cpu_usage_pct: 42.0,
             memory_used_bytes: 8u64 << 30,

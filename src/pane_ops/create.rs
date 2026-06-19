@@ -432,6 +432,7 @@ impl PlexiApp {
         app_id: &str,
         wasm_path: &std::path::Path,
         workspace_root: PathBuf,
+        launch_args: Vec<String>,
     ) -> Result<PaneId, String> {
         use crate::host::wasm_app::{StateStore, WasmApp};
         use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
@@ -448,6 +449,7 @@ impl PlexiApp {
             WasmPane::new(app, Box::new(SysinfoStats::new())),
             app_id,
             snapshot,
+            launch_args,
         );
         live.set_pane_id(new_id);
 
@@ -1117,7 +1119,7 @@ impl PlexiApp {
                     .unwrap_or_else(|| PathBuf::from("."))
             });
             return self
-                .open_wasm_app_pane(&app_id, &app_dir, workspace_root)
+                .open_wasm_app_pane(&app_id, &app_dir, workspace_root, args.to_vec())
                 .map(|_| ());
         }
 

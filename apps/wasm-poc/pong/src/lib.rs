@@ -339,7 +339,7 @@ static mut GAME: Option<Pong> = None;
 fn game() -> &'static mut Pong { unsafe { (*core::ptr::addr_of_mut!(GAME)).as_mut().unwrap() } }
 
 impl Guest for Component {
-    fn init(_state: StateSnapshot, _size: (f32, f32)) -> Vec<Effect> {
+    fn init(_state: StateSnapshot, _size: (f32, f32), _args: Vec<String>) -> Vec<Effect> {
         unsafe { GAME = Some(Pong::new()); }
         host_log::info("pong: init (GPU path)");
 

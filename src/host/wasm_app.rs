@@ -538,8 +538,13 @@ impl WasmApp {
         Ok(WasmApp { store, lifecycle, audio })
     }
 
-    pub fn init(&mut self, snapshot: &StateSnapshot, size: (f32, f32)) -> wasmtime::Result<Vec<Effect>> {
-        self.lifecycle.call_init(&mut self.store, snapshot, size)
+    pub fn init(
+        &mut self,
+        snapshot: &StateSnapshot,
+        size: (f32, f32),
+        args: &[String],
+    ) -> wasmtime::Result<Vec<Effect>> {
+        self.lifecycle.call_init(&mut self.store, snapshot, size, args)
     }
 
     pub fn update(&mut self, event: &InputEvent) -> wasmtime::Result<Vec<Effect>> {
@@ -729,7 +734,7 @@ mod tests {
         )?;
         assert!(app.audio.is_some(), "audio-synth must export audio-rt-process");
 
-        app.init(&empty_snapshot(), (400.0, 300.0))?;
+        app.init(&empty_snapshot(), (400.0, 300.0), &[])?;
 
         // Before play, the envelope is at zero — output is silent.
         let (silent, _) = app.audio_process_output(0, 512, 2, 48_000, 0)?;
@@ -769,7 +774,7 @@ mod tests {
             StateStore::ephemeral(),
         )?;
         // init opens the audio output stream + the waveform binary pipe (Out).
-        app.init(&empty_snapshot(), (400.0, 300.0))?;
+        app.init(&empty_snapshot(), (400.0, 300.0), &[])?;
 
         let sock = app
             .pipe_socket_path("waveform-out")
@@ -954,7 +959,7 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
             StateStore::ephemeral(),
         )?;
 
-        let startup = app.init(&empty_snapshot(), (400.0, 300.0))?;
+        let startup = app.init(&empty_snapshot(), (400.0, 300.0), &[])?;
         assert!(
             startup.iter().any(|e| matches!(e, Effect::GetSystemStats)),
             "init should request system stats"
@@ -989,7 +994,7 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
         {
             let store = StateStore::persistent(path.clone())?;
             let mut app = WasmApp::load_ephemeral_run("sysmon-g5", &fixture(), store)?;
-            app.init(&empty_snapshot(), (400.0, 300.0))?;
+            app.init(&empty_snapshot(), (400.0, 300.0), &[])?;
             // default 2000ms + 3 x 1000ms = 5000ms
             for _ in 0..3 {
                 app.update(&key("="))?;
@@ -999,7 +1004,7 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
         let store = StateStore::persistent(path.clone())?;
         let snapshot = store.snapshot();
         let mut reloaded = WasmApp::load_ephemeral_run("sysmon-g5-reload", &fixture(), store)?;
-        let startup = reloaded.init(&snapshot, (400.0, 300.0))?;
+        let startup = reloaded.init(&snapshot, (400.0, 300.0), &[])?;
         assert!(
             startup
                 .iter()

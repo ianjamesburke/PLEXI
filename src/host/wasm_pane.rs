@@ -295,8 +295,9 @@ impl WasmPane {
         snapshot: &super::wasm_app::StateSnapshot,
         size: (f32, f32),
         now_ms: u64,
+        args: &[String],
     ) -> wasmtime::Result<()> {
-        let effects = self.app.init(snapshot, size)?;
+        let effects = self.app.init(snapshot, size, args)?;
         for e in effects {
             self.exec(e, now_ms);
         }
@@ -1042,12 +1043,20 @@ pub struct LiveWasmPane {
     telemetry: super::wasm_frame::FrameTelemetry,
     /// Wall-clock instant of the previous presented frame, for interval metrics.
     last_present: Option<Instant>,
+    /// Launch arguments (`plexi app open <path> -- <args>`), forwarded to the
+    /// guest's `init` as its argv. Empty for palette/registry launches.
+    launch_args: Vec<String>,
 }
 
 impl LiveWasmPane {
     /// Build a live pane. `init` is deferred to the first `ui` call, when the
     /// egui region size is known. `snapshot` is the persisted state to restore.
-    pub fn new(inner: WasmPane, spawn_name: impl Into<String>, snapshot: StateSnapshot) -> Self {
+    pub fn new(
+        inner: WasmPane,
+        spawn_name: impl Into<String>,
+        snapshot: StateSnapshot,
+        launch_args: Vec<String>,
+    ) -> Self {
         LiveWasmPane {
             inner,
             started: Instant::now(),
@@ -1062,6 +1071,7 @@ impl LiveWasmPane {
             clock: super::wasm_frame::FrameClock::new(60),
             telemetry: super::wasm_frame::FrameTelemetry::new(240),
             last_present: None,
+            launch_args,
         }
     }
 
@@ -1185,7 +1195,7 @@ impl LiveWasmPane {
         let now = self.now_ms();
 
         let stepped = if let Some(snapshot) = self.pending_init.take() {
-            self.inner.init(&snapshot, (size.x, size.y), now)
+            self.inner.init(&snapshot, (size.x, size.y), now, &self.launch_args)
         } else {
             self.inner.tick(now)
         };
@@ -1686,7 +1696,7 @@ mod tests {
     #[test]
     fn init_resolves_first_stats() -> wasmtime::Result<()> {
         let mut p = pane(42.0);
-        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
         assert!(cpu_text(&p.view()?).contains("42.0%"));
         Ok(())
     }
@@ -1696,7 +1706,7 @@ mod tests {
     #[test]
     fn poll_timer_refreshes_stats() -> wasmtime::Result<()> {
         let mut p = pane(10.0);
-        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
         assert!(cpu_text(&p.view()?).contains("10.0%"));
 
         p.stats = Box::new(FakeStats { cpu: 88.0 });
@@ -1709,7 +1719,7 @@ mod tests {
     #[test]
     fn q_closes() -> wasmtime::Result<()> {
         let mut p = pane(5.0);
-        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
         assert!(!p.wants_close());
         p.push_input(key("q"));
         p.tick(10)?;
@@ -1722,7 +1732,7 @@ mod tests {
     #[test]
     fn equals_raises_poll_interval() -> wasmtime::Result<()> {
         let mut p = pane(7.0);
-        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
         for _ in 0..3 {
             p.push_input(key("="));
         }
@@ -1872,7 +1882,8 @@ mod tests {
 
     #[test]
     fn live_wasm_pane_reports_pending_capability_prompt_for_focus() {
-        let mut live = LiveWasmPane::new(pane(0.0), "wasm-test", StateSnapshot { entries: vec![] });
+        let mut live =
+            LiveWasmPane::new(pane(0.0), "wasm-test", StateSnapshot { entries: vec![] }, Vec::new());
         assert!(!live.has_pending_capability_prompt());
         live.inner.exec(request_capability("fs:read:/tmp"), 0);
         assert!(live.has_pending_capability_prompt());
@@ -2073,7 +2084,7 @@ mod tests {
         use egui_kittest::kittest::Queryable;
 
         let mut p = counter_pane();
-        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
         assert!(tree_text(&p.view()?).contains("Count: 0"));
 
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
@@ -2163,7 +2174,7 @@ mod tests {
     #[test]
     fn g7_surface_lifecycle_and_input() -> wasmtime::Result<()> {
         let mut p = pong_pane();
-        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
 
         // Surface allocated and the guest rendered game objects into it.
         let (w, h) = p.surface_size().expect("surface allocated after init");
@@ -2212,7 +2223,7 @@ mod tests {
     #[test]
     fn perf_gate_presentation_reads_back_zero() -> wasmtime::Result<()> {
         let mut p = pong_pane();
-        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
 
         // Precondition for zero-copy compositing: the surface exposes an sRGB
         // view egui can sample directly.
@@ -2249,7 +2260,7 @@ mod tests {
     #[test]
     fn breakout_surface_lifecycle_and_input() -> wasmtime::Result<()> {
         let mut p = breakout_pane();
-        p.init(&StateSnapshot { entries: vec![] }, (940.0, 700.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (940.0, 700.0), 0, &[])?;
 
         let (w, h) = p.surface_size().expect("surface allocated after init");
         assert_eq!((w, h), (900, 600));
@@ -2277,6 +2288,46 @@ mod tests {
         assert!(
             cx_after > cx_before + 80.0,
             "Breakout paddle moved right after held input: {cx_before} -> {cx_after}"
+        );
+        Ok(())
+    }
+
+    // Launch-arg path: `--blocks N` reaches the guest's `init` argv and resizes
+    // the brick grid (snapped to full rows of 8). The on-screen "Bricks N" count
+    // is the deterministic signal — proof the WASM argv plumbing is live
+    // end-to-end. Default is 5 rows (40); `--blocks 96` snaps to 12 rows (96);
+    // `--blocks 30` snaps to the nearest full row (4 rows -> 32).
+    #[test]
+    fn breakout_blocks_arg_resizes_grid() -> wasmtime::Result<()> {
+        let mut default_p = breakout_pane();
+        default_p.init(&StateSnapshot { entries: vec![] }, (940.0, 700.0), 0, &[])?;
+        assert!(
+            tree_text(&default_p.view()?).contains("Bricks 40"),
+            "default breakout grid is 5 rows x 8 cols = 40 bricks"
+        );
+
+        let mut big_p = breakout_pane();
+        big_p.init(
+            &StateSnapshot { entries: vec![] },
+            (940.0, 700.0),
+            0,
+            &["--blocks".to_string(), "96".to_string()],
+        )?;
+        assert!(
+            tree_text(&big_p.view()?).contains("Bricks 96"),
+            "--blocks 96 -> 12 rows x 8 cols = 96 bricks"
+        );
+
+        let mut rounded_p = breakout_pane();
+        rounded_p.init(
+            &StateSnapshot { entries: vec![] },
+            (940.0, 700.0),
+            0,
+            &["--blocks".to_string(), "30".to_string()],
+        )?;
+        assert!(
+            tree_text(&rounded_p.view()?).contains("Bricks 32"),
+            "--blocks 30 snaps to the nearest full row: 4 rows x 8 cols = 32"
         );
         Ok(())
     }
@@ -2390,7 +2441,7 @@ mod tests {
     #[test]
     fn pong_paddle_stops_on_release() -> wasmtime::Result<()> {
         let mut p = pong_pane();
-        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0)?;
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
         let start = left_paddle_centroid_y(&p.read_surface().expect("readback"));
 
         let mut t = 0u64;

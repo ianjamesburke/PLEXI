@@ -217,7 +217,7 @@ static mut SYNTH: Option<Synth> = None;
 fn synth() -> &'static mut Synth { unsafe { (*core::ptr::addr_of_mut!(SYNTH)).as_mut().unwrap() } }
 
 impl Guest for Component {
-    fn init(state: StateSnapshot, _size: (f32, f32)) -> Vec<Effect> {
+    fn init(state: StateSnapshot, _size: (f32, f32), _args: Vec<String>) -> Vec<Effect> {
         let s = Synth::new(&state);
         host_log::info(&format!(
             "audio-synth: init note={} wave={}", s.note_name(), s.wave.label()

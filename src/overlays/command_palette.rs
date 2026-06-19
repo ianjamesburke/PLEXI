@@ -1299,7 +1299,7 @@ impl PlexiApp {
                     .clone()
                     .or_else(dirs::home_dir)
                     .unwrap_or_else(|| std::path::PathBuf::from("."));
-                match self.open_wasm_app_pane("breakout", &fixture, workspace_root) {
+                match self.open_wasm_app_pane("breakout", &fixture, workspace_root, Vec::new()) {
                     Ok(pane_id) => {
                         log::info!("breakout: palette launched WASM pane {pane_id}");
                     }

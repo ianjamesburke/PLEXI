@@ -110,12 +110,22 @@ const BALL_SIZE: f32 = 18.0;
 const BALL_SPEED: f32 = 5.8;
 
 const WALL: f32 = 10.0;
-const BRICK_W: f32 = 100.0;
-const BRICK_H: f32 = 30.0;
 const BRICK_GAP: f32 = 5.0;
 const BRICK_COLS: usize = 8;
-const BRICK_ROWS: usize = 5;
-const MAX_INSTANCES: usize = 96;
+// Default row count; overridden by the `--blocks N` launch arg.
+const DEFAULT_ROWS: usize = 5;
+// Most rows allowed. Bricks shrink vertically to fill the fixed zone, so more
+// rows just means smaller bricks — never an overrun into the ball/paddle area.
+const MAX_ROWS: usize = 20;
+// Brick field zone: a fixed band across the top of the arena. Its bottom stays
+// above the ball start (CANVAS_H / 2) so the ball never spawns inside bricks,
+// regardless of row count.
+const BRICK_ZONE_TOP: f32 = 50.0;
+const BRICK_ZONE_BOTTOM: f32 = 250.0;
+const BRICK_ZONE_X_PAD: f32 = 24.0;
+// Instance buffer capacity: every brick plus the 7 chrome quads (bg, 4 walls,
+// paddle, ball). Sized for the maximum grid so the buffer never reallocates.
+const MAX_INSTANCES: usize = MAX_ROWS * BRICK_COLS + 7;
 
 const BG: [f32; 4] = [0.055, 0.067, 0.090, 1.0];
 const WALL_COLOR: [f32; 4] = [0.310, 0.337, 0.396, 1.0];
@@ -139,6 +149,9 @@ struct Breakout {
     score: u32,
     lives: u32,
     bricks: Vec<Brick>,
+    rows: usize,
+    brick_w: f32,
+    brick_h: f32,
     last_hit_frame: u64,
 
     frames: u64,
@@ -169,6 +182,9 @@ impl Breakout {
             score: 0,
             lives: 3,
             bricks: Vec::new(),
+            rows: DEFAULT_ROWS,
+            brick_w: 0.0,
+            brick_h: 0.0,
             last_hit_frame: 0,
             frames: 0,
             ticks: 0,
@@ -225,16 +241,32 @@ impl Breakout {
         host_log::info(&format!("breakout: GPU ready {}x{}", w, h));
     }
 
+    // Snap a requested block count to the nearest full row of `BRICK_COLS`,
+    // clamped to at least one row and at most `MAX_ROWS` (arena capacity).
+    // Returns the resulting block count (rows * BRICK_COLS).
+    fn set_block_count(&mut self, requested: usize) -> usize {
+        let rows = ((requested as f32) / BRICK_COLS as f32).round() as usize;
+        self.rows = rows.clamp(1, MAX_ROWS);
+        self.reset_bricks();
+        self.rows * BRICK_COLS
+    }
+
     fn reset_bricks(&mut self) {
         self.bricks.clear();
-        let total_w = BRICK_COLS as f32 * BRICK_W + (BRICK_COLS - 1) as f32 * BRICK_GAP;
-        let start_x = (CANVAS_W - total_w) * 0.5;
-        let start_y = 64.0;
-        for row in 0..BRICK_ROWS {
+        let zone_w = CANVAS_W - 2.0 * (WALL + BRICK_ZONE_X_PAD);
+        let zone_h = BRICK_ZONE_BOTTOM - BRICK_ZONE_TOP;
+        let rows = self.rows.max(1);
+        // Bricks fill the fixed zone: width split across the fixed columns,
+        // height split across the requested rows. More rows -> shorter bricks.
+        self.brick_w = (zone_w - (BRICK_COLS - 1) as f32 * BRICK_GAP) / BRICK_COLS as f32;
+        self.brick_h = (zone_h - (rows - 1) as f32 * BRICK_GAP) / rows as f32;
+        let start_x = WALL + BRICK_ZONE_X_PAD;
+        let start_y = BRICK_ZONE_TOP;
+        for row in 0..rows {
             for col in 0..BRICK_COLS {
                 self.bricks.push(Brick {
-                    x: start_x + col as f32 * (BRICK_W + BRICK_GAP),
-                    y: start_y + row as f32 * (BRICK_H + BRICK_GAP),
+                    x: start_x + col as f32 * (self.brick_w + BRICK_GAP),
+                    y: start_y + row as f32 * (self.brick_h + BRICK_GAP),
                     alive: true,
                 });
             }
@@ -303,6 +335,7 @@ impl Breakout {
     }
 
     fn collide_bricks(&mut self) {
+        let (bw, bh) = (self.brick_w, self.brick_h);
         for brick in &mut self.bricks {
             if !brick.alive {
                 continue;
@@ -312,8 +345,8 @@ impl Breakout {
                 BALL_SIZE / 2.0,
                 brick.x,
                 brick.y,
-                BRICK_W,
-                BRICK_H,
+                bw,
+                bh,
             ) else {
                 continue;
             };
@@ -383,7 +416,7 @@ impl Breakout {
                     BRICK_COLOR
                 };
                 instances.push(Instance::from_px(
-                    brick.x, brick.y, BRICK_W, BRICK_H, cw, ch, color,
+                    brick.x, brick.y, self.brick_w, self.brick_h, cw, ch, color,
                 ));
             }
         }
@@ -528,6 +561,21 @@ fn rect_collision(ball: Vec2, radius: f32, x: f32, y: f32, w: f32, h: f32) -> Op
     }
 }
 
+// Parse `--blocks N` / `--blocks=N` from the launch argv. Returns the requested
+// block count, or None if absent or unparsable.
+fn parse_blocks_arg(args: &[String]) -> Option<usize> {
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if let Some(rest) = arg.strip_prefix("--blocks=") {
+            return rest.parse().ok();
+        }
+        if arg == "--blocks" {
+            return it.next().and_then(|v| v.parse().ok());
+        }
+    }
+    None
+}
+
 struct Component;
 static mut GAME: Option<Breakout> = None;
 
@@ -536,9 +584,17 @@ fn game() -> &'static mut Breakout {
 }
 
 impl Guest for Component {
-    fn init(_state: StateSnapshot, _size: (f32, f32)) -> Vec<Effect> {
+    fn init(_state: StateSnapshot, _size: (f32, f32), args: Vec<String>) -> Vec<Effect> {
+        let mut game = Breakout::new();
+        if let Some(requested) = parse_blocks_arg(&args) {
+            let resolved = game.set_block_count(requested);
+            host_log::info(&format!(
+                "breakout: --blocks {requested} -> {resolved} blocks ({} rows x {BRICK_COLS} cols)",
+                game.rows
+            ));
+        }
         unsafe {
-            GAME = Some(Breakout::new());
+            GAME = Some(game);
         }
         host_log::info("breakout: init (GPU benchmark)");
         vec![

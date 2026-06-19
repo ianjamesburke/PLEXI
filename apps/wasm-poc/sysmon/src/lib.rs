@@ -279,7 +279,7 @@ fn app() -> &'static mut Sysmon {
 }
 
 impl Guest for Component {
-    fn init(state: StateSnapshot, _size: (f32, f32)) -> Vec<Effect> {
+    fn init(state: StateSnapshot, _size: (f32, f32), _args: Vec<String>) -> Vec<Effect> {
         let sysmon = Sysmon::new(&state);
         host_log::info(&format!("sysmon: init poll_interval_ms={}", sysmon.poll_interval_ms));
         let effects = sysmon.startup_effects();
