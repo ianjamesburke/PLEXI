@@ -1,6 +1,10 @@
 mod helpers;
 mod icons;
 
+/// Re-exported so the host open resolver (`app::canvas_bindings`) can use the
+/// same media classification the File Explorer does (#2283).
+pub(crate) use helpers::MediaKind;
+
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::list::{self, ListRow};
@@ -15,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use helpers::{
     format_modified, format_size, is_text_preview_candidate, read_text_preview, sort_entries,
-    ColumnConfig, ColumnId, ColumnModel, DirStats, Entry, MediaKind, SortDirection, TextPreview,
+    ColumnConfig, ColumnId, ColumnModel, DirStats, Entry, SortDirection, TextPreview,
 };
 use icons::paint_entry_icon;
 
@@ -426,69 +430,28 @@ impl FileBrowserApp {
     }
 
     /// Open a file the user activated (Enter, double-click, search-Enter).
-    /// GUI↔Terminal media bridge (#79): recognised video/audio extensions
-    /// route to the in-app players (`video-player` / `audio-player`) so
-    /// the user stays inside the canvas. Everything else falls through
-    /// to the system default opener (`open` on macOS, `xdg-open` on
-    /// Linux). Failures to spawn the system opener are logged and
-    /// silently swallowed — they're not user-recoverable from the file
-    /// browser.
+    /// Hands the path to the host's single open resolver via `OpenArtifact`
+    /// (`OpenInPane`): the host consults `[file_handlers]`, manifest
+    /// `file_types`, builtin media players, and finally the OS default opener
+    /// (#2283). The File Explorer no longer routes by extension itself — that
+    /// logic lives in one place so terminal-driven and Explorer-driven opens
+    /// resolve identically.
     fn open_file(&mut self, path: &Path) {
-        let kind = MediaKind::for_path(path);
-        if let Some(app_id) = kind.player_app_id() {
-            log::info!(
-                "file_browser: routing {kind:?} file '{}' to in-app player '{app_id}'",
-                path.display()
-            );
-            self.pending_cmds.push(AppCommand::SpawnApp {
-                type_id: app_id.to_string(),
-                layout: None,
-                args: vec![path.to_string_lossy().to_string()],
-            });
-            return;
-        }
         #[cfg(test)]
         {
             self.opened_files.push(path.to_path_buf());
-            return;
         }
         #[cfg(not(test))]
-        match std::process::Command::new(Self::system_opener())
-            .arg(path)
-            .status()
         {
-            Ok(status) if status.success() => {
-                log::info!("file_browser: opened '{}'", path.display())
-            }
-            Ok(status) => log::error!(
-                "file_browser: system-open failed for '{}': {status}",
+            log::info!(
+                "file_browser: requesting host open-in-pane for '{}'",
                 path.display()
-            ),
-            Err(e) => log::error!(
-                "file_browser: system-open failed to spawn for '{}': {e}",
-                path.display()
-            ),
-        }
-    }
-
-    /// Platform-appropriate fallback opener. macOS / Linux only — Windows
-    /// callers fall through to a no-op since the media-bridge surface is
-    /// unix-first for v3.4 (mirrors `canvas_bindings::shell_open`).
-    #[cfg(not(test))]
-    fn system_opener() -> &'static str {
-        #[cfg(target_os = "macos")]
-        {
-            "open"
-        }
-        #[cfg(target_os = "linux")]
-        {
-            "xdg-open"
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        {
-            // The Command will fail to spawn; the error log makes the
-            // platform gap visible without panicking.
-            "open"
+            );
+            self.pending_cmds.push(AppCommand::OpenArtifact {
+                sender_pane_id: 0, // dispatch.rs stamps the real pane_id
+                path: path.to_string_lossy().to_string(),
+                mode: crate::app_protocol::ArtifactOpenMode::OpenInPane,
+            });
         }
     }
 

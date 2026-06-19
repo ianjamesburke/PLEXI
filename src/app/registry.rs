@@ -263,7 +263,30 @@ pub struct LaunchSection {
     /// user immediate feedback that the app started. Omit to launch silently.
     #[serde(default)]
     pub startup_message: Option<String>,
+    /// The app's natural launch placement — the spatial disposition the host
+    /// uses when a caller does not specify one (#2283). Uses the host's layout-
+    /// hint vocabulary verbatim: `overlay` (default), `split_right`/`split_h`,
+    /// `split_below`/`split_v`, `split_left`, `split_above`, `tab`,
+    /// `new_window`. `None` = host default (`overlay`). Validated at query time
+    /// by [`AppRegistry::placement_for`]; an unrecognized value is ignored with
+    /// a warning so a typo cannot wedge a launch.
+    #[serde(default)]
+    pub placement: Option<String>,
 }
+
+/// The host layout-hint vocabulary an app's `[launch] placement` may declare.
+/// Kept in one place so the manifest validator and the launch path agree.
+pub const VALID_PLACEMENTS: &[&str] = &[
+    "overlay",
+    "split_h",
+    "split_right",
+    "split_v",
+    "split_below",
+    "split_left",
+    "split_above",
+    "tab",
+    "new_window",
+];
 
 impl AppCapabilities {
     /// Convert manifest-declared capabilities to runtime permissions.
@@ -535,6 +558,32 @@ impl AppRegistry {
         self.apps
             .get(app_id)
             .and_then(|a| a.launch.join_group.clone())
+    }
+
+    /// The app's natural launch placement (`[launch].placement`), validated
+    /// against [`VALID_PLACEMENTS`]. Returns `None` when unset, unknown, or the
+    /// app is not installed — callers then fall back to the host default
+    /// (`overlay`). An unrecognized value is logged so a manifest typo is
+    /// visible rather than silently dropped (#2283).
+    pub fn placement_for(&self, app_id: &str) -> Option<String> {
+        let placement = self.apps.get(app_id)?.launch.placement.clone()?;
+        if VALID_PLACEMENTS.contains(&placement.as_str()) {
+            Some(placement)
+        } else {
+            log::warn!(
+                "AppRegistry: app '{app_id}' declares unknown [launch] placement \
+                 '{placement}' — ignoring; valid: {VALID_PLACEMENTS:?}"
+            );
+            None
+        }
+    }
+
+    /// The registry id of the app that declares `[capabilities].file_types`
+    /// for this extension, if any. `ext` is matched lowercase, without a
+    /// leading dot. Backs resolution tier (b) of the File Explorer open path
+    /// (#2283).
+    pub fn handler_for_ext(&self, ext: &str) -> Option<&str> {
+        self.extension_map.get(&ext.to_lowercase()).map(|s| s.as_str())
     }
 
     /// Returns true when the app's manifest sets `[app] watch = true`.

@@ -474,6 +474,16 @@ pub struct PlexiConfig {
     pub agents: Option<AgentsConfig>,
     pub cli: Option<CliConfig>,
     pub marketplace: Option<MarketplaceConfig>,
+    /// Per-extension file-open handlers (`[file_handlers]`). Keys are bare,
+    /// lowercase extensions (`md`, not `.md`); values are `kind:value` handler
+    /// specs resolved by [`crate::app::file_handlers::FileHandler`]:
+    ///   `app:<id>` — open in a Plexi app by registry id
+    ///   `os`       — hand to the OS default opener (`open` / `xdg-open`)
+    ///   `cmd:<command>` — reserved; falls back to OS open until wired
+    /// A user entry overrides any manifest-declared `file_types` association.
+    /// Unmapped extensions fall through to manifest associations, then builtin
+    /// media players, then the OS default.
+    pub file_handlers: Option<std::collections::HashMap<String, String>>,
 }
 
 /// CLI behavior configuration.

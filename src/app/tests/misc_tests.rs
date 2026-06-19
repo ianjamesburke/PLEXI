@@ -86,3 +86,77 @@ fn wake_request_is_noop_on_host() {
     let panes_after: usize = h.app.windows.iter().map(|w| w.panes.len()).sum();
     assert_eq!(panes_after, panes_before, "wake must not touch panes");
 }
+
+/// #2283: a `[file_handlers]` entry routes a matching extension into the named
+/// Plexi app via the host open resolver (OpenInPane), rather than falling
+/// through to the OS opener. Proves resolution tier (a) + the launch path.
+#[test]
+fn file_handler_config_routes_extension_to_app() {
+    let ctx = egui::Context::default();
+    let ft = crate::platform::logging::new_frame_tick();
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
+
+    // Map .md -> the builtin text-editor.
+    let mut handlers = std::collections::HashMap::new();
+    handlers.insert("md".to_string(), "app:text-editor".to_string());
+    app.config.file_handlers = Some(handlers);
+
+    let panes_before: usize = app.windows.iter().map(|w| w.panes.len()).sum();
+
+    // sender_pane_id = 0 -> no pane -> workspace path check is bypassed
+    // (trusted host path), so a temp .md path opens cleanly.
+    let path = std::env::temp_dir()
+        .join("note.md")
+        .to_string_lossy()
+        .to_string();
+    app.dispatch_open_artifact(0, path, crate::app_protocol::ArtifactOpenMode::OpenInPane);
+
+    let panes_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
+    assert_eq!(
+        panes_after,
+        panes_before + 1,
+        "the md handler should open exactly one new in-Plexi pane"
+    );
+
+    let opened_text_editor = app.windows.iter().any(|w| {
+        w.panes.values().any(|p| {
+            p.as_app()
+                .map(|a| a.runtime.type_id() == "text-editor")
+                .unwrap_or(false)
+        })
+    });
+    assert!(
+        opened_text_editor,
+        "the file_handler-routed pane should be the text-editor app"
+    );
+}
+
+/// The file browser must open at the context root when one is set, not the
+/// focused pane's CWD. Mirrors `resolve_new_pane_cwd`'s precedence
+/// (context.root → focused cwd → home) that every other new-pane path uses.
+#[test]
+fn file_browser_opens_at_context_root() {
+    let ctx = egui::Context::default();
+    let ft = crate::platform::logging::new_frame_tick();
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
+
+    let root = std::env::temp_dir().join("plexi-fb-root-test");
+    std::fs::create_dir_all(&root).expect("mkdir root");
+    app.set_context_root(root.clone(), None);
+
+    app.open_file_browser();
+
+    let fb_root = app.windows.iter().find_map(|w| {
+        w.panes.values().find_map(|p| {
+            p.as_app()
+                .filter(|a| a.runtime.type_id() == "file_browser")
+                .map(|a| a.workspace_root.clone())
+        })
+    });
+
+    assert_eq!(
+        fb_root.as_deref(),
+        Some(root.as_path()),
+        "file browser should open at the context root, not the focused pane CWD"
+    );
+}

@@ -2,6 +2,7 @@ pub mod account;
 pub mod app_trait;
 mod canvas_bindings;
 mod dispatch;
+pub mod file_handlers;
 mod focus;
 pub mod host_mcp;
 pub mod host_version;
@@ -2145,7 +2146,16 @@ impl eframe::App for PlexiApp {
                         });
 
                     let new_pane_id = self.host.next_pane_id();
-                    let _ = self.launch_app_by_id_with_layout(&type_id, layout, &args, None);
+                    if let Err(e) =
+                        self.launch_app_by_id_with_layout(&type_id, layout, &args, None)
+                    {
+                        // Fail loud: never swallow a launch failure or confirm
+                        // a spawn that did not happen (#2283).
+                        log::warn!(
+                            "SpawnApp: launch of '{type_id}' failed — {e}; not confirming AppSpawned"
+                        );
+                        continue;
+                    }
 
                     // Confirm back to the requesting app.
                     if let Some(req_pane_id) = requesting_pane_id {

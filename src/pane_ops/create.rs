@@ -934,22 +934,19 @@ impl PlexiApp {
             }
         }
 
-        let cwd = {
-            let ctx = &self.windows[self.active_window];
-            ctx.focused_pane
-                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
-                .filter(|p| {
-                    if p == &PathBuf::from("/") {
-                        log::debug!(
-                            "open_file_browser: CWD is /, falling back to home_dir (GUI launch)"
-                        );
-                        false
-                    } else {
-                        true
-                    }
-                })
-                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
-        };
+        // Resolve via the canonical new-pane resolver so the file browser
+        // honors the context root when set (context.root → focused-pane cwd →
+        // home), matching every other new-pane path. A GUI launch whose focused
+        // cwd is "/" still falls back to home.
+        let cwd = self
+            .resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+            .filter(|p| p != &PathBuf::from("/"))
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        log::info!(
+            "open_file_browser: cwd={} context_root={:?}",
+            cwd.display(),
+            self.router.active().root
+        );
 
         let app: Box<dyn App> = self
             .registry
@@ -1009,6 +1006,12 @@ impl PlexiApp {
             );
             return Ok(());
         }
+
+        // When the caller does not specify a placement, fall back to the app's
+        // manifest-declared `[launch] placement` before the host default
+        // (`overlay`). One resolution point so every downstream hint inherits
+        // it (#2283). Builtins are not in the registry → None → `overlay`.
+        let layout = layout.or_else(|| self.registry.placement_for(id));
 
         let cwd_explicit = cwd_override.is_some();
         let cwd = cwd_override

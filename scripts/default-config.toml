@@ -66,6 +66,19 @@ high   = "claude --dangerously-skip-permissions '{cmd}'"
 [cli]
 tips = true
 
+# [file_handlers]
+# Choose which app opens each file type from the File Explorer (Enter / double-
+# click). Keys are bare, lowercase extensions; values are `kind:value` specs:
+#   "app:<id>"      open in a Plexi app by its registry id (e.g. text-editor)
+#   "os"            hand to the OS default opener (open / xdg-open)
+#   "cmd:<command>" reserved for a future release; falls back to "os" for now
+# A handler here overrides an app's own file_types association. Unmapped types
+# fall through to manifest associations, then builtin media players, then the OS.
+# md   = "app:text-editor"
+# txt  = "app:text-editor"
+# json = "app:text-editor"
+# py   = "os"
+
 # [marketplace]
 # Hosted app catalog + CDN. Defaults point at the official plexiapp.com registry,
 # so leave these unset to use it. Override only to point at a private registry.
