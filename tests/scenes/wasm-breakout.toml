@@ -1,0 +1,20 @@
+# Breakout benchmark — opens the Bevy-inspired WASM GPU surface POC and
+# captures the status row plus live surface. Run with:
+# `just scene tests/scenes/wasm-breakout.toml`.
+size = [1100.0, 760.0]
+suite = true
+
+[[steps]]
+open_wasm = "tests/wasm-fixtures/bevy-breakout.wasm"
+
+[[steps]]
+run_steps = 6
+
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "Bricks" }
+
+[[steps]]
+assert = { tree_contains = "GPU objects" }
+
+[[steps]]
+shot = "wasm-breakout.png"

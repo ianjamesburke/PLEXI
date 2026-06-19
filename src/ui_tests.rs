@@ -513,6 +513,30 @@ mod tests {
         assert!(has_wasm, "a .wasm path launch should produce an AppRuntime::Wasm pane");
     }
 
+    #[test]
+    fn bevy_breakout_palette_builtin_opens_wasm_pane() {
+        let _channel = crate::config::set_test_channel("pr-2300");
+        let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
+        h.step();
+        h.with_app_mut(|app| app.launch_builtin_by_id("bevy-breakout"));
+        h.step();
+
+        let has_breakout = h.with_app(|app| {
+            app.windows[app.active_window].panes.values().any(|pane| {
+                matches!(
+                    pane,
+                    Pane::App(app_pane)
+                        if app_pane.manifest_id == "bevy-breakout"
+                            && matches!(app_pane.runtime, AppRuntime::Wasm(_))
+                )
+            })
+        });
+        assert!(
+            has_breakout,
+            "Breakout palette builtin should open an AppRuntime::Wasm pane"
+        );
+    }
+
     /// Subcontext portal whose child context holds a `text-editor` pane: the
     /// minimap must render the document glyph (accent text rules, folded corner)
     /// instead of the generic app grid, with a status pip sized to match the

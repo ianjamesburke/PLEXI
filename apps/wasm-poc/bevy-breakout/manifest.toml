@@ -1,0 +1,17 @@
+schema_version = "2"
+id = "com.plexi.bevy-breakout"
+version = "0.1.0"
+name = "Breakout Benchmark"
+description = "Breakout-style GPU surface benchmark adapted from Bevy's showcase example."
+
+[runtime]
+target = "wasm32-wasip2"
+execution = "local"
+python_compat = false
+
+[capabilities]
+required = []
+optional = []
+
+[payment]
+model = "free"

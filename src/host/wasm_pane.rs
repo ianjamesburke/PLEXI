@@ -2103,10 +2103,24 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/bevy-pong.wasm")
     }
 
+    fn breakout_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/bevy-breakout.wasm")
+    }
+
     fn pong_pane() -> WasmPane {
         let app =
             WasmApp::load_ephemeral_run("bevy-pong", &pong_fixture(), StateStore::ephemeral())
                 .expect("load pong (gpu device required)");
+        WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+    }
+
+    fn breakout_pane() -> WasmPane {
+        let app = WasmApp::load_ephemeral_run(
+            "bevy-breakout",
+            &breakout_fixture(),
+            StateStore::ephemeral(),
+        )
+        .expect("load breakout (gpu device required)");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }
 
@@ -2123,6 +2137,21 @@ mod tests {
             }
         }
         assert!(count > 0, "no white paddle pixels found in left column");
+        sum / count as f32
+    }
+
+    fn breakout_paddle_centroid_x(img: &image::RgbaImage) -> f32 {
+        let (mut sum, mut count) = (0.0f32, 0u32);
+        for y in 520..550u32 {
+            for x in 0..img.width() {
+                let p = img.get_pixel(x, y);
+                if p[0] > 50 && p[1] > 80 && p[2] > 180 {
+                    sum += x as f32;
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 0, "no blue paddle pixels found in Breakout surface");
         sum / count as f32
     }
 
@@ -2210,6 +2239,44 @@ mod tests {
             p.surface_readbacks() - before,
             1,
             "capture readback must be on-demand and isolated from the present path"
+        );
+        Ok(())
+    }
+
+    // Breakout benchmark: the Bevy-inspired POC allocates a 900x600 surface,
+    // draws the arena/brick grid/paddle/ball through the GPU import, and
+    // responds to right-arrow input through the same guest update path.
+    #[test]
+    fn breakout_surface_lifecycle_and_input() -> wasmtime::Result<()> {
+        let mut p = breakout_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (940.0, 700.0), 0)?;
+
+        let (w, h) = p.surface_size().expect("surface allocated after init");
+        assert_eq!((w, h), (900, 600));
+
+        let before = p.read_surface().expect("surface readback");
+        let brick_pixels = before
+            .pixels()
+            .filter(|px| px[2] > 180 && px[0] > 90 && px[1] > 90)
+            .count();
+        assert!(
+            brick_pixels > 5_000,
+            "rendered Breakout surface should include the brick field"
+        );
+
+        let cx_before = breakout_paddle_centroid_x(&before);
+        p.push_input(key("right"));
+        let mut t = 0u64;
+        for _ in 0..45 {
+            t += 16;
+            p.tick(t)?;
+        }
+        let after = p.read_surface().expect("surface readback");
+        let cx_after = breakout_paddle_centroid_x(&after);
+
+        assert!(
+            cx_after > cx_before + 80.0,
+            "Breakout paddle moved right after held input: {cx_before} -> {cx_after}"
         );
         Ok(())
     }

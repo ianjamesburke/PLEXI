@@ -1,0 +1,24 @@
+[package]
+name = "bevy-breakout"
+version = "0.1.0"
+edition = "2021"
+
+# GPU path: pure WGSL via the gpu capability import. This is a Breakout-style
+# benchmark adapted from Bevy's showcase example into Plexi's WASM surface
+# runtime, so it exercises the same host GPU path as a real app pane.
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.41"
+bytemuck = { version = "1", features = ["derive"] }
+
+[package.metadata.component]
+package = "plexi:bevy-breakout"
+
+[package.metadata.component.target]
+path = "wit"
+world = "plexi-gpu-app"
+
+[workspace]
