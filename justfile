@@ -85,6 +85,28 @@ check-cli-docs:
     fi
     echo "CLI docs are up to date."
 
+# Regenerate the config reference docs from the serde config structs.
+# Run after any change to src/config/mod.rs or scripts/default-config.toml.
+gen-config-docs:
+    cargo run -p gen_config_docs > website/src/content/docs/config.md
+    @echo "Config reference regenerated."
+    git add website/src/content/docs/config.md
+    git diff --cached --quiet || git commit -m "chore(website): regenerate config reference docs"
+    git push
+
+# Verify the committed config docs are up to date with the current Rust source.
+# Fails if website/src/content/docs/config.md is stale.
+check-config-docs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run -p gen_config_docs > /tmp/plexi_check_config.md
+    if ! diff -q website/src/content/docs/config.md /tmp/plexi_check_config.md > /dev/null; then
+        echo "ERROR: website/src/content/docs/config.md is stale. Run 'just gen-config-docs'."
+        diff website/src/content/docs/config.md /tmp/plexi_check_config.md || true
+        exit 1
+    fi
+    echo "Config docs are up to date."
+
 # Verify the committed schema is up to date with the current Rust source.
 # Fails if sdk/protocol/pgap.schema.json is stale.
 check-schema:
@@ -102,8 +124,8 @@ check-schema:
 check-docs-coverage:
     bash tools/check_docs_coverage.sh
 
-# Run all docs checks (CLI freshness + command coverage).
-check-docs: check-cli-docs check-docs-coverage
+# Run all docs checks (CLI freshness + config freshness + command coverage).
+check-docs: check-cli-docs check-config-docs check-docs-coverage
 
 run:
     cargo run --release
@@ -111,18 +133,24 @@ run:
 # Regenerate generated artifacts only when their source files changed.
 # When adding a new generated artifact, add a stale check here.
 #
-# Source file                → Generated artifact(s)               → Generator / Checker
-# Cargo.toml                 → website/src/content/docs/cli.md     → cargo run -p gen_cli_docs
-# src/cli/args.rs            → website/src/content/docs/cli.md     → cargo run -p gen_cli_docs
-# src/app_protocol.rs        → sdk/protocol/pgap.schema.json       → cargo run -p gen_schema
-#                            → sdk/python/plexi_sdk/_protocol.py   → python3 tools/gen_protocol_py.py
-# website/src/content/docs/  → (coverage assertion)                → tools/check_docs_coverage.sh
+# Source file                        → Generated artifact(s)                     → Generator / Checker
+# Cargo.toml                         → website/src/content/docs/cli.md           → cargo run -p gen_cli_docs
+# src/cli/args.rs                    → website/src/content/docs/cli.md           → cargo run -p gen_cli_docs
+# src/config/mod.rs                  → website/src/content/docs/config.md        → cargo run -p gen_config_docs
+# scripts/default-config.toml        → website/src/content/docs/config.md        → cargo run -p gen_config_docs
+# src/app_protocol.rs                → sdk/protocol/pgap.schema.json             → cargo run -p gen_schema
+#                                    → sdk/python/plexi_sdk/_protocol.py         → python3 tools/gen_protocol_py.py
+# website/src/content/docs/          → (coverage assertion)                      → tools/check_docs_coverage.sh
 regen-if-stale:
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ Cargo.toml -nt website/src/content/docs/cli.md || src/cli/args.rs -nt website/src/content/docs/cli.md ]]; then
         echo "CLI docs source changed — regenerating CLI docs..."
         cargo run -p gen_cli_docs > website/src/content/docs/cli.md
+    fi
+    if [[ src/config/mod.rs -nt website/src/content/docs/config.md || scripts/default-config.toml -nt website/src/content/docs/config.md ]]; then
+        echo "Config source changed — regenerating config docs..."
+        cargo run -p gen_config_docs > website/src/content/docs/config.md
     fi
     if [[ src/app_protocol.rs -nt sdk/protocol/pgap.schema.json ]]; then
         echo "app_protocol.rs changed — regenerating schema..."
