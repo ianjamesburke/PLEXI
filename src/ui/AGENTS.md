@@ -2,7 +2,7 @@
 
 **Read before editing anything under `src/ui/`:** this file, plus the root `AGENTS.md`.
 
-For new host-level UI chrome work, read [`docs/prm/host-ui-kit.md`](../../docs/prm/host-ui-kit.md) first.
+For new host-level UI chrome work, read [) first.
 
 ## Primitives (use these, don't re-roll)
 

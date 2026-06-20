@@ -212,9 +212,9 @@ Logging plan:
 
 If the task or linked issue names exact files/functions, verify them cheaply with `rg`/`git ls-files` before broad discovery. If they do not, do the narrowest search that identifies the owning code.
 
-For File Explorer work, read `docs/prm/host-ui-kit.md` first, then `docs/prm/file-explorer-overhaul.md`.
+For File Explorer work, read `src/ui/AGENTS.md` first, then `.stint/sprints/s1.md`.
 
-For app-framework, packaging, marketplace, MCPUI, WASM/WASI, or Bevy work, read `docs/prm/app-framework-marketplace.md` first.
+For app-framework, packaging, marketplace, MCPUI, WASM/WASI, or Bevy work, read `docs/app-framework-marketplace.md` first.
 
 For architectural choices, read `NORTH_STAR.md` and `GLOSSARY.md`.
 

@@ -8,7 +8,7 @@ Before editing any file, read the `AGENTS.md` in its directory if one exists. Ch
 
 - **What shipped** → `git log --oneline -20`
 - **Product direction** → `NORTH_STAR.md`
-- **Feature specs** → `docs/prm/*.md` (PRMs are the planning source of truth)
+- **Feature specs** → `docs/*.md` (active PRMs; see `docs/AGENTS.md` for lifecycle rules)
 - **Sprint graph** → `.stint/` (`stint next`, `stint status`)
 - **Implementation tickets** → GitHub issues
 
@@ -36,7 +36,7 @@ When work begins: `stint start <task-id>`. When done: `stint done <task-id>`. Us
 | `apps/` | App rules, Core 9 policy, design philosophy |
 | `scripts/` | Build channels, branch workflow, releases, install, RELEASE_CHANNELS.md |
 | `registry/` | CLI descriptor guide, embedded descriptor registry |
-| `docs/` | Forward-looking PRMs only |
+| `docs/` | Active PRMs; lifecycle rules in `docs/AGENTS.md` |
 
 ## Branches
 
@@ -101,6 +101,8 @@ Document failures in the issue **body** under `## Prior Attempts`, not in commen
 ## Documentation Rule
 
 Every fact lives in exactly one place. Other files reference it; they never restate it. If you find yourself writing something that exists elsewhere, replace it with a pointer. Inline command help (justfile recipe comments) is exempt — it serves `just --list`, not agent orientation.
+
+**One progress tracker per unit of work.** Work lives in a stint task or in a GitHub issue — never in both, never tracked inside a spec doc. A PRM describes destination state; it never tracks what is done. No checklists, no strikethrough, no status tables inside PRMs. The stint task is the single delete trigger for its PRM.
 
 ## Traps
 

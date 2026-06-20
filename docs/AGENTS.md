@@ -1,22 +1,25 @@
-# docs — Agent Contract
+# docs - Agent Contract
 
-This directory contains only forward-looking product requirements (PRMs). Present-tense reference docs live next to the code they describe, in the owning directory's `AGENTS.md`.
+This directory contains active PRMs (product/architecture specs). Present-tense reference docs live next to the code they describe, in the owning directory's AGENTS.md.
 
-## Child DOX Index
+## PRM Rules
 
-- `prm/` — Product Requirements Documents. Specs for major features. The planning source of truth. PRMs stay as historical record after their features ship; the corresponding code-level docs get updated to reflect the new reality.
+A PRM is the destination spec for a feature. It describes what to build and why. It is not a progress tracker.
 
-## Where did the docs go?
+**One source of truth for progress: stint tasks.** Every PRM must have a `Stint:` line at the top naming the task ID(s) that own its execution. Stint tasks are the only place work state lives. Never track progress inside a PRM (no checklists, no strikethrough, no status tables).
 
-| Old path | New home |
-|---|---|
-| `docs/TESTING.md` | `src/testing/TESTING.md` |
-| `docs/CONFIG.md` | `src/config/CONFIG.md` |
-| `docs/SECURITY_MODEL.md` | `src/process_app/SECURITY_MODEL.md` |
-| `docs/security/shell-execution-inventory.md` | `src/process_app/shell-execution-inventory.md` |
-| `docs/TERMINAL_BINDINGS_CONTRACT.md` | `src/process_app/TERMINAL_BINDINGS_CONTRACT.md` |
-| `docs/RELEASE_CHANNELS.md` | `scripts/RELEASE_CHANNELS.md` |
-| `docs/cli-app-contract.md` | `src/render/CLI_APP_CONTRACT.md` |
-| `docs/cli-descriptor-guide.md` | `registry/CLI_DESCRIPTOR_GUIDE.md` |
-| `docs/sdk-v2.md` | `sdk/python/SDK_V2.md` |
-| `docs/SDK_QUICKSTART.md` | `sdk/python/SDK_QUICKSTART.md` |
+**Status line:** `active` (being stinted) or `superseded` (absorbed into another doc - note which one).
+
+**Delete rule:** delete the PRM in the same PR that closes its last stint task. The stint task is the delete trigger.
+
+## Active PRMs
+
+| File | Covers | Stint |
+|---|---|---|
+| `app-framework-marketplace.md` | v1 app platform + marketplace | see file |
+| `assistant-host-app.md` | Host assistant app spec | see file |
+| `cli-native-pgap-apps.md` | CLI-native PGAP apps + Board/Console primitives | see file |
+| `marketplace-hosted.md` | Hosted marketplace (Sprint S4) | see file |
+| `wasm-runtime.md` | WASM runtime architecture | see file |
+| `wasm-runtime-impl-plan.md` | WASM runtime build sequence (G1-G7, G11-G13) | see file |
+| `workspace-env-secrets.md` | Workspace env secret injection | 0161 |

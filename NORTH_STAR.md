@@ -129,4 +129,4 @@ That has never been true of software before.
 - Before adding a protocol primitive — does it serve both human and machine callers?
 - Before filing or triaging an issue — does this move toward the garden, or away from it?
 - When an architectural decision feels wrong — come back to "local-first is non-negotiable"
-- For the app-framework and marketplace execution plan, see [`docs/prm/app-framework-marketplace.md`](docs/prm/app-framework-marketplace.md).
+- For the app-framework and marketplace execution plan, see [`docs/app-framework-marketplace.md`](docs/app-framework-marketplace.md).

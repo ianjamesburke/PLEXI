@@ -1,4 +1,4 @@
-//! Host Assistant — Phase 1 of `docs/prm/assistant-host-app.md`.
+//! Host Assistant — Phase 1 of `docs/assistant-host-app.md`.
 //!
 //! The Assistant is a first-party host app: a `Pane::App(AppRuntime::Builtin)`
 //! pane, not a PGAP process. It is split into pure state (`model`), slash

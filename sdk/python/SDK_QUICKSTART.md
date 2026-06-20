@@ -184,4 +184,4 @@ is one uncomment (and a `publisher` value) away.
 - SDK v2 reference: [`SDK_V2.md`](SDK_V2.md)
 
 - Security model: [`SECURITY_MODEL.md`](../../src/process_app/SECURITY_MODEL.md)
-- App framework roadmap: [`app-framework-marketplace.md`](../../docs/prm/app-framework-marketplace.md)
+- App framework roadmap: [`app-framework-marketplace.md`](../../docs/app-framework-marketplace.md)

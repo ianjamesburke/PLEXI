@@ -311,7 +311,7 @@ That's the end of this flow — **do not implement**.
 
 After returning the issue URL, always end with exactly one `RECOMMENDATION:` block.
 
-**Check alignment before recommending work.** Read `NORTH_STAR.md`. If the issue touches app-framework, packaging, marketplace, MCPUI, WASM/WASI, or Bevy work, also read `docs/prm/app-framework-marketplace.md` and identify the next unfinished milestone. Ask: is this issue on the critical path to that next step?
+**Check alignment before recommending work.** Read `NORTH_STAR.md`. If the issue touches app-framework, packaging, marketplace, MCPUI, WASM/WASI, or Bevy work, also read `docs/app-framework-marketplace.md` and identify the next unfinished milestone. Ask: is this issue on the critical path to that next step?
 
 - **Yes, aligned with the next North Star / PRM step** → recommend starting work on it.
 - **No, or uncertain** → do not recommend starting work, regardless of priority. The single recommendation is to close the pane. The issue is labeled `ready` and will be picked up when priorities trickle down.

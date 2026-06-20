@@ -1,40 +1,9 @@
 # Plexi WASM Runtime — Full Architecture Specification
 
-Status: **partially implemented** (was: greenfield specification). This document describes the destination architecture. As of 2026-06-18 the runtime core has landed on `alpha` via PR #2291 + #2292.
-Last updated: 2026-06-18.
+Status: active
+Stint: see `wasm-runtime-impl-plan.md` for the build sequence and gate coverage.
 
-**Reading convention (added 2026-06-18):** ~~Struck-through text~~ marks what is **shipped and gate-verified** on `alpha`. Plain text is **not built yet**. Sections that are partly done carry an inline **🟡 PARTIAL** / **⬜ NOT BUILT** callout naming the exact gap. The honest one-line summary: the runtime is **demo-complete, not app-complete**. Every subsystem works in isolation, but the breadth of host effects a real app needs is still incomplete. Lane F now covers manifest/package grant memory, CLI raw `.wasm` review, and native GUI raw `.wasm` pre-launch review. See [Implementation Status](#implementation-status-2026-06-18) below and [Next Steps](#next-steps-2026-06-18) at the end.
-
-This spec is the authoritative description of Plexi's WASM runtime. It supersedes prior WASM/WASI planning fragments and the old "WASM replaces PGAP" framing. PGAP/Python and WASM now land as parallel runtimes under one app contract: PGAP remains the native authoring path and WASM is the sandbox/performance path. The v1 release path (S1-S6 in `app-framework-marketplace.md`) remains the correct near-term sequence.
-
----
-
-## Implementation Status (2026-06-18)
-
-| Subsystem | Gate | Status |
-|---|---|---|
-| WIT interface compiles | G1 | ✅ shipped |
-| Pure-function lifecycle (`init`/`update`/`view`) | G2 | ✅ shipped |
-| Effect round-trip mechanism | G3 | ✅ shipped (mechanism only — most effect *variants* are stubbed, see below) |
-| UINode tree → egui rendering | G4 | ✅ shipped |
-| State persistence (primitive KV) | G5 | ✅ shipped (🟡 `cas()`/CRDT/sync **not built**) |
-| Run primitive (ephemeral `app open ./x.wasm`) | G6 | ✅ shipped |
-| Surface-node lifecycle (Pong) | G7 | ✅ shipped (🟡 per-frame **synchronous GPU readback** remains; row-copy optimization + timing instrumentation shipped in Lane A) |
-| Python compat | G8 | ⬜ deferred mission |
-| Cloud execution | G9 | ⬜ deferred mission |
-| HTTP 402 payment | G10 | ⬜ deferred mission |
-| GPU render pass | G11 | ✅ shipped |
-| RT audio callback | G12 | ✅ shipped |
-| Pipes round-trip | G13 | ✅ shipped |
-
-**Not yet built (the app-completeness gap, beyond the deferred gates):**
-
-- **Some effect variants are still stubbed or missing.** `file-read`/`file-write`, `http-fetch`, `ai-query`, `declare-event-streams`, and `emit-event` now round-trip through host services. Remaining variants such as `file-list`/`file-watch`, `websocket-open`, `open-pane`, `audio-record`, `spawn-child`, `clipboard-*`, `notify`, and `payment-request` are not complete. `get-system-stats`, `set-timer`/`cancel-timer`, `set-title`/`set-status`, and `close-self` also round-trip.
-- **UI interaction is wired.** Button clicks, submitted text inputs, list selections, and text-input changes are produced by the renderer (`wasm_render.rs:22-26`) and routed as typed `ui-action` / `ui-value-change` events through the guest `update()` loop (`wasm_pane.rs:273-299`, `wasm_pane.rs:525-542`).
-- **Input is keyboard-only.** `mouse`, `resize`, `focus-gained`/`focus-lost` are in the WIT but never enqueued. The surface never learns it was resized.
-- **Capability prompts can be remembered for manifest-backed WASM apps.** `request-capability` now prompts the focused WASM pane, answers with `capability-granted`/`capability-denied`, audits `HostEvent::PermissionDecision`, and applies scoped fs/net runtime grants. Manifest-backed WASM apps launched through `type = "wasm"` use persistent state and can save raw scoped WASM decisions in `permissions.toml`; `.plexipkg` validation and the install trust sheet classify WASM packages, display required vs. optional WASM review metadata, and let interactive installs remember selected optional grants. Direct raw `.wasm` launches also fail closed unless required link-time imports have remembered Green decisions; the CLI path can prompt and remember them, and native GUI path launches queue a pre-launch review modal before spawning.
-- **Agentic surface is partial.** WASM apps can call `ai-query` through `AiBroker` after a session `ai.query` grant and can declare/emit app events into `AppTimeline`. Subscribe/delivery imports are still not exposed to WASM, and `ai-query` tools are deferred.
-- **`ProcessApp`/PGAP is NOT removed.** The ["What is removed"](#what-is-removed) list below is aspirational. Python apps still run on the PGAP path alongside WASM. Supersession is a v3 outcome, after G8 (Python compat) lands.
+This spec is the authoritative description of Plexi's WASM runtime destination architecture. It supersedes prior WASM/WASI planning fragments. PGAP/Python and WASM land as parallel runtimes under one app contract: PGAP remains the native authoring path and WASM is the sandbox/performance path. The v1 release path (S1-S6 in `docs/app-framework-marketplace.md`) remains the correct near-term sequence.
 
 ---
 

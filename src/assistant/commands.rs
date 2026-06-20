@@ -1,7 +1,7 @@
 //! Slash command parsing for the host Assistant.
 //!
 //! Commands are recognized only when `/` is the first non-whitespace
-//! character in the composer (spec: docs/prm/assistant-host-app.md). The
+//! character in the composer (spec: docs/assistant-host-app.md). The
 //! parser is a pure function — no model or store access — so it is unit
 //! tested in isolation.
 

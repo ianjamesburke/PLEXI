@@ -36,7 +36,7 @@ GitHub issues are still useful implementation tickets while `.stint` stabilizes,
 | S5 | Host UI stabilization: centralize v1 modals, shortcuts, permission grants, and app-platform chrome on the new UI kit. | `0023`-`0027` |
 | S6 | v1 release readiness: docs, issue hygiene, install QA, and security wording are clean enough to cut v1. | `0028`-`0031` |
 
-S1 is the File Explorer sprint. The File Explorer issue bundle is linked from `docs/prm/file-explorer-overhaul.md`.
+S1 is the File Explorer sprint. The File Explorer issue bundle is linked from `.stint/sprints/s1.md`.
 
 Re-order (2026-06-11): trust tasks `0013` and `0014` were deliberately pulled ahead of the S2 authoring chain. The host-mediated Assistant capability path (chat pane drives app panes through capability-gated PGAP APIs, with a runtime grant prompt) is the go-to-market priority and has no technical dependency on S2 scaffold polish. The runtime yellow-state grant sheet ships with `0014`; the permission manager app remains `0017`.
 

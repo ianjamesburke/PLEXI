@@ -1,7 +1,7 @@
 //! Hosted marketplace layer — registry catalog, publisher submission, and the
 //! paid-app license + payment boundary (stint `0018`-`0021`).
 //!
-//! # Invariant carried from `docs/prm/marketplace-hosted.md`
+//! # Invariant carried from `docs/marketplace-hosted.md`
 //!
 //! Hosted services **distribute metadata and broker money**. They never become
 //! a dependency for running a local app. Everything in this module is a

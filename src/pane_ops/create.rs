@@ -1538,7 +1538,7 @@ impl PlexiApp {
     }
 
     /// Open (or focus) the host Assistant pane (Phase 1 of
-    /// `docs/prm/assistant-host-app.md`, reachable via Cmd+Ctrl+A and the
+    /// `docs/assistant-host-app.md`, reachable via Cmd+Ctrl+A and the
     /// Cmd+P palette). Opens as an overlay — it overtakes the focused pane
     /// like every other app launch. One Assistant pane per window: if one
     /// already exists it is focused and unhidden instead of spawning a

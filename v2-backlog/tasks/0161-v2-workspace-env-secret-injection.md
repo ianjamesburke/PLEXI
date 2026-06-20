@@ -24,7 +24,7 @@ tags:
 
 
 
-Implement the [`workspace environment secrets PRM`](../../docs/prm/workspace-env-secrets.md): canonical env-var secret names, workspace-vs-global resolution, and allowlisted PTY environment injection.
+Implement the [`workspace environment secrets PRM`](../../docs/workspace-env-secrets.md): canonical env-var secret names, workspace-vs-global resolution, and allowlisted PTY environment injection.
 
 ## Scope
 

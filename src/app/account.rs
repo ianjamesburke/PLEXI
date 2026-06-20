@@ -3,7 +3,7 @@
 //!
 //! # What an account is for
 //!
-//! Per `docs/prm/marketplace-hosted.md`, an account is **never** required to
+//! Per `docs/marketplace-hosted.md`, an account is **never** required to
 //! install a free app, run an installed app, or browse the public catalog. It
 //! is required only to:
 //!

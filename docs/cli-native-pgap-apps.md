@@ -29,7 +29,7 @@ This is the same UX class as the `github-issues` Core 9 app (`apps/github-issues
 ### What this is NOT
 
 - Not a replacement for the auto-renderer. CLIs that ship no app still get the generic UI.
-- Not Python sandboxing. A CLI-native app is a reviewed native process, same trust model as every PGAP app (see `docs/prm/app-framework-marketplace.md` §Trust).
+- Not Python sandboxing. A CLI-native app is a reviewed native process, same trust model as every PGAP app (see `docs/app-framework-marketplace.md` §Trust).
 - Not a marketplace feature. Distribution rides the CLI's own install (`cargo install`, `brew`, etc.), not the Plexi registry.
 
 ---
@@ -82,7 +82,7 @@ Three rules:
 
 ### 4.1 `Board` — host-rendered drag-and-drop columns (the headline primitive)
 
-A reusable L1 component: N labeled columns, each holding ordered cards. Host owns layout, rendering, keyboard navigation, **and** pointer drag. The app supplies data and reacts to a single `move` event. This is a Host UI Kit primitive (see `docs/prm/host-ui-kit.md` — reuse before rolling your own); every future board (issues, crew, files) consumes it.
+A reusable L1 component: N labeled columns, each holding ordered cards. Host owns layout, rendering, keyboard navigation, **and** pointer drag. The app supplies data and reacts to a single `move` event. This is a Host UI Kit primitive (see `src/ui/AGENTS.md` — reuse before rolling your own); every future board (issues, crew, files) consumes it.
 
 **`UiNode` (Rust, `src/protocol/ui_nodes.rs`):**
 
@@ -280,6 +280,6 @@ M1–M2 unblock everything. M3 (Board) is the largest single piece. M4 can proce
 | Python SDK UI components | `sdk/python/plexi_sdk/ui.py` |
 | Python SDK emitter (add `run()`) | `sdk/python/plexi_sdk/_emitter.py` |
 | Reference app to mirror | `apps/github-issues/main.py` |
-| Host UI Kit rules | `docs/prm/host-ui-kit.md` |
+| Host UI Kit rules | `src/ui/AGENTS.md` |
 | stint CLI commands | `~/Documents/GitHub/stint/crates/stint-cli/src/main.rs` |
 | stint task (de)serialization | `~/Documents/GitHub/stint/crates/stint-core/src/serialize.rs` |

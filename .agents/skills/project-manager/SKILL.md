@@ -5,7 +5,7 @@ description: Reactive 4-lane dispatcher. Keeps up to 4 agent panes running at al
 
 # Project Manager
 
-Reads current state, fills empty slots, watches on a timer. The default ordering comes from `docs/prm/app-framework-marketplace.md`, not GitHub Project board state.
+Reads current state, fills empty slots, watches on a timer. The default ordering comes from `docs/app-framework-marketplace.md`, not GitHub Project board state.
 
 ---
 
@@ -191,7 +191,7 @@ The watch loop ends when `DISPATCH=false` AND `ACTIVE_LANE_COUNT = 0`.
 
 ## Step 4 — Select candidates
 
-Read `docs/prm/app-framework-marketplace.md` and identify the first unfinished milestone. Fetch ready issues with bundle flag, then keep only issues that match that milestone. If no ready issues match, surface that the backlog needs issue triage instead of filling lanes with unrelated work.
+Read `docs/app-framework-marketplace.md` and identify the first unfinished milestone. Fetch ready issues with bundle flag, then keep only issues that match that milestone. If no ready issues match, surface that the backlog needs issue triage instead of filling lanes with unrelated work.
 
 **Critical:** `ready` is added at every pipeline handoff (implement→open-pr→validate→merge), so it does NOT mean "fresh, dispatch me" — it means "ready for the next stage." A genuinely fresh issue has `ready` AND **no** `pipeline:*` label. Issues carrying any `pipeline:*` label belong to Step 2c (stalled resume), not fresh dispatch — the jq below excludes them so they never leak into a fresh lane:
 
