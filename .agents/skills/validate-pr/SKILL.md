@@ -210,7 +210,7 @@ ISSUE_WHAT=$(gh issue view $ISSUE_NUMBER --json body --jq '.body' \
 ```
 This is the one-line context shown at the top of every testing block so the reviewer knows exactly what they're evaluating.
 
-**Surface testing block format:**
+**Surface testing block format — binary install path:**
 ```
 [TESTING] PR #<n> — <title>
 
@@ -218,7 +218,7 @@ This is the one-line context shown at the top of every testing block so the revi
 |---|---|
 | PR | #<n> · attempt <attempt+1>/3 |
 | Issue | #<issue-number> — <ISSUE_TITLE> |
-| Install | done / skipped — <reason> |
+| Install | done |
 | AI review | <one-line finding or "skipped — <reason>"> |
 | Test evidence | <conclusion line, or "none"> |
 
@@ -229,6 +229,28 @@ Fail: <concrete observable symptom(s)>
 
 Reply: "pass" | "fail: <desc>" | "modify: <change>"
 ```
+
+**Surface testing block format — diff-review path:**
+```
+[TESTING] PR #<n> — <title> (diff review only)
+
+| | |
+|---|---|
+| PR | #<n> |
+| Issue | #<issue-number> — <ISSUE_TITLE> |
+| Install | skipped — diff review only |
+| AI review | <one-line finding or "No issues found"> |
+| Test evidence | <conclusion line, or "none"> |
+
+What this ships: <ISSUE_WHAT — one line>
+
+No binary install was run; validation is limited to the diff and Codex review.
+AI findings: <AI_FINDINGS verbatim, or "No issues found.">
+
+Reply: "pass" | "fail: <desc>" | "modify: <change>"
+```
+
+On the diff-review path, omit the `Pass:` / `Fail:` criteria entirely. The user is reviewing the Codex findings, not exercising a binary. Only the install path asks the user to verify observable stop-check criteria.
 
 AI_FINDINGS always shown verbatim when review ran; if skipped, one-line reason in the table is sufficient.
 
@@ -433,10 +455,10 @@ Issue re-labeled ready for next attempt
 
 ## Diff-Review Testing Block (default)
 
-Still run Step 2b unless the diff is exclusively cosmetic/style. Then surface the Step 3 testing block with these changes:
-- Install row: `skipped — diff review only`
+Still run Step 2b unless the diff is exclusively cosmetic/style. Then surface the diff-review testing block format from Step 3. Key differences from the install path:
 - No attempt count in header (no retry loop for diff-only)
-- Pass/Fail criteria: based on observable diff behavior, not Done When checklist
+- No `Pass:` / `Fail:` stop-check criteria — those are only for binary install validation
+- Show AI_FINDINGS verbatim; the user is reviewing the automated findings, not exercising a binary
 
 Flip pane status the same as the install path before notifying:
 ```bash
