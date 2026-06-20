@@ -8,14 +8,15 @@ Configuration loading, validation, channel-scoped profile dirs, and workspace co
 
 ## Reference
 
-- [CONFIG.md](CONFIG.md) — full config reference: every key, type, default, and section in `config.toml`.
+- `src/config/mod.rs` — authoritative source for every config key, type, and default.
+- `scripts/default-config.toml` — the template seeded on `just install`. Must stay in sync with `mod.rs`.
 
 ## Rules
 
 - **Never hardcode profile or workspace paths.** See path rules in `src/cli/AGENTS.md`.
 - **Required fields have no defaults.** Fail fast with a clear error. Optional fields are clearly marked.
 - **Alpha config stays default.** `just install` refreshes it from the template. Beta config is the staging ground.
-- When adding a new config key, update [CONFIG.md](CONFIG.md) and `scripts/default-config.toml` in the same change.
+- When adding a new config key, update `scripts/default-config.toml` in the same change.
 
 ## Style
 

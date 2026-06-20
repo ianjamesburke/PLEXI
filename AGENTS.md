@@ -7,7 +7,7 @@ Before editing any file, read the `AGENTS.md` in its directory if one exists. Ch
 ## Source of Truth
 
 - **What shipped** → `git log --oneline -20`
-- **Product direction** → `NORTH_STAR.md`, `GLOSSARY.md`
+- **Product direction** → `NORTH_STAR.md`
 - **Feature specs** → `docs/prm/*.md` (PRMs are the planning source of truth)
 - **Sprint graph** → `.stint/` (`stint next`, `stint status`)
 - **Implementation tickets** → GitHub issues
@@ -112,6 +112,10 @@ Non-obvious discoveries with no single owning directory. When you discover a tra
 - **Command handler data must be self-contained.** Any data a command handler needs must be in the command's own fields, never looked up from ambient state at dispatch time. By dispatch, that state may have been mutated or cleared by an earlier step in the same frame.
 - **`#[cfg(unix)]` removal — grep all sites.** When removing a `#[cfg(unix)]` block or executable-bit check, grep for `set_mode`, `PermissionsExt`, and `0o755` across all test functions in the same file before staging. The helper function is never the only site.
 - **Issue-referenced code may no longer exist.** When an issue names specific functions or code paths, grep for them in alpha before implementing. The function may have been removed or moved since the issue was filed.
+
+## Architecture
+
+**HostModel** is a pure state machine with zero egui dependency. Commands in, effects out. All business logic (pane lifecycle, permissions, events) lives here. The renderer (egui in prod, headless in CI) reads state and paints — it never owns logic.
 
 ## General Rules
 
