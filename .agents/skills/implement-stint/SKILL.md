@@ -28,7 +28,7 @@ This skill is not complete when the worktree exists. Completion means the task w
 
 ## Non-Negotiables
 
-- Run `stint start <task-id>` from alpha before creating a fresh worktree.
+- Run `stint claim <task-id>` from alpha before creating a fresh worktree.
 - Immediately commit only the resulting `.stint/tasks/<task-id>-*.md` change directly to alpha with `git commit .stint/tasks/<task-id>-*.md -m "chore: claim stint <task-id>"`.
 - Create the implementation worktree from that alpha claim commit.
 - Default validation should use an isolated PR build. Do not install from a feature worktree, and do not replace alpha/main as proof of the change. Only mark install skippable when tests and scenes fully cover the behavior.
@@ -136,10 +136,10 @@ Stop if the linked issue is closed or already labeled `in progress`, unless this
 
 Build a short slug from the task title: lowercase, ASCII, words separated by `-`, no punctuation, max about 8 words.
 
-For fresh work, claiming and committing are one uninterrupted step from alpha. Do not do more discovery between `stint start` and the claim commit:
+For fresh work, claiming and committing are one uninterrupted step from alpha. Do not do more discovery between `stint claim` and the claim commit:
 
 ```bash
-stint start <task-id>
+stint claim <task-id>
 git status --short
 git diff -- .stint/tasks/<task-id>-*.md
 git commit .stint/tasks/<task-id>-*.md -m "chore: claim stint <task-id>"
@@ -177,14 +177,14 @@ gh issue edit <issue-number> --add-label "in progress" --add-label "pipeline:imp
 
 Do not use `--restart` unless correcting bad timing data. If `started_at` already exists for a legitimate resumed task, keep it.
 
-Run `stint check` in the implementation worktree. Do not run `stint start` there unless intentionally localizing task state to the branch.
+Run `stint check` in the implementation worktree. Do not run `stint claim` there unless intentionally localizing task state to the branch.
 
 ### Resume Mode
 
 If the implementation worktree already exists:
 
 - Check the canonical task file on alpha. If it already has `status: in-progress` and `started_at`, keep it.
-- If the canonical task file is still backlog or missing `started_at`, run `stint start <task-id>` on alpha and immediately commit only that `.stint/tasks/<task-id>-*.md` change.
+- If the canonical task file is still backlog or missing `started_at`, run `stint claim <task-id>` on alpha and immediately commit only that `.stint/tasks/<task-id>-*.md` change.
 - Preserve dirty implementation work before rebasing or merging the existing worktree onto the claim commit.
 - Keep setup reads short: `status --short --branch`, `diff --stat`, and targeted `rg` before full diffs or issue bodies.
 - Continue implementation in the existing worktree.
@@ -295,7 +295,7 @@ If no linked GitHub issue exists, still invoke `/open-pr` for the branch. The PR
 
 ## Blocked Or Abandoned Work
 
-If the work blocks after `stint start`, leave `started_at` in place. Do not run `stint done`.
+If the work blocks after `stint claim`, leave `started_at` in place. Do not run `stint done`.
 
 Record the blocker in the task body and linked issue if one exists. Rename the pane:
 
