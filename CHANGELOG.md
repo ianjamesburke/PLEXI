@@ -1,6 +1,52 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.7] — 2026-06-20
+
+### Changes
+- fix: PIP overlaps pane-type chip on title+subtitle list rows (#2307)
+- implement-stint: two-phase sub-agent pattern (#2306)
+- infra: generate SDK reference docs from Python docstrings (#2304)
+- infra: generate config reference docs from serde structs (#2305)
+- feat: replace create-issue with create-stint skill, add S/M/L sizing
+- infra: docs CI version accuracy and coverage checks (#2303)
+- Rename notes .md file on disk when pane is renamed (#2302)
+- feat: config list and config set subcommands (#2301)
+- feat: add Cmd+F find bar to scratchpad text editor (#2300)
+- fix: add overscroll padding to text editor (#2299)
+- fix: detect one-liner wrapper install for self-update (#2298)
+- feat(wasm): persistent capability grants + install trust sheet review (#2294)
+- feat(wasm): zero-copy present + pong/breakout rename + WASM launch args & breakout --blocks (#2297)
+- feat(file-explorer): file-handler routing + launch placement — open files into Plexi apps with OS fallback (#2283) (#2284)
+- Complete wasm runtime rebuild lanes
+- fix(notes): preserve scroll position across pane zoom transitions (#2293)
+- fix(wasm): forward key release + canonical key names to WASM guests (#2292)
+- fix(wasm): clear -D warnings build break and flaky G11 timing gate
+- feat(wasm): v2 WASM component runtime end-to-end (gates G1–G7, G11–G13) (#2291)
+- feat(apps): add audio-synth RT audio WASM runtime POC
+- feat(apps): add bevy-pong GPU WASM runtime POC
+- feat(apps): add sysmon WASM runtime POC
+- feat(wit): add Plexi v2 WASM platform interface definitions
+- Revert "Support direct Moss app sources"
+- Revert "Add Moss Plexi proof of concept app"
+- Add Moss Plexi proof of concept app
+- Support direct Moss app sources
+- feat(host): event subscriptions for third-party agents (#2288)
+- feat(ui): one-click update button in changelog modal (#2287)
+- feat(promote): auto-push version tag on just promote main
+- fix(tests): prevent CI hang in notify test helper + remove dead tests
+- App test scaffold + plexi app test subcommand (#2286)
+- feat(promote): add optional install flag to just promote
+- feat: canvas styling primitives + Stats dashboard redesign (#2285)
+- fix(list): center metadata chip on two-line rows
+- feat(sidebar): click parked context to unpark and switch
+- fix(minimap): set icon alpha to 200 focused / 100 unfocused
+- fix(minimap): widen focused/unfocused icon alpha gap to 200/60
+- fix(minimap): standardize portal icon alpha across all pane kinds
+- fix(website): derive docs version from Cargo.toml + audit doc accuracy
+- feat(theme): add matrix, bios, plexi-night, and plexi-day presets
+- fix(demo): harden event matching against user fumbles
+- fix(welcome): move 'Brand new to Plexi?' hint above shortcuts
 ## [0.1.6] — 2026-06-20
 
 ### Changes
