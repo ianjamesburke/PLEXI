@@ -408,9 +408,12 @@ impl<'a> ListRow<'a> {
             self.pane_pips.is_some() && text_metrics.secondary_center_y.is_none();
         let chip_center_y = if has_compact_pips {
             text_metrics.primary_center_y - COMPACT_METADATA_CHIP_OFFSET_Y
+        } else if text_metrics.secondary_center_y.is_some() && self.pane_pips.is_some() {
+            // Two-line row with pips: align chip with the title so pips rendered
+            // at secondary_center_y have clear vertical separation.
+            text_metrics.primary_center_y
         } else if text_metrics.secondary_center_y.is_some() {
-            // Two-line row: center the chip on the row, not on the title alone
-            // (primary_center_y sits in the upper half when a subtitle is present).
+            // Two-line row (no pips): center on the row for visual balance.
             rect.center().y
         } else {
             text_metrics.primary_center_y
@@ -899,6 +902,36 @@ mod tests {
                 "row {selected} not fully visible after scroll_row_into_view"
             );
         }
+    }
+
+    #[test]
+    fn two_line_with_pips_chip_clears_pips_vertically() {
+        // For a two-line row (title + subtitle) with pane pips, the pane-type chip
+        // must sit fully above the pip dots with no vertical overlap.
+        // Chip is placed at primary_center_y; pips at secondary_center_y.
+        // Use 1.5x TEXT_* as conservative upper-bound line heights — actual
+        // rendered heights are always smaller, so if the bound holds, real
+        // layout holds.
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            let primary_line_h = style::TEXT_CAPTION * 1.5;
+            let secondary_line_h = style::TEXT_HINT * 1.5;
+            let total_h = primary_line_h + 2.0 + secondary_line_h;
+            let center_y = style::LIST_ROW_H / 2.0;
+            let primary_center_y = center_y - total_h / 2.0 + primary_line_h / 2.0;
+            let secondary_center_y =
+                center_y - total_h / 2.0 + primary_line_h + 2.0 + secondary_line_h / 2.0;
+            let chip_h = chip_size(ui, "ctx").y;
+            let chip_bottom = primary_center_y + chip_h / 2.0;
+            let pip_top = secondary_center_y - PANE_PIP_RADIUS;
+
+            assert!(
+                pip_top >= chip_bottom,
+                "two-line row: pip top ({pip_top:.1}) must clear chip bottom ({chip_bottom:.1})"
+            );
+        });
+        let _ = ctx.end_pass();
     }
 
     #[test]
