@@ -98,17 +98,30 @@ check-schema:
     fi
     echo "Schema is up to date."
 
+# Assert every docs page verified_version matches Cargo.toml.
+check-docs-version:
+    bash tools/check_docs_version.sh
+
+# Assert every non-hidden CLI command is mentioned in at least one docs page.
+check-docs-coverage:
+    bash tools/check_docs_coverage.sh
+
+# Run all docs checks (version accuracy + command coverage).
+check-docs: check-cli-docs check-docs-version check-docs-coverage
+
 run:
     cargo run --release
 
 # Regenerate generated artifacts only when their source files changed.
 # When adding a new generated artifact, add a stale check here.
 #
-# Source file                → Generated artifact(s)               → Generator
+# Source file                → Generated artifact(s)               → Generator / Checker
 # Cargo.toml                 → website/src/content/docs/cli.md     → cargo run -p gen_cli_docs
 # src/cli/args.rs            → website/src/content/docs/cli.md     → cargo run -p gen_cli_docs
 # src/app_protocol.rs        → sdk/protocol/pgap.schema.json       → cargo run -p gen_schema
 #                            → sdk/python/plexi_sdk/_protocol.py   → python3 tools/gen_protocol_py.py
+# Cargo.toml                 → website/src/content/docs/*.md       → tools/check_docs_version.sh
+# website/src/content/docs/  → (coverage assertion)                → tools/check_docs_coverage.sh
 regen-if-stale:
     #!/usr/bin/env bash
     set -euo pipefail
