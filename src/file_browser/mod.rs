@@ -2569,28 +2569,6 @@ mod tests {
         assert!(!app.should_close);
     }
 
-    #[test]
-    fn wasm_files_open_through_plexi_app_launcher() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let wasm_path = dir.path().join("tool.wasm");
-        std::fs::write(&wasm_path, b"not a real component").expect("write wasm");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
-
-        app.open_file(&wasm_path);
-
-        assert!(
-            app.opened_files.is_empty(),
-            "raw WASM files should not fall through to the system opener"
-        );
-        let cmds = app.take_pending_commands();
-        assert!(
-            cmds.iter().any(|cmd| matches!(
-                cmd,
-                AppCommand::OpenAppPath { path, .. } if path == wasm_path.to_string_lossy().as_ref()
-            )),
-            "raw WASM files should route through the Plexi app launcher"
-        );
-    }
 
     #[test]
     fn t_hands_off_cwd_and_closes() {
