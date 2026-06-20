@@ -390,6 +390,7 @@ impl PlexiApp {
                     .max_height(list_max_h)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = style::SPACE_SM;
                         for (row, &entry_idx) in filtered.iter().enumerate() {
                             let entry = &self.notes_picker_entries[entry_idx];
                             if entry.inbox && !shown_inbox_header {
@@ -449,7 +450,7 @@ impl PlexiApp {
                     .show(ui, &colors);
                 } else {
                     HintBar::new(&[
-                        HintGroup::new(&["\u{2318}\u{2191}", "\u{2318}\u{2193}"], "navigate"),
+                        HintGroup::new(&["\u{2318}J", "\u{2318}K"], "navigate"),
                         HintGroup::new(&["\u{21b5}"], "open"),
                         HintGroup::new(&["\u{2318}R"], "rename"),
                         HintGroup::new(&["\u{2318}\u{232b}"], "delete"),
