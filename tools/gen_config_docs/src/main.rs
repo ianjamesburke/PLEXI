@@ -117,7 +117,9 @@ fn extract_doc(attrs: &[syn::Attribute]) -> String {
 fn simplify_type(ty: &Type) -> String {
     match ty {
         Type::Path(p) => {
-            let seg = p.path.segments.last().unwrap();
+            let Some(seg) = p.path.segments.last() else {
+                return "—".to_string();
+            };
             let name = seg.ident.to_string();
             if name == "Option" {
                 if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
@@ -155,8 +157,9 @@ fn extract_default(doc: &str) -> String {
         }
     }
     // "(default: X)"
-    if let Some(pos) = lower.find("(default: ") {
-        let after = &doc[pos + 10..];
+    const PAREN_DEFAULT: &str = "(default: ";
+    if let Some(pos) = lower.find(PAREN_DEFAULT) {
+        let after = &doc[pos + PAREN_DEFAULT.len()..];
         let val = cut_value(after);
         if !val.is_empty() {
             return val;
