@@ -584,8 +584,13 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
         }
     };
 
-    // Determine the installed app bundle path from current_exe():
-    // .../Plexi.app/Contents/MacOS/plexi  →  walk up 3 levels
+    // Determine the installed app bundle path.
+    //
+    // Direct bundle install: current_exe() == .../Plexi.app/Contents/MacOS/plexi
+    // One-liner (wrapper) install: current_exe() == /usr/local/bin/plexi (a shell
+    // script that exec-chains to /Applications/Plexi.app/Contents/MacOS/plexi).
+    // In the wrapper case the 3-level walk-up fails, so we fall back to the
+    // canonical one-liner bundle path.
     let current_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -594,16 +599,31 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
             ));
         }
     };
-    let app_bundle = current_exe
+    let bundle_from_exe = current_exe
         .parent()
         .and_then(|p| p.parent())
         .and_then(|p| p.parent())
         .filter(|p| p.extension().map_or(false, |e| e == "app"))
         .map(|p| p.to_path_buf());
-    let app_bundle = match app_bundle {
-        Some(p) => p,
-        None => {
-            log::info!("cli: self-update skipped — not a bundle install");
+
+    const ONELINER_BUNDLE: &str = "/Applications/Plexi.app";
+    const ONELINER_BINARY: &str = "/Applications/Plexi.app/Contents/MacOS/plexi";
+
+    let app_bundle = if let Some(p) = bundle_from_exe {
+        log::info!("cli: self-update — bundle path from current_exe: {}", p.display());
+        p
+    } else {
+        let oneliner_path = std::path::Path::new(ONELINER_BINARY);
+        if oneliner_path.is_file() {
+            let bundle = std::path::PathBuf::from(ONELINER_BUNDLE);
+            log::info!(
+                "cli: self-update — current_exe is wrapper ({}); using one-liner bundle path: {}",
+                current_exe.display(),
+                bundle.display()
+            );
+            bundle
+        } else {
+            log::info!("cli: self-update skipped — not a bundle install (current_exe: {})", current_exe.display());
             return Ok(
                 "Self-update requires a bundled .app installation.\nFor a dev install, update from source: git pull && just install"
                     .to_string(),
