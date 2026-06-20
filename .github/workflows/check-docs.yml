@@ -1,0 +1,23 @@
+name: check docs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [alpha]
+    paths:
+      - 'tools/check_docs_coverage.sh'
+      - 'website/src/content/docs/**'
+  pull_request:
+    branches: [alpha]
+    paths:
+      - 'tools/check_docs_coverage.sh'
+      - 'website/src/content/docs/**'
+
+jobs:
+  check-docs-coverage:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check docs command coverage
+        run: bash tools/check_docs_coverage.sh

@@ -1,7 +1,6 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.1.5"
 order: 7
 ---
 
@@ -986,6 +985,8 @@ Check your Plexi config file for errors
 | `edit` | Open config.toml in your $EDITOR |
 | `get` | Print the resolved value of a config key to stdout |
 | `reset` | Overwrite config.toml with the built-in default template |
+| `list` | Print all known config keys with type, current value, and description |
+| `set` | Set one or more config keys in-place |
 
 ### `plexi config check`
 
@@ -1027,6 +1028,30 @@ Creates a backup at config.toml.bak before overwriting.
 |---|---|---|---|
 | `--global` / `-g` | flag | no | Use the global channel config.toml only |
 | `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
+
+### `plexi config list`
+
+Print all known config keys with type, current value, and description.
+
+Columns: key\ttype\tvalue\tdescription. Use --json for machine-readable output.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--global` / `-g` | flag | no | Use the global channel config.toml only |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
+| `--json` | flag | no | Output as a JSON array instead of tab-separated lines |
+
+### `plexi config set`
+
+Set one or more config keys in-place.
+
+Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14). Scope defaults to workspace when inside a workspace, global otherwise.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--global` / `-g` | flag | no | Use the global channel config.toml only |
+| `--workspace` / `-w` | flag | no | Use the active workspace's channel-scoped config.toml only |
+| `<pairs>` | string (repeatable) | yes | One or more KEY=VALUE pairs to write |
 
 ## `plexi notes`
 

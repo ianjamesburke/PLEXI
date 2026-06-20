@@ -1,7 +1,6 @@
 ---
 title: "SDK Overview"
 description: "Python SDK v2 for building Plexi pane apps"
-verified_version: "0.1.5"
 ---
 
 Python SDK v2 for Plexi PGAP apps.
