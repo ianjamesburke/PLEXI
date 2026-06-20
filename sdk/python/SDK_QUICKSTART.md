@@ -2,7 +2,7 @@
 
 Audience: a coding agent building its first PGAP app.
 Goal: a running counter app using SDK v2.
-Deeper reference: [`docs/sdk-v2.md`](sdk-v2.md).
+Deeper reference: [`SDK_V2.md`](SDK_V2.md).
 
 Naming: SDK v2 is the Python authoring API. PGAP v3 (`pgap/3`) is the host/app protocol it speaks.
 
@@ -64,7 +64,7 @@ class CounterApp(App):
 CounterApp().run()
 ```
 
-Use `on_render(ctx)` only for games, animations, realtime visualizations, or other pixel-control apps. Never override both `view()` and `on_render(ctx)`. For the full canvas drawing API (rect stroke/glow/gradient, circle glow, arc_ring, theme tokens), see [`docs/sdk-v2.md`](sdk-v2.md#canvas-drawing-reference-games-animation-data-viz).
+Use `on_render(ctx)` only for games, animations, realtime visualizations, or other pixel-control apps. Never override both `view()` and `on_render(ctx)`. For the full canvas drawing API (rect stroke/glow/gradient, circle glow, arc_ring, theme tokens), see [`SDK_V2.md`](SDK_V2.md#canvas-drawing-reference-games-animation-data-viz).
 
 ## 3. Manifest
 
@@ -173,7 +173,7 @@ plexi app publish ./counter    # submit to the marketplace (needs the [marketpla
 `manifest.toml` already includes a commented `[marketplace]` block, so publishing
 is one uncomment (and a `publisher` value) away.
 
-> **This doc vs. [`docs/sdk-v2.md`](sdk-v2.md):** this Quickstart is the
+> **This doc vs. [`SDK_V2.md`](SDK_V2.md):** this Quickstart is the
 > end-to-end *tutorial* (the path from empty dir to published app).
 > `sdk-v2.md` is the *reference* (component tables, the canvas API, the full
 > protocol surface). Start here; reach for `sdk-v2.md` when you need a specific
@@ -181,7 +181,7 @@ is one uncomment (and a `publisher` value) away.
 
 ## 7. Next Steps
 
-- SDK v2 reference: [`docs/sdk-v2.md`](sdk-v2.md)
+- SDK v2 reference: [`SDK_V2.md`](SDK_V2.md)
 
-- Security model: [`docs/SECURITY_MODEL.md`](SECURITY_MODEL.md)
-- App framework roadmap: [`docs/prm/app-framework-marketplace.md`](prm/app-framework-marketplace.md)
+- Security model: [`SECURITY_MODEL.md`](../../src/process_app/SECURITY_MODEL.md)
+- App framework roadmap: [`app-framework-marketplace.md`](../../docs/prm/app-framework-marketplace.md)

@@ -4,7 +4,7 @@
 
 ## Scope
 
-Each app is a directory with a `manifest.toml` (schema_version + `[app]` id/type/name/entry + `[app.capabilities]` + `[launch]`) and a Python entry file. Apps run on the Python SDK in `sdk/python`. Authoring path: `docs/SDK_QUICKSTART.md`, then `docs/sdk-v2.md`, then `docs/prm/app-framework-marketplace.md`.
+Each app is a directory with a `manifest.toml` (schema_version + `[app]` id/type/name/entry + `[app.capabilities]` + `[launch]`) and a Python entry file. Apps run on the Python SDK in `sdk/python`. Authoring path: `sdk/python/SDK_QUICKSTART.md`, then `sdk/python/SDK_V2.md`, then `docs/prm/app-framework-marketplace.md`.
 
 ## Rules
 

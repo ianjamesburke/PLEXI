@@ -101,7 +101,7 @@ using Python's standard library directly.
 ## Shell Execution Audit
 
 The full inventory of every shell execution path in the host (classified by trust
-source) is maintained in [`docs/security/shell-execution-inventory.md`](security/shell-execution-inventory.md).
+source) is maintained in [`shell-execution-inventory.md`](shell-execution-inventory.md).
 
 The key invariant: **no app-reachable `sh -c` path may exist without a capability
 gate and a denial test.** The `terminal.bindings` capability is the only

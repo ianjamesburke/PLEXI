@@ -260,4 +260,4 @@ Project-level config at `.plexi/workspace.toml` (main channel) or `.plexi-alpha/
 Initialize with: `plexi workspace init`
 
 Release-gated product features are not controlled by config. They are controlled
-by the running binary channel; see [`RELEASE_CHANNELS.md`](RELEASE_CHANNELS.md).
+by the running binary channel; see [`RELEASE_CHANNELS.md`](../../scripts/RELEASE_CHANNELS.md).

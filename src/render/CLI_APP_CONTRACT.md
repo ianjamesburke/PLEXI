@@ -8,12 +8,12 @@ runs the assembled command in a linked terminal pane.
 This document is the **runtime contract** for those apps: how a CLI-backed pane
 launches, becomes ready, runs commands, crashes, and is inspected. It does *not*
 re-document the descriptor schema — for that, read the
-[CLI Descriptor Authoring Guide](cli-descriptor-guide.md) and the canonical
+[CLI Descriptor Authoring Guide](../../registry/CLI_DESCRIPTOR_GUIDE.md) and the canonical
 schema at `schemas/plexi-descriptor-schema.json`.
 
-- **What the descriptor looks like** → [`cli-descriptor-guide.md`](cli-descriptor-guide.md)
-- **The host/app wire protocol for SDK apps** → `src/protocol/` and [`sdk-v2.md`](sdk-v2.md)
-- **The capability/permission model** → [`SECURITY_MODEL.md`](SECURITY_MODEL.md)
+- **What the descriptor looks like** → [`CLI_DESCRIPTOR_GUIDE.md`](../../registry/CLI_DESCRIPTOR_GUIDE.md)
+- **The host/app wire protocol for SDK apps** → `src/protocol/` and [`SDK_V2.md`](../../sdk/python/SDK_V2.md)
+- **The capability/permission model** → [`SECURITY_MODEL.md`](../process_app/SECURITY_MODEL.md)
 
 The renderer is implemented in `src/render/cli_renderer_app.rs`. The open path is
 `src/cli/open.rs` and `src/cli/descriptor.rs`. The linked-terminal dispatch is
@@ -203,7 +203,7 @@ are re-resolved on every open. Tier 1 always reflects the CLI's current output;
 Tier 2 reflects the registry file on disk. The crawl cache is the only place
 where a *stale* descriptor can persist, and the version check is the only
 invalidation mechanism. (Registry version pinning — `<version>.json` filenames —
-is a separate authoring concern documented in `cli-descriptor-guide.md` §6.)
+is a separate authoring concern documented in `CLI_DESCRIPTOR_GUIDE.md` §6.)
 
 > There is no TTL and no manual `--no-cache` open flag for the crawl cache; the
 > only invalidation is the version delta above, or deleting the cache file. See
@@ -232,7 +232,7 @@ descriptor:
   the *underlying CLI* does when you run it — read files, write files, make
   network calls — happens unmediated in the terminal. Plexi does not interpose.
 - **Descriptor `writes` / `reads` fields:** the descriptor's `writes`/`reads`
-  arrays (`cli-descriptor-guide.md` §3) are **advisory metadata** for authoring
+  arrays (`CLI_DESCRIPTOR_GUIDE.md` §3) are **advisory metadata** for authoring
   and future trust gating. The shipped renderer does **not** consult them to
   prompt before a command runs. See [GAPS](#gaps-tracked-separately).
 
@@ -259,7 +259,7 @@ the contract above is channel-specific.
   `~/.plexi-alpha/cache/...`, `~/.plexi-pr-<N>/cache/...`).
   Caches never leak across channels.
 - **The registry path** (Tier 2) is likewise `~/.plexi-<channel>/registry/...`
-  (`cli-descriptor-guide.md` §6).
+  (`CLI_DESCRIPTOR_GUIDE.md` §6).
 - **The renderer** is compiled into every channel's binary; the same
   `cli-renderer` builtin id resolves on all of them.
 
@@ -321,7 +321,7 @@ falls back to the stable app-bundle binary.
 
 To drive a CLI-backed pane like any other app for testing, use the
 render → inspect → act loop from
-[`SDK_QUICKSTART.md`](SDK_QUICKSTART.md) §5: `plexi pane key <id> down`,
+[`SDK_QUICKSTART.md`](../../sdk/python/SDK_QUICKSTART.md) §5: `plexi pane key <id> down`,
 `plexi pane key <id> enter`, then `plexi pane state <id>` to confirm.
 
 ---
@@ -371,7 +371,7 @@ not fix them.
    pinned forever for that CLI. There is no content-hash fallback.
 
 4. **`writes`/`reads` descriptor fields are inert.** The descriptor carries
-   `writes`/`reads` arrays (documented in `cli-descriptor-guide.md` §3 as "trust
+   `writes`/`reads` arrays (documented in `CLI_DESCRIPTOR_GUIDE.md` §3 as "trust
    gating") but the renderer never consults them — `execute`
    (`cli_renderer_app.rs:273`) runs the command unconditionally. There is no
    confirm-before-write prompt. The fields are advisory metadata only.

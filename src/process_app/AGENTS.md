@@ -4,11 +4,19 @@
 
 ## Scope
 
-PGAP process app lifecycle: launch, IPC routing, capability gating, and linked terminal bindings.
+PGAP process app lifecycle: launch, IPC routing, capability gating, linked terminal bindings, and the security model.
 
 ## Reference
 
 - [TERMINAL_BINDINGS_CONTRACT.md](TERMINAL_BINDINGS_CONTRACT.md) — the `terminal.bindings` capability contract: five operations, permission error contract, lifecycle, known gaps.
+- [SECURITY_MODEL.md](SECURITY_MODEL.md) — full security model: consent+audit for v1, capability gating table, what is and isn't sandboxed, future WASM sandbox.
+- [shell-execution-inventory.md](shell-execution-inventory.md) — every shell execution path in the host classified by trust source.
+
+## Security invariants
+
+- **No new app-reachable `sh -c` path** without a capability gate and a denial test. Update the shell execution inventory in the same change.
+- v1 apps are native Python subprocesses. The trust boundary is consent+audit, not process isolation.
+- App subprocesses do NOT inherit `PLEXI_SOCKET`. Only terminal PTY panes get it.
 
 ## Traps
 

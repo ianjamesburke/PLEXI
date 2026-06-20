@@ -28,7 +28,7 @@ Each documentation surface has a distinct role. Do not duplicate content across 
 | `GLOSSARY.md` | Shared vocabulary. Canonical definitions of terms used everywhere. | Pane, context, PGAP, capability, secret |
 | `ROADMAP.md` | High-level index of what's shipped, what's in progress, what's next. Points to PRMs and `.stint/`. | Sprint s50 summary, v2 backlog |
 | `docs/prm/*.md` | Product Requirements. Full specs for major features or subsystems. The planning source of truth. | app-framework-marketplace, wasm-runtime, host-ui-kit |
-| `docs/*.md` | Technical reference. How things work today (config, SDK, testing, security, CLI contracts). | CONFIG.md, sdk-v2.md, TESTING.md, SECURITY_MODEL.md |
+| `*/AGENTS.md` | Local agent contracts + technical reference. Present-tense docs live next to the code they describe. Each directory's AGENTS.md is the entry point. | src/config/AGENTS.md, sdk/python/AGENTS.md, src/testing/AGENTS.md |
 | `.stint/` | Sprint and task graph. Operational sequencing, estimates, blockers, time tracking. Use `stint` CLI. | tasks/0005-*.md, sprints/s50.md |
 | GitHub issues | Implementation tickets. One issue per discrete unit of work. | Bug reports, feature tasks |
 
@@ -233,7 +233,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 
 ## Test Infrastructure
 
-**Full reference: [`docs/TESTING.md`](docs/TESTING.md).** The rule: observable state (pane tree, app UI, pixels) → TOML scene in `tests/scenes/` (`just scene <file>`, runner `src/scenes.rs`); return value or internal invariant → Rust test (`HostHarness` in `src/testing/mod.rs` for host logic, plain `#[test]` for pure logic). `PlexiUiHarness` (`src/ui_tests.rs`) is the headless engine under scenes — wgpu Metal, no display, drives real PGAP app processes. The `/testing` skill owns pre-push evidence.
+**Full reference: [`src/testing/TESTING.md`](src/testing/TESTING.md).** The rule: observable state (pane tree, app UI, pixels) → TOML scene in `tests/scenes/` (`just scene <file>`, runner `src/scenes.rs`); return value or internal invariant → Rust test (`HostHarness` in `src/testing/mod.rs` for host logic, plain `#[test]` for pure logic). `PlexiUiHarness` (`src/ui_tests.rs`) is the headless engine under scenes — wgpu Metal, no display, drives real PGAP app processes. The `/testing` skill owns pre-push evidence.
 
 **Active (epic #2162):** `cargo test --bin plexi` is wired into the ship cycle. The `/testing` skill (mandatory in implement-issue/implement-stint before push for any `src/` or `apps/` change) classifies the diff, runs the matching harness (host: `HostHarness`; host-ui: scenes; Python apps: `AppHarness` PNG renders), and writes a `**Test evidence:**` block into the Ship Log. validate-pr reads that block in Step 1a to decide install vs. diff-review; a `Conclusion: install skippable — full coverage` result skips binary install entirely. For full harness usage and the AppHarness PNG snapshot API, see the `/testing` skill.
 

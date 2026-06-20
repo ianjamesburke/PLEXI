@@ -2,6 +2,11 @@
 
 **Read before editing anything under `src/cli/`:** this file, plus the root `AGENTS.md` (especially its "Channel-Agnostic CLI Rule", "CLI Namespace Design", and "CLI Tips" sections — those are binding and not repeated here).
 
+## Reference
+
+- [`src/render/CLI_APP_CONTRACT.md`](../render/CLI_APP_CONTRACT.md) — CLI-backed app runtime contract (launch, lifecycle, caching, permissions).
+- [`registry/CLI_DESCRIPTOR_GUIDE.md`](../../registry/CLI_DESCRIPTOR_GUIDE.md) — CLI descriptor authoring guide (field reference, `ui_hint`, verification).
+
 ## Traps
 
 - **Path-based app commands must not resolve a workspace.** `app validate <path>`, `app install <path>`, `app run <path>` operate on an explicit filesystem path — never call `resolve_workspace_root` / `require_workspace` for that path argument. It returns `None` when no `.plexi/` ancestor exists, and treating `None` as an error breaks agents in a plain cloned repo. Use the path directly (`std::fs::canonicalize`). `resolve_workspace_root` is only legitimate in `AppRegistry::load` and `app init`, where `None` degrades to global rather than failing.
