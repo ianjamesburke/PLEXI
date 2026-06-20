@@ -1,6 +1,6 @@
 <!-- GOTCHAS.md — Non-obvious discoveries, failed approaches, and environment quirks specific to PLEXI. Only write an entry when something genuinely surprised you. For universal behavioral rules see ~/.claude/CLAUDE.md; for language/framework API gotchas see the coding-conventions skill. Review weekly: if the same area tag appears 3+ times, fix the root cause rather than adding another entry. -->
 
-## Area tags: git · ship · macos · rust · egui · sdk · cargo · python · cli · quick-note · railway
+## Area tags: git · ship · macos · rust · egui · sdk · cargo · python · cli · quick-note · railway · host
 
 ---
 
@@ -201,3 +201,45 @@ workspace-local apps) and in `app init` (to decide where to scaffold). In those 
 ## Two MCP servers share one HTTP/JSON-RPC envelope · host · mcp
 
 `src/mcp_http.rs` owns the `POST /mcp` framing, bearer auth, body-size guard, and response writer. Both the per-app bridge (`process_app::mcp_server`) and the host event server (`app::host_mcp`) call `read_json_rpc_request` / `write_http_response`. The host server is a singleton started in `PlexiApp::new`; its `(port, token)` is stored in a `OnceLock` (`host_mcp::discovery`) so `make_backend_settings` can inject `PLEXI_HOST_MCP_PORT`/`PLEXI_HOST_MCP_TOKEN` into every pane PTY. `start_host_mcp_server` also **returns** the `(port, token)` so tests (which start several servers) bind to the right one instead of reading the first-wins `OnceLock`.
+
+---
+
+## [macos] Observe platform behavior before coding it
+
+Before implementing any macOS-specific behavior (menu lifecycle, bundle naming, eframe/winit callback order), add a throwaway `log::info!()` to observe the actual runtime value on the first frame. Never assume which callback fires when or what a property returns.
+
+---
+
+## [host] Command handler data must be self-contained
+
+Any data a command handler needs must be in the command's own fields, never looked up from ambient state (like a queue or map) at dispatch time. By dispatch, that state may have been mutated or cleared by an earlier step in the same frame.
+
+---
+
+## [rust] Test constructor sync
+
+When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Before running `cargo test --bin plexi` on a fresh worktree, run it once on the base branch first to distinguish pre-existing failures from regressions.
+
+---
+
+## [host] HostHarness initial state
+
+`add_test_pane()` inserts a `ProcessApp` pane, not a Terminal. Terminal-count assertions in tests must not assume the initial pane is a Terminal; offset accordingly.
+
+---
+
+## [cli] Shell suffix construction
+
+When appending a stay-alive or exec suffix to a user command string, use the absolute shell path from `settings.shell` (already resolved) rather than `$SHELL`, and `trim_end_matches([';', ' '])` the user command before appending to prevent `;;` syntax errors.
+
+---
+
+## [rust] cfg(unix) propagation on removal
+
+When removing a `#[cfg(unix)]` block or executable-bit check, grep for `set_mode`, `PermissionsExt`, and `0o755` across all test functions in the same file before staging. The helper function is never the only site.
+
+---
+
+## [git] Issue-referenced code validation
+
+When an issue names specific functions or code paths, grep for them in alpha before implementing. The function may have been removed or moved since the issue was filed.
