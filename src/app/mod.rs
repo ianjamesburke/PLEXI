@@ -247,11 +247,9 @@ pub struct PlexiApp {
     pub(crate) notes_picker_entries: Vec<crate::notes::NotePickerEntry>,
     /// Notes picker: currently highlighted index into the filtered view.
     pub(crate) notes_picker_selected: usize,
-    /// Notes picker: fuzzy-filter query (active while `notes_picker_filtering`).
+    /// Notes picker: fuzzy-filter query.
     pub(crate) notes_picker_query: String,
-    /// Notes picker: true while the `/` search field has focus.
-    pub(crate) notes_picker_filtering: bool,
-    /// Notes picker: rename buffer — `Some` while the `r` rename field is open.
+    /// Notes picker: rename buffer — `Some` while the Cmd+R rename field is open.
     pub(crate) notes_picker_rename: Option<String>,
     /// Notes triage: inbox notes loaded when the triage overlay opens.
     pub(crate) notes_triage_notes: Vec<crate::notes::InboxNote>,
@@ -1149,7 +1147,6 @@ impl PlexiApp {
                     notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
                     notes_picker_query: String::new(),
-                    notes_picker_filtering: false,
                     notes_picker_rename: None,
                     notes_triage_notes: Vec::new(),
                     notes_triage_actions: Vec::new(),
@@ -1392,7 +1389,6 @@ impl PlexiApp {
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
             notes_picker_query: String::new(),
-            notes_picker_filtering: false,
             notes_picker_rename: None,
             notes_triage_notes: Vec::new(),
             notes_triage_actions: Vec::new(),
@@ -1610,7 +1606,6 @@ impl PlexiApp {
                 notes_picker_entries: Vec::new(),
                 notes_picker_selected: 0,
                 notes_picker_query: String::new(),
-                notes_picker_filtering: false,
                 notes_picker_rename: None,
                 notes_triage_notes: Vec::new(),
                 notes_triage_actions: Vec::new(),
@@ -3806,7 +3801,6 @@ impl PlexiApp {
         self.notes_picker_entries = entries;
         self.notes_picker_selected = 0;
         self.notes_picker_query.clear();
-        self.notes_picker_filtering = false;
         self.notes_picker_rename = None;
         self.push_focus_layer(FocusLayer::NotesPicker);
         // Surrender egui keyboard focus from the active TextEdit so the picker
