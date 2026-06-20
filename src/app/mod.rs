@@ -1881,7 +1881,6 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
     use crate::app::app_trait::AppCommand;
     match cmd {
         AppCommand::SpawnApp { .. }
-        | AppCommand::OpenAppPath { .. }
         | AppCommand::SpawnPane { .. }
         | AppCommand::RequestLinkedTerminal { .. }
         | AppCommand::RunInLinkedTerminal { .. }
@@ -1899,7 +1898,6 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
     use crate::app::app_trait::AppCommand;
     match cmd {
         AppCommand::SpawnApp { .. } => "SpawnApp",
-        AppCommand::OpenAppPath { .. } => "OpenAppPath",
         AppCommand::SpawnPane { .. } => "SpawnPane",
         AppCommand::RequestLinkedTerminal { .. } => "RequestLinkedTerminal",
         AppCommand::RunInLinkedTerminal { .. } => "RunInLinkedTerminal",
@@ -2193,13 +2191,6 @@ impl eframe::App for PlexiApp {
                                 a.runtime.queue_outbound_event(event);
                             }
                         }
-                    }
-                }
-                AppCommand::OpenAppPath { path, layout, args } => {
-                    if let Err(err) =
-                        self.launch_app_by_path_with_layout(&path, layout, None, &args)
-                    {
-                        log::warn!("app_cmd: OpenAppPath failed for path={path:?}: {err}");
                     }
                 }
                 AppCommand::SpawnPane {

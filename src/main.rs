@@ -1049,6 +1049,12 @@ fn main() -> eframe::Result {
                         ConfigCmd::Reset { scope } => {
                             std::process::exit(cli::config_reset(scope.scope()));
                         }
+                        ConfigCmd::List { scope, json } => {
+                            std::process::exit(cli::config_list(scope.scope(), json));
+                        }
+                        ConfigCmd::Set { scope, pairs } => {
+                            std::process::exit(cli::config_set(&pairs, scope.scope()));
+                        }
                     },
                     Commands::Notes { cmd } => match cmd {
                         Some(NotesCmd::List) | None => std::process::exit(cli::notes_list_cli()),

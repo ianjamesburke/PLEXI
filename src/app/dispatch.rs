@@ -504,7 +504,6 @@ impl PlexiApp {
             for cmd in cmds {
                 match cmd {
                     AppCommand::SpawnApp { .. }
-                    | AppCommand::OpenAppPath { .. }
                     | AppCommand::SpawnPane { .. }
                     | AppCommand::ForwardPaneRequest { .. }
                     | AppCommand::DeliverPipeMessage { .. }
