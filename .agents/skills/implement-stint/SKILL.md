@@ -244,22 +244,26 @@ Spawn **Sub-agent I** with the spec from Phase 3 and the worktree path. Sub-agen
 > - Write tests before implementation for host logic. New `AppRequest` or `HostEffect` behavior needs a `HostHarness` test first.
 > - Always run `cargo build` after edits.
 > - Run the narrower relevant test command: `cargo test --bin plexi <test_name>` (adjust filter as needed).
-> - After tests pass, run the `/code-review` skill (or equivalent Gemini diff review) on the staged diff. Maximum 2 review runs per validation attempt. Iterate on findings internally between runs.
+- After tests pass, run a Codex review against alpha (maximum 2 runs; iterate on findings between runs):
+>   ```bash
+>   codex review -c model_reasoning_effort=low --base alpha \
+>     "Review this diff for correctness bugs, unsafe patterns, missed error handling, and clear simplification opportunities. Do not flag style or cosmetic issues. Reply with a concise bulleted findings list referencing file and line, or 'No issues found.' if clean."
+>   ```
 > - Stage all changes with `git add <files>`. Do NOT commit — the orchestrator commits.
 > - Return a summary in this format:
 >
 > ```text
 > Files changed: <list>
 > Test results: <N passed, M failed — command used>
-> Gemini verdict: clean | findings remaining: <list>
+> Codex verdict: clean | findings remaining: <list>
 > Staged: yes
 > ```
 >
-> If Gemini still has unresolved findings after 2 runs, include them in the `findings remaining` field — do not block; just report.
+> If Codex still has unresolved findings after 2 runs, include them in the `findings remaining` field — do not block; just report.
 
 Receive the summary from Sub-agent I.
 
-**Orchestrator diff review:** Run `git -C <worktree-path> diff --staged --stat` and spot-check the diff before committing. If Sub-agent I reported unresolved Gemini findings, surface them to the user and ask whether to proceed or iterate.
+**Orchestrator diff review:** Run `git -C <worktree-path> diff --staged --stat` and spot-check the diff before committing. If Sub-agent I reported unresolved Codex findings, surface them to the user and ask whether to proceed or iterate.
 
 Then run the `/testing` skill (`.agents/skills/testing/SKILL.md`) to produce the `**Test evidence:**` block — diff classification, harness tests, headless render screenshots for visual changes. Include the block in the Ship Log entry (or PR body when no issue is linked) during handoff.
 
