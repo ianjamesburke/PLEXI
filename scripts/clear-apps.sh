@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: scripts/clear-apps.sh <channel>
 # Wipes a channel's installed apps directory. Re-run 'just install' afterwards
-# to re-sync from examples/. Useful when an app is renamed or removed.
+# to re-sync from apps/. Useful when an app is renamed or removed.
 set -euo pipefail
 
 channel="${1:?channel required — one of: main | alpha | beta | <channel-name>}"
@@ -19,4 +19,4 @@ fi
 count=$(find "$dir" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
 rm -rf "$dir"/*
 echo "Cleared $count app directories from $dir"
-echo "Re-run 'just install' from the matching worktree to re-sync from examples/"
+echo "Re-run 'just install' from the matching worktree to re-sync from apps/"

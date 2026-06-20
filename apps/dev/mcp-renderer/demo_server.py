@@ -2,7 +2,7 @@
 """Minimal stdio MCP server — 3 toy tools for testing mcp-renderer.
 
 Launch via:
-    plexi open mcp-renderer python3 examples/mcp-renderer/demo_server.py
+    plexi open mcp-renderer python3 apps/dev/mcp-renderer/demo_server.py
 """
 
 import json

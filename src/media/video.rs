@@ -17,7 +17,7 @@
 //!
 //!   3. [`MockVideoDecoder`] — procedural RGBA gradient at configurable fps.
 //!      Frames are pushed via the binary-pipe ring (one frame per packet).
-//!      Used by tests and by the POC `examples/video-player/` app driven
+//!      Used by tests and by POC video-player apps driven
 //!      with `PLEXI_VIDEO=mock://...`.
 //!
 //! Wire shape: apps `OpenVideo { request_id, source, pipe_id }` and the host

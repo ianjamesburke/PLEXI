@@ -271,7 +271,7 @@ pub struct ProcessApp {
     /// Video decoder backend (#345). `Arc<dyn VideoDecoder>` so production
     /// panes share an `AvfVideoDecoder` while tests inject `MockVideoDecoder`.
     /// The factory selects `MockVideoDecoder` when `PLEXI_VIDEO=mock://...`
-    /// is set, so the POC `examples/video-player/` app can exercise the
+    /// is set, so a POC video-player app can exercise the
     /// substrate without AVFoundation. Production `AvfVideoDecoder::open`
     /// returns `Err(NotImplemented)` until #346 lands real backing.
     pub(crate) video_device: Arc<dyn VideoDecoder>,
