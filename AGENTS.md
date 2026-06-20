@@ -46,9 +46,9 @@ When work begins: `stint start <task-id>`. When done: `stint done <task-id>`. Us
 
 Never add `Co-Authored-By: Claude ...` trailers. Never push directly to `main` or `beta`. Never pass `--delete-branch` to `gh pr merge`.
 
-## GitHub Issues
+## Tasks and Issues
 
-Always use the `/create-issue` skill. It owns labels, priority, area, and triage state. Never create issues manually.
+Always use the `/create-stint` skill to create tasks. It owns the full flow: duplicate check, sizing, sprint placement, blocking, and optional GitHub issue creation. Never create stint tasks or GitHub issues manually.
 
 ## Planning
 

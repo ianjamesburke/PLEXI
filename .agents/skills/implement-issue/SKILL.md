@@ -148,7 +148,7 @@ gh issue view <n2> --json title,body,labels > /tmp/issue_n2.json &
 wait && cat /tmp/issue_n*.json && rm /tmp/issue_n*.json
 ```
 
-**Implementation Map — verify, then trust.** If the issue body has an `## Implementation Map` section, it lists the exact files to touch (written by `/create-issue` during its codebase research). Do NOT re-run the broad grep/discovery sweep. Instead:
+**Implementation Map — verify, then trust.** If the issue body has an `## Implementation Map` section, it lists the exact files to touch (written by `/create-stint` during its codebase research). Do NOT re-run the broad grep/discovery sweep. Instead:
 
 1. Cheap existence check — one batched pass confirming each mapped path still exists and each named symbol is still present:
    ```bash
