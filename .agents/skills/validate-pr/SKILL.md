@@ -142,13 +142,14 @@ Run from inside the feature worktree:
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT/worktrees/$BRANCH"
 just pr-install $PR_NUMBER
+PR_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= "//' | tr -d '"')
 ```
 
 > **CWD check:** `just pr-install` runs `cargo bundle` AND `rsync apps/dev/` from CWD. Running from the repo root (alpha) syncs alpha's `apps/dev/` — any app added only on the feature branch will be missing or stale in the profile dir. Always `cd` into the worktree first, every time, including fix reinstalls.
 
 > **Compile check:** If no `Compiling plexi` line in output, the binary was cached. `touch src/<changed-file>.rs` then re-run.
 
-Wait for completion. The binary is now installed. Move immediately to Step 2b.
+Wait for completion. The binary is now installed (`$PR_VERSION`). Move immediately to Step 2b.
 
 > **HARD STOP — do not launch the PR binary.** Do not tail logs waiting for app output. Do not poll, watch, or sleep. The full sequence after install is: Codex review → write testing block → notify → stop. The user launches and exercises the app; that is not the agent's job.
 
@@ -218,7 +219,7 @@ This is the one-line context shown at the top of every testing block so the revi
 |---|---|
 | PR | #<n> · attempt <attempt+1>/3 |
 | Issue | #<issue-number> — <ISSUE_TITLE> |
-| Install | done |
+| Install | done — v<PR_VERSION> |
 | AI review | <one-line finding or "skipped — <reason>"> |
 | Test evidence | <conclusion line, or "none"> |
 
