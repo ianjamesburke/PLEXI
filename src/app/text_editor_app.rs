@@ -513,6 +513,7 @@ impl App for TextEditorApp {
         // to be taller than the viewport and triggering an unwanted scrollbar.
         let row_height = ui.fonts(|f| f.row_height(&font_id));
         let min_rows = ((ui.available_height() / row_height).floor() as usize).max(1);
+        const OVERSCROLL_ROWS: usize = 100;
 
         egui::ScrollArea::vertical()
             .id_salt(egui::Id::new("text_editor_scroll").with(&self.path))
@@ -528,7 +529,7 @@ impl App for TextEditorApp {
                             .id(te_id)
                             .font(font_id)
                             .desired_width(f32::INFINITY)
-                            .desired_rows(min_rows)
+                            .desired_rows(min_rows + OVERSCROLL_ROWS)
                             .margin(egui::vec2(4.0, 0.0))
                             .frame(false)
                             .show(ui)
