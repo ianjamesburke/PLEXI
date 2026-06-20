@@ -134,7 +134,7 @@ if git -C "$MAIN_TREE" tag -l "v$version" | grep -q "v$version"; then
     echo "Pushing tag v$version → triggers release CI..."
     git push origin "v$version"
 else
-    die "No tag for v$version — run 'just bump' before promoting to main."
+    echo "No tag for v$version — skipping release CI (run 'just bump' to cut a release)."
 fi
 
 if [[ "$do_install" == "install" || "$do_install" == "true" ]]; then

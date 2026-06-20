@@ -1,14 +1,12 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import { docsNav } from '../../lib/docsNav';
-import { CURRENT_VERSION } from '../../lib/version';
 ---
 <Layout title="Docs — Plexi" description="Plexi documentation.">
   <section class="docs-index">
     <div class="wrap">
       <header class="index-header">
         <h1>Documentation</h1>
-        <p class="version-note">current version: <span class="v">{CURRENT_VERSION}</span></p>
       </header>
       <div class="sections">
         {docsNav.map(group => (
@@ -42,14 +40,7 @@ import { CURRENT_VERSION } from '../../lib/version';
     letter-spacing: -0.02em;
     margin-bottom: 10px;
   }
-  .version-note {
-    font-size: 13px;
-    color: var(--fg-3);
-  }
-  .version-note .v {
-    color: var(--good);
-  }
-  .sections {
+.sections {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 40px;

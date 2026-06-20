@@ -3,20 +3,15 @@ import '../styles/global.css';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 import { docsNav } from '../lib/docsNav';
-import { CURRENT_VERSION } from '../lib/version';
-
 interface Props {
   title: string;
   description?: string;
-  verified_version?: string;
   currentSlug?: string;
 }
 
-const { title, description = '', verified_version, currentSlug } = Astro.props;
+const { title, description = '', currentSlug } = Astro.props;
 const pageTitle = `${title} — Plexi Docs`;
 const canonicalURL = new URL(Astro.url.pathname, Astro.site).toString();
-
-const isStale = verified_version && verified_version !== CURRENT_VERSION;
 ---
 <!doctype html>
 <html lang="en">
@@ -60,12 +55,6 @@ const isStale = verified_version && verified_version !== CURRENT_VERSION;
       <div class="docs-content">
         <header class="doc-header">
           <h1>{title}</h1>
-          {verified_version && (
-            <span class:list={['version-badge', { stale: isStale }]}>
-              {isStale ? '⚠' : '✓'} verified v{verified_version}
-              {isStale && <span class="current-hint"> (current: v{CURRENT_VERSION})</span>}
-            </span>
-          )}
         </header>
         <div class="prose prose-invert max-w-none">
           <slot />
@@ -166,23 +155,6 @@ const isStale = verified_version && verified_version !== CURRENT_VERSION;
     line-height: 1.15;
     color: var(--fg);
   }
-
-  .version-badge {
-    font-size: 11px;
-    color: var(--good);
-    background: rgba(52, 211, 153, 0.1);
-    border: 1px solid rgba(52, 211, 153, 0.25);
-    padding: 3px 8px;
-    border-radius: 4px;
-    white-space: nowrap;
-    letter-spacing: 0.03em;
-  }
-  .version-badge.stale {
-    color: var(--warn);
-    background: rgba(245, 158, 11, 0.1);
-    border-color: rgba(245, 158, 11, 0.25);
-  }
-  .current-hint { opacity: 0.7; }
 
   @media (max-width: 980px) {
     .docs-shell { flex-direction: column; padding: 0 20px; gap: 0; }
