@@ -22,16 +22,12 @@ do_rebase() {
     git fetch origin
     local BEHIND
     BEHIND=$(git -C "worktrees/$BRANCH" rev-list HEAD..origin/alpha --count 2>/dev/null || echo 0)
-    if [ "$BEHIND" -gt 0 ]; then
-        echo "==> Rebasing $BRANCH ($BEHIND commits behind origin/alpha)"
-        git -C "worktrees/$BRANCH" rebase origin/alpha
-        git -C "worktrees/$BRANCH" push --force-with-lease origin HEAD
-        # GitHub merge state lags after a force-push — wait before merging
-        echo "==> Waiting for GitHub to register push..."
-        sleep 10
-    else
-        echo "==> $BRANCH is up to date with origin/alpha"
-    fi
+    echo "==> Rebasing $BRANCH ($BEHIND commits behind origin/alpha)"
+    git -C "worktrees/$BRANCH" rebase origin/alpha
+    git -C "worktrees/$BRANCH" push --force-with-lease origin HEAD
+    # GitHub merge state lags after a force-push — wait before merging
+    echo "==> Waiting for GitHub to register push..."
+    sleep 10
 }
 
 do_squash() {
