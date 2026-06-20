@@ -13,6 +13,58 @@ const NOTE_HEADER_FONT_SIZE: f32 = 11.0;
 const FONT_SIZE_DEFAULT: f32 = 14.0;
 const FONT_SIZE_MIN: f32 = 9.0;
 const FONT_SIZE_MAX: f32 = 32.0;
+const FIND_BAR_HEIGHT: f32 = 28.0;
+const FIND_BAR_FONT_SIZE: f32 = 13.0;
+
+struct FindBar {
+    query: String,
+    /// Byte-offset positions of each match start in `content`.
+    matches: Vec<usize>,
+    /// Index into `matches` for the current (highlighted) match.
+    current: usize,
+    /// Requests focus on the find input on the next frame.
+    focus_requested: bool,
+}
+
+impl FindBar {
+    fn new() -> Self {
+        Self {
+            query: String::new(),
+            matches: Vec::new(),
+            current: 0,
+            focus_requested: true,
+        }
+    }
+
+    fn recompute(&mut self, content: &str) {
+        self.matches.clear();
+        if self.query.is_empty() {
+            return;
+        }
+        let lower_content = content.to_lowercase();
+        let lower_query = self.query.to_lowercase();
+        let mut pos = 0;
+        while let Some(idx) = lower_content[pos..].find(&lower_query) {
+            let abs = pos + idx;
+            self.matches.push(abs);
+            pos = abs + lower_query.len().max(1);
+        }
+        if self.current >= self.matches.len() && !self.matches.is_empty() {
+            self.current = self.matches.len() - 1;
+        }
+    }
+
+    fn advance(&mut self, forward: bool) {
+        if self.matches.is_empty() {
+            return;
+        }
+        if forward {
+            self.current = (self.current + 1) % self.matches.len();
+        } else {
+            self.current = self.current.checked_sub(1).unwrap_or(self.matches.len() - 1);
+        }
+    }
+}
 
 pub struct TextEditorApp {
     path: PathBuf,
@@ -34,6 +86,8 @@ pub struct TextEditorApp {
     /// rendered frame. Gates the down-arrow-appends-newline behavior: the
     /// press that *moves* the cursor to the end must not also append.
     cursor_was_at_end: bool,
+    /// Active find bar, or `None` when dismissed.
+    find_bar: Option<FindBar>,
 }
 
 impl TextEditorApp {
@@ -58,6 +112,7 @@ impl TextEditorApp {
             load_error,
             font_size: FONT_SIZE_DEFAULT,
             cursor_was_at_end: false,
+            find_bar: None,
         }
     }
 
@@ -304,6 +359,43 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn find_bar_recompute_finds_case_insensitive_matches() {
+        let mut bar = FindBar::new();
+        bar.query = "hello".to_string();
+        let content = "Hello world, hello there, HELLO!";
+        bar.recompute(content);
+        assert_eq!(bar.matches.len(), 3);
+        assert_eq!(bar.matches[0], 0);
+        assert_eq!(bar.matches[1], 13);
+        assert_eq!(bar.matches[2], 26);
+    }
+
+    #[test]
+    fn find_bar_advance_wraps_around() {
+        let mut bar = FindBar::new();
+        bar.query = "x".to_string();
+        let content = "x foo x bar x";
+        bar.recompute(content);
+        assert_eq!(bar.matches.len(), 3);
+        assert_eq!(bar.current, 0);
+        bar.advance(true);
+        assert_eq!(bar.current, 1);
+        bar.advance(true);
+        assert_eq!(bar.current, 2);
+        bar.advance(true);
+        assert_eq!(bar.current, 0); // wraps
+        bar.advance(false);
+        assert_eq!(bar.current, 2); // wraps backward
+    }
+
+    #[test]
+    fn find_bar_empty_query_produces_no_matches() {
+        let mut bar = FindBar::new();
+        bar.recompute("anything");
+        assert!(bar.matches.is_empty());
+    }
 }
 
 /// Split a note document into its raw frontmatter block (kept out of the
@@ -438,7 +530,38 @@ impl App for TextEditorApp {
         false
     }
 
-    fn handle_key(&mut self, _input: &egui::InputState) -> KeyDisposition {
+    fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
+        // Cmd+F: open find bar (or re-focus if already open).
+        if input.key_pressed(egui::Key::F)
+            && input.modifiers.matches_logically(egui::Modifiers::COMMAND)
+        {
+            log::info!("TextEditorApp: Cmd+F — opening find bar");
+            match &mut self.find_bar {
+                Some(bar) => bar.focus_requested = true,
+                None => {
+                    let mut bar = FindBar::new();
+                    bar.recompute(&self.content);
+                    self.find_bar = Some(bar);
+                }
+            }
+            return KeyDisposition::Consumed;
+        }
+
+        if let Some(bar) = &mut self.find_bar {
+            // Escape: close the find bar.
+            if input.key_pressed(egui::Key::Escape) {
+                log::info!("TextEditorApp: Escape — closing find bar");
+                self.find_bar = None;
+                return KeyDisposition::Consumed;
+            }
+            // Enter: next match. Shift+Enter: previous match.
+            if input.key_pressed(egui::Key::Enter) {
+                let forward = !input.modifiers.shift;
+                bar.advance(forward);
+                return KeyDisposition::Consumed;
+            }
+        }
+
         KeyDisposition::Passthrough
     }
 
@@ -508,16 +631,110 @@ impl App for TextEditorApp {
         let te_id = egui::Id::new("text_editor_content").with(&self.path);
         let font_id = egui::FontId::monospace(self.font_size);
 
+        // When the find bar is open, reserve its height at the bottom before
+        // laying out the scroll area so the editor doesn't overlap the bar.
+        let find_bar_height = if self.find_bar.is_some() {
+            FIND_BAR_HEIGHT
+        } else {
+            0.0
+        };
+        let editor_height = (ui.available_height() - find_bar_height).max(1.0);
+
         // Use the actual rendered row height (not font em-size) so desired_rows fills
         // the viewport exactly. font_size alone ignores line leading, causing the TextEdit
         // to be taller than the viewport and triggering an unwanted scrollbar.
         let row_height = ui.fonts(|f| f.row_height(&font_id));
-        let min_rows = ((ui.available_height() / row_height).floor() as usize).max(1);
+        let min_rows = ((editor_height / row_height).floor() as usize).max(1);
         const OVERSCROLL_ROWS: usize = 100;
+
+        // Snapshot match positions for the layouter closure (can't borrow self there).
+        let match_positions: Vec<usize> = self
+            .find_bar
+            .as_ref()
+            .map(|b| b.matches.clone())
+            .unwrap_or_default();
+        let current_match: Option<usize> = self
+            .find_bar
+            .as_ref()
+            .and_then(|b| b.matches.get(b.current).copied());
+        let query_len = self
+            .find_bar
+            .as_ref()
+            .map(|b| b.query.len())
+            .unwrap_or(0);
+
+        let match_bg = colors.warning.gamma_multiply(0.45);
+        let current_match_bg = colors.accent.gamma_multiply(0.55);
+        let text_color = colors.text_primary;
+        let font_id_clone = font_id.clone();
+
+        let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
+            let mut job = egui::text::LayoutJob::default();
+            if match_positions.is_empty() || query_len == 0 {
+                job.append(
+                    text,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: font_id_clone.clone(),
+                        color: text_color,
+                        ..Default::default()
+                    },
+                );
+            } else {
+                let mut pos = 0usize;
+                for &start in &match_positions {
+                    if start > text.len() {
+                        break;
+                    }
+                    let end = (start + query_len).min(text.len());
+                    if start > pos {
+                        job.append(
+                            &text[pos..start],
+                            0.0,
+                            egui::TextFormat {
+                                font_id: font_id_clone.clone(),
+                                color: text_color,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    let bg = if Some(start) == current_match {
+                        current_match_bg
+                    } else {
+                        match_bg
+                    };
+                    job.append(
+                        &text[start..end],
+                        0.0,
+                        egui::TextFormat {
+                            font_id: font_id_clone.clone(),
+                            color: text_color,
+                            background: bg,
+                            ..Default::default()
+                        },
+                    );
+                    pos = end;
+                }
+                if pos < text.len() {
+                    job.append(
+                        &text[pos..],
+                        0.0,
+                        egui::TextFormat {
+                            font_id: font_id_clone.clone(),
+                            color: text_color,
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+            job.wrap.max_width = wrap_width;
+            ui.fonts(|f| f.layout_job(job))
+        };
 
         egui::ScrollArea::vertical()
             .id_salt(egui::Id::new("text_editor_scroll").with(&self.path))
             .auto_shrink([false, false])
+            .max_height(editor_height)
             .show(ui, |ui| {
                 // egui's caret is hidden (transparent, non-blinking) and
                 // draw_text_caret paints a glyph-height replacement on top.
@@ -532,6 +749,7 @@ impl App for TextEditorApp {
                             .desired_rows(min_rows + OVERSCROLL_ROWS)
                             .margin(egui::vec2(4.0, 0.0))
                             .frame(false)
+                            .layouter(&mut layouter)
                             .show(ui)
                     })
                     .inner;
@@ -545,6 +763,10 @@ impl App for TextEditorApp {
 
                 if output.response.changed() {
                     self.last_edit = Some(Instant::now());
+                    // Recompute matches when content changes.
+                    if let Some(bar) = &mut self.find_bar {
+                        bar.recompute(&self.content);
+                    }
                 }
 
                 if let Some(t) = self.last_edit {
@@ -595,10 +817,69 @@ impl App for TextEditorApp {
                 // Request focus whenever this pane is active but the TextEdit doesn't
                 // have it — handles initial open, zoom/fullscreen toggles, and pane
                 // switches without a one-shot guard that breaks after focus changes.
-                if ctx.is_focused && !output.response.has_focus() {
+                // Skip when the find bar is open: the find input owns focus then.
+                if ctx.is_focused && !output.response.has_focus() && self.find_bar.is_none() {
                     output.response.request_focus();
                 }
             });
+
+        // Render the find bar below the scroll area.
+        if let Some(bar) = &mut self.find_bar {
+            let find_rect = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), FIND_BAR_HEIGHT),
+            );
+            ui.advance_cursor_after_rect(find_rect);
+
+            ui.painter()
+                .rect_filled(find_rect, 0.0, colors.pane_header_bg());
+
+            let mut find_ui = ui.new_child(egui::UiBuilder::new().max_rect(find_rect));
+            find_ui.horizontal_centered(|ui| {
+                ui.add_space(8.0);
+
+                let input_id = egui::Id::new("text_editor_find_input").with(&self.path);
+                let input_width = (find_rect.width() - 140.0).max(80.0);
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut bar.query)
+                        .id(input_id)
+                        .desired_width(input_width)
+                        .font(egui::FontId::proportional(FIND_BAR_FONT_SIZE))
+                        .hint_text("Find…")
+                        .frame(false),
+                );
+
+                if bar.focus_requested {
+                    response.request_focus();
+                    bar.focus_requested = false;
+                }
+
+                if response.changed() {
+                    bar.recompute(&self.content);
+                    log::info!(
+                        "TextEditorApp: find query {:?} — {} matches",
+                        bar.query,
+                        bar.matches.len()
+                    );
+                }
+
+                ui.add_space(8.0);
+                let count_text = if bar.matches.is_empty() {
+                    if bar.query.is_empty() {
+                        String::new()
+                    } else {
+                        "No results".to_string()
+                    }
+                } else {
+                    format!("{} / {}", bar.current + 1, bar.matches.len())
+                };
+                ui.label(
+                    egui::RichText::new(count_text)
+                        .size(FIND_BAR_FONT_SIZE)
+                        .color(colors.text_dim),
+                );
+            });
+        }
     }
 
     fn wants_close(&self) -> bool {
@@ -637,6 +918,7 @@ impl App for TextEditorApp {
                 self.note_title = note_title;
                 self.load_error = load_error;
                 self.last_edit = None;
+                self.find_bar = None;
             }
         }
     }
