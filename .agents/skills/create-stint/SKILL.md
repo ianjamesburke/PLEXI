@@ -259,6 +259,8 @@ Also apply the `blocked` label. Do not add `depends_on` to the issue body.
 
 ## Step 7 -- Validate
 
+Run `stint check` once at the end of the session, not after every individual task. If the user asks for multiple tasks in one request, write them all first, then validate once.
+
 ```bash
 stint check 2>&1
 ```
