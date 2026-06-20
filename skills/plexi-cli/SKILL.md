@@ -128,6 +128,8 @@ ai setup                 Interactive wizard to configure local AI via Ollama.
 config check             Validate config.toml.
 config edit              Open config.toml in $EDITOR.
 config get KEY           Print resolved value (e.g. agents.medium).
+config list              Print all known keys with type, value, description. --json for machine output.
+config set KEY=VAL ...   Set one or more keys in-place (e.g. config set theme.preset=dracula font_size=14).
 config reset             Overwrite config.toml with defaults.
 doctor [--json]          Audit installed apps for capability/config gaps.
 notes list               Print scratchpad note paths, newest first.
@@ -138,6 +140,10 @@ update apps              Update installed apps.
 completions SHELL        Print completion script (zsh, bash, fish).
 uninstall                Remove app bundle, CLI, completions. --keep-data, -y.
 ```
+
+## Config Workflow for Agents
+
+Before writing any config key, run `plexi config list` to discover valid keys, their types, and current values. Then use `plexi config set KEY=VALUE` to apply changes without opening an editor. Scope: workspace if inside a workspace, global otherwise (override with -g/--global or -w/--workspace).
 
 ## Non-Obvious Translation Rules
 

@@ -1882,7 +1882,7 @@ mod tests {
     fn public_security_docs_do_not_claim_python_sandboxing() {
         for doc in [
             include_str!("../../README.md"),
-            include_str!("../../docs/SECURITY_MODEL.md"),
+            include_str!("../process_app/SECURITY_MODEL.md"),
             include_str!("../../website/src/content/docs/apps.md"),
             include_str!("../../website/src/content/docs/sdk.md"),
             include_str!("../../website/src/content/docs/pgap.md"),

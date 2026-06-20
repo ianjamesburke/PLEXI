@@ -1080,6 +1080,27 @@ pub enum ConfigCmd {
         #[command(flatten)]
         scope: ConfigScopeArgs,
     },
+    /// Print all known config keys with type, current value, and description.
+    ///
+    /// Columns: key\ttype\tvalue\tdescription. Use --json for machine-readable output.
+    List {
+        #[command(flatten)]
+        scope: ConfigScopeArgs,
+        /// Output as a JSON array instead of tab-separated lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set one or more config keys in-place.
+    ///
+    /// Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14).
+    /// Scope defaults to workspace when inside a workspace, global otherwise.
+    Set {
+        #[command(flatten)]
+        scope: ConfigScopeArgs,
+        /// One or more KEY=VALUE pairs to write.
+        #[arg(required = true, value_name = "KEY=VALUE")]
+        pairs: Vec<String>,
+    },
 }
 
 #[derive(Args, Clone, Copy, Debug, Default, PartialEq, Eq)]
