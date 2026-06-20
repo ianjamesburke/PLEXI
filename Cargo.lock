@@ -2070,6 +2070,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gen_config_docs"
+version = "0.1.0"
+dependencies = [
+ "syn",
+]
+
+[[package]]
 name = "gen_schema"
 version = "0.1.0"
 dependencies = [

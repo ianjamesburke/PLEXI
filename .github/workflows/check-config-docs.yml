@@ -1,0 +1,39 @@
+name: check config docs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [alpha]
+    paths:
+      - 'src/config/mod.rs'
+      - 'scripts/default-config.toml'
+      - 'tools/gen_config_docs/**'
+      - 'website/src/content/docs/config.md'
+  pull_request:
+    branches: [alpha]
+    paths:
+      - 'src/config/mod.rs'
+      - 'scripts/default-config.toml'
+      - 'tools/gen_config_docs/**'
+      - 'website/src/content/docs/config.md'
+
+jobs:
+  check-config-docs:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check config docs are up to date
+        run: |
+          cargo run -p gen_config_docs > /tmp/fresh_config.md
+          if ! diff -q website/src/content/docs/config.md /tmp/fresh_config.md; then
+            echo "website/src/content/docs/config.md is stale. Run 'just gen-config-docs' and commit the result."
+            diff website/src/content/docs/config.md /tmp/fresh_config.md
+            exit 1
+          fi
+          echo "Config docs are up to date."

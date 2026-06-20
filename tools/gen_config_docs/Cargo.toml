@@ -1,0 +1,8 @@
+[package]
+name = "gen_config_docs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
