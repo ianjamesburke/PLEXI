@@ -19,6 +19,12 @@ Test infrastructure for the Plexi host. `HostHarness` (headless egui test harnes
 - Every `HostHarness::new()` creates a fresh tempdir for profile isolation. Tests never touch `$HOME`.
 - PTY-dependent tests are tagged `#[ignore = "requires-pty"]`.
 
+## Traps
+
+- **`cargo test --lib` silently misses host tests.** `--lib` only runs the `app_protocol` lib target (~47 tests). Host tests — app_registry, HostHarness, process_app, workspace_secrets — live in the binary target. Always use `cargo test --bin plexi`.
+- **`HostHarness::add_test_pane()` inserts a `ProcessApp` pane, not a Terminal.** Terminal-count assertions must not assume the initial pane is a Terminal; offset accordingly.
+- **Test constructor sync.** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Run `cargo test --bin plexi` on the base branch first to distinguish pre-existing failures from regressions.
+
 ## Style
 
 Document stable contracts, not history. If a rule here stops being true after a refactor, update it in the same change; otherwise leave it alone.

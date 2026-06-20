@@ -33,6 +33,8 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 - **Socket-first, then channel fallback.** Follow the `open_cli` pattern (`open.rs`): honor `PLEXI_SOCKET` when set; only fall back to channel-specific mechanisms when it is not.
 - **Never hardcode a profile or workspace dir.** No literal `~/.plexi-alpha/` or `.plexi/`. Use `config_dir()` and `workspace_channel_dir()`.
 - **Building a `-c` command string:** use `cmd_from_args` (in `src/app/mod.rs`), not `shell_join` directly. A single-arg array is already a shell expression; `shell_join(["echo hello"])` yields `'echo hello'`.
+- **Shell suffix construction:** when appending a stay-alive or exec suffix to a user command string, use the absolute shell path from `settings.shell` (already resolved), not `$SHELL`. `trim_end_matches([';', ' '])` the user command before appending to prevent `;;` syntax errors.
+- **Note token shell injection surface.** `substitute_note_tokens_static` applies `shell_quote` (POSIX single-quote wrapping) to both `{note}` and `{cwd}` before substituting into the command template. Do not add new substitution tokens that expand arbitrary strings without routing them through `shell_quote`. The command template itself comes from `config.toml` (user-controlled, trusted) — only substituted values are escaped.
 
 ## Style
 

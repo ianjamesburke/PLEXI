@@ -24,6 +24,8 @@ PGAP process app lifecycle: launch, IPC routing, capability gating, linked termi
 - **Request-response denials emit sentinel values** (e.g. `terminal_pane_id: 0`) so the SDK unblocks instead of hanging. Fire-and-forget denials are dropped silently.
 - **`linked_pane_id` goes stale** when the linked terminal is closed. A `RunInLinkedTerminal` to a dead pane id is a graceful no-op.
 - **`OpenArtifact` path validation is lexical** (no symlink resolution). A symlink inside the workspace that points outside passes the check.
+- **Python apps and WASM apps speak different key dialects.** Python/process apps (`mod.rs::handle_key`) send the raw egui debug name (`"ArrowUp"`, `"Escape"`); the Python SDK normalizes it. WASM apps (`src/host/wasm_pane.rs::handle_key`) have no normalization layer — the guest matches the wire string literally (`"up"`, `"down"`, `"space"`, `"enter"`, `"escape"`, lowercase letters). `canonical_key_name()` is the single source of truth. For WASM: forward both press AND release edges; collapse OS auto-repeat; test via `translate_key_event()` unit tests, not just direct `push_input`.
+- **Subprocess env for processes spawned outside `ProcessApp::launch`.** Any code that launches a Plexi app subprocess must replicate `ProcessApp::launch` env setup: `ENV_WHITELIST` (`HOME/PATH/LANG/LC_ALL/TERM/USER/SHELL`), `PLEXI_*` passthrough, `PYTHONPATH` → `config_dir/sdk` + bundle SDK path. Reference: `src/process_app/mod.rs` ~lines 320–368.
 
 ## Style
 

@@ -4,68 +4,15 @@
 
 ## Scope
 
-Build, install, release, and channel management scripts. Called from `justfile` recipes.
+Build, install, release, and channel management scripts. Called from `justfile` recipes. Run `just --list` for a self-documented recipe reference.
 
 ## Reference
 
 - [RELEASE_CHANNELS.md](RELEASE_CHANNELS.md) — channel table, feature gates, RC flow, bare CLI shim, stable release flow.
 
-## Build Channels & Isolated Profiles
+## Stability Ladder
 
-Each build channel is a fully isolated instance with its own binary, app bundle, config dir, log file, secrets index, and apps. Channel is detected at runtime from the binary name.
-
-| Channel | Binary | Profile dir | App bundle |
-|---|---|---|---|
-| Main | `plexi` | `~/.plexi/` | `Plexi.app` |
-| Beta | `plexi-beta` | `~/.plexi-beta/` | `Plexi Beta.app` |
-| Alpha | `plexi-alpha` | `~/.plexi-alpha/` | `Plexi Alpha.app` |
-| Release candidate | `plexi-rc-<version>` | `~/.plexi-rc-<version>/` | `Plexi Rc-<version>.app` |
-| PR build | `plexi-pr-<N>` | `~/.plexi-pr-<N>/` | `Plexi PR<N>.app` |
-
-- **RC builds:** local stable-tier release candidates installed with `just channel-install rc-010`. Release gates treat `rc-*` exactly like stable/main.
-- **PR builds:** ephemeral isolated instances installed by `just pr-install <N>` from the feature worktree. Never capture the bare `plexi` shim. Remove after merge with `just channel-clean pr-<N>`.
-- **Alpha config stays default.** Reset on every `just install`. Never customize it. PR builds seed from alpha.
-- **Beta config is the staging ground.** NOT reset on install. Use for migration testing and personal overrides.
-- **Workspace** (`.plexi/workspace.toml`) is a separate per-project concept. Not the same as the profile dir. Never run `workspace init` from `~`.
-- **PR build test instructions:** use `plexi-pr-<N>` (not `plexi`), and `cd` into a real project dir for workspace context.
-
-## Branch Workflow
-
-Three channels, each more stable than the last:
-
-- `alpha` — active development. All work lands here first.
-- `beta` — staging. Promoted from alpha.
-- `main` — production. Promoted from beta.
-
-Never commit directly to `beta` or `main`. Feature branch naming: `feature/<issue-number>-short-description`. Never pass `--delete-branch` to `gh pr merge`.
-
-**Full ship cycle:** `/dispatch N` → implement-issue → open-pr → validate-pr → merge-pr. Labels track state.
-
-### Promotion
-
-Alpha → beta: `git push origin alpha:beta`, then `just install` from `worktrees/beta/`.
-
-Beta → main: `just promote main` (pushes beta→main, creates/pushes version tag, triggers release).
-
-RC before promotion: `just channel-install rc-010`.
-
-**Worktree base is always local `HEAD`.** `wtp add` branches from the last local commit. Unpushed commits are included. Never stop worktree creation for dirty working tree, only for in-progress merge/rebase.
-
-Worktrees: `.` (alpha), `worktrees/beta`, `worktrees/main`, `worktrees/feature/<branch>`, `worktrees/fix/<branch>`.
-
-## Releases
-
-1. `just bump [patch|minor|major]` — bumps version, generates CHANGELOG, commits, creates local tag.
-2. `just promote beta` — pushes alpha→beta, syncs worktree.
-3. Test on beta.
-4. `just promote main` — pushes beta→main, pushes tag, triggers release.
-
-**Bump at release boundaries, not after every PR.** Run `just bump` once at end of batch or before promote.
-
-## Build & Install
-
-- `just install` is manual. Do not run automatically after PR merge.
-- **Never claim done from a feature worktree install.** Full done cycle: commit → PR → squash-merge → `git pull`.
+`alpha` → `beta` → `main`. All work lands on alpha first. Never commit directly to `beta` or `main`.
 
 ## Rules
 
@@ -73,6 +20,18 @@ Worktrees: `.` (alpha), `worktrees/beta`, `worktrees/main`, `worktrees/feature/<
 - **Never hardcode profile paths.** Derive from binary name or `config_dir()`.
 - Scripts are the only place `just` recipes call into. Do not duplicate logic in the justfile.
 - `default-config.toml` is the config template seeded on install. Keep in sync with `src/config/CONFIG.md`.
+- **Bump at release boundaries, not after every PR.** Run `just bump` once at end of a batch or before promoting.
+
+## Traps
+
+- **`cargo metadata` failure → silent install.** `scripts/install.sh` derives the bundle path via `cargo metadata`; if it fails (Python 3 missing, not in a workspace), the script exits immediately. If you change `[build] target-dir` in `.cargo/config.toml`, `install.sh` adapts automatically — but verify `cargo metadata` still succeeds.
+- **Unpushed alpha commits are silently lost when a ship agent rebases.** `implement-issue` runs `git pull --rebase origin alpha` at Phase 1. Commits on local alpha that haven't been pushed will conflict and can be dropped. Every direct commit to alpha must be followed immediately by `git push origin alpha`.
+- **PR build GUI won't launch when `PLEXI_SOCKET` is set.** `open -a "Plexi PR<N>"` inside a Plexi pane silently no-ops — the binary detects `PLEXI_SOCKET` and exits. Test scripts that need the PR build GUI must either run outside Plexi or `unset PLEXI_SOCKET` before the `open` call.
+- **Uncommitted bump on alpha.** If `Cargo.toml` shows a dirty version bump, `just bump` ran but failed to commit. Commit manually with `git commit -m "chore: bump alpha to X.Y.Z"` before creating a worktree — otherwise the feature branch diverges from origin at a bump commit that isn't on origin, and `gh pr merge` will fail.
+- **Session CWD for git commands.** Sessions start inside `worktrees/alpha/`. Run git commands bare (`git`, `wtp`, `just`, `gh`) for alpha; use absolute paths for feature worktrees.
+- **Worktree dir gone after `wtp remove`.** Finish all file edits and cd away before cleanup steps.
+- **Skill file edits don't need `bump + install`.** When the only change is `.claude/skills/*.md` or non-Rust config, commit directly to alpha. `just bump && just install` is only needed when Rust code changes should be reflected in the running build.
+- **`just pr-install` must run from the feature worktree.** `scripts/install.sh` derives `REPO_ROOT` from `${BASH_SOURCE[0]}/..`. Running from the repo root syncs alpha's `apps/dev/`, missing any apps that only exist on the feature branch.
 
 ## Child DOX Index
 

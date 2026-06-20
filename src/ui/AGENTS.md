@@ -29,6 +29,12 @@ Spacing scale (`SPACE_SM/MD/XL`), typography scale (`TEXT_HINT/CAPTION/BODY/TITL
 - `status_chip(ui, status, colors)` — status color mapping (`"running"` → accent, `"crashed"` → danger, etc.).
 - `description_label(ui, text, colors)` — single-line hint label. **Always wrap in `ui.scope()` and `set_max_width(n)` inside the scope** to avoid corrupting sibling layout.
 
+## Traps
+
+- **TextEdit focus — two-layer problem.** `request_focus` is last-caller-wins per frame. Modal overlays lose focus to CentralPanel panes because overlays render first in `update()`. Fix requires both: (1) a one-shot `*_focus_requested` flag — fire `request_focus` after ALL overlay widgets render, then set the flag; (2) an every-frame re-request in `update()` after CentralPanel, mirroring the `palette_search`/`quick_note_text` re-focus block. Either fix alone is insufficient.
+- **New theme presets must pass the WCAG contrast test.** `text_on_is_legible_on_every_preset_accent_and_danger` in `src/ui/theme.rs` asserts ≥3:1 on `accent` and `danger` fills for every entry in `preset_names()`. Add new presets to `preset_names()`, `canonical_preset_name()`, and `preset_colors()` — verify `text_on()` returns a legible color if the accent/danger is mid-luminance.
+- **Canvas apps bypass the host's WCAG check.** `ctx.theme.muted` (`#6c7086`) is only ~2.6:1 against bg — fails WCAG for body text. Use `ctx.theme.fg` for primary labels, a deliberate readable subtext (e.g. `#a6adc8`) for captions. `dim()` is for fills/tracks/glows, never text.
+
 ## Rules
 
 - Components own geometry. Callers should not hand-place modal title gaps, row baselines, scroll-body heights, focus rings, or text styles.

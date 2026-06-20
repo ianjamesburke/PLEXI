@@ -6,7 +6,7 @@ Before editing any file, read the `AGENTS.md` in its directory if one exists. Ch
 
 ## Source of Truth
 
-- **What shipped** → `git log --oneline -20` and `GOTCHAS.md`
+- **What shipped** → `git log --oneline -20`
 - **Product direction** → `NORTH_STAR.md`, `GLOSSARY.md`
 - **Feature specs** → `docs/prm/*.md` (PRMs are the planning source of truth)
 - **Sprint graph** → `.stint/` (`stint next`, `stint status`)
@@ -97,6 +97,21 @@ Document failures in the issue **body** under `## Prior Attempts`, not in commen
 - **Ideas become issues, not tangents.**
 - **Direct-to-alpha when user is watching.**
 - **Own the build.** If your change breaks something, fix it.
+
+## Documentation Rule
+
+Every fact lives in exactly one place. Other files reference it; they never restate it. If you find yourself writing something that exists elsewhere, replace it with a pointer. Inline command help (justfile recipe comments) is exempt — it serves `just --list`, not agent orientation.
+
+## Traps
+
+Non-obvious discoveries with no single owning directory. When you discover a trap, add it to the `## Traps` section of the relevant child `AGENTS.md` file. If it spans multiple subsystems, add it here.
+
+- **`proc_listchildpids(NULL, 0)` returns `EFAULT` on macOS 23.x (Sonoma).** Documented to return bytes needed; on Sonoma it returns -1. Use `pgrep -P <pid>` instead — exits 0 when children exist, 1 when idle, reliable across macOS versions.
+- **`git status --porcelain` can show false-dirty files.** Index timestamps may be stale while `git diff HEAD` is empty. Run `git update-index --refresh` before treating the branch as dirty.
+- **Observe macOS platform behavior before coding it.** Before implementing any macOS-specific behavior (menu lifecycle, bundle naming, eframe/winit callback order), add a throwaway `log::info!()` to observe the actual runtime value on the first frame. Never assume which callback fires when.
+- **Command handler data must be self-contained.** Any data a command handler needs must be in the command's own fields, never looked up from ambient state at dispatch time. By dispatch, that state may have been mutated or cleared by an earlier step in the same frame.
+- **`#[cfg(unix)]` removal — grep all sites.** When removing a `#[cfg(unix)]` block or executable-bit check, grep for `set_mode`, `PermissionsExt`, and `0o755` across all test functions in the same file before staging. The helper function is never the only site.
+- **Issue-referenced code may no longer exist.** When an issue names specific functions or code paths, grep for them in alpha before implementing. The function may have been removed or moved since the issue was filed.
 
 ## General Rules
 
