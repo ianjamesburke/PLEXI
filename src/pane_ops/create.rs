@@ -1312,6 +1312,7 @@ impl PlexiApp {
         )
     }
 
+
     pub(crate) fn launch_app_by_path_with_layout_no_review_modal(
         &mut self,
         app_path: &str,
