@@ -173,7 +173,7 @@ Apps are Python processes that render native UI and communicate with the host ov
 
 A fresh install seeds a core set of apps automatically. Browse them with `Cmd+P` or manage them from the terminal.
 
-Any CLI can also get a rendered Plexi UI without writing an app — see the [CLI Descriptor Authoring Guide](docs/cli-descriptor-guide.md).
+Any CLI can also get a rendered Plexi UI without writing an app — see the [CLI Descriptor Authoring Guide](registry/CLI_DESCRIPTOR_GUIDE.md).
 
 ### Install an app
 
@@ -269,7 +269,7 @@ PGAP is the wire protocol that every Plexi app speaks — built-in or third-part
 6. Out-of-frame commands (`notify`, `secret_get`, `capability_request`, etc.) arrive at any time; host processes them immediately.
 7. On close: host sends `shutdown`; app must exit cleanly within a short timeout.
 
-Current protocol version: **pgap/3**. The Python SDK has its own authoring API version; SDK v2 apps speak PGAP v3. Full reference: `src/protocol/` and [`docs/sdk-v2.md`](docs/sdk-v2.md).
+Current protocol version: **pgap/3**. The Python SDK has its own authoring API version; SDK v2 apps speak PGAP v3. Full reference: `src/protocol/` and [`sdk/python/SDK_V2.md`](sdk/python/SDK_V2.md).
 
 ---
 

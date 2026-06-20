@@ -12,7 +12,7 @@ Configuration loading, validation, channel-scoped profile dirs, and workspace co
 
 ## Rules
 
-- **Never hardcode a profile directory path.** Always use `config_dir()`. Never hardcode `.plexi/` as a workspace directory name; use `workspace_channel_dir()`.
+- **Never hardcode profile or workspace paths.** See path rules in `src/cli/AGENTS.md`.
 - **Required fields have no defaults.** Fail fast with a clear error. Optional fields are clearly marked.
 - **Alpha config stays default.** `just install` refreshes it from the template. Beta config is the staging ground.
 - When adding a new config key, update [CONFIG.md](CONFIG.md) and `scripts/default-config.toml` in the same change.

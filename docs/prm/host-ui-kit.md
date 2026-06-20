@@ -56,7 +56,7 @@ The work also prepares Phase 2 by applying the same rule to host chrome that PGA
 - `src/overlays/notification_modal.rs` already custom-paints option and primary buttons because default egui buttons do not provide the needed fixed-rect label centering.
 - `src/app/mod.rs` owns a large `FocusLayer` switch for overlay key dispatch and rendering.
 - `src/app/render.rs` consumes host UI focus registrations so migrated text-owning overlays can win focus after `CentralPanel`.
-- `GOTCHAS.md` documents the two-layer egui TextEdit focus problem. New text-owning overlays are easy to break unless they are wired into both the one-shot overlay focus path and the post-CentralPanel re-focus path.
+- `src/ui/AGENTS.md` documents the two-layer egui TextEdit focus problem. New text-owning overlays are easy to break unless they are wired into both the one-shot overlay focus path and the post-CentralPanel re-focus path.
 
 ## Design Principles
 

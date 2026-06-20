@@ -337,6 +337,6 @@ Marketplace acceptance scenarios:
 - `docs/SECURITY_MODEL.md` remains the current security disclosure as long as it says Python apps are not sandboxed.
 - Superseded plans under `docs/superpowers/plans/` and `docs/superpowers/specs/` should be removed when they conflict with the current PRM.
 - The old MCPUI standalone plan has been removed. This PRM owns MCPUI sequence.
-- `ROADMAP.md` can summarize milestones, but this PRM resolves conflicts for app framework and marketplace decisions.
+- This PRM resolves conflicts for app framework and marketplace decisions. Sprint tasks live in `.stint/`.
 
 When a future issue changes a decision here, update this PRM in the same PR.
