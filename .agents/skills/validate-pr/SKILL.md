@@ -123,19 +123,15 @@ Evaluate the conclusion, **then apply overrides**:
 
 **Do not re-run `cargo test` in validation.** The suite ran during implementation; the Test Evidence block is the authoritative record. Validation owns diff review and user acceptance, not test execution. Never re-run a suite that the Ship Log already reports as green.
 
-**Default mode: diff review only.** Do not install the PR build just because a Rust file changed. For small or obvious diffs, especially one-file edits, validation is:
-1. Gemini review against `alpha`
-2. Testing block whose pass/fail criteria map to the issue checklist
-3. User manual exercise if the issue is visual or interactive
+**Default mode: install the binary.** Always run `just pr-install $PR_NUMBER` unless one of the explicit skip conditions below applies. The install cost is low and gives the user the option to manually exercise the change.
 
-**Install triggers** (apply when test evidence concludes `binary install required`, is absent, or an override fires):
-- Changed files under `apps/` or `apps/dev/` — Python apps are copied to the profile dir on install, not served from source
-- Packaging, bundle, channel, profile-dir, app-copy, or runtime asset changes
-- Behavior cannot be judged from diff and needs the user to launch `plexi-pr-$PR_NUMBER`
-- The issue's Done When explicitly requires validating the installed PR binary
-- Gemini review or a targeted implementation check reports a blocker that requires a rebuilt binary to verify
+**Skip install only if ALL of the following hold:**
+- Test evidence explicitly says `install skippable — full coverage`
+- No `apps/` files changed
+- Done When does not require binary exercise
+- Changes are exclusively: cosmetic constants, help strings, markdown, or config TOML values
 
-If install is not required → skip Step 2 and proceed to Step 2b (automated quality checks).
+If skipping → mark Install row as `skipped — <reason>`, proceed to Step 2b (automated quality checks).
 
 ---
 
@@ -154,7 +150,7 @@ just pr-install $PR_NUMBER
 
 Wait for completion. The binary is now installed. Move immediately to Step 2b.
 
-> **HARD STOP — do not launch the PR binary.** Do not tail logs waiting for app output. Do not poll, watch, or sleep. The full sequence after install is: Gemini review → write testing block → notify → stop. The user launches and exercises the app; that is not the agent's job.
+> **HARD STOP — do not launch the PR binary.** Do not tail logs waiting for app output. Do not poll, watch, or sleep. The full sequence after install is: Codex review → write testing block → notify → stop. The user launches and exercises the app; that is not the agent's job.
 
 ---
 
@@ -168,33 +164,34 @@ Wait for completion. The binary is now installed. Move immediately to Step 2b.
   - The diff is **fewer than 5 lines changed** (additions + deletions combined, excluding blank lines and comments). Set `AI_FINDINGS="skipped — diff under 5 lines, low infrastructural risk"`.
   - ALL changed files are under `apps/` (app code, not SDK). Set `AI_FINDINGS="skipped — apps-only change, no host/SDK risk"`.
 
-When in doubt, run Gemini review. Do not expand to broad cargo tests or binary install from doubt alone.
+When in doubt, run Codex review. Do not expand to broad cargo tests or binary install from doubt alone.
 
-**Review-run cap:** Run Gemini review at most twice for one validation attempt without checking with Ian. The first run is the normal review. If it finds issues and you push fixes, one rerun is allowed to verify those fixes. If the second run finds more issues, stop, report the remaining findings, and ask Ian before running review again.
+**Review-run cap:** Run Codex review at most twice for one validation attempt without checking with Ian. The first run is the normal review. If it finds issues and you push fixes, one rerun is allowed to verify those fixes. If the second run finds more issues, stop, report the remaining findings, and ask Ian before running review again.
 
-**If running — rigorous Gemini review (gemini-2.5-pro):**
+**If running — Codex review (low reasoning):**
 
 ```bash
 # Use git worktree list to find the alpha root — git rev-parse --show-toplevel returns the
 # CWD's worktree path (not the main repo root) when run from inside a worktree.
 ALPHA_ROOT=$(git worktree list --porcelain | grep -B2 "branch refs/heads/alpha" | grep "^worktree " | head -1 | cut -d' ' -f2)
-REVIEW_OUT="/tmp/plexi-pr-$PR_NUMBER-gemini-review.txt"
-(cd "$ALPHA_ROOT/worktrees/$BRANCH" && git diff alpha...HEAD) | \
-  gemini --approval-mode yolo \
-    -p "Review this git diff for a Rust/Python codebase. Focus on: correctness bugs, unsafe patterns, missed error handling, and clear simplification opportunities. Do not flag style, formatting, or cosmetic issues. Reply with a concise bulleted findings list referencing file and line where possible, or 'No issues found.' if the diff is clean." \
-    > "$REVIEW_OUT" 2>&1 || true
+REVIEW_OUT="/tmp/plexi-pr-$PR_NUMBER-codex-review.txt"
+(cd "$ALPHA_ROOT/worktrees/$BRANCH" && \
+  codex review \
+    -c model_reasoning_effort=low \
+    --base alpha \
+    "Review this git diff for a Rust/Python codebase. Focus on: correctness bugs, unsafe patterns, missed error handling, and clear simplification opportunities. Do not flag style, formatting, or cosmetic issues. Reply with a concise bulleted findings list referencing file and line where possible, or 'No issues found.' if the diff is clean." \
+  > "$REVIEW_OUT" 2>&1) || true
 
-# Strip Gemini CLI skill-conflict warnings that appear before the actual findings.
-AI_FINDINGS=$(grep -v "^Skill conflict" "$REVIEW_OUT" | tail -120)
+AI_FINDINGS=$(tail -120 "$REVIEW_OUT")
 
 if [ -z "$AI_FINDINGS" ]; then
-  AI_FINDINGS="Gemini review completed; no output detected. Full raw output: $REVIEW_OUT"
+  AI_FINDINGS="Codex review completed; no output detected. Full raw output: $REVIEW_OUT"
 fi
 ```
 
-Only surface `AI_FINDINGS` in the testing block. Do not paste the raw Gemini transcript into chat. If you need to inspect raw output, read the temp file narrowly with `tail`, `rg`, or `sed`.
+Only surface `AI_FINDINGS` in the testing block. Do not paste the raw Codex transcript into chat. If you need to inspect raw output, read the temp file narrowly with `tail`, `rg`, or `sed`.
 
-After the optional PR install, mergeable check, and review summary are available, surface the testing block immediately. Do not launch the PR app, browse logs, run broad full-suite tests, or keep investigating unless the install, build, targeted tests, or Gemini findings show a real blocker.
+After the optional PR install, mergeable check, and review summary are available, surface the testing block immediately. Do not launch the PR app, browse logs, run broad full-suite tests, or keep investigating unless the install, build, targeted tests, or Codex findings show a real blocker.
 
 ---
 
@@ -215,26 +212,25 @@ This is the one-line context shown at the top of every testing block so the revi
 
 **Surface testing block format:**
 ```
-[TESTING] PR #<n> — <title> (attempt <attempt+1>/3)
-PR: <pr-url>
+[TESTING] PR #<n> — <title>
 
-Issue #<issue-number>: <ISSUE_TITLE>
-What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
+| | |
+|---|---|
+| PR | #<n> · attempt <attempt+1>/3 |
+| Issue | #<issue-number> — <ISSUE_TITLE> |
+| Install | done / skipped — <reason> |
+| AI review | <one-line finding or "skipped — <reason>"> |
+| Test evidence | <conclusion line, or "none"> |
 
-Test evidence (from implementation, when present):
-<test counts + render PNG path + conclusion line from the Ship Log Test evidence block>
+What this ships: <ISSUE_WHAT — one line>
 
-Gemini review (gemini-2.5-pro):
-<AI_FINDINGS verbatim>
+Pass: <concrete observable outcome(s), comma-separated or bullet if >2>
+Fail: <concrete observable symptom(s)>
 
-Pass criteria (from Done When):
-- <concrete observable outcome>
-
-Fail criteria:
-- <concrete observable symptom>
-
-Reply: "pass" | "fail: <description>" | "modify: <bounded change>"
+Reply: "pass" | "fail: <desc>" | "modify: <change>"
 ```
+
+AI_FINDINGS always shown verbatim when review ran; if skipped, one-line reason in the table is sufficient.
 
 **Your final response for this turn must be the testing block above.** Do not replace it with a status recap. Do not keep working after it is surfaced.
 
@@ -438,11 +434,9 @@ Issue re-labeled ready for next attempt
 ## Diff-Review Testing Block (default)
 
 Still run Step 2b unless the diff is exclusively cosmetic/style. Then surface the Step 3 testing block with these changes:
-- Header: `[TESTING] PR #<n> — <title> (diff review only)` (no attempt count)
-- After PR line: add `No binary install was run; validation is limited to the diff and Gemini review.`
-- Pass criteria label: `Pass criteria:` (drop "from Done When")
-- Pass criteria text: `<observable change visible in diff>`
-- Fail criteria text: `<what would look wrong>`
+- Install row: `skipped — diff review only`
+- No attempt count in header (no retry loop for diff-only)
+- Pass/Fail criteria: based on observable diff behavior, not Done When checklist
 
 Flip pane status the same as the install path before notifying:
 ```bash
@@ -454,12 +448,12 @@ pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the d
 
 ## Rules
 
-- Diff-review validation is the default. `just pr-install` is an exception, not the normal Rust-file path.
-- Step 2b quality checks (Gemini diff review) run unless skipped by the skip gate — assess the diff, then decide
+- Binary install is the default. Skip only when test evidence says skippable AND no apps/ changes AND changes are purely cosmetic.
+- Step 2b quality checks (Codex diff review) run unless skipped by the skip gate — assess the diff, then decide
 - Skip conditions: cosmetic/style-only changes; diff under 5 lines; apps/-only changes. Always run for sdk/ changes.
-- Do not run Gemini review more than twice in one validation attempt without checking with Ian
+- Do not run Codex review more than twice in one validation attempt without checking with Ian
 - Cosmetic = colors, spacing, font sizes, help strings, markdown, config values, UI copy — anything where human visual verification is the only meaningful check
-- Do not run cargo tests during validation unless Gemini review names a specific risk that needs a specific test command
+- Do not run cargo tests during validation unless Codex review names a specific risk that needs a specific test command
 - AI_FINDINGS is always shown verbatim — never summarized or filtered
 - Issue brief (ISSUE_TITLE + ISSUE_WHAT) must appear at the top of every testing block
 - `fail` without description: ask for it before taking any action

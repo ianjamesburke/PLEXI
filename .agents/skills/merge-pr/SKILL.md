@@ -91,11 +91,16 @@ gh issue edit <n> --remove-label "blocked" --add-label "ready"
 git status  # must be clean
 ```
 
+Output exactly this block — nothing after it, no RECOMMENDATION:
 ```
 [COMPLETE]
-- Merged: PR #<n> — <title>
-- Closed: Issue #<n> — <title>
-- Version: v<x.y.z>
+
+| | |
+|---|---|
+| PR | #<n> — <title> |
+| Issue | #<issue> — <title> / no-issue |
+| Alpha | <short-sha> |
+| Stint | <task-id> closed / none |
 ```
 
 ```bash
