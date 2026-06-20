@@ -17,6 +17,23 @@
 
 Before reporting anything as "done" or "missing", verify against `git log`.
 
+## Documentation Hierarchy
+
+Each documentation surface has a distinct role. Do not duplicate content across them.
+
+| Surface | Role | Examples |
+|---|---|---|
+| `CLAUDE.md` / `AGENTS.md` | Agent behavior rules. How to build, test, commit, and ship. Loaded every context window, so maximum density. | Branch policy, build channels, coding discipline, CLI rules |
+| `NORTH_STAR.md` | Product vision and phase plan. Why Plexi exists, where it's going. | Phase 1-4 goals, design principles |
+| `GLOSSARY.md` | Shared vocabulary. Canonical definitions of terms used everywhere. | Pane, context, PGAP, capability, secret |
+| `ROADMAP.md` | High-level index of what's shipped, what's in progress, what's next. Points to PRMs and `.stint/`. | Sprint s50 summary, v2 backlog |
+| `docs/prm/*.md` | Product Requirements. Full specs for major features or subsystems. The planning source of truth. | app-framework-marketplace, wasm-runtime, host-ui-kit |
+| `docs/*.md` | Technical reference. How things work today (config, SDK, testing, security, CLI contracts). | CONFIG.md, sdk-v2.md, TESTING.md, SECURITY_MODEL.md |
+| `.stint/` | Sprint and task graph. Operational sequencing, estimates, blockers, time tracking. Use `stint` CLI. | tasks/0005-*.md, sprints/s50.md |
+| GitHub issues | Implementation tickets. One issue per discrete unit of work. | Bug reports, feature tasks |
+
+**PRMs vs docs:** A PRM is forward-looking (what to build and why). A doc is present-tense (how things work now). When a PRM feature ships, the PRM stays as historical record; the corresponding doc gets updated to reflect the new reality.
+
 ## Website / Domain
 
 The product website is **`plexiapp.com`**. All docs links use `https://plexiapp.com/docs/...`. Never write `plexiapp.dev` or `plexi.app` — both are wrong.
@@ -236,7 +253,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 
 **Factory rule:** any impl returned from a factory function (e.g. `audio_device()`, `video_decoder()`) must never panic in a trait method. Unimplemented methods return `Err(NotImplemented)` / `None` / noop — never `todo!()`. When you add a new prod stub, add a `prod_stub_tests` unit test that calls every trait method and asserts no panic.
 
-## Lessons Carried Into v3
+## Lessons
 
 - **Platform behavior validation:** Before implementing any macOS-specific behavior (menu lifecycle, bundle naming, eframe/winit callback order), add a throwaway `log::info!()` to observe the actual runtime value on the first frame. Never assume which callback fires when or what a property returns — observe first, then code.
 - **Command self-containment:** Any data a command handler needs must be in the command's own fields — never looked up from ambient state (like a queue or map) at dispatch time. By dispatch, that state may have been mutated or cleared by an earlier step in the same frame.

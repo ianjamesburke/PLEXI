@@ -2,57 +2,40 @@
 
 This file is an index, not the dispatch queue.
 
-The canonical v1 plan for app authoring, packaging, marketplace trust, host UI stabilization, and release readiness is [`docs/prm/app-framework-marketplace.md`](docs/prm/app-framework-marketplace.md). MCPUI, WASM/WASI, `Surface`, and Bevy are v2 runtime lanes. If this file and the PRM disagree, the PRM wins.
+The canonical v1 plan is [`docs/prm/app-framework-marketplace.md`](docs/prm/app-framework-marketplace.md). The WASM runtime spec is [`docs/prm/wasm-runtime.md`](docs/prm/wasm-runtime.md). Sprint tasks live in `.stint/`. If this file and a PRM disagree, the PRM wins.
 
-## Current Focus
+## Current Focus -- Sprint s50 (v1 Landing)
 
-Work is moving through the marketplace PRM in this order:
+All remaining v1 work is consolidated into one sprint. Sprints S1-S6 and supporting sprints (S7-S14, S31) are complete.
 
-1. Finish File Explorer as the next Host UI Kit based daily-driver surface.
-2. Finish app authoring: generated apps use `view()` and L1 components, Core apps serve as references, `TextEdit` works as a normal tree child, and app-authoring tests cover render/input/state/layout.
-3. Clean up permissions and trust: app powers go through host-mediated APIs, manifests declare real powers, and Python apps are labeled as reviewed native processes.
-4. Define packages and local install: package metadata, validation, checksums, runtime requirements, capabilities, trust labels, and local install before hosted marketplace work.
-5. Add hosted marketplace: registry, publisher accounts, submission review, paid apps, revenue share, refunds, takedowns, analytics, and Plexi AI subscription as an `ai.query` backend.
-6. Stabilize host UI for v1: centralize remaining modals, shortcut displays, permission grants, package trust sheets, install confirmations, and marketplace chrome on the Host UI Kit.
-7. Cut v1 only after docs cleanup, issue hygiene, install QA, and security/trust wording audit.
+Remaining tasks:
+1. File Explorer completion: recursive search, native actions, settings modal.
+2. CLI tooling: `plexi config set` / `plexi config list`.
+3. UI fixes: PIP/chip overlap on list rows.
+4. Agent tooling: implement-stint two-phase sub-agent refactor.
+5. v1 release gate: docs cleanup, install QA, security wording audit.
 
-MCPUI export/import, WASM/WASI sandboxing, `Surface`, and Bevy targeting WASM + `Surface` are v2 work. They should not cut across the v1 flow unless they unblock a v1 task.
+## Already Shipped
 
-Use the PRM for the actual Done When checks and test plan.
+- App framework: PGAP v3, SDK v2, scaffold, dev loop, Core 9 reference apps.
+- Trust and packaging: capability grants, install trust sheet, package validation, local install.
+- Marketplace: hosted registry, publisher submission, browse/install, paid apps spec, AI subscription spec.
+- Host UI: modal system, command palette, shortcut display, permission grants, UI gallery.
+- Host agents: pane-native state, tool detail, file slots.
+- WASM runtime: gates G1-G7, G11-G13 shipped. Lanes A-E complete. Zero-copy present, launch args, persistent grants.
+- File Explorer: adaptive layout, columns, inspector, Quick Look, multi-select, safe operations, linked terminal.
 
-## Already Stabilized
+## v2 (Post-v1)
 
-The old stabilization and polish layers are no longer the planning surface. Use `git log`, closed issues, and `GOTCHAS.md` when you need history.
-
-Recent completed areas include the declarative keybinding table, shared modal shell, CLI namespace cleanup, pane spawning unification, app viewport overtake, terminal search, notification polish, text editor extraction, Core app theming, SDK v2 scaffolding, and PGAP reference work.
-
-## Parallel Work
-
-Pane lifecycle work remains valid product work, but it is not part of the marketplace PRM:
-
-- pane-level hiding
-- context-level parking
-- inventory overlay
-- notifications from hidden panes
-- restore-to-layout
-- context operations
-- live miniature rendering for portal tiles
-- pane activity indicators
-
-Do not let this track displace the marketplace path unless the user explicitly pivots.
+- WASM: G8 Python compat, G9 cloud execution, G10 payment gate.
+- Marketplace: scope flags, bundled skills, scope-gated activation.
+- Docking layout engine.
+- Collapsible subcontexts (needs keyboard navigation design).
+- CLI-native PGAP apps (Board/Console primitives).
 
 ## Dispatch Rules
 
-Do not use GitHub Project board #7, `NEXT.md`, `/pick-parallel`, `/update-next`, or stale blitz state.
-
-To plan dispatch:
-
 1. Read `docs/prm/app-framework-marketplace.md`.
-2. Identify the first unfinished milestone.
-3. Use `.stint/` for sprint sequencing and blockers.
-4. Use GitHub issues as implementation tickets where they are current and directly useful.
-5. Skip blocked and in-progress issues.
-6. Pick parallel lanes with non-overlapping `area:*` labels.
-7. If the PRM calls for work that has no issue, it is okay for the stint task to be the planning unit until the issue workflow is needed.
-
-GitHub issues are work tickets. GitHub milestones are optional release buckets, not the planning source.
+2. Use `.stint/` for sprint sequencing: `stint sprint show 50`, `stint next`.
+3. Use GitHub issues as implementation tickets.
+4. Pick parallel lanes with non-overlapping `area:*` labels.

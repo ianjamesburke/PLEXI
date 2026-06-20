@@ -1,6 +1,6 @@
 # Plexi Glossary
 
-Shared vocabulary for Plexi. When introducing or redefining terms, update this file alongside DEV_LOG.md.
+Shared vocabulary for Plexi. When introducing or redefining terms, update this file.
 
 ---
 
@@ -66,4 +66,4 @@ Shared vocabulary for Plexi. When introducing or redefining terms, update this f
 
 ## How to Update This
 
-When a DEV_LOG entry introduces or significantly changes terminology, update this file in the same commit. Keep definitions concise and cross-reference related terms.
+When introducing or significantly changing terminology, update this file in the same commit. Keep definitions concise and cross-reference related terms.

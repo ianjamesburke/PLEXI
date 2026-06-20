@@ -2,7 +2,7 @@
 
 Audience: a coding agent building its first PGAP app.
 Goal: a running counter app using SDK v2.
-Deeper reference: [`docs/sdk-v2.md`](sdk-v2.md) and [`docs/PGAP_REFERENCE.md`](PGAP_REFERENCE.md).
+Deeper reference: [`docs/sdk-v2.md`](sdk-v2.md).
 
 Naming: SDK v2 is the Python authoring API. PGAP v3 (`pgap/3`) is the host/app protocol it speaks.
 
@@ -182,6 +182,6 @@ is one uncomment (and a `publisher` value) away.
 ## 7. Next Steps
 
 - SDK v2 reference: [`docs/sdk-v2.md`](sdk-v2.md)
-- PGAP wire reference: [`docs/PGAP_REFERENCE.md`](PGAP_REFERENCE.md)
+
 - Security model: [`docs/SECURITY_MODEL.md`](SECURITY_MODEL.md)
 - App framework roadmap: [`docs/prm/app-framework-marketplace.md`](prm/app-framework-marketplace.md)

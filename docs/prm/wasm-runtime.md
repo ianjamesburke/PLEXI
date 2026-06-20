@@ -1207,7 +1207,7 @@ Each lane below is independently shippable (one PR), independently testable (a `
 
 ### ~~Lane E — Agentic surface: `ai-query` + app events~~ ✅ DONE
 
-**Problem:** the WIT has no `ai-query`, `emit-event`, `declare-event-streams`, or subscribe import — WASM apps cannot make LLM calls or join the app-event subscription system that drives agents (`docs/prm/undo-and-app-events.md`, `permissions-broker.md`). The host side already exists: `LiveAiBroker` (`src/plexi_ai/broker.rs`), cost ledger, consent UI, event timeline. Only the WIT bindings + linker wiring are missing.
+**Problem:** the WIT has no `ai-query`, `emit-event`, `declare-event-streams`, or subscribe import — WASM apps cannot make LLM calls or join the app-event subscription system that drives agents (app event subscriptions, permissions broker). The host side already exists: `LiveAiBroker` (`src/plexi_ai/broker.rs`), cost ledger, consent UI, event timeline. Only the WIT bindings + linker wiring are missing.
 
 **Shipped:** WIT now includes `ai-query` plus `ai-stream-chunk` / `ai-response` input events, and `declare-event-streams` / `emit-event` effects with result events. WASM `ai-query` is gated by the Lane D `ai.query` session grant, runs on a worker through the injected `AiBroker`, and streams/finalizes back through the guest queue. App event declarations and emissions route into `AppTimeline`; undeclared emits return an error result. Tools and WASM subscribe/delivery imports remain future work.
 

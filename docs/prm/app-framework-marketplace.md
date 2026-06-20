@@ -244,7 +244,7 @@ Then, before cutting v1:
 - Regenerate public docs and CLI references from the current build.
 - Reconcile open GitHub issues against stint tasks and v1/v2 labels.
 - Verify install, upgrade, channel isolation, local package install, hosted marketplace install, and trust-label wording.
-- Keep `docs/SECURITY_MODEL.md`, `docs/PGAP_REFERENCE.md`, `docs/sdk-v2.md`, website docs, and README aligned.
+- Keep `docs/SECURITY_MODEL.md`, `docs/sdk-v2.md`, website docs, and README aligned.
 
 ### Runtime Lanes
 
@@ -333,7 +333,7 @@ Marketplace acceptance scenarios:
 - This PRM owns v1 planning for app authoring, trust, packaging, marketplace, paid-app planning, Plexi AI subscription planning, and release readiness.
 - Runtime lanes after v1 are parked here as v2 direction until their own PRM or stint sprint is created.
 - `docs/sdk-v2.md` remains the SDK API reference as long as it matches this PRM.
-- `docs/PGAP_REFERENCE.md` remains the wire reference as long as it matches code.
+
 - `docs/SECURITY_MODEL.md` remains the current security disclosure as long as it says Python apps are not sandboxed.
 - Superseded plans under `docs/superpowers/plans/` and `docs/superpowers/specs/` should be removed when they conflict with the current PRM.
 - The old MCPUI standalone plan has been removed. This PRM owns MCPUI sequence.

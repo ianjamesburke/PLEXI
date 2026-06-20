@@ -12,7 +12,7 @@ re-document the descriptor schema — for that, read the
 schema at `schemas/plexi-descriptor-schema.json`.
 
 - **What the descriptor looks like** → [`cli-descriptor-guide.md`](cli-descriptor-guide.md)
-- **The host/app wire protocol for SDK apps** → [`PGAP_REFERENCE.md`](PGAP_REFERENCE.md)
+- **The host/app wire protocol for SDK apps** → `src/protocol/` and [`sdk-v2.md`](sdk-v2.md)
 - **The capability/permission model** → [`SECURITY_MODEL.md`](SECURITY_MODEL.md)
 
 The renderer is implemented in `src/render/cli_renderer_app.rs`. The open path is
