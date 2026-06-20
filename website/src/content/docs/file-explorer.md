@@ -1,7 +1,6 @@
 ---
 title: File Explorer
 description: Browse your filesystem without leaving Plexi.
-verified_version: "0.1.5"
 order: 8
 ---
 

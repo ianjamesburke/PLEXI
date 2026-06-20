@@ -6,14 +6,11 @@ use plexi::cli_args::Cli;
 
 fn main() {
     let cmd = Cli::command();
-    // Use the version from the plexi package, not gen_cli_docs
-    let version = cmd.get_version().unwrap_or(env!("CARGO_PKG_VERSION"));
 
     print!(
         r#"---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "{version}"
 order: 7
 ---
 

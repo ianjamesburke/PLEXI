@@ -1,7 +1,6 @@
 ---
 title: Configuration
 description: Edit config.toml, choose a theme, wire AI models, and override shortcuts.
-verified_version: "0.1.5"
 order: 2
 ---
 
