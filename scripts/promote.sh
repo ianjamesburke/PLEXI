@@ -132,7 +132,7 @@ if git -C "$MAIN_TREE" tag -l "v$version" | grep -q "v$version"; then
         git tag -f "v$version" "$main_commit"
     fi
     echo "Pushing tag v$version → triggers release CI..."
-    git push origin "v$version"
+    git push origin "v$version" --force
 else
     echo "No tag for v$version — skipping release CI (run 'just bump' to cut a release)."
 fi
