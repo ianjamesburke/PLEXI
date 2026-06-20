@@ -244,10 +244,17 @@ Spawn **Sub-agent I** with the spec from Phase 3 and the worktree path. Sub-agen
 > - Write tests before implementation for host logic. New `AppRequest` or `HostEffect` behavior needs a `HostHarness` test first.
 > - Always run `cargo build` after edits.
 > - Run the narrower relevant test command: `cargo test --bin plexi <test_name>` (adjust filter as needed).
-- After tests pass, run a Codex review against alpha (maximum 2 runs; iterate on findings between runs):
+- After tests pass, run a Codex review against alpha (maximum 2 runs; iterate on findings between runs). Write output to a tmp file; only read it if findings are present:
 >   ```bash
+>   CODEX_OUT="/tmp/plexi-codex-review-$$.txt"
 >   codex review -c model_reasoning_effort=low --base alpha \
->     "Review this diff for correctness bugs, unsafe patterns, missed error handling, and clear simplification opportunities. Do not flag style or cosmetic issues. Reply with a concise bulleted findings list referencing file and line, or 'No issues found.' if clean."
+>     "Review this diff for correctness bugs, unsafe patterns, missed error handling, and clear simplification opportunities. Do not flag style or cosmetic issues. Reply with a concise bulleted findings list referencing file and line, or 'No issues found.' if clean." \
+>     > "$CODEX_OUT" 2>&1 || true
+>   if grep -qi "no issues found" "$CODEX_OUT"; then
+>     CODEX_VERDICT="clean"
+>   else
+>     CODEX_VERDICT=$(tail -80 "$CODEX_OUT")
+>   fi
 >   ```
 > - Stage all changes with `git add <files>`. Do NOT commit — the orchestrator commits.
 > - Return a summary in this format:
