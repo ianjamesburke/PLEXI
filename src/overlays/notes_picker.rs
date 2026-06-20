@@ -95,12 +95,12 @@ impl PlexiApp {
             return;
         };
         let active = self.active_window;
-        if let Some((existing_tile_id, existing_pane_id)) =
+        if let Some((_tile_id, existing_pane_id)) =
             self.find_open_text_editor_tile(active, &entry.path)
         {
-            log::info!("notes_picker: refusing to delete open note in pane {existing_pane_id}");
-            self.set_window_focused_pane(active, existing_tile_id);
-            self.pop_focus_layer(&FocusLayer::NotesPicker);
+            log::info!(
+                "notes_picker: refusing to delete open note in pane {existing_pane_id} — close it first"
+            );
             return;
         }
 
@@ -116,117 +116,7 @@ impl PlexiApp {
         }
     }
 
-    fn notes_picker_commit_rename(&mut self) {
-        let Some(title) = self.notes_picker_rename.take() else {
-            return;
-        };
-        let Some(entry_idx) = self.notes_picker_selected_entry() else {
-            return;
-        };
-        let (path, inbox) = {
-            let entry = &self.notes_picker_entries[entry_idx];
-            (entry.path.clone(), entry.inbox)
-        };
-        if let Err(e) = crate::notes::set_note_title(&path, &title) {
-            log::warn!("notes_picker: rename failed for {:?}: {e}", path);
-            return;
-        }
-        log::info!("notes_picker: renamed {:?} to '{}'", path, title.trim());
-        // If the note is open in an editor pane, sync its in-memory copy and
-        // pane name — otherwise the editor's next flush clobbers the title.
-        let active = self.active_window;
-        if let Some((_, open_pane_id)) = self.find_open_text_editor_tile(active, &path) {
-            if let Some(app_pane) = self.windows[active]
-                .panes
-                .get_mut(&open_pane_id)
-                .and_then(|p| p.as_app_mut())
-            {
-                app_pane.runtime.on_pane_renamed(&title);
-                app_pane.name = if title.trim().is_empty() {
-                    app_pane.runtime.display_name()
-                } else {
-                    title.trim().to_string()
-                };
-            }
-        }
-        if let Some(reloaded) = crate::notes::NotePickerEntry::load(&path, inbox) {
-            self.notes_picker_entries[entry_idx] = reloaded;
-        }
-    }
-
     pub(crate) fn notes_picker_handle_key(&mut self, ctx: &egui::Context) {
-        // ── Rename mode: the TextField owns typing; only Esc/Enter here. ─────
-        if self.notes_picker_rename.is_some() {
-            let (cancel, commit) = ctx.input_mut(|i| {
-                (
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
-                )
-            });
-            if cancel {
-                self.notes_picker_rename = None;
-            } else if commit {
-                self.notes_picker_commit_rename();
-            }
-            return;
-        }
-
-        // ── Filter mode: the TextField owns typing; nav via arrows/Cmd+J/K. ──
-        if self.notes_picker_filtering {
-            let visible = self.notes_picker_filtered().len();
-            #[derive(Clone, Copy)]
-            enum FilterKey {
-                Exit,
-                Open,
-                Down,
-                Up,
-            }
-            let action = ctx.input_mut(|i| {
-                if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-                    Some(FilterKey::Exit)
-                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
-                    Some(FilterKey::Open)
-                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                    || i.consume_key(egui::Modifiers::COMMAND, egui::Key::J)
-                {
-                    Some(FilterKey::Down)
-                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-                    || i.consume_key(egui::Modifiers::COMMAND, egui::Key::K)
-                {
-                    Some(FilterKey::Up)
-                } else {
-                    None
-                }
-            });
-            match action {
-                Some(FilterKey::Exit) => {
-                    self.notes_picker_filtering = false;
-                    self.notes_picker_query.clear();
-                    self.notes_picker_selected = 0;
-                }
-                Some(FilterKey::Open) => self.notes_picker_open_selected(),
-                Some(FilterKey::Down) => {
-                    if visible > 0 {
-                        self.notes_picker_selected =
-                            (self.notes_picker_selected + 1).min(visible - 1);
-                    }
-                }
-                Some(FilterKey::Up) => {
-                    self.notes_picker_selected = self.notes_picker_selected.saturating_sub(1);
-                }
-                None => {}
-            }
-            return;
-        }
-
-        // ── Normal mode ──────────────────────────────────────────────────────
-        // Keep any background TextEdit from reclaiming egui focus.
-        ctx.memory_mut(|m| {
-            if let Some(id) = m.focused() {
-                m.surrender_focus(id);
-            }
-        });
-
         let visible = self.notes_picker_filtered().len();
 
         #[derive(Clone, Copy)]
@@ -237,43 +127,38 @@ impl PlexiApp {
             Enter,
             Delete,
             OpenNew,
-            Search,
-            Rename,
         }
 
         let action = ctx.input_mut(|i| {
-            let action = if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 Some(PickerKey::Escape)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::J)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-            {
-                Some(PickerKey::Down)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::K)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-            {
-                Some(PickerKey::Up)
             } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
                 Some(PickerKey::Enter)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::X) {
-                Some(PickerKey::Delete)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::S) {
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                || i.consume_key(egui::Modifiers::COMMAND, egui::Key::J)
+            {
+                Some(PickerKey::Down)
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                || i.consume_key(egui::Modifiers::COMMAND, egui::Key::K)
+            {
+                Some(PickerKey::Up)
+            } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
                 Some(PickerKey::OpenNew)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Slash) {
-                Some(PickerKey::Search)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::R) {
-                Some(PickerKey::Rename)
+            } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Backspace) {
+                Some(PickerKey::Delete)
             } else {
                 None
-            };
-            // Entering search/rename opens a TextField this same frame — drop
-            // the pending text event so "/" or "r" doesn't land in the field.
-            if matches!(action, Some(PickerKey::Search) | Some(PickerKey::Rename)) {
-                i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
             }
-            action
         });
         match action {
-            Some(PickerKey::Escape) => self.pop_focus_layer(&FocusLayer::NotesPicker),
+            Some(PickerKey::Escape) => {
+                if self.notes_picker_query.is_empty() {
+                    self.pop_focus_layer(&FocusLayer::NotesPicker);
+                } else {
+                    self.notes_picker_query.clear();
+                    self.notes_picker_selected = 0;
+                }
+            }
             Some(PickerKey::Down) => {
                 if visible > 0 {
                     self.notes_picker_selected = (self.notes_picker_selected + 1).min(visible - 1);
@@ -285,35 +170,11 @@ impl PlexiApp {
             Some(PickerKey::Enter) => self.notes_picker_open_selected(),
             Some(PickerKey::Delete) => {
                 if let Some(entry_idx) = self.notes_picker_selected_entry() {
-                    log::info!("notes_picker: x key — deleting entry {entry_idx}");
+                    log::info!("notes_picker: cmd+backspace — deleting entry {entry_idx}");
                     self.notes_picker_delete_entry(entry_idx);
                 }
             }
             Some(PickerKey::OpenNew) => self.notes_picker_open_in_new(),
-            Some(PickerKey::Search) => {
-                log::info!("notes_picker: / key — entering search mode");
-                self.notes_picker_filtering = true;
-                self.notes_picker_selected = 0;
-            }
-            Some(PickerKey::Rename) => {
-                if let Some(entry_idx) = self.notes_picker_selected_entry() {
-                    let entry = &self.notes_picker_entries[entry_idx];
-                    // Prefill with the display title unless it's just the
-                    // file-name fallback.
-                    let file_name = entry
-                        .path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    let prefill = if entry.title == file_name {
-                        String::new()
-                    } else {
-                        entry.title.clone()
-                    };
-                    log::info!("notes_picker: r key — renaming {:?}", entry.path);
-                    self.notes_picker_rename = Some(prefill);
-                }
-            }
             None => {}
         }
     }
@@ -389,43 +250,28 @@ impl PlexiApp {
         let selected = self.notes_picker_selected;
         let total = self.notes_picker_entries.len();
         let inbox_total = self.notes_picker_entries.iter().filter(|e| e.inbox).count();
-        let filtering = self.notes_picker_filtering;
-        let renaming = self.notes_picker_rename.is_some();
 
-        // Track which row the user clicked × on (Cell for shared borrow across
-        // nested closures).
-        let delete_cell = std::cell::Cell::new(None::<usize>);
         let open_cell = std::cell::Cell::new(None::<usize>);
         let prev_selected_cell = std::cell::Cell::new(selected);
 
         let mut query = self.notes_picker_query.clone();
-        let mut rename_buf = self.notes_picker_rename.clone();
+
+        let list_max_h = ((ctx.screen_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
 
         let modal_response = ModalShell::centered("notes_picker")
             .title("Notes")
-            .width(480.0)
+            .width(style::MODAL_WIDTH_PALETTE)
             .escape(true)
             .show(ctx, &colors, |ui| {
-                if renaming {
-                    if let Some(buf) = rename_buf.as_mut() {
-                        let te_id = egui::Id::new("notes_picker_rename");
-                        TextField::singleline(te_id, "Note title…")
-                            .focused(true)
-                            .log_name("notes_picker_rename")
-                            .show(ui, buf, &colors);
-                        ui.add_space(style::SPACE_SM);
-                    }
-                } else if filtering {
-                    let te_id = egui::Id::new("notes_picker_search");
-                    let te = TextField::singleline(te_id, "Fuzzy-find notes…")
-                        .focused(true)
-                        .log_name("notes_picker_search")
-                        .show(ui, &mut query, &colors);
-                    if te.changed() {
-                        prev_selected_cell.set(usize::MAX); // force scroll reset
-                    }
-                    ui.add_space(style::SPACE_SM);
+                let te_id = egui::Id::new("notes_picker_search");
+                let te = TextField::singleline(te_id, "Search notes…")
+                    .focused(true)
+                    .log_name("notes_picker_search")
+                    .show(ui, &mut query, &colors);
+                if te.changed() {
+                    prev_selected_cell.set(usize::MAX); // force scroll reset on query change
                 }
+                ui.add_space(style::SPACE_SM);
 
                 if total == 0 {
                     ui.label(
@@ -452,9 +298,10 @@ impl PlexiApp {
                     // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
                     .animated(false)
                     .id_salt("notes_picker_list")
-                    .max_height(320.0)
+                    .max_height(list_max_h)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = style::SPACE_SM;
                         for (row, &entry_idx) in filtered.iter().enumerate() {
                             let entry = &self.notes_picker_entries[entry_idx];
                             if entry.inbox && !shown_inbox_header {
@@ -488,73 +335,36 @@ impl PlexiApp {
                             let row_response = ListRow::new(&entry.title)
                                 .metadata_chips(if entry.inbox { &["inbox"] } else { &["note"] })
                                 .secondary(&secondary)
-                                .trailing_action("×")
-                                .danger_trailing(true)
                                 .selected(is_selected)
                                 .show(ui, &colors);
                             if is_selected {
                                 row_response
                                     .scroll_into_view(ui, selected != prev_selected_cell.get());
                             }
-                            if row_response.row_clicked() && !row_response.trailing_clicked() {
+                            if row_response.row_clicked() {
                                 open_cell.set(Some(row));
-                            }
-                            if row_response.trailing_clicked() {
-                                delete_cell.set(Some(entry_idx));
                             }
                         }
                     });
 
                 ui.add_space(style::SPACE_SM);
-                if renaming {
-                    HintBar::new(&[
-                        HintGroup::new(&["\u{21b5}"], "save title"),
-                        HintGroup::new(&["esc"], "cancel"),
-                    ])
-                    .show(ui, &colors);
-                } else if filtering {
-                    HintBar::new(&[
-                        HintGroup::new(&["\u{2191}", "\u{2193}"], "navigate"),
-                        HintGroup::new(&["\u{21b5}"], "open"),
-                        HintGroup::new(&["esc"], "clear search"),
-                    ])
-                    .show(ui, &colors);
-                } else {
-                    // Two rows so the hint bar fits inside the modal width
-                    // instead of stretching it wider than the note rows.
-                    // `s` (open in new pane) still works but is omitted to
-                    // keep the bar scannable. Normal mode consumes bare j/k
-                    // (no text field is focused), so no ⌘ in the hint.
-                    HintBar::new(&[
-                        HintGroup::alternatives(&[&["j"], &["k"]], "navigate"),
-                        HintGroup::new(&["\u{21b5}"], "open"),
-                        HintGroup::new(&["/"], "search"),
-                    ])
-                    .show(ui, &colors);
-                    HintBar::new(&[
-                        HintGroup::new(&["r"], "rename"),
-                        HintGroup::new(&["x"], "delete"),
-                        HintGroup::new(&["esc"], "dismiss"),
-                    ])
-                    .show(ui, &colors);
-                }
+                HintBar::new(&[
+                    HintGroup::new(&["\u{2318}J", "\u{2318}K"], "navigate"),
+                    HintGroup::new(&["\u{21b5}"], "open"),
+                    HintGroup::new(&["\u{2318}\u{232b}"], "delete"),
+                    HintGroup::new(&["esc"], "dismiss"),
+                ])
+                .show(ui, &colors);
             });
 
-        // Write back text-field buffers edited inside the closure.
-        if filtering && query != self.notes_picker_query {
+        if query != self.notes_picker_query {
             self.notes_picker_query = query;
             self.notes_picker_selected = 0;
-        }
-        if renaming {
-            self.notes_picker_rename = rename_buf;
         }
 
         if let Some(row) = open_cell.get() {
             self.notes_picker_selected = row;
             self.notes_picker_open_selected();
-        }
-        if let Some(entry_idx) = delete_cell.get() {
-            self.notes_picker_delete_entry(entry_idx);
         }
 
         // Dismiss on click outside the modal (processed after picker Area so it

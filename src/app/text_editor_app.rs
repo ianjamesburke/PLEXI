@@ -156,6 +156,37 @@ impl TextEditorApp {
             self.note_title,
             self.path
         );
+
+        if !title.trim().is_empty() {
+            if let Some(parent) = self.path.parent() {
+                let slug = slugify_title(title);
+                let new_path = parent.join(format!("{slug}.md"));
+                if new_path != self.path && !new_path.exists() {
+                    match std::fs::rename(&self.path, &new_path) {
+                        Ok(()) => {
+                            log::info!(
+                                "TextEditorApp: renamed note {:?} -> {:?}",
+                                self.path,
+                                new_path
+                            );
+                            self.path = new_path;
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "TextEditorApp: failed to rename {:?} -> {:?}: {e}",
+                                self.path,
+                                new_path
+                            );
+                        }
+                    }
+                } else if new_path.exists() && new_path != self.path {
+                    log::warn!(
+                        "TextEditorApp: skipping rename, target already exists: {:?}",
+                        new_path
+                    );
+                }
+            }
+        }
     }
 
     fn is_effectively_empty(&self) -> bool {
@@ -396,6 +427,21 @@ mod tests {
         bar.recompute("anything");
         assert!(bar.matches.is_empty());
     }
+
+    #[test]
+    fn slugify_basic() {
+        assert_eq!(slugify_title("My Note Title"), "my-note-title");
+    }
+
+    #[test]
+    fn slugify_collapses_special_chars() {
+        assert_eq!(slugify_title("Hello, World!"), "hello-world");
+    }
+
+    #[test]
+    fn slugify_empty_falls_back_to_note() {
+        assert_eq!(slugify_title("---"), "note");
+    }
 }
 
 /// Split a note document into its raw frontmatter block (kept out of the
@@ -476,6 +522,23 @@ enum Durability {
     /// For debounced autosaves on the render thread, where an APFS fsync
     /// (1-10ms) can land exactly on the next keystroke.
     Fast,
+}
+
+/// Convert a note title into a safe lowercase filename slug (no `.md` suffix).
+/// Non-alphanumeric characters become `-`; leading/trailing and consecutive
+/// dashes are collapsed; falls back to `"note"` for an all-symbol title.
+fn slugify_title(title: &str) -> String {
+    let slug: String = title
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    // Collapse runs of dashes and trim edges.
+    let slug = slug
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() { "note".to_string() } else { slug }
 }
 
 fn write_note_atomically(path: &Path, bytes: &[u8], durability: Durability) -> std::io::Result<()> {

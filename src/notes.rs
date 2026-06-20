@@ -89,12 +89,6 @@ pub(crate) fn set_title_in_content(content: &str, title: &str) -> String {
     }
 }
 
-/// Disk-backed wrapper around [`set_title_in_content`].
-pub(crate) fn set_note_title(path: &Path, title: &str) -> std::io::Result<()> {
-    let content = std::fs::read_to_string(path)?;
-    std::fs::write(path, set_title_in_content(&content, title))
-}
-
 // ─── Notes picker entries ────────────────────────────────────────────────────
 
 /// One selectable row in the Cmd+O notes picker.
@@ -387,42 +381,6 @@ mod tests {
         let (fm, body) = parse_note(content);
         assert_eq!(fm.title.as_deref(), Some("My Note"));
         assert_eq!(body, "body\n");
-    }
-
-    #[test]
-    fn set_note_title_updates_existing_frontmatter() {
-        let dir = std::env::temp_dir().join(format!("plexi-notes-title-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        let path = dir.join("note.md");
-        std::fs::write(&path, "---\ncaptured_at: 2026-01-01\n---\nbody\n").expect("seed");
-
-        set_note_title(&path, "Renamed").expect("set title");
-        let (fm, body) = parse_note(&std::fs::read_to_string(&path).expect("read"));
-        assert_eq!(fm.title.as_deref(), Some("Renamed"));
-        assert_eq!(fm.captured_at.as_deref(), Some("2026-01-01"));
-        assert_eq!(body, "body\n");
-
-        set_note_title(&path, "Renamed Again").expect("set title twice");
-        let (fm, _) = parse_note(&std::fs::read_to_string(&path).expect("read"));
-        assert_eq!(fm.title.as_deref(), Some("Renamed Again"));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn set_note_title_creates_frontmatter_when_absent() {
-        let dir =
-            std::env::temp_dir().join(format!("plexi-notes-title-new-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        let path = dir.join("plain.md");
-        std::fs::write(&path, "just text\n").expect("seed");
-
-        set_note_title(&path, "Titled").expect("set title");
-        let (fm, body) = parse_note(&std::fs::read_to_string(&path).expect("read"));
-        assert_eq!(fm.title.as_deref(), Some("Titled"));
-        assert_eq!(body, "just text\n");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -303,7 +303,7 @@ impl<'a> ListRow<'a> {
 
         let x = rect.left() + style::LIST_ROW_PAD_H;
 
-        let trailing_response = self
+        let _ = self
             .trailing
             .zip(trailing_rect)
             .map(|(label, trailing_rect)| {
@@ -354,10 +354,7 @@ impl<'a> ListRow<'a> {
         }
         self.draw_metadata(ui, colors, rect, trailing_rect, text_metrics);
 
-        ListRowResponse {
-            row: response,
-            trailing: trailing_response,
-        }
+        ListRowResponse { row: response }
     }
 
     fn action_left(&self, ui: &egui::Ui, rect: egui::Rect) -> f32 {
@@ -445,7 +442,6 @@ impl<'a> ListRow<'a> {
 
 pub struct ListRowResponse {
     row: Response,
-    trailing: Option<Response>,
 }
 
 impl ListRowResponse {
@@ -459,10 +455,6 @@ impl ListRowResponse {
 
     pub fn row_hovered(&self) -> bool {
         self.row.hovered()
-    }
-
-    pub fn trailing_clicked(&self) -> bool {
-        self.trailing.as_ref().is_some_and(Response::clicked)
     }
 
     /// See [`scroll_row_into_view`].
