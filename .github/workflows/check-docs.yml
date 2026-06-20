@@ -6,11 +6,15 @@ on:
     branches: [alpha]
     paths:
       - 'tools/check_docs_coverage.sh'
+      - 'tools/gen_sdk_docs.py'
+      - 'sdk/python/plexi_sdk/**'
       - 'website/src/content/docs/**'
   pull_request:
     branches: [alpha]
     paths:
       - 'tools/check_docs_coverage.sh'
+      - 'tools/gen_sdk_docs.py'
+      - 'sdk/python/plexi_sdk/**'
       - 'website/src/content/docs/**'
 
 jobs:
@@ -21,3 +25,23 @@ jobs:
 
       - name: Check docs command coverage
         run: bash tools/check_docs_coverage.sh
+
+  check-sdk-docs:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check SDK docs freshness
+        run: |
+          python3 tools/gen_sdk_docs.py --stdout > /tmp/plexi_check_sdk.md
+          if ! diff -q website/src/content/docs/sdk.md /tmp/plexi_check_sdk.md > /dev/null; then
+            echo "ERROR: website/src/content/docs/sdk.md is stale. Run 'just gen-sdk-docs' and commit."
+            diff website/src/content/docs/sdk.md /tmp/plexi_check_sdk.md || true
+            exit 1
+          fi
+          echo "SDK docs are up to date."

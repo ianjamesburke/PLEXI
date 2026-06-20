@@ -120,12 +120,30 @@ check-schema:
     fi
     echo "Schema is up to date."
 
+# Generate SDK reference docs from Python docstrings.
+# Run after any change to sdk/python/plexi_sdk/.
+gen-sdk-docs:
+    python3 tools/gen_sdk_docs.py
+
+# Verify the committed SDK docs are up to date with the current SDK source.
+# Fails if website/src/content/docs/sdk.md is stale.
+check-sdk-docs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 tools/gen_sdk_docs.py --stdout > /tmp/plexi_check_sdk.md
+    if ! diff -q website/src/content/docs/sdk.md /tmp/plexi_check_sdk.md > /dev/null; then
+        echo "ERROR: website/src/content/docs/sdk.md is stale. Run 'just gen-sdk-docs'."
+        diff website/src/content/docs/sdk.md /tmp/plexi_check_sdk.md || true
+        exit 1
+    fi
+    echo "SDK docs are up to date."
+
 # Assert every non-hidden CLI command is mentioned in at least one docs page.
 check-docs-coverage:
     bash tools/check_docs_coverage.sh
 
-# Run all docs checks (CLI freshness + config freshness + command coverage).
-check-docs: check-cli-docs check-config-docs check-docs-coverage
+# Run all docs checks (CLI freshness + config freshness + SDK freshness + command coverage).
+check-docs: check-cli-docs check-config-docs check-sdk-docs check-docs-coverage
 
 run:
     cargo run --release
