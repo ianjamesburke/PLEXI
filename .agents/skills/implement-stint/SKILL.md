@@ -189,55 +189,77 @@ If the implementation worktree already exists:
 - Keep setup reads short: `status --short --branch`, `diff --stat`, and targeted `rg` before full diffs or issue bodies.
 - Continue implementation in the existing worktree.
 
-## Phase 3 - Formulate
+## Phase 3 - Research (Sub-agent R)
 
-Read the task body first. If it links a GitHub issue, use the status/title/labels already fetched during setup. Fetch the issue body only if the task file is not enough to implement from.
+Spawn a **read-only** sub-agent. Its only job is to produce the implementation spec; it must not edit any file.
 
-Before editing code, produce a short implementation spec in context:
+**Prompt to Sub-agent R:**
 
-```text
-Task: <task-id> <title>
-Linked issue: #<n> or none
-Files to change:
-  - <path>: <what changes>
-Files not to touch:
-  - <path>: <why out of scope>
-Test that must pass:
-  - <command>
-Invariants:
-  - <from task, PRM, GOTCHAS.md, AGENTS.md>
-Logging plan:
-  - <new info/warn/error traces required by AGENTS.md>
-```
+> You are Sub-agent R for stint task `<task-id>`: `<title>`.
+> Worktree: `<worktree-path>`
+> Task body: `<paste full task body>`
+> Linked issue body (if any): `<paste or "none">`
+>
+> Your output is a structured implementation spec in exactly this format — nothing else:
+>
+> ```text
+> Task: <task-id> <title>
+> Linked issue: #<n> or none
+> Files to change:
+>   - <path>: <what changes>
+> Files not to touch:
+>   - <path>: <why out of scope>
+> Test that must pass:
+>   - <command>
+> Invariants:
+>   - <from task, CLAUDE.md, AGENTS.md>
+> Logging plan:
+>   - <new info/warn/error traces required by AGENTS.md>
+> ```
+>
+> Rules:
+> - Read `.agents/skills/implement-stint/SKILL.md` lines 1-50 for invariants.
+> - If the task or issue names exact files/functions, verify them with `rg`/`git ls-files` first.
+> - Short-circuit: if the task body already contains an explicit file+line implementation map, reformat it into the spec structure above without further discovery.
+> - For File Explorer work, read `src/ui/AGENTS.md` first.
+> - For app-framework, packaging, marketplace, MCPUI, WASM/WASI, or Bevy work, read `docs/app-framework-marketplace.md` first.
+> - For architectural choices, read `NORTH_STAR.md` and `GLOSSARY.md`.
+> - Do NOT edit any file. Return only the spec.
 
-If the task or linked issue names exact files/functions, verify them cheaply with `rg`/`git ls-files` before broad discovery. If they do not, do the narrowest search that identifies the owning code.
+Receive the spec from Sub-agent R. If it is missing any required field, ask Sub-agent R to fill the gap before proceeding to Phase 4.
 
-For File Explorer work, read `src/ui/AGENTS.md` first, then `.stint/sprints/s1.md`.
+## Phase 4 - Implement (Sub-agent I)
 
-For app-framework, packaging, marketplace, MCPUI, WASM/WASI, or Bevy work, read `docs/app-framework-marketplace.md` first.
+Spawn **Sub-agent I** with the spec from Phase 3 and the worktree path. Sub-agent I owns all edits, tests, and the Gemini review loop. It must NOT commit.
 
-For architectural choices, read `NORTH_STAR.md` and `GLOSSARY.md`.
+**Prompt to Sub-agent I:**
 
-## Phase 4 - Implement
+> You are Sub-agent I for stint task `<task-id>`: `<title>`.
+> Worktree: `<worktree-path>`
+>
+> Implementation spec:
+> `<paste spec from Sub-agent R>`
+>
+> Rules:
+> - Write tests before implementation for host logic. New `AppRequest` or `HostEffect` behavior needs a `HostHarness` test first.
+> - Always run `cargo build` after edits.
+> - Run the narrower relevant test command: `cargo test --bin plexi <test_name>` (adjust filter as needed).
+> - After tests pass, run the `/code-review` skill (or equivalent Gemini diff review) on the staged diff. Maximum 2 review runs per validation attempt. Iterate on findings internally between runs.
+> - Stage all changes with `git add <files>`. Do NOT commit — the orchestrator commits.
+> - Return a summary in this format:
+>
+> ```text
+> Files changed: <list>
+> Test results: <N passed, M failed — command used>
+> Gemini verdict: clean | findings remaining: <list>
+> Staged: yes
+> ```
+>
+> If Gemini still has unresolved findings after 2 runs, include them in the `findings remaining` field — do not block; just report.
 
-Write tests before implementation for host logic. New `AppRequest` or `HostEffect` behavior needs a `HostHarness` test first.
+Receive the summary from Sub-agent I.
 
-Scope gate:
-
-- 3 files or fewer: implement inline.
-- More than 3 files or multiple subsystems: dispatch a subagent with the task body, linked issue body, implementation spec, worktree path, and the rule: stage changes but do not commit.
-
-Always run at least:
-
-```bash
-cargo build
-```
-
-Run the narrower relevant test command too, usually:
-
-```bash
-cargo test --bin plexi <test_name>
-```
+**Orchestrator diff review:** Run `git -C <worktree-path> diff --staged --stat` and spot-check the diff before committing. If Sub-agent I reported unresolved Gemini findings, surface them to the user and ask whether to proceed or iterate.
 
 Then run the `/testing` skill (`.agents/skills/testing/SKILL.md`) to produce the `**Test evidence:**` block — diff classification, harness tests, headless render screenshots for visual changes. Include the block in the Ship Log entry (or PR body when no issue is linked) during handoff.
 
