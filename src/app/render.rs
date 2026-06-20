@@ -94,6 +94,7 @@ impl PlexiApp {
         self.sync_text_input_focus();
         self.sync_capability_modal_focus();
         self.sync_event_consent_focus();
+        self.sync_raw_wasm_review_focus();
 
         let _ = ctx; // ctx is unused in the preamble itself; parameter reserved for future use
     }

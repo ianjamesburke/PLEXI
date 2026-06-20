@@ -1,17 +1,18 @@
-schema_version = "2"
+schema_version = 1
+
+[app]
 id = "com.plexi.sysmon"
-version = "0.1.0"
+type = "wasm"
 name = "System Monitor"
-description = "CPU, memory, disk, and network stats. POC for the Plexi v2 WASM runtime."
+entry = "target/wasm32-wasip1/release/sysmon.wasm"
+version = "0.1.0"
+description = "CPU, memory, disk, and network stats POC for the Plexi WASM runtime."
 
-[runtime]
-target = "wasm32-wasip2"
-execution = "local"
-python_compat = false
+[app.capabilities]
+capabilities = []
 
-[capabilities]
+[app.capabilities.wasm]
 required = ["state:read-write"]
 optional = []
 
-[payment]
-model = "free"
+[launch]

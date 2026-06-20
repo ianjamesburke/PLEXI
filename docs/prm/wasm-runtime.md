@@ -3,9 +3,9 @@
 Status: **partially implemented** (was: greenfield specification). This document describes the destination architecture. As of 2026-06-18 the runtime core has landed on `alpha` via PR #2291 + #2292.
 Last updated: 2026-06-18.
 
-**Reading convention (added 2026-06-18):** ~~Struck-through text~~ marks what is **shipped and gate-verified** on `alpha`. Plain text is **not built yet**. Sections that are partly done carry an inline **🟡 PARTIAL** / **⬜ NOT BUILT** callout naming the exact gap. The honest one-line summary: the runtime is **demo-complete, not app-complete** — every subsystem works in isolation (gates pass), but the breadth of host effects a real app needs (remaining host effects, agentic calls, persistent install review) is still incomplete. See [Implementation Status](#implementation-status-2026-06-18) below and [Next Steps](#next-steps-2026-06-18) at the end.
+**Reading convention (added 2026-06-18):** ~~Struck-through text~~ marks what is **shipped and gate-verified** on `alpha`. Plain text is **not built yet**. Sections that are partly done carry an inline **🟡 PARTIAL** / **⬜ NOT BUILT** callout naming the exact gap. The honest one-line summary: the runtime is **demo-complete, not app-complete**. Every subsystem works in isolation, but the breadth of host effects a real app needs is still incomplete. Lane F now covers manifest/package grant memory, CLI raw `.wasm` review, and native GUI raw `.wasm` pre-launch review. See [Implementation Status](#implementation-status-2026-06-18) below and [Next Steps](#next-steps-2026-06-18) at the end.
 
-This spec is the authoritative description of the Plexi v2 runtime. It supersedes all prior WASM/WASI planning fragments, the PGAP v2 design notes, and the "Surface node" placeholder in the app-framework PRM. It does not touch the v1 release path (S1–S6 in `app-framework-marketplace.md`) — those sprints remain the correct near-term sequence.
+This spec is the authoritative description of Plexi's WASM runtime. It supersedes prior WASM/WASI planning fragments and the old "WASM replaces PGAP" framing. PGAP/Python and WASM now land as parallel runtimes under one app contract: PGAP remains the native authoring path and WASM is the sandbox/performance path. The v1 release path (S1-S6 in `app-framework-marketplace.md`) remains the correct near-term sequence.
 
 ---
 
@@ -32,9 +32,9 @@ This spec is the authoritative description of the Plexi v2 runtime. It supersede
 - **Some effect variants are still stubbed or missing.** `file-read`/`file-write`, `http-fetch`, `ai-query`, `declare-event-streams`, and `emit-event` now round-trip through host services. Remaining variants such as `file-list`/`file-watch`, `websocket-open`, `open-pane`, `audio-record`, `spawn-child`, `clipboard-*`, `notify`, and `payment-request` are not complete. `get-system-stats`, `set-timer`/`cancel-timer`, `set-title`/`set-status`, and `close-self` also round-trip.
 - **UI interaction is wired.** Button clicks, submitted text inputs, list selections, and text-input changes are produced by the renderer (`wasm_render.rs:22-26`) and routed as typed `ui-action` / `ui-value-change` events through the guest `update()` loop (`wasm_pane.rs:273-299`, `wasm_pane.rs:525-542`).
 - **Input is keyboard-only.** `mouse`, `resize`, `focus-gained`/`focus-lost` are in the WIT but never enqueued. The surface never learns it was resized.
-- **Capability prompts are session-scoped.** `request-capability` now prompts the focused WASM pane, answers with `capability-granted`/`capability-denied`, audits `HostEvent::PermissionDecision`, and applies scoped fs/net runtime grants. Persistent install review / remembered grants are not built.
+- **Capability prompts can be remembered for manifest-backed WASM apps.** `request-capability` now prompts the focused WASM pane, answers with `capability-granted`/`capability-denied`, audits `HostEvent::PermissionDecision`, and applies scoped fs/net runtime grants. Manifest-backed WASM apps launched through `type = "wasm"` use persistent state and can save raw scoped WASM decisions in `permissions.toml`; `.plexipkg` validation and the install trust sheet classify WASM packages, display required vs. optional WASM review metadata, and let interactive installs remember selected optional grants. Direct raw `.wasm` launches also fail closed unless required link-time imports have remembered Green decisions; the CLI path can prompt and remember them, and native GUI path launches queue a pre-launch review modal before spawning.
 - **Agentic surface is partial.** WASM apps can call `ai-query` through `AiBroker` after a session `ai.query` grant and can declare/emit app events into `AppTimeline`. Subscribe/delivery imports are still not exposed to WASM, and `ai-query` tools are deferred.
-- **`ProcessApp`/PGAP is NOT removed.** The ["What is removed"](#what-is-removed) list below is aspirational — Python apps still run on the v1 path alongside WASM. Supersession is a v3 outcome, after G8 (Python compat) lands.
+- **`ProcessApp`/PGAP is NOT removed.** The ["What is removed"](#what-is-removed) list below is aspirational. Python apps still run on the PGAP path alongside WASM. Supersession is a v3 outcome, after G8 (Python compat) lands.
 
 ---
 
@@ -192,7 +192,7 @@ No callbacks, no async/await visible to the app. The app is always a synchronous
 
 > **Status:** all node variants render to egui (G4 ✅). Button/text-input/list interactions are mapped to typed `input-event` variants and delivered to `update()` in the same frame (Lane B ✅).
 
-PGAP (newline-delimited JSON UI trees) is replaced by a typed tree defined in WIT. The host owns the component implementations — a `button-node` always renders as a Plexi button. Apps cannot bypass the design system except through `surface-node`.
+On the WASM path, PGAP's newline-delimited JSON UI trees are replaced by a typed tree defined in WIT. The host owns the component implementations: a `button-node` always renders as a Plexi button. Apps cannot bypass the design system except through `surface-node`. PGAP apps keep using the PGAP wire protocol.
 
 ```wit
 variant ui-node {
@@ -283,7 +283,7 @@ Apps launched with `plexi run` without `--persist` get a temp-scoped namespace t
 
 ## Capability System  🟡 PARTIAL
 
-> **Status:** link-time gating ships — an ungranted import is not linked into the module, so the app physically cannot call it. Session-time escalation via `request-capability` also ships for focused WASM panes: user decisions enqueue `capability-granted`/`capability-denied`, audit `PermissionDecision`, and widen runtime fs/net access only for recognized scoped strings. **Not built:** persistent install review / remembered grants. Ephemeral runs still auto-grant imported interfaces at link time (`wasm_app.rs:462`).
+> **Status:** link-time gating ships — an ungranted import is not linked into the module, so the app physically cannot call it. Session-time escalation via `request-capability` also ships for focused WASM panes: user decisions enqueue `capability-granted`/`capability-denied`, audit `PermissionDecision`, and widen runtime fs/net access only for recognized scoped strings. Install-time review and remembered grants now persist raw WASM decisions. Raw `.wasm` launches no longer auto-grant imported host interfaces; `plexi app open ./x.wasm` reviews and remembers required link-time imports before launching.
 
 Every import the app can call is a capability. The manifest declares required and optional capabilities. The host only links the imports that match granted capabilities. If `net:fetch` is not granted, the import does not exist in the linked module — the app cannot call it. This is enforced at the WASM link layer, not at runtime.
 
@@ -575,11 +575,11 @@ Python apps must continue to work through the v1 → v2 transition. CPython 3.12
 
 Nothing, unless they were using raw PGAP directly. Apps written against the SDK (`from plexi import App, ctx`) work without modification. `manifest.toml` gets `python_compat = true` added to `[runtime]`. The `plexi app init` scaffold generates this automatically for Python apps.
 
-### Deprecation
+### Compatibility
 
-`python_compat = true` is a compatibility path, not a first-class runtime. It is available in v2. New apps targeting v2 from the start use the WIT interface directly (Rust, Go, or the Python SDK compiled via the compat path with `python_compat = false` once the SDK generates proper WIT bindings natively).
+`python_compat = true` is a bridge for running Python-authored apps inside the WASM runtime. It does not remove the existing PGAP/Python runtime. New apps can choose PGAP/Python for the simple reviewed-native path or WIT/WASM for the sandbox/performance path.
 
-The compat shim is removed at the v3 boundary, after the Core 9 apps have been migrated.
+The compat shim can be retired at a later v3 boundary if Core apps and marketplace apps no longer need it.
 
 ---
 
@@ -1201,7 +1201,7 @@ Each lane below is independently shippable (one PR), independently testable (a `
 
 **Problem:** link-time gating works, but grants auto-derive from imports and ephemeral runs auto-grant everything (`wasm_app.rs:462`). No review sheet, no inline prompt, no escalation, no scope enforcement — the security story the spec sells (link-time + prompts) is half-built.
 
-**Shipped:** focused WASM panes with pending capability requests capture `FocusLayer::CapabilityModal` and render through the shared host modal primitives. `request-capability` now auto-answers from session grants/blocks or prompts, decisions enqueue `capability-granted` / `capability-denied`, emit `HostEvent::PermissionDecision`, and grant runtime access only for explicit `fs:read:<path>`, `fs:write:<path>`, and `net:fetch:<host>` strings. Unknown strings still get guest events but do not widen fs/net access. Persistence is intentionally limited to the current session; persistent install review / remembered grants remain future work.
+**Shipped:** focused WASM panes with pending capability requests capture `FocusLayer::CapabilityModal` and render through the shared host modal primitives. `request-capability` now auto-answers from session grants/blocks or prompts, decisions enqueue `capability-granted` / `capability-denied`, emit `HostEvent::PermissionDecision`, and grant runtime access only for explicit `fs:read:<path>`, `fs:write:<path>`, and `net:fetch:<host>` strings. Unknown strings still get guest events but do not widen fs/net access. Lane F adds remembered grants for manifest/package install surfaces and raw import review; Lane D remains the session runtime-enforcement layer.
 
 **Done condition:** host tests cover grant/deny events, focused-pane pending prompt detection, and fs/net effect behavior before vs. after scoped grants.
 
@@ -1212,6 +1212,16 @@ Each lane below is independently shippable (one PR), independently testable (a `
 **Shipped:** WIT now includes `ai-query` plus `ai-stream-chunk` / `ai-response` input events, and `declare-event-streams` / `emit-event` effects with result events. WASM `ai-query` is gated by the Lane D `ai.query` session grant, runs on a worker through the injected `AiBroker`, and streams/finalizes back through the guest queue. App event declarations and emissions route into `AppTimeline`; undeclared emits return an error result. Tools and WASM subscribe/delivery imports remain future work.
 
 **Done condition:** `host::wasm_pane::tests` covers denied `ai-query` without broker calls, granted streaming/final AI response, declared event emission into the timeline, and undeclared event rejection.
+
+### Lane F — Manifest-backed WASM apps + remembered scoped grants ✅ DONE for current surfaces
+
+**Problem:** direct `.wasm` launches were ephemeral and import-derived. A real sandboxed app needs a manifest-backed path: explicit runtime type, persistent state, explicit link-time host grants, and remembered user decisions for scoped runtime capabilities.
+
+**Shipped:** `manifest.toml` now accepts `[app] type = "wasm"`. Registry/path launches route those manifests through wasmtime instead of `ProcessApp`, use persistent per-app/per-workspace WASM state, derive link-time grants from manifest capabilities (`pipe.open`, `audio.playback`, `gpu.render`), and restore raw scoped WASM decisions from `permissions.toml`. The WASM capability modal now offers once/always allow/deny; always decisions persist raw ids such as `fs:read:<path>`, `fs:write:<path>`, `net:fetch:<host>`, and `ai.query`. `.plexipkg` validation and install trust sheets classify WASM packages, display required vs. optional raw WASM review metadata, and can pre-seed workspace-scoped required/selected optional raw decisions during install. Direct raw `.wasm` launch now inspects required link-time imports (`state:read-write`, `pipe.open`, `gpu.render`, `audio.playback`), fails closed without remembered Green decisions, and the CLI launch path prompts once and remembers approvals for the path scope.
+
+**Shipped:** native GUI path launches for raw `.wasm` queue a pre-launch review modal before spawning. Approval persists the required link-time imports as Green decisions, then replays the launch through the same fail-closed `open_wasm_app_pane` check.
+
+**Done condition:** `app::permissions::tests` covers raw WASM permission persistence and sensitive unset withholding; `app::registry::tests::manifest_with_type_wasm_loads` covers manifest parsing; `host::wasm_pane::tests` remains green.
 
 ### Deferred infra gates (after A–E)
 
@@ -1228,6 +1238,7 @@ These remain explicitly out of scope until the parity lanes land — they are la
 | A | GPU surface readback perf + perf-HUD app | ✅ Bounded pass done — timing + row-copy optimization; zero-copy remains future | S–M |
 | B | Wire UI interaction | ✅ Done — typed-node interactions reach guest update | S |
 | C | Real fs/net effects | ✅ Done — scoped fs + worker-backed HTTP | M |
-| D | Capability grant flow + runtime enforcement | ✅ Done — session prompts + scoped runtime enforcement; persistent install review remains future | M |
+| D | Capability grant flow + runtime enforcement | ✅ Done — session prompts + scoped runtime enforcement; persisted install review lives in Lane F | M |
 | E | `ai-query` + app events → existing broker | ✅ Done — AI query + timeline emit; subscribe imports/tools remain future | M |
+| F | Manifest-backed WASM apps + remembered scoped grants | ✅ Done for current surfaces — manifest launch, persistent state, package review, install-time selected raw decisions, CLI-reviewed raw `.wasm` link imports, and GUI raw `.wasm` pre-launch review ship | M |
 | G8/G9/G10 | Python compat, cloud, payment | Large standalone missions; supersede-Python is a v3 outcome | L each |

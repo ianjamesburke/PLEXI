@@ -463,6 +463,11 @@ pub enum InstallConfirm {
     PreApproved,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct InstallGateDecision {
+    selected_wasm_optional: Vec<String>,
+}
+
 /// Format a byte count for the trust sheet (B / KB / MB / GB, one decimal).
 fn human_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
@@ -486,37 +491,83 @@ pub fn print_trust_sheet(
     report: &crate::app::package::PackageReport,
     label: crate::app::package::TrustLabel,
 ) {
-    println!("id:           {}", report.id);
-    println!("name:         {}", report.name);
-    println!("version:      {}", report.version);
-    println!("entry:        {}", report.entry);
-    println!(
-        "runtime:      {} — {}",
-        report.runtime.as_str(),
-        label.display_str()
-    );
-    println!(
-        "files:        {} ({})",
-        report.file_count,
-        human_size(report.total_size)
-    );
-    if report.capabilities.is_empty() {
-        println!("capabilities: (none)");
-    } else {
-        println!("capabilities:");
-        for cap in &report.capabilities {
-            let sensitive = if cap.is_sensitive() {
-                " [sensitive]"
-            } else {
-                ""
-            };
-            println!("  {:<18}{}{sensitive}", cap.as_str(), cap.description());
-        }
+    for line in trust_sheet_lines(report, label) {
+        println!("{line}");
+    }
+}
+
+fn trust_sheet_lines(
+    report: &crate::app::package::PackageReport,
+    label: crate::app::package::TrustLabel,
+) -> Vec<String> {
+    let mut lines = vec![
+        format!("id:           {}", report.id),
+        format!("name:         {}", report.name),
+        format!("version:      {}", report.version),
+        format!("entry:        {}", report.entry),
+        format!(
+            "runtime:      {} — {}",
+            report.runtime.as_str(),
+            label.display_str()
+        ),
+        format!(
+            "files:        {} ({})",
+            report.file_count,
+            human_size(report.total_size)
+        ),
+    ];
+    if report.capabilities.is_empty()
+        && report.wasm_required_capabilities.is_empty()
+        && report.wasm_optional_capabilities.is_empty()
+    {
+        lines.push("capabilities: (none)".to_string());
+    } else if !report.capabilities.is_empty() {
+        lines.push("capabilities:".to_string());
+        push_capability_rows(&mut lines, &report.capabilities);
+    }
+    if !report.wasm_required_capabilities.is_empty() {
+        lines.push("wasm required capabilities:".to_string());
+        push_wasm_capability_rows(&mut lines, &report.wasm_required_capabilities);
+    }
+    if !report.wasm_optional_capabilities.is_empty() {
+        lines.push("wasm optional capabilities:".to_string());
+        push_wasm_capability_rows(&mut lines, &report.wasm_optional_capabilities);
     }
     if report.requires_plexi_min.is_some() || report.requires_plexi_max.is_some() {
         let min = report.requires_plexi_min.as_deref().unwrap_or("any");
         let max = report.requires_plexi_max.as_deref().unwrap_or("any");
-        println!("requires:     Plexi {min} .. {max}");
+        lines.push(format!("requires:     Plexi {min} .. {max}"));
+    }
+    lines
+}
+
+fn push_capability_rows(lines: &mut Vec<String>, caps: &[crate::app::permissions::Capability]) {
+    for cap in caps {
+        let sensitive = if cap.is_sensitive() {
+            " [sensitive]"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "  {:<18}{}{sensitive}",
+            cap.as_str(),
+            cap.description()
+        ));
+    }
+}
+
+fn push_wasm_capability_rows(lines: &mut Vec<String>, caps: &[String]) {
+    for cap in caps {
+        let sensitive = if crate::app::permissions::wasm_capability_requires_consent(cap) {
+            " [sensitive]"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "  {:<28}{}{sensitive}",
+            cap,
+            crate::app::permissions::wasm_capability_description(cap)
+        ));
     }
 }
 
@@ -594,16 +645,77 @@ pub fn confirm_install(
     }
 }
 
+fn parse_wasm_optional_selection(answer: &str, optional: &[String]) -> Result<Vec<String>, String> {
+    let trimmed = answer.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        return Ok(Vec::new());
+    }
+    if trimmed.eq_ignore_ascii_case("all") {
+        return Ok(optional.to_vec());
+    }
+
+    let mut selected = Vec::new();
+    for raw in trimmed.split(',') {
+        let token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let index = token
+            .parse::<usize>()
+            .map_err(|_| format!("invalid optional WASM grant selection '{token}'"))?;
+        if index == 0 || index > optional.len() {
+            return Err(format!(
+                "optional WASM grant selection {index} is out of range 1..{}",
+                optional.len()
+            ));
+        }
+        let capability = optional[index - 1].clone();
+        if !selected.contains(&capability) {
+            selected.push(capability);
+        }
+    }
+    Ok(selected)
+}
+
+fn prompt_wasm_optional_grants(
+    report: &crate::app::package::PackageReport,
+    assume_yes: bool,
+    is_tty: bool,
+    reader: &mut impl io::BufRead,
+) -> Result<Vec<String>, String> {
+    if report.wasm_optional_capabilities.is_empty() || assume_yes {
+        return Ok(Vec::new());
+    }
+    if !is_tty {
+        return Ok(Vec::new());
+    }
+
+    eprintln!("Optional WASM grants to remember for this launch directory:");
+    for (index, capability) in report.wasm_optional_capabilities.iter().enumerate() {
+        eprintln!("  {}. {}", index + 1, capability);
+    }
+    eprint!("Grant optional WASM capabilities? [none/all/1,3] ");
+    let _ = io::stderr().flush();
+    let mut answer = String::new();
+    reader
+        .read_line(&mut answer)
+        .map_err(|e| format!("failed to read optional WASM grant selection: {e}"))?;
+    parse_wasm_optional_selection(&answer, &report.wasm_optional_capabilities)
+}
+
 /// Run the full trust gate for an interactive install: print the trust sheet,
-/// then prompt. Returns an exit code on refusal/abort, `None` to proceed.
-fn run_install_gate(report: &crate::app::package::PackageReport, assume_yes: bool) -> Option<i32> {
+/// then prompt. Returns selected install-review decisions or an exit code.
+fn run_install_gate(
+    report: &crate::app::package::PackageReport,
+    assume_yes: bool,
+) -> Result<InstallGateDecision, i32> {
     use std::io::IsTerminal;
     let label = trust_label_for(report);
     print_trust_sheet(report, label);
     // Host-version compatibility: a too-old host (or malformed requirement)
     // aborts before the confirm prompt; a too-new host only warns.
     if let Some(code) = host_version_gate(report) {
-        return Some(code);
+        return Err(code);
     }
     let is_tty = io::stdin().is_terminal();
     let mut stdin = io::stdin().lock();
@@ -615,16 +727,31 @@ fn run_install_gate(report: &crate::app::package::PackageReport, assume_yes: boo
         is_tty,
         &mut stdin,
     ) {
-        Ok(true) => None,
+        Ok(true) => match prompt_wasm_optional_grants(report, assume_yes, is_tty, &mut stdin) {
+            Ok(selected_wasm_optional) => Ok(InstallGateDecision {
+                selected_wasm_optional,
+            }),
+            Err(e) => {
+                eprintln!("error: {e}");
+                Err(1)
+            }
+        },
         Ok(false) => {
             eprintln!("install aborted — '{}' was not installed", report.id);
-            Some(1)
+            Err(1)
         }
         Err(e) => {
             eprintln!("error: {e}");
-            Some(1)
+            Err(1)
         }
     }
+}
+
+fn is_valid_app_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
 /// `plexi app inspect <path>` — validate a local app dir or `.plexipkg` file
@@ -663,6 +790,16 @@ pub fn app_install_with_pin(
     confirm: InstallConfirm,
     assume_yes: bool,
 ) -> i32 {
+    app_install_with_pin_inner(path, pin, confirm, assume_yes, None)
+}
+
+fn app_install_with_pin_inner(
+    path: &str,
+    pin: Option<&str>,
+    confirm: InstallConfirm,
+    assume_yes: bool,
+    preapproved_gate: Option<InstallGateDecision>,
+) -> i32 {
     let src = match std::path::Path::new(path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
@@ -675,13 +812,19 @@ pub fn app_install_with_pin(
     // installs must pass it; PreApproved installs (bundled first-party
     // content, or an outer path that already validated and prompted) proceed
     // with a warning so startup seeding can never break on legacy layouts.
+    let mut validated_report = None;
+    let mut gate_decision = preapproved_gate.unwrap_or_default();
     match crate::app::package::validate_dir(&src) {
         Ok(report) => {
             if confirm == InstallConfirm::Interactive {
-                if let Some(code) = run_install_gate(&report, assume_yes) {
-                    return code;
+                match run_install_gate(&report, assume_yes) {
+                    Ok(decision) => {
+                        gate_decision = decision;
+                    }
+                    Err(code) => return code,
                 }
             }
+            validated_report = Some(report);
         }
         Err(e) => match confirm {
             InstallConfirm::Interactive => {
@@ -741,17 +884,10 @@ pub fn app_install_with_pin(
         }
     };
     let app_id = match app_section.get("id").and_then(|v| v.as_str()) {
-        Some(id)
-            if !id.is_empty()
-                && id
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
-        {
-            id.to_string()
-        }
+        Some(id) if is_valid_app_id(id) => id.to_string(),
         _ => {
             eprintln!("error: manifest.toml is missing a valid [app].id");
-            eprintln!("  (IDs must be non-empty and contain only alphanumeric characters, dashes, or underscores)");
+            eprintln!("  (IDs must be non-empty and contain only alphanumeric characters, dots, dashes, or underscores)");
             return 1;
         }
     };
@@ -792,6 +928,9 @@ pub fn app_install_with_pin(
         }
         write_pinned_version(&dest, pin);
     }
+    if let Some(report) = validated_report.as_ref() {
+        remember_wasm_install_review(report, &gate_decision.selected_wasm_optional);
+    }
 
     log::info!(
         "app::install: installed {app_id} v{app_version} from {}",
@@ -806,6 +945,68 @@ pub fn app_install_with_pin(
     }
     println!("Run `plexi app open {app_id}` to launch it.");
     0
+}
+
+fn remember_wasm_install_review(
+    report: &crate::app::package::PackageReport,
+    selected_wasm_optional: &[String],
+) {
+    let workspace_root = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(e) => {
+            log::warn!(
+                "app::install: could not resolve cwd for wasm install review '{}': {e}",
+                report.id
+            );
+            return;
+        }
+    };
+    let Some(summary) = persist_wasm_install_review(
+        report,
+        selected_wasm_optional,
+        &crate::config::config_dir(),
+        &workspace_root,
+    ) else {
+        return;
+    };
+    log::info!(
+        "app::install: wasm review app={} workspace={} required_granted={} optional_granted={} optional_deferred={}",
+        report.id,
+        workspace_root.display(),
+        summary.required_granted,
+        summary.optional_granted,
+        summary.optional_deferred
+    );
+    if summary.required_granted > 0 || summary.optional_granted > 0 {
+        println!(
+            "Remembered WASM grants for '{}': {} required, {} optional.",
+            report.id, summary.required_granted, summary.optional_granted
+        );
+    }
+}
+
+fn persist_wasm_install_review(
+    report: &crate::app::package::PackageReport,
+    selected_wasm_optional: &[String],
+    config_dir: &std::path::Path,
+    workspace_root: &std::path::Path,
+) -> Option<crate::app::permissions::WasmInstallGrantSummary> {
+    if report.wasm_required_capabilities.is_empty() && report.wasm_optional_capabilities.is_empty()
+    {
+        return None;
+    }
+    let selected: std::collections::HashSet<String> =
+        selected_wasm_optional.iter().cloned().collect();
+    let mut store = crate::app::permissions::PermissionStore::load_or_default(config_dir);
+    let summary = store.apply_wasm_install_review(
+        &report.id,
+        workspace_root,
+        &report.wasm_required_capabilities,
+        &report.wasm_optional_capabilities,
+        &selected,
+    );
+    store.save();
+    Some(summary)
 }
 
 /// `plexi app package <path> [--out <file>]` — build a `.plexipkg` artifact.
@@ -859,11 +1060,14 @@ pub fn app_install_package(
         }
     };
 
-    if confirm == InstallConfirm::Interactive {
-        if let Some(code) = run_install_gate(&report, assume_yes) {
-            return code;
+    let gate_decision = if confirm == InstallConfirm::Interactive {
+        match run_install_gate(&report, assume_yes) {
+            Ok(decision) => Some(decision),
+            Err(code) => return code,
         }
-    }
+    } else {
+        None
+    };
 
     // Extract into a unique temp dir and reuse the existing dir-install path.
     let staging = std::env::temp_dir().join(format!("plexipkg-install-{}", uuid::Uuid::new_v4()));
@@ -881,11 +1085,12 @@ pub fn app_install_package(
     );
     // Already validated and (when interactive) confirmed above — the inner
     // dir install must not prompt a second time.
-    let code = app_install_with_pin(
+    let code = app_install_with_pin_inner(
         &staging.to_string_lossy(),
         pin,
         InstallConfirm::PreApproved,
         assume_yes,
+        gate_decision,
     );
     if let Err(e) = std::fs::remove_dir_all(&staging) {
         log::warn!(
@@ -1408,6 +1613,22 @@ mod app_install_workspace_tests {
     }
 
     #[test]
+    fn install_accepts_reverse_dns_app_id() {
+        let src = TempDir::new().unwrap();
+        let app_id = "com.plexi.test-install";
+        write_valid_manifest(src.path(), app_id);
+        let path = src.path().to_string_lossy().to_string();
+
+        let code =
+            super::app_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
+
+        let dest = crate::app::registry::apps_dir().join(app_id);
+        let _ = std::fs::remove_dir_all(&dest);
+
+        assert_eq!(code, 0, "reverse-DNS app ids must install cleanly");
+    }
+
+    #[test]
     fn install_fails_on_missing_manifest_not_workspace_error() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().to_string_lossy().to_string();
@@ -1420,8 +1641,12 @@ mod app_install_workspace_tests {
 
 #[cfg(test)]
 mod install_confirm_tests {
-    use super::{confirm_install, human_size, InstallConfirm};
+    use super::{
+        confirm_install, human_size, parse_wasm_optional_selection, prompt_wasm_optional_grants,
+        trust_sheet_lines, InstallConfirm,
+    };
     use crate::app::package::{PackageReport, PackageRuntime, TrustLabel};
+    use crate::app::permissions::{PermissionState, PermissionStore};
     use std::io::Cursor;
 
     fn report() -> PackageReport {
@@ -1432,6 +1657,8 @@ mod install_confirm_tests {
             runtime: PackageRuntime::Python,
             entry: "main.py".to_string(),
             capabilities: Vec::new(),
+            wasm_required_capabilities: Vec::new(),
+            wasm_optional_capabilities: Vec::new(),
             file_count: 2,
             total_size: 64,
             requires_plexi_min: None,
@@ -1519,6 +1746,130 @@ mod install_confirm_tests {
         assert_eq!(human_size(2048), "2.0 KB");
         assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");
     }
+
+    #[test]
+    fn trust_sheet_lists_wasm_required_and_optional_capabilities() {
+        let mut r = report();
+        r.runtime = PackageRuntime::Wasm;
+        r.entry = "app.wasm".to_string();
+        r.wasm_required_capabilities = vec!["state:read-write".to_string()];
+        r.wasm_optional_capabilities = vec!["ai.query".to_string()];
+
+        let lines = trust_sheet_lines(&r, TrustLabel::WasmComponent);
+        assert!(lines
+            .iter()
+            .any(|line| line == "wasm required capabilities:"));
+        assert!(lines.iter().any(|line| line.contains("state:read-write")));
+        assert!(lines
+            .iter()
+            .any(|line| line == "wasm optional capabilities:"));
+        assert!(lines.iter().any(|line| line.contains("ai.query")));
+    }
+
+    #[test]
+    fn wasm_optional_selection_accepts_none_all_and_indices() {
+        let optional = vec![
+            "ai.query".to_string(),
+            "net:fetch:api.example.com".to_string(),
+            "state:read-write".to_string(),
+        ];
+
+        assert_eq!(
+            parse_wasm_optional_selection("", &optional).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_wasm_optional_selection("none", &optional).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_wasm_optional_selection("all", &optional).unwrap(),
+            optional
+        );
+        assert_eq!(
+            parse_wasm_optional_selection("2, 1, 2", &optional).unwrap(),
+            vec![
+                "net:fetch:api.example.com".to_string(),
+                "ai.query".to_string()
+            ]
+        );
+        assert!(parse_wasm_optional_selection("4", &optional).is_err());
+        assert!(parse_wasm_optional_selection("ai.query", &optional).is_err());
+    }
+
+    #[test]
+    fn wasm_optional_prompt_skips_assume_yes_and_reads_tty_selection() {
+        let mut r = report();
+        r.runtime = PackageRuntime::Wasm;
+        r.wasm_optional_capabilities = vec![
+            "ai.query".to_string(),
+            "net:fetch:api.example.com".to_string(),
+        ];
+
+        let skipped =
+            prompt_wasm_optional_grants(&r, true, true, &mut Cursor::new(b"all\n")).unwrap();
+        assert!(
+            skipped.is_empty(),
+            "--yes must not silently grant optional WASM capabilities"
+        );
+
+        let selected =
+            prompt_wasm_optional_grants(&r, false, true, &mut Cursor::new(b"2\n")).unwrap();
+        assert_eq!(selected, vec!["net:fetch:api.example.com".to_string()]);
+    }
+
+    #[test]
+    fn wasm_install_review_persistence_writes_selected_scope() {
+        let config = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let mut r = report();
+        r.id = "wasm-install-review".to_string();
+        r.runtime = PackageRuntime::Wasm;
+        r.wasm_required_capabilities = vec!["state:read-write".to_string()];
+        r.wasm_optional_capabilities = vec![
+            "ai.query".to_string(),
+            "net:fetch:api.example.com".to_string(),
+        ];
+
+        let summary = super::persist_wasm_install_review(
+            &r,
+            &["net:fetch:api.example.com".to_string()],
+            config.path(),
+            workspace.path(),
+        )
+        .expect("wasm review should persist");
+
+        assert_eq!(summary.required_granted, 1);
+        assert_eq!(summary.optional_granted, 1);
+        assert_eq!(summary.optional_deferred, 1);
+
+        let store = PermissionStore::load_or_default(config.path());
+        assert_eq!(
+            store.get_wasm("wasm-install-review", workspace.path(), "state:read-write"),
+            Some(PermissionState::Green)
+        );
+        assert_eq!(
+            store.get_wasm("wasm-install-review", workspace.path(), "ai.query"),
+            Some(PermissionState::Yellow)
+        );
+        assert_eq!(
+            store.get_wasm(
+                "wasm-install-review",
+                workspace.path(),
+                "net:fetch:api.example.com"
+            ),
+            Some(PermissionState::Green)
+        );
+        assert_eq!(
+            store.get_wasm(
+                "wasm-install-review",
+                tempfile::tempdir().unwrap().path(),
+                "net:fetch:api.example.com"
+            ),
+            None,
+            "raw WASM install grants must remain workspace-scoped"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1546,6 +1897,29 @@ mod app_inspect_tests {
         std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();
         let code = super::app_inspect_cli(&dir.path().to_string_lossy());
         assert_eq!(code, 0, "valid app dir must inspect cleanly");
+    }
+
+    #[test]
+    fn inspect_wasm_manifest_returns_0() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"com.plexi.inspect-wasm\"\n\
+             type = \"wasm\"\n\
+             name = \"Inspect WASM\"\n\
+             entry = \"app.wasm\"\n\
+             version = \"0.1.0\"\n\
+             description = \"Test\"\n\n\
+             [app.capabilities]\n\
+             capabilities = [\"gpu.render\"]\n\n\
+             [launch]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("app.wasm"), b"\0asm").unwrap();
+        let code = super::app_inspect_cli(&dir.path().to_string_lossy());
+        assert_eq!(code, 0, "valid wasm app dir must inspect cleanly");
     }
 
     #[test]

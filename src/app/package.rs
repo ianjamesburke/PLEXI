@@ -9,7 +9,7 @@
 //! [package]
 //! id      = "my-app"
 //! version = "0.1.0"
-//! runtime = "python"   # "python" if entry ends in .py, else "native"
+//! runtime = "python"   # "python", "native", or "wasm"
 //!
 //! capabilities = ["ai.query"]
 //!
@@ -85,6 +85,12 @@ pub enum PackageError {
         valid = Capability::all_str_values().join(", ")
     )]
     UnknownCapability { value: String, path: PathBuf },
+    #[error("unknown raw WASM capability '{value}' in {path}: {message}")]
+    UnknownWasmCapability {
+        value: String,
+        path: PathBuf,
+        message: String,
+    },
     #[error(
         "sha256 mismatch for '{path}': PACKAGE.toml says {expected}, actual content is {actual}"
     )]
@@ -113,7 +119,9 @@ pub enum PackageError {
     IdMismatch { package: String, manifest: String },
     #[error("PACKAGE.toml version '{package}' disagrees with manifest.toml version '{manifest}'")]
     VersionMismatch { package: String, manifest: String },
-    #[error("unsupported runtime '{0}' in PACKAGE.toml — expected \"python\" or \"native\"")]
+    #[error(
+        "unsupported runtime '{0}' in PACKAGE.toml — expected \"python\", \"native\", or \"wasm\""
+    )]
     UnsupportedRuntime(String),
     #[error("file '{0}' listed in PACKAGE.toml is missing from the archive")]
     ListedFileMissing(String),
@@ -138,13 +146,17 @@ fn io_err(action: &'static str, path: &Path, source: std::io::Error) -> PackageE
 pub enum PackageRuntime {
     /// Entry ends in `.py` — launched via python3.
     Python,
+    /// `[app] type = "wasm"` — launched through the wasmtime runtime.
+    Wasm,
     /// Anything else — a native executable.
     Native,
 }
 
 impl PackageRuntime {
-    pub fn from_entry(entry: &str) -> Self {
-        if entry.ends_with(".py") {
+    pub fn from_manifest(manifest_type: crate::app::registry::ManifestType, entry: &str) -> Self {
+        if manifest_type == crate::app::registry::ManifestType::Wasm {
+            Self::Wasm
+        } else if entry.ends_with(".py") {
             Self::Python
         } else {
             Self::Native
@@ -154,6 +166,7 @@ impl PackageRuntime {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Python => "python",
+            Self::Wasm => "wasm",
             Self::Native => "native",
         }
     }
@@ -161,6 +174,7 @@ impl PackageRuntime {
     fn parse(s: &str) -> Result<Self, PackageError> {
         match s {
             "python" => Ok(Self::Python),
+            "wasm" => Ok(Self::Wasm),
             "native" => Ok(Self::Native),
             other => Err(PackageError::UnsupportedRuntime(other.to_string())),
         }
@@ -204,6 +218,8 @@ pub struct PackageReport {
     pub runtime: PackageRuntime,
     pub entry: String,
     pub capabilities: Vec<Capability>,
+    pub wasm_required_capabilities: Vec<String>,
+    pub wasm_optional_capabilities: Vec<String>,
     pub file_count: usize,
     pub total_size: u64,
     /// Declared `[requires].plexi_min` — minimum host version, if any.
@@ -216,8 +232,10 @@ pub struct PackageReport {
 
 /// Blunt trust classification shown before any install proceeds (stint 0016).
 ///
-/// v1 security stance: there is NO sandbox. Anything not bundled with Plexi
-/// runs with the user's full permissions, and the label says so verbatim.
+/// Process-app security stance: there is NO OS sandbox. Anything not bundled
+/// with Plexi runs with the user's full permissions, and the label says so
+/// verbatim. WASM components are separate: their host imports are
+/// capability-gated by the runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustLabel {
     /// The app id is in the bundled core pack — ships with Plexi itself.
@@ -226,6 +244,8 @@ pub enum TrustLabel {
     NativeUnreviewed,
     /// A Python app from outside the core pack.
     PythonUnreviewed,
+    /// A WASM component from outside the core pack.
+    WasmComponent,
 }
 
 impl TrustLabel {
@@ -236,6 +256,7 @@ impl TrustLabel {
             Self::PythonUnreviewed => {
                 "Unreviewed Python process — runs with your full user permissions"
             }
+            Self::WasmComponent => "WASM component — sandboxed; host imports are capability-gated",
             Self::NativeUnreviewed => {
                 "Unreviewed native process — runs with your full user permissions"
             }
@@ -252,6 +273,7 @@ pub fn trust_label(report: &PackageReport, core_ids: &[&str]) -> TrustLabel {
     } else {
         match report.runtime {
             PackageRuntime::Python => TrustLabel::PythonUnreviewed,
+            PackageRuntime::Wasm => TrustLabel::WasmComponent,
             PackageRuntime::Native => TrustLabel::NativeUnreviewed,
         }
     }
@@ -299,6 +321,14 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
         &manifest.app.capabilities.capabilities,
         &app_dir.join("manifest.toml"),
     )?;
+    let wasm_required_capabilities = parse_wasm_capabilities(
+        &manifest.app.capabilities.wasm.required,
+        &app_dir.join("manifest.toml"),
+    )?;
+    let wasm_optional_capabilities = parse_wasm_capabilities(
+        &manifest.app.capabilities.wasm.optional,
+        &app_dir.join("manifest.toml"),
+    )?;
 
     let files = collect_files(app_dir)?;
     let total_size = files.iter().map(|(_, size)| size).sum();
@@ -312,9 +342,11 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
         id: manifest.app.id,
         name: manifest.app.name,
         version: manifest.app.version,
-        runtime: PackageRuntime::from_entry(&entry),
+        runtime: PackageRuntime::from_manifest(manifest.app.manifest_type, &entry),
         entry,
         capabilities,
+        wasm_required_capabilities,
+        wasm_optional_capabilities,
         file_count: files.len(),
         total_size,
         requires_plexi_min,
@@ -373,6 +405,22 @@ fn parse_capabilities(
             })
         })
         .collect()
+}
+
+fn parse_wasm_capabilities(
+    strings: &[String],
+    source_path: &Path,
+) -> Result<Vec<String>, PackageError> {
+    for value in strings {
+        if let Err(message) = crate::app::permissions::validate_wasm_capability_id(value) {
+            return Err(PackageError::UnknownWasmCapability {
+                value: value.clone(),
+                path: source_path.to_path_buf(),
+                message,
+            });
+        }
+    }
+    Ok(strings.to_vec())
 }
 
 /// Recursively collect every regular file under `root` as
@@ -1035,9 +1083,12 @@ mod tests {
             runtime,
             entry: match runtime {
                 PackageRuntime::Python => "main.py".to_string(),
+                PackageRuntime::Wasm => "app.wasm".to_string(),
                 PackageRuntime::Native => "bin/app".to_string(),
             },
             capabilities: Vec::new(),
+            wasm_required_capabilities: Vec::new(),
+            wasm_optional_capabilities: Vec::new(),
             file_count: 2,
             total_size: 100,
             requires_plexi_min: None,
@@ -1075,6 +1126,104 @@ mod tests {
         assert_eq!(
             TrustLabel::NativeUnreviewed.display_str(),
             "Unreviewed native process — runs with your full user permissions"
+        );
+    }
+
+    #[test]
+    fn trust_label_wasm_entry_is_component() {
+        let r = report("third-party-wasm", PackageRuntime::Wasm);
+        assert_eq!(trust_label(&r, &[]), TrustLabel::WasmComponent);
+        assert_eq!(
+            TrustLabel::WasmComponent.display_str(),
+            "WASM component — sandboxed; host imports are capability-gated"
+        );
+    }
+
+    #[test]
+    fn wasm_manifest_round_trips_package_runtime() {
+        let work = TempDir::new().unwrap();
+        let app_dir = work.path().join("app");
+        fs::create_dir(&app_dir).unwrap();
+        fs::write(
+            app_dir.join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"pkg-wasm\"\n\
+             type = \"wasm\"\n\
+             name = \"WASM App\"\n\
+             entry = \"app.wasm\"\n\
+             version = \"0.1.0\"\n\
+             description = \"A WASM app\"\n\n\
+             [app.capabilities]\n\
+             capabilities = [\"gpu.render\", \"pipe.open\"]\n\
+             \n\
+             [app.capabilities.wasm]\n\
+             required = [\"state:read-write\"]\n\
+             optional = [\"ai.query\"]\n\n\
+             [launch]\n",
+        )
+        .unwrap();
+        fs::write(app_dir.join("app.wasm"), b"\0asm").unwrap();
+
+        let report = validate_dir(&app_dir).unwrap();
+        assert_eq!(report.runtime, PackageRuntime::Wasm);
+        assert_eq!(
+            report.capabilities,
+            vec![Capability::GpuRender, Capability::PipeOpen]
+        );
+        assert_eq!(
+            report.wasm_required_capabilities,
+            vec!["state:read-write".to_string()]
+        );
+        assert_eq!(
+            report.wasm_optional_capabilities,
+            vec!["ai.query".to_string()]
+        );
+
+        let out = work.path().join("pkg-wasm-0.1.0.plexipkg");
+        let path = build_package(&app_dir, Some(&out)).unwrap();
+        let package_report = validate_package(&path).unwrap();
+        assert_eq!(package_report.runtime, PackageRuntime::Wasm);
+        assert_eq!(package_report.entry, "app.wasm");
+        assert_eq!(
+            package_report.wasm_required_capabilities,
+            vec!["state:read-write".to_string()]
+        );
+        assert_eq!(
+            package_report.wasm_optional_capabilities,
+            vec!["ai.query".to_string()]
+        );
+    }
+
+    #[test]
+    fn unknown_wasm_review_capability_is_hard_error() {
+        let work = TempDir::new().unwrap();
+        let app_dir = work.path().join("app");
+        fs::create_dir(&app_dir).unwrap();
+        fs::write(
+            app_dir.join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"pkg-wasm-bad-review-cap\"\n\
+             type = \"wasm\"\n\
+             name = \"Bad WASM App\"\n\
+             entry = \"app.wasm\"\n\
+             version = \"0.1.0\"\n\
+             description = \"A WASM app\"\n\n\
+             [app.capabilities]\n\
+             capabilities = []\n\
+             \n\
+             [app.capabilities.wasm]\n\
+             required = [\"net:dial:example.com\"]\n\n\
+             [launch]\n",
+        )
+        .unwrap();
+        fs::write(app_dir.join("app.wasm"), b"\0asm").unwrap();
+
+        let err = validate_dir(&app_dir).unwrap_err();
+        assert!(
+            matches!(err, PackageError::UnknownWasmCapability { ref value, .. } if value == "net:dial:example.com"),
+            "expected UnknownWasmCapability, got: {err}"
         );
     }
 

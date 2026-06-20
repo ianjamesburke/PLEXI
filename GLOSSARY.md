@@ -6,7 +6,7 @@ Shared vocabulary for Plexi. When introducing or redefining terms, update this f
 
 ## Core Concepts
 
-**Pane** — A single view in the tiling layout. Two types: Terminal (shell/PTY), App (external PGAP process). Panes are split horizontally or vertically to create the workspace grid. AI capability is app-level (`ai.query`), not a separate pane type.
+**Pane** — A single view in the tiling layout. Two main types: Terminal (shell/PTY) and App. App panes can run PGAP processes, WASM components, or first-party host apps. Panes are split horizontally or vertically to create the workspace grid. AI capability is app-level (`ai.query`), not a separate pane type.
 
 **Context** — A workspace or project directory. Each context has its own state, secrets (keyed by workspace root), and app instances. Contexts are independent — a secret granted in one context never leaks to another.
 
@@ -18,6 +18,8 @@ Shared vocabulary for Plexi. When introducing or redefining terms, update this f
 
 **PGAP** — Plexi Generic App Protocol. Newline-delimited JSON over a child process's stdin/stdout. Apps declare what they can do; the host sends events (input, renders, permissions); apps send draw commands and requests back. Binary payloads (audio PCM, video frames) travel on typed pipes, not stdio. PGAP is the host API boundary; Python apps are native subprocesses until the WASM runtime provides process isolation.
 
+**WASM app** — A Plexi app implemented as a WebAssembly component. WASM apps export typed lifecycle functions and receive only the host imports Plexi links for their remembered grants. They share the app manifest, package, trust-label, and capability model with PGAP apps, but run through the sandbox/performance runtime instead of a native subprocess.
+
 **PlexiEvent** — Host → app message. Types: init, render, input (keyboard/mouse), capability decision, secret value, run update, pipe message, path changed, suspend/resume, shutdown.
 
 **DrawCommand** — App → host message. Three top-level variants: `Render(RenderCommand)` (frame primitives: rect, text, circle, line, etc.), `Host(AppRequest)` (capability requests, SecretGet, RunGet, Notify, PipeOpen, PipeSend, OpenVideo/SetVideoState/CloseVideo, AudioPlay, AudioCapture, StatusSummary), `Control(ControlCommand)` (clipboard, scheduling). Every frame ends with `FrameDone`.
@@ -26,11 +28,11 @@ Shared vocabulary for Plexi. When introducing or redefining terms, update this f
 
 ## App & Capability Model
 
-**Manifest** — TOML file (`manifest.toml`) that declares an app: name, version, entry point, icon, required capabilities, background flag. Every PGAP app must have one.
+**Manifest** — TOML file (`manifest.toml`) that declares an app: name, version, runtime type, entry point, icon, required capabilities, and background flag. PGAP and WASM apps both use manifests on the installed/packaged path.
 
 **Capability** — A permission an app can request at runtime (e.g., `net`, `fs`, `llm`, `timer`, `audio_capture`). Undeclared capabilities queue a modal prompt on first use. Decisions persist in `permissions.jsonl`.
 
-**App pane** — A pane hosting an external PGAP process. Spawned from a manifest, communicates via PGAP protocol.
+**App pane** — A pane hosting an app runtime instance. PGAP apps spawn an external process and speak the PGAP protocol; WASM apps run in wasmtime and speak the typed WIT runtime.
 
 **Terminal pane** — A pane hosting a PTY (shell). Input is vt100 bytes; output is terminal escape sequences.
 

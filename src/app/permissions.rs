@@ -34,6 +34,8 @@ pub enum Capability {
     AudioRecord,
     /// Play audio via host `rodio` broker.
     AudioPlayback,
+    /// Render directly through the host WASM GPU surface.
+    GpuRender,
     /// Decode and display video via host broker.
     VideoPlayback,
     /// Make LLM API calls via host broker (reads OPENROUTER_API_KEY from environment).
@@ -100,6 +102,7 @@ impl Capability {
             Self::SpawnApp => "Launch another app in a new pane",
             Self::AudioRecord => "Capture microphone audio",
             Self::AudioPlayback => "Play audio",
+            Self::GpuRender => "Render through the WASM GPU surface",
             Self::VideoPlayback => "Decode and display video",
             Self::Llm => "Make LLM API calls using your API key",
             Self::Timer => "Schedule timers",
@@ -125,6 +128,7 @@ impl Capability {
             Self::SpawnApp => "spawn.app",
             Self::AudioRecord => "audio.record",
             Self::AudioPlayback => "audio.playback",
+            Self::GpuRender => "gpu.render",
             Self::VideoPlayback => "video.playback",
             Self::Llm => "llm",
             Self::Timer => "timer",
@@ -153,6 +157,7 @@ impl Capability {
         Self::SpawnApp,
         Self::AudioRecord,
         Self::AudioPlayback,
+        Self::GpuRender,
         Self::VideoPlayback,
         Self::Llm,
         Self::Timer,
@@ -277,6 +282,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "spawn.app" => Ok(Self::SpawnApp),
             "audio.record" => Ok(Self::AudioRecord),
             "audio.playback" => Ok(Self::AudioPlayback),
+            "gpu.render" => Ok(Self::GpuRender),
             "video.playback" => Ok(Self::VideoPlayback),
             "llm" => Ok(Self::Llm),
             "timer" => Ok(Self::Timer),
@@ -399,6 +405,11 @@ pub fn is_blocked(perms: &AppPermissions, cap: Capability) -> bool {
 pub struct PermissionStoreData {
     /// Flat map: key = "app_id::workspace_path::capability_str" → state.
     pub entries: HashMap<String, PermissionState>,
+    /// Raw WASM capability ids such as `fs:read:/tmp` or
+    /// `net:fetch:api.github.com`. These cannot use [`Capability`] because
+    /// their scope is part of the id.
+    #[serde(default)]
+    pub wasm_entries: HashMap<String, PermissionState>,
 }
 
 /// Loads, mutates, and persists `permissions.toml` in the Plexi config dir.
@@ -406,6 +417,13 @@ pub struct PermissionStoreData {
 pub struct PermissionStore {
     data: PermissionStoreData,
     path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WasmInstallGrantSummary {
+    pub required_granted: usize,
+    pub optional_granted: usize,
+    pub optional_deferred: usize,
 }
 
 impl Default for PermissionStore {
@@ -427,6 +445,11 @@ impl PermissionStore {
     fn entry_key(app_id: &str, workspace_root: &Path, cap: Capability) -> String {
         let canonical = Self::canonical_workspace(workspace_root);
         format!("{}::{}::{}", app_id, canonical.display(), cap.as_str())
+    }
+
+    fn wasm_entry_key(app_id: &str, workspace_root: &Path, capability_id: &str) -> String {
+        let canonical = Self::canonical_workspace(workspace_root);
+        format!("{}::{}::{}", app_id, canonical.display(), capability_id)
     }
 
     /// Split a store key (`app_id::workspace_path::capability_str`) into its
@@ -575,6 +598,33 @@ impl PermissionStore {
             .insert(Self::entry_key(app_id, workspace_root, cap), state);
     }
 
+    /// Get the stored state for a raw WASM capability id.
+    pub fn get_wasm(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        capability_id: &str,
+    ) -> Option<PermissionState> {
+        self.data
+            .wasm_entries
+            .get(&Self::wasm_entry_key(app_id, workspace_root, capability_id))
+            .copied()
+    }
+
+    /// Set the stored state for a raw WASM capability id.
+    pub fn set_wasm(
+        &mut self,
+        app_id: &str,
+        workspace_root: &Path,
+        capability_id: &str,
+        state: PermissionState,
+    ) {
+        self.data.wasm_entries.insert(
+            Self::wasm_entry_key(app_id, workspace_root, capability_id),
+            state,
+        );
+    }
+
     /// Atomically write to disk (temp file + rename).
     pub fn save(&self) {
         if self.path.as_os_str().is_empty() {
@@ -671,6 +721,174 @@ impl PermissionStore {
 
         (capabilities, blocked)
     }
+
+    /// Apply stored state for raw WASM capability ids. Raw ids include scoped
+    /// host access such as `fs:read:/project` and `net:fetch:api.example.com`.
+    pub fn build_wasm_permission_sets(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        declared: &HashSet<String>,
+    ) -> (HashSet<String>, HashSet<String>) {
+        let mut granted = HashSet::new();
+        let mut blocked = HashSet::new();
+
+        for cap in declared {
+            match self.get_wasm(app_id, workspace_root, cap) {
+                Some(PermissionState::Yellow) => {}
+                Some(PermissionState::Red) => {
+                    blocked.insert(cap.clone());
+                }
+                Some(PermissionState::Green) => {
+                    granted.insert(cap.clone());
+                }
+                None if wasm_capability_requires_consent(cap) => {
+                    log::info!(
+                        "permission_store: raw wasm capability '{}' withheld for '{}' — first-run consent required",
+                        cap,
+                        app_id
+                    );
+                }
+                None => {
+                    granted.insert(cap.clone());
+                }
+            }
+        }
+
+        let canonical_root = Self::canonical_workspace(workspace_root);
+        let prefix = format!("{}::{}::", app_id, canonical_root.display());
+        for (key, &state) in &self.data.wasm_entries {
+            if !key.starts_with(&prefix) {
+                continue;
+            }
+            let Some(capability_id) = key.strip_prefix(&prefix) else {
+                continue;
+            };
+            if declared.contains(capability_id) {
+                continue;
+            }
+            match state {
+                PermissionState::Green => {
+                    granted.insert(capability_id.to_string());
+                }
+                PermissionState::Red => {
+                    blocked.insert(capability_id.to_string());
+                }
+                PermissionState::Yellow => {}
+            }
+        }
+
+        (granted, blocked)
+    }
+
+    /// Persist install-review decisions for manifest-declared raw WASM
+    /// capabilities in the current workspace. Required capabilities are
+    /// approved by the install confirmation itself. Optional capabilities are
+    /// either approved or explicitly left Yellow so non-sensitive optional
+    /// capabilities are not silently granted by the default unset behavior.
+    pub fn apply_wasm_install_review(
+        &mut self,
+        app_id: &str,
+        workspace_root: &Path,
+        required: &[String],
+        optional: &[String],
+        selected_optional: &HashSet<String>,
+    ) -> WasmInstallGrantSummary {
+        for capability_id in required {
+            self.set_wasm(
+                app_id,
+                workspace_root,
+                capability_id,
+                PermissionState::Green,
+            );
+        }
+
+        let mut optional_granted = 0;
+        for capability_id in optional {
+            let optional_state = if selected_optional.contains(capability_id) {
+                optional_granted += 1;
+                PermissionState::Green
+            } else {
+                PermissionState::Yellow
+            };
+            self.set_wasm(app_id, workspace_root, capability_id, optional_state);
+        }
+
+        WasmInstallGrantSummary {
+            required_granted: required.len(),
+            optional_granted,
+            optional_deferred: optional.len().saturating_sub(optional_granted),
+        }
+    }
+}
+
+pub fn wasm_capability_requires_consent(capability_id: &str) -> bool {
+    capability_id == "ai.query"
+        || capability_id == "state:read-write"
+        || capability_id == "pipe.open"
+        || capability_id == "gpu.render"
+        || capability_id == "audio.playback"
+        || capability_id.starts_with("fs:read:")
+        || capability_id.starts_with("fs:write:")
+        || capability_id.starts_with("net:fetch:")
+        || capability_id == "audio:record"
+        || capability_id.starts_with("audio:record:")
+        || capability_id == "spawn-child"
+        || capability_id.starts_with("spawn-child:")
+        || capability_id == "open-pane"
+        || capability_id.starts_with("open-pane:")
+}
+
+pub fn validate_wasm_capability_id(capability_id: &str) -> Result<(), String> {
+    if capability_id == "ai.query"
+        || capability_id == "state:read-write"
+        || capability_id == "pipe.open"
+        || capability_id == "gpu.render"
+        || capability_id == "audio.playback"
+        || capability_id.starts_with("fs:read:")
+        || capability_id.starts_with("fs:write:")
+        || capability_id.starts_with("net:fetch:")
+        || capability_id == "audio:record"
+        || capability_id.starts_with("audio:record:")
+        || capability_id == "spawn-child"
+        || capability_id.starts_with("spawn-child:")
+        || capability_id == "open-pane"
+        || capability_id.starts_with("open-pane:")
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "unknown raw WASM capability '{capability_id}' — expected ai.query, state:read-write, pipe.open, gpu.render, audio.playback, fs:read:<path>, fs:write:<path>, net:fetch:<host>, audio:record, spawn-child, or open-pane"
+        ))
+    }
+}
+
+pub fn wasm_capability_description(capability_id: &str) -> &'static str {
+    if capability_id == "ai.query" {
+        "Make AI calls through the Plexi broker"
+    } else if capability_id == "state:read-write" {
+        "Read and write app state through the host store"
+    } else if capability_id == "pipe.open" {
+        "Open data pipes to other panes"
+    } else if capability_id == "gpu.render" {
+        "Render through the WASM GPU surface"
+    } else if capability_id == "audio.playback" {
+        "Play audio"
+    } else if capability_id.starts_with("fs:read:") {
+        "Read files at the scoped path"
+    } else if capability_id.starts_with("fs:write:") {
+        "Write files at the scoped path"
+    } else if capability_id.starts_with("net:fetch:") {
+        "Fetch from the scoped network host"
+    } else if capability_id == "audio:record" || capability_id.starts_with("audio:record:") {
+        "Capture microphone audio"
+    } else if capability_id == "spawn-child" || capability_id.starts_with("spawn-child:") {
+        "Spawn a child process"
+    } else if capability_id == "open-pane" || capability_id.starts_with("open-pane:") {
+        "Open a new pane"
+    } else {
+        "Unknown WASM capability"
+    }
 }
 
 #[cfg(test)]
@@ -692,7 +910,7 @@ mod tests {
         }
         assert_eq!(
             Capability::ALL.len(),
-            20,
+            21,
             "update Capability::ALL (and this count) when adding a variant"
         );
         assert_eq!(Capability::all_str_values().len(), Capability::ALL.len());
@@ -1227,5 +1445,181 @@ mod tests {
             !caps.contains(&Capability::FsRead),
             "fs.read granted for /work/project-extra must not bleed into /work/project"
         );
+    }
+
+    #[test]
+    fn wasm_permission_entries_round_trip_raw_scoped_capabilities() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let mut store = PermissionStore::load_or_default(tmp.path());
+
+        store.set_wasm(
+            "wasm-app",
+            workspace.path(),
+            "fs:read:/tmp/allowed",
+            PermissionState::Green,
+        );
+        store.set_wasm(
+            "wasm-app",
+            workspace.path(),
+            "net:fetch:api.example.com",
+            PermissionState::Red,
+        );
+        store.save();
+
+        let reloaded = PermissionStore::load_or_default(tmp.path());
+        assert_eq!(
+            reloaded.get_wasm("wasm-app", workspace.path(), "fs:read:/tmp/allowed"),
+            Some(PermissionState::Green)
+        );
+        assert_eq!(
+            reloaded.get_wasm("wasm-app", workspace.path(), "net:fetch:api.example.com"),
+            Some(PermissionState::Red)
+        );
+    }
+
+    #[test]
+    fn wasm_permission_sets_restore_remembered_and_withhold_sensitive_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let mut store = PermissionStore::load_or_default(tmp.path());
+        store.set_wasm(
+            "wasm-app",
+            workspace.path(),
+            "fs:read:/remembered",
+            PermissionState::Green,
+        );
+        store.set_wasm(
+            "wasm-app",
+            workspace.path(),
+            "net:fetch:block.example",
+            PermissionState::Red,
+        );
+
+        let declared = HashSet::from([
+            "fs:read:/unset".to_string(),
+            "fs:read:/remembered".to_string(),
+            "net:fetch:block.example".to_string(),
+            "ui:theme".to_string(),
+        ]);
+        let (granted, blocked) =
+            store.build_wasm_permission_sets("wasm-app", workspace.path(), &declared);
+
+        assert!(granted.contains("fs:read:/remembered"));
+        assert!(granted.contains("ui:theme"));
+        assert!(!granted.contains("fs:read:/unset"));
+        assert!(blocked.contains("net:fetch:block.example"));
+    }
+
+    #[test]
+    fn wasm_install_review_persists_required_and_deferred_optional() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let mut store = PermissionStore::load_or_default(tmp.path());
+        let required = vec!["state:read-write".to_string()];
+        let optional = vec![
+            "ai.query".to_string(),
+            "net:fetch:api.example.com".to_string(),
+        ];
+
+        let summary = store.apply_wasm_install_review(
+            "wasm-app",
+            workspace.path(),
+            &required,
+            &optional,
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            summary,
+            WasmInstallGrantSummary {
+                required_granted: 1,
+                optional_granted: 0,
+                optional_deferred: 2,
+            }
+        );
+        assert_eq!(
+            store.get_wasm("wasm-app", workspace.path(), "state:read-write"),
+            Some(PermissionState::Green)
+        );
+        assert_eq!(
+            store.get_wasm("wasm-app", workspace.path(), "ai.query"),
+            Some(PermissionState::Yellow)
+        );
+        assert_eq!(
+            store.get_wasm("wasm-app", workspace.path(), "net:fetch:api.example.com"),
+            Some(PermissionState::Yellow)
+        );
+    }
+
+    #[test]
+    fn wasm_install_review_can_persist_optional_grants() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let mut store = PermissionStore::load_or_default(tmp.path());
+        let optional = vec![
+            "ai.query".to_string(),
+            "net:fetch:api.example.com".to_string(),
+        ];
+        let selected = HashSet::from(["net:fetch:api.example.com".to_string()]);
+
+        let summary = store.apply_wasm_install_review(
+            "wasm-app",
+            workspace.path(),
+            &[],
+            &optional,
+            &selected,
+        );
+
+        assert_eq!(
+            summary,
+            WasmInstallGrantSummary {
+                required_granted: 0,
+                optional_granted: 1,
+                optional_deferred: 1,
+            }
+        );
+        assert_eq!(
+            store.get_wasm("wasm-app", workspace.path(), "ai.query"),
+            Some(PermissionState::Yellow)
+        );
+        assert_eq!(
+            store.get_wasm("wasm-app", workspace.path(), "net:fetch:api.example.com"),
+            Some(PermissionState::Green)
+        );
+    }
+
+    #[test]
+    fn wasm_capability_review_ids_validate_current_forms() {
+        for capability_id in [
+            "ai.query",
+            "state:read-write",
+            "pipe.open",
+            "gpu.render",
+            "audio.playback",
+            "fs:read:{workspace}",
+            "fs:write:/tmp/project",
+            "net:fetch:api.github.com",
+            "audio:record",
+            "spawn-child",
+            "open-pane",
+        ] {
+            validate_wasm_capability_id(capability_id)
+                .unwrap_or_else(|e| panic!("{capability_id} should validate: {e}"));
+            assert_ne!(
+                wasm_capability_description(capability_id),
+                "Unknown WASM capability"
+            );
+            assert!(
+                wasm_capability_requires_consent(capability_id),
+                "{capability_id} should require explicit review"
+            );
+        }
+    }
+
+    #[test]
+    fn wasm_capability_review_ids_reject_unknown_forms() {
+        let err = validate_wasm_capability_id("net:dial:api.github.com").unwrap_err();
+        assert!(err.contains("unknown raw WASM capability"));
     }
 }

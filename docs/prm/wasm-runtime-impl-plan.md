@@ -95,13 +95,29 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   capability modal, decisions enqueue `capability-granted` /
   `capability-denied`, emit `PermissionDecision`, and widen runtime access only
   for scoped `fs:read:<path>`, `fs:write:<path>`, and `net:fetch:<host>`
-  strings. Persistent install review / remembered grants remain future work.
+  strings. Remembered install/package grants now live in Lane F; Lane D remains
+  the session enforcement layer.
 - **Lane E — agentic surface (`ai-query` + app events): DONE.** WIT now
   exposes `ai-query`, `ai-stream-chunk`, `ai-response`,
   `declare-event-streams`, and `emit-event`; `WasmPane` gates AI on the
   session `ai.query` grant, dispatches through the injected `AiBroker` on a
   worker, and routes event declarations/emits into `AppTimeline`. Tools and
   WASM subscribe/delivery imports remain future work.
+- **Lane F — manifest-backed WASM apps + remembered scoped grants: DONE for current surfaces.**
+  `[app] type = "wasm"` manifests now load through the registry/path launch
+  surfaces, use persistent per-app/per-workspace WASM state, derive explicit
+  link-time host grants from manifest capabilities, and restore/persist raw
+  scoped WASM decisions in `permissions.toml`. `.plexipkg` validation and the
+  install trust sheet classify WASM packages, and the WASM POC manifests use the
+  registry schema. `[app.capabilities.wasm]` required/optional raw capability
+  review metadata is validated and displayed during package/install review.
+  Interactive installs persist workspace-scoped required and selected optional
+  raw WASM decisions after install succeeds; `--yes` defers optional grants. Raw
+  `.wasm` launches inspect required link-time imports, fail closed without
+  remembered Green decisions, and `plexi app open ./x.wasm` prompts once and
+  remembers approved imports for the path scope. Native GUI path launches queue
+  a pre-launch review modal, persist approved imports, then replay the same
+  fail-closed launch path.
 
 ## Key facts discovered (load-bearing for the build)
 
@@ -112,7 +128,7 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
 - **App runtime enum:** `AppRuntime` in `src/host/pane.rs` (`Process(Box<ProcessApp>)` /
   `Builtin(Box<dyn App>)`). Add a third variant `Wasm(Box<WasmApp>)`; fan out its methods
   (`ui`, `handle_key`, `take_pending_commands`, ...) like the existing arms. **ProcessApp/PGAP
-  stay untouched** — WasmApp lands alongside v1.
+  stay untouched**. WasmApp lands as a parallel runtime, not a PGAP replacement.
 - **Host deps present:** egui 0.31 + eframe(wgpu) + `wgpu = "24"` (metal) + `egui-wgpu` 0.31
   (→ GPU/surface path for M4), `crossbeam-queue` 0.3 (→ pipes ArrayQueue, already used by
   `src/host/typed_pipes.rs`). **No tokio** — effects execute synchronously, not async.

@@ -18,6 +18,7 @@ use crossbeam_queue::ArrayQueue;
 use url::Url;
 
 use crate::app::app_trait::KeyDisposition;
+use crate::app::permissions::{PermissionState, PermissionStore};
 use crate::app_protocol::{
     AiMessage as ProtocolAiMessage, AppEventActor, EventStreamDecl as ProtocolEventStreamDecl,
     ModelTier, TriggerMode,
@@ -154,7 +155,13 @@ impl WasmAccessPolicy {
             .host_str()
             .ok_or_else(|| "url has no host".to_string())?
             .to_ascii_lowercase();
-        if self.net_hosts.iter().any(|allowed| allowed == &host) {
+        if self.net_hosts.iter().any(|allowed| {
+            allowed == "*"
+                || allowed == &host
+                || allowed
+                    .strip_prefix("*.")
+                    .is_some_and(|suffix| host.ends_with(&format!(".{suffix}")))
+        }) {
             Ok(())
         } else {
             Err(format!("net host '{host}' not granted"))
@@ -218,6 +225,8 @@ pub struct WasmPane {
     session_grants: HashSet<String>,
     session_blocks: HashSet<String>,
     pending_capability_prompts: VecDeque<WasmCapabilityPrompt>,
+    permission_store: Option<PermissionStore>,
+    permission_workspace_root: PathBuf,
     deferred_ai_queries: VecDeque<AiQueryEffect>,
     net: Arc<dyn NetService>,
     ai_broker: Arc<dyn AiBroker>,
@@ -244,6 +253,8 @@ impl WasmPane {
             session_grants: HashSet::new(),
             session_blocks: HashSet::new(),
             pending_capability_prompts: VecDeque::new(),
+            permission_store: None,
+            permission_workspace_root: PathBuf::new(),
             deferred_ai_queries: VecDeque::new(),
             net: Arc::new(UreqNetService::new()),
             ai_broker: Arc::new(default_live_broker()),
@@ -288,6 +299,23 @@ impl WasmPane {
         self.pane_id = pane_id;
     }
 
+    pub fn with_remembered_capabilities(
+        mut self,
+        workspace_root: PathBuf,
+        permission_store: PermissionStore,
+        granted: HashSet<String>,
+        blocked: HashSet<String>,
+    ) -> Self {
+        for capability_id in granted {
+            self.session_grants.insert(capability_id.clone());
+            self.apply_capability_grant(&capability_id);
+        }
+        self.session_blocks.extend(blocked);
+        self.permission_workspace_root = workspace_root;
+        self.permission_store = Some(permission_store);
+        self
+    }
+
     /// Run the guest's `init`, execute its startup effects, and converge the
     /// resulting input queue (e.g. the first stats request).
     pub fn init(
@@ -325,6 +353,14 @@ impl WasmPane {
     }
 
     pub fn decide_next_capability_prompt(&mut self, granted: bool) {
+        self.decide_next_capability_prompt_inner(granted, false);
+    }
+
+    pub fn decide_next_capability_prompt_remembered(&mut self, granted: bool) {
+        self.decide_next_capability_prompt_inner(granted, true);
+    }
+
+    fn decide_next_capability_prompt_inner(&mut self, granted: bool, remember: bool) {
         let Some(prompt) = self.pending_capability_prompts.pop_front() else {
             return;
         };
@@ -345,6 +381,27 @@ impl WasmPane {
                 .push_back(InputEvent::CapabilityDenied(capability_id.clone()));
             if capability_id == "ai.query" {
                 self.deny_deferred_ai_queries();
+            }
+        }
+        if remember {
+            if let Some(store) = &mut self.permission_store {
+                store.set_wasm(
+                    self.app.app_id(),
+                    &self.permission_workspace_root,
+                    &capability_id,
+                    if granted {
+                        PermissionState::Green
+                    } else {
+                        PermissionState::Red
+                    },
+                );
+                store.save();
+                log::info!(
+                    "wasm capability: remembered app_id={} capability={} granted={}",
+                    self.app.app_id(),
+                    capability_id,
+                    granted
+                );
             }
         }
         log::info!(
@@ -1126,25 +1183,47 @@ impl LiveWasmPane {
         let capability_id = prompt.capability_id().to_string();
         let actions = [
             crate::ui::dialog::DialogAction::new(
-                "grant",
-                "Grant",
+                "grant_once",
+                "Grant once",
                 crate::ui::button::ButtonKind::Primary,
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Enter"],
-                "grant",
+                "grant once",
                 egui::Modifiers::NONE,
                 egui::Key::Enter,
             )),
             crate::ui::dialog::DialogAction::new(
-                "deny",
-                "Deny",
-                crate::ui::button::ButtonKind::Danger,
+                "grant_always",
+                "Always allow",
+                crate::ui::button::ButtonKind::Primary,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Shift", "Enter"],
+                "always allow",
+                egui::Modifiers::SHIFT,
+                egui::Key::Enter,
+            )),
+            crate::ui::dialog::DialogAction::new(
+                "deny_once",
+                "Deny once",
+                crate::ui::button::ButtonKind::Secondary,
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
                 &["Esc"],
-                "deny",
+                "deny once",
                 egui::Modifiers::NONE,
+                egui::Key::Escape,
+            )),
+            crate::ui::dialog::DialogAction::new(
+                "deny_always",
+                "Always deny",
+                crate::ui::button::ButtonKind::Danger,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Shift", "Esc"],
+                "always deny",
+                egui::Modifiers::SHIFT,
                 egui::Key::Escape,
             )),
         ];
@@ -1163,21 +1242,26 @@ impl LiveWasmPane {
             crate::ui::typography::caption(ui, capability_id.clone(), colors);
             crate::ui::typography::caption(
                 ui,
-                "This decision applies to the current session.",
+                "Always decisions are saved for this app and workspace.",
                 colors,
             );
         });
 
-        let decision = if response.selected == Some("grant") {
-            Some(true)
-        } else if response.dismissed || response.selected == Some("deny") {
-            Some(false)
-        } else {
-            None
+        let decision = match response.selected.as_deref() {
+            Some("grant_once") => Some((true, false)),
+            Some("grant_always") => Some((true, true)),
+            Some("deny_once") => Some((false, false)),
+            Some("deny_always") => Some((false, true)),
+            _ if response.dismissed => Some((false, false)),
+            _ => None,
         };
 
-        if let Some(granted) = decision {
-            self.inner.decide_next_capability_prompt(granted);
+        if let Some((granted, remember)) = decision {
+            if remember {
+                self.inner.decide_next_capability_prompt_remembered(granted);
+            } else {
+                self.inner.decide_next_capability_prompt(granted);
+            }
             if let Err(e) = self.inner.drain(self.now_ms()) {
                 self.fail("capability decision", e);
             }

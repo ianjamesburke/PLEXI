@@ -491,14 +491,88 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_init.png");
     }
 
-    /// G6 — the run primitive's routing: a `.wasm` path handed to the shared
-    /// path-launch entry point (the same call the `app open <path>` socket
-    /// handler makes) must spawn an `AppRuntime::Wasm` pane, not attempt a
-    /// manifest/process launch.
+    /// Raw `.wasm` paths queue a host pre-launch review before spawning. The
+    /// underlying launch path still fails closed until the modal persists the
+    /// required link-time import grants.
     #[test]
-    fn wasm_path_launch_opens_wasm_pane() {
+    fn wasm_path_launch_queues_review_before_spawning() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+
+        let result = h.with_app_mut(|app| {
+            app.launch_app_by_path_with_layout(
+                &fixture.to_string_lossy(),
+                Some("split_v".to_string()),
+                None,
+                &[],
+            )
+        });
+
+        result.expect("unreviewed wasm launch should queue review");
+        h.step();
+        let queued = h.with_app(|app| app.pending_raw_wasm_launches.len());
+        assert_eq!(queued, 1, "raw .wasm path launch should queue one review");
+        let has_review_focus =
+            h.with_app(|app| matches!(app.focus_stack.last(), Some(FocusLayer::RawWasmReview)));
+        assert!(has_review_focus, "raw WASM review should own focus");
+        let has_wasm = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values()
+                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
+        });
+        assert!(
+            !has_wasm,
+            "unreviewed .wasm path launch must not spawn a WASM pane"
+        );
+
+        h.harness().press_key(egui::Key::Enter);
+        h.step();
+        let queued = h.with_app(|app| app.pending_raw_wasm_launches.len());
+        assert_eq!(queued, 0, "approval should drain the raw WASM review queue");
+        let has_wasm = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .values()
+                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
+        });
+        assert!(
+            has_wasm,
+            "approving raw WASM review should spawn an AppRuntime::Wasm pane"
+        );
+    }
+
+    /// Once raw `.wasm` imports are reviewed and persisted for the path scope,
+    /// the same path-launch entry point must still spawn an `AppRuntime::Wasm`
+    /// pane rather than attempting a manifest/process launch.
+    #[test]
+    fn wasm_path_launch_opens_wasm_pane_after_review() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wasm-fixtures/sysmon.wasm");
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
+        let app_id = fixture
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("wasm");
+        let workspace_root = fixture.parent().expect("fixture parent");
+        let grants = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
+            .expect("inspect fixture grants");
+        let mut store =
+            crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
+        for capability_id in grants.capability_ids() {
+            store.set_wasm(
+                app_id,
+                workspace_root,
+                &capability_id,
+                crate::app::permissions::PermissionState::Green,
+            );
+        }
+        store.save();
+
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
         h.with_app_mut(|app| {
             app.launch_app_by_path_with_layout(
@@ -508,7 +582,7 @@ mod tests {
                 &[],
             )
         })
-        .expect("wasm launch should succeed");
+        .expect("reviewed wasm launch should succeed");
         h.step();
         let has_wasm = h.with_app(|app| {
             app.windows[app.active_window]
@@ -518,7 +592,7 @@ mod tests {
         });
         assert!(
             has_wasm,
-            "a .wasm path launch should produce an AppRuntime::Wasm pane"
+            "a reviewed .wasm path launch should produce an AppRuntime::Wasm pane"
         );
     }
 

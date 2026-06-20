@@ -28,6 +28,12 @@ pub enum AppCommand {
         layout: Option<String>,
         args: Vec<String>,
     },
+    /// Request the host to open an app directly from a filesystem path.
+    OpenAppPath {
+        path: String,
+        layout: Option<String>,
+        args: Vec<String>,
+    },
     /// Unified spawn (#592). Mirrors DrawCommand::SpawnPane after capability check.
     SpawnPane {
         type_id: String,

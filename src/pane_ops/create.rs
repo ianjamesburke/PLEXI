@@ -14,7 +14,7 @@ use crate::host::pane::{Pane, TerminalPane};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::{Tile, TileId, Tree};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Instantiate a builtin `App` by id, checked before the process registry.
@@ -435,22 +435,139 @@ impl PlexiApp {
         launch_args: Vec<String>,
     ) -> Result<PaneId, String> {
         use crate::host::wasm_app::{StateStore, WasmApp};
-        use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
 
         let store = StateStore::ephemeral();
         let snapshot = store.snapshot();
-        let app = WasmApp::load_ephemeral_run(app_id, wasm_path, store)
+        let permission_store =
+            crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir());
+        let required_grants = WasmApp::inspect_required_grants(wasm_path)
+            .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
+        let required_caps = required_grants.capability_ids();
+        let declared: std::collections::HashSet<String> = required_caps.iter().cloned().collect();
+        let (remembered_grants, remembered_blocks) =
+            permission_store.build_wasm_permission_sets(app_id, &workspace_root, &declared);
+        let missing: Vec<String> = required_caps
+            .iter()
+            .filter(|cap| !remembered_grants.contains(*cap))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            log::warn!(
+                "app::{app_id}: raw wasm launch requires review for {missing:?} path={}",
+                wasm_path.display()
+            );
+            return Err(format!(
+                "raw WASM launch requires review for: {}",
+                missing.join(", ")
+            ));
+        }
+        let app = WasmApp::load_with_grants(app_id, wasm_path, store, required_grants)
             .map_err(|e| format!("load {}: {e}", wasm_path.display()))?;
+        self.open_wasm_app_instance(
+            app_id,
+            app,
+            snapshot,
+            workspace_root,
+            crate::app::permissions::AppPermissions::default(),
+            Some((permission_store, remembered_grants, remembered_blocks)),
+            None,
+            launch_args,
+        )
+    }
+
+    fn review_or_open_raw_wasm_app_pane(
+        &mut self,
+        app_id: &str,
+        wasm_path: &std::path::Path,
+        workspace_root: PathBuf,
+        launch_args: Vec<String>,
+    ) -> Result<(), String> {
+        let permission_store =
+            crate::app::permissions::PermissionStore::load_or_default(&crate::config::config_dir());
+        let required_grants = crate::host::wasm_app::WasmApp::inspect_required_grants(wasm_path)
+            .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
+        let required_caps = required_grants.capability_ids();
+        let declared: HashSet<String> = required_caps.iter().cloned().collect();
+        let (remembered_grants, remembered_blocks) =
+            permission_store.build_wasm_permission_sets(app_id, &workspace_root, &declared);
+
+        let blocked: Vec<String> = required_caps
+            .iter()
+            .filter(|cap| remembered_blocks.contains(*cap))
+            .cloned()
+            .collect();
+        if !blocked.is_empty() {
+            log::warn!(
+                "raw_wasm_review: launch blocked by remembered denial app_id={app_id} path={} blocked={blocked:?}",
+                wasm_path.display()
+            );
+            return Err(format!(
+                "raw WASM launch blocked by remembered denial for: {}",
+                blocked.join(", ")
+            ));
+        }
+
+        let missing: Vec<String> = required_caps
+            .iter()
+            .filter(|cap| !remembered_grants.contains(*cap))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return self
+                .open_wasm_app_pane(app_id, wasm_path, workspace_root, launch_args)
+                .map(|_| ());
+        }
+
+        let already_pending = self.pending_raw_wasm_launches.iter().any(|pending| {
+            pending.app_id == app_id
+                && pending.wasm_path == wasm_path
+                && pending.workspace_root == workspace_root
+        });
+        if !already_pending {
+            log::info!(
+                "raw_wasm_review: queued app_id={app_id} path={} missing={missing:?}",
+                wasm_path.display()
+            );
+            self.pending_raw_wasm_launches
+                .push_back(crate::app::PendingRawWasmLaunch {
+                    app_id: app_id.to_string(),
+                    wasm_path: wasm_path.to_path_buf(),
+                    workspace_root,
+                    missing_capabilities: missing,
+                    launch_args,
+                });
+        }
+        Ok(())
+    }
+
+    fn open_wasm_app_instance(
+        &mut self,
+        app_id: &str,
+        app: crate::host::wasm_app::WasmApp,
+        snapshot: crate::host::wasm_app::StateSnapshot,
+        workspace_root: PathBuf,
+        permissions: crate::app::permissions::AppPermissions,
+        remembered: Option<(
+            crate::app::permissions::PermissionStore,
+            std::collections::HashSet<String>,
+            std::collections::HashSet<String>,
+        )>,
+        layout: Option<&str>,
+        launch_args: Vec<String>,
+    ) -> Result<PaneId, String> {
+        use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
+
         let active = self.active_window;
         let share = Self::share_ratio_from_fraction(app_id, None);
         let (new_id, share, vertical, new_pane_first) =
-            self.open_pane_layout(app_id, None, None, share);
-        let mut live = LiveWasmPane::new(
-            WasmPane::new(app, Box::new(SysinfoStats::new())),
-            app_id,
-            snapshot,
-            launch_args,
-        );
+            self.open_pane_layout(app_id, None, layout, share);
+        let pane = WasmPane::new(app, Box::new(SysinfoStats::new()));
+        let pane = if let Some((store, granted, blocked)) = remembered {
+            pane.with_remembered_capabilities(workspace_root.clone(), store, granted, blocked)
+        } else {
+            pane
+        };
+        let mut live = LiveWasmPane::new(pane, app_id, snapshot, launch_args);
         live.set_pane_id(new_id);
 
         let linked_pane_id = self.focused_terminal_id(active);
@@ -461,7 +578,7 @@ impl PlexiApp {
                 id: new_id,
                 runtime: crate::host::pane::AppRuntime::Wasm(Box::new(live)),
                 workspace_root,
-                permissions: crate::app::permissions::AppPermissions::default(),
+                permissions,
                 manifest_id: app_id.to_string(),
                 name: app_id.to_string(),
                 pane_group: None,
@@ -478,7 +595,7 @@ impl PlexiApp {
             pane_id: new_id,
             timestamp: crate::host::event_log::now_timestamp(),
         });
-        log::info!("wasm::{app_id}: spawned pane {new_id} from {}", wasm_path.display());
+        log::info!("wasm::{app_id}: spawned pane {new_id}");
 
         if self.windows[active].focused_pane.is_none() {
             let ctx = &mut self.windows[active];
@@ -489,6 +606,72 @@ impl PlexiApp {
         }
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first, false);
         Ok(new_id)
+    }
+
+    fn open_installed_wasm_app_pane(
+        &mut self,
+        installed: crate::app::registry::InstalledApp,
+        workspace_root: PathBuf,
+        layout: Option<&str>,
+        launch_args: Vec<String>,
+    ) -> Result<PaneId, String> {
+        use crate::app::permissions::{AppPermissions, Capability, PermissionStore};
+        use crate::host::wasm_app::{Grants, StateStore, WasmApp};
+
+        let app_id = installed.manifest.id.clone();
+        let config_dir = crate::config::config_dir();
+        let permission_store = PermissionStore::load_or_default(&config_dir);
+        let declared_caps = crate::app::permissions::parse_capability_strings(
+            &installed.manifest.capabilities.capabilities,
+        )
+        .map_err(|e| format!("manifest lists {e}"))?;
+        let (granted_caps, blocked_caps) =
+            permission_store.build_permission_sets(&app_id, &workspace_root, &declared_caps);
+        let mut permissions = AppPermissions {
+            capabilities: granted_caps,
+            blocked: blocked_caps,
+            is_builtin: false,
+            allowed_hosts: installed.manifest.capabilities.allowed_hosts.clone(),
+        };
+        permissions
+            .capabilities
+            .retain(|cap| !permissions.blocked.contains(cap));
+
+        let wasm_declared =
+            wasm_runtime_capabilities_from_permissions(&permissions, &workspace_root);
+        let (remembered_grants, remembered_blocks) =
+            permission_store.build_wasm_permission_sets(&app_id, &workspace_root, &wasm_declared);
+
+        let grants = Grants {
+            state: true,
+            pipes: permissions.capabilities.contains(&Capability::PipeOpen),
+            gpu: permissions.capabilities.contains(&Capability::GpuRender),
+            audio: permissions
+                .capabilities
+                .contains(&Capability::AudioPlayback),
+        };
+        let store = StateStore::persistent(wasm_state_path(&app_id, &workspace_root))
+            .map_err(|e| format!("open wasm state for {app_id}: {e}"))?;
+        let snapshot = store.snapshot();
+        let app = WasmApp::load_with_grants(&app_id, &installed.bin_path, store, grants)
+            .map_err(|e| format!("load {}: {e}", installed.bin_path.display()))?;
+
+        log::info!(
+            "wasm::{app_id}: manifest-backed launch entry={} remembered_grants={} remembered_blocks={}",
+            installed.bin_path.display(),
+            remembered_grants.len(),
+            remembered_blocks.len()
+        );
+        self.open_wasm_app_instance(
+            &app_id,
+            app,
+            snapshot,
+            workspace_root,
+            permissions,
+            Some((permission_store, remembered_grants, remembered_blocks)),
+            layout,
+            launch_args,
+        )
     }
 
     /// Reload the `ProcessApp` inside the AppPane at `pane_id` (#83).
@@ -1066,12 +1249,28 @@ impl PlexiApp {
             return Ok(());
         }
 
-        // Try registry first; if it returns None, fall through to Tier 4.
-        let registry_process = self.registry.launch_process(id, &cwd, args);
         // Query group/hint after any registry reload so metadata reflects the
         // actual registry that found the app.
         let group = self.registry.group_for(id);
         let hint = layout.or_else(|| Some("overlay".to_string()));
+        if let Some(installed) = self.registry.get(id).cloned() {
+            if installed.manifest.manifest_type == crate::app::registry::ManifestType::Wasm {
+                let workspace_root = installed
+                    .workspace_root
+                    .clone()
+                    .unwrap_or_else(|| cwd.clone());
+                self.open_installed_wasm_app_pane(
+                    installed,
+                    workspace_root,
+                    hint.as_deref(),
+                    args.to_vec(),
+                )?;
+                return Ok(());
+            }
+        }
+
+        // Try registry first; if it returns None, fall through to Tier 4.
+        let registry_process = self.registry.launch_process(id, &cwd, args);
         if let Some(process) = registry_process {
             if cli_binary_in_path(id) {
                 log::warn!(
@@ -1104,6 +1303,39 @@ impl PlexiApp {
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
     ) -> Result<(), String> {
+        self.launch_app_by_path_with_layout_inner(
+            app_path,
+            layout,
+            workspace_root_override,
+            args,
+            true,
+        )
+    }
+
+    pub(crate) fn launch_app_by_path_with_layout_no_review_modal(
+        &mut self,
+        app_path: &str,
+        layout: Option<String>,
+        workspace_root_override: Option<std::path::PathBuf>,
+        args: &[String],
+    ) -> Result<(), String> {
+        self.launch_app_by_path_with_layout_inner(
+            app_path,
+            layout,
+            workspace_root_override,
+            args,
+            false,
+        )
+    }
+
+    fn launch_app_by_path_with_layout_inner(
+        &mut self,
+        app_path: &str,
+        layout: Option<String>,
+        workspace_root_override: Option<std::path::PathBuf>,
+        args: &[String],
+        queue_raw_wasm_review: bool,
+    ) -> Result<(), String> {
         let app_dir = PathBuf::from(app_path);
         log::info!("launch_app_by_path_with_layout: path={app_path}");
 
@@ -1121,6 +1353,14 @@ impl PlexiApp {
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| PathBuf::from("."))
             });
+            if queue_raw_wasm_review {
+                return self.review_or_open_raw_wasm_app_pane(
+                    &app_id,
+                    &app_dir,
+                    workspace_root,
+                    args.to_vec(),
+                );
+            }
             return self
                 .open_wasm_app_pane(&app_id, &app_dir, workspace_root, args.to_vec())
                 .map(|_| ());
@@ -1152,6 +1392,15 @@ impl PlexiApp {
             "launch_app_by_path_with_layout: workspace_root={}",
             workspace_root.display()
         );
+        if installed.manifest.manifest_type == crate::app::registry::ManifestType::Wasm {
+            self.open_installed_wasm_app_pane(
+                installed,
+                workspace_root,
+                layout_hint.as_deref(),
+                args.to_vec(),
+            )?;
+            return Ok(());
+        }
         match crate::process_app::ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
@@ -2270,7 +2519,10 @@ mod quick_note_tests {
                 .expect("second write must succeed");
 
         // Even if both calls land in the same millisecond the paths must differ.
-        assert_ne!(path1, path2, "concurrent scratchpad writes must not collide");
+        assert_ne!(
+            path1, path2,
+            "concurrent scratchpad writes must not collide"
+        );
 
         let entries: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -2456,4 +2708,61 @@ fn new_inbox_note_path() -> PathBuf {
         .join("notes")
         .join("inbox")
         .join(filename)
+}
+
+fn wasm_runtime_capabilities_from_permissions(
+    permissions: &crate::app::permissions::AppPermissions,
+    workspace_root: &std::path::Path,
+) -> std::collections::HashSet<String> {
+    use crate::app::permissions::Capability;
+
+    let mut caps = std::collections::HashSet::new();
+    if permissions.capabilities.contains(&Capability::FsRead) {
+        caps.insert(format!("fs:read:{}", workspace_root.display()));
+    }
+    if permissions.capabilities.contains(&Capability::FsWrite) {
+        caps.insert(format!("fs:write:{}", workspace_root.display()));
+    }
+    if permissions.capabilities.contains(&Capability::NetHttp) {
+        if permissions.allowed_hosts.is_empty() {
+            caps.insert("net:fetch:*".to_string());
+        } else {
+            caps.extend(
+                permissions
+                    .allowed_hosts
+                    .iter()
+                    .map(|host| format!("net:fetch:{host}")),
+            );
+        }
+    }
+    if permissions.capabilities.contains(&Capability::AiQuery) {
+        caps.insert("ai.query".to_string());
+    }
+    caps
+}
+
+fn wasm_state_path(app_id: &str, workspace_root: &std::path::Path) -> PathBuf {
+    crate::config::config_dir()
+        .join("wasm-state")
+        .join(sanitize_wasm_path_component(app_id))
+        .join(format!(
+            "{}.json",
+            sanitize_wasm_path_component(&workspace_root.display().to_string())
+        ))
+}
+
+fn sanitize_wasm_path_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "root".to_string()
+    } else {
+        out
+    }
 }
