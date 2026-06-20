@@ -76,13 +76,17 @@ Rules:
 
 ## Step 4 -- Metadata Assembly
 
-### Size (mandatory, pick one)
+### Size (mandatory, always set, never omit or ask)
 
 | Size | Meaning |
 |---|---|
 | `S` | A few hours, 1-3 files |
 | `M` | A day or two, multiple files or systems |
 | `L` | Multi-day, architectural or cross-cutting |
+
+Pick one yourself from the research in Step 2. Never ask the user. Never leave it blank.
+
+**No `time_estimate` field.** Never add it. Size is the only effort signal.
 
 ### Priority (mandatory, pick one)
 
