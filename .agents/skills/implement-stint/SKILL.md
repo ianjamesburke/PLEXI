@@ -191,7 +191,9 @@ If the implementation worktree already exists:
 
 ## Phase 3 - Research (Sub-agent R)
 
-Spawn a **read-only** sub-agent. Its only job is to produce the implementation spec; it must not edit any file.
+**Default: skip deep research.** Most stint tasks already contain sufficient scope, file references, and implementation detail. Only spawn Sub-agent R when the task body lacks actionable detail (no files named, no clear approach, ambiguous scope). When skipping, the orchestrator builds the spec inline from the task body and proceeds directly to Phase 4.
+
+When research IS needed, spawn a **read-only** sub-agent. Its only job is to produce the implementation spec; it must not edit any file.
 
 **Prompt to Sub-agent R:**
 
