@@ -169,6 +169,19 @@ impl PlexiApp {
                             };
                             found = true;
                             break;
+                        } else if let Some(a) = pane.as_app_mut() {
+                            a.runtime.on_pane_renamed(name);
+                            a.name = if name.is_empty() {
+                                a.runtime.display_name()
+                            } else {
+                                name.clone()
+                            };
+                            log::info!(
+                                "pane_ipc: set_pane_title: app pane {pane_id} named {:?}",
+                                a.name
+                            );
+                            found = true;
+                            break;
                         }
                     }
                 }
