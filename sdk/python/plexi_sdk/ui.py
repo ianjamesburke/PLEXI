@@ -82,6 +82,7 @@ RADIUS_BADGE = 6.0
 # Live host theme — populated from the Init payload (light/dark + user overrides).
 # Components read theme.<role> at render time so they track the active theme.
 from ._theme import theme
+from ._constants import BG, FG, ACCENT, SURFACE, HIGHLIGHT, MUTED, GREEN, RED, YELLOW
 
 # ── Utilities ──────────────────────────────────────────────────────────────
 

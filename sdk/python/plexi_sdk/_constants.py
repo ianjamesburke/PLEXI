@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ._theme import _DEFAULTS as _TD
+
 # ── SDK version (single source of truth) ──────────────────────────────────────
 _SDK_VERSION = "0.5.0"
 
@@ -28,6 +30,18 @@ PRIORITY_LOW      = 0
 PRIORITY_NORMAL   = 50
 PRIORITY_HIGH     = 100
 PRIORITY_CRITICAL = 200
+
+
+# ── Color constants (dark-mode defaults; derive from _theme._DEFAULTS) ────────
+BG        = _TD["bg"]
+FG        = _TD["fg"]
+ACCENT    = _TD["accent"]
+SURFACE   = _TD["surface"]
+HIGHLIGHT = _TD["highlight"]
+MUTED     = _TD["muted"]
+GREEN     = _TD["green"]
+RED       = _TD["red"]
+YELLOW    = _TD["yellow"]
 
 
 def rgba(r: int, g: int, b: int, a: int = 255) -> str:
