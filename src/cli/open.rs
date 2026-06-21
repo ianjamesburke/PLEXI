@@ -652,10 +652,33 @@ mod open_cli_tests {
     #[test]
     fn wasm_path_open_forwards_launch_args() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let wasm_path = dir.path().join("breakout.wasm");
-        std::fs::write(&wasm_path, b"\0asm").expect("write wasm stub");
-        let wasm_path_str = wasm_path.to_string_lossy().into_owned();
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
+
+        // Use the real fixture — a stub `\0asm` blob is not a valid WASM component
+        // and wasmtime will reject it before the socket payload is ever sent.
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wasm-fixtures/breakout.wasm");
+        let app_id = fixture.file_stem().and_then(|s| s.to_str()).unwrap_or("wasm");
+        let workspace_root = fixture.parent().expect("fixture parent");
+
+        // Pre-approve all required grants so review does not prompt stdin.
+        let required = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
+            .expect("inspect fixture grants")
+            .capability_ids();
+        let mut store =
+            crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
+        for cap in required {
+            store.set_wasm(
+                app_id,
+                workspace_root,
+                &cap,
+                crate::app::permissions::PermissionState::Green,
+            );
+        }
+        store.save();
+
+        let wasm_path_str = fixture.to_string_lossy().into_owned();
         let args = vec!["--blocks".to_string(), "96".to_string()];
 
         let (code, payload) =
