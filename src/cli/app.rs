@@ -600,7 +600,7 @@ pub fn host_version_gate(report: &crate::app::package::PackageReport) -> Option<
 fn trust_label_for(report: &crate::app::package::PackageReport) -> crate::app::package::TrustLabel {
     let core_ids = crate::cli::install_host::core_pack_ids();
     let core_refs: Vec<&str> = core_ids.iter().map(String::as_str).collect();
-    crate::app::package::trust_label(report, &core_refs)
+    crate::app::package::trust_label(report, &core_refs, false)
 }
 
 /// The install confirmation gate. Returns `Ok(true)` to proceed,
@@ -1663,7 +1663,6 @@ mod install_confirm_tests {
             total_size: 64,
             requires_plexi_min: None,
             requires_plexi_max: None,
-            reviewed: false,
         }
     }
 

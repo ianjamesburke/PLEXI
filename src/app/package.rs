@@ -196,11 +196,6 @@ struct PackageSection {
     id: String,
     version: String,
     runtime: String,
-    /// Set by the marketplace packager/reviewer, not by the app author. Absent means
-    /// unreviewed. When present and true, Python apps display the "Reviewed native
-    /// process" trust label at install time.
-    #[serde(default)]
-    reviewed: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -231,9 +226,6 @@ pub struct PackageReport {
     pub requires_plexi_min: Option<String>,
     /// Declared `[requires].plexi_max` — soft ceiling host version, if any.
     pub requires_plexi_max: Option<String>,
-    /// Whether the app has passed marketplace review (`reviewed = true` in manifest).
-    /// Absent or false means unreviewed. Affects the trust label shown at install time.
-    pub reviewed: bool,
 }
 
 // ── Trust label ───────────────────────────────────────────────────────────────
@@ -280,13 +272,20 @@ impl TrustLabel {
 /// Classify a validated package/dir for the trust sheet. `core_ids` is the
 /// bundled first-party core pack id set
 /// (see `crate::cli::install_host::core_pack_ids`).
-pub fn trust_label(report: &PackageReport, core_ids: &[&str]) -> TrustLabel {
+///
+/// `marketplace_reviewed` is a host-side flag set by the install flow when it
+/// has external proof from a trusted source (e.g. a marketplace server). It is
+/// NOT read from inside the package — any in-package self-attestation is
+/// attacker-controlled and must not be used here. For local installs pass
+/// `false`; marketplace installs will pass `true` based on server attestation
+/// when that flow ships.
+pub fn trust_label(report: &PackageReport, core_ids: &[&str], marketplace_reviewed: bool) -> TrustLabel {
     if core_ids.contains(&report.id.as_str()) {
         TrustLabel::FirstPartyCore
     } else {
         match report.runtime {
             PackageRuntime::Python => {
-                if report.reviewed {
+                if marketplace_reviewed {
                     TrustLabel::PythonReviewed
                 } else {
                     TrustLabel::PythonUnreviewed
@@ -370,7 +369,6 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
         total_size,
         requires_plexi_min,
         requires_plexi_max,
-        reviewed: false, // reviewed status lives in PACKAGE.toml, not manifest.toml
     })
 }
 
@@ -517,7 +515,6 @@ pub fn build_package(app_dir: &Path, out: Option<&Path>) -> Result<PathBuf, Pack
             id: report.id.clone(),
             version: report.version.clone(),
             runtime: report.runtime.as_str().to_string(),
-            reviewed: None, // set by marketplace reviewer, not by build_package
         },
         capabilities: report
             .capabilities
@@ -823,13 +820,7 @@ fn validate_package_inner(file: &Path) -> Result<PackageReport, PackageError> {
         )));
     }
 
-    // reviewed status is set by the marketplace packager in PACKAGE.toml, not by
-    // the app author in manifest.toml. Override the dir-derived false with the
-    // reviewer-controlled value from the descriptor.
-    Ok(PackageReport {
-        reviewed: descriptor.package.reviewed.unwrap_or(false),
-        ..report
-    })
+    Ok(report)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1120,19 +1111,14 @@ mod tests {
             total_size: 100,
             requires_plexi_min: None,
             requires_plexi_max: None,
-            reviewed: false,
         }
-    }
-
-    fn report_reviewed(id: &str) -> PackageReport {
-        PackageReport { reviewed: true, ..report(id, PackageRuntime::Python) }
     }
 
     #[test]
     fn trust_label_core_id_is_first_party() {
         let r = report("welcome", PackageRuntime::Python);
         assert_eq!(
-            trust_label(&r, &["welcome", "snake"]),
+            trust_label(&r, &["welcome", "snake"], false),
             TrustLabel::FirstPartyCore
         );
         assert_eq!(
@@ -1144,7 +1130,7 @@ mod tests {
     #[test]
     fn trust_label_python_entry_is_python_unreviewed() {
         let r = report("third-party", PackageRuntime::Python);
-        assert_eq!(trust_label(&r, &["welcome"]), TrustLabel::PythonUnreviewed);
+        assert_eq!(trust_label(&r, &["welcome"], false), TrustLabel::PythonUnreviewed);
         assert_eq!(
             TrustLabel::PythonUnreviewed.display_str(),
             "Unreviewed Python process — runs with your full user permissions"
@@ -1152,9 +1138,9 @@ mod tests {
     }
 
     #[test]
-    fn trust_label_reviewed_python_is_python_reviewed() {
-        let r = report_reviewed("marketplace-app");
-        assert_eq!(trust_label(&r, &["welcome"]), TrustLabel::PythonReviewed);
+    fn trust_label_marketplace_reviewed_python_is_python_reviewed() {
+        let r = report("marketplace-app", PackageRuntime::Python);
+        assert_eq!(trust_label(&r, &["welcome"], true), TrustLabel::PythonReviewed);
         assert_eq!(
             TrustLabel::PythonReviewed.display_str(),
             "Reviewed native process — manifest reviewed; not sandboxed"
@@ -1163,18 +1149,18 @@ mod tests {
 
     #[test]
     fn trust_label_reviewed_core_id_still_first_party() {
-        let r = report_reviewed("welcome");
+        let r = report("welcome", PackageRuntime::Python);
         assert_eq!(
-            trust_label(&r, &["welcome"]),
+            trust_label(&r, &["welcome"], true),
             TrustLabel::FirstPartyCore,
-            "core id overrides reviewed flag"
+            "core id overrides marketplace_reviewed flag"
         );
     }
 
     #[test]
     fn trust_label_native_entry_is_native_unreviewed() {
         let r = report("third-party-bin", PackageRuntime::Native);
-        assert_eq!(trust_label(&r, &[]), TrustLabel::NativeUnreviewed);
+        assert_eq!(trust_label(&r, &[], false), TrustLabel::NativeUnreviewed);
         assert_eq!(
             TrustLabel::NativeUnreviewed.display_str(),
             "Unreviewed native process — runs with your full user permissions"
@@ -1184,7 +1170,7 @@ mod tests {
     #[test]
     fn trust_label_wasm_entry_is_component() {
         let r = report("third-party-wasm", PackageRuntime::Wasm);
-        assert_eq!(trust_label(&r, &[]), TrustLabel::WasmComponent);
+        assert_eq!(trust_label(&r, &[], false), TrustLabel::WasmComponent);
         assert_eq!(
             TrustLabel::WasmComponent.display_str(),
             "WASM component — sandboxed; host imports are capability-gated"
@@ -1192,59 +1178,23 @@ mod tests {
     }
 
     #[test]
-    fn reviewed_flag_in_package_toml_sets_python_reviewed_label() {
-        // reviewed comes from PACKAGE.toml (reviewer-controlled), not manifest.toml
-        // (author-controlled). Build a package, patch PACKAGE.toml with reviewed=true,
-        // and repack using the existing read_entries/write_entries test helpers.
-        let (work, pkg) = build_valid_package("mkt-app");
-        let mut entries = read_entries(&pkg);
-
-        // Patch PACKAGE.toml to include reviewed = true in [package].
-        let pkg_toml_raw = String::from_utf8(entries[PACKAGE_TOML].clone()).unwrap();
-        let mut pkg_toml_val: toml::Value = pkg_toml_raw.parse().unwrap();
-        pkg_toml_val
-            .get_mut("package")
-            .unwrap()
-            .as_table_mut()
-            .unwrap()
-            .insert("reviewed".to_string(), toml::Value::Boolean(true));
-        *entries.get_mut(PACKAGE_TOML).unwrap() =
-            toml::to_string(&pkg_toml_val).unwrap().into_bytes();
-
-        let reviewed_pkg = work.path().join("mkt-app-reviewed.plexipkg");
-        write_entries(&reviewed_pkg, &entries);
-
-        let report = validate_package(&reviewed_pkg).expect("valid reviewed package");
-        assert!(report.reviewed, "PACKAGE.toml reviewed=true must set reviewed on PackageReport");
+    fn marketplace_reviewed_flag_gates_python_reviewed_label() {
+        // reviewed status is a host-side decision passed as marketplace_reviewed — not
+        // derived from the package itself. Any package install call site controls this.
+        let (_work, pkg) = build_valid_package("mkt-app");
+        let report = validate_package(&pkg).expect("valid package");
+        // Without marketplace attestation: unreviewed.
         assert_eq!(
-            trust_label(&report, &[]),
-            TrustLabel::PythonReviewed,
-            "reviewed package must get PythonReviewed label"
+            trust_label(&report, &[], false),
+            TrustLabel::PythonUnreviewed,
+            "package without marketplace attestation must be unreviewed"
         );
-    }
-
-    #[test]
-    fn validate_dir_is_always_unreviewed() {
-        // A directory (local app) can never be reviewer-certified — reviewed must be false
-        // regardless of any field in manifest.toml.
-        let work = TempDir::new().unwrap();
-        let app_dir = work.path().join("local-app");
-        fs::create_dir(&app_dir).unwrap();
-        fs::write(
-            app_dir.join("manifest.toml"),
-            "schema_version = 1\n\n\
-             [app]\n\
-             id = \"local-app\"\n\
-             type = \"app\"\n\
-             name = \"Local App\"\n\
-             version = \"0.1.0\"\n\
-             entry = \"main.py\"\n",
-        )
-        .unwrap();
-        fs::write(app_dir.join("main.py"), "# stub\n").unwrap();
-        let report = validate_dir(&app_dir).expect("valid local app");
-        assert!(!report.reviewed, "local dir install is always unreviewed");
-        assert_eq!(trust_label(&report, &[]), TrustLabel::PythonUnreviewed);
+        // With marketplace attestation: reviewed.
+        assert_eq!(
+            trust_label(&report, &[], true),
+            TrustLabel::PythonReviewed,
+            "marketplace_reviewed=true must yield PythonReviewed"
+        );
     }
 
     #[test]

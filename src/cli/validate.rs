@@ -200,21 +200,30 @@ fn validate_package_cli(file: &std::path::Path) -> i32 {
     }
 }
 
-/// Walk every `.py` file under `app_dir` and check each for bypass patterns.
-/// Covers helpers and modules imported by the entry file, not just the entry itself.
+/// Walk every `.py` file under `app_dir` recursively and check each for bypass
+/// patterns. Covers helpers and submodules, not just the declared entry point.
 fn scan_python_dir_for_bypass_patterns(app_dir: &std::path::Path, out: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(app_dir) else { return };
+    scan_python_dir_recursive(app_dir, app_dir, out);
+}
+
+fn scan_python_dir_recursive(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<String>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("py") {
-            continue;
-        }
-        if let Ok(src) = std::fs::read_to_string(&path) {
-            let rel = path
-                .strip_prefix(app_dir)
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| path.display().to_string());
-            check_python_bypass_patterns(&src, &rel, out);
+        if path.is_dir() {
+            scan_python_dir_recursive(root, &path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("py") {
+            if let Ok(src) = std::fs::read_to_string(&path) {
+                let rel = path
+                    .strip_prefix(root)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| path.display().to_string());
+                check_python_bypass_patterns(&src, &rel, out);
+            }
         }
     }
 }
@@ -425,7 +434,7 @@ mod validate_tests {
 
     #[test]
     fn validate_warns_on_subprocess_in_helper_module() {
-        // Bypass patterns in non-entry .py files must also be detected.
+        // Bypass patterns in nested .py files must also be detected (recursive walk).
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("manifest.toml"),
@@ -439,9 +448,11 @@ mod validate_tests {
              description = \"App with bypass in helper\"\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("main.py"), "from utils import run_cmd\n").unwrap();
+        std::fs::write(dir.path().join("main.py"), "from lib.utils import run_cmd\n").unwrap();
+        // Bypass pattern is in a subdirectory module, not the entry file.
+        std::fs::create_dir(dir.path().join("lib")).unwrap();
         std::fs::write(
-            dir.path().join("utils.py"),
+            dir.path().join("lib/utils.py"),
             "import subprocess\ndef run_cmd(cmd): return subprocess.run(cmd)\n",
         )
         .unwrap();
