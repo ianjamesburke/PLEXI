@@ -19,7 +19,7 @@ on:
 
 jobs:
   check-docs-coverage:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
@@ -27,7 +27,7 @@ jobs:
         run: bash tools/check_docs_coverage.sh
 
   check-sdk-docs:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
