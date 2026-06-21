@@ -98,6 +98,12 @@ pub fn validate_cli(path: &str) -> i32 {
                     warnings.push(format!("  python3 not found — skipping syntax check: {e}"));
                 }
             }
+            // Bypass pattern scan: flag direct OS/network access that bypasses
+            // capability checks. These patterns are always worth noting; the user
+            // decides whether the usage is intentional.
+            if let Ok(src) = std::fs::read_to_string(&entry_path) {
+                check_python_bypass_patterns(&src, entry, &mut warnings);
+            }
         }
     }
 
@@ -193,6 +199,38 @@ fn validate_package_cli(file: &std::path::Path) -> i32 {
             eprintln!("✗ {} — package validation failed:", file.display());
             eprintln!("  {e}");
             1
+        }
+    }
+}
+
+/// Scan Python source for patterns that bypass PGAP capability checks. Appends
+/// warnings to `out`; never errors. Python apps run as native processes and can
+/// always use the OS directly — this check surfaces the usage so users can make
+/// an informed install decision.
+fn check_python_bypass_patterns(src: &str, entry: &str, out: &mut Vec<String>) {
+    // Each tuple: (search token, human label).
+    // Tokens are checked as substrings — fast, no regex, no false negatives from
+    // aliasing or dynamic imports (which are always detectable only at runtime).
+    const PATTERNS: &[(&str, &str)] = &[
+        ("import subprocess", "subprocess (direct OS process execution)"),
+        ("subprocess.run", "subprocess.run (direct OS process execution)"),
+        ("subprocess.Popen", "subprocess.Popen (direct OS process execution)"),
+        ("subprocess.call", "subprocess.call (direct OS process execution)"),
+        ("import socket", "socket (raw network access)"),
+        ("socket.socket", "socket.socket (raw network access)"),
+        ("os.system", "os.system (shell command execution)"),
+        ("os.popen", "os.popen (shell command execution)"),
+        ("os.execv", "os.execv (process replacement)"),
+        ("os.execl", "os.execl (process replacement)"),
+        ("os.execle", "os.execle (process replacement)"),
+        ("os.execlp", "os.execlp (process replacement)"),
+    ];
+    for (token, label) in PATTERNS {
+        if src.contains(token) {
+            out.push(format!(
+                "  bypass pattern in {entry}: {label} — app runs as a native process and can use \
+                 this; review before installing"
+            ));
         }
     }
 }
@@ -300,6 +338,73 @@ mod validate_tests {
         std::fs::write(&bogus, "x").unwrap();
         let code = super::validate_cli(&bogus.to_string_lossy());
         assert_eq!(code, 1, "non-.plexipkg file must fail validate_cli");
+    }
+
+    #[test]
+    fn bypass_pattern_subprocess_import_produces_warning() {
+        let mut warnings = Vec::new();
+        super::check_python_bypass_patterns("import subprocess\nsubprocess.run(['ls'])", "main.py", &mut warnings);
+        assert!(
+            warnings.iter().any(|w| w.contains("subprocess")),
+            "subprocess import must produce a bypass warning"
+        );
+    }
+
+    #[test]
+    fn bypass_pattern_clean_app_produces_no_warnings() {
+        let mut warnings = Vec::new();
+        super::check_python_bypass_patterns(
+            "from plexi_sdk import App\nclass MyApp(App):\n    def view(self): pass",
+            "main.py",
+            &mut warnings,
+        );
+        assert!(warnings.is_empty(), "clean app must produce no bypass warnings");
+    }
+
+    #[test]
+    fn bypass_pattern_socket_import_produces_warning() {
+        let mut warnings = Vec::new();
+        super::check_python_bypass_patterns("import socket\n", "main.py", &mut warnings);
+        assert!(
+            warnings.iter().any(|w| w.contains("socket")),
+            "socket import must produce a bypass warning"
+        );
+    }
+
+    #[test]
+    fn bypass_pattern_os_system_produces_warning() {
+        let mut warnings = Vec::new();
+        super::check_python_bypass_patterns("os.system('ls')\n", "main.py", &mut warnings);
+        assert!(
+            warnings.iter().any(|w| w.contains("os.system")),
+            "os.system must produce a bypass warning"
+        );
+    }
+
+    #[test]
+    fn validate_warns_on_subprocess_in_python_entry() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"bypass-test\"\n\
+             type = \"app\"\n\
+             name = \"Bypass Test\"\n\
+             entry = \"main.py\"\n\
+             version = \"0.1.0\"\n\
+             description = \"An app with bypass patterns\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("main.py"),
+            "import subprocess\nsubprocess.run(['ls'])\n",
+        )
+        .unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let code = super::validate_cli(&path);
+        // bypass patterns are warnings, not errors — validate must still return 0
+        assert_eq!(code, 0, "bypass pattern warnings must not fail validation");
     }
 
     #[test]

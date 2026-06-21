@@ -226,6 +226,9 @@ pub struct PackageReport {
     pub requires_plexi_min: Option<String>,
     /// Declared `[requires].plexi_max` — soft ceiling host version, if any.
     pub requires_plexi_max: Option<String>,
+    /// Whether the app has passed marketplace review (`reviewed = true` in manifest).
+    /// Absent or false means unreviewed. Affects the trust label shown at install time.
+    pub reviewed: bool,
 }
 
 // ── Trust label ───────────────────────────────────────────────────────────────
@@ -244,6 +247,8 @@ pub enum TrustLabel {
     NativeUnreviewed,
     /// A Python app from outside the core pack.
     PythonUnreviewed,
+    /// A Python app that has passed marketplace review.
+    PythonReviewed,
     /// A WASM component from outside the core pack.
     WasmComponent,
 }
@@ -255,6 +260,9 @@ impl TrustLabel {
             Self::FirstPartyCore => "First-party core — ships with Plexi",
             Self::PythonUnreviewed => {
                 "Unreviewed Python process — runs with your full user permissions"
+            }
+            Self::PythonReviewed => {
+                "Reviewed native process — manifest reviewed; not sandboxed"
             }
             Self::WasmComponent => "WASM component — sandboxed; host imports are capability-gated",
             Self::NativeUnreviewed => {
@@ -272,7 +280,13 @@ pub fn trust_label(report: &PackageReport, core_ids: &[&str]) -> TrustLabel {
         TrustLabel::FirstPartyCore
     } else {
         match report.runtime {
-            PackageRuntime::Python => TrustLabel::PythonUnreviewed,
+            PackageRuntime::Python => {
+                if report.reviewed {
+                    TrustLabel::PythonReviewed
+                } else {
+                    TrustLabel::PythonUnreviewed
+                }
+            }
             PackageRuntime::Wasm => TrustLabel::WasmComponent,
             PackageRuntime::Native => TrustLabel::NativeUnreviewed,
         }
@@ -351,6 +365,7 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
         total_size,
         requires_plexi_min,
         requires_plexi_max,
+        reviewed: manifest.app.reviewed.unwrap_or(false),
     })
 }
 
@@ -1093,7 +1108,12 @@ mod tests {
             total_size: 100,
             requires_plexi_min: None,
             requires_plexi_max: None,
+            reviewed: false,
         }
+    }
+
+    fn report_reviewed(id: &str) -> PackageReport {
+        PackageReport { reviewed: true, ..report(id, PackageRuntime::Python) }
     }
 
     #[test]
@@ -1120,6 +1140,26 @@ mod tests {
     }
 
     #[test]
+    fn trust_label_reviewed_python_is_python_reviewed() {
+        let r = report_reviewed("marketplace-app");
+        assert_eq!(trust_label(&r, &["welcome"]), TrustLabel::PythonReviewed);
+        assert_eq!(
+            TrustLabel::PythonReviewed.display_str(),
+            "Reviewed native process — manifest reviewed; not sandboxed"
+        );
+    }
+
+    #[test]
+    fn trust_label_reviewed_core_id_still_first_party() {
+        let r = report_reviewed("welcome");
+        assert_eq!(
+            trust_label(&r, &["welcome"]),
+            TrustLabel::FirstPartyCore,
+            "core id overrides reviewed flag"
+        );
+    }
+
+    #[test]
     fn trust_label_native_entry_is_native_unreviewed() {
         let r = report("third-party-bin", PackageRuntime::Native);
         assert_eq!(trust_label(&r, &[]), TrustLabel::NativeUnreviewed);
@@ -1137,6 +1177,55 @@ mod tests {
             TrustLabel::WasmComponent.display_str(),
             "WASM component — sandboxed; host imports are capability-gated"
         );
+    }
+
+    #[test]
+    fn reviewed_flag_in_manifest_sets_python_reviewed_label() {
+        let work = TempDir::new().unwrap();
+        let app_dir = work.path().join("reviewed-app");
+        fs::create_dir(&app_dir).unwrap();
+        fs::write(
+            app_dir.join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"marketplace-app\"\n\
+             type = \"app\"\n\
+             name = \"Marketplace App\"\n\
+             version = \"1.0.0\"\n\
+             entry = \"main.py\"\n\
+             reviewed = true\n",
+        )
+        .unwrap();
+        fs::write(app_dir.join("main.py"), "# reviewed app\n").unwrap();
+        let report = validate_dir(&app_dir).expect("valid reviewed app");
+        assert!(report.reviewed, "reviewed=true must set reviewed on PackageReport");
+        assert_eq!(
+            trust_label(&report, &[]),
+            TrustLabel::PythonReviewed,
+            "reviewed Python app must get PythonReviewed label"
+        );
+    }
+
+    #[test]
+    fn absent_reviewed_flag_defaults_to_unreviewed() {
+        let work = TempDir::new().unwrap();
+        let app_dir = work.path().join("unreviewed-app");
+        fs::create_dir(&app_dir).unwrap();
+        fs::write(
+            app_dir.join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"local-app\"\n\
+             type = \"app\"\n\
+             name = \"Local App\"\n\
+             version = \"0.1.0\"\n\
+             entry = \"main.py\"\n",
+        )
+        .unwrap();
+        fs::write(app_dir.join("main.py"), "# stub\n").unwrap();
+        let report = validate_dir(&app_dir).expect("valid unreviewed app");
+        assert!(!report.reviewed, "absent reviewed must default to false");
+        assert_eq!(trust_label(&report, &[]), TrustLabel::PythonUnreviewed);
     }
 
     #[test]

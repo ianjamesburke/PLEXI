@@ -1663,6 +1663,7 @@ mod install_confirm_tests {
             total_size: 64,
             requires_plexi_min: None,
             requires_plexi_max: None,
+            reviewed: false,
         }
     }
 

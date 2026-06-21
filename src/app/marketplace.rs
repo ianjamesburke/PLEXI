@@ -930,6 +930,7 @@ mod tests {
             total_size: 1024,
             requires_plexi_min: None,
             requires_plexi_max: None,
+            reviewed: false,
         };
         let mkt = MarketplaceManifest {
             visibility: Visibility::Public,
