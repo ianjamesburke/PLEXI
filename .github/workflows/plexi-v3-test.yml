@@ -2,9 +2,7 @@ name: Build & Test
 
 on:
   push:
-    branches: [alpha]
-  pull_request:
-    branches: [alpha]
+    branches: [main]
 
 jobs:
   build:
