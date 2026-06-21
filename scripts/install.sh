@@ -187,7 +187,7 @@ if [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" || "
   fi
 fi
 
-mkdir -p "$profile_dir/sdk" "$profile_dir/apps" "$profile_dir/scripts"
+mkdir -p "$profile_dir/sdk" "$profile_dir/apps" "$profile_dir/agents" "$profile_dir/scripts"
 
 # Seed default scripts (skip files already present to preserve user customizations).
 DEFAULT_SCRIPTS_DIR="$REPO_ROOT/scripts/default-scripts"
@@ -271,6 +271,29 @@ install_skills() {
 }
 
 install_skills
+
+# Install bundled agent definitions.
+install_agents() {
+  local agents_dest="$profile_dir/agents"
+  local repo_agents="$REPO_ROOT/agents"
+  [[ -d "$repo_agents" ]] || return 0
+  local installed=0
+
+  for agent_dir in "$repo_agents"/*/; do
+    [[ -f "$agent_dir/settings.toml" ]] || continue
+    local name
+    name="$(basename "$agent_dir")"
+    mkdir -p "$agents_dest/$name"
+    rsync -a "$agent_dir" "$agents_dest/$name/"
+    installed=$((installed + 1))
+  done
+
+  if [[ $installed -gt 0 ]]; then
+    echo "Agents: $installed installed to $agents_dest/"
+  fi
+}
+
+install_agents
 
 echo "Installed $app_dest"
 echo "CLI: $bin_dest"

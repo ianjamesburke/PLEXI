@@ -1,8 +1,5 @@
-# Chess Opponent — example agent definition.
-#
-# Install: copy this directory to
-#   <workspace>/<workspace channel dir>/agents/chess-opponent/
-# e.g. on the alpha channel: <workspace>/.plexi-alpha/agents/chess-opponent/
+# Chess Opponent — bundled agent definition.
+# Installed to ~/.plexi-<channel>/agents/chess-opponent/ by scripts/install.sh.
 #
 # This file REQUESTS behavior. The permission broker stores what the user
 # actually grants:
