@@ -88,6 +88,10 @@ pub struct TextEditorApp {
     cursor_was_at_end: bool,
     /// Active find bar, or `None` when dismissed.
     find_bar: Option<FindBar>,
+    /// Pixel height of the text galley from the last rendered frame. Used to
+    /// keep the scroll region at least half a viewport taller than content,
+    /// so the cursor can always be centered when at the bottom of a long doc.
+    content_pixel_height: f32,
 }
 
 impl TextEditorApp {
@@ -113,6 +117,7 @@ impl TextEditorApp {
             font_size: FONT_SIZE_DEFAULT,
             cursor_was_at_end: false,
             find_bar: None,
+            content_pixel_height: 0.0,
         }
     }
 
@@ -708,7 +713,17 @@ impl App for TextEditorApp {
         // to be taller than the viewport and triggering an unwanted scrollbar.
         let row_height = ui.fonts(|f| f.row_height(&font_id));
         let min_rows = ((editor_height / row_height).floor() as usize).max(1);
-        const OVERSCROLL_ROWS: usize = 100;
+        // Overscroll: always keep at least half a viewport of empty space below
+        // the last line. Computed from last frame's galley height so it grows
+        // with content; on the first frame `content_pixel_height` is 0 so we
+        // fall back to `min_rows` (viewport height) as the content estimate.
+        let half_viewport_rows = ((editor_height / row_height / 2.0).ceil() as usize).max(1);
+        let content_rows_last_frame = if self.content_pixel_height > 0.0 {
+            (self.content_pixel_height / row_height).ceil() as usize
+        } else {
+            min_rows
+        };
+        let desired_rows = (content_rows_last_frame + half_viewport_rows).max(min_rows);
 
         // Snapshot match positions for the layouter closure (can't borrow self there).
         let match_positions: Vec<usize> = self
@@ -809,7 +824,7 @@ impl App for TextEditorApp {
                             .id(te_id)
                             .font(font_id)
                             .desired_width(f32::INFINITY)
-                            .desired_rows(min_rows + OVERSCROLL_ROWS)
+                            .desired_rows(desired_rows)
                             .margin(egui::vec2(4.0, 0.0))
                             .frame(false)
                             .layouter(&mut layouter)
@@ -823,6 +838,8 @@ impl App for TextEditorApp {
                     row_height,
                     egui::Stroke::new(1.0, colors.accent),
                 );
+
+                self.content_pixel_height = output.galley.size().y;
 
                 if output.response.changed() {
                     self.last_edit = Some(Instant::now());
