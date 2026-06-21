@@ -150,11 +150,6 @@ pub struct AppManifestApp {
     /// into a per-app venv at `<app_dir>/.venv`. Empty when omitted.
     #[serde(default)]
     pub dependencies: Vec<String>,
-
-    /// Whether the app has passed marketplace review. Absent (None) means unreviewed.
-    /// When true, Python apps display the "Reviewed native process" trust label instead
-    /// of "Unreviewed Python process". Set by the marketplace reviewer, not by authors.
-    pub reviewed: Option<bool>,
 }
 
 /// Manifest `[app] type` field — chooses the host rendering surface for

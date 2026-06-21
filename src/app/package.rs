@@ -196,6 +196,11 @@ struct PackageSection {
     id: String,
     version: String,
     runtime: String,
+    /// Set by the marketplace packager/reviewer, not by the app author. Absent means
+    /// unreviewed. When present and true, Python apps display the "Reviewed native
+    /// process" trust label at install time.
+    #[serde(default)]
+    reviewed: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -365,7 +370,7 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
         total_size,
         requires_plexi_min,
         requires_plexi_max,
-        reviewed: manifest.app.reviewed.unwrap_or(false),
+        reviewed: false, // reviewed status lives in PACKAGE.toml, not manifest.toml
     })
 }
 
@@ -512,6 +517,7 @@ pub fn build_package(app_dir: &Path, out: Option<&Path>) -> Result<PathBuf, Pack
             id: report.id.clone(),
             version: report.version.clone(),
             runtime: report.runtime.as_str().to_string(),
+            reviewed: None, // set by marketplace reviewer, not by build_package
         },
         capabilities: report
             .capabilities
@@ -817,7 +823,13 @@ fn validate_package_inner(file: &Path) -> Result<PackageReport, PackageError> {
         )));
     }
 
-    Ok(report)
+    // reviewed status is set by the marketplace packager in PACKAGE.toml, not by
+    // the app author in manifest.toml. Override the dir-derived false with the
+    // reviewer-controlled value from the descriptor.
+    Ok(PackageReport {
+        reviewed: descriptor.package.reviewed.unwrap_or(false),
+        ..report
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1180,36 +1192,43 @@ mod tests {
     }
 
     #[test]
-    fn reviewed_flag_in_manifest_sets_python_reviewed_label() {
-        let work = TempDir::new().unwrap();
-        let app_dir = work.path().join("reviewed-app");
-        fs::create_dir(&app_dir).unwrap();
-        fs::write(
-            app_dir.join("manifest.toml"),
-            "schema_version = 1\n\n\
-             [app]\n\
-             id = \"marketplace-app\"\n\
-             type = \"app\"\n\
-             name = \"Marketplace App\"\n\
-             version = \"1.0.0\"\n\
-             entry = \"main.py\"\n\
-             reviewed = true\n",
-        )
-        .unwrap();
-        fs::write(app_dir.join("main.py"), "# reviewed app\n").unwrap();
-        let report = validate_dir(&app_dir).expect("valid reviewed app");
-        assert!(report.reviewed, "reviewed=true must set reviewed on PackageReport");
+    fn reviewed_flag_in_package_toml_sets_python_reviewed_label() {
+        // reviewed comes from PACKAGE.toml (reviewer-controlled), not manifest.toml
+        // (author-controlled). Build a package, patch PACKAGE.toml with reviewed=true,
+        // and repack using the existing read_entries/write_entries test helpers.
+        let (work, pkg) = build_valid_package("mkt-app");
+        let mut entries = read_entries(&pkg);
+
+        // Patch PACKAGE.toml to include reviewed = true in [package].
+        let pkg_toml_raw = String::from_utf8(entries[PACKAGE_TOML].clone()).unwrap();
+        let mut pkg_toml_val: toml::Value = pkg_toml_raw.parse().unwrap();
+        pkg_toml_val
+            .get_mut("package")
+            .unwrap()
+            .as_table_mut()
+            .unwrap()
+            .insert("reviewed".to_string(), toml::Value::Boolean(true));
+        *entries.get_mut(PACKAGE_TOML).unwrap() =
+            toml::to_string(&pkg_toml_val).unwrap().into_bytes();
+
+        let reviewed_pkg = work.path().join("mkt-app-reviewed.plexipkg");
+        write_entries(&reviewed_pkg, &entries);
+
+        let report = validate_package(&reviewed_pkg).expect("valid reviewed package");
+        assert!(report.reviewed, "PACKAGE.toml reviewed=true must set reviewed on PackageReport");
         assert_eq!(
             trust_label(&report, &[]),
             TrustLabel::PythonReviewed,
-            "reviewed Python app must get PythonReviewed label"
+            "reviewed package must get PythonReviewed label"
         );
     }
 
     #[test]
-    fn absent_reviewed_flag_defaults_to_unreviewed() {
+    fn validate_dir_is_always_unreviewed() {
+        // A directory (local app) can never be reviewer-certified — reviewed must be false
+        // regardless of any field in manifest.toml.
         let work = TempDir::new().unwrap();
-        let app_dir = work.path().join("unreviewed-app");
+        let app_dir = work.path().join("local-app");
         fs::create_dir(&app_dir).unwrap();
         fs::write(
             app_dir.join("manifest.toml"),
@@ -1223,8 +1242,8 @@ mod tests {
         )
         .unwrap();
         fs::write(app_dir.join("main.py"), "# stub\n").unwrap();
-        let report = validate_dir(&app_dir).expect("valid unreviewed app");
-        assert!(!report.reviewed, "absent reviewed must default to false");
+        let report = validate_dir(&app_dir).expect("valid local app");
+        assert!(!report.reviewed, "local dir install is always unreviewed");
         assert_eq!(trust_label(&report, &[]), TrustLabel::PythonUnreviewed);
     }
 

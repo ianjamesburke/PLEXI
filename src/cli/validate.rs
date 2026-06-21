@@ -98,12 +98,9 @@ pub fn validate_cli(path: &str) -> i32 {
                     warnings.push(format!("  python3 not found — skipping syntax check: {e}"));
                 }
             }
-            // Bypass pattern scan: flag direct OS/network access that bypasses
-            // capability checks. These patterns are always worth noting; the user
-            // decides whether the usage is intentional.
-            if let Ok(src) = std::fs::read_to_string(&entry_path) {
-                check_python_bypass_patterns(&src, entry, &mut warnings);
-            }
+            // Bypass pattern scan: walk all .py files in the app dir so helpers
+            // and modules are covered, not just the declared entry point.
+            scan_python_dir_for_bypass_patterns(app_dir, &mut warnings);
         }
     }
 
@@ -199,6 +196,25 @@ fn validate_package_cli(file: &std::path::Path) -> i32 {
             eprintln!("✗ {} — package validation failed:", file.display());
             eprintln!("  {e}");
             1
+        }
+    }
+}
+
+/// Walk every `.py` file under `app_dir` and check each for bypass patterns.
+/// Covers helpers and modules imported by the entry file, not just the entry itself.
+fn scan_python_dir_for_bypass_patterns(app_dir: &std::path::Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(app_dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("py") {
+            continue;
+        }
+        if let Ok(src) = std::fs::read_to_string(&path) {
+            let rel = path
+                .strip_prefix(app_dir)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| path.display().to_string());
+            check_python_bypass_patterns(&src, &rel, out);
         }
     }
 }
@@ -404,6 +420,33 @@ mod validate_tests {
         let path = dir.path().to_string_lossy().to_string();
         let code = super::validate_cli(&path);
         // bypass patterns are warnings, not errors — validate must still return 0
+        assert_eq!(code, 0, "bypass pattern warnings must not fail validation");
+    }
+
+    #[test]
+    fn validate_warns_on_subprocess_in_helper_module() {
+        // Bypass patterns in non-entry .py files must also be detected.
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"helper-bypass\"\n\
+             type = \"app\"\n\
+             name = \"Helper Bypass\"\n\
+             entry = \"main.py\"\n\
+             version = \"0.1.0\"\n\
+             description = \"App with bypass in helper\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("main.py"), "from utils import run_cmd\n").unwrap();
+        std::fs::write(
+            dir.path().join("utils.py"),
+            "import subprocess\ndef run_cmd(cmd): return subprocess.run(cmd)\n",
+        )
+        .unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let code = super::validate_cli(&path);
         assert_eq!(code, 0, "bypass pattern warnings must not fail validation");
     }
 
