@@ -26,7 +26,7 @@ Software was built for human interaction first. Every interface, every workflow,
 
 The whole paradigm needs to be re-imagined. Not for AI alone — for collaboration. Getting the most out of a human and the most out of an AI requires software that can act as a garden: a living, modular, breathing protocol where both participants can tend the environment, hand off control naturally, and grow interfaces that fit the individual using them. Not a universal UI. A personal one, shaped by use.
 
-Plexi is built for that model from the ground up. At the core is a tiling layout with app panes and terminal panes; AI is an app capability, not a separate pane type. Apps do not share memory or state with the host. PGAP/Python apps speak the native JSON protocol as reviewed local processes. WASM apps speak the typed component-model runtime with link-time host imports. Both use explicit capability grants, scoped decisions, and audit logs. Python apps remain native subprocesses unless they move to the WASM compatibility path.
+Plexi is built for that model from the ground up. At the core is a tiling layout with app panes and terminal panes. The host Assistant is a first-party builtin: a workspace operator with direct access to the pane tree, filesystem, terminal panes, app connectors, and the unified permission broker. It is the place where a user asks Plexi to do work, and it should feel like Claude Code but for your entire computing environment, not just a git repo. Third-party AI apps are normal PGAP apps that use `ai.query` as a capability; they do not get ambient workspace control. Apps do not share memory or state with the host. PGAP/Python apps speak the native JSON protocol as reviewed local processes. WASM apps speak the typed component-model runtime with link-time host imports. Both use explicit capability grants, scoped decisions, and audit logs. Python apps remain native subprocesses unless they move to the WASM compatibility path.
 
 The app contract is the key abstraction. PGAP is the native protocol: any process that speaks newline-delimited JSON can be a Plexi app. WASM is the sandbox/performance runtime: any component that implements the WIT lifecycle can be a Plexi app. This means apps are portable, auditable, and replaceable, and agents can invoke them, wire them together, and build new ones without leaving the environment.
 
@@ -78,7 +78,13 @@ The SDK's job after this phase: state management, tree building, event dispatch.
 
 ### Phase 3 — Intelligence *(near term)*
 
-Agent apps, not agent panes. The agent experience is a PGAP app: same protocol, same SDK, same marketplace. "Characters" are different manifests with different system prompts and tool sets. Anyone can build an agent app the same way they build any other app. The infrastructure is already in the host: LLM broker with OpenRouter + Ollama backends, capability-gated `ai.query`, streaming token delivery, workspace-scoped tool dispatch, per-turn cost ledger.
+The host Assistant becomes a full workspace operator. It reads and writes files, searches code, sends commands to terminal panes, calls app connectors, and manages panes, all through typed host tools gated by the unified permission broker. Permission postures (plan, review, work, locked) set the baseline once; the broker auto-evaluates every tool call against the active posture, agent-specific grants, and persisted user decisions. In work mode, common file and terminal operations flow without interruption, matching the velocity of dedicated coding assistants.
+
+Agents are named personas inside the host Assistant: different system prompts, model tier policies, tool sets, permission postures, and optional skills. A builder agent has file tools and terminal access in work mode. A spreadsheet agent has app connector tools for CSV operations and a constrained permission set. Agents are selectable, not installable apps. The agent registry lives on disk (user-level and workspace-level), and marketplace agent packages install into the same registry.
+
+Third-party AI apps remain normal PGAP apps. They use `ai.query` as a capability, build their own UI, and ship to the marketplace like any other app. They do not get ambient workspace control. The host Assistant is the privileged operator; third-party agents are apps.
+
+Skills are markdown-backed procedures the assistant can invoke manually (`/skill-name`) or auto-select by description match. App connectors expose typed read/write tools from running apps (e.g. `csv.read_range`, `csv.write_range`). Tool collections group related tools for install and enablement. These three mechanisms (agents, skills, connectors) compose: a builder agent enables coding skills and terminal tools; a data agent enables spreadsheet connectors and analysis skills.
 
 AI onboarding for non-technical users: hardware scanning, local model recommendation and setup (Ollama), guided API key entry for cloud providers, and eventually a Plexi-managed subscription backend so `ai.query` works out of the box with zero configuration.
 
@@ -114,7 +120,7 @@ That has never been true of software before.
 
 - Cloud state or cloud-required features *(cloud sync is opt-in and portable; local-first is never compromised)*
 - Apps that duplicate what a terminal already does well
-- Capabilities that require trusting the app rather than the protocol *(the v1 Python SDK relies on consent + audit, not process isolation; true sandboxing arrives with the WASM runtime)*
+- Capabilities that require trusting the app rather than the protocol *(the v1 Python SDK relies on consent + audit, not process isolation; true sandboxing arrives with the WASM runtime; the host Assistant is the sole exception: it is a first-party builtin with direct host access, not a protocol app)*
 - Any system that creates two sources of truth for state or permissions
 - Complexity that serves the implementation rather than the capability
 - Universal UIs designed for everyone — Plexi grows to fit the individual
