@@ -188,76 +188,9 @@ Omit sections that have nothing to say.
 
 ---
 
-## Step 6 -- GitHub Issue (when warranted)
+## Step 6 -- GitHub Issue (only when explicitly requested)
 
-Not every stint task needs a GitHub issue. Create one when:
-- The task is a bug report (needs `## Reproduce` / `## Expected`)
-- The task needs an Implementation Map for dispatch agents
-- The task is user-facing and benefits from the issue tracker's visibility
-
-When creating, use this format:
-
-**Enhancement:**
-```
-## Summary
-[One sentence, plain English]
-
-## What
-[One short paragraph]
-
-## Why
-[User impact]
-
-## Action Plan
-[Bullet list naming files and functions]
-
-## Implementation Map
-[path:line -- what changes. "Do not touch:" list for adjacent-but-out-of-scope files.]
-
-## Done When
-[Observable pass condition]
-```
-
-**Bug:**
-```
-## Summary
-[What's broken and the symptom]
-
-## Reproduce
-[Exact steps]
-
-## Expected
-[What should happen]
-
-## Action Plan
-[What needs to change]
-
-## Implementation Map
-[path:line -- what changes]
-
-## Done When
-[Observable pass condition]
-```
-
-Labels (all mandatory): one type (`bug`/`enhancement`/`idea`), one priority (`P0`-`P4`), one or more `area:*`, one `load:S|M|L`, one triage state (`ready`/`untriaged`/`blocked`).
-
-```bash
-gh issue create --title "<title>" --body "<body>" \
-  --label "<type>" --label "<priority>" --label "<area:*>" \
-  --label "load:<S|M|L>" --label "<ready|untriaged|blocked>"
-```
-
-After creation, add the issue number to the stint task's `gh_issue` field.
-
-### Blocking Relationships
-
-If the issue is blocked by other issues:
-
-```bash
-gh issue-ext blocking add <new-issue> <blocker>
-```
-
-Also apply the `blocked` label. Do not add `depends_on` to the issue body.
+Do not create a GitHub issue unless the user explicitly asks for one. Stint tasks stand alone. If the user does request an issue, link it in the task's `gh_issue` field.
 
 ---
 
