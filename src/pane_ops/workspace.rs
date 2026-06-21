@@ -1257,7 +1257,7 @@ impl PlexiApp {
                 .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
         });
         log::info!(
-            "transition_context: ctx_id={} root={} — rescanning registry + restarting watcher",
+            "transition_context: ctx_id={} root={} — rescanning registry + reloading config + restarting watcher",
             self.router.active().context_id,
             root.display()
         );
@@ -1277,6 +1277,9 @@ impl PlexiApp {
                 self.registry_reload_rx = None;
             }
         }
+        // Reload config so workspace-scoped config.toml applies immediately —
+        // both on initial launch and on context switches.
+        self.reload_config_for_active_context();
     }
 
     /// Dissolve a portal: remove the context boundary while preserving the child
