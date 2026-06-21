@@ -452,18 +452,17 @@ impl AssistantApp {
         let mut denied = 0usize;
         let mut ro_auto = 0usize;
         for tool in dispatcher.all_tools() {
-            // Read-only tools are auto-allowed without consulting the broker.
-            // The audit trail still records every call.
-            if tool.read_only {
-                log::info!(
-                    "assistant: tool '{}' auto-allowed (read-only)",
-                    tool.name
-                );
-                allowed.insert(tool.name);
-                ro_auto += 1;
-                continue;
-            }
             match self.tool_decision(&tool.name) {
+                // Read-only tools skip the ask prompt (no permission sheet) but
+                // still respect explicit Deny grants — an admin deny wins.
+                Decision::Allow | Decision::Ask if tool.read_only => {
+                    log::info!(
+                        "assistant: tool '{}' auto-allowed (read-only, no prompt needed)",
+                        tool.name
+                    );
+                    allowed.insert(tool.name);
+                    ro_auto += 1;
+                }
                 Decision::Allow => {
                     allowed.insert(tool.name);
                 }
@@ -1498,6 +1497,36 @@ mod tests {
             "mutating tool must be visible (ask-gated by default): {visible:?}"
         );
         tool_dispatch::unregister(9200);
+    }
+
+    #[test]
+    fn deny_grant_withholds_read_only_tool() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        tool_dispatch::register(
+            9205,
+            "csv".to_string(),
+            vec![crate::app_protocol::AiTool {
+                name: "csv.read_range".to_string(),
+                description: "read cells".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+                timeout_ms: None,
+                read_only: true,
+            }],
+            AppEventSender { tx },
+            ws.path().to_path_buf(),
+        );
+        // Explicit deny must still win even though the tool is read-only.
+        seed_grant(&mut app, "app.csv.read_range", Decision::Deny);
+
+        let dispatcher = app.gated_dispatcher();
+        let visible: Vec<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
+        assert!(
+            !visible.contains(&"csv.read_range".to_string()),
+            "explicit deny must withhold a read-only tool: {visible:?}"
+        );
+        tool_dispatch::unregister(9205);
     }
 
     #[test]
