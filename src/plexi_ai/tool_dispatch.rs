@@ -57,6 +57,8 @@ impl AppEventSender {
 struct RegistryEntry {
     tools: Vec<AiTool>,
     sender: AppEventSender,
+    /// App type id (manifest `app.id`) — used to group tools by app for `/apps`.
+    app_id: String,
     /// Workspace root of the pane that exposed these tools. Used to restrict
     /// cross-workspace tool invocation.
     workspace_root: std::path::PathBuf,
@@ -77,6 +79,7 @@ impl ToolRegistry {
     fn register(
         &mut self,
         pane_id: u64,
+        app_id: String,
         tools: Vec<AiTool>,
         sender: AppEventSender,
         workspace_root: std::path::PathBuf,
@@ -86,6 +89,7 @@ impl ToolRegistry {
             RegistryEntry {
                 tools,
                 sender,
+                app_id,
                 workspace_root,
             },
         );
@@ -147,6 +151,27 @@ impl ToolRegistry {
         map
     }
 
+    /// Map from app_id to tool list for all panes in `caller_workspace`.
+    /// Used by `/apps` to present tools grouped by the app that exposed them.
+    fn apps_for_workspace(&self, caller_workspace: &Path) -> Vec<(String, Vec<AiTool>)> {
+        let mut by_app: std::collections::BTreeMap<String, Vec<AiTool>> =
+            std::collections::BTreeMap::new();
+        for entry in self.entries.values() {
+            if !entry
+                .workspace_root
+                .components()
+                .eq(caller_workspace.components())
+            {
+                continue;
+            }
+            by_app
+                .entry(entry.app_id.clone())
+                .or_default()
+                .extend(entry.tools.iter().cloned());
+        }
+        by_app.into_iter().collect()
+    }
+
     /// Get the `AppEventSender` for a pane without moving it.
     fn sender_for(&self, pane_id: u64) -> Option<&AppEventSender> {
         self.entries.get(&pane_id).map(|e| &e.sender)
@@ -163,6 +188,7 @@ fn global_registry() -> &'static Arc<Mutex<ToolRegistry>> {
 /// `DrawCommand::ExposeTools` arrives.
 pub(crate) fn register(
     pane_id: u64,
+    app_id: String,
     tools: Vec<AiTool>,
     sender: AppEventSender,
     workspace_root: std::path::PathBuf,
@@ -171,7 +197,7 @@ pub(crate) fn register(
     global_registry()
         .lock()
         .unwrap()
-        .register(pane_id, tools, sender, workspace_root);
+        .register(pane_id, app_id, tools, sender, workspace_root);
     log::info!("tool_dispatch: registered {count} tool(s) for pane {pane_id}");
 }
 
@@ -360,6 +386,15 @@ impl ToolDispatcher {
             .collect()
     }
 
+    /// Apps and their tools visible to the caller's workspace — for `/apps`.
+    /// Returns `(app_id, tools)` pairs sorted by app_id.
+    pub fn apps_for_workspace(workspace_root: std::path::PathBuf) -> Vec<(String, Vec<AiTool>)> {
+        global_registry()
+            .lock()
+            .unwrap()
+            .apps_for_workspace(&workspace_root)
+    }
+
     /// Restrict the snapshot to `allowed` tool names (Phase C: the agent
     /// runtime applies broker `app_connector` decisions here). Removed tools
     /// are invisible to the model and `dispatch_call` returns
@@ -543,6 +578,7 @@ mod tests {
             description: format!("test tool {name}"),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
             timeout_ms: Some(100),
+            read_only: false,
         }
     }
 
@@ -555,6 +591,7 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         reg.register(
             1,
+            "search-app".to_string(),
             vec![make_tool("search")],
             AppEventSender { tx },
             ws.clone(),
@@ -574,12 +611,14 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         reg.register(
             10,
+            "attacker-app".to_string(),
             vec![make_tool("dangerous_tool")],
             AppEventSender { tx: tx.clone() },
             PathBuf::from("/workspace/attacker"),
         );
         reg.register(
             20,
+            "victim-app".to_string(),
             vec![make_tool("safe_tool")],
             AppEventSender { tx },
             PathBuf::from("/workspace/victim"),
@@ -609,6 +648,7 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         reg.register(
             5,
+            "app-x".to_string(),
             vec![make_tool("tool_a")],
             AppEventSender { tx },
             ws.clone(),
@@ -641,6 +681,7 @@ mod tests {
         let (tx_b, _rx_b) = std::sync::mpsc::channel();
         register(
             999,
+            "app-b".to_string(),
             vec![make_tool("secret_tool")],
             AppEventSender { tx: tx_b },
             PathBuf::from("/workspace/b"),
@@ -685,12 +726,14 @@ mod tests {
         let (tx2, _rx2) = std::sync::mpsc::channel();
         reg.register(
             10,
+            "app-conflict-1".to_string(),
             vec![make_tool("shared_tool"), make_tool("unique_a")],
             AppEventSender { tx: tx1 },
             ws.clone(),
         );
         reg.register(
             20,
+            "app-conflict-2".to_string(),
             vec![make_tool("shared_tool"), make_tool("unique_b")],
             AppEventSender { tx: tx2 },
             ws.clone(),
@@ -728,6 +771,7 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         register(
             998,
+            "hooks-app".to_string(),
             vec![make_tool("gated_tool")],
             AppEventSender { tx },
             PathBuf::from("/workspace/hooks-test"),

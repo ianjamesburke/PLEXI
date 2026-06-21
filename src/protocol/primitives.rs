@@ -61,6 +61,11 @@ pub struct AiTool {
     /// when absent. The broker uses this to bound `ToolCall` round-trips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// When true, this tool only reads state and never mutates it. The
+    /// assistant grants read-only tools automatically without a permission
+    /// prompt; the broker still records every call in the audit trail.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 /// Coarse model tier requested by the app. The host maps each tier to a

@@ -109,6 +109,8 @@ pub enum AssistantEffect {
     SessionWrite { conversation_id: String },
     /// `/tools`: list discovered app connector tools with broker decisions.
     ListTools,
+    /// `/apps`: list running apps and their exposed connectors.
+    ListApps,
     /// `/permissions`: list persisted grants for the assistant actor.
     ListPermissions,
     /// `/revoke <target_id>`: remove persisted grants for one target.
@@ -413,6 +415,7 @@ impl AssistantModel {
             // Real Phase 2 views: the pane shell reads the broker/audit state
             // and answers with an info row.
             "tools" => vec![AssistantEffect::ListTools],
+            "apps" => vec![AssistantEffect::ListApps],
             "permissions" => vec![AssistantEffect::ListPermissions],
             "audit" => vec![AssistantEffect::ShowAudit],
             "revoke" => {
@@ -438,11 +441,11 @@ impl AssistantModel {
                 let mut effects = vec![AssistantEffect::SessionWrite {
                     conversation_id: self.conversation_id.clone(),
                 }];
-                // Route the remaining Phase 3 surface through its future
-                // effect shape so the executor seam stays exercised.
-                if name == "apps" {
+                // Phase 3: pane-read commands go through PaneAction so the
+                // executor seam is exercised before the full impl lands.
+                if name == "context" {
                     effects.push(AssistantEffect::PaneAction {
-                        action: "list_app_connectors".to_string(),
+                        action: "read_context".to_string(),
                     });
                 }
                 effects

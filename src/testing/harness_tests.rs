@@ -2866,6 +2866,7 @@ default = "ask"
             description: format!("test {name}"),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
             timeout_ms: Some(2_000),
+            read_only: false,
         })
         .collect()
     }
@@ -2878,6 +2879,7 @@ default = "ask"
         let (tx, rx) = std::sync::mpsc::channel::<crate::process_app::StdinItem>();
         tool_dispatch::register(
             CHESS_PANE,
+            "chess".to_string(),
             chess_tools(),
             tool_dispatch::AppEventSender { tx },
             workspace,
@@ -3073,6 +3075,7 @@ default = "ask"
         let (tx, _rx) = std::sync::mpsc::channel::<crate::process_app::StdinItem>();
         tool_dispatch::register(
             PANE,
+            "chess".to_string(),
             chess_tools(),
             tool_dispatch::AppEventSender { tx },
             ws.path().to_path_buf(),
@@ -3172,6 +3175,7 @@ default = "ask"
         let (tx, rx) = std::sync::mpsc::channel::<crate::process_app::StdinItem>();
         tool_dispatch::register(
             PANE,
+            "chess".to_string(),
             chess_tools(),
             tool_dispatch::AppEventSender { tx },
             std::env::temp_dir(),

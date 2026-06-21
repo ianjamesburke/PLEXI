@@ -1138,6 +1138,7 @@ mod tests {
             description: "echoes back".to_string(),
             input_schema: serde_json::json!({"type":"object"}),
             timeout_ms: None,
+            read_only: false,
         };
         // No dispatcher: the broker appends an error tool result and continues to
         // the next iteration, where the backend returns the final text.

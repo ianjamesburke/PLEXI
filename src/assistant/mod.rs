@@ -395,6 +395,7 @@ impl AssistantApp {
                 } => self.start_turn(conversation_id, prompt),
                 AssistantEffect::SessionWrite { .. } => self.session_write(),
                 AssistantEffect::ListTools => self.cmd_list_tools(),
+                AssistantEffect::ListApps => self.cmd_list_apps(),
                 AssistantEffect::ListPermissions => self.cmd_list_permissions(),
                 AssistantEffect::RevokeGrant { target_id } => self.cmd_revoke(&target_id),
                 AssistantEffect::ShowAudit => self.cmd_show_audit(),
@@ -449,8 +450,19 @@ impl AssistantApp {
         let mut allowed = HashSet::new();
         let mut ask_tools = HashSet::new();
         let mut denied = 0usize;
+        let mut ro_auto = 0usize;
         for tool in dispatcher.all_tools() {
             match self.tool_decision(&tool.name) {
+                // Read-only tools skip the ask prompt (no permission sheet) but
+                // still respect explicit Deny grants — an admin deny wins.
+                Decision::Allow | Decision::Ask if tool.read_only => {
+                    log::info!(
+                        "assistant: tool '{}' auto-allowed (read-only, no prompt needed)",
+                        tool.name
+                    );
+                    allowed.insert(tool.name);
+                    ro_auto += 1;
+                }
                 Decision::Allow => {
                     allowed.insert(tool.name);
                 }
@@ -465,7 +477,7 @@ impl AssistantApp {
             }
         }
         log::info!(
-            "assistant: connector discovery — {} tool(s) visible ({} ask-gated, {denied} denied)",
+            "assistant: connector discovery — {} tool(s) visible ({ro_auto} read-only auto, {} ask-gated, {denied} denied)",
             allowed.len(),
             ask_tools.len(),
         );
@@ -521,12 +533,14 @@ impl AssistantApp {
                     .to_string(),
                 input_schema: schema.clone(),
                 timeout_ms: Some(120_000),
+                read_only: false,
             },
             AiTool {
                 name: HOST_TOOL_UNSUBSCRIBE.to_string(),
                 description: "Stop receiving an app's event stream.".to_string(),
                 input_schema: schema,
                 timeout_ms: Some(30_000),
+                read_only: false,
             },
         ]
     }
@@ -1162,6 +1176,44 @@ impl AssistantApp {
         self.execute_effects(effects);
     }
 
+    /// `/apps`: running apps and the connectors they expose, with broker decisions.
+    fn cmd_list_apps(&mut self) {
+        let apps = ToolDispatcher::apps_for_workspace(self.workspace_root.clone());
+        log::info!(
+            "assistant: /apps — {} app(s) with connector tools in workspace",
+            apps.len()
+        );
+        let text = if apps.is_empty() {
+            "No apps are exposing connector tools in this workspace.\n\
+             Start an app that calls emit_tools() to see its connectors here."
+                .to_string()
+        } else {
+            let mut out = String::new();
+            for (app_id, mut tools) in apps {
+                tools.sort_by(|a, b| a.name.cmp(&b.name));
+                let ro_count = tools.iter().filter(|t| t.read_only).count();
+                let rw_count = tools.len() - ro_count;
+                out.push_str(&format!(
+                    "{app_id} — {} tool(s) ({ro_count} read-only, {rw_count} mutating)\n",
+                    tools.len()
+                ));
+                for tool in &tools {
+                    let decision = self.tool_decision(&tool.name);
+                    let kind = if tool.read_only { "read" } else { "mutate" };
+                    out.push_str(&format!(
+                        "  {} [{}] — {}\n",
+                        Self::connector_target(&tool.name),
+                        kind,
+                        decision.as_str()
+                    ));
+                }
+            }
+            out
+        };
+        let effects = self.model.push_info(text);
+        self.execute_effects(effects);
+    }
+
     /// `/permissions`: persisted grants for the assistant actor.
     fn cmd_list_permissions(&mut self) {
         let lines: Vec<String> = self
@@ -1406,6 +1458,128 @@ mod tests {
     }
 
     #[test]
+    fn read_only_connector_auto_allowed_without_broker_grant() {
+        let ws = tempfile::tempdir().unwrap();
+        let app = test_app(ws.path());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let ro_tool = crate::app_protocol::AiTool {
+            name: "csv.read_range".to_string(),
+            description: "read cells".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            timeout_ms: Some(2_000),
+            read_only: true,
+        };
+        let rw_tool = crate::app_protocol::AiTool {
+            name: "csv.write_cell".to_string(),
+            description: "write a cell".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            timeout_ms: Some(2_000),
+            read_only: false,
+        };
+        tool_dispatch::register(
+            9200,
+            "csv".to_string(),
+            vec![ro_tool, rw_tool],
+            AppEventSender { tx },
+            ws.path().to_path_buf(),
+        );
+        // No grants seeded — read-only tool must be auto-allowed; mutating
+        // tool must remain ask-gated and visible.
+        let dispatcher = app.gated_dispatcher();
+        let mut visible: Vec<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
+        visible.sort();
+        assert!(
+            visible.contains(&"csv.read_range".to_string()),
+            "read-only tool must be visible without an explicit grant: {visible:?}"
+        );
+        assert!(
+            visible.contains(&"csv.write_cell".to_string()),
+            "mutating tool must be visible (ask-gated by default): {visible:?}"
+        );
+        tool_dispatch::unregister(9200);
+    }
+
+    #[test]
+    fn deny_grant_withholds_read_only_tool() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        tool_dispatch::register(
+            9205,
+            "csv".to_string(),
+            vec![crate::app_protocol::AiTool {
+                name: "csv.read_range".to_string(),
+                description: "read cells".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+                timeout_ms: None,
+                read_only: true,
+            }],
+            AppEventSender { tx },
+            ws.path().to_path_buf(),
+        );
+        // Explicit deny must still win even though the tool is read-only.
+        seed_grant(&mut app, "app.csv.read_range", Decision::Deny);
+
+        let dispatcher = app.gated_dispatcher();
+        let visible: Vec<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
+        assert!(
+            !visible.contains(&"csv.read_range".to_string()),
+            "explicit deny must withhold a read-only tool: {visible:?}"
+        );
+        tool_dispatch::unregister(9205);
+    }
+
+    #[test]
+    fn apps_command_lists_running_app_connectors() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        tool_dispatch::register(
+            9201,
+            "csv".to_string(),
+            vec![
+                crate::app_protocol::AiTool {
+                    name: "csv.read_range".to_string(),
+                    description: "read cells".to_string(),
+                    input_schema: serde_json::json!({"type": "object"}),
+                    timeout_ms: None,
+                    read_only: true,
+                },
+                crate::app_protocol::AiTool {
+                    name: "csv.write_cell".to_string(),
+                    description: "write a cell".to_string(),
+                    input_schema: serde_json::json!({"type": "object"}),
+                    timeout_ms: None,
+                    read_only: false,
+                },
+            ],
+            AppEventSender { tx },
+            ws.path().to_path_buf(),
+        );
+        app.model.composer = "/apps".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+
+        let last = app.model.turns.last().expect("a turn must be added");
+        assert!(
+            last.text.contains("csv"),
+            "/apps output must name the 'csv' app: {}",
+            last.text
+        );
+        assert!(
+            last.text.contains("csv.read_range"),
+            "/apps output must list csv.read_range: {}",
+            last.text
+        );
+        assert!(
+            last.text.contains("read"),
+            "/apps output must label read-only tools: {}",
+            last.text
+        );
+        tool_dispatch::unregister(9201);
+    }
+
+    #[test]
     fn pane_action_stub_executes_without_panicking() {
         let ws = tempfile::tempdir().unwrap();
         let mut app = test_app(ws.path());
@@ -1465,9 +1639,10 @@ mod tests {
                 description: format!("test tool {n}"),
                 input_schema: serde_json::json!({"type": "object", "properties": {}}),
                 timeout_ms: Some(2_000),
+                read_only: false,
             })
             .collect();
-        tool_dispatch::register(pane_id, tools, AppEventSender { tx }, ws);
+        tool_dispatch::register(pane_id, "test-app".to_string(), tools, AppEventSender { tx }, ws);
         std::thread::spawn(move || {
             while let Ok(item) = rx.recv() {
                 let crate::process_app::StdinItem::Event(json) = item else {
