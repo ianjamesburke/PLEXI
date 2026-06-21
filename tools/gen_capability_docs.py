@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = REPO_ROOT / "sdk" / "protocol" / "pgap.schema.json"
 OUTPUT_PATH = REPO_ROOT / "website" / "src" / "content" / "docs" / "pgap.md"
 
-CAP_RE = re.compile(r"[Rr]equires? `([^`]+)` capability")
+CAP_RE = re.compile(r"(?:[Rr]equires?|[Gg]ated on)\s*`([^`]+)`(?:\s+capability)?")
 
 FRONTMATTER = """\
 ---
@@ -64,9 +64,9 @@ these at runtime:
 capabilities = ["secrets.get", "net.http"]
 ```
 
-Capabilities gate certain PGAP host APIs. The **Cap** column in the tables
-below shows which capability is required. Requests without a cap are
-available to all apps.
+Capabilities gate PGAP host APIs; they do not restrict what a native Python
+process can do outside PGAP. The **Cap** column in the tables below shows
+which capability is required. Requests without a cap are available to all apps.
 
 ## The Python SDK
 

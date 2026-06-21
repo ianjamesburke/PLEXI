@@ -40,9 +40,9 @@ these at runtime:
 capabilities = ["secrets.get", "net.http"]
 ```
 
-Capabilities gate certain PGAP host APIs. The **Cap** column in the tables
-below shows which capability is required. Requests without a cap are
-available to all apps.
+Capabilities gate PGAP host APIs; they do not restrict what a native Python
+process can do outside PGAP. The **Cap** column in the tables below shows
+which capability is required. Requests without a cap are available to all apps.
 
 ## The Python SDK
 
@@ -270,6 +270,8 @@ Query info for the previously focused pane. Host walks `pane_focus_history` from
 
 List permission state across apps (stint 0017). Gated on `permissions.manage` when arriving over PGAP. Host writes a ...
 
+**Capability:** `permissions.manage`
+
 | Field | Type | Required |
 |-------|------|----------|
 | `response_file` | `string` | yes |
@@ -277,6 +279,8 @@ List permission state across apps (stint 0017). Gated on `permissions.manage` wh
 ### `set_permission`
 
 Set the stored permission state for an (app, workspace, capability) triple (stint 0017). Gated on `permissions.manage...
+
+**Capability:** `permissions.manage`
 
 | Field | Type | Required |
 |-------|------|----------|
@@ -575,6 +579,8 @@ Request enumeration of MIDI ports (#320). Host responds with `PlexiEvent::MidiDe
 
 Open a MIDI input port and forward every incoming message as a binary pipe frame on `pipe_id`. Each frame is a single...
 
+**Capability:** `midi.in`
+
 | Field | Type | Required |
 |-------|------|----------|
 | `pipe_id` | `string` | yes |
@@ -591,6 +597,8 @@ Close the MIDI input previously opened on `port_id`. The host disconnects from t
 ### `send_midi`
 
 Send one MIDI 1.0 byte stream to `port_id`. Fire-and-forget — the host only emits `PlexiEvent::MidiSendError` if the ...
+
+**Capability:** `midi.out`
 
 | Field | Type | Required |
 |-------|------|----------|
