@@ -596,9 +596,18 @@ impl TerminalBackend {
             let start = range.start();
             let end = range.end();
 
-            let mut url = String::from(self.last_content.grid.index(*start).c);
+            // For multi-row URLs the range spans blank padding cells at the
+            // end of each wrapped row. Filter to URL-valid chars only so those
+            // spaces do not corrupt the reconstructed URL string.
+            let first_c = self.last_content.grid.index(*start).c;
+            let mut url = String::new();
+            if is_url_char(first_c) {
+                url.push(first_c);
+            }
             for indexed in self.last_content.grid.iter_from(*start) {
-                url.push(indexed.c);
+                if is_url_char(indexed.c) {
+                    url.push(indexed.c);
+                }
                 if indexed.point == *end {
                     break;
                 }
@@ -609,6 +618,7 @@ impl TerminalBackend {
                     matches!(c, '.' | ',' | ')' | ';' | ':' | '!' | '?')
                 })
                 .to_string();
+            log::info!("egui_term: open_link url={:?} rows={}..={}", url, start.line, end.line);
             if let Err(e) = open::that(&url) {
                 log::warn!("egui_term: failed to open link {:?}: {}", url, e);
             }
@@ -894,27 +904,28 @@ fn is_url_char(c: char) -> bool {
     true
 }
 
-/// Extend a URL match across a "client-wrapped" visual boundary.
+/// Extend a URL match across a line-wrap boundary.
 ///
-/// Many CLI tools (Claude Code, git, bat, etc.) wrap long lines themselves at
-/// `$COLUMNS` and emit a literal `\n`. Our backend correctly ingests that as a
-/// hard newline, so the cell at the right edge of the wrapped row does NOT
-/// carry `CellFlags::WRAPLINE`. Alacritty's `RegexIter` therefore stops the
-/// match at the newline and the URL is truncated.
+/// Two wrap kinds are handled:
 ///
-/// This helper detects that specific pattern and walks the match end rightward
-/// across subsequent rows, appending cells as long as:
-///   * the row on which the match currently ends is at the terminal's right
-///     edge (`last_column`) AND does NOT have `WRAPLINE` set (so we're looking
-///     at a client wrap, not a normal soft wrap — alacritty already handles
-///     soft wraps internally via `line_search_right`),
-///   * the next row begins with a char accepted by the URL char class,
-///   * and we haven't yet hit a whitespace or URL-terminating character.
+/// * **WRAPLINE (alacritty soft-wrap)** — the terminal itself wrapped the line
+///   because it ran out of columns. The last cell of the row carries
+///   `CellFlags::WRAPLINE`. Alacritty's `RegexIter` may or may not follow this
+///   boundary depending on version; we handle it explicitly for safety.
 ///
-/// The heuristic is deliberately conservative: if any condition fails we stop
-/// extending. A false negative is just "link not clickable across the break",
-/// which is identical to today's behavior; a false positive would attach
-/// unrelated adjacent text to the URL.
+/// * **Client-wrap** — a CLI tool (git, cargo, bat, Claude Code, …) wrapped the
+///   line itself by emitting a literal `\n`, possibly before filling the full
+///   row width. The cell at `end` does NOT have `WRAPLINE` set, and cells
+///   between `end` and `last_column` are blank padding.
+///
+/// In both cases we peek at column 0 of the next row. If it holds a URL-valid
+/// character the match is extended rightward along that row until the first
+/// non-URL character. The loop continues until the URL genuinely ends
+/// mid-row or the bottom of the grid is reached.
+///
+/// The heuristic is conservative: a false negative leaves a URL unclickable
+/// (identical to prior behaviour), while a false positive would attach
+/// unrelated text to the URL.
 fn extend_url_match_across_client_wraps(
     terminal: &Term<EventProxy>,
     m: Match,
@@ -927,17 +938,23 @@ fn extend_url_match_across_client_wraps(
     let mut end = *m.end();
 
     loop {
-        // The match must currently end at the right edge of its row.
-        if end.column != last_col {
-            break;
-        }
-        // And the row's last cell must NOT be alacritty-soft-wrapped (if it
-        // were, alacritty's own `line_search_right` would have already
-        // followed it and the match would already span the join).
         let end_cell: &Cell = &grid[end];
-        if end_cell.flags.contains(CellFlags::WRAPLINE) {
-            break;
+        let is_wrapline = end_cell.flags.contains(CellFlags::WRAPLINE);
+
+        if !is_wrapline {
+            // Client-wrap: the tool emitted `\n` before (or at) the right
+            // edge, leaving cells from end.column+1 through last_col as blank
+            // padding. If any non-space character follows the URL end on this
+            // row there is real text after the URL — do not extend.
+            let trailing_all_spaces =
+                ((end.column.0 + 1)..=last_col.0).all(|c| {
+                    grid[Point::new(end.line, Column(c))].c == ' '
+                });
+            if !trailing_all_spaces {
+                break;
+            }
         }
+
         // Don't walk past the last visible/scrollback row we can index.
         let next_line = end.line + 1;
         if next_line > bottom {
@@ -970,9 +987,12 @@ fn extend_url_match_across_client_wraps(
 
         // If we stopped before the right edge, the URL has genuinely ended.
         if col != last_col {
+            log::info!(
+                "egui_term: url extended across wrap: {}..={}", start.line, end.line
+            );
             break;
         }
-        // Otherwise loop: another client-wrap may continue the URL further.
+        // Otherwise loop: another wrap may continue the URL further.
     }
 
     start..=end
