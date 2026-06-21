@@ -38,6 +38,10 @@
             "name": {
               "type": "string"
             },
+            "read_only": {
+              "description": "When true, this tool only reads state and never mutates it. The\nassistant grants read-only tools automatically without a permission\nprompt; the broker still records every call in the audit trail.",
+              "type": "boolean"
+            },
             "timeout_ms": {
               "description": "Maximum milliseconds to wait for this tool's response. Defaults to 30s\nwhen absent. The broker uses this to bound `ToolCall` round-trips.",
               "format": "uint64",
@@ -54,6 +58,16 @@
             "input_schema"
           ],
           "type": "object"
+        },
+        "AppEventActor": {
+          "description": "Who caused an app state change (`AppRequest::EmitEvent`).",
+          "enum": [
+            "user",
+            "agent",
+            "app",
+            "system"
+          ],
+          "type": "string"
         },
         "ArtifactOpenMode": {
           "description": "Routing target for `DrawCommand::OpenArtifact`.",
@@ -74,6 +88,30 @@
               "type": "string"
             }
           ]
+        },
+        "EventStreamDecl": {
+          "description": "One declared app event stream (`AppRequest::DeclareEventStreams`).",
+          "properties": {
+            "description": {
+              "description": "Human-readable description of when this event fires.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "Stream name, e.g. `\"move.played\"`. Must be non-empty.",
+              "type": "string"
+            },
+            "schema": {
+              "description": "JSON Schema (object) describing the event payload."
+            }
+          },
+          "required": [
+            "name",
+            "schema"
+          ],
+          "type": "object"
         },
         "ModelTier": {
           "description": "Coarse model tier requested by the app. The host maps each tier to a\nconcrete model identifier per backend (spec §ai.query):\n  - `Low`    → Haiku\n  - `Medium` → Sonnet\n  - `High`   → Opus",
@@ -196,6 +234,40 @@
             }
           ]
         },
+        "PayloadMode": {
+          "description": "How much of an event a subscription delivers\n(docs/prm/undo-and-app-events.md).",
+          "oneOf": [
+            {
+              "const": "off",
+              "description": "Deliver nothing beyond the event name.",
+              "type": "string"
+            },
+            {
+              "const": "summary",
+              "description": "Deliver the summary line only.",
+              "type": "string"
+            },
+            {
+              "const": "full",
+              "description": "Deliver the structured payload.",
+              "type": "string"
+            },
+            {
+              "const": "state_ref",
+              "description": "Deliver the state ref only — the subscriber fetches state itself.",
+              "type": "string"
+            }
+          ]
+        },
+        "PipStatus": {
+          "description": "App-reported \"pip\" status — a traffic-light health indicator an app sets for\nitself via the SDK (`App.set_pip_status`). Optional: when unset the host\nfalls back to derived activity. Distinct from `AgentState` (the hook-script\nvocabulary) so the SDK surface reads as red/yellow/green.",
+          "enum": [
+            "green",
+            "yellow",
+            "red"
+          ],
+          "type": "string"
+        },
         "StreamChannel": {
           "description": "Output channel selector for `DrawCommand::StreamProcess`.\nv1: `structured` emits the same bytes as `stdout`.",
           "oneOf": [
@@ -209,6 +281,31 @@
             {
               "const": "structured",
               "description": "Reserved for future structured-progress framing. v1: identical to `stdout`.",
+              "type": "string"
+            }
+          ]
+        },
+        "TriggerMode": {
+          "description": "How an event subscription triggers its subscriber\n(docs/prm/undo-and-app-events.md). Also the vocabulary for an emitting\napp's `suggested_trigger` hint.",
+          "oneOf": [
+            {
+              "const": "never",
+              "description": "Record the event in the timeline only.",
+              "type": "string"
+            },
+            {
+              "const": "conversation",
+              "description": "Inject into the subscriber's context and trigger a visible turn.",
+              "type": "string"
+            },
+            {
+              "const": "ambient",
+              "description": "Run a bounded tool workflow without a visible chat turn.",
+              "type": "string"
+            },
+            {
+              "const": "ask",
+              "description": "Prompt the user before triggering.",
               "type": "string"
             }
           ]
@@ -522,6 +619,29 @@
             "pane_id",
             "state",
             "agent"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Report an app's own pip status (red/yellow/green) for its activity dot.\nFire-and-forget; set by the app process via `App.set_pip_status`. Takes\npriority over derived activity until the app reports a new status.\n\n`pane_id` is stamped by the host with the sending app's own pane (the app\ndoes not know its pane id), so it defaults to 0 on the wire and an app\ncan only ever set its own pip — never another pane's.",
+          "properties": {
+            "pane_id": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/$defs/PipStatus"
+            },
+            "type": {
+              "const": "set_pip_status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "status"
           ],
           "type": "object"
         },
@@ -847,10 +967,16 @@
           "type": "object"
         },
         {
-          "description": "Query info for the previously focused pane. Host walks `pane_focus_history`\nfrom the end, finds the last entry whose tile resolves to a live pane, and\nwrites the same JSON shape as `GetPaneInfo` to `response_file`.\nReturns `{\"error\":\"...\"}` if history is empty or no valid pane found.\nSent by `plexi pane info --previous`.",
+          "description": "Query info for the previously focused pane. Host walks `pane_focus_history`\nfrom the end, finds the Nth live entry, and writes the same JSON shape as\n`GetPaneInfo` to `response_file`. `steps` defaults to 1 (immediate previous).\nReturns `{\"error\":\"...\"}` if history has fewer than N valid panes.\nSent by `plexi pane info --previous [N]`.",
           "properties": {
             "response_file": {
               "type": "string"
+            },
+            "steps": {
+              "default": 1,
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
             },
             "type": {
               "const": "get_previous_pane_info",
@@ -865,7 +991,6 @@
         },
         {
           "description": "List permission state across apps (stint 0017). Gated on\n`permissions.manage` when arriving over PGAP. Host writes a JSON object\nto `response_file`:\n\n```json\n{\n  \"permissions\": [\n    {\n      \"app_id\": \"...\",\n      \"workspace\": \"/abs/path\",\n      \"capability\": \"panes.read\",\n      \"state\": \"green\" | \"yellow\" | \"red\",\n      \"stored\": true | false,\n      \"sensitive\": true | false,\n      \"description\": \"...\"\n    }\n  ],\n  \"running\": [\"app_id\", ...]\n}\n```\n\nOne row per entry persisted in `permissions.toml` (`stored: true`),\nplus one row per live capability of a currently-running app that has\nno stored entry (`stored: false` — granted → \"green\", blocked →\n\"red\"). Live capabilities in the effective yellow state (declared but\nneither granted nor blocked) are not retained by the host after\nlaunch and only appear once a decision is stored.",
-
           "properties": {
             "response_file": {
               "type": "string"
@@ -1261,6 +1386,15 @@
         {
           "description": "Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.",
           "properties": {
+            "anchor_pane": {
+              "description": "Pane in the parent context to anchor the portal split at. The CLI sends\nthe caller's pane (--pane or PLEXI_PANE_ID); absent or unknown ids fall\nback to the parent's focused pane.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "focus": {
               "default": false,
               "description": "Zoom into the new sub-context after creation. Default false (stay in parent).",
@@ -1332,8 +1466,16 @@
           "type": "object"
         },
         {
-          "description": "Set/update the root of the active context. Sent by `plexi context set-root`.",
+          "description": "Set/update the root of a context. Sent by `plexi context set-root`.\n`context_id` targets the caller's context (PLEXI_CONTEXT_ID); when\nabsent, the active context is used.",
           "properties": {
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "root": {
               "type": "string"
             },
@@ -1349,8 +1491,16 @@
           "type": "object"
         },
         {
-          "description": "Set/update the description of the active context. Sent by `plexi context describe`.",
+          "description": "Set/update the description of a context. Sent by `plexi context describe`.\n`context_id` targets the caller's context (PLEXI_CONTEXT_ID); when\nabsent, the active context is used.",
           "properties": {
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "description": {
               "type": "string"
             },
@@ -1398,11 +1548,19 @@
           "type": "object"
         },
         {
-          "description": "Push the focused pane into a new sub-context. Sent by `plexi context push`.",
+          "description": "Push a pane into a new sub-context. Sent by `plexi context push`.\n`pane_id` targets the caller's pane (PLEXI_PANE_ID); when absent, the\nfocused pane is pushed.",
           "properties": {
             "name": {
               "type": [
                 "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
                 "null"
               ]
             },
@@ -2160,6 +2318,264 @@
             "multiple"
           ],
           "type": "object"
+        },
+        {
+          "description": "Declare the named event streams this app may emit on. Event names are\napp-defined but MUST be declared (with a JSON-Schema object) before\nany `EmitEvent` referencing them is accepted. Re-declaring a stream\nreplaces its previous declaration.",
+          "properties": {
+            "streams": {
+              "items": {
+                "$ref": "#/$defs/EventStreamDecl"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "declare_event_streams",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "streams"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Emit a semantic app event into the host timeline.\n\nRequired: `event` (a declared stream name), `actor`, `summary`,\n`resource_id`, `revision_after`. The host validates these and rejects\n(with a warn log) any event that is malformed or references an\nundeclared stream — rejected events never enter the timeline.\n\nSupplying `rollback_token` marks the mutation reversible: the host\nalso creates an undo checkpoint from this event's metadata.",
+          "properties": {
+            "actor": {
+              "$ref": "#/$defs/AppEventActor",
+              "description": "Who caused the state change."
+            },
+            "actor_id": {
+              "description": "Optional stable identity for the actor (e.g. an agent id).\nDefaults to the emitting app's id.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "caused_by": {
+              "description": "Causal identity: the tool caller whose call produced this event\n(e.g. `\"agent:chess-opponent\"`). The SDK stamps this automatically\nfor events emitted while servicing a `ToolCall`. The agent runtime\nuses it to never trigger an agent from its own actions.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "changed_resources": {
+              "default": [],
+              "description": "Other resource ids touched by this change.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "event": {
+              "description": "Declared stream name, e.g. `\"move.played\"`.",
+              "type": "string"
+            },
+            "payload": {
+              "description": "Structured payload matching the declared stream schema."
+            },
+            "resource_id": {
+              "description": "Document, game, pane, or app-instance id the event is about.",
+              "type": "string"
+            },
+            "resource_scope": {
+              "description": "Scope class of `resource_id` (`\"document\"`, `\"game\"`, `\"pane\"`…).\nDefaults to `\"pane\"` (the app instance) when omitted.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "revision_after": {
+              "description": "Revision identifier after the change.",
+              "type": "string"
+            },
+            "revision_before": {
+              "description": "Revision identifier before the change.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "rollback_token": {
+              "description": "Opaque app token the host returns in `PlexiEvent::RollbackApply`.\nPresence makes this event checkpoint-creating (reversible).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state_ref": {
+              "description": "Stable reference an authorized subscriber can fetch state from,\ne.g. `\"chess://game/abc/rev/13\"`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "suggested_trigger": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TriggerMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "App's hint for how subscribers should be triggered. The\nsubscription's own trigger mode always takes precedence."
+            },
+            "summary": {
+              "description": "One-line human-readable description, e.g. `\"White played e4\"`.",
+              "type": "string"
+            },
+            "type": {
+              "const": "emit_event",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "event",
+            "actor",
+            "summary",
+            "resource_id",
+            "revision_after"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "App's answer to `PlexiEvent::RollbackVerify`: the current revision of\nthe queried resource. The host compares it against the checkpoint's\n`revision_after` — match → `PlexiEvent::RollbackApply`; mismatch →\nrollback blocked, checkpoint marked conflict.",
+          "properties": {
+            "checkpoint_id": {
+              "type": "string"
+            },
+            "current_revision": {
+              "type": "string"
+            },
+            "type": {
+              "const": "rollback_verify_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "checkpoint_id",
+            "current_revision"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Subscribe this pane to another app's declared event streams. Gated\nthrough the unified broker (`TargetType::AppEventStream`, one\nevaluation per event name) — the host stamps the subscriber identity\nfrom the requesting pane; apps cannot subscribe as someone else.\nPhase B wire subscriptions are session-scoped.\n\nHost responds with `PlexiEvent::AppEventsSubscribed`. Matching events\nare then delivered as `PlexiEvent::AppEvent`, shaped per\n`payload_mode` and tagged with the subscription's `trigger_mode`.",
+          "properties": {
+            "app_id": {
+              "description": "Publisher app package identity whose streams are subscribed.",
+              "type": "string"
+            },
+            "event_names": {
+              "default": [],
+              "description": "Declared stream names. Empty = all streams the app declares.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "payload_mode": {
+              "$ref": "#/$defs/PayloadMode"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "resource_id": {
+              "description": "Restrict to one resource id; `None` = any resource.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "trigger_mode": {
+              "$ref": "#/$defs/TriggerMode"
+            },
+            "type": {
+              "const": "subscribe_app_events",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "app_id",
+            "payload_mode",
+            "trigger_mode"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Remove a subscription previously created by `SubscribeAppEvents`.\nOnly the subscriber that owns it may remove it. Fire-and-forget.",
+          "properties": {
+            "subscription_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "unsubscribe_app_events",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "subscription_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "List undo checkpoints from the host undo timeline, newest first.\n`app_id` filters to one app; `None` = this app's own checkpoints.\nHost responds with `PlexiEvent::UndoCheckpoints`.",
+          "properties": {
+            "app_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_undo_checkpoints",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request rollback of an undo checkpoint. Gated through the unified\nbroker (`TargetType::UndoCheckpoint`). On allow, the host starts the\nrevision-verification round-trip with the checkpoint's owning app\n(`PlexiEvent::RollbackVerify` → `AppRequest::RollbackVerifyResult` →\n`PlexiEvent::RollbackApply`). Denials and conflicts are logged.",
+          "properties": {
+            "checkpoint_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "request_rollback",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "checkpoint_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No-op wake. Nudges the (zero-frame-idle) UI thread to run a frame so\nqueued work — spawn-queue files, pane-IPC channel messages — is\ndrained promptly. Sent by the CLI after writing a spawn-queue file\nwhen no `PLEXI_SOCKET` is set. Fire-and-forget; the handler does\nnothing — the wake effect is the socket listener's repaint request.",
+          "properties": {
+            "type": {
+              "const": "wake",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
         }
       ],
       "title": "AppRequest"
@@ -2623,6 +3039,31 @@
             {
               "const": "structured",
               "description": "Reserved for future structured-progress framing. v1: identical to `stdout`.",
+              "type": "string"
+            }
+          ]
+        },
+        "TriggerMode": {
+          "description": "How an event subscription triggers its subscriber\n(docs/prm/undo-and-app-events.md). Also the vocabulary for an emitting\napp's `suggested_trigger` hint.",
+          "oneOf": [
+            {
+              "const": "never",
+              "description": "Record the event in the timeline only.",
+              "type": "string"
+            },
+            {
+              "const": "conversation",
+              "description": "Inject into the subscriber's context and trigger a visible turn.",
+              "type": "string"
+            },
+            {
+              "const": "ambient",
+              "description": "Run a bounded tool workflow without a visible chat turn.",
+              "type": "string"
+            },
+            {
+              "const": "ask",
+              "description": "Prompt the user before triggering.",
               "type": "string"
             }
           ]
@@ -3584,6 +4025,10 @@
             "call_id": {
               "type": "string"
             },
+            "caller_id": {
+              "description": "Broker identity of the caller (e.g. `\"agent:chess-opponent\"` or\nan app id). The SDK stamps `caused_by` on events emitted while\nthis call is being serviced.",
+              "type": "string"
+            },
             "input_json": {
               "type": "string"
             },
@@ -3599,7 +4044,8 @@
             "type",
             "call_id",
             "name",
-            "input_json"
+            "input_json",
+            "caller_id"
           ],
           "type": "object"
         },
@@ -4165,6 +4611,167 @@
             "event_type"
           ],
           "type": "object"
+        },
+        {
+          "description": "Host asks the app whether `resource_id` is still at\n`expected_revision` before rolling back a checkpoint. The app must\nanswer with `AppRequest::RollbackVerifyResult` carrying its current\nrevision; rollback only proceeds on an exact match.",
+          "properties": {
+            "checkpoint_id": {
+              "type": "string"
+            },
+            "expected_revision": {
+              "type": "string"
+            },
+            "resource_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "rollback_verify",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "checkpoint_id",
+            "resource_id",
+            "expected_revision"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Host instructs the app to roll `resource_id` back using the\n`rollback_token` the app supplied when it emitted the reversible\nevent. Sent only after a successful `RollbackVerify` round-trip.",
+          "properties": {
+            "checkpoint_id": {
+              "type": "string"
+            },
+            "resource_id": {
+              "type": "string"
+            },
+            "rollback_token": {
+              "type": "string"
+            },
+            "type": {
+              "const": "rollback_apply",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "checkpoint_id",
+            "resource_id",
+            "rollback_token"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to `AppRequest::SubscribeAppEvents`. Exactly one of\n`subscription_id` / `error` is set.",
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "subscription_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "app_events_subscribed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One subscribed app event, delivered to the subscriber pane. Content\nbeyond the event identity is shaped by the subscription's\n`payload_mode`; `trigger_mode` tells the subscriber (Phase C: the\nagent runtime) how it is allowed to react.",
+          "properties": {
+            "app_id": {
+              "description": "Publisher app id.",
+              "type": "string"
+            },
+            "created_at": {
+              "description": "RFC 3339.",
+              "type": "string"
+            },
+            "event": {
+              "description": "Stream name, e.g. `\"move.played\"`.",
+              "type": "string"
+            },
+            "event_id": {
+              "description": "Host-assigned timeline id of the underlying event.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "payload": true,
+            "resource_id": {
+              "type": "string"
+            },
+            "state_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "subscription_id": {
+              "type": "string"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "trigger_mode": {
+              "$ref": "#/$defs/TriggerMode"
+            },
+            "type": {
+              "const": "app_event",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "subscription_id",
+            "app_id",
+            "event",
+            "event_id",
+            "resource_id",
+            "trigger_mode",
+            "created_at"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to `AppRequest::ListUndoCheckpoints`: undo checkpoints,\nnewest first, serialized with the spec's checkpoint metadata fields\nplus `status` (`active | verifying | rolled_back | conflict`).",
+          "properties": {
+            "checkpoints": {
+              "items": true,
+              "type": "array"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "undo_checkpoints",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "checkpoints"
+          ],
+          "type": "object"
         }
       ],
       "title": "PlexiEvent"
@@ -4189,6 +4796,34 @@
             "description"
           ],
           "type": "object"
+        },
+        "Gradient": {
+          "description": "Linear gradient fill descriptor for `Rect`. Replaces the solid fill when present.\n\nCorner radius is not applied to the mesh — the gradient rect has sharp corners.",
+          "properties": {
+            "dir": {
+              "$ref": "#/$defs/GradientDir",
+              "default": "h"
+            },
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        "GradientDir": {
+          "description": "Direction for a linear gradient fill.",
+          "enum": [
+            "h",
+            "v"
+          ],
+          "type": "string"
         },
         "LayoutChild": {},
         "LayoutDirection": {
@@ -4514,11 +5149,34 @@
           ],
           "type": "object"
         },
+        "ShortcutsAlign": {
+          "description": "Horizontal alignment for a `Shortcuts` row within its `max_width`.\nDefaults to `Center` so app footers read as centered without extra work.",
+          "enum": [
+            "left",
+            "center"
+          ],
+          "type": "string"
+        },
         "StackDirection": {
           "description": "Flex direction for a `UiNode::Stack`.",
           "enum": [
             "vertical",
             "horizontal"
+          ],
+          "type": "string"
+        },
+        "TextAlign": {
+          "description": "Closed vocabulary for text anchor alignment.\nValues match egui's `Align2` naming convention: `{h}_{v}`.",
+          "enum": [
+            "left_top",
+            "center_top",
+            "right_top",
+            "left_center",
+            "center_center",
+            "right_center",
+            "left_bottom",
+            "center_bottom",
+            "right_bottom"
           ],
           "type": "string"
         },
@@ -5213,10 +5871,31 @@
           "type": "object"
         },
         {
-          "description": "Fill a rectangle.",
+          "description": "Fill a rectangle.\n\nOptional styling (all default to \"no effect\"):\n- `stroke` / `stroke_width`: outline with the given hex color and pixel width.\n- `glow_color` / `glow_radius`: soft halo painted behind the fill.\n- `gradient`: linear fill (`from`/`to` hex, `dir` \"h\" or \"v\") that replaces the solid fill.\n  Corner radius is not applied to the gradient mesh (it is always sharp-cornered).",
           "properties": {
             "fill": {
               "type": "string"
+            },
+            "glow_color": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "glow_radius": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "gradient": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Gradient"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "h": {
               "format": "float",
@@ -5224,6 +5903,17 @@
             },
             "radius": {
               "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "stroke": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stroke_width": {
+              "default": 1.0,
               "format": "float",
               "type": "number"
             },
@@ -5255,11 +5945,11 @@
           "type": "object"
         },
         {
-          "description": "Draw text at a position.\n\n`align` controls how the `(x, y)` point maps to the text box:\n  - `\"top_left\"` (default) — `(x, y)` is the top-left corner.\n  - `\"center\"`              — `(x, y)` is the visual center of the text.\n\nCentering uses the host's real font metrics, which matters for small\nbadges / buttons where a 0.1em difference is visible. Prefer `center`\nfor anything inside a fixed-size container.\n\n`max_width` — when `Some(w)`, the text is clipped at `w` pixels.\n`elide` — when `true`, a `…` is appended at the clip point; when\n          `false`, the text is hard-clipped with no marker.\n`selectable` — when `true`, the host renders this text as a\n               selectable egui label so the user can drag-select\n               inside it and Cmd+C copies the selection. When\n               `false` (default for pre-#200 callers), the text\n               paints via the painter and cannot be selected.\n               Required field — no `serde(default)`. Apps must\n               set it explicitly; omitting it fails deserialisation.",
+          "description": "Draw text at a position.\n\n`align` controls how the `(x, y)` point maps to the text box.\nValid values (horizontal_vertical): `left_top` (default), `center_top`,\n`right_top`, `left_center`, `center_center`, `right_center`,\n`left_bottom`, `center_bottom`, `right_bottom`.\n\nCentering uses the host's real font metrics, which matters for small\nbadges / buttons where a 0.1em difference is visible. Prefer `center_center`\nfor anything inside a fixed-size container.\n\n`max_width` — when `Some(w)`, the text is clipped at `w` pixels.\n`elide` — when `true`, a `…` is appended at the clip point; when\n          `false`, the text is hard-clipped with no marker.\n`selectable` — when `true`, the host renders this text as a\n               selectable egui label so the user can drag-select\n               inside it and Cmd+C copies the selection. When\n               `false` (default for pre-#200 callers), the text\n               paints via the painter and cannot be selected.\n               Required field — no `serde(default)`. Apps must\n               set it explicitly; omitting it fails deserialisation.",
           "properties": {
             "align": {
-              "default": "top_left",
-              "type": "string"
+              "$ref": "#/$defs/TextAlign",
+              "default": "left_top"
             },
             "bold": {
               "default": false,
@@ -5368,7 +6058,7 @@
           "type": "object"
         },
         {
-          "description": "Draw a filled circle. Alpha is supported via 8-digit hex fill (#rrggbbaa).",
+          "description": "Draw a filled circle. Alpha is supported via 8-digit hex fill (#rrggbbaa).\n\nOptional styling: `stroke`/`stroke_width` outline the circle; `glow_color`/`glow_radius`\npaint a soft halo behind the fill using concentric rings with linear alpha falloff.",
           "properties": {
             "cx": {
               "format": "float",
@@ -5381,7 +6071,29 @@
             "fill": {
               "type": "string"
             },
+            "glow_color": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "glow_radius": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
             "r": {
+              "format": "float",
+              "type": "number"
+            },
+            "stroke": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "stroke_width": {
+              "default": 1.0,
               "format": "float",
               "type": "number"
             },
@@ -5438,6 +6150,53 @@
             "start_angle",
             "end_angle",
             "fill"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Draw a stroked arc ring (hollow donut arc). Distinct from `Arc` (filled pie).\n\n`start_angle` / `end_angle` in radians, clockwise from east — same convention as `Arc`.\n`color` is the stroke hex color (supports 8-digit `#rrggbbaa` alpha).\n`stroke_width` defaults to 2.0 pixels.",
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "cx": {
+              "format": "float",
+              "type": "number"
+            },
+            "cy": {
+              "format": "float",
+              "type": "number"
+            },
+            "end_angle": {
+              "format": "float",
+              "type": "number"
+            },
+            "r": {
+              "format": "float",
+              "type": "number"
+            },
+            "start_angle": {
+              "format": "float",
+              "type": "number"
+            },
+            "stroke_width": {
+              "default": 2.0,
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "arc_ring",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cx",
+            "cy",
+            "r",
+            "start_angle",
+            "end_angle",
+            "color"
           ],
           "type": "object"
         },
@@ -5676,6 +6435,10 @@
         {
           "description": "A multi-group shortcut row. The host owns all layout — chip widths\nfrom real font metrics, flow horizontally with configurable inter-\ngroup gap, wrap to a new line when the next group would exceed\n`max_width`. Returns nothing; correct by construction.\n\n`x`, `y`      — top-left origin.\n`max_width`   — wrap budget. Wrap to a new line when the next group\n                would exceed it. Caller passes the available pane\n                width minus its own padding.\n`pairs`       — ordered list of `(chip-labels, description)` groups.\n                Each pair renders as one or more chips followed by\n                the description text.\n`font_size`   — applies to all chips and descriptions.",
           "properties": {
+            "align": {
+              "$ref": "#/$defs/ShortcutsAlign",
+              "default": "center"
+            },
             "font_size": {
               "format": "float",
               "type": "number"
@@ -5714,10 +6477,11 @@
           "type": "object"
         },
         {
-          "description": "Multiple text segments rendered horizontally with host-measured layout.\nThe host measures each segment with real font metrics and flows them\nleft-to-right with configurable gap spacing.\n\n`x`, `y`  — origin of the text row.\n`items`   — list of text segments, each with text, color, size, monospace.\n`gap`     — spacing between items in pixels.\n`align`   — vertical alignment (e.g., \"left_center\").",
+          "description": "Multiple text segments rendered horizontally with host-measured layout.\nThe host measures each segment with real font metrics and flows them\nleft-to-right with configurable gap spacing.\n\n`x`, `y`  — origin of the text row.\n`items`   — list of text segments, each with text, color, size, monospace.\n`gap`     — spacing between items in pixels.\n`align`   — anchor alignment, e.g. `left_center` to center items on the y-axis.",
           "properties": {
             "align": {
-              "type": "string"
+              "$ref": "#/$defs/TextAlign",
+              "default": "left_top"
             },
             "gap": {
               "format": "float",
@@ -5747,8 +6511,7 @@
             "x",
             "y",
             "items",
-            "gap",
-            "align"
+            "gap"
           ],
           "type": "object"
         },
