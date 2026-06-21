@@ -138,12 +138,30 @@ check-sdk-docs:
     fi
     echo "SDK docs are up to date."
 
+# Generate PGAP capability reference docs from the protocol JSON schema.
+# Run after any change to src/app_protocol.rs (via just gen-schema first).
+gen-capability-docs:
+    python3 tools/gen_capability_docs.py
+
+# Verify the committed PGAP docs are up to date with the current schema.
+# Fails if website/src/content/docs/pgap.md is stale.
+check-capability-docs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 tools/gen_capability_docs.py --stdout > /tmp/plexi_check_pgap.md
+    if ! diff -q website/src/content/docs/pgap.md /tmp/plexi_check_pgap.md > /dev/null; then
+        echo "ERROR: website/src/content/docs/pgap.md is stale. Run 'just gen-capability-docs'."
+        diff website/src/content/docs/pgap.md /tmp/plexi_check_pgap.md || true
+        exit 1
+    fi
+    echo "PGAP capability docs are up to date."
+
 # Assert every non-hidden CLI command is mentioned in at least one docs page.
 check-docs-coverage:
     bash tools/check_docs_coverage.sh
 
-# Run all docs checks (CLI freshness + config freshness + SDK freshness + command coverage).
-check-docs: check-cli-docs check-config-docs check-sdk-docs check-docs-coverage
+# Run all docs checks (CLI freshness + config freshness + SDK freshness + capability docs + command coverage).
+check-docs: check-cli-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage
 
 run:
     cargo run --release
