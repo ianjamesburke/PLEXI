@@ -7,14 +7,18 @@ on:
     paths:
       - 'tools/check_docs_coverage.sh'
       - 'tools/gen_sdk_docs.py'
+      - 'tools/gen_capability_docs.py'
       - 'sdk/python/plexi_sdk/**'
+      - 'sdk/protocol/pgap.schema.json'
       - 'website/src/content/docs/**'
   pull_request:
     branches: [alpha]
     paths:
       - 'tools/check_docs_coverage.sh'
       - 'tools/gen_sdk_docs.py'
+      - 'tools/gen_capability_docs.py'
       - 'sdk/python/plexi_sdk/**'
+      - 'sdk/protocol/pgap.schema.json'
       - 'website/src/content/docs/**'
 
 jobs:
@@ -45,3 +49,23 @@ jobs:
             exit 1
           fi
           echo "SDK docs are up to date."
+
+  check-capability-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check PGAP capability docs freshness
+        run: |
+          python3 tools/gen_capability_docs.py --stdout > /tmp/plexi_check_pgap.md
+          if ! diff -q website/src/content/docs/pgap.md /tmp/plexi_check_pgap.md > /dev/null; then
+            echo "ERROR: website/src/content/docs/pgap.md is stale. Run 'just gen-capability-docs' and commit."
+            diff website/src/content/docs/pgap.md /tmp/plexi_check_pgap.md || true
+            exit 1
+          fi
+          echo "PGAP capability docs are up to date."
