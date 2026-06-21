@@ -249,13 +249,18 @@ class Metrics:
             if local < day_start or local >= day_end:
                 continue
             # Within the selected 4 AM-anchored window.
-            m.switches_today += 1
+            # Only user-initiated pane switches count toward the Switches tile;
+            # timer heartbeats are not user activity.
+            if (ev.get("reason") or "") == "pane_switch":
+                m.switches_today += 1
             label = _context_label(ev)
             offset = (local - day_start).total_seconds()
-            if 0 <= offset < 86400.0:
+            # Only events with counted duration produce waveform spokes; idle-filtered
+            # heartbeats (secs == 0) must not paint overnight activity.
+            if secs > 0 and 0 <= offset < 86400.0:
                 b = min(WAVE_BUCKETS - 1, int(offset / bucket_secs))
                 wave_count[b] += 1
-                wave_ctx[b][label] = wave_ctx[b].get(label, 0.0) + max(secs, 1.0)
+                wave_ctx[b][label] = wave_ctx[b].get(label, 0.0) + secs
             if secs > 0:
                 m.active_secs += secs
                 hourly[local.hour] += secs
