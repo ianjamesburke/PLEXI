@@ -16,14 +16,6 @@ curl -fsSL https://plexiapp.com/install | sh
 
 You'll be asked for your password. The script installs Plexi.app to /Applications, sets up the `plexi` CLI in /usr/local/bin, and adds shell completions. Launch Plexi from Applications or Spotlight.
 
-<details>
-<summary>Prefer to install manually?</summary>
-
-Download the `.dmg` from the [GitHub releases page](https://github.com/ianjamesburke/PLEXI/releases/latest), open it, and drag Plexi to your Applications folder.
-
-Note: the install script also sets up the CLI and shell completions automatically. If you install manually, open Plexi after dragging it to Applications — it will prompt you to install the CLI on first launch.
-</details>
-
 On first launch, Plexi will request Accessibility permission. This is required for context-aware features.
 
 ## Your First Session

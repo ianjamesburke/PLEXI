@@ -2,7 +2,6 @@
 import Layout from '../layouts/Layout.astro';
 import Newsletter from '../components/Newsletter.astro';
 
-const RELEASES_LATEST = 'https://github.com/ianjamesburke/PLEXI/releases/latest';
 const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
 ---
 <Layout title="Download Plexi" description="Install Plexi on macOS with a single command.">
@@ -30,9 +29,6 @@ const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
         </p>
       </div>
 
-      <div class="alt-link">
-        Prefer to install manually? <a href={RELEASES_LATEST}>Download from GitHub</a>
-      </div>
     </div>
   </section>
 
@@ -137,17 +133,6 @@ const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
     color: var(--fg-3);
     line-height: 1.6;
   }
-
-  .alt-link {
-    margin-top: 24px;
-    font-size: 13px;
-    color: var(--fg-3);
-  }
-  .alt-link a {
-    color: var(--accent-light);
-    text-decoration: none;
-  }
-  .alt-link a:hover { color: var(--fg); }
 
   @media (max-width: 720px) {
     .dl-hero h1 { font-size: 40px; }
