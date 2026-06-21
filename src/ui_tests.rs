@@ -600,6 +600,24 @@ mod tests {
     fn spawn_pane_path_forwards_wasm_launch_args() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/breakout.wasm");
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
+        let app_id = fixture.file_stem().and_then(|s| s.to_str()).unwrap_or("wasm");
+        let workspace_root = fixture.parent().expect("fixture parent");
+        let grants = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
+            .expect("inspect fixture grants");
+        let mut store =
+            crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
+        for cap in grants.capability_ids() {
+            store.set_wasm(
+                app_id,
+                workspace_root,
+                &cap,
+                crate::app::permissions::PermissionState::Green,
+            );
+        }
+        store.save();
+
         let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
         h.with_app_mut(|app| {
             app.handle_pane_ipc_request(AppRequest::SpawnPane {
@@ -645,6 +663,24 @@ mod tests {
     fn spawn_queue_path_forwards_wasm_launch_args() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/breakout.wasm");
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
+        let app_id = fixture.file_stem().and_then(|s| s.to_str()).unwrap_or("wasm");
+        let workspace_root = fixture.parent().expect("fixture parent");
+        let grants = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
+            .expect("inspect fixture grants");
+        let mut store =
+            crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
+        for cap in grants.capability_ids() {
+            store.set_wasm(
+                app_id,
+                workspace_root,
+                &cap,
+                crate::app::permissions::PermissionState::Green,
+            );
+        }
+        store.save();
+
         let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
         let queue_dir = crate::config::config_dir().join("spawn-queue");
         std::fs::create_dir_all(&queue_dir).expect("create spawn queue");
