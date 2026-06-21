@@ -2397,6 +2397,11 @@ impl App for ProcessApp {
                         if ch.is_control() {
                             continue;
                         }
+                        // Space comes through Event::Key as "Space" (→ SDK alias "space");
+                        // suppress the duplicate Text path to prevent double on_key calls.
+                        if ch == ' ' {
+                            continue;
+                        }
                         // Suppress j/k text events when a ListView is active
                         if self.render_session.list_view_intercepts_nav
                             && matches!(ch, 'j' | 'k' | 'J' | 'K')
