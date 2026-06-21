@@ -790,6 +790,7 @@ impl ProcessApp {
             if let Some(sender) = self.make_app_event_sender() {
                 crate::plexi_ai::tool_dispatch::register(
                     id,
+                    self.type_id.clone(),
                     self.exposed_tools.clone(),
                     sender,
                     self.workspace_root.clone(),
