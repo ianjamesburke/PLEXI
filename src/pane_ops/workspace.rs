@@ -1112,7 +1112,6 @@ impl PlexiApp {
             .copied()
             .unwrap_or(page_count > 1);
 
-        self.reload_config_for_active_context();
         self.apply_context_transition_effects();
     }
 
