@@ -1,9 +1,9 @@
 ---
 id: "0274"
 title: "feat: bundled agent definitions and install-time discovery"
-status: todo
+status: in-progress
 priority: p2
-size: M
+started_at: "2026-06-21T19:50:07Z"
 blocked_by: []
 gh_issue: []
 area:
@@ -12,6 +12,11 @@ area:
 tags:
   - "v2"
 ---
+
+
+
+
+
 
 Define where agent definitions that ship with Plexi live in the repo and wire them into the install path so they land in `~/.plexi-<channel>/agents/` alongside apps.
 
