@@ -944,8 +944,14 @@ fn extend_url_match_across_client_wraps(
         if !is_wrapline {
             // Client-wrap: the tool emitted `\n` before (or at) the right
             // edge, leaving cells from end.column+1 through last_col as blank
-            // padding. If any non-space character follows the URL end on this
-            // row there is real text after the URL — do not extend.
+            // padding. Only bridge when the URL fills at least 25 % of the
+            // terminal width — this accepts tool-wrapped URLs in terminals up
+            // to ~4× the tool's wrap width while rejecting short prose URLs
+            // like `Visit https://example.com\nNext step` where bridging would
+            // corrupt the opened URL.
+            if end.column.0.saturating_mul(4) < last_col.0 {
+                break;
+            }
             let trailing_all_spaces =
                 ((end.column.0 + 1)..=last_col.0).all(|c| {
                     grid[Point::new(end.line, Column(c))].c == ' '
