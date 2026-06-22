@@ -57,6 +57,8 @@ pub struct AppManifest {
     pub app: AppManifestApp,
     #[serde(default)]
     pub launch: LaunchSection,
+    #[serde(default)]
+    pub runtime: AppManifestRuntime,
     /// Canonical secret names this app reads via `ctx.secret(...)`. The host
     /// uses this to validate workspace routes at launch and to surface the
     /// missing-secret modal proactively. Empty when omitted.
@@ -150,6 +152,56 @@ pub struct AppManifestApp {
     /// into a per-app venv at `<app_dir>/.venv`. Empty when omitted.
     #[serde(default)]
     pub dependencies: Vec<String>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct AppManifestRuntime {
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub world: Option<String>,
+    #[serde(default)]
+    pub execution: RuntimeExecution,
+    #[serde(default)]
+    pub python_compat: Option<bool>,
+}
+
+impl AppManifestRuntime {
+    fn summary(&self) -> Option<String> {
+        if self.target.is_none()
+            && self.world.is_none()
+            && self.python_compat.is_none()
+            && self.execution == RuntimeExecution::Local
+        {
+            return None;
+        }
+        Some(format!(
+            "target={:?} world={:?} execution={} python_compat={:?}",
+            self.target,
+            self.world,
+            self.execution.as_str(),
+            self.python_compat
+        ))
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeExecution {
+    #[default]
+    Local,
+    Cloud,
+    PreferredLocal,
+}
+
+impl RuntimeExecution {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Cloud => "cloud",
+            Self::PreferredLocal => "preferred-local",
+        }
+    }
 }
 
 /// Manifest `[app] type` field — chooses the host rendering surface for
@@ -519,6 +571,9 @@ impl AppRegistry {
                  update Plexi to install this app",
                 manifest.schema_version, MANIFEST_SCHEMA_VERSION
             ));
+        }
+        if let Some(summary) = manifest.runtime.summary() {
+            log::info!("AppRegistry: '{}' runtime {summary}", manifest.app.id);
         }
 
         // STEP-7: refuse to install an app whose declared capabilities include
@@ -1075,6 +1130,29 @@ optional = ["ai.query"]
             vec!["state:read-write", "net:fetch:api.github.com"]
         );
         assert_eq!(parsed.app.capabilities.wasm.optional, vec!["ai.query"]);
+    }
+
+    #[test]
+    fn manifest_runtime_python_compat_and_cloud_execution_parse() {
+        let raw = r#"
+schema_version = 1
+
+[app]
+id = "py-wasm"
+type = "app"
+name = "Python WASM"
+version = "0.0.1"
+entry = "main.py"
+
+[runtime]
+target = "wasm32-wasip1"
+execution = "preferred-local"
+python_compat = true
+"#;
+        let parsed: AppManifest = toml::from_str(raw).expect("manifest should parse");
+        assert_eq!(parsed.runtime.target.as_deref(), Some("wasm32-wasip1"));
+        assert_eq!(parsed.runtime.execution, RuntimeExecution::PreferredLocal);
+        assert_eq!(parsed.runtime.python_compat, Some(true));
     }
 
     #[test]

@@ -74,6 +74,10 @@ pub enum PackageError {
     MissingField { field: &'static str, path: PathBuf },
     #[error("entry file '{entry}' declared in manifest.toml not found at {path}")]
     EntryMissing { entry: String, path: PathBuf },
+    #[error(
+        "[runtime].python_compat = true requires a .py or .pyc entry file, got '{entry}' in {path}"
+    )]
+    PythonCompatEntryInvalid { entry: String, path: PathBuf },
     #[error("symlink not allowed in a package: {0} — packages must contain only regular files")]
     SymlinkInDir(PathBuf),
     #[error("archive entry '{0}' is a {1} — only regular files and directories are allowed")]
@@ -324,6 +328,14 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
 
     let manifest = read_manifest(app_dir)?;
     let entry = manifest.app.entry.clone();
+    if manifest.runtime.python_compat == Some(true)
+        && !(entry.ends_with(".py") || entry.ends_with(".pyc"))
+    {
+        return Err(PackageError::PythonCompatEntryInvalid {
+            entry,
+            path: app_dir.join("manifest.toml"),
+        });
+    }
 
     // Entry must exist and must not be a symlink.
     let entry_path = app_dir.join(&entry);
@@ -1282,6 +1294,34 @@ mod tests {
         assert!(
             matches!(err, PackageError::UnknownWasmCapability { ref value, .. } if value == "net:dial:example.com"),
             "expected UnknownWasmCapability, got: {err}"
+        );
+    }
+
+    #[test]
+    fn python_compat_requires_python_entry() {
+        let work = TempDir::new().unwrap();
+        let app_dir = work.path().join("app");
+        fs::create_dir(&app_dir).unwrap();
+        fs::write(
+            app_dir.join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"py-compat-bad\"\n\
+             type = \"app\"\n\
+             name = \"Bad Python Compat\"\n\
+             entry = \"bin/app\"\n\
+             version = \"0.1.0\"\n\n\
+             [runtime]\n\
+             python_compat = true\n",
+        )
+        .unwrap();
+        fs::create_dir(app_dir.join("bin")).unwrap();
+        fs::write(app_dir.join("bin/app"), b"#!/bin/sh\n").unwrap();
+
+        let err = validate_dir(&app_dir).unwrap_err();
+        assert!(
+            matches!(err, PackageError::PythonCompatEntryInvalid { .. }),
+            "expected PythonCompatEntryInvalid, got: {err}"
         );
     }
 

@@ -354,6 +354,56 @@ class Label(Component):
 
 
 @dataclass
+class Text(Label):
+    """SDK v3 text node. Backed by the existing host-native Label component."""
+
+    size: Optional[float] = None
+    truncate: bool = False
+    align: str = "start"
+    key: str = ""
+
+    def _font_size(self) -> float:
+        return self.size if self.size is not None else super()._font_size()
+
+    def to_node(self) -> dict:
+        node = super().to_node()
+        node.update({
+            "type": "label",
+            "align": self.align,
+            "truncate": self.truncate,
+            "key": self.key,
+        })
+        return node
+
+
+@dataclass
+class Button(Component):
+    label: str
+    on_click: str
+    style: str = "secondary"
+    disabled: bool = False
+    key: str = ""
+
+    def measure(self, _avail_w: float) -> float:
+        return 28.0
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        fill = theme.accent if self.style == "primary" else theme.surface
+        ctx.rect(x, y, w, h, fill=fill, radius=RADIUS_SM)
+        ctx.text(x + SPACE_SM, y + 7.0, self.label, size=TEXT_BODY, color=theme.fg, bold=False)
+
+    def to_node(self) -> dict:
+        return {
+            "type": "button",
+            "label": self.label,
+            "on_click": self.on_click,
+            "style": self.style,
+            "disabled": self.disabled,
+            "key": self.key,
+        }
+
+
+@dataclass
 class Spacer(Component):
     """Fixed or flex gap. `grow=True` expands to consume remaining space."""
     size: float = SPACE_MD
@@ -1527,6 +1577,9 @@ class Column(Component):
     padding: float = SPACE_XL
     padding_top: Optional[float] = None
     gap: float = SPACE_MD
+    align: str = "start"
+    grow: bool = False
+    key: str = ""
 
     def __post_init__(self):
         self.children = list(self.children)
@@ -1591,9 +1644,28 @@ class Column(Component):
             "type": "column",
             "children": children,
             "gap": self.gap,
+            "align": self.align,
+            "grow": self.grow,
+            "key": self.key,
             "padding_top": self._pad_top,
             "padding": self.padding,
         }
+
+
+def AppBar(title: str, subtitle: str = "") -> Column:
+    children: list[Component] = [Text(title, bold=True, size=15.0)]
+    if subtitle:
+        children.append(Text(subtitle, size=11.0))
+    return Column(children, gap=2.0)
+
+
+def FooterKeys(pairs: list) -> "Row":
+    children: list[Component] = []
+    for key, label in pairs:
+        children.append(Badge(key, tone="neutral"))
+        children.append(Text(label, size=11.0))
+        children.append(Spacer(8.0))
+    return Row(children, gap=4.0, align="center")
 
 
 # ── Public render entry point ──────────────────────────────────────────────

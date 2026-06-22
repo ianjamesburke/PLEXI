@@ -11,6 +11,7 @@ mod app_protocol;
 mod assistant;
 mod broker;
 mod cli;
+pub mod cloud_protocol;
 
 mod config;
 mod features;
@@ -25,6 +26,7 @@ mod platform;
 mod plexi_ai;
 mod process_app;
 mod protocol;
+pub mod registry;
 mod release;
 mod render;
 #[cfg(test)]
