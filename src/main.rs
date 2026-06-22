@@ -12,6 +12,7 @@ mod assistant;
 mod broker;
 mod cli;
 pub mod cloud_protocol;
+pub mod cloud_runtime;
 
 mod config;
 mod features;

@@ -114,8 +114,9 @@ pub fn encode_frame(frame: &CloudFrame) -> Result<Vec<u8>, ProtocolError> {
     let payload =
         bincode::serialize(&frame.payload).map_err(|e| ProtocolError::Encode(e.to_string()))?;
     let mut out = Vec::with_capacity(5 + payload.len());
+    let frame_len = 1usize + payload.len();
+    out.extend_from_slice(&(frame_len as u32).to_be_bytes());
     out.push(frame.frame_type as u8);
-    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     out.extend_from_slice(&payload);
     Ok(out)
 }
@@ -124,15 +125,16 @@ pub fn decode_frame(bytes: &[u8]) -> Result<CloudFrame, ProtocolError> {
     if bytes.len() < 5 {
         return Err(ProtocolError::FrameTooShort);
     }
-    let frame_type = FrameType::try_from(bytes[0])?;
-    let expected = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
-    let payload = &bytes[5..];
-    if payload.len() != expected {
+    let expected = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let frame = &bytes[4..];
+    if frame.len() != expected {
         return Err(ProtocolError::LengthMismatch {
             expected,
-            actual: payload.len(),
+            actual: frame.len(),
         });
     }
+    let frame_type = FrameType::try_from(frame[0])?;
+    let payload = &bytes[5..];
     let decoded: CloudPayload =
         bincode::deserialize(payload).map_err(|e| ProtocolError::Decode(e.to_string()))?;
     Ok(CloudFrame {
@@ -362,7 +364,7 @@ mod tests {
     fn wire_protocol_round_trips_all_frame_types() {
         for frame in payloads() {
             let encoded = encode_frame(&frame).unwrap();
-            assert_eq!(encoded[0], frame.frame_type as u8);
+            assert_eq!(encoded[4], frame.frame_type as u8);
             let decoded = decode_frame(&encoded).unwrap();
             assert_eq!(decoded, frame);
         }

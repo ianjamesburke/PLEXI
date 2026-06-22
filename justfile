@@ -295,6 +295,10 @@ channel-list:
 registry-stub port="8787":
     bash scripts/registry-stub.sh {{port}}
 
+# Run the local cloud runtime POC loop.
+cloud-dev-server:
+    cargo test --bin plexi cloud_runtime::tests::local_cloud_runtime_round_trips_view_input_and_reconnect -- --nocapture
+
 # Remove ALL Plexi channels plus shell integration and completions.
 # Same as: just uninstall all
 channel-uninstall channel="all":
