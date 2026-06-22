@@ -88,6 +88,27 @@ def test_ui_tree_serializes_text_input_and_select_list() -> None:
     assert nodes[2]["data"]["items"] == [3, 4]
 
 
+def test_ui_tree_serializes_row_children() -> None:
+    tree = _encode_uitree(
+        {
+            "type": "row",
+            "children": [Button("One", "one"), Button("Two", "two")],
+            "gap": 8.0,
+        }
+    )
+
+    nodes = tree["nodes"]
+    assert nodes[0]["data"] == {
+        "type": "Row",
+        "children": [1, 2],
+        "gap": 8.0,
+        "align": "start",
+        "grow": False,
+    }
+    assert nodes[1]["data"]["type"] == "Button"
+    assert nodes[2]["data"]["type"] == "Button"
+
+
 def test_ui_tree_serializes_canvas_commands() -> None:
     tree = _encode_uitree(
         Canvas(

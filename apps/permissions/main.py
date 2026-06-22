@@ -1,161 +1,247 @@
 #!/usr/bin/env python3
-"""Permissions — first-party permission manager (stint 0017).
+"""Permissions — SDK v3 state-backed permission grant browser."""
 
-Lists every (app, workspace, capability) permission row the host knows
-about via `list_permissions`, grouped by app, and lets the user flip a
-row to Allow (green) / Ask (yellow) / Block (red) via `set_permission`.
-Both calls gate on the sensitive `permissions.manage` capability.
-"""
-from plexi_sdk import App, CapabilityDeniedError
-from plexi_sdk.ui import AppBar, Column, FooterKeys, Label, SelectList, Spacer
+from __future__ import annotations
 
-_STATE_BADGE = {"green": "● allow", "yellow": "● ask", "red": "● block"}
+from pathlib import Path
 
+from plexi_sdk import log, state
+from plexi_sdk.effects import RequestCapability, SetState, SetStatus, SetTitle
+from plexi_sdk.events import CapabilityDenied, CapabilityGranted, KeyEvent, UiAction
+from plexi_sdk.ui import Button, Column, SelectList, Spacer, Text
 
-class Permissions(App):
-    def on_init(self) -> None:
-        self._rows: list[dict] = []
-        self._running: list[str] = []
-        self._loading = True
-        self._denied = False
-        self._error: str | None = None
-        self._list = SelectList([])
-        self.emit.info("Permissions app initialized — fetching permission rows")
-        self.emit.schedule_task(self._refresh())
+DEFAULT_STATE = {
+    "grants": [],
+    "selected": 0,
+    "path": "",
+    "mode": "list",
+    "notice": "",
+    "can_manage": False,
+}
 
-    # ── Data ──────────────────────────────────────────────────────────────────
-
-    async def _refresh(self) -> None:
-        """Fetch permission rows from the host and rebuild the list."""
-        self._loading = True
-        self._error = None
-        self.emit.schedule_render()
-        try:
-            data = await self.emit.list_permissions()
-            rows = data.get("permissions", [])
-            # Group by app: stable sort by (app_id, capability).
-            rows.sort(key=lambda r: (r.get("app_id", ""), r.get("capability", "")))
-            self._rows = rows
-            self._running = data.get("running", [])
-            self._denied = False
-            self.emit.info(f"Permissions: fetched {len(rows)} rows "
-                           f"({len(self._running)} running apps)")
-        except CapabilityDeniedError as exc:
-            self._denied = True
-            self.emit.warn(f"Permissions: list_permissions denied: {exc}")
-        except Exception as exc:
-            self._error = str(exc)
-            self.emit.error(f"Permissions: list_permissions failed: {exc}")
-        finally:
-            self._loading = False
-            self._rebuild_list()
-            self.emit.schedule_render()
-
-    def _rebuild_list(self) -> None:
-        items = []
-        prev_app = None
-        for row in self._rows:
-            app_id = row.get("app_id", "?")
-            badge = _STATE_BADGE.get(row.get("state", ""), row.get("state", "?"))
-            running = " · running" if app_id in self._running else ""
-            sensitive = " · [sensitive]" if row.get("sensitive") else ""
-            stored = "" if row.get("stored", True) else " · live"
-            group = app_id if app_id != prev_app else " " * len(app_id)
-            prev_app = app_id
-            items.append({
-                "name": f"{group}  {row.get('capability', '?')}",
-                "description": (row.get("description") or "") + running,
-                "trailing": f"{badge}{sensitive}{stored}",
-            })
-        selected = min(self._list.selected_idx, max(0, len(items) - 1))
-        self._list = SelectList(items, selected_idx=selected)
-
-    # ── Mutations ─────────────────────────────────────────────────────────────
-
-    async def _set_selected(self, state: str) -> None:
-        if not self._rows:
-            return
-        row = self._rows[self._list.selected_idx]
-        app_id = row.get("app_id", "")
-        capability = row.get("capability", "")
-        workspace = row.get("workspace")
-        self.emit.info(f"Permissions: set {app_id}/{capability} "
-                       f"@ {workspace} → {state}")
-        try:
-            await self.emit.set_permission(
-                app_id, capability, state, workspace=workspace)
-        except CapabilityDeniedError as exc:
-            self._denied = True
-            self.emit.warn(f"Permissions: set_permission denied: {exc}")
-            self.emit.schedule_render()
-            return
-        except Exception as exc:
-            self._error = str(exc)
-            self.emit.error(f"Permissions: set_permission failed: {exc}")
-            self.emit.schedule_render()
-            return
-        await self._refresh()
-
-    async def _retry_after_denial(self) -> None:
-        """Re-ask for permissions.manage via the host grant modal, then refetch."""
-        try:
-            await self.emit.capability_request("permissions.manage")
-        except CapabilityDeniedError:
-            self.emit.warn("Permissions: user denied permissions.manage again")
-            self.emit.schedule_render()
-            return
-        self._denied = False
-        await self._refresh()
-
-    # ── View ──────────────────────────────────────────────────────────────────
-
-    def view(self):
-        if self._denied:
-            body: list = [
-                Spacer(grow=True),
-                Label("permissions.manage was denied — grant it to manage "
-                      "app permissions", tone="hint"),
-                Spacer(grow=True),
-            ]
-            keys = [("r", "retry"), ("esc", "close")]
-        elif self._loading:
-            body = [Spacer(grow=True),
-                    Label("Loading permissions…", tone="hint"),
-                    Spacer(grow=True)]
-            keys = [("esc", "close")]
-        else:
-            body = []
-            if self._error:
-                body.append(Label(f"Error: {self._error}", tone="hint"))
-            body.append(self._list)
-            keys = [("j/k", "select"), ("g", "allow"), ("y", "ask"),
-                    ("b", "block"), ("r", "refresh"), ("esc", "close")]
-        return Column([
-            AppBar(title="Permissions",
-                   subtitle=f"{len(self._rows)} rows"),
-            *body,
-            FooterKeys(shortcuts=keys),
-        ])
-
-    # ── Keys ──────────────────────────────────────────────────────────────────
-
-    def on_key(self, key: str, _mods: dict) -> None:
-        if self._denied:
-            if key == "r":
-                self.emit.schedule_task(self._retry_after_denial())
-            return
-        if self._list.handle_key(key):
-            self.emit.schedule_render()
-            return
-        if key == "r":
-            self.emit.schedule_task(self._refresh())
-        elif key == "g":
-            self.emit.schedule_task(self._set_selected("green"))
-        elif key == "y":
-            self.emit.schedule_task(self._set_selected("yellow"))
-        elif key == "b":
-            self.emit.schedule_task(self._set_selected("red"))
+STATE_LABELS = {
+    "green": "allow",
+    "yellow": "ask",
+    "red": "block",
+    "revoked": "revoked",
+}
 
 
-if __name__ == "__main__":
-    Permissions().run()
+def init(size, args) -> list:
+    data = _state()
+    if not data["path"]:
+        data["path"] = str(Path.cwd())
+    missing = {key: data[key] for key in DEFAULT_STATE if state.get(key, None) is None}
+    log.info("permissions: SDK v3 initialized")
+    effects: list = [
+        SetTitle("Permissions"),
+        SetStatus(_status(data)),
+        RequestCapability("permissions.manage"),
+    ]
+    if missing:
+        effects.append(SetState(missing))
+    return effects
+
+
+def update(event) -> list:
+    data = _state()
+
+    if isinstance(event, CapabilityGranted) and event.name == "permissions.manage":
+        data["can_manage"] = True
+        data["notice"] = "permissions.manage granted. Waiting for host grant inventory."
+        return _commit(data)
+
+    if isinstance(event, CapabilityDenied) and event.name == "permissions.manage":
+        data["can_manage"] = False
+        data["notice"] = "permissions.manage denied."
+        return _commit(data)
+
+    action = _action(event)
+    if action is None:
+        return []
+
+    if action == "reload":
+        data["notice"] = "Reload requested. SDK v3 has no list-permissions effect yet."
+        log.info("permissions: reload requested without v3 host list effect")
+        return _commit(data)
+
+    if action == "detail" and data["grants"]:
+        data["mode"] = "detail"
+        data["notice"] = ""
+        return _commit(data)
+
+    if action == "back":
+        data["mode"] = "list"
+        return _commit(data)
+
+    if action == "revoke":
+        return _revoke_selected(data)
+
+    if action == "up":
+        data["selected"] = _clamp(data["selected"] - 1, len(data["grants"]))
+        return _commit(data)
+
+    if action == "down":
+        data["selected"] = _clamp(data["selected"] + 1, len(data["grants"]))
+        return _commit(data)
+
+    return []
+
+
+def view():
+    data = _state()
+    if data["mode"] == "detail":
+        return _detail_view(data)
+    return _list_view(data)
+
+
+def _state() -> dict:
+    data = dict(DEFAULT_STATE)
+    for key, value in DEFAULT_STATE.items():
+        data[key] = state.get(key, value)
+    data["grants"] = [_grant(row) for row in data.get("grants") or []]
+    data["selected"] = _clamp(int(data.get("selected") or 0), len(data["grants"]))
+    data["path"] = str(data.get("path") or "")
+    data["mode"] = (
+        data.get("mode") if data.get("mode") in {"list", "detail"} else "list"
+    )
+    data["notice"] = str(data.get("notice") or "")
+    data["can_manage"] = bool(data.get("can_manage"))
+    return data
+
+
+def _grant(row: dict) -> dict:
+    return {
+        "app_id": str(row.get("app_id") or row.get("app") or "?"),
+        "capability": str(row.get("capability") or "?"),
+        "state": str(row.get("state") or "yellow"),
+        "workspace": str(row.get("workspace") or row.get("path") or ""),
+        "description": str(row.get("description") or ""),
+        "sensitive": bool(row.get("sensitive")),
+        "stored": bool(row.get("stored", True)),
+    }
+
+
+def _commit(data: dict) -> list:
+    data["selected"] = _clamp(data["selected"], len(data["grants"]))
+    return [SetState(data), SetStatus(_status(data))]
+
+
+def _revoke_selected(data: dict) -> list:
+    if not data["grants"]:
+        return []
+    grant = dict(data["grants"][data["selected"]])
+    grant["state"] = "revoked"
+    data["grants"][data["selected"]] = grant
+    data["notice"] = (
+        "Revoke modeled locally. SDK v3 host revoke effect is not available."
+    )
+    log.info(
+        "permissions: modeled revoke for "
+        f"{grant['app_id']}/{grant['capability']} workspace={grant['workspace']!r}"
+    )
+    return _commit(data)
+
+
+def _list_view(data: dict):
+    rows = [
+        {
+            "name": f"{grant['app_id']}  {grant['capability']}",
+            "description": _grant_summary(grant),
+        }
+        for grant in data["grants"]
+    ]
+    body = (
+        SelectList(rows, selected_idx=data["selected"])
+        if rows
+        else Text("No permission grants in state.", size=12.0)
+    )
+    return Column(
+        [
+            Text("Permissions", bold=True, size=15.0),
+            Text(data["path"] or "workspace unknown", size=11.0),
+            body,
+            Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
+            Spacer(grow=True),
+            Button("Open", "permissions:detail", disabled=not rows),
+            Button("Reload", "permissions:reload"),
+            Text("j/k selects. Enter opens. r reloads.", size=11.0),
+        ],
+        gap=8.0,
+        grow=True,
+    )
+
+
+def _detail_view(data: dict):
+    grant = data["grants"][data["selected"]] if data["grants"] else _grant({})
+    return Column(
+        [
+            Text("Permission", bold=True, size=15.0),
+            Text(f"{grant['app_id']} / {grant['capability']}", bold=True, size=16.0),
+            Text(
+                f"State: {STATE_LABELS.get(grant['state'], grant['state'])}", size=12.0
+            ),
+            Text(f"Workspace: {grant['workspace'] or data['path'] or '-'}", size=12.0),
+            Text(f"Description: {grant['description'] or '-'}", size=12.0),
+            Text(f"Stored: {'yes' if grant['stored'] else 'live only'}", size=12.0),
+            Text(f"Sensitive: {'yes' if grant['sensitive'] else 'no'}", size=12.0),
+            Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
+            Spacer(grow=True),
+            Button(
+                "Revoke",
+                "permissions:revoke",
+                style="danger",
+                disabled=not data["can_manage"],
+            ),
+            Button("Back", "permissions:back"),
+            Text("x revokes. Esc returns.", size=11.0),
+        ],
+        gap=8.0,
+        grow=True,
+    )
+
+
+def _grant_summary(grant: dict) -> str:
+    state_label = STATE_LABELS.get(grant["state"], grant["state"])
+    bits = [state_label]
+    if grant["workspace"]:
+        bits.append(grant["workspace"])
+    if grant["sensitive"]:
+        bits.append("sensitive")
+    if not grant["stored"]:
+        bits.append("live")
+    return " | ".join(bits)
+
+
+def _action(event) -> str | None:
+    if isinstance(event, UiAction) and event.handler_id.startswith("permissions:"):
+        return event.handler_id.removeprefix("permissions:")
+    if not isinstance(event, KeyEvent) or not event.pressed:
+        return None
+    if event.key in {"up", "k", "ArrowUp"}:
+        return "up"
+    if event.key in {"down", "j", "ArrowDown"}:
+        return "down"
+    if event.key in {"return", "enter"}:
+        return "detail"
+    if event.key in {"escape", "h", "left", "ArrowLeft"}:
+        return "back"
+    if event.key == "r":
+        return "reload"
+    if event.key == "x":
+        return "revoke"
+    return None
+
+
+def _status(data: dict) -> str:
+    grant_count = len(data["grants"])
+    if data["mode"] == "detail" and grant_count:
+        grant = data["grants"][data["selected"]]
+        return f"{grant['app_id']} {grant['capability']}"
+    return f"{grant_count} grants"
+
+
+def _clamp(selected: int, total: int) -> int:
+    if total <= 0:
+        return 0
+    return max(0, min(selected, total - 1))

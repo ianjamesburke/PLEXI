@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Four-function calculator. Demonstrates ctx.button() with hover and click."
 entry = "calc.py"
 
+[runtime]
+python_compat = true
+
 [app.capabilities]
 capabilities = []
 

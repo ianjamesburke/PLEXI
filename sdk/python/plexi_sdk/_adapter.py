@@ -156,6 +156,18 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "align": data.get("align", "start"),
             "grow": data.get("grow", False),
         }
+    if node_type in ("row", "Row"):
+        children = data.get("children", [])
+        child_ids = [
+            flatten(child, f"{key}/{idx}") for idx, child in enumerate(children)
+        ]
+        return {
+            "type": "Row",
+            "children": child_ids,
+            "gap": data.get("gap", 0.0),
+            "align": data.get("align", "start"),
+            "grow": data.get("grow", False),
+        }
     if node_type == "button":
         return {
             "type": "Button",
