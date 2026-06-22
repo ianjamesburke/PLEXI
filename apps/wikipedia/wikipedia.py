@@ -1,198 +1,272 @@
 #!/usr/bin/env python3
-"""Wikipedia — search and read Wikipedia articles via the MediaWiki API."""
+"""Wikipedia — SDK v3 HTTP-backed article search."""
+
+from __future__ import annotations
 
 import json
-import threading
 import urllib.parse
 
-from plexi_sdk import (
-    App, CapabilityDeniedError,
-)
+from plexi_sdk import log, state
+from plexi_sdk.effects import HttpFetch, SetState, SetStatus, SetTitle
+from plexi_sdk.events import HttpResponse, KeyEvent, UiAction, UiValueChange
 from plexi_sdk.ui import (
-    Column, AppBar, Spacer, Footer, FooterKeys,
-    Label, Section, Scrollable, SelectList, TextInput, theme,
+    AppBar,
+    Button,
+    Column,
+    FooterKeys,
+    Scrollable,
+    SelectList,
+    Spacer,
+    Text,
+    TextInput,
 )
 
 API = "https://en.wikipedia.org/w/api.php"
 EXTRACT_API = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 
+DEFAULT_STATE = {
+    "query": "",
+    "results": [],
+    "selected": 0,
+    "article": "",
+    "article_title": "",
+    "loading": False,
+    "pending": "",
+    "error": "",
+    "mode": "search",
+}
 
-class WikiApp(App):
-    async def on_init(self) -> None:
-        self._query = ""
-        self._results: list[str] = []
-        self._selected = 0
-        self._extract = ""
-        self._loading = False
-        self._error_msg = ""
-        self._mode = "search"  # search | results | article
 
-        # Stateful widgets — created once here, reused across renders.
-        self._search_input = TextInput(
-            id="wiki_search",
-            placeholder="Enter search query…",
-        )
-        self._results_list = SelectList(items=[], selected_idx=0)
-        self._article_scroll = Scrollable(
-            child=Label("", tone="body", max_lines=500),
-        )
-
-        self.emit.info("wikipedia: ready")
-        try:
-            await self.emit.capability_request("net.http")
-        except CapabilityDeniedError:
-            self._error_msg = "Network access denied. Search requires net.http."
-            self.emit.warn("wikipedia: net.http capability denied")
-
-    def on_inject(self, payload: dict) -> None:
-        """Layer-1 test seam — seed mode/query/results/extract without network."""
-        if isinstance(payload, dict):
-            if "mode" in payload:
-                self._mode = payload["mode"]
-            if "query" in payload:
-                self._query = payload["query"]
-            if "results" in payload:
-                self._results = list(payload["results"])
-                self._selected = 0
-                self._results_list.items = [{"name": r} for r in self._results]
-                self._results_list.selected_idx = 0
-            if "extract" in payload:
-                self._extract = payload["extract"]
-                self._article_scroll.child = Label(
-                    self._extract, tone="body", max_lines=500,
-                )
-
-    def on_escape(self):
-        if self._mode == "article":
-            self._mode = "results"
-            self.emit.schedule_render()
-            return True
-        if self._mode == "results":
-            self._mode = "search"
-            self.emit.schedule_render()
-            return True
-        return False
-
-    def on_key(self, key: str, _mods: dict) -> None:
-        if self._mode == "results":
-            if self._results_list.handle_key(key):
-                self._selected = self._results_list.selected_idx
-                self.emit.schedule_render()
-                return
-            if key in ("return", "Enter"):
-                if self._results:
-                    self._fetch_article(self._results[self._selected])
-                return
-        elif self._mode == "article":
-            if self._article_scroll.handle_key(key):
-                self.emit.schedule_render()
-                return
-
-    def _fetch_search(self, query: str) -> None:
-        self._loading = True
-        self._error_msg = ""
-        self.emit.status_summary("Searching…")
-
-        def run() -> None:
-            try:
-                params = urllib.parse.urlencode({
-                    "action": "opensearch", "search": query,
-                    "limit": 10, "format": "json",
-                })
-                body = self.emit.run_sync(self.emit.http_get(f"{API}?{params}"))
-                data = json.loads(body)
-                self._results = data[1] if len(data) > 1 else []
-                self._selected = 0
-                self._results_list.items = [{"name": r} for r in self._results]
-                self._results_list.selected_idx = 0
-                self._mode = "results"
-                self.emit.info(f"wikipedia: search '{query}' -> {len(self._results)} results")
-            except Exception as e:
-                self.emit.error(f"wikipedia search failed: {e}")
-                self._error_msg = str(e)
-                self._results = []
-            finally:
-                self._loading = False
-                self.emit.status_summary("")
-        threading.Thread(target=run, daemon=True).start()
-
-    def _fetch_article(self, title: str) -> None:
-        self._loading = True
-        self._error_msg = ""
-        self.emit.status_summary(f"Loading {title}…")
-
-        def run() -> None:
-            try:
-                url = EXTRACT_API + urllib.parse.quote(title)
-                body = self.emit.run_sync(self.emit.http_get(url))
-                data = json.loads(body)
-                self._extract = data.get("extract", "No extract available.")
-                self._article_scroll.child = Label(
-                    self._extract, tone="body", max_lines=500,
-                )
-                self._article_scroll.scroll_offset = 0.0
-                self._mode = "article"
-                self.emit.info(f"wikipedia: article '{title}' loaded")
-            except Exception as e:
-                self.emit.error(f"wikipedia article fetch failed: {e}")
-                self._error_msg = str(e)
-                self._extract = ""
-            finally:
-                self._loading = False
-                self.emit.status_summary("")
-        threading.Thread(target=run, daemon=True).start()
-
-    def _body_children(self) -> list:
-        if self._mode == "search":
-            children: list = [self._search_input]
-            if self._error_msg:
-                children.append(Label(f"Error: {self._error_msg}", tone="hint", color=theme.danger))
-            else:
-                children.append(Label("Type a query and press Enter", tone="hint"))
-            return children
-
-        if self._mode == "results":
-            return [
-                Section(f'Results for "{self._query}"'),
-                self._results_list,
-            ]
-
-        # article mode
-        title = self._results[self._selected] if self._results else ""
-        return [
-            Section(title),
-            self._article_scroll,
+def init(size, args) -> list:
+    data = _state()
+    effects: list = [SetTitle("Wikipedia"), SetState(data), SetStatus("Wikipedia")]
+    if args:
+        data["query"] = " ".join(args)
+        data["loading"] = True
+        data["pending"] = "search"
+        effects = [
+            SetTitle("Wikipedia"),
+            SetState(data),
+            SetStatus("Searching"),
+            _fetch_search(data["query"]),
         ]
-
-    def _footer_component(self):
-        if self._mode == "search":
-            return Footer("Type a query · Enter to search")
-        if self._mode == "results":
-            return FooterKeys([
-                (["↑", "↓"], "navigate"),
-                ("↵", "open"),
-                ("esc", "back"),
-            ])
-        return FooterKeys([
-            (["j", "k"], "scroll"),
-            ("esc", "back to results"),
-        ])
-
-    def on_text_submitted(self, id: str, text: str) -> None:
-        if id == "wiki_search":
-            query = text.strip()
-            if query:
-                self._query = query
-                self._fetch_search(query)
-
-    def view(self):
-        return Column([
-            AppBar(title="Wikipedia"),
-            *self._body_children(),
-            Spacer(grow=False),
-            self._footer_component(),
-        ])
+    log.info("wikipedia: SDK v3 initialized")
+    return effects
 
 
-if __name__ == "__main__":
-    WikiApp().run()
+def update(event) -> list:
+    data = _state()
+    if isinstance(event, HttpResponse):
+        data.update(_handle_http(data, event))
+        return [SetState(data), SetStatus(_status(data))]
+    if isinstance(event, UiValueChange) and event.handler_id == "wiki-query":
+        data["query"] = event.value
+        return [SetState(data)]
+    if isinstance(event, UiAction) and event.handler_id == "wiki-submit":
+        return _start_search(data)
+    if not isinstance(event, KeyEvent) or not event.pressed:
+        return []
+
+    key = event.key
+    if data["mode"] == "search":
+        if key in ("return", "enter"):
+            return _start_search(data)
+        return []
+    if data["mode"] == "results":
+        if key in ("down", "j", "ArrowDown"):
+            data["selected"] = _clamp(data["selected"] + 1, len(data["results"]))
+        elif key in ("up", "k", "ArrowUp"):
+            data["selected"] = _clamp(data["selected"] - 1, len(data["results"]))
+        elif key in ("return", "enter") and data["results"]:
+            title = data["results"][data["selected"]]
+            data["loading"] = True
+            data["pending"] = "article"
+            data["article_title"] = title
+            data["error"] = ""
+            return [
+                SetState(data),
+                SetStatus(f"Loading {title}"),
+                _fetch_article(title),
+            ]
+        elif key == "escape":
+            data["mode"] = "search"
+        else:
+            return []
+        return [SetState(data), SetStatus(_status(data))]
+    if data["mode"] == "article" and key == "escape":
+        data["mode"] = "results"
+        return [SetState(data), SetStatus(_status(data))]
+    return []
+
+
+def view():
+    data = _state()
+    if data["mode"] == "results":
+        return _results_view(data)
+    if data["mode"] == "article":
+        return _article_view(data)
+    return _search_view(data)
+
+
+def _state() -> dict:
+    data = dict(DEFAULT_STATE)
+    for key, value in DEFAULT_STATE.items():
+        data[key] = state.get(key, value)
+    data["results"] = list(data.get("results") or [])
+    data["selected"] = _clamp(int(data.get("selected") or 0), len(data["results"]))
+    data["query"] = str(data.get("query") or "")
+    data["article"] = str(data.get("article") or "")
+    data["error"] = str(data.get("error") or "")
+    return data
+
+
+def _start_search(data: dict) -> list:
+    query = data["query"].strip()
+    if not query:
+        return []
+    data["loading"] = True
+    data["pending"] = "search"
+    data["error"] = ""
+    return [SetState(data), SetStatus("Searching"), _fetch_search(query)]
+
+
+def _fetch_search(query: str) -> HttpFetch:
+    params = urllib.parse.urlencode(
+        {
+            "action": "opensearch",
+            "search": query,
+            "limit": 10,
+            "format": "json",
+        }
+    )
+    return HttpFetch(f"{API}?{params}", headers={"Accept": "application/json"})
+
+
+def _fetch_article(title: str) -> HttpFetch:
+    return HttpFetch(
+        EXTRACT_API + urllib.parse.quote(title), headers={"Accept": "application/json"}
+    )
+
+
+def _handle_http(data: dict, event: HttpResponse) -> dict:
+    if event.status < 200 or event.status >= 300:
+        data["loading"] = False
+        data["pending"] = ""
+        data["error"] = f"HTTP {event.status}: {_body_text(event)[:240]}"
+        log.warn(f"wikipedia: request failed {event.status}")
+        return data
+    try:
+        payload = json.loads(_body_text(event))
+    except json.JSONDecodeError as exc:
+        data["loading"] = False
+        data["pending"] = ""
+        data["error"] = str(exc)
+        return data
+    if data["pending"] == "search":
+        data["results"] = _parse_search(payload)
+        data["selected"] = 0
+        data["mode"] = "results"
+        log.info(
+            f"wikipedia: search {data['query']!r} -> {len(data['results'])} results"
+        )
+    elif data["pending"] == "article":
+        data["article"] = str(payload.get("extract") or "No extract available.")
+        data["mode"] = "article"
+        log.info(f"wikipedia: article {data['article_title']!r} loaded")
+    data["loading"] = False
+    data["pending"] = ""
+    data["error"] = ""
+    return data
+
+
+def _parse_search(payload) -> list[str]:
+    if isinstance(payload, list) and len(payload) > 1 and isinstance(payload[1], list):
+        return [str(item) for item in payload[1]]
+    return []
+
+
+def _body_text(event: HttpResponse) -> str:
+    if isinstance(event.body, bytes):
+        return event.body.decode("utf-8", errors="replace")
+    if isinstance(event.body, list):
+        return bytes(event.body).decode("utf-8", errors="replace")
+    return str(event.body)
+
+
+def _search_view(data: dict):
+    return Column(
+        [
+            AppBar("Wikipedia", "search"),
+            TextInput(
+                "wiki-query",
+                value=data["query"],
+                placeholder="Search Wikipedia",
+                on_change="wiki-query",
+                on_submit="wiki-submit",
+            ),
+            Button(
+                "Search",
+                "wiki-submit",
+                style="primary",
+                disabled=not data["query"].strip(),
+            ),
+            Text(
+                data["error"] if data["error"] else "Type a query and press Enter.",
+                size=12.0,
+            ),
+            Spacer(grow=True),
+            FooterKeys([("enter", "search")]),
+        ],
+        grow=True,
+        padding=0,
+    )
+
+
+def _results_view(data: dict):
+    rows = [{"name": title} for title in data["results"]]
+    body = (
+        SelectList(rows, selected_idx=data["selected"])
+        if rows
+        else Text(data["error"] or "No results.", size=12.0)
+    )
+    return Column(
+        [
+            AppBar("Wikipedia", f"Results for {data['query']}"),
+            body,
+            Spacer(grow=True),
+            FooterKeys([("j/k", "select"), ("enter", "open"), ("esc", "search")]),
+        ],
+        grow=True,
+        padding=0,
+    )
+
+
+def _article_view(data: dict):
+    return Column(
+        [
+            AppBar("Wikipedia", data["article_title"]),
+            Scrollable(
+                Text(data["article"] or data["error"] or "Loading...", size=12.0)
+            ),
+            Spacer(grow=True),
+            FooterKeys([("esc", "results")]),
+        ],
+        grow=True,
+        padding=0,
+    )
+
+
+def _status(data: dict) -> str:
+    if data["loading"]:
+        return "Loading"
+    if data["error"]:
+        return "Error"
+    if data["mode"] == "results":
+        return f"{len(data['results'])} results"
+    return data["article_title"] if data["mode"] == "article" else "Wikipedia"
+
+
+def _clamp(selected: int, total: int) -> int:
+    if total <= 0:
+        return 0
+    return max(0, min(selected, total - 1))

@@ -1,107 +1,185 @@
 #!/usr/bin/env python3
-"""Kraken — a text-adventure stress test for inventory-conditional rendering."""
-from plexi_sdk import App
-from plexi_sdk.ui import AppBar, Card, Column, FooterKeys, Label, Spacer
+"""Kraken — SDK v3 HTTP-backed market price watcher."""
 
+from __future__ import annotations
 
-NODES = {
-    "wake_up": {
-        "title": "Below Deck",
-        "text": "You wake to the ship lurching. Screams outside. Cabin is flooding ankle-deep.",
-    },
-    "deck": {
-        "title": "Main Deck",
-        "text": "Chaos. The kraken's tentacle sweeps across the bow. Water everywhere.",
-    },
-    "bridge": {
-        "title": "Bridge",
-        "text": "Captain is gone. A tentacle smashes through the window.",
-    },
-    "survive": {
-        "title": "Rescued",
-        "text": "You leap into the dark water. The life preserver keeps you afloat. You watch the ship go down. Rescued at dawn.",
-    },
-    "death": {
-        "title": "Crushed",
-        "text": "The tentacle crushes the bridge. Everything goes dark.",
-    },
+import json
+
+from plexi_sdk import log, state
+from plexi_sdk.effects import HttpFetch, SetState, SetStatus, SetTimer, SetTitle
+from plexi_sdk.events import HttpResponse, KeyEvent, TimerFired
+from plexi_sdk.ui import AppBar, Column, FooterKeys, SelectList, Spacer, Text
+
+API = "https://api.kraken.com/0/public/Ticker"
+TIMER_ID = 1
+POLL_MS = 30_000
+DEFAULT_PAIRS = ["XBTUSD", "ETHUSD", "SOLUSD"]
+PAIR_ALIASES = {"XXBTZUSD": "XBTUSD", "XETHZUSD": "ETHUSD"}
+
+DEFAULT_STATE = {
+    "pairs": DEFAULT_PAIRS,
+    "prices": {},
+    "selected": 0,
+    "loading": False,
+    "error": "",
 }
 
 
-class Kraken(App):
-    def on_init(self) -> None:
-        self.node: str = self.state.get("node", "wake_up")
-        self.inventory: list = self.state.get("inventory", [])
-        self.deaths: int = self.state.get("deaths", 0)
+def init(size, args) -> list:
+    data = _state()
+    if args:
+        data["pairs"] = args
+    data["loading"] = True
+    log.info(f"kraken: SDK v3 initialized pairs={','.join(data['pairs'])}")
+    return [
+        SetTitle("Kraken"),
+        SetTimer(TIMER_ID, POLL_MS, repeat=True),
+        SetStatus("Loading prices"),
+        SetState(data),
+        _fetch(data["pairs"]),
+    ]
 
-    def view(self):
-        node = NODES.get(self.node, NODES["wake_up"])
-        children = [
-            AppBar(title=f"Kraken: {node['title']}"),
-            Card(children=[Label(node["text"])]),
-            Spacer(grow=True),
-        ]
 
-        if self.node == "survive":
-            children.insert(2, Label("YOU SURVIVED", bold=True))
-            children.insert(3, Label(f"Deaths: {self.deaths}"))
-            children.append(FooterKeys(shortcuts=[("r", "restart")]))
-        elif self.node == "death":
-            children.insert(2, Label("YOU DIED", bold=True))
-            children.insert(3, Label(f"Deaths: {self.deaths}"))
-            children.append(FooterKeys(shortcuts=[("r", "restart")]))
-        else:
-            children.append(FooterKeys(shortcuts=self._options()))
-
-        return Column(children)
-
-    def _options(self) -> list:
-        if self.node == "wake_up":
-            return [("1", "Rush to deck")]
-        elif self.node == "deck":
-            if "life_preserver" not in self.inventory:
-                return [
-                    ("1", "Grab life preserver"),
-                    ("2", "Run to bridge"),
-                ]
-            else:
-                return [
-                    ("1", "Jump overboard"),
-                    ("2", "Run to bridge"),
-                ]
-        elif self.node == "bridge":
-            return [("1", "Brace for impact")]
+def update(event) -> list:
+    data = _state()
+    if isinstance(event, TimerFired) and event.id == TIMER_ID:
+        data["loading"] = True
+        return [SetState(data), SetStatus("Refreshing prices"), _fetch(data["pairs"])]
+    if isinstance(event, HttpResponse):
+        data.update(_handle_http(data, event))
+        return [SetState(data), SetStatus(_status(data))]
+    if not isinstance(event, KeyEvent) or not event.pressed:
         return []
-
-    def on_key(self, key: str, mods: dict) -> None:
-        if key == "r" and self.node in ("survive", "death"):
-            self.node = "wake_up"
-            self.inventory = []
-            self.state.save({"node": self.node, "inventory": self.inventory, "deaths": self.deaths})
-            self.emit.schedule_render()
-            return
-
-        if self.node == "wake_up":
-            if key == "1":
-                self.node = "deck"
-        elif self.node == "deck":
-            if "life_preserver" not in self.inventory:
-                if key == "1":
-                    self.inventory.append("life_preserver")
-                elif key == "2":
-                    self.node = "bridge"
-            else:
-                if key == "1":
-                    self.node = "survive"
-                elif key == "2":
-                    self.node = "bridge"
-        elif self.node == "bridge":
-            if key == "1":
-                self.node = "death"
-                self.deaths += 1
-
-        self.state.save({"node": self.node, "inventory": self.inventory, "deaths": self.deaths})
-        self.emit.schedule_render()
+    if event.key in ("down", "j", "ArrowDown"):
+        data["selected"] = _clamp(data["selected"] + 1, len(data["pairs"]))
+    elif event.key in ("up", "k", "ArrowUp"):
+        data["selected"] = _clamp(data["selected"] - 1, len(data["pairs"]))
+    elif event.key == "r":
+        data["loading"] = True
+        return [SetState(data), SetStatus("Refreshing prices"), _fetch(data["pairs"])]
+    else:
+        return []
+    return [SetState(data), SetStatus(_status(data))]
 
 
-Kraken().run()
+def view():
+    data = _state()
+    selected_pair = data["pairs"][data["selected"]] if data["pairs"] else ""
+    price = data["prices"].get(selected_pair, {})
+    rows = [
+        {"name": pair, "description": _price_line(pair, data["prices"].get(pair, {}))}
+        for pair in data["pairs"]
+    ]
+    detail = data["error"] or (
+        f"{selected_pair}\n"
+        f"last: {price.get('last', '-')}\n"
+        f"bid:  {price.get('bid', '-')}\n"
+        f"ask:  {price.get('ask', '-')}\n"
+        f"high: {price.get('high', '-')}\n"
+        f"low:  {price.get('low', '-')}"
+    )
+    return Column(
+        [
+            AppBar("Kraken", "market ticker"),
+            SelectList(rows, selected_idx=data["selected"])
+            if rows
+            else Text("No pairs configured.", size=12.0),
+            Text(detail, size=12.0),
+            Spacer(grow=True),
+            FooterKeys([("j/k", "select"), ("r", "refresh"), ("timer", "auto")]),
+        ],
+        grow=True,
+        padding=0,
+    )
+
+
+def _state() -> dict:
+    data = dict(DEFAULT_STATE)
+    for key, value in DEFAULT_STATE.items():
+        data[key] = state.get(key, value)
+    data["pairs"] = [str(pair).upper() for pair in data.get("pairs") or DEFAULT_PAIRS]
+    data["prices"] = dict(data.get("prices") or {})
+    data["selected"] = _clamp(int(data.get("selected") or 0), len(data["pairs"]))
+    data["error"] = str(data.get("error") or "")
+    return data
+
+
+def _fetch(pairs: list[str]) -> HttpFetch:
+    return HttpFetch(
+        f"{API}?pair={','.join(pairs)}", headers={"Accept": "application/json"}
+    )
+
+
+def _handle_http(data: dict, event: HttpResponse) -> dict:
+    if event.status < 200 or event.status >= 300:
+        data["loading"] = False
+        data["error"] = f"HTTP {event.status}: {_body_text(event)[:240]}"
+        log.warn(f"kraken: request failed {event.status}")
+        return data
+    try:
+        payload = json.loads(_body_text(event))
+    except json.JSONDecodeError as exc:
+        data["loading"] = False
+        data["error"] = str(exc)
+        return data
+    errors = payload.get("error") or []
+    if errors:
+        data["loading"] = False
+        data["error"] = ", ".join(str(item) for item in errors)
+        return data
+    data["prices"] = _parse_prices(data["pairs"], payload.get("result") or {})
+    data["loading"] = False
+    data["error"] = ""
+    log.info(f"kraken: loaded {len(data['prices'])} prices")
+    return data
+
+
+def _parse_prices(pairs: list[str], result: dict) -> dict:
+    prices = {}
+    remaining = list(pairs)
+    for key, ticker in result.items():
+        pair = PAIR_ALIASES.get(key.upper(), key.upper())
+        for requested in remaining:
+            if requested in pair or pair.endswith(requested):
+                pair = requested
+                break
+        prices[pair] = {
+            "last": _first(ticker.get("c")),
+            "bid": _first(ticker.get("b")),
+            "ask": _first(ticker.get("a")),
+            "high": _first(ticker.get("h")),
+            "low": _first(ticker.get("l")),
+        }
+    return prices
+
+
+def _first(value) -> str:
+    if isinstance(value, list) and value:
+        return str(value[0])
+    return "-"
+
+
+def _body_text(event: HttpResponse) -> str:
+    if isinstance(event.body, bytes):
+        return event.body.decode("utf-8", errors="replace")
+    if isinstance(event.body, list):
+        return bytes(event.body).decode("utf-8", errors="replace")
+    return str(event.body)
+
+
+def _price_line(pair: str, price: dict) -> str:
+    return f"last {price.get('last', '-')}"
+
+
+def _status(data: dict) -> str:
+    if data["loading"]:
+        return "Loading"
+    if data["error"]:
+        return "Error"
+    return f"{len(data['prices'])} prices"
+
+
+def _clamp(selected: int, total: int) -> int:
+    if total <= 0:
+        return 0
+    return max(0, min(selected, total - 1))

@@ -73,9 +73,21 @@ def _encode_effect(effect: Any) -> dict[str, Any]:
         raise TypeError(f"Unknown effect type: {type(effect).__name__}")
     if getattr(effect_types, type(effect).__name__, None) is not type(effect):
         raise TypeError(f"Unknown effect type: {type(effect).__name__}")
-    payload = asdict(effect)
+    payload = _jsonable(asdict(effect))
     payload["type"] = type(effect).__name__
     return payload
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return list(value)
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 def _decode_event(payload: dict[str, Any]) -> Any:
@@ -90,6 +102,8 @@ def _decode_event(payload: dict[str, Any]) -> Any:
         kwargs["modifiers"] = event_types.Modifiers(**kwargs["modifiers"])
     if cls is event_types.SystemStatsResult and isinstance(kwargs.get("stats"), dict):
         kwargs["stats"] = event_types.SystemStats(**kwargs["stats"])
+    if cls is event_types.HttpResponse and isinstance(kwargs.get("body"), list):
+        kwargs["body"] = bytes(kwargs["body"])
     if cls is event_types.PipeMessage and isinstance(kwargs.get("payload"), dict):
         kwargs["payload"] = event_types.PipePayload(**kwargs["payload"])
     return cls(**kwargs)
@@ -132,7 +146,9 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
         }
     if node_type == "column":
         children = data.get("children", [])
-        child_ids = [flatten(child, f"{key}/{idx}") for idx, child in enumerate(children)]
+        child_ids = [
+            flatten(child, f"{key}/{idx}") for idx, child in enumerate(children)
+        ]
         return {
             "type": "Column",
             "children": child_ids,

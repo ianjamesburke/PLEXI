@@ -16,8 +16,8 @@ use crate::app::registry::{AppManifest, RuntimeExecution};
 
 use super::wasm_app::bindings::plexi::platform::types::{
     BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine, CanvasNode,
-    CanvasRect, CanvasText, Color, ColumnNode, FileReadEffect, FileWriteEffect, IndexedNode,
-    InputEvent, KeyEvent, ListNode, PaddingNode, ProgressBarNode, RowNode, ScrollNode,
+    CanvasRect, CanvasText, Color, ColumnNode, FileReadEffect, FileWriteEffect, HttpFetchEffect,
+    IndexedNode, InputEvent, KeyEvent, ListNode, PaddingNode, ProgressBarNode, RowNode, ScrollNode,
     StateSnapshot, TextInputNode, TextNode, TimerEffect, UiActionEvent, UiNodeData, UiTree,
     UiValueChangeEvent,
 };
@@ -295,6 +295,12 @@ pub fn encode_input_event(event: &InputEvent) -> Result<Value, WasmPythonError> 
         InputEvent::FocusGained => json!({ "type": "FocusGained" }),
         InputEvent::FocusLost => json!({ "type": "FocusLost" }),
         InputEvent::TimerFired(id) => json!({ "type": "TimerFired", "id": id }),
+        InputEvent::HttpResponse(response) => json!({
+            "type": "HttpResponse",
+            "status": response.status,
+            "headers": response.headers,
+            "body": response.body,
+        }),
         InputEvent::CapabilityGranted(name) => {
             json!({ "type": "CapabilityGranted", "name": name })
         }
@@ -350,6 +356,18 @@ fn decode_effect(value: Value) -> Result<PythonBridgeEffect, WasmPythonError> {
             FileWriteEffect {
                 path: required_string(&value, "path")?,
                 content: bytes_field(&value, "content")?,
+            },
+        ))),
+        "HttpFetch" => Ok(PythonBridgeEffect::Host(Effect::HttpFetch(
+            HttpFetchEffect {
+                url: required_string(&value, "url")?,
+                method: value
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or("GET")
+                    .to_string(),
+                headers: headers_field(&value, "headers")?,
+                body: optional_bytes_field(&value, "body")?,
             },
         ))),
         other => Err(WasmPythonError::BridgeJson(format!(
@@ -725,6 +743,61 @@ fn bytes_field(value: &Value, field: &str) -> Result<Vec<u8>, WasmPythonError> {
     }
 }
 
+fn optional_bytes_field(value: &Value, field: &str) -> Result<Option<Vec<u8>>, WasmPythonError> {
+    if matches!(value.get(field), None | Some(Value::Null)) {
+        return Ok(None);
+    }
+    bytes_field(value, field).map(Some)
+}
+
+fn headers_field(value: &Value, field: &str) -> Result<Vec<(String, String)>, WasmPythonError> {
+    match value.get(field) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Object(map)) => Ok(map
+            .iter()
+            .map(|(key, value)| {
+                value
+                    .as_str()
+                    .map(|text| (key.clone(), text.to_string()))
+                    .ok_or_else(|| {
+                        WasmPythonError::BridgeJson(format!(
+                            "field '{field}' object values must be strings"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                let pair = item.as_array().ok_or_else(|| {
+                    WasmPythonError::BridgeJson(format!(
+                        "field '{field}' header entry must be an array"
+                    ))
+                })?;
+                if pair.len() != 2 {
+                    return Err(WasmPythonError::BridgeJson(format!(
+                        "field '{field}' header entry must have two items"
+                    )));
+                }
+                let key = pair[0].as_str().ok_or_else(|| {
+                    WasmPythonError::BridgeJson(format!(
+                        "field '{field}' header name must be a string"
+                    ))
+                })?;
+                let val = pair[1].as_str().ok_or_else(|| {
+                    WasmPythonError::BridgeJson(format!(
+                        "field '{field}' header value must be a string"
+                    ))
+                })?;
+                Ok((key.to_string(), val.to_string()))
+            })
+            .collect(),
+        _ => Err(WasmPythonError::BridgeJson(format!(
+            "field '{field}' must be an object or array"
+        ))),
+    }
+}
+
 fn u32_list(value: &Value, field: &str) -> Result<Vec<u32>, WasmPythonError> {
     value
         .get(field)
@@ -789,6 +862,7 @@ fn runtime_execution_label(execution: RuntimeExecution) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::wasm_app::bindings::plexi::platform::types::HttpResponse;
     use crate::host::wasm_app::Modifiers;
     use tempfile::tempdir;
 
@@ -886,6 +960,47 @@ python_compat = true
             &effects[1],
             PythonBridgeEffect::SetState(entries) if entries == &vec![("count".to_string(), b"4".to_vec())]
         ));
+    }
+
+    #[test]
+    fn effects_decode_http_fetch() {
+        let effects = decode_effects(
+            r#"[
+                {
+                    "type":"HttpFetch",
+                    "url":"https://api.example.test/items",
+                    "method":"POST",
+                    "headers":{"Accept":"application/json"},
+                    "body":[111,107]
+                }
+            ]"#,
+        )
+        .expect("effects");
+
+        let PythonBridgeEffect::Host(Effect::HttpFetch(req)) = &effects[0] else {
+            panic!("expected http fetch");
+        };
+        assert_eq!(req.url, "https://api.example.test/items");
+        assert_eq!(req.method, "POST");
+        assert_eq!(
+            req.headers,
+            vec![("Accept".to_string(), "application/json".to_string())]
+        );
+        assert_eq!(req.body, Some(b"ok".to_vec()));
+    }
+
+    #[test]
+    fn http_response_event_encodes_sdk_v3_shape() {
+        let encoded = encode_input_event(&InputEvent::HttpResponse(HttpResponse {
+            status: 200,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: b"ok".to_vec(),
+        }))
+        .expect("event");
+
+        assert_eq!(encoded["type"], "HttpResponse");
+        assert_eq!(encoded["status"], 200);
+        assert_eq!(encoded["body"], json!([111, 107]));
     }
 
     #[test]

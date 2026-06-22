@@ -6,11 +6,15 @@ type = "app"
 name = "Kraken"
 entry = "main.py"
 version = "0.1.0"
-description = "A Plexi app"
+description = "Track market prices from the Kraken public ticker API."
 watch = true
 
+[runtime]
+python_compat = true
+
 [app.capabilities]
-capabilities = ["timer"]
+capabilities = ["timer", "net.http"]
+allowed_hosts = ["api.kraken.com"]
 
 [launch]
 

@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Browse and inspect CSV files in the current directory."
 entry = "csv_viewer.py"
 
+[runtime]
+python_compat = true
+
 [app.capabilities]
 capabilities = []
 
