@@ -5,16 +5,11 @@
 //! `Input`, `Interactive`) fire `ComponentEvent`s back to the app via the
 //! returned `Vec<ComponentEventPayload>` (task A3).
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use egui::Ui;
 
 use crate::app_protocol::{PinnedEdge, StackDirection, UiNode};
-use crate::render::app_chrome::{self, AppChrome};
+use crate::ui::style;
 use crate::ui::theme::Colors;
-use crate::ui::{button, style};
-
-static APP_CHROME_INFO_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Persistent per-pane render resources threaded into `UiNode::Raw` nodes.
 ///
@@ -42,287 +37,6 @@ pub(crate) struct ComponentEventPayload {
     pub(crate) node_id: String,
     pub(crate) event_type: String,
     pub(crate) payload: Option<serde_json::Value>,
-}
-
-/// Result from rendering a component tree — includes both interaction events
-/// and layout feedback (e.g. the actual rendered canvas dimensions).
-pub(crate) struct ComponentTreeResult {
-    pub(crate) events: Vec<ComponentEventPayload>,
-    /// Actual rendered canvas dimensions (0×0 if tree had no Canvas node).
-    pub(crate) canvas_width: f32,
-    pub(crate) canvas_height: f32,
-    /// Hit regions collected from Canvas nodes during rendering.
-    pub(crate) hit_regions: Vec<(egui::Rect, String)>,
-}
-
-/// Validate the same vertical shell slots used by the component renderer.
-///
-/// This is intentionally geometry-level, not pixel-diff-level: app checks use it
-/// to prove that current scaffold chrome resolves to non-overlapping body,
-/// action, and footer regions at a given viewport size.
-pub(crate) fn validate_shell_layout(
-    root: &UiNode,
-    viewport_width: f32,
-    viewport_height: f32,
-) -> Vec<String> {
-    let mut errors = Vec::new();
-    if viewport_width <= 0.0 || viewport_height <= 0.0 {
-        errors.push(format!(
-            "viewport must be positive, got {viewport_width:.0}x{viewport_height:.0}"
-        ));
-        return errors;
-    }
-
-    let ctx = egui::Context::default();
-    ctx.begin_pass(egui::RawInput::default());
-    egui::CentralPanel::default().show(&ctx, |ui| {
-        errors.extend(validate_shell_layout_inner(
-            ui,
-            root,
-            viewport_width,
-            viewport_height,
-        ));
-    });
-    let _ = ctx.end_pass();
-
-    errors
-}
-
-fn validate_shell_layout_inner(
-    ui: &egui::Ui,
-    root: &UiNode,
-    viewport_width: f32,
-    viewport_height: f32,
-) -> Vec<String> {
-    match root {
-        UiNode::Column {
-            children,
-            gap,
-            padding_top,
-            padding,
-        } => {
-            let effective_top = match children.first() {
-                Some(UiNode::AppBar { .. }) => 0.0,
-                _ => (*padding_top).max(0.0),
-            };
-            let content_padding = semantic_shell_padding(children, *padding).max(0.0);
-            let content_width = viewport_width - content_padding * 2.0;
-            validate_vertical_shell(
-                ui,
-                children,
-                *gap,
-                content_width,
-                viewport_height - effective_top,
-            )
-        }
-        UiNode::Stack {
-            direction: StackDirection::Vertical,
-            children,
-            gap,
-            padding,
-        } => {
-            let content_width = viewport_width - padding.left.max(0.0) - padding.right.max(0.0);
-            let content_height = viewport_height - padding.top.max(0.0) - padding.bottom.max(0.0);
-            validate_vertical_shell(ui, children, *gap, content_width, content_height)
-        }
-        UiNode::Stack { .. } => vec!["root stack must be vertical for shell layout".to_string()],
-        _ => vec!["root must be a column or vertical stack for shell layout".to_string()],
-    }
-}
-
-fn validate_vertical_shell(
-    ui: &egui::Ui,
-    children: &[UiNode],
-    gap: f32,
-    content_width: f32,
-    content_height: f32,
-) -> Vec<String> {
-    const EPSILON: f32 = 0.5;
-
-    let mut errors = Vec::new();
-    if content_width < -EPSILON {
-        errors.push(format!(
-            "horizontal padding exceeds viewport width by {:.1}px",
-            -content_width
-        ));
-    }
-    if content_height < -EPSILON {
-        errors.push(format!(
-            "shell padding exceeds viewport height by {:.1}px",
-            -content_height
-        ));
-        return errors;
-    }
-    if gap < 0.0 {
-        errors.push(format!("shell gap must be non-negative, got {gap:.1}"));
-    }
-
-    let mut pinned_bottom: Vec<(usize, f32, &UiNode)> = Vec::new();
-    let mut body_children: Vec<(usize, &UiNode)> = Vec::new();
-
-    for (idx, child) in children.iter().enumerate() {
-        if let UiNode::Pinned {
-            edge: PinnedEdge::Bottom,
-            child: inner,
-        } = child
-        {
-            if let Some(h) = bottom_pin_height(ui, inner) {
-                pinned_bottom.push((idx, h, inner.as_ref()));
-                continue;
-            }
-        }
-        body_children.push((idx, child));
-    }
-
-    while let Some((idx, last)) = body_children.last().copied() {
-        if let Some(h) = bottom_pin_height(ui, last) {
-            pinned_bottom.push((idx, h, last));
-            body_children.pop();
-        } else {
-            break;
-        }
-    }
-    pinned_bottom.reverse();
-
-    let action_idx = children.iter().position(is_action_bar_node);
-    let footer_idx = children.iter().position(is_footer_shell_node);
-
-    let Some(action_idx) = action_idx else {
-        errors.push("missing action_bar in shell body".to_string());
-        return errors;
-    };
-    let Some(footer_idx) = footer_idx else {
-        errors.push("missing bottom footer in shell".to_string());
-        return errors;
-    };
-    if action_idx > footer_idx {
-        errors.push("action_bar appears after footer in shell order".to_string());
-    }
-
-    let total_footer_h: f32 = pinned_bottom.iter().map(|(_, h, _)| *h).sum();
-    if total_footer_h <= 0.0 {
-        errors.push("footer has no resolved height".to_string());
-    }
-    if total_footer_h > content_height + EPSILON {
-        errors.push(format!(
-            "footer would extend below viewport: footer {:.1}px > shell {:.1}px",
-            total_footer_h, content_height
-        ));
-    }
-
-    let body_h = content_height - total_footer_h;
-    if body_h < -EPSILON {
-        errors.push(format!(
-            "body slot is negative: shell {:.1}px - footer {:.1}px = {:.1}px",
-            content_height, total_footer_h, body_h
-        ));
-        return errors;
-    }
-    let body_h = body_h.max(0.0);
-
-    let effective_gap = gap.max(0.0);
-    let gap_total = effective_gap * body_children.len().saturating_sub(1) as f32;
-    let mut fixed_total = gap_total;
-    let mut grow_count = 0usize;
-    let mut unresolved = Vec::new();
-
-    for (idx, child) in &body_children {
-        if vertical_grow_node(child) {
-            grow_count += 1;
-        } else if let Some(h) = vertical_fixed_height(ui, child) {
-            fixed_total += h;
-        } else {
-            unresolved.push(*idx);
-        }
-    }
-
-    if !unresolved.is_empty() {
-        errors.push(format!(
-            "body child height is unresolved at column index(es) {:?}",
-            unresolved
-        ));
-    }
-    if fixed_total > body_h + EPSILON {
-        errors.push(format!(
-            "body fixed content exceeds body slot: fixed {:.1}px > body {:.1}px",
-            fixed_total, body_h
-        ));
-        if grow_count > 0 {
-            errors.push(format!(
-                "grow area is negative: body {:.1}px - fixed {:.1}px = {:.1}px",
-                body_h,
-                fixed_total,
-                body_h - fixed_total
-            ));
-        }
-    }
-
-    let grow_h = if grow_count > 0 {
-        ((body_h - fixed_total).max(0.0)) / grow_count as f32
-    } else {
-        0.0
-    };
-    let mut cursor = 0.0;
-    let mut action_slot = None;
-
-    for (body_pos, (idx, child)) in body_children.iter().enumerate() {
-        if body_pos > 0 {
-            cursor += effective_gap;
-        }
-        let h = if vertical_grow_node(child) {
-            grow_h
-        } else {
-            vertical_fixed_height(ui, child).unwrap_or(0.0)
-        };
-        if *idx == action_idx {
-            action_slot = Some((cursor, cursor + h));
-        }
-        cursor += h;
-    }
-
-    if let Some((action_top, action_bottom)) = action_slot {
-        if action_top < -EPSILON {
-            errors.push(format!(
-                "action_bar starts above body slot at {action_top:.1}px"
-            ));
-        }
-        if action_bottom > body_h + EPSILON {
-            errors.push(format!(
-                "action_bar overlaps footer: action bottom {:.1}px > footer top {:.1}px",
-                action_bottom, body_h
-            ));
-        }
-    } else {
-        errors.push("action_bar is not in resolved body slot".to_string());
-    }
-
-    let footer_bottom = body_h + total_footer_h;
-    if footer_bottom > content_height + EPSILON {
-        errors.push(format!(
-            "footer bottom exceeds viewport: footer bottom {:.1}px > shell {:.1}px",
-            footer_bottom, content_height
-        ));
-    }
-
-    errors
-}
-
-fn is_action_bar_node(node: &UiNode) -> bool {
-    matches!(node, UiNode::ActionBar { .. })
-}
-
-fn is_footer_shell_node(node: &UiNode) -> bool {
-    match node {
-        UiNode::Pinned {
-            edge: PinnedEdge::Bottom,
-            child,
-        } => matches!(
-            child.as_ref(),
-            UiNode::FooterKeys { .. } | UiNode::Footer { .. }
-        ),
-        UiNode::FooterKeys { .. } | UiNode::Footer { .. } => true,
-        _ => false,
-    }
 }
 
 /// Focus and styling context for `UiNode::TextEdit` nodes within a component
@@ -369,7 +83,8 @@ impl TextEditFocusCtx {
 
 /// Render a `UiNode` tree into the provided egui `Ui`.
 ///
-/// Returns a `ComponentTreeResult` with interaction events and canvas dimensions.
+/// Returns any interaction events that occurred during this frame so the
+/// caller can forward them to the app as `PlexiEvent::ComponentEvent`.
 ///
 /// `colors` is the active host theme — passed through so L1 sugar nodes and
 /// `Raw` escape-hatch nodes have consistent theming.
@@ -387,39 +102,6 @@ pub(crate) fn render_component_tree(
     text_edit_buffers: &mut std::collections::HashMap<String, String>,
     focus_ctx: &mut TextEditFocusCtx,
     raw_caches: &mut RawNodeCaches<'_>,
-) -> ComponentTreeResult {
-    let mut canvas_width = 0.0f32;
-    let mut canvas_height = 0.0f32;
-    let mut hit_regions: Vec<(egui::Rect, String)> = Vec::new();
-    let events = render_component_tree_inner(
-        ui,
-        node,
-        colors,
-        text_edit_buffers,
-        focus_ctx,
-        raw_caches,
-        &mut canvas_width,
-        &mut canvas_height,
-        &mut hit_regions,
-    );
-    ComponentTreeResult {
-        events,
-        canvas_width,
-        canvas_height,
-        hit_regions,
-    }
-}
-
-fn render_component_tree_inner(
-    ui: &mut Ui,
-    node: &UiNode,
-    colors: &Colors,
-    text_edit_buffers: &mut std::collections::HashMap<String, String>,
-    focus_ctx: &mut TextEditFocusCtx,
-    raw_caches: &mut RawNodeCaches<'_>,
-    canvas_w: &mut f32,
-    canvas_h: &mut f32,
-    hit_regions: &mut Vec<(egui::Rect, String)>,
 ) -> Vec<ComponentEventPayload> {
     let mut events: Vec<ComponentEventPayload> = Vec::new();
 
@@ -444,79 +126,28 @@ fn render_component_tree_inner(
                         direction,
                         children,
                         *gap,
-                        0.0,
                         colors,
                         text_edit_buffers,
                         focus_ctx,
                         raw_caches,
-                        canvas_w,
-                        canvas_h,
-                        hit_regions,
                     ));
                 });
         }
 
         UiNode::Scroll { child, horizontal } => {
-            let size = ui.max_rect().size();
-            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
             let scroll = if *horizontal {
                 egui::ScrollArea::both()
             } else {
                 egui::ScrollArea::vertical()
             };
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
-                ui.set_clip_rect(rect);
-                ui.set_min_width(rect.width());
-                ui.set_max_width(rect.width());
-                ui.set_min_height(rect.height());
-                ui.set_max_height(rect.height());
-                scroll
-                    .max_width(rect.width())
-                    .max_height(rect.height())
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        events.extend(render_component_tree_inner(
-                            ui,
-                            child,
-                            colors,
-                            text_edit_buffers,
-                            focus_ctx,
-                            raw_caches,
-                            canvas_w,
-                            canvas_h,
-                            hit_regions,
-                        ));
-                    });
-            });
-        }
-
-        UiNode::Sized {
-            width,
-            height,
-            child,
-        } => {
-            let w = width.unwrap_or_else(|| ui.available_width()).max(0.0);
-            let h = height.unwrap_or_else(|| ui.available_height()).max(0.0);
-            log::trace!(
-                "render Sized: w={w} h={h} avail_w={} avail_h={}",
-                ui.available_width(),
-                ui.available_height()
-            );
-            ui.allocate_ui(egui::vec2(w, h), |ui| {
-                ui.set_min_width(w);
-                ui.set_max_width(w);
-                ui.set_min_height(h);
-                ui.set_max_height(h);
-                events.extend(render_component_tree_inner(
+            scroll.show(ui, |ui| {
+                events.extend(render_component_tree(
                     ui,
                     child,
                     colors,
                     text_edit_buffers,
                     focus_ctx,
                     raw_caches,
-                    canvas_w,
-                    canvas_h,
-                    hit_regions,
                 ));
             });
         }
@@ -524,16 +155,13 @@ fn render_component_tree_inner(
         UiNode::Layer { children } => {
             // V1: sequential rendering (true Z-stacking is a future improvement).
             for child in children {
-                events.extend(render_component_tree_inner(
+                events.extend(render_component_tree(
                     ui,
                     child,
                     colors,
                     text_edit_buffers,
                     focus_ctx,
                     raw_caches,
-                    canvas_w,
-                    canvas_h,
-                    hit_regions,
                 ));
             }
         }
@@ -545,52 +173,22 @@ fn render_component_tree_inner(
             bold,
             monospace,
         } => {
-            let chrome = AppChrome::new(colors);
-            chrome.text_label(
-                ui,
-                text,
-                if *size > 0.0 { *size } else { style::TEXT_BODY },
-                chrome.text_color(color, ""),
-                *bold,
-                *monospace,
-                false,
-            );
-        }
-
-        UiNode::Markdown {
-            text,
-            base_size,
-            color,
-            padding,
-        } => {
-            let size = egui::vec2(ui.available_width(), ui.available_height());
-            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-            let content = rect.shrink((*padding).max(0.0));
-            if content.is_positive() {
-                let text_color = if color.is_empty() {
-                    colors.text_primary
-                } else {
-                    parse_color(color).unwrap_or(colors.text_primary)
-                };
-                let mut child = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(content)
-                        .layout(egui::Layout::top_down(egui::Align::LEFT)),
-                );
-                child.set_clip_rect(content);
-                crate::ui::markdown::show(
-                    &mut child,
-                    raw_caches.commonmark_cache,
-                    colors,
-                    text,
-                    text_color,
-                    if *base_size > 0.0 {
-                        *base_size
-                    } else {
-                        style::TEXT_BODY
-                    },
-                );
+            let mut rich = egui::RichText::new(text.as_str());
+            if *size > 0.0 {
+                rich = rich.size(*size);
             }
+            if !color.is_empty() {
+                if let Some(c) = parse_color(color) {
+                    rich = rich.color(c);
+                }
+            }
+            if *bold {
+                rich = rich.strong();
+            }
+            if *monospace {
+                rich = rich.monospace();
+            }
+            ui.add(egui::Label::new(rich).selectable(true));
         }
 
         UiNode::Interactive {
@@ -602,16 +200,13 @@ fn render_component_tree_inner(
             // Render the child inside an interact-sense scope so we get a
             // Response covering the child's bounding rect.
             let child_response = ui.scope(|ui| {
-                let child_evts = render_component_tree_inner(
+                let child_evts = render_component_tree(
                     ui,
                     child,
                     colors,
                     text_edit_buffers,
                     focus_ctx,
                     raw_caches,
-                    canvas_w,
-                    canvas_h,
-                    hit_regions,
                 );
                 // Bubble child events up.
                 (child_evts, ui.min_rect())
@@ -650,16 +245,13 @@ fn render_component_tree_inner(
                 "render_components: Pinned {:?} rendered inline (no enclosing vertical Stack)",
                 edge
             );
-            events.extend(render_component_tree_inner(
+            events.extend(render_component_tree(
                 ui,
                 child,
                 colors,
                 text_edit_buffers,
                 focus_ctx,
                 raw_caches,
-                canvas_w,
-                canvas_h,
-                hit_regions,
             ));
         }
 
@@ -667,15 +259,7 @@ fn render_component_tree_inner(
             // Delegate to the existing flat renderer for a single draw command,
             // threading the pane's persistent caches so markdown/image/list
             // state survives across frames instead of being rebuilt per node.
-            let raw_h = match command.as_ref() {
-                crate::app_protocol::RenderCommand::ListView { h, .. } if *h > 0.0 => *h,
-                crate::app_protocol::RenderCommand::ListView { .. } => ui.available_height(),
-                _ => ui.available_height(),
-            };
-            let (pane_rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), raw_h.max(0.0)),
-                egui::Sense::hover(),
-            );
+            let pane_rect = ui.clip_rect();
             let mut raw_events: Vec<crate::app_protocol::PlexiEvent> = Vec::new();
             // Raw escape-hatch uses a throwaway focus ctx — focus tracking doesn't
             // apply to legacy draw commands embedded inside a component tree.
@@ -696,9 +280,6 @@ fn render_component_tree_inner(
                 &mut raw_events,
                 text_edit_buffers,
                 &mut raw_focus_ctx,
-                &mut 0.0f32,
-                &mut 0.0f32,
-                &mut Vec::new(),
             );
             // Convert any ComponentEvent payloads back from PlexiEvent (unlikely
             // from a Raw draw command, but keep the pipeline consistent).
@@ -726,30 +307,15 @@ fn render_component_tree_inner(
             height,
             grow,
         } => {
-            let node_canvas_w = if *grow {
+            let canvas_w = if *grow {
                 ui.available_width()
             } else {
                 (*width).min(ui.available_width())
             }
             .max(0.0);
-            let node_canvas_h = if *grow {
-                ui.available_height().max(*height)
-            } else {
-                *height
-            }
-            .max(0.0);
-            // Track the largest canvas — the primary content canvas wins over
-            // small utility canvases (e.g. numpads) that appear later in the tree.
-            if node_canvas_w > *canvas_w {
-                *canvas_w = node_canvas_w;
-            }
-            if node_canvas_h > *canvas_h {
-                *canvas_h = node_canvas_h;
-            }
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(node_canvas_w, node_canvas_h),
-                egui::Sense::click(),
-            );
+            let canvas_h = (*height).max(0.0);
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(canvas_w, canvas_h), egui::Sense::hover());
             let mut raw_events: Vec<crate::app_protocol::PlexiEvent> = Vec::new();
             let mut raw_focus_ctx = TextEditFocusCtx::new();
             crate::process_app::render::render_draw_commands(
@@ -767,9 +333,6 @@ fn render_component_tree_inner(
                 &mut raw_events,
                 text_edit_buffers,
                 &mut raw_focus_ctx,
-                &mut 0.0f32,
-                &mut 0.0f32,
-                hit_regions,
             );
             for evt in raw_events {
                 if let crate::app_protocol::PlexiEvent::ComponentEvent {
@@ -797,65 +360,102 @@ fn render_component_tree_inner(
             node_id,
             label,
             disabled,
-            style: button_style,
             ..
         } => {
-            let btn_w = button::chrome_button_intrinsic_width(ui, label);
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(btn_w, button_height()), egui::Sense::hover());
-            if let Some(evt) =
-                render_button_at(ui, rect, node_id, label, *disabled, button_style, colors)
-            {
-                events.push(evt);
+            const BTN_PAD_V: f32 = 5.0;
+            let font_id = egui::FontId::proportional(crate::ui::style::TEXT_BODY);
+            // Layout with placeholder color; painter.galley() overrides per-state below.
+            let galley =
+                ui.fonts(|f| f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE));
+            let text_w = galley.size().x;
+            let text_h = galley.size().y;
+            let btn_w = (text_w + crate::ui::style::SPACE_SM * 2.0).max(48.0);
+            let btn_h = text_h + BTN_PAD_V * 2.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(btn_w, btn_h), egui::Sense::hover());
+            // Use raw PointerState — button_down/button_pressed read pointer_events directly
+            // and are not affected by the pane-wide Sense::click_and_drag() widget registered
+            // later at process_app/mod.rs:1676.
+            let pointer_pos =
+                ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
+            let is_hovered = !*disabled && pointer_pos.map_or(false, |p| rect.contains(p));
+            let is_down =
+                is_hovered && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+            let is_just_pressed =
+                is_hovered && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+            let painter = ui.painter();
+            let fill = if is_down {
+                colors.accent
+            } else {
+                colors.bg_active
+            };
+            painter.rect_filled(rect, crate::ui::style::RADIUS_MD, fill);
+            if !*disabled {
+                let stroke_color = if is_hovered {
+                    colors.accent
+                } else {
+                    colors.border
+                };
+                painter.rect_stroke(
+                    rect,
+                    crate::ui::style::RADIUS_MD,
+                    egui::Stroke::new(1.0, stroke_color),
+                    egui::StrokeKind::Inside,
+                );
+                if is_hovered {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+            }
+            let text_color = if *disabled {
+                colors.text_dim
+            } else if is_down {
+                colors.bg_active
+            } else {
+                colors.text_primary
+            };
+            let text_pos = egui::pos2(
+                rect.center().x - text_w / 2.0,
+                rect.center().y - text_h / 2.0,
+            );
+            painter.galley(text_pos, galley, text_color);
+            if is_just_pressed {
+                log::info!("render_components: Button press node_id={node_id}");
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "click".into(),
+                    payload: None,
+                });
             }
         }
 
-        UiNode::ActionBar { actions } => {
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), action_bar_height()),
-                egui::Sense::hover(),
+        UiNode::Input {
+            node_id,
+            value,
+            placeholder,
+            ..
+        } => {
+            let mut val_buf = value.clone();
+            let response = crate::ui::text_field::styled_text_input(
+                ui,
+                &mut val_buf,
+                placeholder.as_str(),
+                egui::Id::new(node_id.as_str()),
+                colors,
             );
-            AppChrome::new(colors).paint_action_bar_background(ui, rect);
-            let mut x = rect.min.x;
-            let y = rect.min.y + (action_bar_height() - button_height()) / 2.0;
-
-            for action in actions {
-                let UiNode::Button {
-                    node_id,
-                    label,
-                    disabled,
-                    style: button_style,
-                    ..
-                } = action
-                else {
-                    log::warn!(
-                        "render_components: ActionBar child is not a Button; skipping child"
-                    );
-                    continue;
-                };
-
-                let w = button::chrome_button_intrinsic_width(ui, label);
-                if x + w > rect.max.x {
-                    log::debug!(
-                        "render_components: ActionBar clipped remaining actions at width={}",
-                        rect.width()
-                    );
-                    break;
-                }
-                let button_rect =
-                    egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, button_height()));
-                if let Some(evt) = render_button_at(
-                    ui,
-                    button_rect,
-                    node_id,
-                    label,
-                    *disabled,
-                    button_style,
-                    colors,
-                ) {
-                    events.push(evt);
-                }
-                x += w + style::SPACE_SM;
+            if response.changed() {
+                log::debug!("render_components: Input change node_id={node_id} value={val_buf:?}");
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "change".into(),
+                    payload: Some(serde_json::json!({ "value": val_buf })),
+                });
+            }
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                log::info!("render_components: Input submit node_id={node_id} value={val_buf:?}");
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "submit".into(),
+                    payload: Some(serde_json::json!({ "value": val_buf })),
+                });
             }
         }
 
@@ -888,15 +488,58 @@ fn render_component_tree_inner(
 
             let widget_id = egui::Id::new(("text_edit_node", node_id.as_str()));
 
-            let chrome_response = AppChrome::new(colors).text_edit(
-                ui,
-                widget_id,
-                placeholder,
-                buffer,
-                *multiline,
-                *max_length,
-            );
-            let response = chrome_response.response;
+            // Styling matches QuickNote overlay: frameless, monospace, accent caret,
+            // dim hint text. See src/overlays/quick_note.rs lines 138-154.
+            let response = ui
+                .scope(|ui| {
+                    // egui's caret is hidden (transparent, non-blinking);
+                    // draw_text_caret paints a glyph-height replacement on top.
+                    ui.visuals_mut().text_cursor.blink = false;
+                    ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
+                    let font_id = egui::FontId::monospace(style::TEXT_BODY);
+                    let row_height = ui.fonts(|f| f.row_height(&font_id));
+
+                    let output = if *multiline {
+                        let hint = egui::RichText::new(placeholder.as_str())
+                            .color(colors.text_dim.linear_multiply(0.3))
+                            .size(style::TEXT_BODY);
+                        let mut edit = egui::TextEdit::multiline(buffer)
+                            .id(widget_id)
+                            .font(font_id.clone())
+                            .text_color(colors.text_primary)
+                            .desired_width(f32::INFINITY)
+                            .frame(false)
+                            .hint_text(hint);
+                        if *max_length > 0 {
+                            edit = edit.char_limit(*max_length);
+                        }
+                        edit.show(ui)
+                    } else {
+                        let hint = egui::RichText::new(placeholder.as_str())
+                            .color(colors.text_dim.linear_multiply(0.3))
+                            .size(style::TEXT_BODY);
+                        let mut edit = egui::TextEdit::singleline(buffer)
+                            .id(widget_id)
+                            .font(font_id.clone())
+                            .text_color(colors.text_primary)
+                            .desired_width(f32::INFINITY)
+                            .frame(false)
+                            .hint_text(hint);
+                        if *max_length > 0 {
+                            edit = edit.char_limit(*max_length);
+                        }
+                        edit.show(ui)
+                    };
+                    crate::ui::text_field::draw_text_caret(
+                        ui,
+                        &output,
+                        style::TEXT_BODY,
+                        row_height,
+                        egui::Stroke::new(1.0, colors.accent),
+                    );
+                    output.response
+                })
+                .inner;
 
             // Auto-focus: first newly-visible TextEdit, or first TextEdit when
             // the pane just gained keyboard focus.
@@ -912,9 +555,8 @@ fn render_component_tree_inner(
 
             // Click-to-focus: if the user clicked inside the TextEdit area,
             // request focus so the cursor appears and typing works.
-            if response.clicked() || chrome_response.frame_clicked {
+            if response.clicked() {
                 response.request_focus();
-                ui.ctx().request_repaint();
                 log::debug!("render_components: TextEdit click-focus node_id={node_id}");
             }
 
@@ -939,12 +581,12 @@ fn render_component_tree_inner(
             }
 
             // Submit: Enter for single-line, Cmd+Enter for multiline.
-            let should_submit = text_edit_should_submit(
-                *multiline,
-                response.has_focus(),
-                ui.input(|i| i.key_pressed(egui::Key::Enter)),
-                ui.input(|i| i.modifiers.command),
-            );
+            let should_submit = if *multiline {
+                response.has_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command)
+            } else {
+                response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            };
 
             if should_submit {
                 log::info!(
@@ -962,11 +604,46 @@ fn render_component_tree_inner(
         UiNode::Badge {
             label, fill, fg, ..
         } => {
-            AppChrome::new(colors).paint_badge(ui, label, fill, fg);
+            let fill_color = if fill.is_empty() {
+                colors.accent
+            } else {
+                parse_color(fill).unwrap_or(colors.accent)
+            };
+            let fg_color = if fg.is_empty() {
+                colors.text_primary
+            } else {
+                parse_color(fg).unwrap_or(colors.text_primary)
+            };
+            egui::Frame::new()
+                .fill(fill_color)
+                .stroke(egui::Stroke::new(1.0, colors.border))
+                .corner_radius(egui::CornerRadius::same(
+                    crate::ui::style::RADIUS_BADGE as u8,
+                ))
+                .inner_margin(egui::Margin::symmetric(
+                    crate::ui::style::BADGE_PAD_H as i8,
+                    crate::ui::style::BADGE_PAD_V as i8,
+                ))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(label.as_str())
+                            .color(fg_color)
+                            .size(crate::ui::style::TEXT_CAPTION),
+                    );
+                });
         }
 
         UiNode::Dot { color, size, .. } => {
-            AppChrome::new(colors).paint_dot(ui, color, *size);
+            let dot_size = if *size > 0.0 { *size } else { 8.0 };
+            let fill = if color.is_empty() {
+                colors.accent
+            } else {
+                parse_color(color).unwrap_or(colors.accent)
+            };
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(dot_size, dot_size), egui::Sense::hover());
+            ui.painter()
+                .circle_filled(rect.center(), dot_size / 2.0, fill);
         }
 
         // ── L1 layout components ────────────────────────────────────────
@@ -976,37 +653,10 @@ fn render_component_tree_inner(
             padding_top,
             padding,
         } => {
-            log::trace!(
+            log::info!(
                 "render_components: Column {} children gap={gap} padding_top={padding_top} padding={padding}",
                 children.len()
             );
-            let content_padding = semantic_shell_padding(children, *padding);
-            if is_semantic_app_shell(children) {
-                if !APP_CHROME_INFO_LOGGED.swap(true, Ordering::Relaxed) {
-                    log::info!(
-                        "render_components: SDK semantic app chrome routed through host AppChrome"
-                    );
-                }
-                if vertical_stack_needs_full_height(children) {
-                    let h = ui.available_height();
-                    ui.set_min_height(h);
-                }
-                events.extend(render_stack(
-                    ui,
-                    &StackDirection::Vertical,
-                    children,
-                    *gap,
-                    content_padding,
-                    colors,
-                    text_edit_buffers,
-                    focus_ctx,
-                    raw_caches,
-                    canvas_w,
-                    canvas_h,
-                    hit_regions,
-                ));
-                return events;
-            }
             // Skip top padding when the first child is AppBar (it's full-bleed chrome)
             let effective_top = match children.first() {
                 Some(UiNode::AppBar { .. }) => 0,
@@ -1014,32 +664,25 @@ fn render_component_tree_inner(
             };
             egui::Frame::new()
                 .inner_margin(egui::Margin {
-                    left: content_padding as i8,
-                    right: content_padding as i8,
+                    left: *padding as i8,
+                    right: *padding as i8,
                     top: effective_top,
                     bottom: 0,
                 })
                 .show(ui, |ui| {
-                    // Only fill the remaining height when the stack contains a child
-                    // that needs partitioning. Static nested Columns should stay
-                    // content-sized; otherwise they push later siblings into footers.
-                    if vertical_stack_needs_full_height(children) {
-                        let h = ui.available_height();
-                        ui.set_min_height(h);
-                    }
+                    // Expand the inner ui to fill available height so render_stack's
+                    // sticky-footer partition can see the full remaining pane height.
+                    let h = ui.available_height();
+                    ui.set_min_height(h);
                     events.extend(render_stack(
                         ui,
                         &StackDirection::Vertical,
                         children,
                         *gap,
-                        0.0,
                         colors,
                         text_edit_buffers,
                         focus_ctx,
                         raw_caches,
-                        canvas_w,
-                        canvas_h,
-                        hit_regions,
                     ));
                 });
         }
@@ -1047,21 +690,238 @@ fn render_component_tree_inner(
         UiNode::AppBar {
             title, subtitle, ..
         } => {
-            AppChrome::new(colors).paint_app_bar(ui, title, subtitle);
+            const TITLE_SIZE: f32 = 16.0;
+            let has_subtitle = !subtitle.is_empty();
+            let band_h = if has_subtitle { 48.0 } else { 34.0 };
+            let total_h = band_h + 1.0;
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), total_h),
+                egui::Sense::hover(),
+            );
+            let painter = ui.painter();
+            // Full-bleed: expand to clip rect width so AppBar spans the pane edge-to-edge
+            let clip = ui.clip_rect();
+            let full_rect = egui::Rect::from_min_size(
+                egui::pos2(clip.min.x, rect.min.y),
+                egui::vec2(clip.width(), total_h),
+            );
+            painter.rect_filled(full_rect, 0.0, colors.bg_sidebar);
+            let text_x = full_rect.min.x + style::SPACE_MD;
+            let max_w = full_rect.width() - 2.0 * style::SPACE_MD;
+            let title_y = full_rect.min.y + style::SPACE_SM;
+            if has_subtitle {
+                let sub_y = title_y + TITLE_SIZE + style::SPACE_XS;
+                let title_galley = ui.fonts(|f| {
+                    f.layout(
+                        title.clone(),
+                        egui::FontId::proportional(TITLE_SIZE),
+                        colors.text_primary,
+                        max_w,
+                    )
+                });
+                painter.galley(
+                    egui::pos2(text_x, title_y),
+                    title_galley,
+                    colors.text_primary,
+                );
+                let sub_galley = ui.fonts(|f| {
+                    f.layout(
+                        subtitle.clone(),
+                        egui::FontId::proportional(style::TEXT_HINT),
+                        colors.text_dim,
+                        max_w,
+                    )
+                });
+                painter.galley(egui::pos2(text_x, sub_y), sub_galley, colors.text_dim);
+            } else {
+                let title_galley = ui.fonts(|f| {
+                    f.layout(
+                        title.clone(),
+                        egui::FontId::proportional(TITLE_SIZE),
+                        colors.text_primary,
+                        max_w,
+                    )
+                });
+                painter.galley(
+                    egui::pos2(text_x, title_y),
+                    title_galley,
+                    colors.text_primary,
+                );
+            }
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(full_rect.min.x, full_rect.min.y + band_h),
+                    egui::vec2(full_rect.width(), 1.0),
+                ),
+                0.0,
+                colors.border,
+            );
         }
 
         UiNode::FooterKeys {
             entries, divider, ..
         } => {
-            AppChrome::new(colors).paint_footer_keys(ui, entries, *divider);
+            let chip_h = style::TEXT_HINT + 4.0;
+            let chip_row_h = style::TEXT_HINT + 6.0;
+            let total_h = if *divider {
+                1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
+            } else {
+                style::SPACE_SM + chip_row_h + style::SPACE_SM
+            };
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), total_h),
+                egui::Sense::hover(),
+            );
+
+            // Full-bleed: expand to clip rect width so footer spans the pane edge-to-edge
+            let clip = ui.clip_rect();
+            let full_rect = egui::Rect::from_min_size(
+                egui::pos2(clip.min.x, rect.min.y),
+                egui::vec2(clip.width(), total_h),
+            );
+            ui.painter().rect_filled(full_rect, 0.0, colors.bg_sidebar);
+
+            if *divider {
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(full_rect.min.x, full_rect.min.y),
+                        egui::vec2(full_rect.width(), 1.0),
+                    ),
+                    0.0,
+                    colors.border,
+                );
+            }
+
+            // Measure total content width so we can center the group horizontally.
+            let chip_font = egui::FontId::monospace(style::TEXT_HINT);
+            let desc_font = egui::FontId::proportional(style::TEXT_HINT);
+            let mut content_w: f32 = 0.0;
+            for (ei, entry) in entries.iter().enumerate() {
+                for (ki, key) in entry.keys.iter().enumerate() {
+                    if ki > 0 {
+                        content_w += 2.0;
+                    }
+                    let tw = ui.fonts(|f| {
+                        f.layout_no_wrap(key.clone(), chip_font.clone(), colors.text_primary)
+                            .size()
+                            .x
+                    });
+                    content_w += (tw + 8.0).max(chip_h);
+                }
+                content_w += 4.0;
+                content_w += ui.fonts(|f| {
+                    f.layout_no_wrap(
+                        entry.description.clone(),
+                        desc_font.clone(),
+                        colors.text_dim,
+                    )
+                    .size()
+                    .x
+                });
+                if ei + 1 < entries.len() {
+                    content_w += style::SPACE_MD;
+                }
+            }
+
+            // Center the content group inside the full-bleed band; clamp left edge.
+            let left =
+                (full_rect.center().x - content_w / 2.0).max(full_rect.min.x + style::SPACE_MD);
+            let content_rect = egui::Rect::from_min_size(
+                egui::pos2(left, full_rect.center().y - chip_h / 2.0),
+                egui::vec2(content_w, chip_h),
+            );
+
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for (ei, entry) in entries.iter().enumerate() {
+                        for (ki, key) in entry.keys.iter().enumerate() {
+                            if ki > 0 {
+                                ui.add_space(2.0);
+                            }
+                            crate::ui::shortcuts::key_chip(ui, key, colors, chip_font.clone());
+                        }
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(entry.description.clone())
+                                .size(style::TEXT_HINT)
+                                .color(colors.text_dim),
+                        );
+                        if ei + 1 < entries.len() {
+                            ui.add_space(style::SPACE_MD);
+                        }
+                    }
+                });
+            });
         }
 
         UiNode::Footer { text, color, .. } => {
-            AppChrome::new(colors).paint_footer(ui, text, color);
+            let line_h = style::TEXT_CAPTION + 5.0;
+            let total_h = style::SPACE_MD + 1.0 + style::SPACE_MD + line_h;
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), total_h),
+                egui::Sense::hover(),
+            );
+            let line_y = rect.min.y + style::SPACE_MD;
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x, line_y),
+                    egui::vec2(rect.width(), 1.0),
+                ),
+                0.0,
+                colors.border,
+            );
+            let text_color = if color.is_empty() {
+                colors.text_dim
+            } else {
+                parse_color(color).unwrap_or(colors.text_dim)
+            };
+            // Content area sits below the divider line, vertically centered in
+            // the remaining height. egui handles DPI/rounding internally.
+            let content_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.min.x, line_y + 1.0),
+                egui::vec2(rect.width(), style::SPACE_MD + line_h),
+            );
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+                ui.with_layout(
+                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(text.clone())
+                                .size(style::TEXT_CAPTION)
+                                .color(text_color),
+                        );
+                    },
+                );
+            });
         }
 
         UiNode::Section { title, .. } => {
-            AppChrome::new(colors).paint_section(ui, title);
+            let total_h =
+                style::SPACE_SM + style::TEXT_HINT + style::SPACE_XS + 1.0 + style::SPACE_XS;
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), total_h),
+                egui::Sense::hover(),
+            );
+            let painter = ui.painter();
+            let label_y = rect.min.y + style::SPACE_SM;
+            let galley = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    title.to_uppercase(),
+                    egui::FontId::proportional(style::TEXT_HINT),
+                    colors.text_dim,
+                )
+            });
+            painter.galley(egui::pos2(rect.min.x, label_y), galley, colors.text_dim);
+            let line_y = label_y + style::TEXT_HINT + style::SPACE_XS;
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x, line_y),
+                    egui::vec2(rect.width(), 1.0),
+                ),
+                0.0,
+                colors.border,
+            );
         }
 
         UiNode::Label {
@@ -1074,33 +934,31 @@ fn render_component_tree_inner(
             max_lines,
             ..
         } => {
-            let chrome = AppChrome::new(colors);
             let font_size = if *size > 0.0 { *size } else { style::TEXT_BODY };
+            let text_color = if !color.is_empty() {
+                parse_color(color).unwrap_or(colors.text_primary)
+            } else {
+                resolve_tone(tone, colors)
+            };
+            let mut rich = egui::RichText::new(text.as_str())
+                .size(font_size)
+                .color(text_color);
+            if *bold {
+                rich = rich.strong();
+            }
+            if *monospace {
+                rich = rich.monospace();
+            }
+            let label = egui::Label::new(rich).selectable(true).wrap();
             if *max_lines > 0 {
                 let line_h = font_size + 4.0;
                 let max_h = *max_lines as f32 * line_h;
                 ui.scope(|ui| {
                     ui.set_max_height(max_h);
-                    chrome.text_label(
-                        ui,
-                        text,
-                        font_size,
-                        chrome.text_color(color, tone),
-                        *bold,
-                        *monospace,
-                        true,
-                    );
+                    ui.add(label);
                 });
             } else {
-                chrome.text_label(
-                    ui,
-                    text,
-                    font_size,
-                    chrome.text_color(color, tone),
-                    *bold,
-                    *monospace,
-                    true,
-                );
+                ui.add(label);
             }
         }
 
@@ -1116,30 +974,41 @@ fn render_component_tree_inner(
         UiNode::Divider {
             color: div_color, ..
         } => {
-            AppChrome::new(colors).paint_divider(ui, div_color);
+            let fill = if div_color.is_empty() {
+                colors.border
+            } else {
+                parse_color(div_color).unwrap_or(colors.border)
+            };
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, fill);
         }
 
         UiNode::Card {
             children, padding, ..
         } => {
-            AppChrome::new(colors).card(ui, *padding, |ui| {
-                for (idx, child) in children.iter().enumerate() {
-                    if idx > 0 {
-                        ui.add_space(app_chrome::CARD_CHILD_GAP);
+            let pad = if *padding > 0.0 {
+                *padding
+            } else {
+                style::SPACE_MD
+            };
+            egui::Frame::new()
+                .fill(colors.bg_sidebar)
+                .stroke(egui::Stroke::new(1.0, colors.border))
+                .corner_radius(style::RADIUS_MD)
+                .inner_margin(egui::Margin::same(pad as i8))
+                .show(ui, |ui| {
+                    for child in children {
+                        events.extend(render_component_tree(
+                            ui,
+                            child,
+                            colors,
+                            text_edit_buffers,
+                            focus_ctx,
+                            raw_caches,
+                        ));
                     }
-                    events.extend(render_component_tree_inner(
-                        ui,
-                        child,
-                        colors,
-                        text_edit_buffers,
-                        focus_ctx,
-                        raw_caches,
-                        canvas_w,
-                        canvas_h,
-                        hit_regions,
-                    ));
-                }
-            });
+                });
         }
 
         UiNode::SelectList {
@@ -1147,1317 +1016,135 @@ fn render_component_tree_inner(
             selected_idx,
             ..
         } => {
-            AppChrome::new(colors).select_list(ui, items, *selected_idx);
-        }
-
-        // ── L1 form controls (placeholder primitives) ───────────────────────
-        // styling to be expanded — no bespoke Plexi chrome exists for these yet;
-        // they render through host metrics and fire the same ComponentEvents an
-        // app would otherwise hand-roll, settling the vocabulary for the WASM era.
-        UiNode::Checkbox {
-            node_id,
-            label,
-            checked,
-            disabled,
-        } => {
-            let chrome = AppChrome::new(colors);
-            let resp = ui
-                .horizontal(|ui| {
-                    let (b, _) =
-                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                    let stroke = egui::Stroke::new(
-                        1.5,
-                        if *disabled { colors.text_dim } else { colors.border },
-                    );
-                    let fill = if *checked {
-                        colors.accent
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    };
-                    ui.painter()
-                        .rect(b, style::RADIUS_SM, fill, stroke, egui::StrokeKind::Inside);
-                    if *checked {
-                        ui.painter().text(
-                            b.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "✓",
-                            egui::FontId::proportional(12.0),
-                            colors.text_on(colors.accent),
-                        );
-                    }
-                    if !label.is_empty() {
-                        ui.add_space(style::SPACE_SM);
-                        chrome.text_label(
-                            ui,
-                            label,
-                            style::TEXT_BODY,
-                            colors.text_primary,
-                            false,
-                            false,
-                            false,
-                        );
-                    }
-                })
-                .response;
-            if !*disabled && clicked_in(ui, resp.rect) {
-                events.push(ComponentEventPayload {
-                    node_id: node_id.clone(),
-                    event_type: "change".into(),
-                    payload: Some(serde_json::json!({ "value": !*checked })),
-                });
-            }
-        }
-
-        UiNode::Radio {
-            node_id,
-            options,
-            selected,
-            disabled,
-        } => {
-            let chrome = AppChrome::new(colors);
-            for (idx, opt) in options.iter().enumerate() {
-                let is_sel = idx == *selected;
-                let resp = ui
-                    .horizontal(|ui| {
-                        let (c, _) =
-                            ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                        let stroke = egui::Stroke::new(
-                            1.5,
-                            if *disabled { colors.text_dim } else { colors.border },
-                        );
-                        ui.painter().circle_stroke(c.center(), 7.0, stroke);
-                        if is_sel {
-                            ui.painter().circle_filled(c.center(), 4.0, colors.accent);
-                        }
-                        ui.add_space(style::SPACE_SM);
-                        chrome.text_label(
-                            ui,
-                            opt,
-                            style::TEXT_BODY,
-                            colors.text_primary,
-                            false,
-                            false,
-                            false,
-                        );
-                    })
-                    .response;
-                if !*disabled && !is_sel && clicked_in(ui, resp.rect) {
-                    events.push(ComponentEventPayload {
-                        node_id: node_id.clone(),
-                        event_type: "change".into(),
-                        payload: Some(serde_json::json!({ "value": idx })),
-                    });
-                }
-            }
-        }
-
-        UiNode::Switch {
-            node_id,
-            label,
-            on,
-            disabled,
-        } => {
-            let chrome = AppChrome::new(colors);
-            let resp = ui
-                .horizontal(|ui| {
-                    let (track, _) =
-                        ui.allocate_exact_size(egui::vec2(34.0, 18.0), egui::Sense::hover());
-                    let track_fill = if *on { colors.accent } else { colors.bg_active };
-                    ui.painter()
-                        .rect_filled(track, egui::CornerRadius::same(9), track_fill);
-                    let knob_x = if *on { track.right() - 9.0 } else { track.left() + 9.0 };
-                    let knob = egui::pos2(knob_x, track.center().y);
-                    ui.painter().circle_filled(
-                        knob,
-                        6.5,
-                        if *disabled { colors.text_dim } else { colors.text_primary },
-                    );
-                    if !label.is_empty() {
-                        ui.add_space(style::SPACE_SM);
-                        chrome.text_label(
-                            ui,
-                            label,
-                            style::TEXT_BODY,
-                            colors.text_primary,
-                            false,
-                            false,
-                            false,
-                        );
-                    }
-                })
-                .response;
-            if !*disabled && clicked_in(ui, resp.rect) {
-                events.push(ComponentEventPayload {
-                    node_id: node_id.clone(),
-                    event_type: "change".into(),
-                    payload: Some(serde_json::json!({ "value": !*on })),
-                });
-            }
-        }
-
-        UiNode::Slider {
-            node_id,
-            value,
-            min,
-            max,
-            disabled,
-        } => {
-            let span = (*max - *min).max(f32::EPSILON);
-            let frac = ((*value - *min) / span).clamp(0.0, 1.0);
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width().min(240.0), 20.0),
-                egui::Sense::hover(),
-            );
-            let track = egui::Rect::from_min_max(
-                egui::pos2(rect.left(), rect.center().y - 2.0),
-                egui::pos2(rect.right(), rect.center().y + 2.0),
-            );
-            ui.painter()
-                .rect_filled(track, egui::CornerRadius::same(2), colors.bg_active);
-            let filled = egui::Rect::from_min_max(
-                track.min,
-                egui::pos2(track.left() + track.width() * frac, track.max.y),
-            );
-            ui.painter()
-                .rect_filled(filled, egui::CornerRadius::same(2), colors.accent);
-            let knob = egui::pos2(track.left() + track.width() * frac, rect.center().y);
-            ui.painter().circle_filled(
-                knob,
-                6.0,
-                if *disabled { colors.text_dim } else { colors.text_primary },
-            );
-            if !*disabled && clicked_in(ui, rect) {
-                if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
-                    let new_frac = ((p.x - track.left()) / track.width()).clamp(0.0, 1.0);
-                    let new_val = *min + new_frac * span;
-                    events.push(ComponentEventPayload {
-                        node_id: node_id.clone(),
-                        event_type: "change".into(),
-                        payload: Some(serde_json::json!({ "value": new_val })),
-                    });
-                }
-            }
-        }
-
-        UiNode::Select {
-            node_id,
-            options,
-            selected,
-            placeholder,
-        } => {
-            let label = options
-                .get(*selected)
-                .cloned()
-                .filter(|_| !options.is_empty())
-                .unwrap_or_else(|| placeholder.clone());
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width().min(240.0), app_chrome::button_height()),
-                egui::Sense::hover(),
-            );
-            ui.painter().rect(
-                rect,
-                style::RADIUS_SM,
-                colors.bg_active,
-                egui::Stroke::new(1.0, colors.border),
-                egui::StrokeKind::Inside,
-            );
-            ui.painter().text(
-                egui::pos2(rect.left() + style::SPACE_SM, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                &label,
-                egui::FontId::proportional(style::TEXT_BODY),
-                colors.text_primary,
-            );
-            ui.painter().text(
-                egui::pos2(rect.right() - style::SPACE_SM, rect.center().y),
-                egui::Align2::RIGHT_CENTER,
-                "▾",
-                egui::FontId::proportional(style::TEXT_CAPTION),
-                colors.text_dim,
-            );
-            if clicked_in(ui, rect) {
-                events.push(ComponentEventPayload {
-                    node_id: node_id.clone(),
-                    event_type: "click".into(),
-                    payload: None,
-                });
-            }
-        }
-
-        UiNode::DateTimePicker {
-            node_id,
-            value,
-            mode,
-        } => {
-            let display = if value.is_empty() {
-                format!("Pick {mode}…")
+            if items.is_empty() {
+                ui.label(
+                    egui::RichText::new("No items")
+                        .size(style::TEXT_HINT)
+                        .color(colors.text_dim),
+                );
             } else {
-                value.clone()
-            };
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width().min(240.0), app_chrome::button_height()),
-                egui::Sense::hover(),
-            );
-            ui.painter().rect(
-                rect,
-                style::RADIUS_SM,
-                colors.bg_active,
-                egui::Stroke::new(1.0, colors.border),
-                egui::StrokeKind::Inside,
-            );
-            ui.painter().text(
-                egui::pos2(rect.left() + style::SPACE_SM, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                &display,
-                egui::FontId::proportional(style::TEXT_BODY),
-                colors.text_primary,
-            );
-            ui.painter().text(
-                egui::pos2(rect.right() - style::SPACE_SM, rect.center().y),
-                egui::Align2::RIGHT_CENTER,
-                "🗓",
-                egui::FontId::proportional(style::TEXT_CAPTION),
-                colors.text_dim,
-            );
-            if clicked_in(ui, rect) {
-                events.push(ComponentEventPayload {
-                    node_id: node_id.clone(),
-                    event_type: "click".into(),
-                    payload: None,
-                });
-            }
-        }
-
-        // ── L1 display / data primitives ────────────────────────────────────
-        UiNode::Progress {
-            value,
-            label,
-            indeterminate,
-        } => {
-            let chrome = AppChrome::new(colors);
-            if !label.is_empty() {
-                chrome.text_label(
-                    ui,
-                    label,
-                    style::TEXT_CAPTION,
-                    colors.text_dim,
-                    false,
-                    false,
-                    false,
-                );
-            }
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), 8.0),
-                egui::Sense::hover(),
-            );
-            ui.painter()
-                .rect_filled(rect, egui::CornerRadius::same(4), colors.bg_active);
-            let frac = if *indeterminate {
-                let t = ui.input(|i| i.time) as f32;
-                ui.ctx().request_repaint();
-                0.3 + 0.2 * (t * 2.0).sin().abs()
-            } else {
-                value.clamp(0.0, 1.0)
-            };
-            let filled = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * frac, 8.0));
-            ui.painter()
-                .rect_filled(filled, egui::CornerRadius::same(4), colors.accent);
-        }
-
-        UiNode::Spinner { label } => {
-            ui.horizontal(|ui| {
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-                let t = ui.input(|i| i.time) as f32;
-                ui.ctx().request_repaint();
-                let angle = t * 4.0;
-                let center = rect.center();
-                for k in 0..8 {
-                    let a = angle + k as f32 * std::f32::consts::TAU / 8.0;
-                    let alpha = (k as f32 / 8.0 * 200.0) as u8 + 40;
-                    let p = center + egui::vec2(a.cos(), a.sin()) * 6.0;
-                    ui.painter().circle_filled(
-                        p,
-                        1.6,
-                        colors.accent.linear_multiply(alpha as f32 / 255.0),
-                    );
-                }
-                if !label.is_empty() {
-                    ui.add_space(style::SPACE_SM);
-                    AppChrome::new(colors).text_label(
-                        ui,
-                        label,
-                        style::TEXT_CAPTION,
-                        colors.text_dim,
-                        false,
-                        false,
-                        false,
-                    );
-                }
-            });
-        }
-
-        UiNode::Tooltip { text, child } => {
-            // styling to be expanded — placeholder shows the tooltip inline via
-            // egui's native hover popup around the wrapped child.
-            let inner = ui
-                .scope(|ui| {
-                    events.extend(render_component_tree_inner(
-                        ui,
-                        child,
-                        colors,
-                        text_edit_buffers,
-                        focus_ctx,
-                        raw_caches,
-                        canvas_w,
-                        canvas_h,
-                        hit_regions,
-                    ));
-                })
-                .response;
-            inner.on_hover_text(text.as_str());
-        }
-
-        UiNode::Avatar { label, size } => {
-            let d = if *size > 0.0 { *size } else { 32.0 };
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::hover());
-            ui.painter().circle_filled(rect.center(), d / 2.0, colors.bg_active);
-            let initials: String = label
-                .split_whitespace()
-                .filter_map(|w| w.chars().next())
-                .take(2)
-                .collect::<String>()
-                .to_uppercase();
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                &initials,
-                egui::FontId::proportional(d * 0.4),
-                colors.text_primary,
-            );
-        }
-
-        UiNode::Icon { name, size, color } => {
-            // styling to be expanded — renders the semantic token until a real
-            // icon set is wired; keeps the vocabulary + layout slot settled.
-            let chrome = AppChrome::new(colors);
-            let fs = if *size > 0.0 { *size } else { style::TEXT_BODY };
-            chrome.text_label(
-                ui,
-                &format!("⬚ {name}"),
-                fs,
-                chrome.text_color(color, ""),
-                false,
-                false,
-                false,
-            );
-        }
-
-        UiNode::CodeBlock { code, language } => {
-            AppChrome::new(colors).card(ui, 0.0, |ui| {
-                if !language.is_empty() {
-                    AppChrome::new(colors).text_label(
-                        ui,
-                        language,
-                        style::TEXT_META,
-                        colors.text_dim,
-                        false,
-                        true,
-                        false,
-                    );
-                    ui.add_space(style::SPACE_XS);
-                }
-                AppChrome::new(colors).text_label(
-                    ui,
-                    code,
-                    style::TEXT_CAPTION,
-                    colors.text_primary,
-                    false,
-                    true,
-                    true,
-                );
-            });
-        }
-
-        UiNode::Table { columns, rows } => {
-            let chrome = AppChrome::new(colors);
-            egui::Grid::new(ui.next_auto_id())
-                .striped(true)
-                .spacing(egui::vec2(style::SPACE_MD, style::SPACE_SM))
-                .show(ui, |ui| {
-                    for col in columns {
-                        chrome.text_label(
-                            ui,
-                            col,
-                            style::TEXT_CAPTION,
-                            colors.text_section,
-                            true,
-                            false,
-                            false,
-                        );
-                    }
-                    ui.end_row();
-                    for row in rows {
-                        for cell in row {
-                            chrome.text_label(
-                                ui,
-                                cell,
-                                style::TEXT_CAPTION,
-                                colors.text_primary,
-                                false,
-                                false,
-                                false,
-                            );
-                        }
-                        ui.end_row();
-                    }
-                });
-        }
-
-        UiNode::Banner { text, tone, title } => {
-            let accent = tone_color(colors, tone);
-            let chrome = AppChrome::new(colors);
-            egui::Frame::new()
-                .fill(accent.linear_multiply(0.15))
-                .stroke(egui::Stroke::new(1.0, accent))
-                .corner_radius(style::RADIUS_SM)
-                .inner_margin(egui::Margin::same(style::SPACE_SM as i8))
-                .show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        if !title.is_empty() {
-                            chrome.text_label(
-                                ui,
-                                title,
-                                style::TEXT_BODY,
-                                accent,
-                                true,
-                                false,
-                                false,
-                            );
-                        }
-                        chrome.text_label(
-                            ui,
-                            text,
-                            style::TEXT_CAPTION,
-                            colors.text_primary,
-                            false,
-                            false,
-                            true,
-                        );
-                    });
-                });
-        }
-
-        UiNode::KeyValue { rows } => {
-            let chrome = AppChrome::new(colors);
-            ui.vertical(|ui| {
-                for row in rows {
-                    ui.horizontal(|ui| {
-                        chrome.text_label(
-                            ui,
-                            &row.key,
-                            style::TEXT_CAPTION,
-                            colors.text_dim,
-                            false,
-                            false,
-                            false,
-                        );
-                        ui.add_space(style::SPACE_MD);
-                        chrome.text_label(
-                            ui,
-                            &row.value,
-                            style::TEXT_CAPTION,
-                            colors.text_primary,
-                            false,
-                            false,
-                            true,
-                        );
-                    });
-                }
-            });
-        }
-
-        UiNode::Breadcrumb { items } => {
-            let chrome = AppChrome::new(colors);
-            ui.horizontal(|ui| {
-                let last = items.len().saturating_sub(1);
-                for (idx, item) in items.iter().enumerate() {
-                    let (color, bold) = if idx == last {
-                        (colors.text_primary, true)
-                    } else {
-                        (colors.text_dim, false)
-                    };
-                    chrome.text_label(ui, item, style::TEXT_CAPTION, color, bold, false, false);
-                    if idx != last {
-                        ui.add_space(style::SPACE_XS);
-                        chrome.text_label(
-                            ui,
-                            "/",
-                            style::TEXT_CAPTION,
-                            colors.text_dim,
-                            false,
-                            false,
-                            false,
-                        );
-                        ui.add_space(style::SPACE_XS);
-                    }
-                }
-            });
-        }
-
-        UiNode::Pagination { node_id, page, total } => {
-            let chrome = AppChrome::new(colors);
-            ui.horizontal(|ui| {
-                let prev = pagination_chip(ui, colors, "‹");
-                if prev && *page > 0 {
-                    events.push(ComponentEventPayload {
-                        node_id: node_id.clone(),
-                        event_type: "change".into(),
-                        payload: Some(serde_json::json!({ "value": page - 1 })),
-                    });
-                }
-                ui.add_space(style::SPACE_SM);
-                chrome.text_label(
-                    ui,
-                    &format!("{} / {}", page + 1, (*total).max(1)),
-                    style::TEXT_CAPTION,
-                    colors.text_primary,
-                    false,
-                    false,
-                    false,
-                );
-                ui.add_space(style::SPACE_SM);
-                let next = pagination_chip(ui, colors, "›");
-                if next && *page + 1 < *total {
-                    events.push(ComponentEventPayload {
-                        node_id: node_id.clone(),
-                        event_type: "change".into(),
-                        payload: Some(serde_json::json!({ "value": page + 1 })),
-                    });
-                }
-            });
-        }
-
-        UiNode::Accordion {
-            node_id,
-            title,
-            open,
-            child,
-        } => {
-            let chrome = AppChrome::new(colors);
-            let header = ui
-                .horizontal(|ui| {
-                    chrome.text_label(
-                        ui,
-                        if *open { "▾" } else { "▸" },
-                        style::TEXT_CAPTION,
-                        colors.text_dim,
-                        false,
-                        false,
-                        false,
-                    );
-                    ui.add_space(style::SPACE_XS);
-                    chrome.text_label(
-                        ui,
-                        title,
-                        style::TEXT_BODY,
-                        colors.text_primary,
-                        true,
-                        false,
-                        false,
-                    );
-                })
-                .response;
-            if clicked_in(ui, header.rect) {
-                events.push(ComponentEventPayload {
-                    node_id: node_id.clone(),
-                    event_type: "click".into(),
-                    payload: None,
-                });
-            }
-            if *open {
-                ui.add_space(style::SPACE_XS);
-                ui.scope(|ui| {
-                    events.extend(render_component_tree_inner(
-                        ui,
-                        child,
-                        colors,
-                        text_edit_buffers,
-                        focus_ctx,
-                        raw_caches,
-                        canvas_w,
-                        canvas_h,
-                        hit_regions,
-                    ));
-                });
-            }
-        }
-
-        UiNode::Tabs {
-            node_id,
-            tabs,
-            active,
-        } => {
-            let chrome = AppChrome::new(colors);
-            ui.horizontal(|ui| {
-                for (idx, tab) in tabs.iter().enumerate() {
-                    let is_active = idx == *active;
-                    let resp = ui
-                        .scope(|ui| {
-                            let color = if is_active {
-                                colors.text_primary
+                let avail = ui.available_size();
+                egui::ScrollArea::vertical()
+                    .max_height(avail.y)
+                    .show(ui, |ui| {
+                        for (i, item) in items.iter().enumerate() {
+                            let selected = i == *selected_idx;
+                            let bg = if selected {
+                                colors.bg_active
                             } else {
-                                colors.text_dim
+                                colors.bg_sidebar
                             };
-                            chrome.text_label(
-                                ui,
-                                tab,
-                                style::TEXT_BODY,
-                                color,
-                                is_active,
-                                false,
-                                false,
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(
+                                    avail.x,
+                                    if item.description.is_empty() {
+                                        36.0
+                                    } else {
+                                        52.0
+                                    },
+                                ),
+                                egui::Sense::hover(),
                             );
-                            if is_active {
-                                let r = ui.min_rect();
-                                let underline = egui::Rect::from_min_max(
-                                    egui::pos2(r.left(), r.bottom()),
-                                    egui::pos2(r.right(), r.bottom() + 2.0),
+                            let painter = ui.painter();
+                            painter.rect_filled(rect, 0.0, bg);
+                            if selected {
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(
+                                        rect.min,
+                                        egui::vec2(3.0, rect.height()),
+                                    ),
+                                    0.0,
+                                    colors.accent,
                                 );
-                                ui.painter().rect_filled(underline, 0.0, colors.accent);
                             }
-                        })
-                        .response;
-                    if !is_active && clicked_in(ui, resp.rect) {
-                        events.push(ComponentEventPayload {
-                            node_id: node_id.clone(),
-                            event_type: "change".into(),
-                            payload: Some(serde_json::json!({ "value": idx })),
-                        });
-                    }
-                    ui.add_space(style::SPACE_MD);
-                }
-            });
-        }
-
-        UiNode::EmptyState {
-            title,
-            description,
-            icon,
-        } => {
-            let chrome = AppChrome::new(colors);
-            ui.vertical_centered(|ui| {
-                let glyph = if icon.is_empty() { "∅" } else { icon.as_str() };
-                chrome.text_label(
-                    ui,
-                    glyph,
-                    style::TEXT_TITLE_XL,
-                    colors.text_dim,
-                    false,
-                    false,
-                    false,
-                );
-                ui.add_space(style::SPACE_SM);
-                chrome.text_label(
-                    ui,
-                    title,
-                    style::TEXT_TITLE,
-                    colors.text_primary,
-                    true,
-                    false,
-                    false,
-                );
-                if !description.is_empty() {
-                    ui.add_space(style::SPACE_XS);
-                    chrome.text_label(
-                        ui,
-                        description,
-                        style::TEXT_CAPTION,
-                        colors.text_dim,
-                        false,
-                        false,
-                        true,
-                    );
-                }
-            });
-        }
-
-        UiNode::Skeleton { rows, height } => {
-            let h = if *height > 0.0 { *height } else { 12.0 };
-            let t = ui.input(|i| i.time) as f32;
-            ui.ctx().request_repaint();
-            let shimmer = 0.5 + 0.3 * (t * 2.0).sin();
-            for i in 0..(*rows).max(1) {
-                if i > 0 {
-                    ui.add_space(style::SPACE_SM);
-                }
-                let w = ui.available_width() * if i % 2 == 0 { 1.0 } else { 0.7 };
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
-                ui.painter().rect_filled(
-                    rect,
-                    style::RADIUS_SM,
-                    colors.bg_active.linear_multiply(shimmer),
-                );
-            }
-        }
-
-        UiNode::Modal {
-            node_id,
-            title,
-            child,
-        } => {
-            // styling to be expanded — renders the dialog inline (host does not
-            // yet own an SDK-driven overlay layer; the shape is settled for when
-            // it does). Close affordance fires a "close" ComponentEvent.
-            let chrome = AppChrome::new(colors);
-            egui::Frame::new()
-                .fill(colors.bg_sidebar)
-                .stroke(egui::Stroke::new(1.0, colors.border))
-                .corner_radius(style::RADIUS_LG)
-                .inner_margin(egui::Margin::same(style::SPACE_MD as i8))
-                .show(ui, |ui| {
-                    let header = ui
-                        .horizontal(|ui| {
-                            chrome.text_label(
-                                ui,
-                                title,
-                                style::TEXT_TITLE,
-                                colors.text_primary,
-                                true,
-                                false,
-                                false,
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    chrome.text_label(
-                                        ui,
-                                        "✕",
-                                        style::TEXT_BODY,
-                                        colors.text_dim,
-                                        false,
-                                        false,
-                                        false,
+                            let text_x = rect.min.x + style::SPACE_MD;
+                            let max_w = rect.width() - 2.0 * style::SPACE_MD;
+                            if item.description.is_empty() {
+                                let title_y = rect.center().y - style::TEXT_BODY / 2.0;
+                                let galley = ui.fonts(|f| {
+                                    f.layout(
+                                        item.name.clone(),
+                                        egui::FontId::proportional(style::TEXT_BODY),
+                                        colors.text_primary,
+                                        max_w,
                                     )
-                                    .rect
-                                },
-                            )
-                            .inner
-                        })
-                        .inner;
-                    ui.add_space(style::SPACE_SM);
-                    events.extend(render_component_tree_inner(
-                        ui,
-                        child,
-                        colors,
-                        text_edit_buffers,
-                        focus_ctx,
-                        raw_caches,
-                        canvas_w,
-                        canvas_h,
-                        hit_regions,
-                    ));
-                    if clicked_in(ui, header) {
-                        events.push(ComponentEventPayload {
-                            node_id: node_id.clone(),
-                            event_type: "click".into(),
-                            payload: None,
-                        });
-                    }
-                });
+                                });
+                                painter.galley(
+                                    egui::pos2(text_x, title_y),
+                                    galley,
+                                    colors.text_primary,
+                                );
+                            } else {
+                                let block_h = style::TEXT_BODY + 2.0 + style::TEXT_HINT;
+                                let title_y = rect.center().y - block_h / 2.0;
+                                let desc_y = title_y + style::TEXT_BODY + 2.0;
+                                let galley = ui.fonts(|f| {
+                                    f.layout(
+                                        item.name.clone(),
+                                        egui::FontId::proportional(style::TEXT_BODY),
+                                        colors.text_primary,
+                                        max_w,
+                                    )
+                                });
+                                painter.galley(
+                                    egui::pos2(text_x, title_y),
+                                    galley,
+                                    colors.text_primary,
+                                );
+                                let desc_galley = ui.fonts(|f| {
+                                    f.layout(
+                                        item.description.clone(),
+                                        egui::FontId::proportional(style::TEXT_HINT),
+                                        colors.text_dim,
+                                        max_w,
+                                    )
+                                });
+                                painter.galley(
+                                    egui::pos2(text_x, desc_y),
+                                    desc_galley,
+                                    colors.text_dim,
+                                );
+                            }
+                            if !item.trailing.is_empty() {
+                                let tr_galley = ui.fonts(|f| {
+                                    f.layout_no_wrap(
+                                        item.trailing.clone(),
+                                        egui::FontId::proportional(style::TEXT_HINT),
+                                        colors.text_dim,
+                                    )
+                                });
+                                let tr_x = rect.max.x - style::SPACE_MD - tr_galley.size().x;
+                                let tr_y = rect.center().y - tr_galley.size().y / 2.0;
+                                painter.galley(egui::pos2(tr_x, tr_y), tr_galley, colors.text_dim);
+                            }
+                        }
+                    });
+            }
         }
     }
 
     events
-}
-
-/// Placeholder hit-test: true when the primary pointer button was pressed this
-/// frame while hovering `rect`. Mirrors [`render_button_at`]'s raw-pointer read
-/// so clicks are not swallowed by the pane-wide click-and-drag widget.
-fn clicked_in(ui: &egui::Ui, rect: egui::Rect) -> bool {
-    let pos = ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
-    let hovered = pos.map_or(false, |p| rect.contains(p));
-    hovered && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
-}
-
-/// Resolve a semantic banner/callout tone to a theme colour.
-fn tone_color(colors: &Colors, tone: &str) -> egui::Color32 {
-    match tone {
-        "success" => colors.success,
-        "warning" | "warn" => colors.warning,
-        "danger" | "error" => colors.danger,
-        _ => colors.accent,
-    }
-}
-
-/// Paint one pagination chevron chip; returns true when clicked this frame.
-fn pagination_chip(ui: &mut egui::Ui, colors: &Colors, glyph: &str) -> bool {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
-    ui.painter().rect(
-        rect,
-        style::RADIUS_SM,
-        colors.bg_active,
-        egui::Stroke::new(1.0, colors.border),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        egui::FontId::proportional(style::TEXT_BODY),
-        colors.text_primary,
-    );
-    clicked_in(ui, rect)
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-fn button_height() -> f32 {
-    app_chrome::button_height()
-}
-
-fn action_bar_height() -> f32 {
-    app_chrome::action_bar_height()
-}
-
-fn render_button_at(
-    ui: &mut Ui,
-    rect: egui::Rect,
-    node_id: &str,
-    label: &str,
-    disabled: bool,
-    button_style: &str,
-    colors: &Colors,
-) -> Option<ComponentEventPayload> {
-    // Use raw PointerState because button_down/button_pressed read pointer
-    // events directly and are not affected by the pane-wide click-and-drag
-    // widget registered later around the whole pane.
-    let pointer_pos = ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
-    let is_hovered = !disabled && pointer_pos.map_or(false, |p| rect.contains(p));
-    let is_down = is_hovered && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
-    let is_just_pressed =
-        is_hovered && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
-    button::paint_chrome_button_at(
-        ui.painter(),
-        rect,
-        label,
-        app_button_kind(button_style),
-        button::ChromeButtonState {
-            disabled,
-            hovered: is_hovered,
-            down: is_down,
-        },
-        colors,
-    );
-    if is_hovered {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-
-    if is_just_pressed {
-        log::info!("render_components: Button press node_id={node_id}");
-        return Some(ComponentEventPayload {
-            node_id: node_id.to_owned(),
-            event_type: "click".into(),
-            payload: None,
-        });
-    }
-    None
-}
-
-fn app_button_kind(button_style: &str) -> button::ButtonKind {
-    app_chrome::button_kind(button_style)
-}
-
-fn text_edit_should_submit(
-    multiline: bool,
-    has_focus: bool,
-    enter_pressed: bool,
-    command_pressed: bool,
-) -> bool {
-    has_focus && enter_pressed && (!multiline || command_pressed)
-}
-
 /// Returns the known fixed height of a node that can be bottom-pinned, or `None`
 /// if the height cannot be determined without rendering.
-fn bottom_pin_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
+fn bottom_pin_height(node: &UiNode) -> Option<f32> {
     match node {
-        UiNode::FooterKeys { entries, divider } => {
-            Some(app_chrome::footer_keys_height(ui, entries, *divider))
-        }
-        UiNode::Footer { .. } => Some(app_chrome::footer_height()),
-        _ => None,
-    }
-}
-
-fn vertical_grow_node(node: &UiNode) -> bool {
-    match node {
-        UiNode::Spacer { grow, .. } => *grow,
-        UiNode::Scroll { .. } => true,
-        UiNode::SelectList { .. } => true,
-        UiNode::Canvas { grow, .. } => *grow,
-        UiNode::Raw { command } => matches!(
-            command.as_ref(),
-            crate::app_protocol::RenderCommand::ListView { .. }
-        ),
-        _ => false,
-    }
-}
-
-fn semantic_shell_padding(children: &[UiNode], requested_padding: f32) -> f32 {
-    if is_semantic_app_shell(children) {
-        requested_padding.max(style::SPACE_MD)
-    } else {
-        requested_padding
-    }
-}
-
-fn is_semantic_app_shell(children: &[UiNode]) -> bool {
-    matches!(children.first(), Some(UiNode::AppBar { .. }))
-        && children
-            .iter()
-            .any(|child| matches!(child, UiNode::ActionBar { .. }))
-        && children.iter().any(|child| {
-            matches!(
-                child,
-                UiNode::Pinned {
-                    edge: PinnedEdge::Bottom,
-                    child
-                } if matches!(child.as_ref(), UiNode::FooterKeys { .. })
-            ) || matches!(child, UiNode::FooterKeys { .. })
-        })
-}
-
-fn vertical_stack_needs_full_height(children: &[UiNode]) -> bool {
-    children.iter().any(|child| {
-        vertical_grow_node(child)
-            || matches!(
-                child,
-                UiNode::Pinned {
-                    edge: PinnedEdge::Bottom,
-                    ..
-                } | UiNode::FooterKeys { .. }
-                    | UiNode::Footer { .. }
-            )
-    })
-}
-
-fn vertical_fixed_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
-    match node {
-        UiNode::Stack {
-            direction,
-            children,
-            padding,
-            ..
-        } if *direction == StackDirection::Horizontal => {
-            let mut max_h: f32 = 0.0;
-            for child in children {
-                let h = vertical_fixed_height(ui, child)?;
-                max_h = max_h.max(h);
-            }
-            Some(max_h + padding.top + padding.bottom)
-        }
-        UiNode::AppBar { subtitle, .. } => Some(app_chrome::app_bar_height(subtitle)),
-        UiNode::Button { .. } => Some(button_height()),
-        UiNode::ActionBar { .. } => Some(action_bar_height()),
-        UiNode::TextEdit { multiline, .. } => Some(app_chrome::text_edit_height(*multiline)),
-        UiNode::Spacer { size, grow } => {
-            if *grow {
-                None
+        UiNode::FooterKeys { divider, .. } => {
+            let chip_row_h = style::TEXT_HINT + 6.0;
+            Some(if *divider {
+                1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
             } else {
-                Some(if *size > 0.0 { *size } else { style::SPACE_MD })
-            }
+                style::SPACE_SM + chip_row_h + style::SPACE_SM
+            })
         }
-        UiNode::FooterKeys { .. } | UiNode::Footer { .. } => bottom_pin_height(ui, node),
-        UiNode::Divider { .. } => Some(1.0),
-        UiNode::Section { .. } => {
-            Some(style::SPACE_SM + style::TEXT_HINT + style::SPACE_XS + 1.0 + style::SPACE_XS)
-        }
-        UiNode::Text { size, .. } => Some(if *size > 0.0 {
-            *size + 4.0
-        } else {
-            style::TEXT_BODY + 4.0
-        }),
-        UiNode::Badge { .. } => Some(style::TEXT_CAPTION + style::BADGE_PAD_V * 2.0 + 2.0),
-        UiNode::Card { children, padding } => {
-            let child_gap = app_chrome::CARD_CHILD_GAP * children.len().saturating_sub(1) as f32;
-            let mut total = app_chrome::card_padding(*padding) * 2.0 + child_gap;
-            for child in children {
-                total += vertical_fixed_height(ui, child)?;
-            }
-            Some(total)
-        }
-        UiNode::Dot { size, .. } => Some(if *size > 0.0 { *size } else { 8.0 }),
-        UiNode::Canvas { height, grow, .. } => {
-            if *grow {
-                None
-            } else {
-                Some(*height)
-            }
-        }
-        UiNode::Sized { height, .. } => height.map(|h| h.max(0.0)),
-        // Intrinsic-size contract: fixed-height placeholders report their layout
-        // minimum so containers can compute minima instead of blind-shrinking.
-        UiNode::Checkbox { .. } | UiNode::Switch { .. } | UiNode::Slider { .. } => Some(20.0),
-        UiNode::Select { .. } | UiNode::DateTimePicker { .. } => Some(button_height()),
-        UiNode::Spinner { .. } => Some(16.0),
-        UiNode::Progress { label, .. } => {
-            Some(8.0 + if label.is_empty() { 0.0 } else { style::TEXT_CAPTION + 4.0 })
-        }
-        UiNode::Avatar { size, .. } => Some(if *size > 0.0 { *size } else { 32.0 }),
-        _ => None,
-    }
-}
-
-/// True for nodes that expand to fill remaining *width* in a horizontal Stack.
-fn horizontal_grow_node(node: &UiNode) -> bool {
-    match node {
-        UiNode::Canvas { grow, .. } => *grow,
-        UiNode::Spacer { grow, .. } => *grow,
-        _ => false,
-    }
-}
-
-/// Fixed width (in px) for a node inside a horizontal Stack, or `None` when the
-/// node has no intrinsic width and should render inline. Grow nodes return
-/// `None` here — they are partitioned by [`horizontal_grow_node`].
-fn horizontal_fixed_width(node: &UiNode) -> Option<f32> {
-    match node {
-        UiNode::Sized { width, .. } => width.map(|w| w.max(0.0)),
-        UiNode::Spacer { size, grow } => {
-            if *grow {
-                None
-            } else {
-                Some(if *size > 0.0 { *size } else { style::SPACE_MD })
-            }
-        }
-        UiNode::Canvas { width, grow, .. } => {
-            if *grow {
-                None
-            } else {
-                Some((*width).max(0.0))
-            }
+        UiNode::Footer { .. } => {
+            Some(style::SPACE_MD + 1.0 + style::SPACE_MD + style::TEXT_CAPTION + 5.0)
         }
         _ => None,
     }
-}
-
-fn render_horizontal_children(
-    ui: &mut Ui,
-    children: &[UiNode],
-    gap: f32,
-    panel_h: f32,
-    colors: &Colors,
-    text_edit_buffers: &mut std::collections::HashMap<String, String>,
-    focus_ctx: &mut TextEditFocusCtx,
-    raw_caches: &mut RawNodeCaches<'_>,
-    canvas_w: &mut f32,
-    canvas_h: &mut f32,
-    hit_regions: &mut Vec<(egui::Rect, String)>,
-) -> Vec<ComponentEventPayload> {
-    let mut events = Vec::new();
-    if children.is_empty() {
-        return events;
-    }
-
-    let available_w = ui.available_width().max(0.0);
-    let gap_total = gap * children.len().saturating_sub(1) as f32;
-    let mut fixed_total = 0.0f32;
-    let mut grow_count = 0usize;
-
-    for child in children {
-        if horizontal_grow_node(child) {
-            grow_count += 1;
-        } else if let Some(w) = horizontal_fixed_width(child) {
-            fixed_total += w;
-        }
-    }
-
-    let grow_w = if grow_count > 0 {
-        ((available_w - fixed_total - gap_total).max(0.0)) / grow_count as f32
-    } else {
-        0.0
-    };
-
-    for (i, child) in children.iter().enumerate() {
-        if i > 0 && gap > 0.0 {
-            ui.add_space(gap);
-        }
-
-        let allocated_w = if horizontal_grow_node(child) {
-            Some(grow_w)
-        } else {
-            horizontal_fixed_width(child)
-        };
-
-        if let Some(w) = allocated_w {
-            ui.allocate_ui(egui::vec2(w.max(0.0), panel_h), |ui| {
-                ui.set_min_width(w.max(0.0));
-                ui.set_max_width(w.max(0.0));
-                events.extend(render_component_tree_inner(
-                    ui,
-                    child,
-                    colors,
-                    text_edit_buffers,
-                    focus_ctx,
-                    raw_caches,
-                    canvas_w,
-                    canvas_h,
-                    hit_regions,
-                ));
-            });
-        } else {
-            events.extend(render_component_tree_inner(
-                ui,
-                child,
-                colors,
-                text_edit_buffers,
-                focus_ctx,
-                raw_caches,
-                canvas_w,
-                canvas_h,
-                hit_regions,
-            ));
-        }
-    }
-
-    events
-}
-
-fn render_vertical_children(
-    ui: &mut Ui,
-    children: &[&UiNode],
-    gap: f32,
-    content_inset: f32,
-    available_h_override: Option<f32>,
-    colors: &Colors,
-    text_edit_buffers: &mut std::collections::HashMap<String, String>,
-    focus_ctx: &mut TextEditFocusCtx,
-    raw_caches: &mut RawNodeCaches<'_>,
-    canvas_w: &mut f32,
-    canvas_h: &mut f32,
-    hit_regions: &mut Vec<(egui::Rect, String)>,
-) -> Vec<ComponentEventPayload> {
-    let mut events = Vec::new();
-    if children.is_empty() {
-        return events;
-    }
-
-    ui.spacing_mut().item_spacing.y = 0.0;
-    let available_h = available_h_override
-        .unwrap_or_else(|| ui.available_height().min(ui.max_rect().height()))
-        .max(0.0);
-    let gap_total = gap * children.len().saturating_sub(1) as f32;
-    let mut fixed_total = gap_total;
-    let mut grow_count = 0usize;
-
-    for child in children {
-        if vertical_grow_node(child) {
-            grow_count += 1;
-        } else if let Some(h) = vertical_fixed_height(ui, child) {
-            fixed_total += h;
-        }
-    }
-
-    let grow_h = if grow_count > 0 {
-        ((available_h - fixed_total).max(0.0)) / grow_count as f32
-    } else {
-        0.0
-    };
-
-    for (i, child) in children.iter().enumerate() {
-        if i > 0 && gap > 0.0 {
-            ui.add_space(gap);
-        }
-
-        let allocated_h = if vertical_grow_node(child) {
-            Some(grow_h)
-        } else {
-            vertical_fixed_height(ui, child)
-        };
-
-        if let Some(h) = allocated_h {
-            let (slot_rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), h.max(0.0)),
-                egui::Sense::hover(),
-            );
-            let render_rect = shell_child_rect(slot_rect, child, content_inset);
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(render_rect), |ui| {
-                ui.set_clip_rect(render_rect);
-                ui.set_min_height(render_rect.height());
-                ui.set_max_height(render_rect.height());
-                events.extend(render_component_tree_inner(
-                    ui,
-                    child,
-                    colors,
-                    text_edit_buffers,
-                    focus_ctx,
-                    raw_caches,
-                    canvas_w,
-                    canvas_h,
-                    hit_regions,
-                ));
-            });
-        } else if content_inset > 0.0 && node_uses_shell_content_inset(child) {
-            egui::Frame::new()
-                .inner_margin(egui::Margin {
-                    left: content_inset as i8,
-                    right: content_inset as i8,
-                    top: 0,
-                    bottom: 0,
-                })
-                .show(ui, |ui| {
-                    events.extend(render_component_tree_inner(
-                        ui,
-                        child,
-                        colors,
-                        text_edit_buffers,
-                        focus_ctx,
-                        raw_caches,
-                        canvas_w,
-                        canvas_h,
-                        hit_regions,
-                    ));
-                });
-        } else {
-            events.extend(render_component_tree_inner(
-                ui,
-                child,
-                colors,
-                text_edit_buffers,
-                focus_ctx,
-                raw_caches,
-                canvas_w,
-                canvas_h,
-                hit_regions,
-            ));
-        }
-    }
-
-    events
-}
-
-fn shell_child_rect(slot_rect: egui::Rect, child: &UiNode, content_inset: f32) -> egui::Rect {
-    if content_inset <= 0.0 || !node_uses_shell_content_inset(child) {
-        return slot_rect;
-    }
-    let inset = content_inset.min(slot_rect.width() / 2.0);
-    egui::Rect::from_min_max(
-        egui::pos2(slot_rect.min.x + inset, slot_rect.min.y),
-        egui::pos2(slot_rect.max.x - inset, slot_rect.max.y),
-    )
-}
-
-fn node_uses_shell_content_inset(node: &UiNode) -> bool {
-    !matches!(
-        node,
-        UiNode::AppBar { .. }
-            | UiNode::FooterKeys { .. }
-            | UiNode::Footer { .. }
-            | UiNode::Pinned {
-                edge: PinnedEdge::Bottom,
-                ..
-            }
-    )
 }
 
 fn render_stack(
@@ -2465,34 +1152,28 @@ fn render_stack(
     direction: &StackDirection,
     children: &[UiNode],
     gap: f32,
-    content_inset: f32,
     colors: &Colors,
     text_edit_buffers: &mut std::collections::HashMap<String, String>,
     focus_ctx: &mut TextEditFocusCtx,
     raw_caches: &mut RawNodeCaches<'_>,
-    canvas_w: &mut f32,
-    canvas_h: &mut f32,
-    hit_regions: &mut Vec<(egui::Rect, String)>,
 ) -> Vec<ComponentEventPayload> {
     let mut events = Vec::new();
     match direction {
         StackDirection::Horizontal => {
-            let panel_h = ui.available_height();
-            log::trace!("render_stack: horizontal panel_h={panel_h}");
             ui.horizontal(|ui| {
-                events.extend(render_horizontal_children(
-                    ui,
-                    children,
-                    gap,
-                    panel_h,
-                    colors,
-                    text_edit_buffers,
-                    focus_ctx,
-                    raw_caches,
-                    canvas_w,
-                    canvas_h,
-                    hit_regions,
-                ));
+                for (i, child) in children.iter().enumerate() {
+                    if i > 0 && gap > 0.0 {
+                        ui.add_space(gap);
+                    }
+                    events.extend(render_component_tree(
+                        ui,
+                        child,
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                        raw_caches,
+                    ));
+                }
             });
         }
         StackDirection::Vertical => {
@@ -2503,7 +1184,7 @@ fn render_stack(
             // Two sources of pinning:
             //   1. Explicit: `Pinned { edge: Bottom, child }` wrapper
             //   2. Implicit: FooterKeys/Footer at the tail of the children list
-            //      (kept for hand-authored protocol trees; SDK footers use Pinned)
+            //      (the SDK doesn't wrap them in Pinned, but they always pin to bottom)
             let mut pinned_bottom: Vec<(f32, &UiNode)> = Vec::new();
             let mut body_children: Vec<&UiNode> = Vec::new();
 
@@ -2513,7 +1194,7 @@ fn render_stack(
                     child: inner,
                 } = child
                 {
-                    if let Some(h) = bottom_pin_height(ui, inner) {
+                    if let Some(h) = bottom_pin_height(inner) {
                         pinned_bottom.push((h, inner.as_ref()));
                         continue;
                     } else {
@@ -2527,7 +1208,7 @@ fn render_stack(
 
             // Auto-pin: pull FooterKeys/Footer off the tail of body_children
             while let Some(last) = body_children.last() {
-                if let Some(h) = bottom_pin_height(ui, last) {
+                if let Some(h) = bottom_pin_height(last) {
                     pinned_bottom.push((h, body_children.pop().unwrap()));
                 } else {
                     break;
@@ -2538,83 +1219,55 @@ fn render_stack(
 
             if !pinned_bottom.is_empty() {
                 let total_pinned_h: f32 = pinned_bottom.iter().map(|(h, _)| h).sum();
-                let stack_size = egui::vec2(ui.available_width(), ui.available_height());
-                let (stack_rect, _) = ui.allocate_exact_size(stack_size, egui::Sense::hover());
-                let body_h = (stack_rect.height() - total_pinned_h).max(0.0);
-                let body_rect = egui::Rect::from_min_size(
-                    stack_rect.min,
-                    egui::vec2(stack_rect.width(), body_h),
-                );
+                let body_h = (ui.available_height() - total_pinned_h).max(0.0);
 
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body_rect), |ui| {
-                    ui.set_clip_rect(body_rect);
+                // Body gets a constrained-height allocation; pinned fills the rest below.
+                // set_min_height forces the cursor to advance by the full body_h even when
+                // content is short, ensuring the footer renders flush to the bottom.
+                ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
                     ui.set_min_height(body_h);
-                    ui.set_max_height(body_h);
-                    events.extend(render_vertical_children(
-                        ui,
-                        &body_children,
-                        gap,
-                        content_inset,
-                        Some(body_h),
-                        colors,
-                        text_edit_buffers,
-                        focus_ctx,
-                        raw_caches,
-                        canvas_w,
-                        canvas_h,
-                        hit_regions,
-                    ));
-                });
-
-                let mut footer_y = stack_rect.max.y - total_pinned_h;
-                for (footer_h, inner) in &pinned_bottom {
-                    let footer_rect = egui::Rect::from_min_size(
-                        egui::pos2(stack_rect.min.x, footer_y),
-                        egui::vec2(stack_rect.width(), *footer_h),
-                    );
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
-                        ui.set_clip_rect(footer_rect);
-                        ui.set_min_height(*footer_h);
-                        ui.set_max_height(*footer_h);
-                        events.extend(render_component_tree_inner(
+                    for (i, child) in body_children.iter().enumerate() {
+                        if i > 0 && gap > 0.0 {
+                            ui.add_space(gap);
+                        }
+                        events.extend(render_component_tree(
                             ui,
-                            inner,
+                            child,
                             colors,
                             text_edit_buffers,
                             focus_ctx,
                             raw_caches,
-                            canvas_w,
-                            canvas_h,
-                            hit_regions,
                         ));
-                    });
-                    footer_y += *footer_h;
-                }
-                log::trace!(
-                    "render_components: render_stack vertical pinned body_h={body_h:.0} footer_h={total_pinned_h:.0}"
-                );
-            } else {
-                log::trace!(
-                    "render_stack: vertical no-pin {} children avail_h={}",
-                    children.len(),
-                    ui.available_height()
-                );
-                let child_refs: Vec<&UiNode> = children.iter().collect();
-                ui.vertical(|ui| {
-                    events.extend(render_vertical_children(
+                    }
+                });
+                for (_, inner) in &pinned_bottom {
+                    events.extend(render_component_tree(
                         ui,
-                        &child_refs,
-                        gap,
-                        content_inset,
-                        None,
+                        inner,
                         colors,
                         text_edit_buffers,
                         focus_ctx,
                         raw_caches,
-                        canvas_w,
-                        canvas_h,
-                        hit_regions,
                     ));
+                }
+                log::info!(
+                    "render_components: render_stack vertical pinned body_h={body_h:.0} footer_h={total_pinned_h:.0}"
+                );
+            } else {
+                ui.vertical(|ui| {
+                    for (i, child) in children.iter().enumerate() {
+                        if i > 0 && gap > 0.0 {
+                            ui.add_space(gap);
+                        }
+                        events.extend(render_component_tree(
+                            ui,
+                            child,
+                            colors,
+                            text_edit_buffers,
+                            focus_ctx,
+                            raw_caches,
+                        ));
+                    }
                 });
             }
         }
@@ -2624,61 +1277,24 @@ fn render_stack(
 
 use crate::process_app::render::parse_color;
 
+fn resolve_tone(tone: &str, colors: &Colors) -> egui::Color32 {
+    match tone {
+        "hint" | "dim" | "muted" => colors.text_dim,
+        "danger" | "error" => colors.danger,
+        "success" => colors.success,
+        "warning" => colors.warning,
+        "accent" => colors.accent,
+        "section" => colors.text_section,
+        _ => colors.text_primary,
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod render_component_tree_tests {
     use super::*;
-    use crate::app_protocol::{FooterKeyEntry, StackDirection, UiNode, UiPadding};
-
-    fn scaffold_shell_tree() -> UiNode {
-        UiNode::Column {
-            children: vec![
-                UiNode::AppBar {
-                    title: "Counter".into(),
-                    subtitle: String::new(),
-                },
-                UiNode::Text {
-                    text: "3".into(),
-                    size: 0.0,
-                    color: String::new(),
-                    bold: false,
-                    monospace: false,
-                },
-                UiNode::Spacer {
-                    size: 0.0,
-                    grow: true,
-                },
-                UiNode::ActionBar {
-                    actions: vec![UiNode::Button {
-                        node_id: "counter-increment".into(),
-                        label: "Increment".into(),
-                        disabled: false,
-                        style: "primary".into(),
-                    }],
-                },
-                UiNode::Pinned {
-                    edge: PinnedEdge::Bottom,
-                    child: Box::new(UiNode::FooterKeys {
-                        entries: vec![
-                            FooterKeyEntry {
-                                keys: vec!["i".into()],
-                                description: "increment".into(),
-                            },
-                            FooterKeyEntry {
-                                keys: vec!["r".into()],
-                                description: "reset".into(),
-                            },
-                        ],
-                        divider: true,
-                    }),
-                },
-            ],
-            gap: 8.0,
-            padding_top: 0.0,
-            padding: style::SPACE_MD,
-        }
-    }
+    use crate::app_protocol::{StackDirection, UiNode, UiPadding};
 
     /// A `UiNode::Text` with `size == 0.0` must not pass 0.0 to `RichText::size()`,
     /// and an empty color string must return `None` from `parse_color` without panicking.
@@ -2798,7 +1414,6 @@ mod render_component_tree_tests {
             node_id: "btn1".into(),
             label: "Click me".into(),
             disabled: false,
-            style: "primary".into(),
         };
         if let UiNode::Button {
             node_id,
@@ -2936,23 +1551,6 @@ mod render_component_tree_tests {
         }
     }
 
-    #[test]
-    fn action_bar_node_constructable() {
-        let node = UiNode::ActionBar {
-            actions: vec![UiNode::Button {
-                node_id: "save".into(),
-                label: "Save".into(),
-                disabled: false,
-                style: "primary".into(),
-            }],
-        };
-        if let UiNode::ActionBar { actions } = &node {
-            assert_eq!(actions.len(), 1);
-        } else {
-            panic!("wrong variant");
-        }
-    }
-
     /// Serde round-trip for `UiNode::Pinned`.
     #[test]
     fn pinned_serde_roundtrip() {
@@ -2993,7 +1591,6 @@ mod render_component_tree_tests {
     #[test]
     fn bottom_pin_height_known_nodes() {
         use super::bottom_pin_height;
-        use crate::render::app_chrome;
         use crate::ui::style;
         let fk_with_div = UiNode::FooterKeys {
             entries: vec![],
@@ -3017,269 +1614,15 @@ mod render_component_tree_tests {
             max_lines: 0,
         };
 
+        let chip_row_h = style::TEXT_HINT + 6.0;
+        let expected_with_div = 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM;
+        let expected_no_div = style::SPACE_SM + chip_row_h + style::SPACE_SM;
         let expected_footer = style::SPACE_MD + 1.0 + style::SPACE_MD + style::TEXT_CAPTION + 5.0;
 
-        let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
-            let crh = app_chrome::chip_row_height(ui);
-            let row_h = crh + 4.0;
-            let expected_with_div = 1.0 + style::SPACE_SM + row_h + style::SPACE_SM;
-            let expected_no_div = style::SPACE_SM + row_h + style::SPACE_SM;
-
-            assert_eq!(bottom_pin_height(ui, &fk_with_div), Some(expected_with_div));
-            assert_eq!(bottom_pin_height(ui, &fk_no_div), Some(expected_no_div));
-            assert_eq!(bottom_pin_height(ui, &footer), Some(expected_footer));
-            assert_eq!(bottom_pin_height(ui, &label), None);
-        });
-        let _ = ctx.end_pass();
-    }
-
-    #[test]
-    fn footer_keys_content_rect_centers_horizontally_and_vertically() {
-        let full_rect = egui::Rect::from_min_size(egui::pos2(0.0, 100.0), egui::vec2(320.0, 40.0));
-        let content =
-            crate::render::app_chrome::footer_keys_content_rect(full_rect, 150.0, 18.0, true);
-
-        assert_eq!(content.center().x, full_rect.center().x);
-        let top_pad = content.min.y - (full_rect.min.y + 1.0);
-        let bottom_pad = full_rect.max.y - content.max.y;
-        assert_eq!(top_pad, bottom_pad);
-    }
-
-    /// A horizontal stack of fixed-height buttons reserves one button row in vertical layout.
-    #[test]
-    fn horizontal_button_stack_has_fixed_height() {
-        use super::vertical_fixed_height;
-
-        let stack = UiNode::Stack {
-            direction: StackDirection::Horizontal,
-            children: vec![
-                UiNode::Button {
-                    node_id: "save".into(),
-                    label: "Save".into(),
-                    disabled: false,
-                    style: "primary".into(),
-                },
-                UiNode::Button {
-                    node_id: "cancel".into(),
-                    label: "Cancel".into(),
-                    disabled: false,
-                    style: "ghost".into(),
-                },
-            ],
-            gap: 8.0,
-            padding: crate::app_protocol::UiPadding {
-                top: 3.0,
-                bottom: 5.0,
-                ..Default::default()
-            },
-        };
-
-        let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
-            assert_eq!(vertical_fixed_height(ui, &stack), Some(40.0));
-        });
-        let _ = ctx.end_pass();
-    }
-
-    #[test]
-    fn action_bar_has_fixed_height() {
-        use super::{action_bar_height, vertical_fixed_height};
-
-        let node = UiNode::ActionBar {
-            actions: vec![UiNode::Button {
-                node_id: "save".into(),
-                label: "Save".into(),
-                disabled: false,
-                style: "primary".into(),
-            }],
-        };
-
-        let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
-            assert_eq!(vertical_fixed_height(ui, &node), Some(action_bar_height()));
-        });
-        let _ = ctx.end_pass();
-    }
-
-    #[test]
-    fn text_edit_submit_uses_focused_enter() {
-        assert!(super::text_edit_should_submit(false, true, true, false));
-        assert!(!super::text_edit_should_submit(false, false, true, false));
-        assert!(!super::text_edit_should_submit(false, true, false, false));
-        assert!(!super::text_edit_should_submit(true, true, true, false));
-        assert!(super::text_edit_should_submit(true, true, true, true));
-    }
-
-    #[test]
-    fn card_with_known_semantic_children_has_fixed_height() {
-        use super::vertical_fixed_height;
-        use crate::render::app_chrome;
-
-        let node = UiNode::Card {
-            padding: style::SPACE_MD,
-            children: vec![
-                UiNode::Text {
-                    text: "3".into(),
-                    size: 24.0,
-                    color: String::new(),
-                    bold: true,
-                    monospace: false,
-                },
-                UiNode::TextEdit {
-                    node_id: "name".into(),
-                    placeholder: "Type".into(),
-                    value: String::new(),
-                    multiline: false,
-                    max_length: 0,
-                },
-            ],
-        };
-
-        let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
-            assert_eq!(
-                vertical_fixed_height(ui, &node),
-                Some(
-                    style::SPACE_MD * 2.0
-                        + 24.0
-                        + 4.0
-                        + app_chrome::CARD_CHILD_GAP
-                        + app_chrome::text_edit_height(false)
-                )
-            );
-        });
-        let _ = ctx.end_pass();
-    }
-
-    /// Static nested Columns stay content-sized; pinned/grow stacks fill the available height.
-    #[test]
-    fn vertical_stack_fill_height_only_when_needed() {
-        use super::vertical_stack_needs_full_height;
-
-        let static_children = vec![UiNode::Text {
-            text: "body".into(),
-            size: 0.0,
-            color: String::new(),
-            bold: false,
-            monospace: false,
-        }];
-        assert!(!vertical_stack_needs_full_height(&static_children));
-
-        let grow_children = vec![UiNode::SelectList {
-            items: vec![],
-            selected_idx: 0,
-        }];
-        assert!(vertical_stack_needs_full_height(&grow_children));
-
-        let footer_children = vec![UiNode::Pinned {
-            edge: PinnedEdge::Bottom,
-            child: Box::new(UiNode::FooterKeys {
-                entries: vec![],
-                divider: true,
-            }),
-        }];
-        assert!(vertical_stack_needs_full_height(&footer_children));
-    }
-
-    #[test]
-    fn semantic_app_shell_has_minimum_content_padding() {
-        let UiNode::Column { children, .. } = scaffold_shell_tree() else {
-            panic!("scaffold_shell_tree should return column");
-        };
-
-        assert_eq!(semantic_shell_padding(&children, 0.0), style::SPACE_MD);
-        assert_eq!(semantic_shell_padding(&children, 4.0), style::SPACE_MD);
-        assert_eq!(semantic_shell_padding(&children, 24.0), 24.0);
-    }
-
-    #[test]
-    fn plain_column_can_still_be_full_bleed() {
-        let children = vec![UiNode::Text {
-            text: "body".into(),
-            size: 0.0,
-            color: String::new(),
-            bold: false,
-            monospace: false,
-        }];
-
-        assert_eq!(semantic_shell_padding(&children, 0.0), 0.0);
-    }
-
-    #[test]
-    fn shell_layout_accepts_fresh_scaffold_small_and_normal_viewports() {
-        let tree = scaffold_shell_tree();
-
-        assert!(
-            validate_shell_layout(&tree, 320.0, 240.0).is_empty(),
-            "{:?}",
-            validate_shell_layout(&tree, 320.0, 240.0)
-        );
-        assert!(
-            validate_shell_layout(&tree, 800.0, 600.0).is_empty(),
-            "{:?}",
-            validate_shell_layout(&tree, 800.0, 600.0)
-        );
-    }
-
-    #[test]
-    fn shell_layout_rejects_footer_below_viewport() {
-        let tree = scaffold_shell_tree();
-        let errors = validate_shell_layout(&tree, 320.0, 20.0);
-
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("footer would extend below viewport")),
-            "{errors:?}"
-        );
-    }
-
-    #[test]
-    fn shell_layout_rejects_action_footer_overlap() {
-        let tree = scaffold_shell_tree();
-        let errors = validate_shell_layout(&tree, 320.0, 110.0);
-
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("action_bar overlaps footer")),
-            "{errors:?}"
-        );
-    }
-
-    #[test]
-    fn shell_layout_rejects_negative_grow_area() {
-        let tree = scaffold_shell_tree();
-        let errors = validate_shell_layout(&tree, 320.0, 110.0);
-
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("grow area is negative")),
-            "{errors:?}"
-        );
-    }
-
-    #[test]
-    fn shell_layout_rejects_action_bar_after_footer() {
-        let mut tree = scaffold_shell_tree();
-        if let UiNode::Column { children, .. } = &mut tree {
-            children.swap(3, 4);
-        }
-
-        let errors = validate_shell_layout(&tree, 320.0, 240.0);
-
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("action_bar appears after footer")),
-            "{errors:?}"
-        );
+        assert_eq!(bottom_pin_height(&fk_with_div), Some(expected_with_div));
+        assert_eq!(bottom_pin_height(&fk_no_div), Some(expected_no_div));
+        assert_eq!(bottom_pin_height(&footer), Some(expected_footer));
+        assert_eq!(bottom_pin_height(&label), None);
     }
 
     /// `UiNode::TextEdit` PartialEq works.
@@ -3294,72 +1637,6 @@ mod render_component_tree_tests {
         };
         let b = a.clone();
         assert_eq!(a, b);
-    }
-
-    /// Serde round-trip for `UiNode::Sized` with a null (inherited) height.
-    #[test]
-    fn sized_serde_roundtrip() {
-        let node = UiNode::Sized {
-            width: Some(160.0),
-            height: None,
-            child: Box::new(UiNode::Text {
-                text: "side".into(),
-                size: 0.0,
-                color: String::new(),
-                bold: false,
-                monospace: false,
-            }),
-        };
-        let json = serde_json::to_string(&node).unwrap();
-        assert!(json.contains("\"type\":\"sized\""), "json={json}");
-        let parsed: UiNode = serde_json::from_str(&json).unwrap();
-        assert_eq!(node, parsed);
-    }
-
-    /// Horizontal width partitioning: a `Sized{width:160}` sidebar next to a
-    /// growing `Canvas` gives the Canvas `total_width - 160 - gap`.
-    #[test]
-    fn horizontal_partition_sized_plus_grow_canvas() {
-        use super::{horizontal_fixed_width, horizontal_grow_node};
-        let gap = 12.0_f32;
-        let total_w = 800.0_f32;
-        let sidebar = UiNode::Sized {
-            width: Some(160.0),
-            height: None,
-            child: Box::new(UiNode::Text {
-                text: "side".into(),
-                size: 0.0,
-                color: String::new(),
-                bold: false,
-                monospace: false,
-            }),
-        };
-        let canvas = UiNode::Canvas {
-            commands: vec![],
-            width: 0.0,
-            height: 0.0,
-            grow: true,
-        };
-
-        assert_eq!(horizontal_fixed_width(&sidebar), Some(160.0));
-        assert_eq!(horizontal_fixed_width(&canvas), None);
-        assert!(horizontal_grow_node(&canvas));
-        assert!(!horizontal_grow_node(&sidebar));
-
-        // Mirror render_horizontal_children's arithmetic.
-        let children = [&sidebar, &canvas];
-        let gap_total = gap * (children.len() - 1) as f32;
-        let mut fixed_total = 0.0f32;
-        let mut grow_count = 0usize;
-        for c in &children {
-            if horizontal_grow_node(c) {
-                grow_count += 1;
-            } else if let Some(w) = horizontal_fixed_width(c) {
-                fixed_total += w;
-            }
-        }
-        let grow_w = (total_w - fixed_total - gap_total) / grow_count as f32;
-        assert_eq!(grow_w, total_w - 160.0 - gap);
     }
 
     /// Serde round-trip for `UiNode::TextEdit`.

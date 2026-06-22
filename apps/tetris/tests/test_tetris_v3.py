@@ -37,7 +37,9 @@ def test_key_moves_piece_and_view_has_canvas() -> None:
     _with_state(moved)
 
     assert moved["current"]["col"] == data["current"]["col"] - 1
-    assert tetris.view().children[1].to_node()["type"] == "canvas"
+    canvas = tetris.view().children[1].to_node()
+    assert canvas["type"] == "canvas"
+    assert any(cmd["type"] == "rect" and "w" in cmd and "h" in cmd for cmd in canvas["commands"])
 
 
 def test_timer_drops_piece_after_threshold() -> None:

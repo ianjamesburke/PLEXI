@@ -325,7 +325,7 @@ def _draw(data: dict) -> list:
                     size=18.0,
                     color="#f38ba8",
                     bold=True,
-                    align="center",
+                    align="center_center",
                 ),
             ]
         )
@@ -340,7 +340,7 @@ def _draw(data: dict) -> list:
                     size=16.0,
                     color="#f9e2af",
                     bold=True,
-                    align="center",
+                    align="center_center",
                 ),
             ]
         )
