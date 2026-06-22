@@ -82,6 +82,7 @@ RADIUS_BADGE = 6.0
 # Live host theme — populated from the Init payload (light/dark + user overrides).
 # Components read theme.<role> at render time so they track the active theme.
 from ._theme import theme
+from ._constants import BG, FG, ACCENT, SURFACE, HIGHLIGHT, MUTED, GREEN, RED, YELLOW
 
 # ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -2108,6 +2109,8 @@ __all__ = [
     "TEXT_HINT", "TEXT_CAPTION", "TEXT_BODY", "TEXT_HEADING",
     "TEXT_TITLE", "TEXT_TITLE_XL",
     "RADIUS_SM", "RADIUS_MD", "RADIUS_LG", "RADIUS_BADGE",
+    # color constants (dark-mode defaults)
+    "BG", "FG", "ACCENT", "SURFACE", "HIGHLIGHT", "MUTED", "GREEN", "RED", "YELLOW",
     # components
     "Component", "Column", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
