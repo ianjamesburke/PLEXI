@@ -9,6 +9,9 @@ description = "Live tail of the Plexi host log, color-coded by level, with level
 entry = "logs.py"
 mouse_tracking = true
 
+[runtime]
+python_compat = true
+
 [app.capabilities]
 capabilities = ["fs.read", "timer"]
 

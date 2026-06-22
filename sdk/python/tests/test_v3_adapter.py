@@ -13,13 +13,29 @@ from plexi_sdk import _v3_state
 from plexi_sdk import state
 from plexi_sdk._adapter import _decode_event, _encode_effect, _encode_uitree
 from plexi_sdk._adapter import call_lifecycle, load_app
-from plexi_sdk.effects import SetState, SetTitle
-from plexi_sdk.events import KeyEvent, PipeMessage, PipePayload, SystemStatsResult
+from plexi_sdk.effects import HttpFetch, SetState, SetTitle
+from plexi_sdk.events import (
+    HttpResponse,
+    KeyEvent,
+    PipeMessage,
+    PipePayload,
+    SystemStatsResult,
+)
 from plexi_sdk.ui import Button, Canvas, CanvasRect, Column, SelectList, Text, TextInput
 
 
 def test_effects_encode_dataclass_shape() -> None:
     assert _encode_effect(SetTitle("hello")) == {"type": "SetTitle", "title": "hello"}
+
+
+def test_effects_encode_http_fetch_bytes_as_json_list() -> None:
+    assert _encode_effect(HttpFetch("https://example.test", body=b"ok")) == {
+        "type": "HttpFetch",
+        "url": "https://example.test",
+        "method": "GET",
+        "headers": {},
+        "body": [111, 107],
+    }
 
 
 def test_events_decode_key_event_with_modifiers() -> None:
@@ -129,11 +145,16 @@ def test_events_decode_nested_payloads() -> None:
     pipe = _decode_event(
         {"type": "PipeMessage", "handle": 1, "payload": {"json": "{}"}}
     )
+    http = _decode_event(
+        {"type": "HttpResponse", "status": 200, "headers": [], "body": [111, 107]}
+    )
 
     assert isinstance(stats, SystemStatsResult)
     assert stats.stats.memory_total_bytes == 3
     assert isinstance(pipe, PipeMessage)
     assert pipe.payload == PipePayload(json="{}")
+    assert isinstance(http, HttpResponse)
+    assert http.body == b"ok"
 
 
 def test_state_proxy_reads_snapshot_and_set_returns_effect() -> None:

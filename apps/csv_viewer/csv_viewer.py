@@ -1,149 +1,99 @@
 #!/usr/bin/env python3
-"""CSV Viewer - SDK v3 host-file-list CSV browser."""
+"""CSV Viewer — SDK v3 state-backed CSV browser."""
 
 from __future__ import annotations
 
 import csv
-import io
 from pathlib import Path
 
-import plexi_sdk as sdk
 from plexi_sdk import log, state
-from plexi_sdk.effects import FileList, FileRead, RequestCapability, SetState, SetStatus, SetTitle
-from plexi_sdk.events import (
-    CapabilityDenied,
-    CapabilityGranted,
-    FileListResult,
-    FileReadResult,
-    KeyEvent,
-    UiAction,
-    UiValueChange,
+from plexi_sdk.effects import SetState, SetStatus, SetTitle
+from plexi_sdk.events import KeyEvent
+from plexi_sdk.ui import (
+    AppBar,
+    Column,
+    FooterKeys,
+    Scrollable,
+    SelectList,
+    Spacer,
+    Text,
 )
-from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, Scrollable, SelectList, Table, Text, TextEdit
 
 VISIBLE_ROWS = 24
 VISIBLE_COLS = 5
 
 DEFAULT_STATE = {
-    "dir_input": "",
     "cwd": "",
     "files": [],
+    "file_hints": {},
     "selected": 0,
-    "pending_capability": "",
-    "pending_action": "",
-    "pending_path": "",
     "mode": "list",
     "path": "",
     "headers": [],
     "rows": [],
     "row_offset": 0,
     "col_offset": 0,
-    "loading": False,
     "error": "",
 }
 
 
 def init(size, args) -> list:
+    launch_dir = Path.cwd()
     data = _state()
-    target = Path(args[0]).expanduser() if args else _base_dir()
-    if target.suffix.lower() == ".csv":
-        data["dir_input"] = str(target.parent)
-        effects = _request_open(data, str(target))
-    else:
-        data["dir_input"] = str(target)
-        effects = _request_list(data, str(target))
-    log.info("csv_viewer: SDK v3 initialized")
-    return [SetTitle("CSV Viewer"), *effects]
+    if not data["cwd"]:
+        data.update(_scan_dir(launch_dir))
+    if args:
+        target = Path(args[0])
+        if not target.is_absolute():
+            target = launch_dir / target
+        if target.is_file():
+            data.update(_open_csv(target))
+            data["files"] = [str(target)]
+            data["file_hints"] = {str(target): _file_hint(target)}
+            data["selected"] = 0
+            data["mode"] = "detail"
+    log.info(f"csv_viewer: SDK v3 initialized cwd={data['cwd']!r}")
+    return [
+        SetTitle("CSV Viewer"),
+        SetStatus(_status(data)),
+        SetState(data),
+    ]
 
 
 def update(event) -> list:
-    data = _state()
-
-    if isinstance(event, UiValueChange) and event.handler_id == "csv-dir":
-        data["dir_input"] = event.value
-        data["error"] = ""
-        return [SetState(data)]
-
-    if isinstance(event, UiAction):
-        if event.handler_id == "csv-dir" or event.handler_id == "csv-refresh":
-            return _request_list(data, data["dir_input"])
-        if event.handler_id == "csv-back-list":
-            data["mode"] = "list"
-            return _set(data)
-
-    if isinstance(event, CapabilityGranted) and event.name == data["pending_capability"]:
-        if data["pending_action"] == "list":
-            return [SetStatus("Listing CSV files"), FileList(data["pending_path"], ["csv"])]
-        if data["pending_action"] == "read":
-            return [SetStatus("Loading CSV"), FileRead(data["pending_path"])]
-
-    if isinstance(event, CapabilityDenied) and event.name == data["pending_capability"]:
-        data["loading"] = False
-        data["error"] = "File access denied."
-        data["pending_capability"] = ""
-        data["pending_action"] = ""
-        data["pending_path"] = ""
-        return _set(data)
-
-    if isinstance(event, FileListResult):
-        entries = event.entries or []
-        data["files"] = [
-            {
-                "name": entry.name,
-                "path": entry.path,
-                "description": _file_hint(entry.size_bytes),
-            }
-            for entry in entries
-            if not entry.is_dir and entry.name.lower().endswith(".csv")
-        ]
-        data["selected"] = _clamp(data["selected"], len(data["files"]))
-        data["cwd"] = data["pending_path"]
-        data["dir_input"] = data["cwd"]
-        data["pending_capability"] = ""
-        data["pending_action"] = ""
-        data["pending_path"] = ""
-        data["loading"] = False
-        data["error"] = event.error or ("" if data["files"] else "No CSV files found.")
-        data["mode"] = "list"
-        log.info(f"csv_viewer: listed cwd={data['cwd']} files={len(data['files'])}")
-        return _set(data)
-
-    if isinstance(event, FileReadResult):
-        data = _handle_file(data, event)
-        return _set(data)
-
     if not isinstance(event, KeyEvent) or not event.pressed:
         return []
-
+    data = _state()
     key = event.key
+
     if data["mode"] == "list":
-        if key in ("up", "k"):
+        if key in ("up", "k", "ArrowUp"):
             data["selected"] = _clamp(data["selected"] - 1, len(data["files"]))
-        elif key in ("down", "j"):
+        elif key in ("down", "j", "ArrowDown"):
             data["selected"] = _clamp(data["selected"] + 1, len(data["files"]))
         elif key in ("return", "enter") and data["files"]:
-            return _request_open(data, data["files"][data["selected"]]["path"])
+            data.update(_open_csv(Path(data["files"][data["selected"]])))
+            data["mode"] = "detail"
+            log.info(f"csv_viewer: opened {data['path']}")
         elif key == "r":
-            return _request_list(data, data["dir_input"])
+            data.update(_scan_dir(Path(data["cwd"] or Path.cwd())))
         else:
             return []
-        return _set(data)
+        return [SetState(data), SetStatus(_status(data))]
 
-    if data["mode"] == "detail":
-        if key == "escape":
-            data["mode"] = "list"
-        elif key in ("up", "k"):
-            data["row_offset"] = max(0, data["row_offset"] - 1)
-        elif key in ("down", "j"):
-            data["row_offset"] = min(_max_row_offset(data), data["row_offset"] + 1)
-        elif key in ("left", "h"):
-            data["col_offset"] = max(0, data["col_offset"] - 1)
-        elif key in ("right", "l"):
-            data["col_offset"] = min(_max_col_offset(data), data["col_offset"] + 1)
-        else:
-            return []
-        return _set(data)
-    return []
+    if key == "escape":
+        data["mode"] = "list"
+    elif key in ("up", "k", "ArrowUp"):
+        data["row_offset"] = max(0, data["row_offset"] - 1)
+    elif key in ("down", "j", "ArrowDown"):
+        data["row_offset"] = min(_max_row_offset(data), data["row_offset"] + 1)
+    elif key in ("left", "h", "ArrowLeft"):
+        data["col_offset"] = max(0, data["col_offset"] - 1)
+    elif key in ("right", "l", "ArrowRight"):
+        data["col_offset"] = min(_max_col_offset(data), data["col_offset"] + 1)
+    else:
+        return []
+    return [SetState(data), SetStatus(_status(data))]
 
 
 def view():
@@ -157,80 +107,80 @@ def _state() -> dict:
     data = dict(DEFAULT_STATE)
     for key, value in DEFAULT_STATE.items():
         data[key] = state.get(key, value)
-    data["files"] = [dict(item) for item in data.get("files") or []]
-    data["headers"] = [str(item) for item in data.get("headers") or []]
-    data["rows"] = [[str(cell) for cell in row] for row in data.get("rows") or []]
+    data["files"] = list(data.get("files") or [])
+    data["headers"] = list(data.get("headers") or [])
+    data["rows"] = [list(row) for row in data.get("rows") or []]
+    data["file_hints"] = dict(data.get("file_hints") or {})
     data["selected"] = _clamp(int(data.get("selected") or 0), len(data["files"]))
     data["row_offset"] = max(0, int(data.get("row_offset") or 0))
     data["col_offset"] = max(0, int(data.get("col_offset") or 0))
-    data["loading"] = bool(data.get("loading"))
-    data["mode"] = data.get("mode") if data.get("mode") in ("list", "detail") else "list"
-    for key in ("dir_input", "cwd", "pending_capability", "pending_action", "pending_path", "path", "error"):
-        data[key] = str(data.get(key) or "")
     return data
 
 
-def _request_list(data: dict, raw_path: str) -> list:
-    path = Path(str(raw_path or "").strip() or ".").expanduser()
-    if not path.is_absolute():
-        path = _base_dir() / path
-    data["pending_path"] = str(path)
-    data["pending_capability"] = "fs.read"
-    data["pending_action"] = "list"
-    data["loading"] = True
-    data["error"] = ""
-    return [SetState(data), SetStatus("Requesting file access"), RequestCapability(data["pending_capability"])]
+def _scan_dir(path: Path) -> dict:
+    files = sorted(path.glob("*.csv"), key=lambda item: item.name.lower())
+    return {
+        "cwd": str(path),
+        "files": [str(item) for item in files],
+        "file_hints": {str(item): _file_hint(item) for item in files},
+        "selected": 0,
+        "mode": "list",
+        "path": "",
+        "headers": [],
+        "rows": [],
+        "row_offset": 0,
+        "col_offset": 0,
+        "error": "",
+    }
 
 
-def _request_open(data: dict, raw_path: str) -> list:
-    path = Path(raw_path).expanduser()
-    if not path.is_absolute():
-        path = _base_dir() / path
-    data["pending_path"] = str(path)
-    data["pending_capability"] = "fs.read"
-    data["pending_action"] = "read"
-    data["loading"] = True
-    data["error"] = ""
-    return [SetState(data), SetStatus("Requesting file access"), RequestCapability(data["pending_capability"])]
-
-
-def _handle_file(data: dict, event: FileReadResult) -> dict:
-    data["loading"] = False
-    data["pending_capability"] = ""
-    data["pending_action"] = ""
-    if event.error:
-        data["error"] = event.error
-        return data
-    content = event.content or b""
+def _file_hint(path: Path) -> str:
     try:
-        loaded = list(csv.reader(io.StringIO(content.decode("utf-8-sig", errors="replace"))))
-    except csv.Error as exc:
-        data["error"] = f"CSV parse error: {exc}"
-        return data
-    data["path"] = data["pending_path"]
-    data["pending_path"] = ""
-    data["headers"] = loaded[0] if loaded else []
-    data["rows"] = loaded[1:]
-    data["row_offset"] = 0
-    data["col_offset"] = 0
-    data["mode"] = "detail"
-    data["error"] = "" if loaded else "Empty CSV."
-    log.info(f"csv_viewer: loaded path={data['path']} rows={len(data['rows'])}")
-    return data
+        kb = path.stat().st_size / 1024
+    except OSError:
+        return ""
+    return f"{kb:.1f} KB" if kb < 1024 else f"{kb / 1024:.1f} MB"
+
+
+def _open_csv(path: Path) -> dict:
+    try:
+        with path.open(newline="", errors="replace") as handle:
+            loaded = list(csv.reader(handle))
+    except OSError as exc:
+        return {
+            "path": str(path),
+            "headers": [f"Error: {exc}"],
+            "rows": [],
+            "row_offset": 0,
+            "col_offset": 0,
+            "error": str(exc),
+        }
+    headers = loaded[0] if loaded else []
+    return {
+        "path": str(path),
+        "headers": headers,
+        "rows": loaded[1:],
+        "row_offset": 0,
+        "col_offset": 0,
+        "error": "",
+    }
 
 
 def _list_view(data: dict):
+    rows = [
+        {"name": Path(path).name, "description": data["file_hints"].get(path, "")}
+        for path in data["files"]
+    ]
     body = (
-        SelectList(data["files"], selected_idx=data["selected"])
-        if data["files"]
-        else Text(data["error"] or "No CSV files found.", size=12.0)
+        SelectList(rows, selected_idx=data["selected"])
+        if rows
+        else Text("No CSV files found.", size=12.0)
     )
     return Column(
         [
-            AppBar("CSV Viewer", data["cwd"] or "choose folder"),
-            TextEdit("csv-dir", value=data["dir_input"], placeholder="/path/to/folder"),
-            ActionBar([Button("Refresh", "csv-refresh", style="primary")]),
+            AppBar("CSV Viewer", data["cwd"]),
             body,
+            Spacer(grow=True),
             FooterKeys([("j/k", "select"), ("enter", "open"), ("r", "refresh")]),
         ],
         grow=True,
@@ -239,46 +189,34 @@ def _list_view(data: dict):
 
 
 def _detail_view(data: dict):
-    name = Path(data["path"]).name or "CSV"
-    visible_headers = data["headers"][data["col_offset"] : data["col_offset"] + VISIBLE_COLS]
-    visible_rows = [
-        row[data["col_offset"] : data["col_offset"] + VISIBLE_COLS]
-        for row in data["rows"][data["row_offset"] : data["row_offset"] + VISIBLE_ROWS]
-    ]
+    name = Path(data["path"]).name
+    header = " | ".join(
+        data["headers"][data["col_offset"] : data["col_offset"] + VISIBLE_COLS]
+    )
+    lines = [header, "-" * min(120, max(3, len(header)))]
+    row_end = min(len(data["rows"]), data["row_offset"] + VISIBLE_ROWS)
+    col_start = data["col_offset"]
+    col_end = col_start + VISIBLE_COLS
+    for idx in range(data["row_offset"], row_end):
+        row = data["rows"][idx]
+        lines.append(" | ".join(row[col_start:col_end]))
+    body = "\n".join(lines) if lines else data["error"] or "Empty CSV."
     return Column(
         [
             AppBar(name, f"{len(data['rows'])} rows x {len(data['headers'])} columns"),
-            Scrollable(Table(visible_headers or ["(no headers)"], visible_rows)),
-            ActionBar([Button("Back", "csv-back-list", style="ghost")]),
-            FooterKeys([("j/k", "rows"), ("h/l", "cols"), ("esc", "list")]),
+            Scrollable(Text(body, size=12.0)),
+            Spacer(grow=True),
+            FooterKeys([("j/k", "rows"), ("h/l", "cols"), ("esc", "back")]),
         ],
         grow=True,
         padding=0,
     )
 
 
-def _set(data: dict) -> list:
-    return [SetState(data), SetStatus(_status(data))]
-
-
-def _base_dir() -> Path:
-    root = getattr(sdk, "_workspace_root", "") or ""
-    return Path(root).expanduser() if root else Path.home()
-
-
 def _status(data: dict) -> str:
-    if data["loading"]:
-        return "Loading"
     if data["mode"] == "detail":
         return f"{len(data['rows'])} rows x {len(data['headers'])} columns"
-    return f"{len(data['files'])} CSV files" if not data["error"] else "Error"
-
-
-def _file_hint(size: int | None) -> str:
-    if size is None:
-        return ""
-    kb = size / 1024
-    return f"{kb:.1f} KB" if kb < 1024 else f"{kb / 1024:.1f} MB"
+    return f"{len(data['files'])} CSV files"
 
 
 def _clamp(selected: int, total: int) -> int:
