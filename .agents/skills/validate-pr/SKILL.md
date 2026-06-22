@@ -137,17 +137,43 @@ If skipping → mark Install row as `skipped — <reason>`, proceed to Step 2b (
 
 ## Step 2 — Install
 
-Run from inside the feature worktree:
+**Worktree gate — run this exact sequence. No shortcuts.**
+
 ```bash
-REPO_ROOT=$(git rev-parse --show-toplevel)
-cd "$REPO_ROOT/worktrees/$BRANCH"
-just pr-install $PR_NUMBER
+# 1. Resolve WORKTREE from the alpha root — never from git rev-parse (returns CWD's worktree).
+ALPHA_ROOT=$(git worktree list --porcelain | awk '
+  /^worktree / { path=$2 }
+  /^branch refs\/heads\/alpha$/ { print path; exit }
+')
+test -n "$ALPHA_ROOT" || { echo "HARD STOP: could not resolve alpha worktree"; exit 1; }
+WORKTREE="$ALPHA_ROOT/worktrees/$BRANCH"
+test -d "$WORKTREE" || { echo "HARD STOP: feature worktree not found: $WORKTREE"; exit 1; }
+
+# 2. Verify the worktree is on the right branch before touching anything.
+ACTIVE_BRANCH=$(git -C "$WORKTREE" branch --show-current)
+test "$ACTIVE_BRANCH" = "$BRANCH" || { echo "HARD STOP: worktree branch mismatch: $ACTIVE_BRANCH != $BRANCH"; exit 1; }
+cd "$WORKTREE"
+
+# 3. Run install and capture output to check for actual recompile.
+INSTALL_OUT=$(just pr-install $PR_NUMBER 2>&1)
+echo "$INSTALL_OUT"
+
+# 4. Hard stop if no compile happened — binary would be stale alpha code.
+if ! echo "$INSTALL_OUT" | grep -q "Compiling plexi"; then
+  echo "WARNING: no 'Compiling plexi' in output — binary may be cached from wrong worktree."
+  echo "Forcing recompile..."
+  # Touch every changed file to invalidate cargo's cache for this worktree.
+  git diff --name-only origin/alpha...HEAD | grep '\.rs$' | xargs -I{} touch "$WORKTREE/{}" 2>/dev/null || true
+  INSTALL_OUT=$(just pr-install $PR_NUMBER 2>&1)
+  echo "$INSTALL_OUT"
+  if ! echo "$INSTALL_OUT" | grep -q "Compiling plexi"; then
+    echo "HARD STOP: still no recompile after touch. Binary source is unknown. Do not proceed."
+    exit 1
+  fi
+fi
+
 PR_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= "//' | tr -d '"')
 ```
-
-> **CWD check:** `just pr-install` runs `cargo bundle` AND `rsync apps/dev/` from CWD. Running from the repo root (alpha) syncs alpha's `apps/dev/` — any app added only on the feature branch will be missing or stale in the profile dir. Always `cd` into the worktree first, every time, including fix reinstalls.
-
-> **Compile check:** If no `Compiling plexi` line in output, the binary was cached. `touch src/<changed-file>.rs` then re-run.
 
 Wait for completion. The binary is now installed (`$PR_VERSION`). Move immediately to Step 2b.
 
@@ -328,7 +354,7 @@ git commit -m "fix: <description>"
 git push
 ```
 
-Run `cargo build` from `WORKTREE`, then re-run `just pr-install $PR_NUMBER` **from inside `WORKTREE`**. Never run `just install` during validation. Re-surface the testing block (which flips status back to `needs-you`). Do not expand scope.
+Run `cargo build` from `WORKTREE` to confirm the fix compiles, then reinstall using the Step 2 worktree gate (verify branch, run install, hard stop if no "Compiling plexi" in output). Never run `just install` during validation. Re-surface the testing block (which flips status back to `needs-you`). Do not expand scope.
 
 Append to Ship Log:
 ```markdown
@@ -363,7 +389,7 @@ git commit -m "fix: <description from failure>"
 git push
 ```
 
-Run `cargo build` from `WORKTREE`, then re-run `just pr-install $PR_NUMBER` **from inside `WORKTREE`**. Never run `just install` during validation.
+Run `cargo build` from `WORKTREE` to confirm the fix compiles, then reinstall using the Step 2 worktree gate (verify branch, run install, hard stop if no "Compiling plexi" in output). Never run `just install` during validation.
 
 Append to Ship Log:
 ```markdown
@@ -484,6 +510,8 @@ pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the d
 - A user reply after a `[TESTING]` block stays inside `/validate-pr` by default, even after context compaction
 - Before any validation fix, rehydrate the PR with Step 0b and move into `WORKTREE`; no edits from repo root
 - `just install` is forbidden during validation; only `just pr-install $PR_NUMBER` from `WORKTREE`
+- Every `just pr-install` must produce a "Compiling plexi" line. If absent, binary is cached from the wrong worktree — hard stop, touch changed files, retry. Do not surface a testing block until the recompile is confirmed.
+- Always resolve `WORKTREE` from `git worktree list --porcelain` + alpha branch match, never from `git rev-parse --show-toplevel` (returns CWD's worktree, which may be wrong after context compaction)
 - Never commit or release-bump `alpha`, `beta`, or `main` while handling `pass`, `fail`, or `modify`
 - Attempt count comes from the Ship Log, not arguments
 - Max 3 soft rejects. Hard reject requires explicit confirmation unless user already typed "fail" 3 times.
