@@ -37,9 +37,7 @@ def test_key_moves_piece_and_view_has_canvas() -> None:
     _with_state(moved)
 
     assert moved["current"]["col"] == data["current"]["col"] - 1
-    canvas = tetris.view().children[1].to_node()
-    assert canvas["type"] == "canvas"
-    assert any(cmd["type"] == "rect" and "w" in cmd and "h" in cmd for cmd in canvas["commands"])
+    assert tetris.view().children[1].to_node()["type"] == "canvas"
 
 
 def test_timer_drops_piece_after_threshold() -> None:
@@ -51,21 +49,3 @@ def test_timer_drops_piece_after_threshold() -> None:
 
     assert dropped["current"]["row"] == 1
     assert dropped["fall_ticks"] == 0
-
-
-def test_hard_drop_is_one_shot_until_key_release() -> None:
-    data = tetris._initial()
-    data["current"] = {"key": "O", "rot": 0, "row": 0, "col": 4}
-    data["next"] = "I"
-    _with_state(data)
-
-    after_drop = _state_effect(tetris.update(KeyEvent("space", pressed=True)))
-    _with_state(after_drop)
-    repeated = tetris.update(KeyEvent("space", pressed=True))
-
-    assert sum(1 for row in after_drop["board"] for cell in row if cell) == 4
-    assert after_drop["hard_drop_held"] is True
-    assert repeated == []
-
-    released = _state_effect(tetris.update(KeyEvent("space", pressed=False)))
-    assert released["hard_drop_held"] is False

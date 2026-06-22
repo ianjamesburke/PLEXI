@@ -10,10 +10,9 @@ sys.path.insert(
 )
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import plexi_sdk as sdk
 from plexi_sdk import StateSnapshot, _v3_state  # noqa: E402
 from plexi_sdk.effects import SetState  # noqa: E402
-from plexi_sdk.events import KeyEvent, Resize, TimerFired  # noqa: E402
+from plexi_sdk.events import KeyEvent, TimerFired  # noqa: E402
 
 import snake  # noqa: E402
 
@@ -48,23 +47,4 @@ def test_key_changes_direction_and_view_has_canvas() -> None:
     _with_state(changed)
 
     assert changed["next_direction"] == [0, 1]
-    canvas = snake.view().children[0].to_node()
-    assert canvas["type"] == "canvas"
-    assert any(cmd["type"] == "rect" and "w" in cmd and "h" in cmd for cmd in canvas["commands"])
-
-
-def test_resize_updates_pane_and_scales_grid() -> None:
-    _with_state(snake._initial())
-    sdk.pane_width = 640.0
-    sdk.pane_height = 360.0
-    sdk.canvas_width = 640.0
-    sdk.canvas_height = 360.0
-
-    snake.update(Resize(width=1200.0, height=800.0))
-    sdk.pane_width = 1200.0
-    sdk.pane_height = 800.0
-    sdk.canvas_width = 1200.0
-    sdk.canvas_height = 800.0
-
-    cell = snake._cell_size()
-    assert cell > 18.0
+    assert snake.view().children[1].to_node()["type"] == "canvas"

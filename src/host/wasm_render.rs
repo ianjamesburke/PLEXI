@@ -13,6 +13,7 @@ use egui::{Color32, RichText};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
+use super::wasm_app::bindings::plexi::platform::types::CanvasCommand;
 use super::wasm_app::{Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, UiNodeData, UiTree};
 
 const MAX_DEPTH: u32 = 256;
@@ -42,6 +43,14 @@ pub fn render_ui_tree_with_surface(
 
 fn rgba(c: &Color) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
+}
+
+fn canvas_align(align: Alignment) -> egui::Align2 {
+    match align {
+        Alignment::Start | Alignment::Stretch => egui::Align2::LEFT_TOP,
+        Alignment::Center => egui::Align2::CENTER_CENTER,
+        Alignment::End => egui::Align2::RIGHT_TOP,
+    }
 }
 
 fn cross_align(a: Alignment) -> egui::Align {
@@ -92,7 +101,9 @@ fn render_node(
                 ButtonStyle::Ghost => Color32::TRANSPARENT,
             };
             let label = RichText::new(&b.label).color(colors.text_on(fill));
-            let btn = egui::Button::new(label).fill(fill).corner_radius(style::RADIUS_SM);
+            let btn = egui::Button::new(label)
+                .fill(fill)
+                .corner_radius(style::RADIUS_SM);
             if ui.add_enabled(!b.disabled, btn).clicked() {
                 out.actions.push(b.on_click.clone());
             }
@@ -122,19 +133,20 @@ fn render_node(
         }
 
         UiNodeData::Column(c) => {
-            ui.with_layout(
-                egui::Layout::top_down(cross_align(c.align)),
-                |ui| {
-                    ui.spacing_mut().item_spacing.y = c.gap;
-                    for child in &c.children {
-                        render_node(ui, index, *child, colors, out, depth + 1, surface);
-                    }
-                },
-            );
+            ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
+                ui.spacing_mut().item_spacing.y = c.gap;
+                for child in &c.children {
+                    render_node(ui, index, *child, colors, out, depth + 1, surface);
+                }
+            });
         }
 
         UiNodeData::ProgressBar(p) => {
-            let frac = if p.max > 0.0 { (p.value / p.max).clamp(0.0, 1.0) } else { 0.0 };
+            let frac = if p.max > 0.0 {
+                (p.value / p.max).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             let mut bar = egui::ProgressBar::new(frac);
             if let Some(label) = &p.label {
                 bar = bar.text(label);
@@ -210,6 +222,71 @@ fn render_node(
                 });
         }
 
+        UiNodeData::Canvas(c) => {
+            let width = if c.grow {
+                ui.available_width().max(1.0)
+            } else if c.width > 0.0 {
+                c.width.min(ui.available_width()).max(1.0)
+            } else {
+                ui.available_width().max(1.0)
+            };
+            let height = if c.grow {
+                ui.available_height().max(c.height)
+            } else {
+                c.height
+            };
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(width, height.max(1.0)), egui::Sense::hover());
+            let sx = if c.width > 0.0 {
+                rect.width() / c.width
+            } else {
+                1.0
+            };
+            let sy = if c.height > 0.0 {
+                rect.height() / c.height
+            } else {
+                1.0
+            };
+            for command in &c.commands {
+                match command {
+                    CanvasCommand::Rect(r) => {
+                        let min = egui::pos2(rect.left() + r.x * sx, rect.top() + r.y * sy);
+                        let size = egui::vec2(r.width * sx, r.height * sy);
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(min, size),
+                            r.radius * sx.min(sy),
+                            rgba(&r.fill),
+                        );
+                    }
+                    CanvasCommand::Circle(circle) => {
+                        ui.painter().circle_filled(
+                            egui::pos2(rect.left() + circle.x * sx, rect.top() + circle.y * sy),
+                            circle.radius * sx.min(sy),
+                            rgba(&circle.fill),
+                        );
+                    }
+                    CanvasCommand::Line(line) => {
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(rect.left() + line.x1 * sx, rect.top() + line.y1 * sy),
+                                egui::pos2(rect.left() + line.x2 * sx, rect.top() + line.y2 * sy),
+                            ],
+                            egui::Stroke::new(line.width * sx.min(sy), rgba(&line.color)),
+                        );
+                    }
+                    CanvasCommand::Text(text) => {
+                        ui.painter().text(
+                            egui::pos2(rect.left() + text.x * sx, rect.top() + text.y * sy),
+                            canvas_align(text.align),
+                            &text.text,
+                            egui::FontId::proportional(text.size * sx.min(sy)),
+                            rgba(&text.color),
+                        );
+                    }
+                }
+            }
+        }
+
         UiNodeData::Divider => {
             ui.separator();
         }
@@ -222,8 +299,10 @@ fn render_node(
         // texture by the live pane). Without one (e.g. no gpu grant), draw a
         // labelled placeholder so the layout still reserves the footprint.
         UiNodeData::Surface(s) => {
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(s.width as f32, s.height as f32), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(s.width as f32, s.height as f32),
+                egui::Sense::hover(),
+            );
             match surface {
                 Some(tex) => {
                     ui.painter().image(
@@ -234,7 +313,8 @@ fn render_node(
                     );
                 }
                 None => {
-                    ui.painter().rect_filled(rect, style::RADIUS_MD, colors.bg_active);
+                    ui.painter()
+                        .rect_filled(rect, style::RADIUS_MD, colors.bg_active);
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -263,7 +343,8 @@ mod tests {
     // spurious actions.
     #[test]
     fn renders_sysmon_tree_headless() -> wasmtime::Result<()> {
-        let mut app = WasmApp::load_ephemeral_run("sysmon-render", &fixture(), StateStore::ephemeral())?;
+        let mut app =
+            WasmApp::load_ephemeral_run("sysmon-render", &fixture(), StateStore::ephemeral())?;
         app.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), &[])?;
         app.update(&InputEvent::SystemStatsResult(SystemStats {
             cpu_usage_pct: 42.0,
@@ -291,7 +372,10 @@ mod tests {
             });
         });
 
-        assert!(captured.actions.is_empty(), "sysmon view declares no actions");
+        assert!(
+            captured.actions.is_empty(),
+            "sysmon view declares no actions"
+        );
         Ok(())
     }
 }

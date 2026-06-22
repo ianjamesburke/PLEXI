@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""Tetris — SDK v3 runtime-state canvas game."""
+"""Tetris — SDK v3 state-backed canvas game."""
 
 from __future__ import annotations
 
 import random
 
-import plexi_sdk as sdk
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
-from plexi_sdk.events import KeyEvent, Resize, TimerFired
+from plexi_sdk.events import KeyEvent, TimerFired
 from plexi_sdk.ui import AppBar, Canvas, CanvasRect, CanvasText, Column, FooterKeys
 
 ROWS = 20
 COLS = 10
+CELL = 20.0
+CANVAS_W = 360.0
+CANVAS_H = 440.0
 TIMER_ID = 1
 TICK_MS = 100
-HARD_DROP_KEYS = ("space", "enter", "return")
 
 PIECES = {
     "I": {
@@ -76,20 +77,6 @@ PIECES = {
 }
 PIECE_KEYS = list(PIECES)
 
-def _cell_size() -> float:
-    # Board is COLS wide + ~5 cells for side panel; leave margin on all sides.
-    by_height = (sdk.canvas_height - 60.0) / ROWS
-    by_width = (sdk.canvas_width - 60.0) / (COLS + 5)
-    return min(by_height, by_width)
-
-
-def _board_origin() -> tuple[float, float]:
-    cell = _cell_size()
-    total_w = COLS * cell + 5 * cell  # board + side panel
-    bx = (sdk.canvas_width - total_w) / 2
-    by = (sdk.canvas_height - ROWS * cell) / 2
-    return bx, by
-
 
 def _spawn(key: str | None = None) -> dict:
     return {"key": key or random.choice(PIECE_KEYS), "rot": 0, "row": 0, "col": 3}
@@ -106,7 +93,6 @@ def _initial() -> dict:
         "alive": True,
         "paused": False,
         "fall_ticks": 0,
-        "hard_drop_held": False,
     }
 
 
@@ -121,7 +107,6 @@ def _game() -> dict:
         data[key] = int(data[key])
     data["alive"] = bool(data["alive"])
     data["paused"] = bool(data["paused"])
-    data["hard_drop_held"] = bool(data["hard_drop_held"])
     return data
 
 
@@ -142,9 +127,6 @@ def init(size, args) -> list:
 
 
 def update(event) -> list:
-    if isinstance(event, Resize):
-        return []
-
     data = _game()
     if isinstance(event, TimerFired) and event.id == TIMER_ID:
         if not data["alive"] or data["paused"]:
@@ -155,15 +137,10 @@ def update(event) -> list:
             data = _soft_drop(data, score=False)
         return _set(data)
 
-    if not isinstance(event, KeyEvent):
+    if not isinstance(event, KeyEvent) or not event.pressed:
         return []
     key = event.key
-    if not event.pressed:
-        if key in HARD_DROP_KEYS and data["hard_drop_held"]:
-            data["hard_drop_held"] = False
-            return _set(data)
-        return []
-    if key == "r":
+    if key in ("r", "R"):
         data = _initial()
         log.info("tetris: restarted")
         return _set(data)
@@ -172,18 +149,15 @@ def update(event) -> list:
         return _set(data)
     if not data["alive"] or data["paused"]:
         return []
-    if key in ("left", "h"):
+    if key in ("left", "ArrowLeft", "h"):
         return _set(_move(data, dc=-1))
-    if key in ("right", "l"):
+    if key in ("right", "ArrowRight", "l"):
         return _set(_move(data, dc=1))
-    if key in ("down", "j"):
+    if key in ("down", "ArrowDown", "j"):
         return _set(_soft_drop(data, score=True))
-    if key in ("up", "k", "x"):
+    if key in ("up", "ArrowUp", "k", "x"):
         return _set(_rotate(data))
-    if key in HARD_DROP_KEYS:
-        if data["hard_drop_held"]:
-            return []
-        data["hard_drop_held"] = True
+    if key in ("space", "enter", "return", "Enter"):
         while _valid(data, _shift(data["current"], dr=1)):
             data["current"]["row"] += 1
             data["score"] += 2
@@ -289,7 +263,7 @@ def view():
     return Column(
         [
             AppBar("Tetris", _status(data)),
-            Canvas(_draw(data), width=sdk.canvas_width, height=100.0, grow=True),
+            Canvas(_draw(data), width=CANVAS_W, height=CANVAS_H, grow=True),
             FooterKeys(keys),
         ],
         padding=0,
@@ -299,13 +273,12 @@ def view():
 
 
 def _draw(data: dict) -> list:
-    cell = _cell_size()
-    bx, by = _board_origin()
-    board_w = COLS * cell
-    board_h = ROWS * cell
-
+    bx = 28.0
+    by = 20.0
     commands: list = [
-        CanvasRect(bx - 2, by - 2, board_w + 4, board_h + 4, "#11111b", radius=2.0)
+        CanvasRect(
+            bx - 2, by - 2, COLS * CELL + 4, ROWS * CELL + 4, "#11111b", radius=2.0
+        )
     ]
     for row in range(ROWS):
         for col in range(COLS):
@@ -318,63 +291,56 @@ def _draw(data: dict) -> list:
                 _cell(
                     commands, bx, by, row, col, PIECES[data["current"]["key"]]["color"]
                 )
-
-    side_gap = max(12.0, cell * 1.0)
-    px = bx + board_w + side_gap
-    mini = max(8.0, cell * 0.65)
-    row_score = by
+    px = bx + COLS * CELL + 28.0
     commands.extend(
         [
-            CanvasText(px, row_score, "SCORE", size=10.0, color="#a6adc8"),
+            CanvasText(px, by, "SCORE", size=10.0, color="#a6adc8"),
             CanvasText(
-                px, row_score + 14.0, str(data["score"]), size=18.0, color="#cdd6f4", bold=True
+                px, by + 18.0, str(data["score"]), size=18.0, color="#cdd6f4", bold=True
             ),
-            CanvasText(px, row_score + 42.0, "LINES", size=10.0, color="#a6adc8"),
-            CanvasText(px, row_score + 56.0, str(data["lines"]), size=16.0, color="#cdd6f4"),
-            CanvasText(px, row_score + 86.0, "NEXT", size=10.0, color="#a6adc8"),
+            CanvasText(px, by + 52.0, "LINES", size=10.0, color="#a6adc8"),
+            CanvasText(px, by + 70.0, str(data["lines"]), size=16.0, color="#cdd6f4"),
+            CanvasText(px, by + 108.0, "NEXT", size=10.0, color="#a6adc8"),
         ]
     )
     for row, col in PIECES[data["next"]]["shapes"][0]:
         commands.append(
             CanvasRect(
-                px + col * (mini + 2.0),
-                row_score + 100.0 + row * (mini + 2.0),
-                mini,
-                mini,
+                px + col * 14.0,
+                by + 126.0 + row * 14.0,
+                12.0,
+                12.0,
                 PIECES[data["next"]]["color"],
                 radius=2.0,
             )
         )
-
-    board_cx = bx + board_w / 2
-    board_cy = by + board_h / 2
     if not data["alive"]:
         commands.extend(
             [
-                CanvasRect(board_cx - 88.0, board_cy - 27.0, 176.0, 54.0, "#000000cc", radius=4.0),
+                CanvasRect(bx + 12.0, by + 160.0, 176.0, 54.0, "#000000cc", radius=4.0),
                 CanvasText(
-                    board_cx,
-                    board_cy,
+                    bx + 100.0,
+                    by + 187.0,
                     "GAME OVER",
                     size=18.0,
                     color="#f38ba8",
                     bold=True,
-                    align="center_center",
+                    align="center",
                 ),
             ]
         )
     elif data["paused"]:
         commands.extend(
             [
-                CanvasRect(board_cx - 66.0, board_cy - 20.0, 132.0, 40.0, "#000000cc", radius=4.0),
+                CanvasRect(bx + 34.0, by + 176.0, 132.0, 40.0, "#000000cc", radius=4.0),
                 CanvasText(
-                    board_cx,
-                    board_cy,
+                    bx + 100.0,
+                    by + 196.0,
                     "PAUSED",
                     size=16.0,
                     color="#f9e2af",
                     bold=True,
-                    align="center_center",
+                    align="center",
                 ),
             ]
         )
@@ -382,8 +348,7 @@ def _draw(data: dict) -> list:
 
 
 def _cell(commands: list, bx: float, by: float, row: int, col: int, fill: str) -> None:
-    cell = _cell_size()
-    x = bx + col * cell + 1.0
-    y = by + row * cell + 1.0
-    commands.append(CanvasRect(x, y, cell - 2.0, cell - 2.0, fill, radius=2.0))
-    commands.append(CanvasRect(x + 1.5, y + 1.5, cell - 5.0, 2.0, "#ffffff44"))
+    x = bx + col * CELL + 1.0
+    y = by + row * CELL + 1.0
+    commands.append(CanvasRect(x, y, CELL - 2.0, CELL - 2.0, fill, radius=2.0))
+    commands.append(CanvasRect(x + 1.5, y + 1.5, CELL - 5.0, 2.0, "#ffffff44"))

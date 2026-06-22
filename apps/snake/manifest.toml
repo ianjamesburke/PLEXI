@@ -12,6 +12,9 @@ watch = true
 [app.capabilities]
 capabilities = ["timer"]
 
+[runtime]
+python_compat = true
+
 [launch]
 
 # Uncomment to publish this app to the marketplace:
