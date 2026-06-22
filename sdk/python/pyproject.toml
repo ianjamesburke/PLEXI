@@ -1,9 +1,9 @@
 [project]
 name = "plexi-sdk"
-version = "0.1.17"
-description = "Python SDK v3 for Plexi apps running through native ProcessApp"
+version = "3.0.0"
+description = "Python SDK v3 for Plexi apps running through the CPython-in-WASM runtime"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Ian Burke", email = "ianjamesburke@gmail.com" }]
 keywords = ["plexi", "pgap", "sdk", "tiling", "window-manager", "apps"]
@@ -12,7 +12,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",

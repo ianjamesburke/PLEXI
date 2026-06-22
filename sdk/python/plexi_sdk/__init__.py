@@ -1,32 +1,51 @@
-"""Plexi Python SDK v3 for native ProcessApp apps.
+"""Python SDK v3 for Plexi apps.
 
-App modules expose exactly three lifecycle functions:
+SDK v3 apps expose module-level ``init()``, ``update(event)``, and ``view()``
+functions for the CPython-in-WASM adapter. Legacy PGAP exports remain available
+while native subprocess apps are still supported.
 
-``init(size, args) -> list``
-    Called once at launch. Return startup effects such as ``SetTitle`` or
-    ``SetState``.
+Legacy PGAP apps implement ``view()`` and return a component tree:
 
-``update(event) -> list``
-    Called for keyboard, mouse, timer, render, and host-result events. Return
-    effects; do not mutate Plexi state directly.
+    from plexi_sdk import App
+    from plexi_sdk.ui import AppBar, Column, FooterKeys, Label, Spacer
 
-``view() -> Component``
-    Called after state changes to produce the current component tree. Keep it
-    pure: read ``state`` here, but return state-changing effects from
-    ``update``.
+    class CounterApp(App):
+        def on_init(self) -> None:
+            self.count = self.state.get("count", 0)
 
-Useful entry points:
-``plexi_sdk.effects`` for effect dataclasses,
-``plexi_sdk.events`` for event dataclasses, and
-``plexi_sdk.ui`` for declarative components.
+        def view(self):
+            return Column([
+                AppBar("Counter"),
+                Spacer(grow=True),
+                Label(str(self.count), bold=True),
+                Spacer(grow=True),
+                FooterKeys([("+", "increment"), ("-", "decrement")]),
+            ])
 
-SDK v3 Python apps run as reviewed native processes through ``ProcessApp``.
-Capabilities gate host APIs; they are not a process sandbox. CPython-in-WASM is
-deferred and is not this runtime.
+        def on_key(self, key: str, mods: dict) -> None:
+            if key in ("plus", "equals"):
+                self.count += 1
+            elif key == "minus":
+                self.count -= 1
+            self.state.save({"count": self.count})
+            self.emit.schedule_render()
+
+    CounterApp().run()
+
+Use ``on_render(ctx)`` only for games, animations, realtime visualizations, or
+other pixel-control apps. Never override both ``view()`` and ``on_render(ctx)``.
+
+Host-brokered actions live on ``self.emit``:
+
+    await self.emit.http_get(url)       # requires net.http
+    await self.emit.secret_get("KEY")   # requires secrets.get
+    await self.emit.ai_query("low", system, messages)  # requires ai.query
+
+Capabilities gate PGAP host APIs. Python apps are native subprocesses, not a
+process sandbox.
 """
 
-from ._version import __version__ as __version__
-
+__version__ = "3.0.0"
 SDK_ID = f"plexi-sdk-py/{__version__}"
 
 from ._v3_state import StateSnapshot, log, state
@@ -42,9 +61,14 @@ from ._constants import (
 )
 from ._types import (
     CapabilityDeniedError, VideoHandle,
-    RectCommand, TextCommand, BadgeCommand, ShortcutPair, NotifyOption,
+    RectCommand, TextCommand, BadgeCommand, TextInputSpec, ShortcutPair, NotifyOption,
 )
 from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, AudioDeviceInfo, AudioDeviceList, PROTOCOL_VERSION
+from ._emitter import Emitter, _emit, _make_async_queue, _LOCK
+from ._pipe import Pipe
+from ._render_context import RenderContext, COMPACT_DEFAULT, REGULAR_DEFAULT
+from ._app import App, Arg
+from ._state import State as State
 from .ui import (
     Tabs as Tabs,
     Grid as Grid,
@@ -54,12 +78,3 @@ from .ui import (
     TextEdit as TextEdit,
 )
 from ._theme import theme, Theme, AppPalette
-
-_workspace_root: str = ""
-pane_width: float = 0.0
-pane_height: float = 0.0
-canvas_width: float = 0.0
-canvas_height: float = 0.0
-keys_held: set[str] = set()
-_state: StateSnapshot | None = None
-_in_view: bool = False

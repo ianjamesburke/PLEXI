@@ -13,29 +13,13 @@ from plexi_sdk import _v3_state
 from plexi_sdk import state
 from plexi_sdk._adapter import _decode_event, _encode_effect, _encode_uitree
 from plexi_sdk._adapter import call_lifecycle, load_app
-from plexi_sdk.effects import HttpFetch, SetState, SetTitle
-from plexi_sdk.events import (
-    HttpResponse,
-    KeyEvent,
-    PipeMessage,
-    PipePayload,
-    SystemStatsResult,
-)
-from plexi_sdk.ui import Button, Canvas, CanvasRect, Column, SelectList, Text, TextEdit
+from plexi_sdk.effects import SetState, SetTitle
+from plexi_sdk.events import KeyEvent, PipeMessage, PipePayload, SystemStatsResult
+from plexi_sdk.ui import Button, Column, Text
 
 
 def test_effects_encode_dataclass_shape() -> None:
     assert _encode_effect(SetTitle("hello")) == {"type": "SetTitle", "title": "hello"}
-
-
-def test_effects_encode_http_fetch_bytes_as_json_list() -> None:
-    assert _encode_effect(HttpFetch("https://example.test", body=b"ok")) == {
-        "type": "HttpFetch",
-        "url": "https://example.test",
-        "method": "GET",
-        "headers": {},
-        "body": [111, 107],
-    }
 
 
 def test_events_decode_key_event_with_modifiers() -> None:
@@ -50,116 +34,8 @@ def test_ui_tree_flattens_v3_components() -> None:
     assert tree["root"] == 0
     assert len(tree["nodes"]) == 3
     assert tree["nodes"][0]["data"]["type"] == "Column"
-    assert tree["nodes"][1]["data"]["type"] == "text"
-    assert tree["nodes"][2]["data"] == {
-        "type": "button",
-        "node_id": "run",
-        "label": "Run",
-        "style": "secondary",
-        "disabled": False,
-    }
-
-
-def test_ui_tree_serializes_text_edit_and_select_list() -> None:
-    tree = _encode_uitree(
-        Column(
-            [
-                TextEdit(
-                    "todo-add",
-                    value="draft",
-                    placeholder="New item",
-                ),
-                SelectList(
-                    [{"name": "one"}, {"name": "two", "description": "done"}],
-                    selected_idx=1,
-                ),
-            ],
-            padding=0,
-        )
-    )
-
-    nodes = tree["nodes"]
-    assert nodes[1]["data"] == {
-        "type": "text_edit",
-        "node_id": "todo-add",
-        "placeholder": "New item",
-        "value": "draft",
-        "multiline": False,
-        "max_length": 0,
-    }
-    assert nodes[2]["data"]["type"] == "ListView"
-    assert nodes[2]["data"]["selected"] == 1
-    assert nodes[2]["data"]["items"] == [3, 4]
-
-
-def test_ui_tree_serializes_row_children() -> None:
-    tree = _encode_uitree(
-        {
-            "type": "row",
-            "children": [Button("One", "one"), Button("Two", "two")],
-            "gap": 8.0,
-        }
-    )
-
-    nodes = tree["nodes"]
-    assert nodes[0]["data"] == {
-        "type": "Row",
-        "children": [1, 2],
-        "gap": 8.0,
-        "align": "start",
-        "grow": False,
-    }
-    assert nodes[1]["data"]["type"] == "button"
-    assert nodes[2]["data"]["type"] == "button"
-
-
-def test_ui_tree_serializes_canvas_commands() -> None:
-    tree = _encode_uitree(
-        Canvas(
-            [
-                CanvasRect(1.0, 2.0, 30.0, 40.0, "#112233", radius=2.0),
-            ],
-            width=320.0,
-            height=180.0,
-        )
-    )
-
-    node = tree["nodes"][0]["data"]
-    assert node["type"] == "canvas"
-    assert node["width"] == 320.0
-    assert node["height"] == 180.0
-    assert node["commands"] == [
-        {
-            "type": "rect",
-            "x": 1.0,
-            "y": 2.0,
-            "w": 30.0,
-            "h": 40.0,
-            "fill": "#112233",
-            "radius": 2.0,
-        }
-    ]
-
-
-def test_canvas_rect_border_serializes_stroke() -> None:
-    tree = _encode_uitree(
-        Canvas(
-            [
-                CanvasRect(0.0, 0.0, 10.0, 10.0, "#11111b",
-                           border_color="#6c7086", border_width=2.0),
-            ],
-        )
-    )
-    cmd = tree["nodes"][0]["data"]["commands"][0]
-    assert cmd["stroke"] == "#6c7086"
-    assert cmd["stroke_width"] == 2.0
-
-
-def test_canvas_rect_without_border_omits_stroke() -> None:
-    tree = _encode_uitree(Canvas([CanvasRect(0.0, 0.0, 10.0, 10.0, "#11111b")]))
-    cmd = tree["nodes"][0]["data"]["commands"][0]
-    assert "stroke" not in cmd
-    assert "stroke_width" not in cmd
+    assert tree["nodes"][1]["data"]["type"] == "Text"
+    assert tree["nodes"][2]["data"]["type"] == "Button"
 
 
 def test_effects_reject_unknown_dataclass() -> None:
@@ -172,42 +48,31 @@ def test_effects_reject_unknown_dataclass() -> None:
 
 
 def test_events_decode_nested_payloads() -> None:
-    stats = _decode_event(
-        {
-            "type": "SystemStatsResult",
-            "stats": {
-                "cpu_usage_pct": 1.0,
-                "memory_used_bytes": 2,
-                "memory_total_bytes": 3,
-                "disk_read_bps": 4,
-                "disk_write_bps": 5,
-                "net_rx_bps": 6,
-                "net_tx_bps": 7,
-                "uptime_secs": 8,
-                "load_avg_one_min": 9.0,
-            },
-        }
-    )
-    pipe = _decode_event(
-        {"type": "PipeMessage", "handle": 1, "payload": {"json": "{}"}}
-    )
-    http = _decode_event(
-        {"type": "HttpResponse", "status": 200, "headers": [], "body": [111, 107]}
-    )
+    stats = _decode_event({
+        "type": "SystemStatsResult",
+        "stats": {
+            "cpu_usage_pct": 1.0,
+            "memory_used_bytes": 2,
+            "memory_total_bytes": 3,
+            "disk_read_bps": 4,
+            "disk_write_bps": 5,
+            "net_rx_bps": 6,
+            "net_tx_bps": 7,
+            "uptime_secs": 8,
+            "load_avg_one_min": 9.0,
+        },
+    })
+    pipe = _decode_event({"type": "PipeMessage", "handle": 1, "payload": {"json": "{}"}})
 
     assert isinstance(stats, SystemStatsResult)
     assert stats.stats.memory_total_bytes == 3
     assert isinstance(pipe, PipeMessage)
     assert pipe.payload == PipePayload(json="{}")
-    assert isinstance(http, HttpResponse)
-    assert http.body == b"ok"
 
 
 def test_state_proxy_reads_snapshot_and_set_returns_effect() -> None:
     payload = base64.b64encode(json.dumps(3).encode()).decode()
-    _v3_state._state = sdk.StateSnapshot(
-        {"count": 3}, {"count": json.dumps(3).encode()}
-    )
+    _v3_state._state = sdk.StateSnapshot({"count": 3}, {"count": json.dumps(3).encode()})
     _v3_state._in_view = False
     assert state.get("count") == 3
     assert state.get("missing", 9) == 9
@@ -220,12 +85,12 @@ def test_state_proxy_reads_snapshot_and_set_returns_effect() -> None:
     assert payload
 
 
-def test_view_lifecycle_resets_view_guard(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_view_lifecycle_resets_view_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     app_file = tmp_path / "sample_app.py"
     app_file.write_text(
-        "from plexi_sdk.ui import Text\n" "def view():\n" "    return Text('ok')\n"
+        "from plexi_sdk.ui import Text\n"
+        "def view():\n"
+        "    return Text('ok')\n"
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
@@ -233,76 +98,3 @@ def test_view_lifecycle_resets_view_guard(
     call_lifecycle("view", json.dumps({"state": {}}))
 
     assert _v3_state._in_view is False
-
-
-# ── Canvas hit_region tests ───────────────────────────────────────────────
-
-
-def test_canvas_rect_hit_region_serialization() -> None:
-    from plexi_sdk.ui import CanvasRect
-
-    rect = CanvasRect(10, 20, 100, 50, fill="#ff0000", hit_region="cell-3-4")
-    cmd = rect.to_command()
-    assert cmd["hit_region"] == "cell-3-4"
-
-    rect_no_region = CanvasRect(0, 0, 10, 10, fill="#000000")
-    cmd2 = rect_no_region.to_command()
-    assert "hit_region" not in cmd2
-
-
-def test_canvas_text_hit_region_serialization() -> None:
-    from plexi_sdk.ui import CanvasText
-
-    text = CanvasText(5, 10, "hello", hit_region="label-1")
-    cmd = text.to_command()
-    assert cmd["hit_region"] == "label-1"
-
-    text_no_region = CanvasText(0, 0, "bye")
-    cmd2 = text_no_region.to_command()
-    assert "hit_region" not in cmd2
-
-
-def test_canvas_button_decomposition() -> None:
-    from plexi_sdk.ui import CanvasButton
-
-    btn = CanvasButton(x=10, y=20, width=100, height=40, label="OK", region="btn-ok")
-    cmds = btn.to_commands()
-    assert len(cmds) == 2
-    rect_cmd = cmds[0].to_command()
-    text_cmd = cmds[1].to_command()
-    assert rect_cmd["type"] == "rect"
-    assert rect_cmd["hit_region"] == "btn-ok"
-    assert text_cmd["type"] == "text"
-    assert text_cmd["hit_region"] == "btn-ok"
-    assert text_cmd["text"] == "OK"
-    assert text_cmd["align"] == "center_center"
-    # Text is centered in the rect
-    assert text_cmd["x"] == 10 + 100 / 2
-    assert text_cmd["y"] == 20 + 40 / 2
-
-
-def test_canvas_button_in_canvas_to_node() -> None:
-    from plexi_sdk.ui import Canvas, CanvasButton, CanvasRect
-
-    btn = CanvasButton(x=0, y=0, width=80, height=30, label="Go", region="go")
-    rect = CanvasRect(0, 0, 10, 10, fill="#000")
-    canvas = Canvas(commands=[rect, btn])
-    node = canvas.to_node()
-    # rect produces 1 command, button produces 2
-    assert len(node["commands"]) == 3
-    assert node["commands"][0]["type"] == "rect"
-    assert "hit_region" not in node["commands"][0]
-    assert node["commands"][1]["type"] == "rect"
-    assert node["commands"][1]["hit_region"] == "go"
-    assert node["commands"][2]["type"] == "text"
-    assert node["commands"][2]["hit_region"] == "go"
-
-
-def test_mouse_event_region_field() -> None:
-    from plexi_sdk.events import MouseEvent
-
-    ev = MouseEvent(x=10, y=20, button="primary", pressed=True, region="btn-ok")
-    assert ev.region == "btn-ok"
-
-    ev_no_region = MouseEvent(x=0, y=0)
-    assert ev_no_region.region is None

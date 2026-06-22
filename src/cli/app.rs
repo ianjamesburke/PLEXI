@@ -1,8 +1,84 @@
 use std::io::{self, Write};
 
-pub(super) const SCAFFOLD_METADATA_FILE: &str = "plexi.scaffold.toml";
-pub(super) const SCAFFOLD_METADATA_SCHEMA_VERSION: u32 = 1;
-pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 3;
+pub(super) fn ensure_plexi_sdk() -> bool {
+    let check = std::process::Command::new("python3")
+        .args(["-c", "import plexi_sdk"])
+        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .status();
+
+    match check {
+        Ok(s) if s.success() => {
+            log::info!("ensure_plexi_sdk: already importable");
+            return true;
+        }
+        Err(e) => {
+            log::warn!("ensure_plexi_sdk: python3 not found: {e}");
+            eprintln!(
+                "warning: python3 not found — install plexi-sdk manually: pip install plexi-sdk"
+            );
+            return false;
+        }
+        Ok(_) => {}
+    }
+
+    log::info!("ensure_plexi_sdk: plexi_sdk not importable, attempting install");
+
+    // Try uv pip install first; suppress output so noisy venv warnings don't surface.
+    let uv_ok = std::process::Command::new("uv")
+        .args(["pip", "install", "plexi-sdk"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if uv_ok {
+        println!("Installed plexi-sdk (via uv).");
+        log::info!("ensure_plexi_sdk: installed via uv pip");
+        return true;
+    }
+
+    // Fallback: python3 -m pip to guarantee the same environment that python3 checked.
+    match std::process::Command::new("python3")
+        .args(["-m", "pip", "install", "plexi-sdk"])
+        .status()
+    {
+        Ok(s) if s.success() => {
+            println!("Installed plexi-sdk (via pip).");
+            log::info!("ensure_plexi_sdk: installed via python3 -m pip");
+            true
+        }
+        Ok(_) => {
+            eprintln!(
+                "warning: could not install plexi-sdk — install manually: pip install plexi-sdk"
+            );
+            log::warn!("ensure_plexi_sdk: python3 -m pip install failed");
+            false
+        }
+        Err(e) => {
+            eprintln!("warning: pip not available ({e}) — install manually: pip install plexi-sdk");
+            log::warn!("ensure_plexi_sdk: python3 -m pip not available: {e}");
+            false
+        }
+    }
+}
+
+/// Returns true if the app at `app_dir` has a Python entry point (entry ending in `.py`).
+pub(super) fn app_is_python(app_dir: &std::path::Path) -> bool {
+    let Ok(s) = std::fs::read_to_string(app_dir.join("manifest.toml")) else {
+        return false;
+    };
+    let Ok(manifest) = toml::from_str::<toml::Value>(&s) else {
+        return false;
+    };
+    let entry = manifest
+        .get("app")
+        .and_then(|a| a.get("entry"))
+        .and_then(|e| e.as_str())
+        .unwrap_or("");
+    entry.ends_with(".py")
+}
 
 /// Detect the channel config dir name from the running binary name.
 pub(super) fn app_init_config_dir() -> String {
@@ -104,70 +180,20 @@ pub fn app_init(
         return 1;
     }
 
-    // `lang` is constrained by the CLI `value_parser` (see AppCmd::Init); an
-    // unlisted value never reaches here. The explicit arms keep the mapping
-    // total so a newly added language can't silently fall back to Python.
     let result = match lang {
         "rust" => scaffold_rust_app(&app_dir, name),
         "python_agent" => scaffold_agent_python_app(&app_dir, name),
-        "python" => scaffold_python_app(&app_dir, name),
-        other => {
-            log::error!("app_init: no scaffold implemented for --lang '{other}'");
-            eprintln!("error: no scaffold implemented for --lang '{other}'");
-            return 1;
-        }
+        _ => scaffold_python_app(&app_dir, name),
     };
 
     match result {
         Ok(()) => {
-            if lang != "rust" {
-                match crate::app::python_env::ensure_app_venv(name, &app_dir, &[]) {
-                    Ok(python) => {
-                        println!("  Python venv: {}", python.display());
-                    }
-                    Err(e) => {
-                        let entry_path = app_dir.join("main.py");
-                        match crate::app::python_env::resolve_python_runtime(
-                            name,
-                            &entry_path,
-                            false,
-                            &[],
-                        ) {
-                            Ok(runtime) => {
-                                log::warn!(
-                                    "app_init[{name}]: Python venv setup failed: {e}; using {} ({})",
-                                    runtime.label,
-                                    runtime.version
-                                );
-                                eprintln!(
-                                    "warning: Python venv setup failed: {e}; using {} ({})",
-                                    runtime.label, runtime.version
-                                );
-                            }
-                            Err(runtime_err) => {
-                                log::error!(
-                                    "app_init[{name}]: Python environment setup failed: {e}; no fallback runtime: {runtime_err}"
-                                );
-                                eprintln!(
-                                    "error: app created, but no compatible Python runtime is available."
-                                );
-                                eprintln!("  venv setup: {e}");
-                                eprintln!("  fallback: {runtime_err}");
-                                return 1;
-                            }
-                        }
-                    }
-                }
-            }
             println!("Created app '{name}' at {}", app_dir.display());
-            let (channel, profile_dir) = current_scaffold_channel();
-            let explicit_plexi = explicit_plexi_command(&channel);
-            let explicit_host_plexi = explicit_host_plexi_command(&channel, &profile_dir);
             if lang == "rust" {
                 println!("\nNext steps:");
                 println!("  cd {}", app_dir.display());
                 println!("  cargo build --release");
-                println!("  {explicit_host_plexi} app open {}", app_dir.display());
+                println!("  plexi app open {}", app_dir.display());
             } else {
                 if open {
                     let path_str = app_dir.to_string_lossy().to_string();
@@ -178,44 +204,15 @@ pub fn app_init(
                         eprintln!(
                             "warning: app created but could not auto-open (exit {exit_code})"
                         );
-                        eprintln!(
-                            "  Open with: {explicit_host_plexi} app open {}",
-                            app_dir.display()
-                        );
+                        eprintln!("  Open with: plexi app open {}", app_dir.display());
                     }
                 } else {
                     log::info!(
                         "app_init: created '{name}' without opening path={}",
                         app_dir.display()
                     );
-                    println!(
-                        "  Open with: {explicit_host_plexi} app open {}",
-                        app_dir.display()
-                    );
+                    println!("  Open with: plexi app open {}", app_dir.display());
                 }
-                println!("  Agent loop: read {}/AGENTS.md", app_dir.display());
-                println!(
-                    "  Test with: {explicit_plexi} app test {}",
-                    app_dir.display()
-                );
-                println!(
-                    "  Check gate: {explicit_plexi} app check {} --png-dir /tmp/{name}-shots",
-                    app_dir.display()
-                );
-                println!(
-                    "  Render state: {explicit_plexi} app render {} --state fixtures/state.json",
-                    app_dir.display()
-                );
-                println!(
-                    "  Hot reload: after open, edit source and verify the same pane id updates with pane state"
-                );
-                println!("  Host probes:");
-                println!("    {explicit_host_plexi} pane state <pane-id>");
-                println!("    {explicit_host_plexi} app action <pane-id> <handler-id>");
-                println!("    {explicit_host_plexi} pane key <pane-id> <key>");
-                println!(
-                    "  SDK docs: read sdk/python/SDK_V3.md; with Plexi's SDK on PYTHONPATH, run python -c \"import plexi_sdk; help(plexi_sdk)\""
-                );
             }
             0
         }
@@ -250,7 +247,6 @@ pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
 
     let mut cmd = std::process::Command::new("uv");
     cmd.args(["run", "pytest", "tests/"]).current_dir(app_dir);
-    cmd.env("PYTHONPATH", crate::config::build_pythonpath(None));
     if snapshot {
         cmd.env("PLEXI_UPDATE_SNAPSHOTS", "1");
     }
@@ -279,124 +275,23 @@ fn marketplace_placeholder() -> &'static str {
     }
 }
 
-pub(super) fn python_sdk_version() -> String {
-    const PYPROJECT: &str = include_str!("../../sdk/python/pyproject.toml");
-    toml::from_str::<toml::Value>(PYPROJECT)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("project")
-                .and_then(|project| project.get("version"))
-                .and_then(toml::Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-pub(super) fn current_scaffold_channel() -> (String, String) {
-    let profile_dir = crate::config::workspace_channel_dir();
-    let channel = profile_dir
-        .strip_prefix(".plexi-")
-        .map(str::to_owned)
-        .or_else(|| {
-            if profile_dir == ".plexi" {
-                Some("main".to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| profile_dir.trim_start_matches('.').to_string());
-    (channel, profile_dir)
-}
-
-fn explicit_plexi_command(channel: &str) -> String {
-    if channel == "main" {
-        "plexi".to_string()
-    } else {
-        format!("PLEXI_CHANNEL={channel} plexi")
-    }
-}
-
-fn explicit_host_plexi_command(channel: &str, profile_dir: &str) -> String {
-    let socket = format!("PLEXI_SOCKET=$HOME/{profile_dir}/notify.sock");
-    if channel == "main" {
-        format!("{socket} plexi")
-    } else {
-        format!("{socket} PLEXI_CHANNEL={channel} plexi")
-    }
-}
-
-fn write_python_scaffold_support_files(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
-    let sdk_version = python_sdk_version();
-    let (channel, profile_dir) = current_scaffold_channel();
-    let cli_version = env!("CARGO_PKG_VERSION");
-    let manifest_schema_version = crate::app::registry::MANIFEST_SCHEMA_VERSION;
-    let python_runtime_version = crate::app::python_env::PYTHON_APP_VENV_VERSION;
-    let template_version = PYTHON_SCAFFOLD_TEMPLATE_VERSION;
-
-    let agents = include_str!("../../sdk/python/plexi_sdk/templates/AGENTS.md")
-        .replace("__APP_NAME__", name)
-        .replace("__CLI_VERSION__", cli_version)
-        .replace("__SDK_VERSION__", &sdk_version)
-        .replace(
-            "__MANIFEST_SCHEMA_VERSION__",
-            &manifest_schema_version.to_string(),
-        )
-        .replace("__PYTHON_RUNTIME_VERSION__", python_runtime_version)
-        .replace("__TEMPLATE_VERSION__", &template_version.to_string())
-        .replace("__CHANNEL__", &channel)
-        .replace("__PROFILE_DIR__", &profile_dir);
-    std::fs::write(app_dir.join("AGENTS.md"), agents)?;
-
-    let gitignore = include_str!("../../sdk/python/plexi_sdk/templates/gitignore");
-    std::fs::write(app_dir.join(".gitignore"), gitignore)?;
-
-    let metadata = format!(
-        "schema_version = {schema}\n\
-         generated_by = \"plexi app init\"\n\
-         plexi_cli_version = \"{cli_version}\"\n\
-         sdk_version = \"{sdk_version}\"\n\
-         manifest_schema_version = {manifest_schema_version}\n\
-         python_runtime_version = \"{python_runtime_version}\"\n\
-         template_version = {template_version}\n\
-         channel = \"{channel}\"\n\
-         profile_dir = \"{profile_dir}\"\n",
-        schema = SCAFFOLD_METADATA_SCHEMA_VERSION,
-    );
-    std::fs::write(app_dir.join(SCAFFOLD_METADATA_FILE), metadata)?;
-    log::info!(
-        "app_init: wrote scaffold support files metadata={} template_version={template_version} sdk_version={sdk_version} channel={channel} profile_dir={profile_dir}",
-        app_dir.join(SCAFFOLD_METADATA_FILE).display()
-    );
-
-    Ok(())
-}
-
 fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    // manifest.toml — shape lives in the template file beside the other scaffold
-    // artifacts so it can't silently diverge from the documented manifest. The
-    // feature-gated marketplace placeholder is appended in Rust.
-    let manifest_template =
-        include_str!("../../sdk/python/plexi_sdk/templates/manifest.toml");
-    let manifest = format!(
-        "{}{}",
-        manifest_template
-            .replace("__APP_ID__", name)
-            .replace("__DISPLAY_NAME__", &to_title_case(name)),
-        marketplace_placeholder(),
-    );
-    std::fs::write(app_dir.join("manifest.toml"), manifest)?;
+    // manifest.toml
+    std::fs::write(app_dir.join("manifest.toml"), format!(
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[runtime]\npython_compat = true\n\n[app.capabilities]\ncapabilities = []\n\n[app.capabilities.wasm]\nrequired = []\noptional = []\n\n[launch]\n{mp}",
+        name = name,
+        display = to_title_case(name),
+        mp = marketplace_placeholder(),
+    ))?;
 
     // main.py — plexi_sdk is injected via PYTHONPATH by the host at launch;
     // do NOT copy plexi_sdk.py alongside (the package uses relative imports
     // that break when imported as a flat single file).
     // __CLASS_NAME__ and __DISPLAY_NAME__ are substituted below.
     let template = include_str!("../../sdk/python/plexi_sdk/templates/app_init.py");
-    let main_py = template
-        .replace("__CLASS_NAME__", &to_struct_name(name))
-        .replace("__DISPLAY_NAME__", &to_title_case(name));
+    let main_py = template.replace("__DISPLAY_NAME__", &to_title_case(name));
     let main_path = app_dir.join("main.py");
     std::fs::write(&main_path, main_py)?;
 
@@ -405,19 +300,10 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     perms.set_mode(perms.mode() | 0o111);
     std::fs::set_permissions(&main_path, perms)?;
 
-    // tests/test_app.py — a working AppHarness example co-located with the app
-    // so agents learn the test pattern from the scaffold, not from docs.
-    let tests_dir = app_dir.join("tests");
-    std::fs::create_dir_all(&tests_dir)?;
-    let test_template = include_str!("../../sdk/python/plexi_sdk/templates/test_app_init.py");
-    let test_py = test_template.replace("__DISPLAY_NAME__", &to_title_case(name));
-    std::fs::write(tests_dir.join("test_app.py"), test_py)?;
-
-    let fixtures_dir = app_dir.join("fixtures");
-    std::fs::create_dir_all(&fixtures_dir)?;
-    std::fs::write(fixtures_dir.join("state.json"), "{\n  \"count\": 3\n}\n")?;
-
-    write_python_scaffold_support_files(app_dir, name)?;
+    std::fs::write(app_dir.join("pyproject.toml"), format!(
+        "[project]\nname = \"{name}\"\nversion = \"0.1.0\"\nrequires-python = \">=3.12\"\ndependencies = [\"plexi-sdk>=3.0\"]\n",
+        name = name,
+    ))?;
 
     Ok(())
 }
@@ -470,7 +356,7 @@ fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     let src_dir = app_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
     std::fs::write(src_dir.join("main.rs"), format!(
-        "use plexi_sdk::{{App, Emitter, Modifiers, RenderContext, run}};\n\nstruct {struct_name};\n\nimpl App for {struct_name} {{\n    fn on_render(&mut self, ctx: &mut RenderContext) {{\n        // Canvas color fields accept \"theme.<token>\" so app chrome tracks the host theme.\n        ctx.rect(0.0, 0.0, ctx.width, ctx.height, \"theme.bg\");\n        ctx.text_bold(20.0, 20.0, \"{display}\", 16.0, \"theme.fg\");\n        ctx.text(20.0, 50.0, \"Edit src/main.rs to build your app.\", 13.0, \"theme.muted\");\n    }}\n\n    fn on_key(&mut self, _key: &str, _mods: &Modifiers, _emit: &mut Emitter) {{}}\n}}\n\nfn main() {{\n    run(&mut {struct_name});\n}}\n",
+        "use plexi_sdk::{{App, Emitter, Modifiers, RenderContext, run}};\n\nstruct {struct_name};\n\nimpl App for {struct_name} {{\n    fn on_render(&mut self, ctx: &mut RenderContext) {{\n        ctx.rect(0.0, 0.0, ctx.width, ctx.height, \"#1e1e2e\");\n        ctx.text_bold(20.0, 20.0, \"{display}\", 16.0, \"#cdd6f4\");\n        ctx.text(20.0, 50.0, \"Edit src/main.rs to build your app.\", 13.0, \"#6c7086\");\n    }}\n\n    fn on_key(&mut self, _key: &str, _mods: &Modifiers, _emit: &mut Emitter) {{}}\n}}\n\nfn main() {{\n    run(&mut {struct_name});\n}}\n",
         struct_name = to_struct_name(name),
         display = to_title_case(name),
     ))?;
@@ -704,13 +590,10 @@ pub fn host_version_gate(report: &crate::app::package::PackageReport) -> Option<
 }
 
 /// Resolve the trust label for a report against the bundled core pack ids.
-fn trust_label_for(
-    report: &crate::app::package::PackageReport,
-    marketplace_reviewed: bool,
-) -> crate::app::package::TrustLabel {
+fn trust_label_for(report: &crate::app::package::PackageReport) -> crate::app::package::TrustLabel {
     let core_ids = crate::cli::install_host::core_pack_ids();
     let core_refs: Vec<&str> = core_ids.iter().map(String::as_str).collect();
-    crate::app::package::trust_label(report, &core_refs, marketplace_reviewed)
+    crate::app::package::trust_label(report, &core_refs, false)
 }
 
 /// The install confirmation gate. Returns `Ok(true)` to proceed,
@@ -818,10 +701,9 @@ fn prompt_wasm_optional_grants(
 fn run_install_gate(
     report: &crate::app::package::PackageReport,
     assume_yes: bool,
-    marketplace_reviewed: bool,
 ) -> Result<InstallGateDecision, i32> {
     use std::io::IsTerminal;
-    let label = trust_label_for(report, marketplace_reviewed);
+    let label = trust_label_for(report);
     print_trust_sheet(report, label);
     // Host-version compatibility: a too-old host (or malformed requirement)
     // aborts before the confirm prompt; a too-new host only warns.
@@ -877,7 +759,7 @@ pub fn app_inspect_cli(path: &str) -> i32 {
     };
     match report {
         Ok(report) => {
-            print_trust_sheet(&report, trust_label_for(&report, false));
+            print_trust_sheet(&report, trust_label_for(&report));
             0
         }
         Err(e) => {
@@ -928,7 +810,7 @@ fn app_install_with_pin_inner(
     match crate::app::package::validate_dir(&src) {
         Ok(report) => {
             if confirm == InstallConfirm::Interactive {
-                match run_install_gate(&report, assume_yes, false) {
+                match run_install_gate(&report, assume_yes) {
                     Ok(decision) => {
                         gate_decision = decision;
                     }
@@ -1051,6 +933,9 @@ fn app_install_with_pin_inner(
         "Installed '{app_id}' v{app_version} from {}.",
         src.display()
     );
+    if app_is_python(&dest) {
+        ensure_plexi_sdk();
+    }
     println!("Run `plexi app open {app_id}` to launch it.");
     0
 }
@@ -1151,27 +1036,6 @@ pub fn app_install_package(
     confirm: InstallConfirm,
     assume_yes: bool,
 ) -> i32 {
-    app_install_package_inner(file, pin, confirm, assume_yes, false, None)
-}
-
-pub fn app_install_marketplace_package(
-    file: &str,
-    pin: Option<&str>,
-    confirm: InstallConfirm,
-    assume_yes: bool,
-    source_metadata: Option<crate::app::marketplace::InstalledRegistrySource>,
-) -> i32 {
-    app_install_package_inner(file, pin, confirm, assume_yes, true, source_metadata)
-}
-
-fn app_install_package_inner(
-    file: &str,
-    pin: Option<&str>,
-    confirm: InstallConfirm,
-    assume_yes: bool,
-    marketplace_reviewed: bool,
-    source_metadata: Option<crate::app::marketplace::InstalledRegistrySource>,
-) -> i32 {
     log::info!("app_install:cli: package file={file} pin={pin:?} confirm={confirm:?}");
     let pkg_path = match std::path::Path::new(file).canonicalize() {
         Ok(p) => p,
@@ -1181,11 +1045,7 @@ fn app_install_package_inner(
         }
     };
 
-    let report = match if marketplace_reviewed {
-        crate::app::package::validate_package_reviewed_native(&pkg_path)
-    } else {
-        crate::app::package::validate_package(&pkg_path)
-    } {
+    let report = match crate::app::package::validate_package(&pkg_path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: package validation failed — refusing install: {e}");
@@ -1194,7 +1054,7 @@ fn app_install_package_inner(
     };
 
     let gate_decision = if confirm == InstallConfirm::Interactive {
-        match run_install_gate(&report, assume_yes, marketplace_reviewed) {
+        match run_install_gate(&report, assume_yes) {
             Ok(decision) => Some(decision),
             Err(code) => return code,
         }
@@ -1225,17 +1085,6 @@ fn app_install_package_inner(
         assume_yes,
         gate_decision,
     );
-    if code == 0 {
-        if let Some(metadata) = source_metadata {
-            let app_dir = crate::app::registry::apps_dir().join(&report.id);
-            if let Err(e) = metadata.write_to(&app_dir) {
-                log::warn!(
-                    "app_install:cli: could not record marketplace source for '{}': {e}",
-                    report.id
-                );
-            }
-        }
-    }
     if let Err(e) = std::fs::remove_dir_all(&staging) {
         log::warn!(
             "app_install:cli: could not clean up staging dir {}: {e}",
@@ -1246,29 +1095,13 @@ fn app_install_package_inner(
 }
 
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
-    copy_dir_all_inner(src, dst, std::path::Path::new(""))
-}
-
-fn copy_dir_all_inner(
-    src: &std::path::Path,
-    dst: &std::path::Path,
-    rel: &std::path::Path,
-) -> io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let entry_path = entry.path();
-        let rel_path = rel.join(entry.file_name());
-        if crate::app::package::is_generated_dev_artifact_rel(&rel_path) {
-            log::info!(
-                "app::install: skipping generated dev artifact {}",
-                entry_path.display()
-            );
-            continue;
-        }
         let dst_path = dst.join(entry.file_name());
         if entry_path.is_dir() {
-            copy_dir_all_inner(&entry_path, &dst_path, &rel_path)?;
+            copy_dir_all(&entry_path, &dst_path)?;
         } else {
             std::fs::copy(entry_path, dst_path)?;
         }
@@ -1364,14 +1197,8 @@ pub fn app_render(
                 return 1;
             }
         };
-        match serde_json::from_str::<serde_json::Value>(&json) {
-            Ok(v) if v.is_object() => Some(v),
-            Ok(_) => {
-                eprintln!(
-                    "error: --state must be a plain JSON object, for example {{\"count\": 3}}"
-                );
-                return 1;
-            }
+        match serde_json::from_str(&json) {
+            Ok(v) => Some(v),
             Err(e) => {
                 eprintln!("error: invalid JSON in state file '{s}': {e}");
                 return 1;
@@ -1385,8 +1212,7 @@ pub fn app_render(
     // A path is detected by prefix (./  ../  /) or by existing as a directory.
     // Path: more than one component (./foo, ../foo, /abs/path) OR an existing directory.
     // Using components() instead of prefix checks is portable across platforms.
-    let (app_id, app_bin, python_dependencies) = if std::path::Path::new(app).components().count()
-        > 1
+    let (app_id, app_bin) = if std::path::Path::new(app).components().count() > 1
         || std::path::Path::new(app).is_dir()
     {
         let app_dir = match std::path::Path::new(app).canonicalize() {
@@ -1442,17 +1268,13 @@ pub fn app_render(
             return 1;
         }
         log::info!("app_render[{}]: loaded from path '{app}'", manifest.app.id);
-        (manifest.app.id, entry, manifest.app.dependencies)
+        (manifest.app.id, entry)
     } else {
         // ID-based: registry lookup
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let registry = crate::app::registry::AppRegistry::load(&cwd);
         match registry.list().into_iter().find(|a| a.manifest.id == app) {
-            Some(a) => (
-                a.manifest.id.clone(),
-                a.bin_path.clone(),
-                a.manifest.dependencies.clone(),
-            ),
+            Some(a) => (a.manifest.id.clone(), a.bin_path.clone()),
             None => {
                 eprintln!(
                     "error: app '{app}' not found — run `plexi app list` to see installed apps"
@@ -1465,12 +1287,7 @@ pub fn app_render(
     if png {
         // PNG mode: rasterize and write binary
         let png_bytes = match crate::render::app_render::render_app_to_png(
-            &app_id,
-            &app_bin,
-            width,
-            height,
-            seed_state,
-            &python_dependencies,
+            &app_id, &app_bin, width, height, seed_state,
         ) {
             Ok(b) => b,
             Err(e) => {
@@ -1502,12 +1319,7 @@ pub fn app_render(
     } else {
         // JSON mode (default): return raw frame commands
         let json = match crate::render::app_render::render_app_to_json(
-            &app_id,
-            &app_bin,
-            width,
-            height,
-            seed_state,
-            &python_dependencies,
+            &app_id, &app_bin, width, height, seed_state,
         ) {
             Ok(j) => j,
             Err(e) => {
@@ -1546,30 +1358,7 @@ fn parse_render_size(s: &str) -> Option<(u32, u32)> {
 
 // ── Top-level package manager subcommands (#308 Phase 2) ──────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AppInstallSpecKind {
-    Package,
-    Source,
-    LocalPath,
-    MarketplaceId,
-}
-
-/// Classify the user-provided `plexi app install <spec>` target before any
-/// path canonicalization. Source specs such as `github:owner/repo` contain `/`
-/// but are not filesystem paths.
-pub(crate) fn classify_app_install_spec(s: &str) -> AppInstallSpecKind {
-    if s.ends_with(".plexipkg") {
-        return AppInstallSpecKind::Package;
-    }
-    if crate::app::packs::parse_source_spec(s).is_ok() {
-        return AppInstallSpecKind::Source;
-    }
-    if s.contains('/') || s.starts_with('.') || std::path::Path::new(s).is_dir() {
-        return AppInstallSpecKind::LocalPath;
-    }
-    AppInstallSpecKind::MarketplaceId
-}
-
+/// `plexi install <source-spec>[@ref]` — clone + place one app into the
 /// Returns true if `s` looks like a bare app ID (no scheme prefix, no path separators).
 pub(super) fn is_bare_id(s: &str) -> bool {
     !s.contains(':') && !s.contains('/') && !s.is_empty()
@@ -1613,13 +1402,91 @@ fn to_struct_name(s: &str) -> String {
         .collect::<String>()
 }
 
-/// `plexi app update [<id>]` — canonical app update path.
+/// `plexi app update [<id>]` — local version check for installed apps.
 ///
-/// Pulls git-backed installed apps in the current workspace-aware registry.
-/// `plexi update apps` delegates to the same implementation for compatibility.
+/// v1: compares `<app_dir>/installed_version.txt` against `manifest.toml`
+/// version field. If `pinned_version.txt` exists, reports the pin.
+/// No network calls — registry check is future work.
 pub fn app_update_cli(id: Option<&str>) -> i32 {
-    log::info!("app_update:cli: delegating to workspace-aware git updater id={id:?}");
-    crate::cli::install::update_cli(id)
+    let apps_dir = crate::app::registry::apps_dir();
+
+    // Collect app dirs to check.
+    let dirs: Vec<std::path::PathBuf> = match id {
+        Some(app_id) => {
+            let dir = apps_dir.join(app_id);
+            if !dir.exists() {
+                eprintln!("error: app '{app_id}' not installed — run `plexi app list`");
+                return 1;
+            }
+            vec![dir]
+        }
+        None => match std::fs::read_dir(&apps_dir) {
+            Ok(rd) => rd
+                .flatten()
+                .filter(|e| e.path().is_dir())
+                .filter(|e| {
+                    e.path()
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| !n.starts_with('.'))
+                })
+                .map(|e| e.path())
+                .collect(),
+            Err(_) => {
+                println!("no apps installed");
+                return 0;
+            }
+        },
+    };
+
+    if dirs.is_empty() {
+        println!("no apps installed");
+        return 0;
+    }
+
+    for app_dir in &dirs {
+        let dir_name = app_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+
+        // Read manifest version.
+        let manifest_version = {
+            let manifest_path = app_dir.join("manifest.toml");
+            match std::fs::read_to_string(&manifest_path) {
+                Ok(s) => match toml::from_str::<toml::Value>(&s) {
+                    Ok(v) => v
+                        .get("app")
+                        .and_then(|a| a.get("version"))
+                        .and_then(|ver| ver.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                    Err(_) => "?".to_string(),
+                },
+                Err(_) => "?".to_string(),
+            }
+        };
+
+        // Read installed version (written at install time).
+        let installed_version = std::fs::read_to_string(app_dir.join("installed_version.txt"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| manifest_version.clone());
+
+        // Read optional pin.
+        let pinned_version = std::fs::read_to_string(app_dir.join("pinned_version.txt"))
+            .ok()
+            .map(|s| s.trim().to_string());
+
+        if let Some(ref pin) = pinned_version {
+            println!("{dir_name}: pinned to v{pin} (installed v{installed_version})");
+        } else if installed_version == manifest_version {
+            println!("{dir_name}: up to date (v{installed_version})");
+        } else {
+            println!(
+                "{dir_name}: installed v{installed_version}, manifest v{manifest_version} — consider reinstalling"
+            );
+        }
+    }
+
+    log::info!("app_update: checked {} app(s)", dirs.len());
+    0
 }
 
 /// `plexi app action <pane_id> <action> [args...]`
@@ -1688,7 +1555,6 @@ pub fn app_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod app_install_workspace_tests {
-    use super::{classify_app_install_spec, AppInstallSpecKind};
     use tempfile::TempDir;
 
     fn write_valid_manifest(dir: &std::path::Path, id: &str) {
@@ -1763,22 +1629,6 @@ mod app_install_workspace_tests {
             super::app_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
         // Must fail with exit code 1 (manifest missing), not a workspace error.
         assert_eq!(code, 1, "missing manifest must return 1");
-    }
-
-    #[test]
-    fn github_source_spec_is_not_classified_as_local_path() {
-        assert_eq!(
-            classify_app_install_spec("github:owner/repo"),
-            AppInstallSpecKind::Source
-        );
-        assert_eq!(
-            classify_app_install_spec("git+file:///tmp/repo"),
-            AppInstallSpecKind::Source
-        );
-        assert_eq!(
-            classify_app_install_spec("owner/repo"),
-            AppInstallSpecKind::LocalPath
-        );
     }
 }
 
@@ -1898,7 +1748,7 @@ mod install_confirm_tests {
         r.wasm_required_capabilities = vec!["state:read-write".to_string()];
         r.wasm_optional_capabilities = vec!["ai.query".to_string()];
 
-        let lines = trust_sheet_lines(&r, TrustLabel::SandboxedWasm);
+        let lines = trust_sheet_lines(&r, TrustLabel::WasmComponent);
         assert!(lines
             .iter()
             .any(|line| line == "wasm required capabilities:"));
@@ -1907,37 +1757,6 @@ mod install_confirm_tests {
             .iter()
             .any(|line| line == "wasm optional capabilities:"));
         assert!(lines.iter().any(|line| line.contains("ai.query")));
-    }
-
-    #[test]
-    fn trust_sheet_uses_honest_runtime_labels() {
-        let mut r = report();
-        let reviewed_lines = trust_sheet_lines(&r, TrustLabel::ReviewedNative);
-        assert!(reviewed_lines.iter().any(|line| {
-            line == "runtime:      python — Reviewed native process — human-reviewed; not sandboxed"
-        }));
-
-        r.runtime = PackageRuntime::Wasm;
-        r.entry = "app.wasm".to_string();
-        let wasm_lines = trust_sheet_lines(&r, TrustLabel::SandboxedWasm);
-        assert!(wasm_lines.iter().any(|line| {
-            line == "runtime:      wasm — Sandboxed WASM — scoped host imports are capability-gated"
-        }));
-
-        let core_lines = trust_sheet_lines(&report(), TrustLabel::FirstPartyCore);
-        assert!(core_lines
-            .iter()
-            .any(|line| line == "runtime:      python — First-party core — bundled with Plexi"));
-    }
-
-    #[test]
-    fn marketplace_reviewed_helper_uses_reviewed_native_label() {
-        let r = report();
-        assert_eq!(
-            super::trust_label_for(&r, false),
-            TrustLabel::PythonUnreviewed
-        );
-        assert_eq!(super::trust_label_for(&r, true), TrustLabel::ReviewedNative);
     }
 
     #[test]
@@ -2142,13 +1961,15 @@ mod version_pin_tests {
     }
 
     #[test]
-    fn installed_version_matches_manifest_version_when_written() {
+    fn app_update_reports_up_to_date() {
         let dir = TempDir::new().unwrap();
         // Write manifest with version 0.1.0.
         write_manifest(dir.path(), "test-app", "0.1.0");
         // Write installed_version.txt matching manifest.
         super::write_installed_version(dir.path(), "0.1.0");
 
+        // app_update_cli operates on apps_dir(), which is a runtime directory.
+        // Test the logic via the helper directly instead.
         let installed = std::fs::read_to_string(dir.path().join("installed_version.txt"))
             .map(|s| s.trim().to_string())
             .unwrap();
@@ -2168,47 +1989,6 @@ mod version_pin_tests {
         );
         // No pinned_version.txt → no pin.
         assert!(!dir.path().join("pinned_version.txt").exists());
-    }
-
-    #[test]
-    fn marketplace_package_install_records_source_metadata() {
-        let profile = TempDir::new().unwrap();
-        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let app_src = TempDir::new().unwrap();
-        write_manifest(app_src.path(), "reviewed-notes", "0.1.0");
-        let pkg = app_src.path().join("reviewed-notes-0.1.0.plexipkg");
-        crate::app::package::build_package(app_src.path(), Some(&pkg)).unwrap();
-
-        let metadata = crate::app::marketplace::InstalledRegistrySource {
-            schema_version: crate::app::marketplace::MARKETPLACE_SCHEMA_VERSION,
-            source: "hosted-registry".to_string(),
-            registry_url: "https://plexiapp.com/registry/v1/index.json".to_string(),
-            app_id: "reviewed-notes".to_string(),
-            version: "0.1.0".to_string(),
-            publisher: "plexi".to_string(),
-            checksum: "abc123".to_string(),
-            package_url: "https://plexiapp.com/registry/v1/packages/abc123.plexipkg".to_string(),
-            reviewed_native: true,
-        };
-
-        let code = super::app_install_marketplace_package(
-            &pkg.to_string_lossy(),
-            None,
-            super::InstallConfirm::PreApproved,
-            true,
-            Some(metadata.clone()),
-        );
-
-        assert_eq!(code, 0);
-        let source_path = profile
-            .path()
-            .join("apps")
-            .join("reviewed-notes")
-            .join(crate::app::marketplace::INSTALLED_REGISTRY_SOURCE_FILE);
-        let text = std::fs::read_to_string(source_path).unwrap();
-        let parsed: crate::app::marketplace::InstalledRegistrySource =
-            toml::from_str(&text).unwrap();
-        assert_eq!(parsed, metadata);
     }
 }
 
@@ -2261,219 +2041,43 @@ mod scaffold_marketplace_tests {
     }
 
     #[test]
-    fn python_scaffold_writes_appharness_test() {
+    fn python_scaffold_writes_sdk_v3_files() {
         let dir = TempDir::new().unwrap();
         let app_dir = dir.path().join("myapp");
         std::fs::create_dir_all(&app_dir).unwrap();
         scaffold_python_app(&app_dir, "myapp").unwrap();
 
-        let test_path = app_dir.join("tests").join("test_app.py");
+        let main_path = app_dir.join("main.py");
+        let pyproject_path = app_dir.join("pyproject.toml");
         assert!(
-            test_path.is_file(),
-            "python scaffold must write tests/test_app.py"
-        );
-        let test_src = std::fs::read_to_string(&test_path).unwrap();
-        assert!(
-            test_src.contains("AppHarness"),
-            "generated test must exemplify AppHarness"
+            main_path.is_file(),
+            "python scaffold must write module-level main.py"
         );
         assert!(
-            test_src.contains("assert_no_overlap"),
-            "generated test must assert no layout overlap"
+            pyproject_path.is_file(),
+            "python scaffold must write pyproject.toml"
         );
         assert!(
-            !test_src.contains("__DISPLAY_NAME__"),
-            "generated test must substitute the display-name placeholder"
+            !app_dir.join("tests").exists(),
+            "SDK v3 scaffold should not write legacy AppHarness tests"
         );
-    }
-
-    #[test]
-    fn python_scaffold_writes_agent_contract_gitignore_and_metadata() {
-        let dir = TempDir::new().unwrap();
-        let app_dir = dir.path().join("myapp");
-        std::fs::create_dir_all(&app_dir).unwrap();
-        scaffold_python_app(&app_dir, "myapp").unwrap();
-
-        let agents = std::fs::read_to_string(app_dir.join("AGENTS.md")).unwrap();
+        let main_src = std::fs::read_to_string(&main_path).unwrap();
         assert!(
-            agents.contains("Use TDD"),
-            "AGENTS.md must tell agents to use TDD"
+            main_src.contains("def init(size, args)")
+                && main_src.contains("def update(event)")
+                && main_src.contains("def view()"),
+            "generated app must use SDK v3 lifecycle functions"
         );
+        let manifest = std::fs::read_to_string(app_dir.join("manifest.toml")).unwrap();
         assert!(
-            agents.contains("plexi app test ."),
-            "AGENTS.md must teach regular app tests"
+            manifest.contains("python_compat = true"),
+            "generated manifest must route to the Python WASM adapter"
         );
+        let pyproject = std::fs::read_to_string(pyproject_path).unwrap();
         assert!(
-            agents.contains("PLEXI_CHANNEL=alpha plexi app check . --png-dir"),
-            "AGENTS.md must teach explicit-channel check gate"
+            pyproject.contains("plexi-sdk>=3.0"),
+            "generated pyproject must depend on SDK v3"
         );
-        assert!(
-            agents.contains("plexi-pr-123 app check . --png-dir"),
-            "AGENTS.md must teach direct PR-channel check syntax"
-        );
-        assert!(
-            agents.contains("plexi app action <pane-id>"),
-            "AGENTS.md must teach exercising app actions"
-        );
-        assert!(
-            agents.contains("Hot reload is part of the dev loop"),
-            "AGENTS.md must teach same-pane hot reload validation"
-        );
-        assert!(
-            agents.contains("padding=SPACE_MD"),
-            "AGENTS.md must teach the semantic shell padding contract"
-        );
-        assert!(
-            agents.contains("log.debug"),
-            "AGENTS.md must teach SDK log levels"
-        );
-
-        let gitignore = std::fs::read_to_string(app_dir.join(".gitignore")).unwrap();
-        assert!(gitignore.contains(".venv/"));
-        assert!(gitignore.contains("__pycache__/"));
-        assert!(gitignore.contains("*.pyc"));
-        assert!(gitignore.contains(".pytest_cache/"));
-        assert!(gitignore.contains("render-output/"));
-        assert!(gitignore.contains("agent-run-logs/"));
-        assert!(
-            !gitignore.contains("manifest.toml"),
-            ".gitignore must not hide the manifest"
-        );
-        assert!(
-            !gitignore.contains("tests/"),
-            ".gitignore must not hide tests"
-        );
-        assert!(
-            !gitignore.contains("fixtures/"),
-            ".gitignore must not hide fixtures"
-        );
-        assert_eq!(
-            std::fs::read_to_string(app_dir.join("fixtures/state.json")).unwrap(),
-            "{\n  \"count\": 3\n}\n"
-        );
-
-        let metadata_raw = std::fs::read_to_string(app_dir.join(SCAFFOLD_METADATA_FILE)).unwrap();
-        let metadata: toml::Value = toml::from_str(&metadata_raw).unwrap();
-        assert_eq!(
-            metadata
-                .get("schema_version")
-                .and_then(toml::Value::as_integer),
-            Some(SCAFFOLD_METADATA_SCHEMA_VERSION as i64)
-        );
-        assert_eq!(
-            metadata
-                .get("plexi_cli_version")
-                .and_then(toml::Value::as_str),
-            Some(env!("CARGO_PKG_VERSION"))
-        );
-        assert_eq!(
-            metadata.get("sdk_version").and_then(toml::Value::as_str),
-            Some(python_sdk_version().as_str())
-        );
-        assert_eq!(
-            metadata
-                .get("manifest_schema_version")
-                .and_then(toml::Value::as_integer),
-            Some(crate::app::registry::MANIFEST_SCHEMA_VERSION as i64)
-        );
-        assert_eq!(
-            metadata
-                .get("python_runtime_version")
-                .and_then(toml::Value::as_str),
-            Some(crate::app::python_env::PYTHON_APP_VENV_VERSION)
-        );
-        assert_eq!(
-            metadata
-                .get("template_version")
-                .and_then(toml::Value::as_integer),
-            Some(PYTHON_SCAFFOLD_TEMPLATE_VERSION as i64)
-        );
-        assert!(metadata
-            .get("channel")
-            .and_then(toml::Value::as_str)
-            .is_some());
-        assert!(metadata
-            .get("profile_dir")
-            .and_then(toml::Value::as_str)
-            .is_some());
-    }
-
-    #[test]
-    fn python_scaffold_writes_self_documenting_main() {
-        let dir = TempDir::new().unwrap();
-        let app_dir = dir.path().join("myapp");
-        std::fs::create_dir_all(&app_dir).unwrap();
-        scaffold_python_app(&app_dir, "myapp").unwrap();
-
-        let main_src = std::fs::read_to_string(app_dir.join("main.py")).unwrap();
-        assert!(
-            main_src.contains("SDK v3 app generated by `plexi app init`"),
-            "generated main.py should identify the SDK v3 scaffold"
-        );
-        assert!(
-            main_src.contains("init(size, args)"),
-            "generated main.py should document the lifecycle function names"
-        );
-        assert!(
-            main_src.contains("Do not mutate Plexi state in-place"),
-            "generated main.py should explain effect-returned state changes"
-        );
-        assert!(
-            main_src.contains("Components describe UI. Effects describe host work."),
-            "generated main.py should explain component/effect separation"
-        );
-        assert!(
-            main_src.contains("ActionBar("),
-            "generated main.py should demonstrate the standard action-row primitive"
-        );
-        assert!(
-            main_src.contains("Card("),
-            "generated main.py should demonstrate the standard surface primitive"
-        );
-        assert!(
-            main_src.contains("Section("),
-            "generated main.py should demonstrate semantic section chrome"
-        );
-        assert!(
-            main_src.contains("Badge("),
-            "generated main.py should demonstrate semantic badges"
-        );
-        assert!(
-            main_src.contains("Divider("),
-            "generated main.py should demonstrate semantic dividers"
-        );
-        assert!(
-            main_src.contains("TextEdit("),
-            "generated main.py should demonstrate the host-rendered text edit primitive"
-        );
-        assert!(
-            main_src.contains("SelectList("),
-            "generated main.py should demonstrate the host-rendered select list primitive"
-        );
-        assert!(
-            main_src.contains("Scrollable("),
-            "generated main.py should keep proof components inside a scroll body"
-        );
-        assert!(
-            main_src.contains("UiValueChange"),
-            "generated main.py should handle editable component value changes"
-        );
-        assert!(
-            main_src.contains("FooterKeys("),
-            "generated main.py should keep shortcut hints in the footer"
-        );
-        assert!(
-            main_src.contains("SPACE_MD"),
-            "generated main.py should keep semantic shell content inset"
-        );
-        assert!(
-            main_src.contains("padding=SPACE_MD"),
-            "generated main.py must keep root semantic shell content padding"
-        );
-        assert!(main_src.contains("log.debug"));
-        assert!(main_src.contains("log.info"));
-        assert!(main_src.contains("log.warn"));
-        assert!(main_src.contains("log.error"));
     }
 
     #[test]

@@ -1638,6 +1638,33 @@ impl PlexiApp {
             )?;
             return Ok(Some(pane_id));
         }
+        if let Some(config) =
+            crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(&installed.app_dir)
+                .map_err(|e| format!("failed to inspect Python WASM runtime: {e}"))?
+        {
+            log::info!(
+                "launch_app_by_path_with_layout: routing '{}' through python_compat adapter",
+                config.app_id
+            );
+            return match crate::host::wasm_python::WasmPythonAdapter::prepare_from_manifest(
+                &installed.app_dir,
+            ) {
+                Ok(Some(adapter)) => {
+                    let _ = adapter
+                        .bridge_contract_probe((800.0, 600.0), args)
+                        .map_err(|e| format!("failed to prepare Python WASM bridge: {e}"))?;
+                    Err(
+                        "Python WASM adapter prepared, but live CPython lifecycle execution is not wired yet"
+                            .to_string(),
+                    )
+                }
+                Ok(None) => Err(format!(
+                    "runtime.python_compat disappeared while launching '{}'",
+                    config.app_id
+                )),
+                Err(e) => Err(format!("failed to prepare Python WASM runtime: {e}")),
+            };
+        }
         match crate::process_app::ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
