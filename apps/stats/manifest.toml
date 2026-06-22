@@ -8,6 +8,9 @@ version = "0.2.0"
 description = "Activity dashboard: focus level, time, streak, top projects, and a 24h heatmap from Plexi focus events."
 entry = "stats.py"
 
+[runtime]
+python_compat = true
+
 [app.capabilities]
 capabilities = []
 

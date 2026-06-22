@@ -1,136 +1,171 @@
 #!/usr/bin/env python3
-"""Todo — simple list with persistence."""
+"""Todo — SDK v3 state-backed list."""
 
-import json
-import pathlib
+from __future__ import annotations
 
-from plexi_sdk import App
-from plexi_sdk.ui import (
-    Column, AppBar, Section, Spacer, FooterKeys,
-    SelectList, TextInput, Label,
-)
+from plexi_sdk import state
+from plexi_sdk.effects import SetState, SetStatus, SetTitle
+from plexi_sdk.events import KeyEvent, UiAction, UiValueChange
+from plexi_sdk.ui import AppBar, Button, Column, SelectList, Spacer, Text, TextInput
 
-TODO_FILE = ".plexi/todos.json"
+DEFAULT_TODO_STATE = {
+    "items": [],
+    "selected": 0,
+    "adding": False,
+    "cwd": "",
+    "draft": "",
+}
 
 
-class TodoApp(App):
-    def on_init(self) -> None:
-        self._items: list[dict] = []
-        self._selected = 0
-        self._adding = False
-        self._cwd = pathlib.Path(self.workspace_root)
-        self._list = SelectList([], selected_idx=0)
-        self._input = TextInput("todo-add", placeholder="New item…", height=48.0)
-        self._load()
+def _app_state() -> dict:
+    data = dict(DEFAULT_TODO_STATE)
+    for key in data:
+        data[key] = state.get(key, data[key])
+    data["items"] = list(data.get("items") or [])
+    data["selected"] = _clamp_selected(data["items"], int(data.get("selected") or 0))
+    data["adding"] = bool(data.get("adding"))
+    data["draft"] = str(data.get("draft") or "")
+    data["cwd"] = str(data.get("cwd") or "")
+    return data
 
-    def on_path_changed(self, cwd: str) -> None:
-        if not cwd:
-            return
-        new_cwd = pathlib.Path(cwd)
-        if new_cwd == self._cwd:
-            return
-        self._cwd = new_cwd
-        self._selected = 0
-        self._items = []
-        self._load()
-        self.emit.info(f"todo: cwd -> {cwd}")
 
-    def _path(self) -> pathlib.Path:
-        return self._cwd / TODO_FILE
+def _set(data: dict) -> list[SetState]:
+    data["selected"] = _clamp_selected(data["items"], int(data.get("selected") or 0))
+    return [SetState(data)]
 
-    def _load(self) -> None:
-        try:
-            p = self._path()
-            if p.exists():
-                self._items = json.loads(p.read_text())
-        except Exception as e:
-            self.emit.error(f"todo load failed: {e}")
-        self._sync_list()
 
-    def _save(self) -> None:
-        try:
-            p = self._path()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(json.dumps(self._items, indent=2))
-        except Exception as e:
-            self.emit.error(f"todo save failed: {e}")
+def _clamp_selected(items: list, selected: int) -> int:
+    if not items:
+        return 0
+    return max(0, min(selected, len(items) - 1))
 
-    def _sync_list(self) -> None:
-        """Rebuild SelectList items from self._items and keep selection in bounds."""
-        self._list.items = [
-            {"name": f"{'✓' if it['done'] else '○'}  {it['text']}"}
-            for it in self._items
-        ]
-        if self._items:
-            self._selected = max(0, min(self._selected, len(self._items) - 1))
-        else:
-            self._selected = 0
-        self._list.selected_idx = self._selected
 
-    def on_escape(self):
-        if self._adding:
-            self._adding = False
-            return True
-        return False
+def _add_item(data: dict) -> list[SetState]:
+    text = data["draft"].strip()
+    if text:
+        data["items"].append({"text": text, "done": False})
+        data["selected"] = len(data["items"]) - 1
+    data["adding"] = False
+    data["draft"] = ""
+    return _set(data)
 
-    def on_key(self, key: str, _mods: dict) -> None:
-        if self._adding:
-            return
 
-        if key in ("up", "k", "ArrowUp"):
-            self._list.handle_key("k")
-            self._selected = self._list.selected_idx
-        elif key in ("down", "j", "ArrowDown"):
-            self._list.handle_key("j")
-            self._selected = self._list.selected_idx
-        elif key == "space" and self._items:
-            self._items[self._selected]["done"] ^= True
-            self._save()
-            self._sync_list()
-        elif key == "a":
-            self._adding = True
-        elif key == "d" and self._items:
-            self._items.pop(self._selected)
-            self._selected = min(self._selected, max(0, len(self._items) - 1))
-            self._save()
-            self._sync_list()
+def init(size, args) -> list:
+    data = _app_state()
+    effects: list = [SetTitle("Todo"), SetStatus(f"{len(data['items'])} todo items")]
+    missing = {
+        key: value
+        for key, value in DEFAULT_TODO_STATE.items()
+        if state.get(key, None) is None
+    }
+    if missing:
+        effects.append(SetState(missing))
+    return effects
 
-    def on_text_submitted(self, id: str, text: str) -> None:
-        if id == "todo-add":
-            val = text.strip()
-            if val:
-                self._items.append({"text": val, "done": False})
-                self._save()
-                self._sync_list()
-            self._adding = False
 
-    def view(self):
-        if self._adding:
-            return Column([
-                AppBar(title="Todo"),
-                Section("Add item"),
-                self._input,
-                Spacer(grow=True),
-                FooterKeys([
-                    ("Enter", "save"),
-                    ("Esc", "cancel"),
-                ]),
-            ])
+def update(event) -> list:
+    data = _app_state()
 
-        list_area = self._list if self._items else Label("No items. Press 'a' to add.", tone="hint")
+    if isinstance(event, UiValueChange) and event.handler_id == "todo-add:change":
+        data["draft"] = event.value
+        return _set(data)
+
+    if isinstance(event, UiAction):
+        if event.handler_id == "todo-add:start":
+            data["adding"] = True
+            data["draft"] = ""
+            return _set(data)
+        if event.handler_id == "todo-add:submit":
+            return _add_item(data)
+        if event.handler_id == "todo-add:cancel":
+            data["adding"] = False
+            data["draft"] = ""
+            return _set(data)
+        if event.handler_id == "todo-toggle":
+            return _toggle_selected(data)
+        if event.handler_id == "todo-delete":
+            return _delete_selected(data)
+
+    if not isinstance(event, KeyEvent) or not event.pressed:
+        return []
+
+    key = event.key
+    if data["adding"]:
+        if key == "escape":
+            data["adding"] = False
+            data["draft"] = ""
+            return _set(data)
+        return []
+
+    if key in ("up", "k", "ArrowUp"):
+        data["selected"] = _clamp_selected(data["items"], data["selected"] - 1)
+        return _set(data)
+    if key in ("down", "j", "ArrowDown"):
+        data["selected"] = _clamp_selected(data["items"], data["selected"] + 1)
+        return _set(data)
+    if key == "space":
+        return _toggle_selected(data)
+    if key == "a":
+        data["adding"] = True
+        data["draft"] = ""
+        return _set(data)
+    if key == "d":
+        return _delete_selected(data)
+    return []
+
+
+def _toggle_selected(data: dict) -> list:
+    if not data["items"]:
+        return []
+    item = dict(data["items"][data["selected"]])
+    item["done"] = not bool(item.get("done"))
+    data["items"][data["selected"]] = item
+    return _set(data)
+
+
+def _delete_selected(data: dict) -> list:
+    if not data["items"]:
+        return []
+    data["items"].pop(data["selected"])
+    data["selected"] = _clamp_selected(data["items"], data["selected"])
+    return _set(data)
+
+
+def view():
+    data = _app_state()
+    if data["adding"]:
         return Column([
-            AppBar(title="Todo"),
-            Section("Current list"),
-            list_area,
-            Spacer(grow=False),
-            FooterKeys([
-                (["↑", "↓"], "select"),
-                ("space", "toggle"),
-                ("a", "add"),
-                ("d", "delete"),
-            ]),
-        ])
+            AppBar("Todo", "Add item"),
+            TextInput(
+                "todo-add",
+                value=data["draft"],
+                placeholder="New item",
+                on_change="todo-add:change",
+                on_submit="todo-add:submit",
+            ),
+            Button("Add", "todo-add:submit", style="primary", disabled=not data["draft"].strip()),
+            Button("Cancel", "todo-add:cancel", style="ghost"),
+            Spacer(grow=True),
+            Text("Enter saves. Esc cancels.", size=11.0),
+        ], grow=True)
 
-
-if __name__ == "__main__":
-    TodoApp().run()
+    rows = [
+        {
+            "name": f"{'[x]' if item.get('done') else '[ ]'} {item.get('text', '')}",
+        }
+        for item in data["items"]
+    ]
+    list_area = (
+        SelectList(rows, selected_idx=data["selected"])
+        if rows
+        else Text("No items. Press 'a' to add.", size=12.0)
+    )
+    return Column([
+        AppBar("Todo", f"{len(rows)} items"),
+        list_area,
+        Spacer(grow=True),
+        Button("Add item", "todo-add:start", style="primary"),
+        Button("Toggle selected", "todo-toggle", disabled=not rows),
+        Button("Delete selected", "todo-delete", style="danger", disabled=not rows),
+        Text("Up/down select. Space toggles. a adds. d deletes.", size=11.0),
+    ], grow=True)

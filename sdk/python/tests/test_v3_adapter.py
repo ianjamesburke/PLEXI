@@ -15,7 +15,7 @@ from plexi_sdk._adapter import _decode_event, _encode_effect, _encode_uitree
 from plexi_sdk._adapter import call_lifecycle, load_app
 from plexi_sdk.effects import SetState, SetTitle
 from plexi_sdk.events import KeyEvent, PipeMessage, PipePayload, SystemStatsResult
-from plexi_sdk.ui import Button, Column, Text
+from plexi_sdk.ui import Button, Column, SelectList, Text, TextInput
 
 
 def test_effects_encode_dataclass_shape() -> None:
@@ -36,6 +36,32 @@ def test_ui_tree_flattens_v3_components() -> None:
     assert tree["nodes"][0]["data"]["type"] == "Column"
     assert tree["nodes"][1]["data"]["type"] == "Text"
     assert tree["nodes"][2]["data"]["type"] == "Button"
+
+
+def test_ui_tree_serializes_text_input_and_select_list() -> None:
+    tree = _encode_uitree(Column([
+        TextInput(
+            "todo-add",
+            value="draft",
+            placeholder="New item",
+            on_change="todo-add:change",
+            on_submit="todo-add:submit",
+        ),
+        SelectList([{"name": "one"}, {"name": "two", "description": "done"}], selected_idx=1),
+    ], padding=0))
+
+    nodes = tree["nodes"]
+    assert nodes[1]["data"] == {
+        "type": "TextInput",
+        "value": "draft",
+        "placeholder": "New item",
+        "on_change": "todo-add:change",
+        "on_submit": "todo-add:submit",
+        "password": False,
+    }
+    assert nodes[2]["data"]["type"] == "ListView"
+    assert nodes[2]["data"]["selected"] == 1
+    assert nodes[2]["data"]["items"] == [3, 4]
 
 
 def test_effects_reject_unknown_dataclass() -> None:

@@ -1226,6 +1226,9 @@ class TextInput(Component):
     height: float = 48.0
     multiline: bool = False
     value: Optional[str] = None
+    on_change: str = ""
+    on_submit: str = ""
+    password: bool = False
 
     _submitted: Optional[str] = field(default=None, init=False, repr=False)
 
@@ -1243,6 +1246,16 @@ class TextInput(Component):
     def submitted(self) -> Optional[str]:
         """Text submitted this frame (user pressed Enter), else None."""
         return self._submitted
+
+    def to_node(self) -> dict:
+        return {
+            "type": "TextInput",
+            "value": self.value or "",
+            "placeholder": self.placeholder,
+            "on_change": self.on_change,
+            "on_submit": self.on_submit,
+            "password": self.password,
+        }
 
 
 @dataclass
