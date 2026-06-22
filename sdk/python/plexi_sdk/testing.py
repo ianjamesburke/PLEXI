@@ -19,6 +19,90 @@ from typing import Union
 
 DEFAULT_BG = "#1e1e2e"
 
+_V3_HARNESS_BOOTSTRAP = r"""
+import importlib.util
+import sys
+
+import plexi_sdk as sdk
+from plexi_sdk import App
+from plexi_sdk import _v3_state
+from plexi_sdk import effects
+from plexi_sdk import events
+from plexi_sdk._v3_state import StateSnapshot
+
+app_path = sys.argv[1]
+width = float(sys.argv[2])
+height = float(sys.argv[3])
+
+spec = importlib.util.spec_from_file_location("plexi_harness_v3_app", app_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError(f"could not load app module from {app_path!r}")
+module = importlib.util.module_from_spec(spec)
+sys.modules["plexi_harness_v3_app"] = module
+spec.loader.exec_module(module)
+
+
+class V3HarnessApp(App):
+    def on_init(self):
+        self._v3_values = {}
+        self._set_v3_state(in_view=False)
+        self._apply_effects(module.init((width, height), self.launch_args))
+
+    def view(self):
+        self._set_v3_state(in_view=True)
+        try:
+            return module.view()
+        finally:
+            self._set_v3_state(in_view=False)
+
+    def on_key(self, key, mods):
+        self._set_v3_state(in_view=False)
+        modifiers = events.Modifiers(
+            ctrl=bool(mods.get("ctrl", False)),
+            shift=bool(mods.get("shift", False)),
+            alt=bool(mods.get("alt", False)),
+            meta=bool(mods.get("meta", False)),
+        )
+        self._apply_effects(module.update(events.KeyEvent(key=key, modifiers=modifiers)))
+        self.emit.schedule_render()
+
+    def _set_v3_state(self, in_view):
+        snapshot = StateSnapshot(dict(self._v3_values), {})
+        sdk._state = snapshot
+        sdk._in_view = in_view
+        _v3_state._state = snapshot
+        _v3_state._in_view = in_view
+
+    def _apply_effects(self, app_effects):
+        for effect in app_effects or []:
+            if isinstance(effect, effects.SetState):
+                self._v3_values.update(effect.data)
+            elif isinstance(effect, effects.SetStatus):
+                self.emit.status_summary(effect.text)
+            elif isinstance(effect, effects.SetTimer):
+                self.emit.set_timer(str(effect.id), int(effect.delay_ms))
+            elif isinstance(effect, effects.CancelTimer):
+                self.emit.cancel_timer(str(effect.id))
+            elif isinstance(effect, effects.CloseSelf):
+                self.emit.close_self()
+            elif isinstance(effect, effects.SetTitle):
+                continue
+            else:
+                self.emit.info(f"v3 harness ignored effect {type(effect).__name__}")
+
+
+def _host_log(level, msg):
+    try:
+        V3HarnessApp.current.emit.info(f"{level}: {msg}")
+    except Exception:
+        print(f"[{level}] {msg}", file=sys.stderr)
+
+
+V3HarnessApp.current = V3HarnessApp()
+_v3_state._host_log = _host_log
+V3HarnessApp.current.run()
+"""
+
 # ---------------------------------------------------------------------------
 # Binary location
 # ---------------------------------------------------------------------------
@@ -348,9 +432,11 @@ class AppHarness:
         if _is_v3_module_app(app_path):
             command = [
                 sys.executable,
-                "-m",
-                "plexi_sdk._v3_process",
+                "-c",
+                _V3_HARNESS_BOOTSTRAP,
                 str(app_path),
+                str(width),
+                str(height),
             ]
 
         self._proc = _subprocess.Popen(
@@ -499,6 +585,10 @@ class AppHarness:
     def key(self, key: str, modifiers: "dict | None" = None) -> None:
         """Inject a synthetic key event."""
         self._send({"type": "key", "key": key, "modifiers": modifiers or {}})
+
+    def text_submit(self, id: str, value: str) -> None:
+        """Inject a synthetic text_submitted event (user pressed Enter in a TextInput)."""
+        self._send({"type": "text_submitted", "id": id, "value": value})
 
     def screenshot(self) -> bytes:
         """Render current draw commands to PNG. Requires the plexi binary."""
