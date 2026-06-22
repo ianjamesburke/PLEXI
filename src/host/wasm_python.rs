@@ -15,7 +15,8 @@ use thiserror::Error;
 use crate::app::registry::{AppManifest, RuntimeExecution};
 
 use super::wasm_app::bindings::plexi::platform::types::{
-    BadgeColor, ButtonNode, ButtonStyle, ColumnNode, FileReadEffect, FileWriteEffect, IndexedNode,
+    BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine, CanvasNode,
+    CanvasRect, CanvasText, Color, ColumnNode, FileReadEffect, FileWriteEffect, IndexedNode,
     InputEvent, KeyEvent, ListNode, PaddingNode, ProgressBarNode, RowNode, ScrollNode,
     StateSnapshot, TextInputNode, TextNode, TimerEffect, UiActionEvent, UiNodeData, UiTree,
     UiValueChangeEvent,
@@ -541,8 +542,126 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             bottom: optional_f32(value, "bottom")?.unwrap_or(0.0),
             left: optional_f32(value, "left")?.unwrap_or(0.0),
         })),
+        "Canvas" | "canvas" => Ok(UiNodeData::Canvas(CanvasNode {
+            width: optional_f32(value, "width")?.unwrap_or(640.0),
+            height: optional_f32(value, "height")?.unwrap_or(360.0),
+            grow: value.get("grow").and_then(Value::as_bool).unwrap_or(true),
+            commands: canvas_commands(value, "commands")?,
+        })),
         other => Err(WasmPythonError::BridgeJson(format!(
             "Unknown UINode type: {other}"
+        ))),
+    }
+}
+
+fn canvas_commands(value: &Value, field: &str) -> Result<Vec<CanvasCommand>, WasmPythonError> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| WasmPythonError::BridgeJson(format!("missing array field '{field}'")))?
+        .iter()
+        .map(decode_canvas_command)
+        .collect()
+}
+
+fn decode_canvas_command(value: &Value) -> Result<CanvasCommand, WasmPythonError> {
+    let kind = value.get("type").and_then(Value::as_str).ok_or_else(|| {
+        WasmPythonError::BridgeJson("canvas command missing string 'type'".to_string())
+    })?;
+    match kind {
+        "rect" | "Rect" => Ok(CanvasCommand::Rect(CanvasRect {
+            x: optional_f32(value, "x")?.unwrap_or(0.0),
+            y: optional_f32(value, "y")?.unwrap_or(0.0),
+            width: optional_f32(value, "width")?
+                .or(optional_f32(value, "w")?)
+                .unwrap_or(0.0),
+            height: optional_f32(value, "height")?
+                .or(optional_f32(value, "h")?)
+                .unwrap_or(0.0),
+            fill: decode_color_field(value, "fill")?,
+            radius: optional_f32(value, "radius")?.unwrap_or(0.0),
+        })),
+        "circle" | "Circle" => Ok(CanvasCommand::Circle(CanvasCircle {
+            x: optional_f32(value, "x")?.unwrap_or(0.0),
+            y: optional_f32(value, "y")?.unwrap_or(0.0),
+            radius: optional_f32(value, "radius")?
+                .or(optional_f32(value, "r")?)
+                .unwrap_or(0.0),
+            fill: decode_color_field(value, "fill")?,
+        })),
+        "line" | "Line" => Ok(CanvasCommand::Line(CanvasLine {
+            x1: optional_f32(value, "x1")?.unwrap_or(0.0),
+            y1: optional_f32(value, "y1")?.unwrap_or(0.0),
+            x2: optional_f32(value, "x2")?.unwrap_or(0.0),
+            y2: optional_f32(value, "y2")?.unwrap_or(0.0),
+            width: optional_f32(value, "width")?.unwrap_or(1.0),
+            color: decode_color_field(value, "color")?,
+        })),
+        "text" | "Text" => Ok(CanvasCommand::Text(CanvasText {
+            x: optional_f32(value, "x")?.unwrap_or(0.0),
+            y: optional_f32(value, "y")?.unwrap_or(0.0),
+            text: required_string(value, "text")?,
+            size: optional_f32(value, "size")?.unwrap_or(14.0),
+            color: decode_color_field(value, "color")?,
+            bold: value.get("bold").and_then(Value::as_bool).unwrap_or(false),
+            align: decode_alignment(
+                value
+                    .get("align")
+                    .and_then(Value::as_str)
+                    .unwrap_or("start"),
+            )?,
+        })),
+        other => Err(WasmPythonError::BridgeJson(format!(
+            "unknown canvas command type: {other}"
+        ))),
+    }
+}
+
+fn decode_color_field(value: &Value, field: &str) -> Result<Color, WasmPythonError> {
+    let Some(raw) = value.get(field) else {
+        return Err(WasmPythonError::BridgeJson(format!(
+            "missing color field '{field}'"
+        )));
+    };
+    decode_color(raw)
+}
+
+fn decode_color(value: &Value) -> Result<Color, WasmPythonError> {
+    if let Some(hex) = value.as_str() {
+        return decode_hex_color(hex);
+    }
+    let r = required_u8(value, "r")?;
+    let g = required_u8(value, "g")?;
+    let b = required_u8(value, "b")?;
+    let a = value
+        .get("a")
+        .map(|_| required_u8(value, "a"))
+        .transpose()?
+        .unwrap_or(255);
+    Ok(Color { r, g, b, a })
+}
+
+fn decode_hex_color(hex: &str) -> Result<Color, WasmPythonError> {
+    let value = hex.strip_prefix('#').unwrap_or(hex);
+    let parse = |s: &str| {
+        u8::from_str_radix(s, 16)
+            .map_err(|e| WasmPythonError::BridgeJson(format!("invalid color '{hex}': {e}")))
+    };
+    match value.len() {
+        6 => Ok(Color {
+            r: parse(&value[0..2])?,
+            g: parse(&value[2..4])?,
+            b: parse(&value[4..6])?,
+            a: 255,
+        }),
+        8 => Ok(Color {
+            r: parse(&value[0..2])?,
+            g: parse(&value[2..4])?,
+            b: parse(&value[4..6])?,
+            a: parse(&value[6..8])?,
+        }),
+        _ => Err(WasmPythonError::BridgeJson(format!(
+            "invalid color '{hex}': expected #rrggbb or #rrggbbaa"
         ))),
     }
 }
@@ -562,6 +681,15 @@ fn required_u32(value: &Value, field: &str) -> Result<u32, WasmPythonError> {
         .ok_or_else(|| WasmPythonError::BridgeJson(format!("missing u32 field '{field}'")))?;
     u32::try_from(n)
         .map_err(|_| WasmPythonError::BridgeJson(format!("field '{field}' out of u32 range")))
+}
+
+fn required_u8(value: &Value, field: &str) -> Result<u8, WasmPythonError> {
+    let n = value
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| WasmPythonError::BridgeJson(format!("missing u8 field '{field}'")))?;
+    u8::try_from(n)
+        .map_err(|_| WasmPythonError::BridgeJson(format!("field '{field}' out of u8 range")))
 }
 
 fn optional_f32(value: &Value, field: &str) -> Result<Option<f32>, WasmPythonError> {
@@ -797,5 +925,35 @@ python_compat = true
         assert!(matches!(tree.nodes[1].data, UiNodeData::TextInput(_)));
         assert!(matches!(tree.nodes[3].data, UiNodeData::ListView(_)));
         assert!(matches!(tree.nodes[4].data, UiNodeData::ProgressBar(_)));
+    }
+
+    #[test]
+    fn ui_tree_decodes_canvas_node() {
+        let tree = decode_ui_tree(
+            r##"{
+                "root":0,
+                "nodes":[
+                    {"id":0,"key":"0","data":{
+                        "type":"Canvas",
+                        "width":320.0,
+                        "height":180.0,
+                        "grow":true,
+                        "commands":[
+                            {"type":"rect","x":1.0,"y":2.0,"w":30.0,"h":40.0,"fill":"#112233","radius":2.0},
+                            {"type":"text","x":9.0,"y":10.0,"text":"ok","size":14.0,"color":"#ffffffcc","bold":true,"align":"center"}
+                        ]
+                    }}
+                ]
+            }"##,
+        )
+        .expect("tree");
+
+        let UiNodeData::Canvas(canvas) = &tree.nodes[0].data else {
+            panic!("expected canvas node");
+        };
+        assert_eq!(canvas.width, 320.0);
+        assert_eq!(canvas.commands.len(), 2);
+        assert!(matches!(canvas.commands[0], CanvasCommand::Rect(_)));
+        assert!(matches!(canvas.commands[1], CanvasCommand::Text(_)));
     }
 }

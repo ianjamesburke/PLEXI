@@ -81,8 +81,8 @@ RADIUS_BADGE = 6.0
 
 # Live host theme — populated from the Init payload (light/dark + user overrides).
 # Components read theme.<role> at render time so they track the active theme.
-from ._theme import theme
-from ._constants import BG, FG, ACCENT, SURFACE, HIGHLIGHT, MUTED, GREEN, RED, YELLOW
+from ._theme import theme  # noqa: E402
+from ._constants import BG, FG, ACCENT, SURFACE, HIGHLIGHT, MUTED, GREEN, RED, YELLOW  # noqa: E402
 
 # ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -122,7 +122,7 @@ def _wrap_to_width(text: str, avail_px: float, font_size: float,
         lines.append(current)
 
     if len(lines) == max_lines and (
-        sum(len(l) for l in lines) + len(lines) - 1 < len(text)
+        sum(len(line) for line in lines) + len(lines) - 1 < len(text)
     ):
         last = lines[-1]
         if not last.endswith("…"):
@@ -423,6 +423,31 @@ class Spacer(Component):
 
 
 @dataclass
+class Badge(Component):
+    text: str
+    color: str = "neutral"
+    tone: "str | None" = None
+    key: str = ""
+
+    def __post_init__(self) -> None:
+        if self.tone is not None:
+            self.color = self.tone
+
+    def measure(self, _avail_w: float) -> float:
+        return 18.0
+
+    def render(self, ctx, x: float, y: float, _w: float, _h: float) -> None:
+        fill = theme.accent if self.color == "accent" else theme.surface
+        ctx.rect(x, y, max(18.0, len(self.text) * 7.0 + 12.0), 18.0,
+                 fill=fill, radius=RADIUS_SM)
+        ctx.text(x + 6.0, y + 4.0, self.text, size=TEXT_HINT, color=theme.fg)
+
+    def to_node(self) -> dict:
+        return {"type": "badge", "text": self.text,
+                "color": self.color, "key": self.key}
+
+
+@dataclass
 class Divider(Component):
     """A horizontal 1px rule."""
     color: "str | None" = None
@@ -440,25 +465,91 @@ class Divider(Component):
 
 
 @dataclass
+class CanvasRect:
+    x: float
+    y: float
+    width: float
+    height: float
+    fill: str
+    radius: float = 0.0
+
+    def to_command(self) -> dict:
+        return {"type": "rect", "x": self.x, "y": self.y,
+                "width": self.width, "height": self.height,
+                "fill": self.fill, "radius": self.radius}
+
+
+@dataclass
+class CanvasCircle:
+    x: float
+    y: float
+    radius: float
+    fill: str
+
+    def to_command(self) -> dict:
+        return {"type": "circle", "x": self.x, "y": self.y,
+                "radius": self.radius, "fill": self.fill}
+
+
+@dataclass
+class CanvasLine:
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    color: str
+    width: float = 1.0
+
+    def to_command(self) -> dict:
+        return {"type": "line", "x1": self.x1, "y1": self.y1,
+                "x2": self.x2, "y2": self.y2,
+                "color": self.color, "width": self.width}
+
+
+@dataclass
+class CanvasText:
+    x: float
+    y: float
+    text: str
+    size: float = 14.0
+    color: str = "#ffffff"
+    bold: bool = False
+    align: str = "start"
+
+    def to_command(self) -> dict:
+        return {"type": "text", "x": self.x, "y": self.y,
+                "text": self.text, "size": self.size,
+                "color": self.color, "bold": self.bold,
+                "align": self.align}
+
+
 class Canvas(Component):
-    """Leaf component for custom drawing. The draw callable receives
-    ``(ctx, x, y, w, h)`` and emits draw commands directly.
+    """SDK v3 CPU canvas node.
 
-    ``grow=True`` (default) makes the Canvas fill remaining vertical space.
-    ``height`` fixes the height in pixels when grow is False.
-
-    Example::
-
-        def draw_grid(ctx, x, y, w, h):
-            for i in range(5):
-                cx = x + (i + 0.5) * w / 5
-                ctx.circle(cx, y + h / 2, 4.0, "#89b4fa")
-
-        Canvas(draw=draw_grid)
+    Pass typed drawing commands for host-side rendering from ``view()``. The
+    legacy ``Canvas(draw_callable)`` PGAP escape hatch remains accepted while
+    subprocess apps still exist.
     """
-    draw: "Callable[[Any, float, float, float, float], None]"
-    grow: bool = True
-    height: "float | None" = None
+
+    def __init__(
+        self,
+        commands: "list | Callable[[Any, float, float, float, float], None] | None" = None,
+        *,
+        width: float = 640.0,
+        height: "float | None" = 360.0,
+        grow: bool = True,
+        key: str = "",
+        draw: "Callable[[Any, float, float, float, float], None] | None" = None,
+    ) -> None:
+        if callable(commands) and draw is None:
+            draw = commands
+            commands = None
+        self.commands = list(commands or [])
+        self.width = width
+        self.height = height
+        self.grow = grow
+        self.key = key
+        self.draw = draw
 
     def measure(self, _avail_w: float) -> float:
         return self.height if self.height is not None else 0.0
@@ -467,7 +558,27 @@ class Canvas(Component):
         return self.grow and self.height is None
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        if self.draw is None:
+            return
         self.draw(ctx, x, y, w, h)
+
+    def to_node(self) -> "dict | None":
+        if self.draw is not None:
+            return None
+        return {
+            "type": "canvas",
+            "width": self.width,
+            "height": self.height if self.height is not None else 0.0,
+            "grow": self.grow,
+            "commands": [_canvas_command(c) for c in self.commands],
+            "key": self.key,
+        }
+
+
+def _canvas_command(command) -> dict:
+    if hasattr(command, "to_command"):
+        return command.to_command()
+    return dict(command)
 
 
 @dataclass
@@ -1109,7 +1220,7 @@ def badge(
 # revalidate: the boundary stays mounted with current content; the only
 # visual signal is a small pill instead of a destructive remount.
 
-import time as _ct_time  # `time` collides with some example apps' imports
+import time as _ct_time  # noqa: E402  # `time` collides with some example apps' imports
 
 
 def loading_pill(ctx, x: float, y: float, label: str = "Fetching…") -> float:
@@ -1665,20 +1776,16 @@ class Column(Component):
         }
 
 
-def AppBar(title: str, subtitle: str = "") -> Column:
+def AppBar(title: str, subtitle: str = "") -> Column:  # noqa: F811
     children: list[Component] = [Text(title, bold=True, size=15.0)]
     if subtitle:
         children.append(Text(subtitle, size=11.0))
     return Column(children, gap=2.0)
 
 
-def FooterKeys(pairs: list) -> "Row":
-    children: list[Component] = []
-    for key, label in pairs:
-        children.append(Badge(key, tone="neutral"))
-        children.append(Text(label, size=11.0))
-        children.append(Spacer(8.0))
-    return Row(children, gap=4.0, align="center")
+def FooterKeys(pairs: list) -> Column:  # noqa: F811
+    hints = "   ".join(f"{key} {label}" for key, label in pairs)
+    return Column([Text(hints, size=11.0)], padding=0, gap=0)
 
 
 # ── Public render entry point ──────────────────────────────────────────────
@@ -2199,7 +2306,8 @@ __all__ = [
     # components
     "Component", "Column", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
-    "Spacer", "Divider", "Canvas", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
+    "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
+    "CanvasText", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
     "ListItem", "Row", "TextInput", "TextEdit", "ChatBubble",
     "SelectList", "FormField",
     "InfoTable", "ButtonRow",

@@ -11,6 +11,9 @@ entry = "snake.py"
 [app.capabilities]
 capabilities = ["pipe.open"]
 
+[runtime]
+python_compat = true
+
 [launch]
 
 # Uncomment to publish this app to the marketplace:
