@@ -7,10 +7,9 @@ name = "Snake"
 version = "0.1.0"
 description = "Classic snake game — proves input + draw primitives."
 entry = "snake.py"
-watch = true
 
 [app.capabilities]
-capabilities = ["timer"]
+capabilities = ["pipe.open", "timer"]
 
 [runtime]
 python_compat = true

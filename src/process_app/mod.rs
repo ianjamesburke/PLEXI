@@ -35,109 +35,6 @@ use runtime_state::{FrameDoneOutcome, PgapRuntime, RenderPoll};
 pub(crate) use scheduler::RENDER_IN_FLIGHT_TIMEOUT;
 pub(crate) use transport::StdinItem;
 
-/// Check a manifest `min_sdk_version` against the SDK version reported in the
-/// ready handshake. `reported_sdk` is the handshake `sdk` string, e.g.
-/// `"plexi-sdk-py/0.1.13"`; the version after the last `/` is parsed.
-///
-/// Pure and fully testable. Returns `Ok(())` when the running SDK satisfies the
-/// requirement, or `Err(message)` with a user-facing explanation when it does
-/// not (running SDK too old, or either version string is malformed — never a
-/// silent pass).
-fn check_sdk_gate(min: &str, reported_sdk: &str) -> Result<(), String> {
-    use crate::app::host_version::parse_version;
-
-    let Some(min_v) = parse_version(min) else {
-        return Err(format!(
-            "manifest [app].min_sdk_version = \"{min}\" is not a valid major.minor.patch version"
-        ));
-    };
-    let reported = reported_sdk.rsplit('/').next().unwrap_or("");
-    let Some(sdk_v) = parse_version(reported) else {
-        return Err(format!(
-            "could not parse SDK version from ready handshake (sdk = \"{reported_sdk}\"); \
-             this app requires SDK >= {min}"
-        ));
-    };
-    if sdk_v < min_v {
-        return Err(format!(
-            "this app requires Plexi SDK >= {min}, but the running SDK is {reported}. \
-             Update the Plexi SDK to run it."
-        ));
-    }
-    Ok(())
-}
-
-fn hung_relevant_input(input: &egui::InputState) -> bool {
-    hung_relevant_events(&input.events)
-}
-
-fn hung_relevant_events(events: &[egui::Event]) -> bool {
-    events.iter().any(|event| {
-        matches!(
-            event,
-            egui::Event::Text(_)
-                | egui::Event::Paste(_)
-                | egui::Event::Key {
-                    pressed: true,
-                    ..
-                }
-        )
-    })
-}
-
-#[cfg(test)]
-mod sdk_gate_tests {
-    use super::{check_sdk_gate, hung_relevant_events};
-
-    #[test]
-    fn passes_when_sdk_at_or_above_min() {
-        assert!(check_sdk_gate("0.1.13", "plexi-sdk-py/0.1.13").is_ok());
-        assert!(check_sdk_gate("0.1.0", "plexi-sdk-py/0.1.13").is_ok());
-        assert!(check_sdk_gate("0.1.13", "plexi-sdk-py/0.2.0").is_ok());
-    }
-
-    #[test]
-    fn rejects_when_sdk_older_than_min() {
-        let err = check_sdk_gate("0.2.0", "plexi-sdk-py/0.1.13").unwrap_err();
-        assert!(err.contains(">= 0.2.0"), "message: {err}");
-        assert!(err.contains("0.1.13"), "message: {err}");
-    }
-
-    #[test]
-    fn rejects_malformed_min() {
-        assert!(check_sdk_gate("not-a-version", "plexi-sdk-py/0.1.13").is_err());
-    }
-
-    #[test]
-    fn rejects_unparseable_handshake_version() {
-        assert!(check_sdk_gate("0.1.0", "garbage").is_err());
-    }
-
-    #[test]
-    fn hung_relevant_events_ignore_pointer_only_chrome_input() {
-        let pointer_events = [
-            egui::Event::PointerMoved(egui::pos2(10.0, 10.0)),
-            egui::Event::PointerButton {
-                pos: egui::pos2(10.0, 10.0),
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::default(),
-            },
-        ];
-        assert!(!hung_relevant_events(&pointer_events));
-
-        assert!(hung_relevant_events(&[egui::Event::Text("x".into())]));
-        assert!(hung_relevant_events(&[egui::Event::Paste("x".into())]));
-        assert!(hung_relevant_events(&[egui::Event::Key {
-            key: egui::Key::Enter,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::default(),
-        }]));
-    }
-}
-
 fn channel_from_config_dir(config_dir: &Path) -> Option<String> {
     config_dir
         .file_name()
@@ -272,12 +169,7 @@ pub struct ProcessApp {
     pub(crate) pending_async_completions: usize,
     idle_render_poll_logged: bool,
     sdk: Option<String>,
-    /// Wire protocol version reported in the ready handshake (e.g. `"pgap/3"`).
-    protocol_version: Option<String>,
     features_used: Vec<String>,
-    /// Minimum SDK version this app requires (manifest `[app].min_sdk_version`).
-    /// `None` → no gate. Checked against the SDK version in the ready handshake.
-    pub(crate) min_sdk_version: Option<String>,
     /// workspace_root sent in Init — scopes all SecretGet calls.
     pub(crate) workspace_root: PathBuf,
     /// Directory containing the app's entry file — used to resolve relative
@@ -299,7 +191,7 @@ pub struct ProcessApp {
     /// evaluation. `None` = no posture configured (broker falls back to Ask).
     pub(crate) posture: Option<crate::broker::PermissionPosture>,
     /// Host-owned app event timeline + undo checkpoints + subscriptions
-    /// (src/host/app_timeline.rs). Production panes share the global
+    /// (docs/prm/undo-and-app-events.md). Production panes share the global
     /// instance; tests inject an isolated one.
     pub(crate) app_timeline: Arc<Mutex<crate::host::app_timeline::AppTimeline>>,
     /// Typed pipe registry.
@@ -431,7 +323,7 @@ pub struct ProcessApp {
     commonmark_cache: egui_commonmark::CommonMarkCache,
     /// Image load cache for `RenderCommand::Image` (#1144).
     pub(crate) image_cache: image_cache::ImageCache,
-    /// Per-frame rendering state — component buffers, scroll offsets, and
+    /// Per-frame rendering state — TextInput buffers, scroll offsets, and
     /// accumulated outbound events from widget passes. Extracted from
     /// `ProcessApp` so each concern has a clear owner.
     pub(crate) render_session: RenderSession,
@@ -536,24 +428,55 @@ impl ProcessApp {
         // host credential — apps must use the iq.query / llm broker, never direct API access.
         const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
 
-        // .py entries are launched through the SDK v3 adapter using the shared
-        // Python runtime resolver; no shebang or executable bit is required.
+        // Resolve the bundled Python interpreter path — used both to build the
+        // python3 command for .py entries and to prepend to PATH for PYTHONPATH setup.
+        let bundle_contents = std::env::current_exe().ok().and_then(|exe| {
+            exe.parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf())
+        });
+        let bundled_py_bin = bundle_contents.as_ref().map(|c| {
+            c.join("Resources")
+                .join("assets")
+                .join("python")
+                .join("bin")
+        });
+
+        // .py entries are launched via python3 directly — no shebang or executable bit required.
         let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
-        let python_runtime = if is_python {
+        let py_exe: Option<std::ffi::OsString> = if is_python {
+            // Prefer the per-app venv Python when it exists (D2: per-app venv via uv).
+            let venv_python = bin_path
+                .parent()
+                .map(|app_dir| app_dir.join(".venv").join("bin").join("python"))
+                .filter(|p| p.exists());
+            if let Some(ref vp) = venv_python {
+                log::info!(
+                    "ProcessApp[{type_id}]: using per-app venv Python at {}",
+                    vp.display()
+                );
+            }
             Some(
-                crate::app::python_env::resolve_python_runtime(&type_id, bin_path, false, &[])
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
+                venv_python
+                    .map(std::ffi::OsString::from)
+                    .or_else(|| {
+                        bundled_py_bin
+                            .as_ref()
+                            .map(|b| b.join("python3"))
+                            .filter(|p| p.exists())
+                            .map(std::ffi::OsString::from)
+                    })
+                    .unwrap_or_else(|| std::ffi::OsString::from("python3")),
             )
         } else {
             None
         };
-        let mut cmd = if let Some(ref runtime) = python_runtime {
+        let mut cmd = if let Some(ref py) = py_exe {
             log::info!(
-                "ProcessApp[{type_id}]: launching .py entry via {} ({}) with SDK v3 native adapter",
-                runtime.label,
-                runtime.version,
+                "ProcessApp[{type_id}]: launching .py entry via {:?} with SDK v3 CPython runner",
+                py,
             );
-            let mut c = std::process::Command::new(&runtime.executable);
+            let mut c = std::process::Command::new(py);
             c.arg("-m").arg("plexi_sdk._v3_process").arg(bin_path);
             c
         } else {
@@ -618,22 +541,22 @@ impl ProcessApp {
         // Prepend the bundled Python interpreter's bin/ dir to PATH so that
         // dev-mode .py entries without the bundle still resolve python3 correctly.
         // Falls back silently to host PATH if the bundle runtime isn't present.
-        if let Some(ref py_bin) = crate::app::python_env::bundled_python_bin_dir() {
+        if let Some(ref py_bin) = bundled_py_bin {
             if py_bin.exists() {
                 let host_path = std::env::var("PATH").unwrap_or_default();
                 cmd.env("PATH", format!("{}:{}", py_bin.display(), host_path));
             }
         }
 
-        let pythonpath = python_runtime
+        let bundle_sdk = bundle_contents
             .as_ref()
-            .map(|runtime| runtime.pythonpath.clone())
-            .unwrap_or_else(crate::app::python_env::pythonpath_for_current_exe);
+            .map(|p| p.join("Resources").join("sdk").join("python"));
+        let pythonpath = crate::config::build_pythonpath(bundle_sdk.as_deref());
         log::info!("process_app[{type_id}]: PYTHONPATH={pythonpath}");
 
-        if python_runtime.is_some() {
+        if py_exe.is_some() {
             log::info!(
-                "ProcessApp[{type_id}]: static capability check skipped for SDK v3 native adapter; manifest capabilities are authoritative"
+                "ProcessApp[{type_id}]: static capability check skipped for SDK v3 CPython runner; manifest capabilities are authoritative"
             );
         }
 
@@ -754,9 +677,7 @@ impl ProcessApp {
             pending_async_completions: 0,
             idle_render_poll_logged: false,
             sdk: None,
-            protocol_version: None,
             features_used: Vec::new(),
-            min_sdk_version: None,
             workspace_root,
             app_dir: bin_path
                 .parent()
@@ -929,9 +850,7 @@ impl ProcessApp {
             pending_async_completions: 0,
             idle_render_poll_logged: false,
             sdk: None,
-            protocol_version: None,
             features_used: Vec::new(),
-            min_sdk_version: None,
             workspace_root: std::env::temp_dir(),
             app_dir: std::env::temp_dir(),
             permissions,
@@ -1021,7 +940,7 @@ impl ProcessApp {
         }
     }
 
-    // ── App events + undo (src/host/app_timeline.rs, Phase B) ────────
+    // ── App events + undo (docs/prm/undo-and-app-events.md, Phase B) ────────
 
     /// Subscribe an actor to `publisher_app_id`'s event streams. Gated
     /// through the unified broker: one `TargetType::AppEventStream`
@@ -1296,8 +1215,6 @@ impl ProcessApp {
                         w: size.x,
                         h: size.y,
                     },
-                    canvas_width: self.render_session.last_canvas_width,
-                    canvas_height: self.render_session.last_canvas_height,
                 });
                 self.render_diag.record_render_sent(
                     frame_id,
@@ -1469,8 +1386,13 @@ impl ProcessApp {
     }
 
     fn flush_outbound_events(&mut self) {
+        let mut flushed = false;
         while let Some(event) = self.outbound_events.pop_front() {
             self.send_event(&event);
+            flushed = true;
+        }
+        if flushed {
+            self.mark_render_needed("outbound_event");
         }
     }
 
@@ -1521,39 +1443,6 @@ impl ProcessApp {
                 buf.push_back(line.to_string());
             }
         }
-    }
-
-    /// Process the SDK ready handshake: record the reported SDK / protocol
-    /// versions, run the `min_sdk_version` gate, and mark the runtime ready
-    /// unless the gate rejected the app. Returns `true` if the app passed the
-    /// gate (or no gate was declared), `false` if it was rejected.
-    pub(crate) fn on_ready(
-        &mut self,
-        sdk: String,
-        protocol_version: String,
-        features_used: Vec<String>,
-    ) -> bool {
-        self.features_used = features_used;
-        self.protocol_version = if protocol_version.is_empty() {
-            None
-        } else {
-            Some(protocol_version)
-        };
-
-        if let Some(min) = self.min_sdk_version.clone() {
-            if let Err(message) = check_sdk_gate(&min, &sdk) {
-                self.sdk = Some(sdk);
-                self.record_fatal_error(
-                    message,
-                    String::from("SDK version gate failed at launch (manifest min_sdk_version)"),
-                );
-                return false;
-            }
-        }
-
-        self.sdk = Some(sdk);
-        self.runtime.mark_ready();
-        true
     }
 
     fn set_scheduler_mode(&mut self, mode: &str, fps: Option<u32>) {
@@ -1699,6 +1588,16 @@ impl ProcessApp {
         painter.galley(egui::pos2(text_x, text_y), galley, fg_color);
     }
 
+    /// Drain the buffer for `id` and queue a `TextSubmitted` event. Default
+    /// UX is "field clears on submit" — the next TextInput emit with the
+    /// same id starts empty. Public to the crate for unit tests that
+    /// don't go through egui rendering.
+    #[cfg(test)]
+    pub(crate) fn submit_text_input(&mut self, id: &str) {
+        let ev = self.render_session.submit_text_input(id);
+        self.outbound_events.push_back(ev);
+    }
+
     /// Test hook: shift the in-flight render's start time into the past so
     /// the render-in-flight timeout can be exercised without sleeping.
     #[cfg(test)]
@@ -1766,12 +1665,10 @@ impl ProcessApp {
                     self.click_awaiting_frame = false;
                     self.lifecycle.on_frame_done();
                 }
-                DrawCommand::Control(ControlCommand::Ready {
-                    sdk,
-                    protocol_version,
-                    features_used,
-                }) => {
-                    self.on_ready(sdk, protocol_version, features_used);
+                DrawCommand::Control(ControlCommand::Ready { sdk, features_used }) => {
+                    self.sdk = Some(sdk);
+                    self.features_used = features_used;
+                    self.runtime.mark_ready();
                 }
                 DrawCommand::Control(ControlCommand::SetSchedulerMode { mode, fps }) => {
                     self.set_scheduler_mode(&mode, fps);
@@ -1814,10 +1711,16 @@ impl App for ProcessApp {
         self.poll_mcp_calls();
         self.flush_outbound_events();
 
-        // Lifecycle: track only input that should make the app answer. Pointer
-        // movement/clicks can be host chrome focus work for component widgets;
-        // counting them makes healthy idle SDK apps flash "hung".
-        let had_input = ui.input(hung_relevant_input);
+        // Lifecycle: track user-input recency on this pane. Only required
+        // for the Hung detector — we just need a "did the user touch this
+        // window in the last N seconds" signal, not a per-event log. egui's
+        // per-frame input snapshot exposes that directly.
+        let had_input = ui.input(|i| {
+            !i.events.is_empty()
+                || i.pointer.any_pressed()
+                || i.pointer.any_down()
+                || i.pointer.is_moving()
+        });
         if had_input {
             self.lifecycle.on_user_input();
         }
@@ -1854,8 +1757,6 @@ impl App for ProcessApp {
                 theme: ctx.colors.to_theme_map(),
                 args: self.launch_args.clone(),
                 state: None,
-                width: size.x,
-                height: size.y,
             });
             // Inject persisted state before first render so on_inject runs with data.
             let state = load_app_state(&self.type_id, &self.workspace_root);
@@ -1865,10 +1766,6 @@ impl App for ProcessApp {
                 "ProcessApp[{}]: injected persisted state at startup",
                 self.type_id
             );
-            self.send_event(&PlexiEvent::Resize {
-                width: size.x,
-                height: size.y,
-            });
         }
 
         if (size - self.last_size).length() > 1.0 {
@@ -2263,21 +2160,6 @@ impl App for ProcessApp {
                 let primary_up = mouse_response.clicked() || mouse_response.drag_stopped();
                 let secondary_up = mouse_response.secondary_clicked()
                     || mouse_response.drag_stopped_by(egui::PointerButton::Secondary);
-                // Resolve canvas hit region: iterate in reverse (last-drawn wins)
-                let hit_region = self
-                    .render_session
-                    .canvas_hit_regions
-                    .iter()
-                    .rev()
-                    .find(|(rect, _)| rect.contains(pos))
-                    .map(|(_, id)| id.clone());
-                if hit_region.is_some() {
-                    log::info!(
-                        "app::{}: click resolved to canvas hit region {:?}",
-                        self.type_id,
-                        hit_region
-                    );
-                }
                 if primary_up {
                     self.send_event(&PlexiEvent::MouseUp {
                         x,
@@ -2289,7 +2171,6 @@ impl App for ProcessApp {
                         x,
                         y,
                         button: crate::app_protocol::MouseButton::Primary,
-                        region: hit_region.clone(),
                     });
                     self.mark_render_needed("mouse_up");
                     needs_click_repaint = true;
@@ -2305,7 +2186,6 @@ impl App for ProcessApp {
                         x,
                         y,
                         button: crate::app_protocol::MouseButton::Secondary,
-                        region: hit_region.clone(),
                     });
                     self.mark_render_needed("mouse_up");
                     needs_click_repaint = true;
@@ -2345,7 +2225,7 @@ impl App for ProcessApp {
 
         // Deliver any subscribed app events queued for this pane, then flush
         // events accumulated during this frame (broker AiResponse,
-        // ScrollOffset, etc.) so apps receive them without
+        // TextSubmitted, ScrollOffset, etc.) so apps receive them without
         // waiting for the next frame's start-of-ui flush.
         self.deliver_subscribed_events();
         self.flush_outbound_events();
@@ -2384,11 +2264,11 @@ impl App for ProcessApp {
 
     fn handle_key(&mut self, input: &egui::InputState) -> crate::app::app_trait::KeyDisposition {
         use crate::app::app_trait::KeyDisposition;
-        // When a TextEdit widget has focus, egui owns the keyboard — all
-        // text and key events are consumed by the widget. Don't
+        // When a TextInput widget has focus, egui owns the keyboard — all
+        // text and key events are consumed by the TextEdit widget. Don't
         // forward them to the app's on_key handler (typing "h" in the chat
         // input shouldn't trigger a tier change, for example).
-        if self.render_session.text_edit_has_focus {
+        if self.render_session.text_input_has_focus {
             return KeyDisposition::Passthrough;
         }
         let mut consumed = false;
@@ -2396,7 +2276,7 @@ impl App for ProcessApp {
             match event {
                 egui::Event::Key {
                     key,
-                    pressed,
+                    pressed: true,
                     modifiers,
                     ..
                 } => {
@@ -2459,9 +2339,7 @@ impl App for ProcessApp {
                     );
                     // When a ListView is active, suppress bare j/k/up/down/enter
                     // forwarding — the list_view pass already handled these host-side.
-                    if *pressed
-                        && self.render_session.list_view_intercepts_nav
-                        && !self.render_session.text_edit_has_focus
+                    if self.render_session.list_view_intercepts_nav
                         && !modifiers.ctrl
                         && !modifiers.command
                     {
@@ -2479,19 +2357,11 @@ impl App for ProcessApp {
                         }
                     }
 
-                    // Bare Escape is host-managed: ClosePane checks
-                    // nav_stack_depth and either sends NavBack (sub-view)
-                    // or closes the pane (root). Don't forward to the app
-                    // and don't set `consumed` so it stays in InputState.
-                    if *key == egui::Key::Escape && !modifiers.command {
-                        continue;
-                    }
-
                     // Cmd-modified chords are reserved for host shortcuts
                     // (Cmd+Enter zoom, Cmd+P palette, Cmd+Shift+A notifications,
                     // etc.). Apps can't shadow a host keybind; they use bare
                     // letters or non-Cmd modifiers instead.
-                    if (!is_printable_key || modifiers.ctrl || !*pressed) && !modifiers.command {
+                    if (!is_printable_key || modifiers.ctrl) && !modifiers.command {
                         self.send_event(&PlexiEvent::Key {
                             key: format!("{key:?}"),
                             modifiers: Modifiers {
@@ -2500,12 +2370,9 @@ impl App for ProcessApp {
                                 alt: modifiers.alt,
                                 cmd: modifiers.command,
                             },
-                            pressed: *pressed,
                         });
                     }
-                    if *pressed {
-                        consumed = true;
-                    }
+                    consumed = true;
                 }
                 egui::Event::Text(text) => {
                     for ch in text.chars() {
@@ -2514,7 +2381,6 @@ impl App for ProcessApp {
                         }
                         // Suppress j/k text events when a ListView is active
                         if self.render_session.list_view_intercepts_nav
-                            && !self.render_session.text_edit_has_focus
                             && matches!(ch, 'j' | 'k' | 'J' | 'K')
                         {
                             continue;
@@ -2522,7 +2388,6 @@ impl App for ProcessApp {
                         self.send_event(&PlexiEvent::Key {
                             key: ch.to_string(),
                             modifiers: Modifiers::default(),
-                            pressed: true,
                         });
                     }
                     consumed = true;

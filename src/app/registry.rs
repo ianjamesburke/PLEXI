@@ -57,6 +57,8 @@ pub struct AppManifest {
     pub app: AppManifestApp,
     #[serde(default)]
     pub launch: LaunchSection,
+    #[serde(default)]
+    pub runtime: AppManifestRuntime,
     /// Canonical secret names this app reads via `ctx.secret(...)`. The host
     /// uses this to validate workspace routes at launch and to surface the
     /// missing-secret modal proactively. Empty when omitted.
@@ -114,13 +116,6 @@ pub struct AppManifestApp {
     pub manifest_type: ManifestType,
     #[serde(default)]
     pub version: String,
-    /// Optional minimum SDK version this app requires, as a `major.minor.patch`
-    /// string (e.g. `"0.1.13"`). When set, the host compares it against the SDK
-    /// version reported in the ready handshake and rejects the app with a
-    /// user-visible fatal error if the running SDK is older. Absent → no gate;
-    /// the app launches on any SDK version (preserves every existing app).
-    #[serde(default)]
-    pub min_sdk_version: Option<String>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -157,6 +152,56 @@ pub struct AppManifestApp {
     /// into a per-app venv at `<app_dir>/.venv`. Empty when omitted.
     #[serde(default)]
     pub dependencies: Vec<String>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct AppManifestRuntime {
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub world: Option<String>,
+    #[serde(default)]
+    pub execution: RuntimeExecution,
+    #[serde(default)]
+    pub python_compat: Option<bool>,
+}
+
+impl AppManifestRuntime {
+    fn summary(&self) -> Option<String> {
+        if self.target.is_none()
+            && self.world.is_none()
+            && self.python_compat.is_none()
+            && self.execution == RuntimeExecution::Local
+        {
+            return None;
+        }
+        Some(format!(
+            "target={:?} world={:?} execution={} python_compat={:?}",
+            self.target,
+            self.world,
+            self.execution.as_str(),
+            self.python_compat
+        ))
+    }
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeExecution {
+    #[default]
+    Local,
+    Cloud,
+    PreferredLocal,
+}
+
+impl RuntimeExecution {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Cloud => "cloud",
+            Self::PreferredLocal => "preferred-local",
+        }
+    }
 }
 
 /// Manifest `[app] type` field — chooses the host rendering surface for
@@ -297,55 +342,7 @@ pub struct LaunchSection {
     /// a warning so a typo cannot wedge a launch.
     #[serde(default)]
     pub placement: Option<String>,
-    /// What the host does when this app is launched while an instance already
-    /// exists (#0336). One of [`VALID_ON_LAUNCH`]: `focus_existing` (one
-    /// instance globally — relaunch focuses it, jumping context if needed),
-    /// `focus_existing_in_context` (one instance per context — relaunch focuses
-    /// the instance in the caller's context, else spawns one there), or
-    /// `always_new` (default; every launch spawns fresh). Unlike `placement`,
-    /// an unknown value fails install loudly (validated in [`AppRegistry::load_app`])
-    /// per the config-fails-loud philosophy; a dedup typo must never silently
-    /// degrade to `always_new`. Resolved at launch via [`OnLaunchPolicy`].
-    #[serde(default)]
-    pub on_launch: Option<String>,
 }
-
-/// How the host resolves a launch request when an instance of the app is
-/// already open (`[launch] on_launch`, #0336). Duplicate instances (under
-/// `always_new`) each subscribe to the event bus independently, so event
-/// delivery stays sound; instance identity is the host-stamped pane id, never
-/// a self-assigned id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum OnLaunchPolicy {
-    /// One instance globally. A relaunch focuses the existing pane, jumping to
-    /// its context if it lives in a different one.
-    FocusExisting,
-    /// One instance per context. A relaunch focuses the instance in the
-    /// caller's context if present, otherwise spawns one there.
-    FocusExistingInContext,
-    /// Every launch spawns a fresh instance. Default — matches historical
-    /// behavior, so the field is purely additive.
-    #[default]
-    AlwaysNew,
-}
-
-impl OnLaunchPolicy {
-    /// Parse a manifest `on_launch` string. `Err` = unknown value; callers turn
-    /// that into a loud install-time failure (never a silent fallback).
-    pub fn parse(value: &str) -> Result<Self, ()> {
-        match value {
-            "focus_existing" => Ok(Self::FocusExisting),
-            "focus_existing_in_context" => Ok(Self::FocusExistingInContext),
-            "always_new" => Ok(Self::AlwaysNew),
-            _ => Err(()),
-        }
-    }
-}
-
-/// The valid `[launch] on_launch` policy strings. Kept in one place so the
-/// manifest validator, the launch path, and the author docs agree.
-pub const VALID_ON_LAUNCH: &[&str] =
-    &["focus_existing", "focus_existing_in_context", "always_new"];
 
 /// The host layout-hint vocabulary an app's `[launch] placement` may declare.
 /// Kept in one place so the manifest validator and the launch path agree.
@@ -575,6 +572,25 @@ impl AppRegistry {
                 manifest.schema_version, MANIFEST_SCHEMA_VERSION
             ));
         }
+        if let Some(summary) = manifest.runtime.summary() {
+            log::info!("AppRegistry: '{}' runtime {summary}", manifest.app.id);
+        }
+        if (manifest.app.entry.ends_with(".py") || manifest.app.entry.ends_with(".pyc"))
+            && manifest.runtime.python_compat != Some(true)
+        {
+            return Err(format!(
+                "Python app '{}' must declare [runtime] python_compat = true",
+                manifest.app.id
+            ));
+        }
+        if manifest.runtime.python_compat == Some(true)
+            && !(manifest.app.entry.ends_with(".py") || manifest.app.entry.ends_with(".pyc"))
+        {
+            return Err(format!(
+                "[runtime] python_compat = true requires a .py or .pyc entry for '{}'",
+                manifest.app.id
+            ));
+        }
 
         // STEP-7: refuse to install an app whose declared capabilities include
         // any unknown string. Silent `→ FsRead` fallback was removed in STEP-2;
@@ -586,19 +602,6 @@ impl AppRegistry {
                 "manifest lists {e}; valid values: {}",
                 crate::app::permissions::Capability::all_str_values().join(", ")
             ));
-        }
-
-        // #0336: an unknown `[launch] on_launch` policy fails install loudly.
-        // Unlike `placement` (query-time warn-and-ignore), a silent fallback to
-        // `always_new` would hide a dedup typo and spawn duplicate singletons.
-        if let Some(mode) = &manifest.launch.on_launch {
-            if OnLaunchPolicy::parse(mode).is_err() {
-                return Err(format!(
-                    "manifest [launch] on_launch = '{mode}' is not a valid policy; \
-                     valid values: {}",
-                    VALID_ON_LAUNCH.join(", ")
-                ));
-            }
         }
 
         let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
@@ -662,19 +665,6 @@ impl AppRegistry {
             );
             None
         }
-    }
-
-    /// The app's manifest-declared launch dedup policy (`[launch] on_launch`,
-    /// #0336). Defaults to [`OnLaunchPolicy::AlwaysNew`] when unset or the app
-    /// is not installed. The value is validated loudly at install time, so a
-    /// parse miss here can only mean the app predates validation — treat it as
-    /// the default rather than panicking.
-    pub fn on_launch_for(&self, app_id: &str) -> OnLaunchPolicy {
-        self.apps
-            .get(app_id)
-            .and_then(|a| a.launch.on_launch.as_deref())
-            .and_then(|mode| OnLaunchPolicy::parse(mode).ok())
-            .unwrap_or_default()
     }
 
     /// The registry id of the app that declares `[capabilities].file_types`
@@ -764,7 +754,6 @@ impl AppRegistry {
             installed.manifest.manifest_type,
             installed.source.label(),
         );
-
         // Issue #322: log declared-but-routed status for visibility. The
         // missing-secret prompt fires lazily on first `ctx.secret(...)` call —
         // this just makes the manifest's contract observable in the host log.
@@ -794,7 +783,6 @@ impl AppRegistry {
         ) {
             Ok(mut app) => {
                 app.permissions.allowed_hosts = perms.allowed_hosts;
-                app.min_sdk_version = installed.manifest.min_sdk_version.clone();
                 app.manifest_min_width = installed.launch.min_width.unwrap_or(120.0);
                 app.manifest_min_height = installed.launch.min_height.unwrap_or(80.0);
                 app.compact_threshold = installed.launch.compact.unwrap_or(280.0);
@@ -863,16 +851,13 @@ pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// Returns the directories that [`load`] would scan for the given `cwd`.
-/// Passed to `app_registry_watcher::start()` so the watcher follows the same
-/// workspace detection as the registry. The workspace channel root is included
-/// to catch first-time creation of `apps/` or `agents/`; the host restarts the
-/// watcher after each reload so those new child dirs become direct watches.
+/// Passed to `app_registry_watcher::start()` so the watcher covers exactly the
+/// same paths the registry uses — no independent workspace detection.
 pub fn registry_watch_dirs(cwd: &Path) -> Vec<PathBuf> {
     let mut dirs = vec![apps_dir()];
     let channel_dir = registry_config_dir();
     if let Some(root) = resolve_workspace_root_with_channel(cwd, &channel_dir) {
         let channel_root = root.join(&channel_dir);
-        dirs.push(channel_root.clone());
         dirs.push(channel_root.join("apps"));
         dirs.push(channel_root.join("agents"));
     }
@@ -960,7 +945,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let app_dir = global.path().join("myapp");
         fs::create_dir_all(&app_dir).unwrap();
-        let manifest = "schema_version = 1\n\n[app]\nid = \"myapp\"\ntype = \"app\"\nname = \"My App\"\nversion = \"0.0.1\"\nentry = \"app.py\"\n";
+        let manifest = "schema_version = 1\n\n[app]\nid = \"myapp\"\ntype = \"app\"\nname = \"My App\"\nversion = \"0.0.1\"\nentry = \"app.py\"\n\n[runtime]\npython_compat = true\n";
         fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
         // Write entry without shebang or executable bit.
         fs::write(app_dir.join("app.py"), "import plexi\n").unwrap();
@@ -1165,6 +1150,29 @@ optional = ["ai.query"]
     }
 
     #[test]
+    fn manifest_runtime_python_compat_and_cloud_execution_parse() {
+        let raw = r#"
+schema_version = 1
+
+[app]
+id = "py-wasm"
+type = "app"
+name = "Python WASM"
+version = "0.0.1"
+entry = "main.py"
+
+[runtime]
+target = "wasm32-wasip1"
+execution = "preferred-local"
+python_compat = true
+"#;
+        let parsed: AppManifest = toml::from_str(raw).expect("manifest should parse");
+        assert_eq!(parsed.runtime.target.as_deref(), Some("wasm32-wasip1"));
+        assert_eq!(parsed.runtime.execution, RuntimeExecution::PreferredLocal);
+        assert_eq!(parsed.runtime.python_compat, Some(true));
+    }
+
+    #[test]
     fn manifest_missing_type_field_errors() {
         // No `type` field — must fail to parse. Required field, no
         // `serde(default)`. Discipline matches `schema_version`.
@@ -1202,87 +1210,6 @@ entry = "run.sh"
         assert!(
             parsed.is_err(),
             "manifest with unknown type variant must be rejected, got: {parsed:?}"
-        );
-    }
-
-    // ── #0336 `[launch] on_launch` dedup policy ──────────────────────────
-
-    #[test]
-    fn manifest_with_valid_on_launch_loads_and_resolves_policy() {
-        let global = tempfile::tempdir().unwrap();
-        let bare = tempfile::tempdir().unwrap();
-        let app_dir = global.path().join("singleton-app");
-        fs::create_dir_all(&app_dir).unwrap();
-        let manifest = "\
-schema_version = 1
-
-[app]
-id = \"singleton-app\"
-type = \"app\"
-name = \"Singleton\"
-version = \"0.0.1\"
-entry = \"run.sh\"
-
-[launch]
-on_launch = \"focus_existing\"
-";
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
-        fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
-
-        let registry = AppRegistry::load_with_global(bare.path(), global.path());
-        assert!(
-            registry.get("singleton-app").is_some(),
-            "a valid on_launch policy must load"
-        );
-        assert_eq!(
-            registry.on_launch_for("singleton-app"),
-            OnLaunchPolicy::FocusExisting
-        );
-        // An app that declares no policy defaults to always_new.
-        assert_eq!(
-            registry.on_launch_for("does-not-exist"),
-            OnLaunchPolicy::AlwaysNew
-        );
-    }
-
-    #[test]
-    fn manifest_with_invalid_on_launch_fails_install_loudly() {
-        let global = tempfile::tempdir().unwrap();
-        let bare = tempfile::tempdir().unwrap();
-        let app_dir = global.path().join("bad-policy-app");
-        fs::create_dir_all(&app_dir).unwrap();
-        let manifest = "\
-schema_version = 1
-
-[app]
-id = \"bad-policy-app\"
-type = \"app\"
-name = \"Bad Policy\"
-version = \"0.0.1\"
-entry = \"run.sh\"
-
-[launch]
-on_launch = \"focus_maybe\"
-";
-        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
-        fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
-
-        // Directly assert the loud failure — scan_dir would otherwise just warn
-        // and skip, so we call the loader to inspect the error message.
-        let registry = AppRegistry::load_with_global(bare.path(), bare.path());
-        let err = registry
-            .load_app(&app_dir)
-            .expect_err("an unknown on_launch value must fail to load");
-        assert!(
-            err.contains("on_launch") && err.contains("focus_maybe"),
-            "error must name the offending field and value, got: {err}"
-        );
-
-        // And the app must never reach the registry via the normal scan path.
-        let scanned = AppRegistry::load_with_global(bare.path(), global.path());
-        assert!(
-            scanned.get("bad-policy-app").is_none(),
-            "an app with an invalid on_launch policy must not install"
         );
     }
 
@@ -1593,25 +1520,6 @@ startup_message = \"Starting Greeter…\"
         assert_eq!(
             loaded.canonicalize().unwrap(),
             workspace.path().canonicalize().unwrap(),
-        );
-    }
-
-    #[test]
-    fn registry_watch_dirs_include_workspace_channel_root() {
-        let workspace = tempfile::tempdir().unwrap();
-        let channel_dir = registry_config_dir();
-        let channel_root = workspace.path().join(&channel_dir);
-        fs::create_dir_all(&channel_root).unwrap();
-
-        let dirs = registry_watch_dirs(workspace.path());
-
-        assert!(
-            dirs.contains(&channel_root),
-            "watcher must observe channel root so first-time apps/ creation triggers registry reload"
-        );
-        assert!(
-            dirs.contains(&channel_root.join("apps")),
-            "watcher should directly observe apps/ after it exists"
         );
     }
 

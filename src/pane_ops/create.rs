@@ -26,24 +26,6 @@ use std::path::{Path, PathBuf};
 /// `"terminal"` is intentionally absent — it is a PTY pane, not an `App`.
 pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<Box<dyn App>> {
     match id {
-        "image-viewer" => {
-            let path = args.first().map(PathBuf::from)?;
-            Some(Box::new(crate::app::image_viewer_app::ImageViewerApp::new(
-                path,
-            )))
-        }
-        "video-player" => {
-            let path = args.first().map(PathBuf::from)?;
-            Some(Box::new(crate::app::video_player_app::VideoPlayerApp::new(
-                path,
-            )))
-        }
-        "audio-player" => {
-            let path = args.first().map(PathBuf::from)?;
-            Some(Box::new(crate::app::audio_player_app::AudioPlayerApp::new(
-                path,
-            )))
-        }
         "text-editor" => {
             // No explicit path → a fresh scratch note in the inbox. The file is
             // only created once content is typed (empty notes are deleted).
@@ -83,7 +65,7 @@ fn builtin_restore_args(
     app_state: Option<&serde_json::Value>,
 ) -> Option<Vec<String>> {
     match app_id {
-        "text-editor" | "image-viewer" | "video-player" | "audio-player" => app_state
+        "text-editor" => app_state
             .and_then(|state| state.get("path"))
             .and_then(|path| path.as_str())
             .map(|path| vec![path.to_string()]),
@@ -123,7 +105,6 @@ pub(crate) fn restore_builtin_app_pane(
         hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
-        semantic_state: Default::default(),
     })))
 }
 
@@ -164,7 +145,6 @@ pub(crate) fn restore_assistant_pane(
         hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
-        semantic_state: Default::default(),
     }))
 }
 
@@ -285,53 +265,48 @@ impl PlexiApp {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
-                semantic_state: Default::default(),
             }))
         };
 
         if matches!(hint, Some("overlay")) {
-            if let Some(focused_tile) = self.windows[active].focused_pane {
-                let Some(Tile::Pane(focused_pane_id)) =
-                    self.windows[active].tree.tiles.get(focused_tile)
-                else {
-                    log::warn!(
-                        "app::{app_id}: overlay launch skipped — focused tile is not a pane"
-                    );
-                    return None;
-                };
-                let pane_id = *focused_pane_id;
-                let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
-                    log::warn!(
-                        "app::{app_id}: overlay launch skipped — pane {pane_id} missing from pane map"
-                    );
-                    return None;
-                };
-                process.set_pane_id(pane_id);
-                self.windows[active].panes.insert(
-                    pane_id,
-                    new_app_pane(
-                        pane_id,
-                        process,
-                        workspace_root,
-                        group,
-                        None,
-                        Some(Box::new(replaced_pane)),
-                    ),
+            let Some(focused_tile) = self.windows[active].focused_pane else {
+                log::warn!("app::{app_id}: overlay launch skipped — no focused pane");
+                return None;
+            };
+            let Some(Tile::Pane(focused_pane_id)) =
+                self.windows[active].tree.tiles.get(focused_tile)
+            else {
+                log::warn!("app::{app_id}: overlay launch skipped — focused tile is not a pane");
+                return None;
+            };
+            let pane_id = *focused_pane_id;
+            let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
+                log::warn!(
+                    "app::{app_id}: overlay launch skipped — pane {pane_id} missing from pane map"
                 );
-                self.set_window_focused_pane(active, focused_tile);
-                log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
-                crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
-                    app_id: app_id.to_string(),
-                    type_id: app_id.to_string(),
+                return None;
+            };
+            process.set_pane_id(pane_id);
+            self.windows[active].panes.insert(
+                pane_id,
+                new_app_pane(
                     pane_id,
-                    timestamp: crate::host::event_log::now_timestamp(),
-                });
-                return Some(pane_id);
-            }
-            log::info!(
-                "app::{app_id}: overlay requested but empty context — launching as root pane"
+                    process,
+                    workspace_root,
+                    group,
+                    None,
+                    Some(Box::new(replaced_pane)),
+                ),
             );
-            // fall through to root-pane path below
+            self.set_window_focused_pane(active, focused_tile);
+            log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
+            crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+                app_id: app_id.to_string(),
+                type_id: app_id.to_string(),
+                pane_id,
+                timestamp: crate::host::event_log::now_timestamp(),
+            });
+            return Some(pane_id);
         }
 
         if self.windows[active].zoomed_pane.take().is_some() {
@@ -431,7 +406,6 @@ impl PlexiApp {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
-                semantic_state: Default::default(),
             })),
         );
         if self.windows[active].focused_pane.is_none() {
@@ -613,7 +587,6 @@ impl PlexiApp {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
-                semantic_state: Default::default(),
             })),
         );
         crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
@@ -749,45 +722,45 @@ impl PlexiApp {
         // Path-launched apps (app run / app init) are never inserted into the
         // registry's in-memory map, so launch_process returns None. Fall back
         // to loading the manifest directly from workspace_root.
-        let new_process_opt =
-            if new_process_opt.is_none() && workspace_root.join("manifest.toml").exists() {
-                match self.registry.load_app(&workspace_root) {
-                    Ok(installed) => {
-                        let perms = installed.manifest.capabilities.to_permissions();
-                        let caps = perms.capabilities.clone();
-                        let keyboard_capture = installed.launch.keyboard_capture;
-                        match crate::process_app::ProcessApp::launch(
-                            installed.manifest.id.clone(),
-                            installed.manifest.name.clone(),
-                            &installed.bin_path,
-                            &cwd,
-                            &saved_launch_args,
-                            workspace_root.clone(),
-                            caps,
-                            keyboard_capture,
-                            installed.manifest.mcp.as_ref(),
-                        ) {
-                            Ok(mut process) => {
-                                process.permissions.allowed_hosts = perms.allowed_hosts;
-                                process.min_sdk_version = installed.manifest.min_sdk_version.clone();
-                                Some(process)
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "reload_app_pane({pane_id}): path-reload launch failed: {e}"
-                                );
-                                None
-                            }
+        let new_process_opt = if new_process_opt.is_none()
+            && workspace_root.join("manifest.toml").exists()
+        {
+            match self.registry.load_app(&workspace_root) {
+                Ok(installed) => {
+                    let perms = installed.manifest.capabilities.to_permissions();
+                    let caps = perms.capabilities.clone();
+                    let keyboard_capture = installed.launch.keyboard_capture;
+                    match crate::process_app::ProcessApp::launch(
+                        installed.manifest.id.clone(),
+                        installed.manifest.name.clone(),
+                        &installed.bin_path,
+                        &cwd,
+                        &saved_launch_args,
+                        workspace_root.clone(),
+                        caps,
+                        keyboard_capture,
+                        installed.manifest.mcp.as_ref(),
+                    ) {
+                        Ok(mut process) => {
+                            process.permissions.allowed_hosts = perms.allowed_hosts;
+                            Some(process)
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "reload_app_pane({pane_id}): path-reload launch failed: {e}"
+                            );
+                            None
                         }
                     }
-                    Err(e) => {
-                        log::warn!("reload_app_pane({pane_id}): path-reload load_app failed: {e}");
-                        None
-                    }
                 }
-            } else {
-                new_process_opt
-            };
+                Err(e) => {
+                    log::warn!("reload_app_pane({pane_id}): path-reload load_app failed: {e}");
+                    None
+                }
+            }
+        } else {
+            new_process_opt
+        };
         let Some(mut new_process) = new_process_opt else {
             log::warn!(
                 "reload_app_pane({pane_id}): launch_process returned None — keeping old instance"
@@ -926,7 +899,6 @@ impl PlexiApp {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
-                semantic_state: Default::default(),
             }))
         };
 
@@ -1180,133 +1152,6 @@ impl PlexiApp {
         );
     }
 
-    /// Locate an open instance of app `manifest_id`, including one currently
-    /// buried under overlay replacements. When `context_id` is `Some`, only
-    /// panes whose owning window belongs to that context match; `None` searches
-    /// every window in every context. Returns `(window_index, slot_pane_id,
-    /// overlay_depth)` — depth 0 means the instance is the visible pane at the
-    /// slot, depth N means N overlays sit on top of it and must be popped to
-    /// reveal it. Backs the `[launch] on_launch` resolver (#0336).
-    ///
-    /// Identity is `AppPane::manifest_id`, not `runtime.type_id()`: WASM panes
-    /// all report `type_id() == "wasm"`, so only the manifest id is a stable,
-    /// runtime-agnostic identity that equals the launch id across process,
-    /// WASM, and builtin apps. Pane lookup is global by design (#878); context
-    /// scoping comes purely from the owning window's `context_id`.
-    pub(crate) fn locate_app_instance(
-        &self,
-        manifest_id: &str,
-        context_id: Option<u64>,
-    ) -> Option<(usize, PaneId, usize)> {
-        // Walk a pane's overlay-replacement chain, returning how many overlays
-        // sit above the first pane whose manifest id matches (`0` = the pane
-        // itself matches). The replaced pane an overlay stores can be any
-        // variant; only app panes carry an id and a further chain.
-        fn overlay_depth(pane: &Pane, manifest_id: &str) -> Option<usize> {
-            let mut current = pane;
-            let mut depth = 0;
-            loop {
-                let app = current.as_app()?;
-                if app.manifest_id == manifest_id {
-                    return Some(depth);
-                }
-                current = app.overlay_replaced.as_deref()?;
-                depth += 1;
-            }
-        }
-
-        self.windows.iter().enumerate().find_map(|(win_idx, win)| {
-            if context_id.is_some_and(|c| c != win.context_id) {
-                return None;
-            }
-            win.panes
-                .iter()
-                .find_map(|(slot, pane)| overlay_depth(pane, manifest_id).map(|d| (win_idx, *slot, d)))
-        })
-    }
-
-    /// Convenience wrapper returning `(slot_pane_id, window_index)` for the
-    /// first open instance of `manifest_id`, discarding overlay depth. Used by
-    /// tests that only assert which instance was matched.
-    #[cfg(test)]
-    pub(crate) fn find_app_pane_by_type(
-        &self,
-        manifest_id: &str,
-        context_id: Option<u64>,
-    ) -> Option<(PaneId, usize)> {
-        self.locate_app_instance(manifest_id, context_id)
-            .map(|(win_idx, slot, _)| (slot, win_idx))
-    }
-
-    /// Resolve an app's `[launch] on_launch` policy (#0336) against currently
-    /// open panes before spawning. Returns `Some(existing_pane_id)` when the
-    /// launch was satisfied by focusing a live instance — the caller must then
-    /// NOT spawn, and must report *that* pane id (never a predicted one).
-    /// Returns `None` when no instance matched and the caller should spawn.
-    ///
-    /// `caller_context_id` is the context the launch originates in (the active
-    /// window's context). Cross-context focus for `focus_existing` uses the
-    /// sanctioned [`jump_to_context`](Self::jump_to_context) path; it never
-    /// mutates `active_window`/`router.active` to steer the focus. An instance
-    /// buried under overlays is revealed by popping those overlays via the
-    /// sanctioned [`restore_overlay_replacement`](super::layout::restore_overlay_replacement)
-    /// path — the same restore Esc performs — before focusing. Revealing a
-    /// buried instance therefore pops (and closes) every app overlay stacked
-    /// above it, exactly as pressing Esc that many times would; this is
-    /// intentional, not incidental.
-    ///
-    /// `args`/`cwd_override` are the relaunch payload. When a dedup focuses an
-    /// existing instance they are *dropped* — the running app never receives
-    /// them (delivering relaunch args to a live instance via a bus event is
-    /// future work). The drop is logged at `warn` so it is observable.
-    pub(crate) fn resolve_on_launch_policy(
-        &mut self,
-        id: &str,
-        caller_context_id: u64,
-        args: &[String],
-        cwd_override: Option<&Path>,
-    ) -> Option<PaneId> {
-        use crate::app::registry::OnLaunchPolicy;
-        let (scope, target) = match self.registry.on_launch_for(id) {
-            OnLaunchPolicy::AlwaysNew => return None,
-            OnLaunchPolicy::FocusExisting => {
-                ("focus_existing", self.locate_app_instance(id, None))
-            }
-            OnLaunchPolicy::FocusExistingInContext => (
-                "focus_existing_in_context",
-                self.locate_app_instance(id, Some(caller_context_id)),
-            ),
-        };
-        let Some((win_idx, slot, overlay_depth)) = target else {
-            log::info!(
-                "on_launch[{scope}]: no existing '{id}' instance to focus (context {caller_context_id}) — spawning"
-            );
-            return None;
-        };
-        let ctx_id = self.windows[win_idx].context_id;
-        let win_id = self.windows[win_idx].window_id;
-        log::info!(
-            "on_launch[{scope}]: '{id}' already open at slot {slot} in context {ctx_id} (overlay_depth={overlay_depth}) — focusing instead of spawning"
-        );
-        if !args.is_empty() || cwd_override.is_some() {
-            log::warn!(
-                "on_launch[{scope}]: '{id}' relaunch carried args={args:?} cwd={cwd_override:?} \
-                 but the policy focused the existing instance — these are NOT delivered to it \
-                 (relaunch arg delivery to a running instance is future work)"
-            );
-        }
-        // Pop any overlays covering the instance so a relaunch reveals it, then
-        // unhide (it may have been hidden rather than overlaid) and focus.
-        for _ in 0..overlay_depth {
-            super::layout::restore_overlay_replacement(&mut self.windows[win_idx].panes, slot);
-        }
-        if let Some(pane) = self.windows[win_idx].panes.get_mut(&slot) {
-            pane.set_hidden(false);
-        }
-        self.jump_to_context(win_idx, win_id, Some(slot));
-        Some(slot)
-    }
-
     /// Launch an installed app by id in the focused pane.
     pub(crate) fn launch_app_by_id(&mut self, id: &str) {
         let _ = self.launch_app_by_id_with_layout(id, None, &[], None);
@@ -1316,44 +1161,13 @@ impl PlexiApp {
     ///   "overlay" (default) — full pane takeover; Esc restores the original pane
     ///   "split_h"           — horizontal split, new pane to the right
     ///   "split_v"           — vertical split, new pane below
-    ///
-    /// Honors the app's `[launch] on_launch` dedup policy: returns
-    /// `Ok(Some(existing_pane_id))` when a live instance satisfied the launch
-    /// (nothing was spawned), and `Ok(None)` when a fresh pane was spawned (the
-    /// caller's predicted `next_pane_id()` is then the real id).
     pub(crate) fn launch_app_by_id_with_layout(
         &mut self,
         id: &str,
         layout: Option<String>,
         args: &[String],
         cwd_override: Option<PathBuf>,
-    ) -> Result<Option<PaneId>, String> {
-        self.launch_app_by_id_with_layout_inner(id, layout, args, cwd_override, false)
-    }
-
-    /// Like [`launch_app_by_id_with_layout`](Self::launch_app_by_id_with_layout)
-    /// but bypasses the `[launch] on_launch` dedup policy so a fresh instance is
-    /// always spawned. Used by the split-mirror path (#0336), whose whole point
-    /// is to duplicate a pane — with a singleton app the policy would otherwise
-    /// silently no-op the mirror.
-    pub(crate) fn launch_app_by_id_with_layout_forced(
-        &mut self,
-        id: &str,
-        layout: Option<String>,
-        args: &[String],
-        cwd_override: Option<PathBuf>,
-    ) -> Result<Option<PaneId>, String> {
-        self.launch_app_by_id_with_layout_inner(id, layout, args, cwd_override, true)
-    }
-
-    fn launch_app_by_id_with_layout_inner(
-        &mut self,
-        id: &str,
-        layout: Option<String>,
-        args: &[String],
-        cwd_override: Option<PathBuf>,
-        bypass_on_launch: bool,
-    ) -> Result<Option<PaneId>, String> {
+    ) -> Result<(), String> {
         // "terminal" is a builtin pane type, not in the app registry.
         // Reached via SDK AppCommand::SpawnApp("terminal", ...) and legacy paths.
         // Socket IPC and spawn-queue handle terminal inline in app/mod.rs.
@@ -1376,32 +1190,7 @@ impl PlexiApp {
                 new_pane_first,
                 None,
             );
-            return Ok(None);
-        }
-
-        // The Assistant is a compiled-in app whose constructor needs the live
-        // broker and channel profile, so it cannot participate in the
-        // broker-free `builtin_factory`. Keep it on the same generic app-open
-        // route as every other builtin so scene and CLI callers do not need an
-        // app-specific command.
-        if id == "assistant" {
-            if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
-                crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
-                return Err("assistant is not enabled on this release channel".to_string());
-            }
-            let predicted = self.host.next_pane_id();
-            self.open_assistant_pane_with_hint(layout.as_deref().unwrap_or("overlay"));
-            let pane_id = self.windows[self.active_window]
-                .panes
-                .iter()
-                .find_map(|(pane_id, pane)| {
-                    pane.as_app()
-                        .filter(|app| app.runtime.type_id() == "assistant")
-                        .map(|_| *pane_id)
-                })
-                .unwrap_or(predicted);
-            log::info!("launch_app_by_id_with_layout: 'assistant' resolved as builtin pane_id={pane_id}");
-            return Ok(Some(pane_id));
+            return Ok(());
         }
 
         // When the caller does not specify a placement, fall back to the app's
@@ -1409,23 +1198,6 @@ impl PlexiApp {
         // (`overlay`). One resolution point so every downstream hint inherits
         // it (#2283). Builtins are not in the registry → None → `overlay`.
         let layout = layout.or_else(|| self.registry.placement_for(id));
-
-        // #0336: honor the app's `[launch] on_launch` dedup policy before any
-        // spawn path (unless the caller forces a fresh instance, e.g. the
-        // split-mirror). If a live instance already satisfies the policy we
-        // focus it and return its real pane id; otherwise we fall through and
-        // spawn as usual. This sits ahead of the background re-attach below on
-        // purpose: the policy only matches *open* panes, so a `focus_existing`
-        // app whose pane was closed (its process parked in `background_apps`)
-        // finds no pane here, falls through, and re-attaches — the two compose.
-        if !bypass_on_launch {
-            let caller_context_id = self.windows[self.active_window].context_id;
-            if let Some(existing_id) =
-                self.resolve_on_launch_policy(id, caller_context_id, args, cwd_override.as_deref())
-            {
-                return Ok(Some(existing_id));
-            }
-        }
 
         let cwd_explicit = cwd_override.is_some();
         let cwd = cwd_override
@@ -1449,7 +1221,7 @@ impl PlexiApp {
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
             let perms = crate::app::permissions::AppPermissions::builtin();
             self.open_builtin_app_pane(app, perms, cwd, group, Some(&hint), None);
-            return Ok(None);
+            return Ok(());
         }
 
         // Re-attach a parked background app if one is waiting
@@ -1459,7 +1231,7 @@ impl PlexiApp {
             let group = self.registry.group_for(id);
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
             self.open_process_app_pane(id, *parked, cwd, group, Some(&hint));
-            return Ok(None);
+            return Ok(());
         }
 
         // Ensure the registry is up-to-date: rescan if the app was added mid-session
@@ -1475,7 +1247,7 @@ impl PlexiApp {
             log::warn!("pre-flight: '{id}' cannot launch — missing: {missing:?}");
             let fail_hint = layout.or_else(|| Some("overlay".to_string()));
             self.open_launch_failed_pane(id, fail_hint.as_deref(), missing, cwd);
-            return Ok(None);
+            return Ok(());
         }
 
         // Query group/hint after any registry reload so metadata reflects the
@@ -1494,7 +1266,7 @@ impl PlexiApp {
                     hint.as_deref(),
                     args.to_vec(),
                 )?;
-                return Ok(None);
+                return Ok(());
             }
         }
 
@@ -1508,13 +1280,13 @@ impl PlexiApp {
                 );
             }
             self.open_process_app_pane(id, process, cwd, group, hint.as_deref());
-            return Ok(None);
+            return Ok(());
         }
 
         // Tier 4 — CLI native descriptor (plexi_app field).
         if let Some(process) = self.try_launch_cli_pgap_app(id, &cwd) {
             self.open_process_app_pane(&format!("cli:{id}"), process, cwd, group, hint.as_deref());
-            Ok(None)
+            Ok(())
         } else {
             log::warn!("launch_app_by_id: app '{id}' not found or failed to launch");
             Err(format!("app '{id}' not found"))
@@ -1539,7 +1311,6 @@ impl PlexiApp {
             args,
             true,
         )
-        .map(|_| ())
     }
 
     pub(crate) fn launch_app_by_path_with_layout_no_review_modal(
@@ -1548,7 +1319,7 @@ impl PlexiApp {
         layout: Option<String>,
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
-    ) -> Result<Option<PaneId>, String> {
+    ) -> Result<(), String> {
         self.launch_app_by_path_with_layout_inner(
             app_path,
             layout,
@@ -1565,7 +1336,7 @@ impl PlexiApp {
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
         queue_raw_wasm_review: bool,
-    ) -> Result<Option<PaneId>, String> {
+    ) -> Result<(), String> {
         let app_dir = PathBuf::from(app_path);
         log::info!("launch_app_by_path_with_layout: path={app_path}");
 
@@ -1584,18 +1355,16 @@ impl PlexiApp {
                     .unwrap_or_else(|| PathBuf::from("."))
             });
             if queue_raw_wasm_review {
-                return self
-                    .review_or_open_raw_wasm_app_pane(
-                        &app_id,
-                        &app_dir,
-                        workspace_root,
-                        args.to_vec(),
-                    )
-                    .map(|_| None);
+                return self.review_or_open_raw_wasm_app_pane(
+                    &app_id,
+                    &app_dir,
+                    workspace_root,
+                    args.to_vec(),
+                );
             }
             return self
                 .open_wasm_app_pane(&app_id, &app_dir, workspace_root, args.to_vec())
-                .map(Some);
+                .map(|_| ());
         }
 
         let installed = match self.registry.load_app(&app_dir) {
@@ -1613,12 +1382,7 @@ impl PlexiApp {
         let keyboard_capture = installed.launch.keyboard_capture;
         let app_id = installed.manifest.id.clone();
 
-        let manifest_placement = installed
-            .launch
-            .placement
-            .clone()
-            .filter(|p| crate::app::registry::VALID_PLACEMENTS.contains(&p.as_str()));
-        let layout_hint = Some(cli_open_placement(layout, manifest_placement));
+        let layout_hint = layout.or_else(|| Some("overlay".to_string()));
 
         let cwd = self
             .resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
@@ -1630,40 +1394,13 @@ impl PlexiApp {
             workspace_root.display()
         );
         if installed.manifest.manifest_type == crate::app::registry::ManifestType::Wasm {
-            let pane_id = self.open_installed_wasm_app_pane(
+            self.open_installed_wasm_app_pane(
                 installed,
                 workspace_root,
                 layout_hint.as_deref(),
                 args.to_vec(),
             )?;
-            return Ok(Some(pane_id));
-        }
-        if let Some(config) =
-            crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(&installed.app_dir)
-                .map_err(|e| format!("failed to inspect Python WASM runtime: {e}"))?
-        {
-            log::info!(
-                "launch_app_by_path_with_layout: routing '{}' through python_compat adapter",
-                config.app_id
-            );
-            return match crate::host::wasm_python::WasmPythonAdapter::prepare_from_manifest(
-                &installed.app_dir,
-            ) {
-                Ok(Some(adapter)) => {
-                    let _ = adapter
-                        .bridge_contract_probe((800.0, 600.0), args)
-                        .map_err(|e| format!("failed to prepare Python WASM bridge: {e}"))?;
-                    Err(
-                        "Python WASM adapter prepared, but live CPython lifecycle execution is not wired yet"
-                            .to_string(),
-                    )
-                }
-                Ok(None) => Err(format!(
-                    "runtime.python_compat disappeared while launching '{}'",
-                    config.app_id
-                )),
-                Err(e) => Err(format!("failed to prepare Python WASM runtime: {e}")),
-            };
+            return Ok(());
         }
         match crate::process_app::ProcessApp::launch(
             installed.manifest.id.clone(),
@@ -1678,7 +1415,6 @@ impl PlexiApp {
         ) {
             Ok(mut process) => {
                 process.permissions.allowed_hosts = perms.allowed_hosts;
-                process.min_sdk_version = installed.manifest.min_sdk_version.clone();
                 let group = installed.launch.join_group.clone();
                 let watch = installed.manifest.watch.unwrap_or(false);
                 log::info!(
@@ -1701,9 +1437,7 @@ impl PlexiApp {
                         self.hot_reload.watch(pane_id, &watch_dir);
                     }
                 }
-                new_pane_id
-                    .map(Some)
-                    .ok_or_else(|| format!("launch of '{app_id}' did not create a pane"))
+                Ok(())
             }
             Err(e) => {
                 log::error!("launch_app_by_path_with_layout: failed to launch '{app_id}' from {app_path}: {e}");
@@ -1757,7 +1491,7 @@ impl PlexiApp {
             cwd.clone(),
             caps,
             false, // keyboard_capture
-            None,  // mcp: CLI-spawned apps have no manifest [app.mcp]
+            None, // mcp: CLI-spawned apps have no manifest [app.mcp]
         ) {
             Ok(app) => {
                 log::info!(
@@ -1811,18 +1545,7 @@ impl PlexiApp {
     /// already exists it is focused and unhidden instead of spawning a
     /// duplicate. Conversation state is workspace-scoped on disk, so
     /// close-then-reopen resumes the same conversation.
-    ///
-    /// Builtin exception to the manifest `[launch] on_launch` policy (#0336):
-    /// the Assistant is a host builtin with its own entry point and is never
-    /// routed through `launch_app_by_id_with_layout`, so the generic resolver
-    /// does not see it. Its dedup is per *window* (not per context) and is kept
-    /// hardcoded here rather than expressed as `focus_existing_in_context`,
-    /// which would change the granularity from window to context.
     pub(crate) fn open_assistant_pane(&mut self) {
-        self.open_assistant_pane_with_hint("overlay");
-    }
-
-    fn open_assistant_pane_with_hint(&mut self, hint: &str) {
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
             return;
@@ -1864,7 +1587,7 @@ impl PlexiApp {
             &crate::config::config_dir(),
         ));
         let perms = crate::app::permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(app, perms, workspace_root, None, Some(hint), None);
+        self.open_builtin_app_pane(app, perms, workspace_root, None, Some("overlay"), None);
     }
 
     /// Create a new scratch note in `notes/inbox/` and open it in a text-editor
@@ -1902,7 +1625,7 @@ impl PlexiApp {
         let path_str = path.display().to_string();
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
         match self.launch_app_by_id_with_layout("text-editor", None, &[path_str.clone()], None) {
-            Ok(_) => {
+            Ok(()) => {
                 let pane_id = target_pane_id.or_else(|| {
                     self.windows[active].focused_pane.and_then(|tile_id| {
                         match self.windows[active].tree.tiles.get(tile_id) {
@@ -2039,23 +1762,6 @@ impl PlexiApp {
     }
 }
 
-/// Resolve the pane placement for a CLI- or spawn-request-initiated app open.
-///
-/// The caller's pane is typically the agent's own terminal, so a CLI open must
-/// never take over it (`overlay`). Precedence: an explicit layout from the
-/// command flag, then the app's manifest `[launch] placement`, then a sibling
-/// split (`split_h`). Manifest placement still overrides the default; only the
-/// fallback changed from `overlay` to `split_h` (stint 0330). `manifest_placement`
-/// must already be validated against [`crate::app::registry::VALID_PLACEMENTS`].
-pub(crate) fn cli_open_placement(
-    explicit: Option<String>,
-    manifest_placement: Option<String>,
-) -> String {
-    explicit
-        .or(manifest_placement)
-        .unwrap_or_else(|| "split_h".to_string())
-}
-
 /// Returns `true` if a binary named `name` exists in any directory on `PATH`.
 /// Used to detect when an installed Plexi app shadows a same-named CLI binary.
 fn cli_binary_in_path(name: &str) -> bool {
@@ -2071,71 +1777,6 @@ mod tests {
     use crate::host::pane::{AppRuntime, Pane};
     use crate::process_app::ProcessApp;
     use crate::testing::HostHarness;
-
-    #[test]
-    fn cli_open_placement_defaults_to_sibling_split() {
-        // No explicit flag, no manifest placement → sibling split, never overlay.
-        assert_eq!(cli_open_placement(None, None), "split_h");
-    }
-
-    #[test]
-    fn cli_open_placement_manifest_overrides_default() {
-        // Manifest `[launch] placement` overrides the split default...
-        assert_eq!(
-            cli_open_placement(None, Some("overlay".to_string())),
-            "overlay"
-        );
-    }
-
-    #[test]
-    fn cli_open_placement_explicit_flag_wins_over_manifest() {
-        // ...and an explicit command flag wins over the manifest.
-        assert_eq!(
-            cli_open_placement(Some("tab".to_string()), Some("overlay".to_string())),
-            "tab"
-        );
-    }
-
-    #[test]
-    fn builtin_factory_registers_native_media_viewers() {
-        let cwd = std::path::Path::new("/tmp");
-        for (id, path) in [
-            ("image-viewer", "/tmp/photo.png"),
-            ("video-player", "/tmp/clip.mp4"),
-            ("audio-player", "/tmp/song.mp3"),
-        ] {
-            let args = vec![path.to_string()];
-            let app = builtin_factory(id, cwd, &args).expect("media viewer builtin");
-            assert_eq!(app.type_id(), id);
-            assert!(
-                app.display_name()
-                    .contains(std::path::Path::new(path).file_name().unwrap().to_str().unwrap()),
-                "display name should include opened file"
-            );
-        }
-    }
-
-    fn write_sleeping_process_app(app_dir: &std::path::Path, id: &str) {
-        std::fs::create_dir_all(app_dir).expect("create app dir");
-        std::fs::write(
-            app_dir.join("manifest.toml"),
-            format!(
-                "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
-            ),
-        )
-        .expect("write manifest");
-        let entry = app_dir.join("run.sh");
-        std::fs::write(&entry, "#!/bin/sh\nsleep 30\n").expect("write entry");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&entry)
-                .expect("entry metadata")
-                .permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&entry, perms).expect("chmod entry");
-        }
-    }
 
     /// Regression guard for issue #622: launching an app via `open_process_app_pane`
     /// into an empty context (welcome screen) silently did nothing — the process was
@@ -2203,25 +1844,6 @@ mod tests {
             h.app.windows[0].tree.root.is_some(),
             "tree root should be set after launch into empty context"
         );
-    }
-
-    #[test]
-    fn generic_app_launch_resolves_assistant_builtin() {
-        let _channel = crate::config::set_test_channel("alpha");
-        let mut h = HostHarness::new();
-
-        let pane_id = h
-            .app
-            .launch_app_by_id_with_layout("assistant", Some("split_h".into()), &[], None)
-            .expect("generic Assistant launch must succeed")
-            .expect("Assistant launch returns its real pane id");
-
-        let pane = h.app.windows[0]
-            .panes
-            .get(&pane_id)
-            .and_then(Pane::as_app)
-            .expect("Assistant app pane");
-        assert_eq!(pane.runtime.type_id(), "assistant");
     }
 
     #[test]
@@ -2355,6 +1977,7 @@ mod tests {
             type_id: "terminal".to_string(),
             layout: Some("split_v".to_string()),
             args: vec![],
+            pipe_id: None,
             from_pane_id: None,
             request_id: None,
             response_file: None,
@@ -2381,55 +2004,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn spawn_pane_path_overlay_response_returns_reused_pane_id() {
-        let mut h = HostHarness::new();
-        let focused_pane_id = h.add_test_pane();
-        let root = h.app.windows[0]
-            .tree
-            .root
-            .expect("root tile after add_test_pane");
-        h.app.windows[0].focused_pane = Some(root);
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let app_dir = dir.path().join("overlay-response-app");
-        write_sleeping_process_app(&app_dir, "overlay-response-app");
-        let response_file = dir.path().join("spawn-response.json");
-
-        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
-            type_id: String::new(),
-            layout: Some("overlay".to_string()),
-            args: vec![],
-            from_pane_id: None,
-            request_id: None,
-            response_file: Some(response_file.to_string_lossy().to_string()),
-            ephemeral: false,
-            cwd: None,
-            no_focus: false,
-            path: Some(app_dir.to_string_lossy().to_string()),
-            workspace_root: None,
-            target_context: None,
-            name: None,
-        });
-        h.run_frames(2);
-
-        let response = std::fs::read_to_string(&response_file).expect("spawn response file");
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("spawn response JSON");
-        assert_eq!(
-            response["pane_id"],
-            serde_json::json!(focused_pane_id),
-            "overlay path launch must return the reused app pane id"
-        );
-        assert!(
-            matches!(
-                h.app.windows[0].panes.get(&focused_pane_id),
-                Some(Pane::App(app)) if app.manifest_id == "overlay-response-app"
-            ),
-            "returned pane id must address the launched app pane"
-        );
-    }
-
     /// Regression guard for issue #890: terminal panes spawned with an initial_cmd
     /// must persist after the process exits (no auto-close). The pane must appear
     /// in pane list and accept pane send calls.
@@ -2447,6 +2021,7 @@ mod tests {
             type_id: "terminal".to_string(),
             layout: Some("split_v".to_string()),
             args: vec!["echo".to_string(), "hello".to_string()],
+            pipe_id: None,
             from_pane_id: None,
             request_id: None,
             response_file: None,
@@ -2493,6 +2068,7 @@ mod tests {
             type_id: "terminal".to_string(),
             layout: None,
             args: vec![],
+            pipe_id: None,
             from_pane_id: None,
             request_id: None,
             response_file: None,
@@ -2538,6 +2114,7 @@ mod tests {
             type_id: "terminal".to_string(),
             layout: Some("tab".to_string()),
             args: vec![],
+            pipe_id: None,
             from_pane_id: None,
             request_id: None,
             response_file: None,
@@ -2593,6 +2170,7 @@ mod tests {
             type_id: "terminal".to_string(),
             layout: Some("new_window".to_string()),
             args: vec![],
+            pipe_id: None,
             from_pane_id: None,
             request_id: None,
             response_file: None,
@@ -2632,39 +2210,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn spawn_pane_new_window_uses_explicit_cwd() {
-        let mut h = HostHarness::new();
-        let _pane = h.add_test_pane();
-        let root = h.app.windows[0].tree.root.expect("root tile");
-        h.app.windows[0].focused_pane = Some(root);
-        let cwd = tempfile::tempdir().expect("cwd");
-        let cwd_path = cwd.path().to_path_buf();
-
-        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
-            type_id: "terminal".to_string(),
-            layout: Some("new_window".to_string()),
-            args: vec![],
-            from_pane_id: None,
-            request_id: None,
-            response_file: None,
-            ephemeral: false,
-            cwd: Some(cwd_path.to_string_lossy().into_owned()),
-            no_focus: false,
-            path: None,
-            workspace_root: None,
-            target_context: None,
-            name: None,
-        });
-        h.run_frames(2);
-
-        let created = h.app.windows.last().expect("new window");
-        assert_eq!(
-            created.path, cwd_path,
-            "explicit SpawnPane cwd must become the new terminal window cwd"
-        );
-    }
-
     /// A second `new_window` spawn places the next window at grid_x=2, not grid_x=1.
     #[test]
     fn spawn_pane_new_window_stacks_right() {
@@ -2679,6 +2224,7 @@ mod tests {
                 type_id: "terminal".to_string(),
                 layout: Some("new_window".to_string()),
                 args: vec![],
+                pipe_id: None,
                 from_pane_id: None,
                 request_id: None,
                 response_file: None,
@@ -2818,12 +2364,10 @@ mod tests {
         assert!(result.is_some(), "overlay launch must return Some(pane_id)");
     }
 
-    /// Regression guard for stint 0311: launching an app via overlay hint (the
-    /// default layout for Cmd+P) when no pane is open must not be a silent no-op.
-    /// With an empty context the overlay path falls through to the root-pane path,
-    /// installs the app as the tree root, and returns its pane id.
+    /// Regression guard for issue #1706: overlay launch with no focused pane returns
+    /// None (nothing was created) so callers do not try to start a watcher.
     #[test]
-    fn open_process_app_pane_overlay_no_focused_pane_launches_root() {
+    fn open_process_app_pane_overlay_no_focused_pane_returns_none() {
         let mut h = HostHarness::new();
         assert!(
             h.app.windows[0].focused_pane.is_none(),
@@ -2838,17 +2382,9 @@ mod tests {
             None,
             Some("overlay"),
         );
-        let pane_id = result.expect("overlay with empty context must launch as root pane");
-        let root = h.app.windows[0].tree.root.expect("root tile installed");
-        assert_eq!(
-            h.app.windows[0].focused_pane,
-            Some(root),
-            "new root pane must be focused"
-        );
-        assert_eq!(
-            h.app.windows[0].tree.tiles.get(root),
-            Some(&Tile::Pane(pane_id)),
-            "root tile must hold the launched app pane"
+        assert!(
+            result.is_none(),
+            "overlay with no focused pane must return None"
         );
     }
 
@@ -3068,6 +2604,7 @@ mod quick_note_tests {
                 type_id: "terminal".to_string(),
                 layout: Some("split_v".to_string()),
                 args: vec![],
+                pipe_id: None,
                 from_pane_id: None,
                 request_id: Some("req-ctx-bad".to_string()),
                 response_file: None,
@@ -3109,6 +2646,7 @@ mod quick_note_tests {
             type_id: "terminal".to_string(),
             layout: Some("split_h".to_string()),
             args: vec![],
+            pipe_id: None,
             from_pane_id: None,
             request_id: None,
             response_file: None,
@@ -3131,6 +2669,7 @@ mod quick_note_tests {
             type_id: "terminal".to_string(),
             layout: Some("split_v".to_string()),
             args: vec![],
+            pipe_id: None,
             from_pane_id: Some(pane_a),
             request_id: None,
             response_file: None,
