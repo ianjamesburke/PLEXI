@@ -16,7 +16,8 @@ use crate::app::registry::{AppManifest, RuntimeExecution};
 
 use super::wasm_app::bindings::plexi::platform::types::{
     BadgeColor, ButtonNode, ButtonStyle, ColumnNode, FileReadEffect, FileWriteEffect, IndexedNode,
-    InputEvent, KeyEvent, StateSnapshot, TextNode, TimerEffect, UiActionEvent, UiNodeData, UiTree,
+    InputEvent, KeyEvent, ListNode, PaddingNode, ProgressBarNode, RowNode, ScrollNode,
+    StateSnapshot, TextInputNode, TextNode, TimerEffect, UiActionEvent, UiNodeData, UiTree,
     UiValueChangeEvent,
 };
 use super::wasm_app::{Alignment, Effect};
@@ -445,10 +446,60 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         })),
+        "TextInput" | "text_input" | "text-input" => Ok(UiNodeData::TextInput(TextInputNode {
+            value: value
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            placeholder: value
+                .get("placeholder")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            on_change: value
+                .get("on_change")
+                .or_else(|| value.get("on-change"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            on_submit: value
+                .get("on_submit")
+                .or_else(|| value.get("on-submit"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            password: value
+                .get("password")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })),
+        "Row" | "row" => Ok(UiNodeData::Row(RowNode {
+            children: u32_list(value, "children")?,
+            gap: optional_f32(value, "gap")?.unwrap_or(0.0),
+            align: decode_alignment(
+                value
+                    .get("align")
+                    .and_then(Value::as_str)
+                    .unwrap_or("start"),
+            )?,
+            grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
+        })),
         "Divider" | "divider" => Ok(UiNodeData::Divider),
         "Space" | "spacer" => Ok(UiNodeData::Space(
             optional_f32(value, "size")?.unwrap_or(0.0),
         )),
+        "ProgressBar" | "progress_bar" | "progress-bar" => {
+            Ok(UiNodeData::ProgressBar(ProgressBarNode {
+                value: optional_f32(value, "value")?.unwrap_or(0.0),
+                max: optional_f32(value, "max")?.unwrap_or(1.0),
+                color: None,
+                label: value
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            }))
+        }
         "Badge" | "badge" => Ok(UiNodeData::Badge(
             super::wasm_app::bindings::plexi::platform::types::BadgeNode {
                 text: required_string(value, "text")?,
@@ -460,6 +511,36 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                 )?,
             },
         )),
+        "ListView" | "list_view" | "list-view" => Ok(UiNodeData::ListView(ListNode {
+            items: u32_list(value, "items")?,
+            selected: value
+                .get("selected")
+                .and_then(Value::as_u64)
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| {
+                    WasmPythonError::BridgeJson("field 'selected' out of range".to_string())
+                })?,
+            on_select: value
+                .get("on_select")
+                .or_else(|| value.get("on-select"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })),
+        "Scroll" | "scroll" => Ok(UiNodeData::Scroll(ScrollNode {
+            child: required_u32(value, "child")?,
+            horizontal: value
+                .get("horizontal")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })),
+        "Padding" | "padding" => Ok(UiNodeData::Padding(PaddingNode {
+            child: required_u32(value, "child")?,
+            top: optional_f32(value, "top")?.unwrap_or(0.0),
+            right: optional_f32(value, "right")?.unwrap_or(0.0),
+            bottom: optional_f32(value, "bottom")?.unwrap_or(0.0),
+            left: optional_f32(value, "left")?.unwrap_or(0.0),
+        })),
         other => Err(WasmPythonError::BridgeJson(format!(
             "Unknown UINode type: {other}"
         ))),
@@ -695,5 +776,26 @@ python_compat = true
             UiNodeData::Text(text) => assert_eq!(text.text, "ok"),
             other => panic!("expected text node, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ui_tree_decodes_interactive_nodes() {
+        let tree = decode_ui_tree(
+            r#"{
+                "root":0,
+                "nodes":[
+                    {"id":0,"key":"0","data":{"type":"Column","children":[1,2,3,4],"gap":4.0}},
+                    {"id":1,"key":"0/input","data":{"type":"TextInput","value":"draft","placeholder":"New item","on_change":"draft","on_submit":"submit"}},
+                    {"id":2,"key":"0/item","data":{"type":"Text","text":"Write tests"}},
+                    {"id":3,"key":"0/list","data":{"type":"ListView","items":[2],"selected":0}},
+                    {"id":4,"key":"0/progress","data":{"type":"ProgressBar","value":3.0,"max":5.0,"label":"3 / 5"}}
+                ]
+            }"#,
+        )
+        .expect("tree");
+
+        assert!(matches!(tree.nodes[1].data, UiNodeData::TextInput(_)));
+        assert!(matches!(tree.nodes[3].data, UiNodeData::ListView(_)));
+        assert!(matches!(tree.nodes[4].data, UiNodeData::ProgressBar(_)));
     }
 }

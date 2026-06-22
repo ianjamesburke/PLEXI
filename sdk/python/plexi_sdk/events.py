@@ -57,6 +57,17 @@ class FocusLost:
 
 
 @dataclass
+class FocusChanged:
+    timestamp: str
+    duration_secs: int = 0
+    reason: str = "focus_changed"
+    pane_id: Optional[int] = None
+    context_name: Optional[str] = None
+    context_root: Optional[str] = None
+    cwd: Optional[str] = None
+
+
+@dataclass
 class TimerFired:
     id: int
 

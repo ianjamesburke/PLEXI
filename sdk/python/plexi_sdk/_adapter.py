@@ -148,4 +148,42 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "style": data.get("style", "secondary"),
             "disabled": data.get("disabled", False),
         }
+    if node_type in ("TextInput", "text_input", "text-input"):
+        return {
+            "type": "TextInput",
+            "value": data.get("value", ""),
+            "placeholder": data.get("placeholder", ""),
+            "on_change": data.get("on_change", data.get("on-change", "")),
+            "on_submit": data.get("on_submit", data.get("on-submit", "")),
+            "password": data.get("password", False),
+        }
+    if node_type == "select_list":
+        items = data.get("items", [])
+        child_ids = []
+        for idx, item in enumerate(items):
+            text = str(item.get("name", "")) if isinstance(item, dict) else str(item)
+            description = ""
+            if isinstance(item, dict):
+                description = str(item.get("description", "") or "")
+            if description:
+                child = {
+                    "type": "column",
+                    "children": [
+                        {"type": "label", "text": text, "bold": True},
+                        {"type": "label", "text": description, "size": 11.0},
+                    ],
+                    "gap": 2.0,
+                }
+            else:
+                child = {"type": "label", "text": text}
+            child_ids.append(flatten(child, f"{key}/{idx}"))
+        selected = data.get("selected_idx")
+        if selected is not None:
+            selected = int(selected)
+        return {
+            "type": "ListView",
+            "items": child_ids,
+            "selected": selected,
+            "on_select": data.get("on_select"),
+        }
     return data
