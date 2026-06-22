@@ -12,7 +12,7 @@ entry = "stats.py"
 python_compat = true
 
 [app.capabilities]
-capabilities = []
+capabilities = ["timer"]
 
 [launch]
 

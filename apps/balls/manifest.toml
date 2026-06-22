@@ -9,7 +9,7 @@ description = "Physics simulation — elastic circle collisions demonstrating Dr
 entry = "balls.py"
 
 [app.capabilities]
-capabilities = []
+capabilities = ["timer"]
 
 [runtime]
 python_compat = true

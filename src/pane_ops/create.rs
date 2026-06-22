@@ -722,44 +722,45 @@ impl PlexiApp {
         // Path-launched apps (app run / app init) are never inserted into the
         // registry's in-memory map, so launch_process returns None. Fall back
         // to loading the manifest directly from workspace_root.
-        let new_process_opt =
-            if new_process_opt.is_none() && workspace_root.join("manifest.toml").exists() {
-                match self.registry.load_app(&workspace_root) {
-                    Ok(installed) => {
-                        let perms = installed.manifest.capabilities.to_permissions();
-                        let caps = perms.capabilities.clone();
-                        let keyboard_capture = installed.launch.keyboard_capture;
-                        match crate::process_app::ProcessApp::launch(
-                            installed.manifest.id.clone(),
-                            installed.manifest.name.clone(),
-                            &installed.bin_path,
-                            &cwd,
-                            &saved_launch_args,
-                            workspace_root.clone(),
-                            caps,
-                            keyboard_capture,
-                            installed.manifest.mcp.as_ref(),
-                        ) {
-                            Ok(mut process) => {
-                                process.permissions.allowed_hosts = perms.allowed_hosts;
-                                Some(process)
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "reload_app_pane({pane_id}): path-reload launch failed: {e}"
-                                );
-                                None
-                            }
+        let new_process_opt = if new_process_opt.is_none()
+            && workspace_root.join("manifest.toml").exists()
+        {
+            match self.registry.load_app(&workspace_root) {
+                Ok(installed) => {
+                    let perms = installed.manifest.capabilities.to_permissions();
+                    let caps = perms.capabilities.clone();
+                    let keyboard_capture = installed.launch.keyboard_capture;
+                    match crate::process_app::ProcessApp::launch(
+                        installed.manifest.id.clone(),
+                        installed.manifest.name.clone(),
+                        &installed.bin_path,
+                        &cwd,
+                        &saved_launch_args,
+                        workspace_root.clone(),
+                        caps,
+                        keyboard_capture,
+                        installed.manifest.mcp.as_ref(),
+                    ) {
+                        Ok(mut process) => {
+                            process.permissions.allowed_hosts = perms.allowed_hosts;
+                            Some(process)
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "reload_app_pane({pane_id}): path-reload launch failed: {e}"
+                            );
+                            None
                         }
                     }
-                    Err(e) => {
-                        log::warn!("reload_app_pane({pane_id}): path-reload load_app failed: {e}");
-                        None
-                    }
                 }
-            } else {
-                new_process_opt
-            };
+                Err(e) => {
+                    log::warn!("reload_app_pane({pane_id}): path-reload load_app failed: {e}");
+                    None
+                }
+            }
+        } else {
+            new_process_opt
+        };
         let Some(mut new_process) = new_process_opt else {
             log::warn!(
                 "reload_app_pane({pane_id}): launch_process returned None — keeping old instance"
@@ -1401,33 +1402,6 @@ impl PlexiApp {
             )?;
             return Ok(());
         }
-        if let Some(config) =
-            crate::host::wasm_python::PythonLaunchConfig::from_manifest_file(&installed.app_dir)
-                .map_err(|e| format!("failed to inspect Python WASM runtime: {e}"))?
-        {
-            log::info!(
-                "launch_app_by_path_with_layout: routing '{}' through python_compat adapter",
-                config.app_id
-            );
-            return match crate::host::wasm_python::WasmPythonAdapter::prepare_from_manifest(
-                &installed.app_dir,
-            ) {
-                Ok(Some(adapter)) => {
-                    let _ = adapter
-                        .bridge_contract_probe((800.0, 600.0), args)
-                        .map_err(|e| format!("failed to prepare Python WASM bridge: {e}"))?;
-                    Err(
-                        "Python WASM adapter prepared, but live CPython lifecycle execution is not wired yet"
-                            .to_string(),
-                    )
-                }
-                Ok(None) => Err(format!(
-                    "runtime.python_compat disappeared while launching '{}'",
-                    config.app_id
-                )),
-                Err(e) => Err(format!("failed to prepare Python WASM runtime: {e}")),
-            };
-        }
         match crate::process_app::ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
@@ -1517,7 +1491,7 @@ impl PlexiApp {
             cwd.clone(),
             caps,
             false, // keyboard_capture
-            None,  // mcp: CLI-spawned apps have no manifest [app.mcp]
+            None, // mcp: CLI-spawned apps have no manifest [app.mcp]
         ) {
             Ok(app) => {
                 log::info!(

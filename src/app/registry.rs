@@ -575,6 +575,22 @@ impl AppRegistry {
         if let Some(summary) = manifest.runtime.summary() {
             log::info!("AppRegistry: '{}' runtime {summary}", manifest.app.id);
         }
+        if (manifest.app.entry.ends_with(".py") || manifest.app.entry.ends_with(".pyc"))
+            && manifest.runtime.python_compat != Some(true)
+        {
+            return Err(format!(
+                "Python app '{}' must declare [runtime] python_compat = true",
+                manifest.app.id
+            ));
+        }
+        if manifest.runtime.python_compat == Some(true)
+            && !(manifest.app.entry.ends_with(".py") || manifest.app.entry.ends_with(".pyc"))
+        {
+            return Err(format!(
+                "[runtime] python_compat = true requires a .py or .pyc entry for '{}'",
+                manifest.app.id
+            ));
+        }
 
         // STEP-7: refuse to install an app whose declared capabilities include
         // any unknown string. Silent `→ FsRead` fallback was removed in STEP-2;
@@ -656,7 +672,9 @@ impl AppRegistry {
     /// leading dot. Backs resolution tier (b) of the File Explorer open path
     /// (#2283).
     pub fn handler_for_ext(&self, ext: &str) -> Option<&str> {
-        self.extension_map.get(&ext.to_lowercase()).map(|s| s.as_str())
+        self.extension_map
+            .get(&ext.to_lowercase())
+            .map(|s| s.as_str())
     }
 
     /// Returns true when the app's manifest sets `[app] watch = true`.
@@ -736,7 +754,6 @@ impl AppRegistry {
             installed.manifest.manifest_type,
             installed.source.label(),
         );
-
         // Issue #322: log declared-but-routed status for visibility. The
         // missing-secret prompt fires lazily on first `ctx.secret(...)` call —
         // this just makes the manifest's contract observable in the host log.
@@ -928,7 +945,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let app_dir = global.path().join("myapp");
         fs::create_dir_all(&app_dir).unwrap();
-        let manifest = "schema_version = 1\n\n[app]\nid = \"myapp\"\ntype = \"app\"\nname = \"My App\"\nversion = \"0.0.1\"\nentry = \"app.py\"\n";
+        let manifest = "schema_version = 1\n\n[app]\nid = \"myapp\"\ntype = \"app\"\nname = \"My App\"\nversion = \"0.0.1\"\nentry = \"app.py\"\n\n[runtime]\npython_compat = true\n";
         fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
         // Write entry without shebang or executable bit.
         fs::write(app_dir.join("app.py"), "import plexi\n").unwrap();
