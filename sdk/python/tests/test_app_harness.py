@@ -127,6 +127,65 @@ def test_appharness_reports_sdk_fatal_errors(tmp_path: Path) -> None:
     pytest.fail(f"expected fatal_error, saw {seen}")
 
 
+def test_sdk_v3_process_seeds_and_saves_host_state(tmp_path: Path) -> None:
+    """SDK v3 process runner loads Init.state and persists SetState effects."""
+    app_file = tmp_path / "v3_state_app.py"
+    app_file.write_text(textwrap.dedent("""
+        from plexi_sdk import state
+        from plexi_sdk.effects import SetState
+        from plexi_sdk.ui import Text
+
+        def init(size, args):
+            return [SetState({"count": state.get("count", 0) + 1})]
+
+        def update(event):
+            return []
+
+        def view():
+            return Text(str(state.get("count", 0)))
+    """).lstrip())
+
+    repo_root = Path(__file__).resolve().parents[3]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo_root / "sdk/python")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "plexi_sdk._v3_process", str(app_file)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    try:
+        proc.stdin.write(json.dumps({
+            "type": "init",
+            "protocol": "pgap/3",
+            "app_id": "v3-state-test",
+            "workspace_root": "/tmp",
+            "capabilities": [],
+            "feature_flags": [],
+            "state": {"count": 41},
+        }) + "\n")
+        proc.stdin.flush()
+
+        seen = []
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            ev = json.loads(line)
+            seen.append(ev)
+            if ev.get("type") == "save_app_state":
+                assert ev["payload"]["count"] == 42
+                return
+    finally:
+        proc.kill()
+    pytest.fail(f"expected save_app_state with seeded count, saw {seen}")
+
+
 @pytest.mark.parametrize("relative_path", [
     "apps/balls/balls.py",
     "apps/snake/snake.py",

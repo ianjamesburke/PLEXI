@@ -31,6 +31,7 @@ class V3ProcessApp(App):
         self._repeating_timers: dict[int, int] = {}
 
     def on_init(self):
+        self._v3_values = dict(self.state.all())
         self._set_v3_state(in_view=False)
         self._apply_effects(self._module.init((0.0, 0.0), self.launch_args))
 
@@ -73,9 +74,11 @@ class V3ProcessApp(App):
         _v3_state._in_view = in_view
 
     def _apply_effects(self, app_effects) -> None:
+        state_changed = False
         for effect in app_effects or []:
             if isinstance(effect, effects.SetState):
                 self._v3_values.update(effect.data)
+                state_changed = True
             elif isinstance(effect, effects.SetStatus):
                 self.emit.status_summary(effect.text)
             elif isinstance(effect, effects.SetTimer):
@@ -95,6 +98,8 @@ class V3ProcessApp(App):
                 continue
             else:
                 self.emit.info(f"sdk_v3_process: ignored effect {type(effect).__name__}")
+        if state_changed:
+            self.state.save(self._v3_values)
 
     async def _request_capability(self, capability: str) -> None:
         try:
