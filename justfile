@@ -11,6 +11,11 @@ export RUSTFLAGS := "-D warnings"
 fetch-python-runtime:
     PYTHON_VERSION={{PYTHON_VERSION}} PYTHON_PBS_DATE={{PYTHON_PBS_DATE}} bash scripts/fetch-python-runtime.sh
 
+# Download the pinned CPython WASI bundle used by SDK v3 python_compat probes.
+# Override cache root with PLEXI_CPYTHON_BUNDLE_DIR=/path/to/wasm-bundles.
+fetch-cpython-bundle:
+    bash scripts/fetch-cpython-bundle.sh
+
 dev:
     cargo run
 

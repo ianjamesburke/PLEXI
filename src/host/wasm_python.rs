@@ -6,6 +6,8 @@
 //! subprocess path when the CPython WASM bundle is unavailable.
 
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::process::{Command, Stdio};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde_json::{json, Value};
@@ -23,9 +25,12 @@ use super::wasm_app::bindings::plexi::platform::types::{
 };
 use super::wasm_app::{Alignment, Effect};
 
-pub const CPYTHON_BUNDLE_VERSION: &str = "3.12.3";
-pub const CPYTHON_BUNDLE_FILE: &str = "cpython-3.12.wasm";
-pub const CPYTHON_BUNDLE_SHA256: &str = "unavailable-until-bundle-is-vendored";
+pub const CPYTHON_BUNDLE_VERSION: &str = "3.12.12";
+pub const CPYTHON_WASI_SDK_VERSION: &str = "20";
+pub const CPYTHON_BUNDLE_FILE: &str = "cpython-3.12.12/python.wasm";
+pub const CPYTHON_BUNDLE_SHA256: &str =
+    "62392f07fee032c22e3aa84be033c07105cd42424e5149058b9f5449a8deb272";
+pub const CPYTHON_BUNDLE_CACHE_ENV: &str = "PLEXI_CPYTHON_BUNDLE_DIR";
 pub const FETCH_CPYTHON_BUNDLE_COMMAND: &str = "just fetch-cpython-bundle";
 
 #[derive(Debug, Error)]
@@ -62,6 +67,8 @@ pub enum WasmPythonError {
         expected: &'static str,
         actual: String,
     },
+    #[error("CPython WASM bundle cannot run Plexi SDK v3 apps yet: {reason}")]
+    UnsupportedBundleAbi { reason: String },
     #[error("read CPython WASM bundle at {path}: {source}")]
     ReadBundle {
         path: PathBuf,
@@ -136,7 +143,14 @@ impl WasmPythonAdapter {
         let Some(config) = PythonLaunchConfig::from_manifest_file(app_dir)? else {
             return Ok(None);
         };
+        log::info!(
+            "app::{}: python_compat launch attempt app_dir={} entry={}",
+            config.app_id,
+            config.app_dir.display(),
+            config.entry.display()
+        );
         let bundle = resolve_default_cpython_bundle()?;
+        validate_cpython_bundle_abi(&bundle)?;
         log::info!(
             "app::{}: python_compat routed to CPython WASM bundle {}",
             config.app_id,
@@ -193,11 +207,20 @@ impl WasmPythonAdapter {
 }
 
 pub fn resolve_default_cpython_bundle() -> Result<PathBuf, WasmPythonError> {
-    resolve_cpython_bundle(crate::config::config_dir().join("wasm-bundles"))
+    let cache_dir = std::env::var_os(CPYTHON_BUNDLE_CACHE_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::config::config_dir().join("wasm-bundles"));
+    resolve_cpython_bundle(cache_dir)
 }
 
 pub fn resolve_cpython_bundle(cache_dir: PathBuf) -> Result<PathBuf, WasmPythonError> {
     let path = cache_dir.join(CPYTHON_BUNDLE_FILE);
+    log::info!(
+        "python_compat: resolving CPython WASI bundle version={} cache_dir={} path={}",
+        CPYTHON_BUNDLE_VERSION,
+        cache_dir.display(),
+        path.display()
+    );
     if !path.is_file() {
         return Err(WasmPythonError::MissingBundle {
             path,
@@ -223,6 +246,25 @@ pub fn resolve_cpython_bundle(cache_dir: PathBuf) -> Result<PathBuf, WasmPythonE
         });
     }
     Ok(path)
+}
+
+pub fn validate_cpython_bundle_abi(path: &Path) -> Result<(), WasmPythonError> {
+    log::info!(
+        "python_compat: validating CPython WASI bundle abi version={} wasi_sdk={} path={}",
+        CPYTHON_BUNDLE_VERSION,
+        CPYTHON_WASI_SDK_VERSION,
+        path.display()
+    );
+    match wasmtime::component::Component::from_file(&wasmtime::Engine::default(), path) {
+        Ok(_) => Err(WasmPythonError::UnsupportedBundleAbi {
+            reason: "upstream CPython artifact is a WASI command/runtime, not a component exporting plexi:app/lifecycle init/update/view".to_string(),
+        }),
+        Err(source) => Err(WasmPythonError::UnsupportedBundleAbi {
+            reason: format!(
+                "upstream CPython artifact is not a WASM component accepted by wasmtime component bindings ({source}); Plexi needs a shim component that embeds CPython and exports plexi:app/lifecycle"
+            ),
+        }),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -404,6 +446,74 @@ pub fn decode_ui_tree(json_text: &str) -> Result<UiTree, WasmPythonError> {
         .map(decode_indexed_node)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(UiTree { root, nodes })
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct NativePythonLifecycleOutput {
+    init_json: String,
+    update_json: String,
+    view_json: String,
+}
+
+#[cfg(test)]
+fn run_native_python_lifecycle_probe(
+    sdk_dir: &Path,
+    app_dir: &Path,
+    module_name: &str,
+    init_arg: &Value,
+    update_arg: &Value,
+    view_arg: &Value,
+) -> Result<NativePythonLifecycleOutput, WasmPythonError> {
+    let script = r#"
+import json
+import sys
+
+sdk_dir, app_dir, module_name, init_arg, update_arg, view_arg = sys.argv[1:]
+sys.path.insert(0, sdk_dir)
+sys.path.insert(0, app_dir)
+
+import plexi_sdk._v3_state as v3_state
+from plexi_sdk._adapter import call_lifecycle, load_app
+
+v3_state._host_log = lambda level, msg: None
+
+load_app(module_name)
+print(json.dumps({
+    "init": call_lifecycle("init", init_arg),
+    "update": call_lifecycle("update", update_arg),
+    "view": call_lifecycle("view", view_arg),
+}))
+"#;
+    let output = Command::new("python3")
+        .arg("-c")
+        .arg(script)
+        .arg(sdk_dir)
+        .arg(app_dir)
+        .arg(module_name)
+        .arg(init_arg.to_string())
+        .arg(update_arg.to_string())
+        .arg(view_arg.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|source| WasmPythonError::ReadBundle {
+            path: PathBuf::from("python3"),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(WasmPythonError::BridgeJson(format!(
+            "native Python bridge probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    let value = serde_json::from_slice::<Value>(&output.stdout)
+        .map_err(|e| WasmPythonError::BridgeJson(e.to_string()))?;
+    Ok(NativePythonLifecycleOutput {
+        init_json: required_string(&value, "init")?,
+        update_json: required_string(&value, "update")?,
+        view_json: required_string(&value, "view")?,
+    })
 }
 
 fn decode_indexed_node(value: &Value) -> Result<IndexedNode, WasmPythonError> {
@@ -905,6 +1015,40 @@ python_compat = true
     }
 
     #[test]
+    fn bundle_hash_mismatch_is_typed() {
+        let dir = tempdir().expect("tempdir");
+        let bundle = dir.path().join(CPYTHON_BUNDLE_FILE);
+        std::fs::create_dir_all(bundle.parent().expect("bundle parent")).expect("bundle dir");
+        std::fs::write(&bundle, b"not-python").expect("bundle");
+
+        let err = resolve_cpython_bundle(dir.path().to_path_buf()).unwrap_err();
+
+        assert!(matches!(err, WasmPythonError::BundleHashMismatch { .. }));
+    }
+
+    #[test]
+    fn raw_wasm_bundle_reports_unsupported_abi() {
+        let dir = tempdir().expect("tempdir");
+        let bundle = dir.path().join("python.wasm");
+        std::fs::write(&bundle, b"\0asm\x01\0\0\0").expect("empty wasm module");
+
+        let err = validate_cpython_bundle_abi(&bundle).unwrap_err();
+
+        assert!(matches!(err, WasmPythonError::UnsupportedBundleAbi { .. }));
+        assert!(err.to_string().contains("component"));
+    }
+
+    #[test]
+    #[ignore = "requires `just fetch-cpython-bundle` and PLEXI_CPYTHON_BUNDLE_DIR pointing at that cache"]
+    fn real_cpython_bundle_resolves_but_is_abi_blocked() {
+        let bundle = resolve_default_cpython_bundle().expect("resolved CPython bundle");
+        let err = validate_cpython_bundle_abi(&bundle).unwrap_err();
+
+        eprintln!("{err}");
+        assert!(matches!(err, WasmPythonError::UnsupportedBundleAbi { .. }));
+    }
+
+    #[test]
     fn state_snapshot_encodes_json_bytes_and_raw_bytes() {
         let snapshot = StateSnapshot {
             entries: vec![
@@ -1070,5 +1214,88 @@ python_compat = true
         assert_eq!(canvas.commands.len(), 2);
         assert!(matches!(canvas.commands[0], CanvasCommand::Rect(_)));
         assert!(matches!(canvas.commands[1], CanvasCommand::Text(_)));
+    }
+
+    #[test]
+    fn native_python_bridge_runs_calc_lifecycle() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let sdk_dir = root.join("sdk/python");
+        let app_dir = root.join("apps/calc");
+        let snapshot = StateSnapshot {
+            entries: Vec::new(),
+        };
+        let update_event = InputEvent::Key(KeyEvent {
+            key: "7".to_string(),
+            modifiers: Modifiers {
+                ctrl: false,
+                shift: false,
+                alt: false,
+                meta: false,
+            },
+            pressed: true,
+        });
+
+        let output = run_native_python_lifecycle_probe(
+            &sdk_dir,
+            &app_dir,
+            "calc",
+            &init_bridge_arg(&snapshot, (320.0, 240.0), &[]),
+            &update_bridge_arg(&snapshot, &update_event).expect("update arg"),
+            &view_bridge_arg(&snapshot),
+        )
+        .expect("native bridge probe");
+
+        let init = decode_effects(&output.init_json).expect("init effects");
+        let update = decode_effects(&output.update_json).expect("update effects");
+        let view = decode_ui_tree(&output.view_json).expect("view tree");
+
+        assert!(matches!(
+            &init[0],
+            PythonBridgeEffect::Host(Effect::SetTitle(title)) if title == "Calculator"
+        ));
+        assert!(matches!(
+            &update[0],
+            PythonBridgeEffect::SetState(entries) if entries.iter().any(|(key, value)| key == "display" && value == b"\"7\"")
+        ));
+        assert!(view
+            .nodes
+            .iter()
+            .any(|node| matches!(&node.data, UiNodeData::Text(text) if text.text == "Calculator")));
+    }
+
+    #[test]
+    fn native_python_bridge_runs_stats_lifecycle() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let sdk_dir = root.join("sdk/python");
+        let app_dir = root.join("apps/stats");
+        let snapshot = StateSnapshot {
+            entries: Vec::new(),
+        };
+        let update_event = InputEvent::TimerFired(1);
+
+        let output = run_native_python_lifecycle_probe(
+            &sdk_dir,
+            &app_dir,
+            "stats",
+            &init_bridge_arg(&snapshot, (480.0, 320.0), &[]),
+            &update_bridge_arg(&snapshot, &update_event).expect("update arg"),
+            &view_bridge_arg(&snapshot),
+        )
+        .expect("native bridge probe");
+
+        let init = decode_effects(&output.init_json).expect("init effects");
+        let update = decode_effects(&output.update_json).expect("update effects");
+        let view = decode_ui_tree(&output.view_json).expect("view tree");
+
+        assert!(init
+            .iter()
+            .any(|effect| matches!(effect, PythonBridgeEffect::Host(Effect::SetTitle(title)) if title == "Stats")));
+        assert!(update
+            .iter()
+            .any(|effect| matches!(effect, PythonBridgeEffect::Host(Effect::SetStatus(_)))));
+        assert!(view
+            .nodes
+            .iter()
+            .any(|node| matches!(&node.data, UiNodeData::Text(text) if text.text.contains("No focus events"))));
     }
 }
