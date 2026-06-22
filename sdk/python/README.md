@@ -1,10 +1,8 @@
 # plexi-sdk
 
-Python SDK v2 for building Plexi PGAP apps.
+Python SDK v3 for building Plexi apps running inside the CPython-in-WASM runtime.
 
-SDK v2 is the Python authoring API. PGAP v3 (`pgap/3`) is the host/app wire protocol the SDK speaks.
-
-Full API reference: `plexi_sdk/__init__.py` and [`SDK_V2.md`](SDK_V2.md).
+Full design spec: [`SDK_V3.md`](SDK_V3.md)
 
 ## Install For SDK Development
 
@@ -12,86 +10,53 @@ Full API reference: `plexi_sdk/__init__.py` and [`SDK_V2.md`](SDK_V2.md).
 uv pip install -e ./sdk/python
 ```
 
-Run from the repo root. `uv` creates `.venv` automatically if needed. Changes to `sdk/python/plexi_sdk/` take effect immediately in that environment.
-
-Apps running inside Plexi use the SDK copy injected by the host on `PYTHONPATH`; the editable install is for type checking, tests, and local development.
-
-Verify the install:
-
-```sh
-source .venv/bin/activate
-python3 -c "from plexi_sdk import App; print('ok')"
-```
+Changes to `sdk/python/plexi_sdk/` take effect immediately.
 
 ## App Pattern
 
-Normal apps implement `view()` and return a component tree:
+An app is three module-level functions:
 
 ```python
-from plexi_sdk import App
-from plexi_sdk.ui import AppBar, Column, FooterKeys, Label, Spacer
+from plexi_sdk import state
+from plexi_sdk.effects import SetTitle, SetState
+from plexi_sdk.events import KeyEvent
+from plexi_sdk.ui import Column, AppBar, Text, FooterKeys
 
 
-class CounterApp(App):
-    def on_init(self) -> None:
-        self.count = self.state.get("count", 0)
-
-    def view(self):
-        return Column([
-            AppBar("Counter"),
-            Spacer(grow=True),
-            Label(str(self.count), bold=True),
-            Spacer(grow=True),
-            FooterKeys([("+", "increment"), ("-", "decrement")]),
-        ])
-
-    def on_key(self, key: str, mods: dict) -> None:
-        if key in ("plus", "equals"):
-            self.count += 1
-        elif key == "minus":
-            self.count -= 1
-        self.state.save({"count": self.count})
-        self.emit.schedule_render()
+def init(size, args):
+    return [SetTitle("Counter"), SetState({"count": 0})]
 
 
-CounterApp().run()
+def update(event):
+    if isinstance(event, KeyEvent) and event.key == "plus" and event.pressed:
+        return [SetState({"count": state.get("count", 0) + 1})]
+    return []
+
+
+def view():
+    return Column([
+        AppBar("Counter"),
+        Text(str(state.get("count", 0)), bold=True, align="center"),
+        FooterKeys([("+", "increment")]),
+    ], grow=True)
 ```
-
-Use `on_render(ctx)` only for games, animations, realtime visualizations, or other pixel-control apps.
 
 ## Keyboard Conventions
 
-Keys arrive in `on_key(self, key, mods)` as lowercase canonical strings.
+Keys arrive in `update(event)` as `KeyEvent`. Key strings are lowercase canonical.
 
-| Physical key | `key` string |
+| Physical key | `event.key` |
 |---|---|
 | Enter / Return | `"return"` |
 | Escape | `"escape"` |
 | Backspace | `"backspace"` |
-| Tab | `"tab"` |
 | Space | `"space"` |
 | Arrow keys | `"up"` / `"down"` / `"left"` / `"right"` |
 
-Use `"return"`, not `"Enter"`. Use `"escape"`, not `"Escape"`.
+## New App
 
-Common list bindings:
-
-| Key | Action |
-|---|---|
-| `j` / `"down"` | Move selection down |
-| `k` / `"up"` | Move selection up |
-| `"return"` | Open selected item |
-| `"escape"` | Exit list or go back |
-
-## State And Host I/O
-
-```python
-self.state.get("key", default)
-self.state.save({"key": value})
-self.emit.schedule_render()
-await self.emit.http_get(url)
-await self.emit.secret_get("API_KEY")
-await self.emit.ai_query("low", system, messages)
+```sh
+plexi app init myapp
 ```
 
-Declare capabilities in `manifest.toml` before using brokered host powers.
+Generates `myapp/main.py` + `myapp/manifest.toml` with `python_compat = true`.
