@@ -317,7 +317,7 @@ pub fn app_publish_cli(path: &str) -> i32 {
 
     let core_ids = crate::cli::install_host::core_pack_ids();
     let core_refs: Vec<&str> = core_ids.iter().map(String::as_str).collect();
-    let trust = package::trust_label(&report, &core_refs);
+    let trust = package::trust_label(&report, &core_refs, false);
 
     let entry = RegistryEntry::from_report(
         &report,

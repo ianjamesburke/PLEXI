@@ -244,6 +244,8 @@ pub enum TrustLabel {
     NativeUnreviewed,
     /// A Python app from outside the core pack.
     PythonUnreviewed,
+    /// A Python app that has passed marketplace review.
+    PythonReviewed,
     /// A WASM component from outside the core pack.
     WasmComponent,
 }
@@ -256,6 +258,9 @@ impl TrustLabel {
             Self::PythonUnreviewed => {
                 "Unreviewed Python process — runs with your full user permissions"
             }
+            Self::PythonReviewed => {
+                "Reviewed native process — manifest reviewed; not sandboxed"
+            }
             Self::WasmComponent => "WASM component — sandboxed; host imports are capability-gated",
             Self::NativeUnreviewed => {
                 "Unreviewed native process — runs with your full user permissions"
@@ -267,12 +272,25 @@ impl TrustLabel {
 /// Classify a validated package/dir for the trust sheet. `core_ids` is the
 /// bundled first-party core pack id set
 /// (see `crate::cli::install_host::core_pack_ids`).
-pub fn trust_label(report: &PackageReport, core_ids: &[&str]) -> TrustLabel {
+///
+/// `marketplace_reviewed` is a host-side flag set by the install flow when it
+/// has external proof from a trusted source (e.g. a marketplace server). It is
+/// NOT read from inside the package — any in-package self-attestation is
+/// attacker-controlled and must not be used here. For local installs pass
+/// `false`; marketplace installs will pass `true` based on server attestation
+/// when that flow ships.
+pub fn trust_label(report: &PackageReport, core_ids: &[&str], marketplace_reviewed: bool) -> TrustLabel {
     if core_ids.contains(&report.id.as_str()) {
         TrustLabel::FirstPartyCore
     } else {
         match report.runtime {
-            PackageRuntime::Python => TrustLabel::PythonUnreviewed,
+            PackageRuntime::Python => {
+                if marketplace_reviewed {
+                    TrustLabel::PythonReviewed
+                } else {
+                    TrustLabel::PythonUnreviewed
+                }
+            }
             PackageRuntime::Wasm => TrustLabel::WasmComponent,
             PackageRuntime::Native => TrustLabel::NativeUnreviewed,
         }
@@ -1100,7 +1118,7 @@ mod tests {
     fn trust_label_core_id_is_first_party() {
         let r = report("welcome", PackageRuntime::Python);
         assert_eq!(
-            trust_label(&r, &["welcome", "snake"]),
+            trust_label(&r, &["welcome", "snake"], false),
             TrustLabel::FirstPartyCore
         );
         assert_eq!(
@@ -1112,7 +1130,7 @@ mod tests {
     #[test]
     fn trust_label_python_entry_is_python_unreviewed() {
         let r = report("third-party", PackageRuntime::Python);
-        assert_eq!(trust_label(&r, &["welcome"]), TrustLabel::PythonUnreviewed);
+        assert_eq!(trust_label(&r, &["welcome"], false), TrustLabel::PythonUnreviewed);
         assert_eq!(
             TrustLabel::PythonUnreviewed.display_str(),
             "Unreviewed Python process — runs with your full user permissions"
@@ -1120,9 +1138,29 @@ mod tests {
     }
 
     #[test]
+    fn trust_label_marketplace_reviewed_python_is_python_reviewed() {
+        let r = report("marketplace-app", PackageRuntime::Python);
+        assert_eq!(trust_label(&r, &["welcome"], true), TrustLabel::PythonReviewed);
+        assert_eq!(
+            TrustLabel::PythonReviewed.display_str(),
+            "Reviewed native process — manifest reviewed; not sandboxed"
+        );
+    }
+
+    #[test]
+    fn trust_label_reviewed_core_id_still_first_party() {
+        let r = report("welcome", PackageRuntime::Python);
+        assert_eq!(
+            trust_label(&r, &["welcome"], true),
+            TrustLabel::FirstPartyCore,
+            "core id overrides marketplace_reviewed flag"
+        );
+    }
+
+    #[test]
     fn trust_label_native_entry_is_native_unreviewed() {
         let r = report("third-party-bin", PackageRuntime::Native);
-        assert_eq!(trust_label(&r, &[]), TrustLabel::NativeUnreviewed);
+        assert_eq!(trust_label(&r, &[], false), TrustLabel::NativeUnreviewed);
         assert_eq!(
             TrustLabel::NativeUnreviewed.display_str(),
             "Unreviewed native process — runs with your full user permissions"
@@ -1132,10 +1170,30 @@ mod tests {
     #[test]
     fn trust_label_wasm_entry_is_component() {
         let r = report("third-party-wasm", PackageRuntime::Wasm);
-        assert_eq!(trust_label(&r, &[]), TrustLabel::WasmComponent);
+        assert_eq!(trust_label(&r, &[], false), TrustLabel::WasmComponent);
         assert_eq!(
             TrustLabel::WasmComponent.display_str(),
             "WASM component — sandboxed; host imports are capability-gated"
+        );
+    }
+
+    #[test]
+    fn marketplace_reviewed_flag_gates_python_reviewed_label() {
+        // reviewed status is a host-side decision passed as marketplace_reviewed — not
+        // derived from the package itself. Any package install call site controls this.
+        let (_work, pkg) = build_valid_package("mkt-app");
+        let report = validate_package(&pkg).expect("valid package");
+        // Without marketplace attestation: unreviewed.
+        assert_eq!(
+            trust_label(&report, &[], false),
+            TrustLabel::PythonUnreviewed,
+            "package without marketplace attestation must be unreviewed"
+        );
+        // With marketplace attestation: reviewed.
+        assert_eq!(
+            trust_label(&report, &[], true),
+            TrustLabel::PythonReviewed,
+            "marketplace_reviewed=true must yield PythonReviewed"
         );
     }
 
