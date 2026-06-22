@@ -1,6 +1,10 @@
-"""Python SDK v2 for Plexi PGAP apps.
+"""Python SDK v3 for Plexi apps.
 
-Normal apps implement ``view()`` and return a component tree:
+SDK v3 apps expose module-level ``init()``, ``update(event)``, and ``view()``
+functions for the CPython-in-WASM adapter. Legacy PGAP exports remain available
+while native subprocess apps are still supported.
+
+Legacy PGAP apps implement ``view()`` and return a component tree:
 
     from plexi_sdk import App
     from plexi_sdk.ui import AppBar, Column, FooterKeys, Label, Spacer
@@ -41,7 +45,7 @@ Capabilities gate PGAP host APIs. Python apps are native subprocesses, not a
 process sandbox.
 """
 
-__version__ = "0.5.0"
+__version__ = "3.0.0"
 SDK_ID = f"plexi-sdk-py/{__version__}"
 
 from ._v3_state import StateSnapshot, log, state

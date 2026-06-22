@@ -62,6 +62,24 @@ class TimerFired:
 
 
 @dataclass
+class SystemStats:
+    cpu_usage_pct: float
+    memory_used_bytes: int
+    memory_total_bytes: int
+    disk_read_bps: int
+    disk_write_bps: int
+    net_rx_bps: int
+    net_tx_bps: int
+    uptime_secs: int
+    load_avg_one_min: float
+
+
+@dataclass
+class SystemStatsResult:
+    stats: SystemStats
+
+
+@dataclass
 class FileReadResult:
     content: Optional[bytes]
     error: Optional[str]
@@ -94,6 +112,60 @@ class AiResponse:
     tokens_in: int
     tokens_out: int
     error: Optional[str]
+
+
+@dataclass
+class DeclareEventStreamsResult:
+    streams: Optional[list]
+    error: Optional[str]
+
+
+@dataclass
+class EmitEventResult:
+    sequence: Optional[int]
+    error: Optional[str]
+
+
+@dataclass
+class SurfaceReady:
+    texture_handle: int
+    width: int
+    height: int
+
+
+@dataclass
+class SurfaceResized:
+    texture_handle: int
+    width: int
+    height: int
+
+
+@dataclass
+class PipePayload:
+    binary: Optional[bytes] = None
+    json: Optional[str] = None
+
+
+@dataclass
+class PipeMessage:
+    handle: int
+    payload: PipePayload
+
+
+@dataclass
+class PipePeerConnected:
+    handle: int
+
+
+@dataclass
+class PipeClosed:
+    handle: int
+
+
+@dataclass
+class PipeError:
+    handle: int
+    error: str
 
 
 @dataclass

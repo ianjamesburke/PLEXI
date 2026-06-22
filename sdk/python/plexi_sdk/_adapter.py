@@ -10,6 +10,7 @@ import plexi_sdk as sdk
 
 from ._v3_state import StateSnapshot
 from . import _v3_state
+from . import effects as effect_types
 from . import events as event_types
 
 _module = None
@@ -70,6 +71,8 @@ def _decode_state(encoded: dict[str, str]) -> StateSnapshot:
 def _encode_effect(effect: Any) -> dict[str, Any]:
     if not is_dataclass(effect):
         raise TypeError(f"Unknown effect type: {type(effect).__name__}")
+    if getattr(effect_types, type(effect).__name__, None) is not type(effect):
+        raise TypeError(f"Unknown effect type: {type(effect).__name__}")
     payload = asdict(effect)
     payload["type"] = type(effect).__name__
     return payload
@@ -85,6 +88,10 @@ def _decode_event(payload: dict[str, Any]) -> Any:
     kwargs = {f.name: payload[f.name] for f in fields(cls) if f.name in payload}
     if cls is event_types.KeyEvent and isinstance(kwargs.get("modifiers"), dict):
         kwargs["modifiers"] = event_types.Modifiers(**kwargs["modifiers"])
+    if cls is event_types.SystemStatsResult and isinstance(kwargs.get("stats"), dict):
+        kwargs["stats"] = event_types.SystemStats(**kwargs["stats"])
+    if cls is event_types.PipeMessage and isinstance(kwargs.get("payload"), dict):
+        kwargs["payload"] = event_types.PipePayload(**kwargs["payload"])
     return cls(**kwargs)
 
 
@@ -115,11 +122,30 @@ def _encode_uitree(root: Any) -> dict[str, Any]:
 def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, Any]:
     node_type = data.get("type") or data.get("kind")
     if node_type == "label":
-        return {"type": "Text", "text": data.get("text", ""), "bold": data.get("bold", False)}
+        return {
+            "type": "Text",
+            "text": data.get("text", ""),
+            "size": data.get("size"),
+            "bold": data.get("bold", False),
+            "truncate": data.get("truncate", False),
+            "align": data.get("align", "start"),
+        }
     if node_type == "column":
         children = data.get("children", [])
         child_ids = [flatten(child, f"{key}/{idx}") for idx, child in enumerate(children)]
-        return {"type": "Column", "children": child_ids, "gap": data.get("gap", 0.0)}
+        return {
+            "type": "Column",
+            "children": child_ids,
+            "gap": data.get("gap", 0.0),
+            "align": data.get("align", "start"),
+            "grow": data.get("grow", False),
+        }
     if node_type == "button":
-        return data
+        return {
+            "type": "Button",
+            "label": data.get("label", ""),
+            "on_click": data.get("on_click", ""),
+            "style": data.get("style", "secondary"),
+            "disabled": data.get("disabled", False),
+        }
     return data

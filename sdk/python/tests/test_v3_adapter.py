@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -13,7 +14,7 @@ from plexi_sdk import state
 from plexi_sdk._adapter import _decode_event, _encode_effect, _encode_uitree
 from plexi_sdk._adapter import call_lifecycle, load_app
 from plexi_sdk.effects import SetState, SetTitle
-from plexi_sdk.events import KeyEvent
+from plexi_sdk.events import KeyEvent, PipeMessage, PipePayload, SystemStatsResult
 from plexi_sdk.ui import Button, Column, Text
 
 
@@ -34,7 +35,39 @@ def test_ui_tree_flattens_v3_components() -> None:
     assert len(tree["nodes"]) == 3
     assert tree["nodes"][0]["data"]["type"] == "Column"
     assert tree["nodes"][1]["data"]["type"] == "Text"
-    assert tree["nodes"][2]["data"]["type"] == "button"
+    assert tree["nodes"][2]["data"]["type"] == "Button"
+
+
+def test_effects_reject_unknown_dataclass() -> None:
+    @dataclass
+    class NotAnEffect:
+        value: int
+
+    with pytest.raises(TypeError, match="Unknown effect type"):
+        _encode_effect(NotAnEffect(1))
+
+
+def test_events_decode_nested_payloads() -> None:
+    stats = _decode_event({
+        "type": "SystemStatsResult",
+        "stats": {
+            "cpu_usage_pct": 1.0,
+            "memory_used_bytes": 2,
+            "memory_total_bytes": 3,
+            "disk_read_bps": 4,
+            "disk_write_bps": 5,
+            "net_rx_bps": 6,
+            "net_tx_bps": 7,
+            "uptime_secs": 8,
+            "load_avg_one_min": 9.0,
+        },
+    })
+    pipe = _decode_event({"type": "PipeMessage", "handle": 1, "payload": {"json": "{}"}})
+
+    assert isinstance(stats, SystemStatsResult)
+    assert stats.stats.memory_total_bytes == 3
+    assert isinstance(pipe, PipeMessage)
+    assert pipe.payload == PipePayload(json="{}")
 
 
 def test_state_proxy_reads_snapshot_and_set_returns_effect() -> None:

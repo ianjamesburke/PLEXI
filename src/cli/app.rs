@@ -195,7 +195,6 @@ pub fn app_init(
                 println!("  cargo build --release");
                 println!("  plexi app open {}", app_dir.display());
             } else {
-                ensure_plexi_sdk();
                 if open {
                     let path_str = app_dir.to_string_lossy().to_string();
                     log::info!("app_init: opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
@@ -214,7 +213,6 @@ pub fn app_init(
                     );
                     println!("  Open with: plexi app open {}", app_dir.display());
                 }
-                println!("  Test with: plexi app test {}", app_dir.display());
             }
             0
         }
@@ -282,7 +280,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
 
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"timer\"]\n\n[launch]\n{mp}",
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[runtime]\npython_compat = true\n\n[app.capabilities]\ncapabilities = []\n\n[app.capabilities.wasm]\nrequired = []\noptional = []\n\n[launch]\n{mp}",
         name = name,
         display = to_title_case(name),
         mp = marketplace_placeholder(),
@@ -293,9 +291,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     // that break when imported as a flat single file).
     // __CLASS_NAME__ and __DISPLAY_NAME__ are substituted below.
     let template = include_str!("../../sdk/python/plexi_sdk/templates/app_init.py");
-    let main_py = template
-        .replace("__CLASS_NAME__", &to_struct_name(name))
-        .replace("__DISPLAY_NAME__", &to_title_case(name));
+    let main_py = template.replace("__DISPLAY_NAME__", &to_title_case(name));
     let main_path = app_dir.join("main.py");
     std::fs::write(&main_path, main_py)?;
 
@@ -304,13 +300,10 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     perms.set_mode(perms.mode() | 0o111);
     std::fs::set_permissions(&main_path, perms)?;
 
-    // tests/test_app.py — a working AppHarness example co-located with the app
-    // so agents learn the test pattern from the scaffold, not from docs.
-    let tests_dir = app_dir.join("tests");
-    std::fs::create_dir_all(&tests_dir)?;
-    let test_template = include_str!("../../sdk/python/plexi_sdk/templates/test_app_init.py");
-    let test_py = test_template.replace("__DISPLAY_NAME__", &to_title_case(name));
-    std::fs::write(tests_dir.join("test_app.py"), test_py)?;
+    std::fs::write(app_dir.join("pyproject.toml"), format!(
+        "[project]\nname = \"{name}\"\nversion = \"0.1.0\"\nrequires-python = \">=3.12\"\ndependencies = [\"plexi-sdk>=3.0\"]\n",
+        name = name,
+    ))?;
 
     Ok(())
 }
@@ -2048,29 +2041,42 @@ mod scaffold_marketplace_tests {
     }
 
     #[test]
-    fn python_scaffold_writes_appharness_test() {
+    fn python_scaffold_writes_sdk_v3_files() {
         let dir = TempDir::new().unwrap();
         let app_dir = dir.path().join("myapp");
         std::fs::create_dir_all(&app_dir).unwrap();
         scaffold_python_app(&app_dir, "myapp").unwrap();
 
-        let test_path = app_dir.join("tests").join("test_app.py");
+        let main_path = app_dir.join("main.py");
+        let pyproject_path = app_dir.join("pyproject.toml");
         assert!(
-            test_path.is_file(),
-            "python scaffold must write tests/test_app.py"
-        );
-        let test_src = std::fs::read_to_string(&test_path).unwrap();
-        assert!(
-            test_src.contains("AppHarness"),
-            "generated test must exemplify AppHarness"
+            main_path.is_file(),
+            "python scaffold must write module-level main.py"
         );
         assert!(
-            test_src.contains("assert_no_overlap"),
-            "generated test must assert no layout overlap"
+            pyproject_path.is_file(),
+            "python scaffold must write pyproject.toml"
         );
         assert!(
-            !test_src.contains("__DISPLAY_NAME__"),
-            "generated test must substitute the display-name placeholder"
+            !app_dir.join("tests").exists(),
+            "SDK v3 scaffold should not write legacy AppHarness tests"
+        );
+        let main_src = std::fs::read_to_string(&main_path).unwrap();
+        assert!(
+            main_src.contains("def init(size, args)")
+                && main_src.contains("def update(event)")
+                && main_src.contains("def view()"),
+            "generated app must use SDK v3 lifecycle functions"
+        );
+        let manifest = std::fs::read_to_string(app_dir.join("manifest.toml")).unwrap();
+        assert!(
+            manifest.contains("python_compat = true"),
+            "generated manifest must route to the Python WASM adapter"
+        );
+        let pyproject = std::fs::read_to_string(pyproject_path).unwrap();
+        assert!(
+            pyproject.contains("plexi-sdk>=3.0"),
+            "generated pyproject must depend on SDK v3"
         );
     }
 

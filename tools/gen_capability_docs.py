@@ -64,8 +64,8 @@ these at runtime:
 capabilities = ["secrets.get", "net.http"]
 ```
 
-Capabilities gate PGAP host APIs; they do not restrict what a native Python
-process can do outside PGAP. The **Cap** column in the tables below shows
+Capabilities gate PGAP host APIs; they do not sandbox or restrict what a native
+Python process can do outside PGAP. The **Cap** column in the tables below shows
 which capability is required. Requests without a cap are available to all apps.
 
 ## The Python SDK
