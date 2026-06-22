@@ -23,15 +23,18 @@ use super::wasm_app::bindings::plexi::platform::types::{
     StateSnapshot, TextInputNode, TextNode, TimerEffect, UiActionEvent, UiNodeData, UiTree,
     UiValueChangeEvent,
 };
-use super::wasm_app::{Alignment, Effect};
+use super::wasm_app::{Alignment, Effect, Grants, StateStore, WasmApp};
 
 pub const CPYTHON_BUNDLE_VERSION: &str = "3.12.12";
 pub const CPYTHON_WASI_SDK_VERSION: &str = "20";
 pub const CPYTHON_BUNDLE_FILE: &str = "cpython-3.12.12/python.wasm";
+pub const CPYTHON_SHIM_COMPONENT_FILE: &str = "cpython-3.12.12/plexi-python-shim.wasm";
 pub const CPYTHON_BUNDLE_SHA256: &str =
     "62392f07fee032c22e3aa84be033c07105cd42424e5149058b9f5449a8deb272";
 pub const CPYTHON_BUNDLE_CACHE_ENV: &str = "PLEXI_CPYTHON_BUNDLE_DIR";
+pub const CPYTHON_SHIM_COMPONENT_ENV: &str = "PLEXI_CPYTHON_SHIM_COMPONENT";
 pub const FETCH_CPYTHON_BUNDLE_COMMAND: &str = "just fetch-cpython-bundle";
+pub const BUILD_CPYTHON_SHIM_COMMAND: &str = "just wasm-python-shim";
 
 #[derive(Debug, Error)]
 pub enum WasmPythonError {
@@ -56,6 +59,11 @@ pub enum WasmPythonError {
         path: PathBuf,
         command: &'static str,
     },
+    #[error("CPython lifecycle shim component unavailable at {path}; run: {command}")]
+    MissingShimComponent {
+        path: PathBuf,
+        command: &'static str,
+    },
     #[error("CPython WASM bundle hash is not pinned for {version}; run: {command}")]
     BundleHashUnpinned {
         version: &'static str,
@@ -67,8 +75,16 @@ pub enum WasmPythonError {
         expected: &'static str,
         actual: String,
     },
-    #[error("CPython WASM bundle cannot run Plexi SDK v3 apps yet: {reason}")]
-    UnsupportedBundleAbi { reason: String },
+    #[error("raw WASM module ABI mismatch at {path}: {reason}")]
+    RawModuleAbiMismatch { path: PathBuf, reason: String },
+    #[error("load CPython lifecycle shim component at {path}: {message}")]
+    ShimComponentLoadFailure { path: PathBuf, message: String },
+    #[error("CPython lifecycle shim call '{function}' failed at {path}: {message}")]
+    ShimLifecycleCallFailure {
+        path: PathBuf,
+        function: &'static str,
+        message: String,
+    },
     #[error("read CPython WASM bundle at {path}: {source}")]
     ReadBundle {
         path: PathBuf,
@@ -136,6 +152,7 @@ impl PythonLaunchConfig {
 pub struct WasmPythonAdapter {
     pub config: PythonLaunchConfig,
     pub cpython_bundle: PathBuf,
+    pub cpython_shim_component: PathBuf,
 }
 
 impl WasmPythonAdapter {
@@ -150,15 +167,28 @@ impl WasmPythonAdapter {
             config.entry.display()
         );
         let bundle = resolve_default_cpython_bundle()?;
-        validate_cpython_bundle_abi(&bundle)?;
+        match inspect_cpython_bundle_abi(&bundle)? {
+            CpythonBundleAbi::RawWasiModule => log::info!(
+                "app::{}: python_compat CPython bundle is raw WASI; requiring lifecycle shim",
+                config.app_id
+            ),
+            CpythonBundleAbi::LifecycleComponent => log::info!(
+                "app::{}: python_compat CPython bundle already exports lifecycle",
+                config.app_id
+            ),
+        }
+        let shim = resolve_default_cpython_shim_component()?;
+        probe_cpython_shim_component(&shim)?;
         log::info!(
-            "app::{}: python_compat routed to CPython WASM bundle {}",
+            "app::{}: python_compat routed to CPython WASM bundle {} through shim {}",
             config.app_id,
-            bundle.display()
+            bundle.display(),
+            shim.display()
         );
         Ok(Some(Self {
             config,
             cpython_bundle: bundle,
+            cpython_shim_component: shim,
         }))
     }
 
@@ -171,10 +201,11 @@ impl WasmPythonAdapter {
             entries: Vec::new(),
         };
         log::info!(
-            "app::{}: python_compat bridge prepared module={} bundle={}",
+            "app::{}: python_compat bridge prepared module={} bundle={} shim={}",
             self.config.app_id,
             self.config.module_name,
-            self.cpython_bundle.display()
+            self.cpython_bundle.display(),
+            self.cpython_shim_component.display()
         );
         for effect in decode_effects(
             r#"[{"type":"SetTitle","title":"probe"},{"type":"SetState","data":{"probe":true}}]"#,
@@ -248,23 +279,150 @@ pub fn resolve_cpython_bundle(cache_dir: PathBuf) -> Result<PathBuf, WasmPythonE
     Ok(path)
 }
 
-pub fn validate_cpython_bundle_abi(path: &Path) -> Result<(), WasmPythonError> {
+pub fn resolve_default_cpython_shim_component() -> Result<PathBuf, WasmPythonError> {
+    if let Some(path) = std::env::var_os(CPYTHON_SHIM_COMPONENT_ENV).map(PathBuf::from) {
+        return resolve_cpython_shim_component_path(path);
+    }
+    let cache_dir = std::env::var_os(CPYTHON_BUNDLE_CACHE_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::config::config_dir().join("wasm-bundles"));
+    resolve_cpython_shim_component(cache_dir)
+}
+
+pub fn resolve_cpython_shim_component(cache_dir: PathBuf) -> Result<PathBuf, WasmPythonError> {
+    resolve_cpython_shim_component_path(cache_dir.join(CPYTHON_SHIM_COMPONENT_FILE))
+}
+
+fn resolve_cpython_shim_component_path(path: PathBuf) -> Result<PathBuf, WasmPythonError> {
     log::info!(
-        "python_compat: validating CPython WASI bundle abi version={} wasi_sdk={} path={}",
+        "python_compat: resolving CPython lifecycle shim component path={}",
+        path.display()
+    );
+    if !path.is_file() {
+        return Err(WasmPythonError::MissingShimComponent {
+            path,
+            command: BUILD_CPYTHON_SHIM_COMMAND,
+        });
+    }
+    Ok(path)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpythonBundleAbi {
+    RawWasiModule,
+    LifecycleComponent,
+}
+
+pub fn inspect_cpython_bundle_abi(path: &Path) -> Result<CpythonBundleAbi, WasmPythonError> {
+    log::info!(
+        "python_compat: inspecting CPython WASI bundle abi version={} wasi_sdk={} path={}",
         CPYTHON_BUNDLE_VERSION,
         CPYTHON_WASI_SDK_VERSION,
         path.display()
     );
-    match wasmtime::component::Component::from_file(&wasmtime::Engine::default(), path) {
-        Ok(_) => Err(WasmPythonError::UnsupportedBundleAbi {
-            reason: "upstream CPython artifact is a WASI command/runtime, not a component exporting plexi:app/lifecycle init/update/view".to_string(),
-        }),
-        Err(source) => Err(WasmPythonError::UnsupportedBundleAbi {
-            reason: format!(
-                "upstream CPython artifact is not a WASM component accepted by wasmtime component bindings ({source}); Plexi needs a shim component that embeds CPython and exports plexi:app/lifecycle"
-            ),
+    if probe_lifecycle_component(path, "CPython bundle ABI probe").is_ok() {
+        return Ok(CpythonBundleAbi::LifecycleComponent);
+    }
+    if is_core_wasm_module(path) {
+        return Ok(CpythonBundleAbi::RawWasiModule);
+    }
+    Err(WasmPythonError::RawModuleAbiMismatch {
+        path: path.to_path_buf(),
+        reason: "artifact is neither a raw WASM module nor a lifecycle component accepted by Plexi"
+            .to_string(),
+    })
+}
+
+#[cfg(test)]
+fn validate_cpython_bundle_abi(path: &Path) -> Result<(), WasmPythonError> {
+    match inspect_cpython_bundle_abi(path)? {
+        CpythonBundleAbi::LifecycleComponent => Ok(()),
+        CpythonBundleAbi::RawWasiModule => Err(WasmPythonError::RawModuleAbiMismatch {
+            path: path.to_path_buf(),
+            reason: "upstream CPython artifact is a WASI command/runtime, not a component exporting plexi:app/lifecycle init/update/view; Plexi needs a shim component that embeds CPython and exports lifecycle".to_string(),
         }),
     }
+}
+
+pub fn probe_cpython_shim_component(path: &Path) -> Result<(), WasmPythonError> {
+    probe_lifecycle_component(path, "Python Shim POC")
+}
+
+fn probe_lifecycle_component(path: &Path, expected_view_text: &str) -> Result<(), WasmPythonError> {
+    let grants = WasmApp::inspect_required_grants(path)
+        .map_err(|source| classify_component_load_error(path, source))?;
+    let mut app = WasmApp::load_with_grants(
+        "python-shim-probe",
+        path,
+        StateStore::ephemeral(),
+        grants_with_state(grants),
+    )
+    .map_err(|source| classify_component_load_error(path, source))?;
+    let snapshot = StateSnapshot {
+        entries: Vec::new(),
+    };
+    let effects = app.init(&snapshot, (320.0, 240.0), &[]).map_err(|source| {
+        WasmPythonError::ShimLifecycleCallFailure {
+            path: path.to_path_buf(),
+            function: "init",
+            message: source.to_string(),
+        }
+    })?;
+    if effects.is_empty() {
+        return Err(WasmPythonError::ShimLifecycleCallFailure {
+            path: path.to_path_buf(),
+            function: "init",
+            message: "shim init returned no effects".to_string(),
+        });
+    }
+    let tree = app
+        .view()
+        .map_err(|source| WasmPythonError::ShimLifecycleCallFailure {
+            path: path.to_path_buf(),
+            function: "view",
+            message: source.to_string(),
+        })?;
+    if !ui_tree_contains_text(&tree, expected_view_text) {
+        return Err(WasmPythonError::ShimLifecycleCallFailure {
+            path: path.to_path_buf(),
+            function: "view",
+            message: format!("view did not contain '{expected_view_text}'"),
+        });
+    }
+    Ok(())
+}
+
+fn classify_component_load_error(path: &Path, source: wasmtime::Error) -> WasmPythonError {
+    if is_core_wasm_module(path) {
+        return WasmPythonError::RawModuleAbiMismatch {
+            path: path.to_path_buf(),
+            reason:
+                "artifact is a raw WASM module; expected a component exporting plexi:app/lifecycle"
+                    .to_string(),
+        };
+    }
+    WasmPythonError::ShimComponentLoadFailure {
+        path: path.to_path_buf(),
+        message: source.to_string(),
+    }
+}
+
+fn is_core_wasm_module(path: &Path) -> bool {
+    wasmtime::Module::from_file(&wasmtime::Engine::default(), path).is_ok()
+}
+
+fn grants_with_state(mut grants: Grants) -> Grants {
+    grants.state = true;
+    grants
+}
+
+fn ui_tree_contains_text(tree: &UiTree, needle: &str) -> bool {
+    tree.nodes.iter().any(|node| {
+        matches!(
+            &node.data,
+            UiNodeData::Text(text) if text.text.contains(needle)
+        )
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -976,6 +1134,25 @@ mod tests {
     use crate::host::wasm_app::Modifiers;
     use tempfile::tempdir;
 
+    fn python_shim_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/python-shim.wasm")
+    }
+
+    fn sysmon_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/sysmon.wasm")
+    }
+
+    fn tree_text(tree: &UiTree) -> String {
+        tree.nodes
+            .iter()
+            .filter_map(|node| match &node.data {
+                UiNodeData::Text(text) => Some(text.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn manifest_python_compat_routes_to_launch_config() {
         let dir = tempdir().expect("tempdir");
@@ -1004,6 +1181,15 @@ python_compat = true
 
         assert_eq!(config.module_name, "main");
         assert_eq!(config.app_id, "hello-py");
+
+        let adapter = WasmPythonAdapter {
+            config,
+            cpython_bundle: PathBuf::from("python.wasm"),
+            cpython_shim_component: python_shim_fixture(),
+        };
+        assert!(adapter
+            .cpython_shim_component
+            .ends_with("tests/wasm-fixtures/python-shim.wasm"));
     }
 
     #[test]
@@ -1012,6 +1198,15 @@ python_compat = true
         let err = resolve_cpython_bundle(dir.path().join("wasm-bundles")).unwrap_err();
 
         assert!(err.to_string().contains(FETCH_CPYTHON_BUNDLE_COMMAND));
+    }
+
+    #[test]
+    fn missing_shim_component_returns_actionable_error() {
+        let dir = tempdir().expect("tempdir");
+        let err = resolve_cpython_shim_component(dir.path().join("wasm-bundles")).unwrap_err();
+
+        assert!(matches!(err, WasmPythonError::MissingShimComponent { .. }));
+        assert!(err.to_string().contains(BUILD_CPYTHON_SHIM_COMMAND));
     }
 
     #[test]
@@ -1034,8 +1229,8 @@ python_compat = true
 
         let err = validate_cpython_bundle_abi(&bundle).unwrap_err();
 
-        assert!(matches!(err, WasmPythonError::UnsupportedBundleAbi { .. }));
-        assert!(err.to_string().contains("component"));
+        assert!(matches!(err, WasmPythonError::RawModuleAbiMismatch { .. }));
+        assert!(err.to_string().contains("lifecycle"));
     }
 
     #[test]
@@ -1045,7 +1240,54 @@ python_compat = true
         let err = validate_cpython_bundle_abi(&bundle).unwrap_err();
 
         eprintln!("{err}");
-        assert!(matches!(err, WasmPythonError::UnsupportedBundleAbi { .. }));
+        assert!(matches!(err, WasmPythonError::RawModuleAbiMismatch { .. }));
+    }
+
+    #[test]
+    fn python_shim_fixture_executes_lifecycle_json_bridge() {
+        let mut app = WasmApp::load_with_grants(
+            "python-shim-test",
+            &python_shim_fixture(),
+            StateStore::ephemeral(),
+            Grants {
+                state: true,
+                ..Grants::default()
+            },
+        )
+        .expect("load shim");
+        let snapshot = StateSnapshot {
+            entries: Vec::new(),
+        };
+
+        let init = app.init(&snapshot, (320.0, 240.0), &[]).expect("shim init");
+        assert!(matches!(
+            &init[0],
+            Effect::SetTitle(title) if title == "Python Shim POC"
+        ));
+        let view = app.view().expect("shim view");
+        assert!(tree_text(&view).contains("Count: 0"));
+
+        let update = app
+            .update(&InputEvent::UiAction(UiActionEvent {
+                handler_id: "increment".to_string(),
+            }))
+            .expect("shim update");
+        assert!(update.is_empty());
+        let view = app.view().expect("updated shim view");
+        assert!(tree_text(&view).contains("Count: 1"));
+    }
+
+    #[test]
+    fn shim_lifecycle_contract_failure_is_typed() {
+        let err = probe_cpython_shim_component(&sysmon_fixture()).unwrap_err();
+
+        assert!(matches!(
+            err,
+            WasmPythonError::ShimLifecycleCallFailure {
+                function: "view",
+                ..
+            } | WasmPythonError::ShimComponentLoadFailure { .. }
+        ));
     }
 
     #[test]

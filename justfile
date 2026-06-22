@@ -16,6 +16,11 @@ fetch-python-runtime:
 fetch-cpython-bundle:
     bash scripts/fetch-cpython-bundle.sh
 
+# Build the SDK v3 CPython lifecycle shim POC component and refresh its fixture.
+# If PLEXI_CPYTHON_BUNDLE_DIR is set, also stages the shim beside python.wasm.
+wasm-python-shim:
+    bash scripts/build-wasm-python-shim.sh
+
 dev:
     cargo run
 
@@ -42,6 +47,7 @@ wasm-fixtures:
     cp target/wasm32-wasip1/release/breakout.wasm tests/wasm-fixtures/breakout.wasm
     cd apps/wasm-poc/counter && cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/counter.wasm tests/wasm-fixtures/counter.wasm
+    bash scripts/build-wasm-python-shim.sh
 
 # Generate an HTML line-coverage report and open it in the browser.
 # Requires: cargo install cargo-llvm-cov && rustup component add llvm-tools-preview
