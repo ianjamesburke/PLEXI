@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Permissions — SDK v3 runtime-state permission grant browser."""
+"""Permissions — SDK v3 state-backed permission grant browser."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import plexi_sdk as sdk
 from plexi_sdk import log, state
 from plexi_sdk.effects import RequestCapability, SetState, SetStatus, SetTitle
 from plexi_sdk.events import CapabilityDenied, CapabilityGranted, KeyEvent, UiAction
-from plexi_sdk.ui import ActionBar, Button, Column, FooterKeys, SelectList, Spacer, Text
+from plexi_sdk.ui import Button, Column, SelectList, Spacer, Text
 
 DEFAULT_STATE = {
     "grants": [],
@@ -31,7 +30,7 @@ STATE_LABELS = {
 def init(size, args) -> list:
     data = _state()
     if not data["path"]:
-        data["path"] = str(_base_dir())
+        data["path"] = str(Path.cwd())
     missing = {key: data[key] for key in DEFAULT_STATE if state.get(key, None) is None}
     log.info("permissions: SDK v3 initialized")
     effects: list = [
@@ -42,11 +41,6 @@ def init(size, args) -> list:
     if missing:
         effects.append(SetState(missing))
     return effects
-
-
-def _base_dir() -> Path:
-    root = getattr(sdk, "_workspace_root", "") or ""
-    return Path(root).expanduser() if root else Path.home()
 
 
 def update(event) -> list:
@@ -168,13 +162,10 @@ def _list_view(data: dict):
             Text(data["path"] or "workspace unknown", size=11.0),
             body,
             Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
-            ActionBar(
-                [
-                    Button("Open", "permissions:detail", disabled=not rows),
-                    Button("Reload", "permissions:reload"),
-                ]
-            ),
-            FooterKeys([("j/k", "select"), ("enter", "open"), ("r", "reload")]),
+            Spacer(grow=True),
+            Button("Open", "permissions:detail", disabled=not rows),
+            Button("Reload", "permissions:reload"),
+            Text("j/k selects. Enter opens. r reloads.", size=11.0),
         ],
         gap=8.0,
         grow=True,
@@ -195,18 +186,15 @@ def _detail_view(data: dict):
             Text(f"Stored: {'yes' if grant['stored'] else 'live only'}", size=12.0),
             Text(f"Sensitive: {'yes' if grant['sensitive'] else 'no'}", size=12.0),
             Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
-            ActionBar(
-                [
-                    Button(
-                        "Revoke",
-                        "permissions:revoke",
-                        style="danger",
-                        disabled=not data["can_manage"],
-                    ),
-                    Button("Back", "permissions:back"),
-                ]
+            Spacer(grow=True),
+            Button(
+                "Revoke",
+                "permissions:revoke",
+                style="danger",
+                disabled=not data["can_manage"],
             ),
-            FooterKeys([("x", "revoke"), ("esc", "back")]),
+            Button("Back", "permissions:back"),
+            Text("x revokes. Esc returns.", size=11.0),
         ],
         gap=8.0,
         grow=True,
@@ -230,13 +218,13 @@ def _action(event) -> str | None:
         return event.handler_id.removeprefix("permissions:")
     if not isinstance(event, KeyEvent) or not event.pressed:
         return None
-    if event.key in {"up", "k"}:
+    if event.key in {"up", "k", "ArrowUp"}:
         return "up"
-    if event.key in {"down", "j"}:
+    if event.key in {"down", "j", "ArrowDown"}:
         return "down"
     if event.key in {"return", "enter"}:
         return "detail"
-    if event.key in {"escape", "h", "left"}:
+    if event.key in {"escape", "h", "left", "ArrowLeft"}:
         return "back"
     if event.key == "r":
         return "reload"

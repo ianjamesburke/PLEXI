@@ -31,7 +31,6 @@ def _state_effect(effects: list) -> dict:
 def test_keyboard_math_uses_v3_set_state_effects() -> None:
     _set_state(dict(calc.DEFAULT_STATE))
 
-    data: dict = dict(calc.DEFAULT_STATE)
     for key in ["7", "+", "5", "enter"]:
         effects = calc.update(KeyEvent(key))
         data = _state_effect(effects)
@@ -46,7 +45,6 @@ def test_keyboard_math_uses_v3_set_state_effects() -> None:
 def test_button_actions_decimal_backspace_and_clear() -> None:
     _set_state(dict(calc.DEFAULT_STATE))
 
-    data: dict = dict(calc.DEFAULT_STATE)
     for action in [
         "calc:key:1",
         "calc:key:.",
@@ -63,20 +61,3 @@ def test_button_actions_decimal_backspace_and_clear() -> None:
     _set_state(dict(calc.DEFAULT_STATE, display="123", fresh=False))
     effects = calc.update(KeyEvent("backspace"))
     assert _state_effect(effects)["display"] == "12"
-
-
-def test_view_serializes_button_rows_as_action_bars() -> None:
-    _set_state(dict(calc.DEFAULT_STATE))
-
-    root = calc.view().to_node()
-    assert root is not None
-
-    def walk(node: dict) -> list[dict]:
-        children = []
-        for child in node.get("children", []):
-            children.extend(walk(child))
-        return [node, *children]
-
-    nodes = walk(root)
-    assert all(node.get("type") != "row" for node in nodes)
-    assert any(node.get("type") == "action_bar" for node in nodes)

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Calculator — SDK v3 runtime-state four-function calculator."""
+"""Calculator — SDK v3 state-backed four-function calculator."""
 
 from __future__ import annotations
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction
-from plexi_sdk.ui import ActionBar, Button, Column, FooterKeys, Text
+from plexi_sdk.ui import Button, Column, Component, Spacer, Text
 
 BUTTON_ROWS = [
     ["C", "+/-", "%", "/"],
@@ -22,6 +22,23 @@ DEFAULT_STATE = {
     "op": None,
     "fresh": True,
 }
+
+
+class ButtonRow(Component):
+    def __init__(self, labels: list[str]) -> None:
+        self.labels = labels
+
+    def to_node(self) -> dict:
+        return {
+            "type": "row",
+            "children": [
+                Button(label, f"calc:key:{label}", style=_button_style(label))
+                for label in self.labels
+            ],
+            "gap": 8.0,
+            "align": "start",
+            "grow": False,
+        }
 
 
 def init(size, args) -> list:
@@ -55,23 +72,11 @@ def view():
             Text("Calculator", bold=True, size=15.0),
             Text(subtitle or "ready", size=11.0),
             Text(data["display"], size=28.0, bold=True, align="end", truncate=True),
-            *[
-                ActionBar(
-                    [
-                        Button(label, f"calc:key:{label}", style=_button_style(label))
-                        for label in row
-                    ],
-                    gap=8.0,
-                )
-                for row in BUTTON_ROWS
-            ],
-            FooterKeys(
-                [
-                    ("0-9", "digits"),
-                    ("ops", "queue"),
-                    ("enter", "equals"),
-                    ("backspace", "delete"),
-                ]
+            *[ButtonRow(row) for row in BUTTON_ROWS],
+            Spacer(grow=True),
+            Text(
+                "0-9 input. Operators queue. Enter equals. Backspace deletes.",
+                size=11.0,
             ),
         ],
         gap=8.0,
