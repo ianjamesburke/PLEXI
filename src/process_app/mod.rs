@@ -1386,13 +1386,8 @@ impl ProcessApp {
     }
 
     fn flush_outbound_events(&mut self) {
-        let mut flushed = false;
         while let Some(event) = self.outbound_events.pop_front() {
             self.send_event(&event);
-            flushed = true;
-        }
-        if flushed {
-            self.mark_render_needed("outbound_event");
         }
     }
 

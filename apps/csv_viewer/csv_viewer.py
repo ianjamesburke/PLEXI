@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSV Viewer — SDK v3 state-backed CSV browser."""
+"""CSV Viewer — SDK v3 runtime-state CSV browser."""
 
 from __future__ import annotations
 

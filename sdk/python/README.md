@@ -41,6 +41,8 @@ def view():
     ], grow=True)
 ```
 
+`SetState` is process-local runtime state. Use `PersistState` when a key must survive app restart.
+
 ## Keyboard Conventions
 
 Keys arrive in `update(event)` as `KeyEvent`. Key strings are lowercase canonical.

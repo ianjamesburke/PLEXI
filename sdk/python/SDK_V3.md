@@ -55,23 +55,28 @@ def view():
 from plexi_sdk import state   # StateProxy instance
 
 state.get(key: str, default=None) -> any       # JSON-decode value, return default if absent
-state.set(key: str, value: any) -> SetState    # returns a SetState effect (does NOT mutate immediately)
+state.set(key: str, value: any) -> SetState    # returns a runtime-state effect (does NOT mutate immediately)
 state.all() -> dict[str, any]                  # all keys decoded
 state.raw(key: str) -> bytes | None            # raw bytes, no decode
 ```
 
-**`state.set()` returns an effect, it does not mutate.** The app returns `[state.set("count", 5)]` from `update()`. The adapter executes it via `host-state::set`, then rebuilds the snapshot and calls `view()`.
+**`state.set()` returns an effect, it does not mutate immediately.** The app returns `[state.set("count", 5)]` from `update()`. The adapter applies the update to the process-local SDK snapshot, then calls `view()`.
 
-**`SetState` effect:** convenience shorthand. Equivalent to returning a list of `HostStateSet` effects. Implemented as:
+**`SetState` effect:** process-local runtime state. Use it for view/update data, game state, caches, and animation state. It never writes host app-state files.
 
 ```python
 @dataclass
 class SetState:
-    """Set one or more state keys. Values are JSON-encoded by the adapter."""
     data: dict  # {key: value} — values must be JSON-serializable
 ```
 
-The adapter serializes each value as JSON bytes and calls `host-state::set(key, json_bytes)` for each entry.
+**`PersistState` effect:** explicit durable state. It updates the same runtime snapshot and writes the full app-state snapshot through the host.
+
+```python
+@dataclass
+class PersistState:
+    data: dict
+```
 
 **State in `view()`:** `state.get()` reads the snapshot set by the adapter before the call. It is read-only inside `view()` — calling `state.set()` inside `view()` raises `RuntimeError("state.set() called inside view() — return SetState from update() instead")`.
 
@@ -107,7 +112,11 @@ from typing import Optional
 
 @dataclass
 class SetState:
-    data: dict  # {key: any} — JSON-encoded per key by adapter
+    data: dict  # process-local runtime state
+
+@dataclass
+class PersistState:
+    data: dict  # runtime state plus explicit durable app-state save
 
 # ── File I/O ──────────────────────────────────────────────────────────────────
 

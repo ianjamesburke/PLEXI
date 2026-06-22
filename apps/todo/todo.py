@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Todo — SDK v3 state-backed list."""
+"""Todo — SDK v3 persisted list."""
 
 from __future__ import annotations
 
 from plexi_sdk import state
-from plexi_sdk.effects import SetState, SetStatus, SetTitle
+from plexi_sdk.effects import PersistState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction, UiValueChange
 from plexi_sdk.ui import AppBar, Button, Column, SelectList, Spacer, Text, TextInput
 
@@ -29,9 +29,9 @@ def _app_state() -> dict:
     return data
 
 
-def _set(data: dict) -> list[SetState]:
+def _set(data: dict) -> list[PersistState]:
     data["selected"] = _clamp_selected(data["items"], int(data.get("selected") or 0))
-    return [SetState(data)]
+    return [PersistState(data)]
 
 
 def _clamp_selected(items: list, selected: int) -> int:
@@ -40,7 +40,7 @@ def _clamp_selected(items: list, selected: int) -> int:
     return max(0, min(selected, len(items) - 1))
 
 
-def _add_item(data: dict) -> list[SetState]:
+def _add_item(data: dict) -> list[PersistState]:
     text = data["draft"].strip()
     if text:
         data["items"].append({"text": text, "done": False})
@@ -59,7 +59,7 @@ def init(size, args) -> list:
         if state.get(key, None) is None
     }
     if missing:
-        effects.append(SetState(missing))
+        effects.append(PersistState(missing))
     return effects
 
 

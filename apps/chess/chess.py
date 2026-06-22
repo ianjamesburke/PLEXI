@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Chess — SDK v3 state-backed canvas board."""
+"""Chess — SDK v3 runtime-state canvas board."""
 
 from __future__ import annotations
 

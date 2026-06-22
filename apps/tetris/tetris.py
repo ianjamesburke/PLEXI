@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tetris — SDK v3 state-backed canvas game."""
+"""Tetris — SDK v3 runtime-state canvas game."""
 
 from __future__ import annotations
 

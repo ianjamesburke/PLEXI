@@ -526,7 +526,7 @@ fn decode_effect(value: Value) -> Result<PythonBridgeEffect, WasmPythonError> {
         .and_then(Value::as_str)
         .ok_or_else(|| WasmPythonError::BridgeJson("effect missing string 'type'".to_string()))?;
     match kind {
-        "SetState" => decode_set_state(value).map(PythonBridgeEffect::SetState),
+        "SetState" | "PersistState" => decode_set_state(value).map(PythonBridgeEffect::SetState),
         "SetTitle" => Ok(PythonBridgeEffect::Host(Effect::SetTitle(required_string(
             &value, "title",
         )?))),
@@ -692,7 +692,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
         .ok_or_else(|| WasmPythonError::BridgeJson("ui node missing string 'type'".to_string()))?;
     match kind {
         "Empty" => Ok(UiNodeData::Empty),
-        "Text" | "label" => Ok(UiNodeData::Text(TextNode {
+        "Text" | "text" | "label" => Ok(UiNodeData::Text(TextNode {
             text: required_string(value, "text")?,
             size: optional_f32(value, "size")?,
             bold: value.get("bold").and_then(Value::as_bool).unwrap_or(false),
@@ -707,6 +707,17 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                     .and_then(Value::as_str)
                     .unwrap_or("start"),
             )?,
+        })),
+        "AppBar" | "app_bar" | "app-bar" => Ok(UiNodeData::Text(TextNode {
+            text: match value.get("subtitle").and_then(Value::as_str) {
+                Some("") | None => required_string(value, "title")?,
+                Some(subtitle) => format!("{} {}", required_string(value, "title")?, subtitle),
+            },
+            size: Some(16.0),
+            bold: true,
+            color: None,
+            truncate: true,
+            align: Alignment::Start,
         })),
         "Column" | "column" => Ok(UiNodeData::Column(ColumnNode {
             children: u32_list(value, "children")?,

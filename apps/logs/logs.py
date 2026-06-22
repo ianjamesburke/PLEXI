@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Logs — SDK v3 state-backed live tail of the Plexi host log."""
+"""Logs — SDK v3 runtime-state live tail of the Plexi host log."""
 
 from __future__ import annotations
 

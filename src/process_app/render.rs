@@ -318,7 +318,16 @@ pub(crate) fn render_draw_commands(
                 );
             }
 
-            RenderCommand::Circle { cx, cy, r, fill, stroke, stroke_width, glow_color, glow_radius } => {
+            RenderCommand::Circle {
+                cx,
+                cy,
+                r,
+                fill,
+                stroke,
+                stroke_width,
+                glow_color,
+                glow_radius,
+            } => {
                 let center = egui::pos2(origin.x + cx, origin.y + cy);
                 let painter = ui.painter().with_clip_rect(clip);
                 // 1. Glow behind fill (concentric rings)
@@ -1222,7 +1231,7 @@ pub(crate) fn render_draw_commands(
             }
 
             RenderCommand::ComponentTree { root } => {
-                log::info!(
+                log::trace!(
                     "render: ComponentTree received; rendering via render_component_tree; pane_origin={:?}",
                     pane_rect.min
                 );
@@ -2088,14 +2097,26 @@ fn paint_gradient_rect(
     // the correct UV for solid-color mesh vertices with the default texture.
     let white_uv = egui::pos2(0.0, 0.0);
     let mut mesh = egui::Mesh::default();
-    mesh.vertices
-        .push(egui::epaint::Vertex { pos: rect.left_top(),     uv: white_uv, color: tl });
-    mesh.vertices
-        .push(egui::epaint::Vertex { pos: rect.right_top(),    uv: white_uv, color: tr });
-    mesh.vertices
-        .push(egui::epaint::Vertex { pos: rect.right_bottom(), uv: white_uv, color: br });
-    mesh.vertices
-        .push(egui::epaint::Vertex { pos: rect.left_bottom(),  uv: white_uv, color: bl });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_top(),
+        uv: white_uv,
+        color: tl,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_top(),
+        uv: white_uv,
+        color: tr,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_bottom(),
+        uv: white_uv,
+        color: br,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_bottom(),
+        uv: white_uv,
+        color: bl,
+    });
     mesh.indices = vec![0, 1, 2, 0, 2, 3];
     painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
 }

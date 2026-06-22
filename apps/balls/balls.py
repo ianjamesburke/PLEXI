@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Balls — SDK v3 state-backed canvas physics demo."""
+"""Balls — SDK v3 runtime-state canvas physics demo."""
 
 from __future__ import annotations
 
 import math
 import random
 
-from plexi_sdk import log, state
-from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
+from plexi_sdk import log
+from plexi_sdk.effects import SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import TimerFired
 from plexi_sdk.ui import (
     AppBar,
@@ -28,6 +28,7 @@ GRAVITY = 300.0
 DAMPING = 0.78
 FRICTION = 0.995
 MAX_BALLS = 50
+_runtime: dict | None = None
 PALETTE = [
     "#f38ba8",
     "#a6e3a1",
@@ -59,29 +60,26 @@ def _initial(count: int = 10) -> dict:
 
 
 def _sim() -> dict:
-    data = _initial()
-    data["balls"] = [dict(ball) for ball in state.get("balls", data["balls"])]
-    data["ticks"] = int(state.get("ticks", 0))
-    return data
+    global _runtime
+    if _runtime is None:
+        _runtime = _initial()
+    return _runtime
 
 
 def init(size, args) -> list:
+    global _runtime
     count = 10
     if args:
         try:
             count = int(args[0])
         except (TypeError, ValueError):
             count = 10
-    missing = {}
-    if state.get("balls", None) is None:
-        missing.update(_initial(count))
+    _runtime = _initial(count)
     effects: list = [
         SetTitle("Balls"),
         SetTimer(TIMER_ID, TICK_MS, repeat=True),
-        SetStatus(f"{len(missing.get('balls', state.get('balls', [])))} balls"),
+        SetStatus(f"{len(_runtime['balls'])} balls"),
     ]
-    if missing:
-        effects.append(SetState(missing))
     log.info("balls: SDK v3 canvas initialized")
     return effects
 
@@ -89,8 +87,8 @@ def init(size, args) -> list:
 def update(event) -> list:
     if not isinstance(event, TimerFired) or event.id != TIMER_ID:
         return []
-    data = _step(_sim())
-    return [SetState(data), SetStatus(f"{len(data['balls'])} balls")]
+    _step(_sim())
+    return []
 
 
 def _step(data: dict) -> dict:

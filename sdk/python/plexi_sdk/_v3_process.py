@@ -79,6 +79,10 @@ class V3ProcessApp(App):
             if isinstance(effect, effects.SetState):
                 self._v3_values.update(effect.data)
                 state_changed = True
+            elif isinstance(effect, effects.PersistState):
+                self._v3_values.update(effect.data)
+                state_changed = True
+                self.state.save(self._v3_values)
             elif isinstance(effect, effects.SetStatus):
                 self.emit.status_summary(effect.text)
             elif isinstance(effect, effects.SetTimer):
@@ -99,7 +103,7 @@ class V3ProcessApp(App):
             else:
                 self.emit.info(f"sdk_v3_process: ignored effect {type(effect).__name__}")
         if state_changed:
-            self.state.save(self._v3_values)
+            self._set_v3_state(in_view=False)
 
     async def _request_capability(self, capability: str) -> None:
         try:

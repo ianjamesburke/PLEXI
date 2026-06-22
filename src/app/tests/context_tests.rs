@@ -771,6 +771,8 @@ fn context_transition_rescans_registry() {
         "name = \"Test App A\"\n",
         "entry = \"app.py\"\n",
         "type = \"app\"\n",
+        "[runtime]\n",
+        "python_compat = true\n",
     );
     let manifest_b = concat!(
         "schema_version = 1\n",
@@ -779,6 +781,8 @@ fn context_transition_rescans_registry() {
         "name = \"Test App B\"\n",
         "entry = \"app.py\"\n",
         "type = \"app\"\n",
+        "[runtime]\n",
+        "python_compat = true\n",
     );
 
     let apps_a = crate::app::registry::workspace_apps_dir(&dir_a);
@@ -1986,10 +1990,7 @@ fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
 /// not at the end — even when another sibling context (child2) already exists.
 #[test]
 fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
-    fn push_ipc(
-        h: &mut crate::testing::HostHarness,
-        pane_id: crate::spatial::tiling::PaneId,
-    ) {
+    fn push_ipc(h: &mut crate::testing::HostHarness, pane_id: crate::spatial::tiling::PaneId) {
         let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
             "type": "push_pane_to_subcontext",
             "pane_id": pane_id,
@@ -2020,7 +2021,11 @@ fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     // [root, child1, grandchild, child2].
     // Without the fix, grandchild would append at the end: [root, child1, child2, grandchild].
     push_ipc(&mut h, pane_a);
-    assert_eq!(h.app.router.len(), 4, "root + child1 + grandchild + child2 = 4 contexts");
+    assert_eq!(
+        h.app.router.len(),
+        4,
+        "root + child1 + grandchild + child2 = 4 contexts"
+    );
 
     let ids: Vec<u64> = h.app.router.iter().map(|c| c.context_id).collect();
     let grandchild = h
@@ -2032,7 +2037,10 @@ fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     assert_eq!(grandchild.depth, 2, "grandchild depth must be 2");
 
     let child1_pos = ids.iter().position(|&id| id == child1_id).unwrap();
-    let grandchild_pos = ids.iter().position(|&id| id == grandchild.context_id).unwrap();
+    let grandchild_pos = ids
+        .iter()
+        .position(|&id| id == grandchild.context_id)
+        .unwrap();
     let child2_pos = ids.iter().position(|&id| id == child2_id).unwrap();
     let root_pos = ids.iter().position(|&id| id == root_id).unwrap();
 

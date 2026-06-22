@@ -10,6 +10,11 @@ class SetState:
 
 
 @dataclass
+class PersistState:
+    data: dict
+
+
+@dataclass
 class FileRead:
     path: str
 
