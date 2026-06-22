@@ -1,14 +1,14 @@
-"""Plexi SDK v2 — declarative UI primitives.
+"""Plexi SDK v3 — declarative UI primitives.
 
-A component tree that lays itself out and emits low-level `DrawCommand`s.
-Apps describe *what* the screen should look like; the SDK handles *where*.
+A component tree that the host lays out and renders. Apps describe *what* the
+screen should be; the host owns geometry, theme, input, and rendering.
 
 Design goals:
   - Hard to make ugly UI. Defaults do the right thing.
   - Compose: a `Card` can hold `KeyRow`s, a `Column` can hold `Card`s.
   - Responsive: components truncate, wrap, or scroll instead of clipping.
-  - Escape hatch: apps that need pixel control still have `ctx.rect` /
-    `ctx.text` from the lower-level API.
+  - Canvas: games and visualizations use typed canvas commands inside the same
+    component-tree protocol.
 
 Usage:
     from plexi_sdk import App
@@ -27,9 +27,6 @@ Usage:
                 Footer("Status line"),
             ])
 
-Canvas, games, and visualizations can still override ``on_render(ctx)`` and
-use lower-level draw calls.
-
 ## Component measurement
 
 Each component reports a `measure(avail_w) -> height` used in a single
@@ -41,7 +38,7 @@ below the minimum pane size, or use `ScrollLog` for variable content.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional, Protocol, Union, runtime_checkable
+from typing import List, Optional, Protocol, Union, runtime_checkable
 
 
 @runtime_checkable
@@ -195,7 +192,7 @@ class Component:
         raise NotImplementedError
 
     def to_node(self) -> "dict | None":
-        """Return a UiNode dict for host-side rendering, or None for L0 fallback."""
+        """Return a UiNode dict for host-side rendering."""
         return None
 
     def render_into(self, ctx, x: float, y: float, w: float) -> float:
@@ -355,7 +352,7 @@ class Label(Component):
 
 @dataclass
 class Text(Label):
-    """SDK v3 text node. Backed by the existing host-native Label component."""
+    """SDK v3 inline text node."""
 
     size: Optional[float] = None
     truncate: bool = False
@@ -366,14 +363,14 @@ class Text(Label):
         return self.size if self.size is not None else super()._font_size()
 
     def to_node(self) -> dict:
-        node = super().to_node()
-        node.update({
-            "type": "label",
-            "align": self.align,
-            "truncate": self.truncate,
-            "key": self.key,
-        })
-        return node
+        return {
+            "type": "text",
+            "text": self.text,
+            "size": self._font_size(),
+            "color": self.color or "",
+            "bold": self.bold,
+            "monospace": False,
+        }
 
 
 @dataclass
@@ -475,7 +472,7 @@ class CanvasRect:
 
     def to_command(self) -> dict:
         return {"type": "rect", "x": self.x, "y": self.y,
-                "width": self.width, "height": self.height,
+                "w": self.width, "h": self.height,
                 "fill": self.fill, "radius": self.radius}
 
 
@@ -487,8 +484,8 @@ class CanvasCircle:
     fill: str
 
     def to_command(self) -> dict:
-        return {"type": "circle", "x": self.x, "y": self.y,
-                "radius": self.radius, "fill": self.fill}
+        return {"type": "circle", "cx": self.x, "cy": self.y,
+                "r": self.radius, "fill": self.fill}
 
 
 @dataclass
@@ -514,71 +511,56 @@ class CanvasText:
     size: float = 14.0
     color: str = "#ffffff"
     bold: bool = False
-    align: str = "start"
+    align: str = "left_top"
 
     def to_command(self) -> dict:
         return {"type": "text", "x": self.x, "y": self.y,
                 "text": self.text, "size": self.size,
                 "color": self.color, "bold": self.bold,
-                "align": self.align}
+                "align": self.align, "monospace": False,
+                "max_width": None, "elide": True, "selectable": False}
 
 
 class Canvas(Component):
     """SDK v3 CPU canvas node.
 
-    Pass typed drawing commands for host-side rendering from ``view()``. The
-    legacy ``Canvas(draw_callable)`` PGAP escape hatch remains accepted while
-    subprocess apps still exist.
+    Pass typed drawing commands for host-side rendering from ``view()``.
     """
 
     def __init__(
         self,
-        commands: "list | Callable[[Any, float, float, float, float], None] | None" = None,
+        commands: "list | None" = None,
         *,
         width: float = 640.0,
-        height: "float | None" = 360.0,
+        height: float = 360.0,
         grow: bool = True,
         key: str = "",
-        draw: "Callable[[Any, float, float, float, float], None] | None" = None,
     ) -> None:
-        if callable(commands) and draw is None:
-            draw = commands
-            commands = None
+        if callable(commands):
+            raise TypeError("Canvas expects typed canvas commands, not a draw callback")
         self.commands = list(commands or [])
         self.width = width
         self.height = height
         self.grow = grow
         self.key = key
-        self.draw = draw
 
     def measure(self, _avail_w: float) -> float:
-        return self.height if self.height is not None else 0.0
+        return self.height
 
     def is_grow(self) -> bool:
-        return self.grow and self.height is None
+        return self.grow
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        if self.draw is None:
-            return
-        self.draw(ctx, x, y, w, h)
+        raise RuntimeError("Canvas renders only through the SDK v3 component-tree path")
 
-    def to_node(self) -> "dict | None":
-        if self.draw is not None:
-            return None
+    def to_node(self) -> dict:
         return {
             "type": "canvas",
             "width": self.width,
-            "height": self.height if self.height is not None else 0.0,
+            "height": self.height,
             "grow": self.grow,
-            "commands": [_canvas_command(c) for c in self.commands],
-            "key": self.key,
+            "commands": [c.to_command() for c in self.commands],
         }
-
-
-def _canvas_command(command) -> dict:
-    if hasattr(command, "to_command"):
-        return command.to_command()
-    return dict(command)
 
 
 @dataclass
@@ -1408,7 +1390,7 @@ class TextEdit(Component):
 
     @property
     def submitted(self) -> Optional[str]:
-        """Text submitted this frame (user pressed Enter) during L0 fallback, else None."""
+        """Text submitted this frame (user pressed Enter), else None."""
         return self._submitted
 
     def to_node(self) -> dict:
@@ -1768,24 +1750,9 @@ class Column(Component):
             "type": "column",
             "children": children,
             "gap": self.gap,
-            "align": self.align,
-            "grow": self.grow,
-            "key": self.key,
             "padding_top": self._pad_top,
             "padding": self.padding,
         }
-
-
-def AppBar(title: str, subtitle: str = "") -> Column:  # noqa: F811
-    children: list[Component] = [Text(title, bold=True, size=15.0)]
-    if subtitle:
-        children.append(Text(subtitle, size=11.0))
-    return Column(children, gap=2.0)
-
-
-def FooterKeys(pairs: list) -> Column:  # noqa: F811
-    hints = "   ".join(f"{key} {label}" for key, label in pairs)
-    return Column([Text(hints, size=11.0)], padding=0, gap=0)
 
 
 # ── Public render entry point ──────────────────────────────────────────────
@@ -1797,9 +1764,8 @@ def render_tree(ctx, root: Component, fill: Optional[str] = None) -> None:
     `fill` defaults to the active host theme background (`theme.bg`).
     Apps normally call `ctx.render(root)` instead, which calls this.
 
-    If the root component (and all descendants) support ``to_node()``, the tree
-    is emitted as a single ``ComponentTree`` command and the host renders it
-    natively with consistent theming. Otherwise falls back to L0 draw commands.
+    The root component and every descendant must support ``to_node()``. The SDK
+    emits a single ``ComponentTree`` command and the host renders it natively.
     """
     if not isinstance(root, Component):
         raise TypeError(
@@ -1808,18 +1774,12 @@ def render_tree(ctx, root: Component, fill: Optional[str] = None) -> None:
         )
     ctx.clear(fill or theme.bg)
     node = root.to_node()
-    if node is not None:
-        ctx.render_tree(node)
-        return
-    if getattr(ctx._app, "_l0_fallback_warned", False) is not True:
-        setattr(ctx._app, "_l0_fallback_warned", True)
-        ctx.warn(
-            "ctx.render() fell back to L0 draw commands because "
-            f"{type(root).__name__}.to_node() returned None. "
-            "Use UiNode-native components for ordinary app UI; reserve raw "
-            "drawing for games, visualizations, or explicitly documented escape hatches."
+    if node is None:
+        raise TypeError(
+            f"{type(root).__name__}.to_node() returned None. SDK v3 requires "
+            "a host-native component tree."
         )
-    root.render(ctx, 0.0, 0.0, ctx.w, ctx.h)
+    ctx.render_tree(node)
 
 
 @dataclass

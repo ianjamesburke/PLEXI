@@ -25,7 +25,7 @@ class ButtonStyle:
 class Button:
     """Stateful manual-layout button for canvas apps.
 
-    Tracks its own hover/click state across frames. Normal SDK v2 apps should
+    Tracks its own hover/click state across frames. SDK v3 apps should
     use ``ButtonRow`` or L1 UI nodes from ``view()`` instead.
 
     Usage::

@@ -47,4 +47,6 @@ def test_key_changes_direction_and_view_has_canvas() -> None:
     _with_state(changed)
 
     assert changed["next_direction"] == [0, 1]
-    assert snake.view().children[1].to_node()["type"] == "canvas"
+    canvas = snake.view().children[1].to_node()
+    assert canvas["type"] == "canvas"
+    assert any(cmd["type"] == "rect" and "w" in cmd and "h" in cmd for cmd in canvas["commands"])

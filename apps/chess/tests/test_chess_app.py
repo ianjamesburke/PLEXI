@@ -64,5 +64,10 @@ def test_view_returns_canvas_tree() -> None:
     tree = chess.view()
     node = tree.children[1]
 
-    assert node.to_node()["type"] == "canvas"
-    assert node.to_node()["commands"]
+    canvas = node.to_node()
+    assert canvas["type"] == "canvas"
+    assert canvas["commands"]
+    assert any(
+        cmd["type"] == "text" and cmd.get("align") == "center_center"
+        for cmd in canvas["commands"]
+    )

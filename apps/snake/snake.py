@@ -220,7 +220,7 @@ def _draw(data: dict) -> list:
                     size=14.0,
                     color="#f38ba8",
                     bold=True,
-                    align="center",
+                    align="center_center",
                 ),
             ]
         )

@@ -50,7 +50,7 @@ def test_ui_tree_flattens_v3_components() -> None:
     assert tree["root"] == 0
     assert len(tree["nodes"]) == 3
     assert tree["nodes"][0]["data"]["type"] == "Column"
-    assert tree["nodes"][1]["data"]["type"] == "Text"
+    assert tree["nodes"][1]["data"]["type"] == "text"
     assert tree["nodes"][2]["data"]["type"] == "Button"
 
 
@@ -129,8 +129,8 @@ def test_ui_tree_serializes_canvas_commands() -> None:
             "type": "rect",
             "x": 1.0,
             "y": 2.0,
-            "width": 30.0,
-            "height": 40.0,
+            "w": 30.0,
+            "h": 40.0,
             "fill": "#112233",
             "radius": 2.0,
         }

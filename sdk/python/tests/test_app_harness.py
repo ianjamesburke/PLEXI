@@ -197,3 +197,16 @@ def test_core_game_apps_boot_and_render(relative_path: str) -> None:
     with AppHarness(repo_root / relative_path, timeout=2.0) as h:
         cmds = h.run(1)
     assert cmds, f"{relative_path} should emit draw/control commands for first frame"
+    trees = [cmd for cmd in cmds if cmd.get("type") == "component_tree"]
+    assert trees, f"{relative_path} should render through the SDK v3 component tree"
+    assert _contains_node_type(trees[0]["root"], "canvas")
+
+
+def _contains_node_type(node: dict, node_type: str) -> bool:
+    if node.get("type") == node_type:
+        return True
+    for child in node.get("children", []):
+        if _contains_node_type(child, node_type):
+            return True
+    child = node.get("child")
+    return isinstance(child, dict) and _contains_node_type(child, node_type)

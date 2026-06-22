@@ -26,7 +26,7 @@ def view():
     count = state.get("count", 0)
     return Column([
         AppBar("__DISPLAY_NAME__"),
-        Text(str(count), bold=True, align="center"),
+        Text(str(count), bold=True),
         FooterKeys([
             ("+", "increment"),
             ("-", "decrement"),

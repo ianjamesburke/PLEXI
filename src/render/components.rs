@@ -301,6 +301,55 @@ pub(crate) fn render_component_tree(
             }
         }
 
+        UiNode::Canvas {
+            commands,
+            width,
+            height,
+            grow,
+        } => {
+            let canvas_w = if *grow {
+                ui.available_width()
+            } else {
+                (*width).min(ui.available_width())
+            }
+            .max(0.0);
+            let canvas_h = (*height).max(0.0);
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(canvas_w, canvas_h), egui::Sense::hover());
+            let mut raw_events: Vec<crate::app_protocol::PlexiEvent> = Vec::new();
+            let mut raw_focus_ctx = TextEditFocusCtx::new();
+            crate::process_app::render::render_draw_commands(
+                ui,
+                rect,
+                commands,
+                colors,
+                &mut *raw_caches.commonmark_cache,
+                raw_caches.audio_peaks,
+                &mut *raw_caches.image_cache,
+                raw_caches.workspace_root,
+                raw_caches.net_http_granted,
+                &mut *raw_caches.list_view_scroll_offsets,
+                &mut *raw_caches.list_view_last_aligned_sel,
+                &mut raw_events,
+                text_edit_buffers,
+                &mut raw_focus_ctx,
+            );
+            for evt in raw_events {
+                if let crate::app_protocol::PlexiEvent::ComponentEvent {
+                    node_id,
+                    event_type,
+                    payload,
+                } = evt
+                {
+                    events.push(ComponentEventPayload {
+                        node_id,
+                        event_type,
+                        payload,
+                    });
+                }
+            }
+        }
+
         UiNode::Surface { .. } => {
             // Reserved for future GPU surface layer — no-op.
             log::trace!("render_components: Surface node encountered — no-op (future GPU layer)");

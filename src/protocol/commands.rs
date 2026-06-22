@@ -3850,6 +3850,29 @@ mod ui_node_tests {
     }
 
     #[test]
+    fn draw_command_render_component_tree_canvas_deserializes() {
+        let json = r##"{"type":"component_tree","root":{"type":"canvas","width":640.0,"height":360.0,"grow":true,"commands":[{"type":"rect","x":0.0,"y":0.0,"w":640.0,"h":360.0,"fill":"#000000","radius":0.0},{"type":"circle","cx":10.0,"cy":20.0,"r":5.0,"fill":"#ffffff"}]}}"##;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialize DrawCommand");
+        match cmd {
+            DrawCommand::Render(RenderCommand::ComponentTree { root }) => match root {
+                UiNode::Canvas {
+                    commands,
+                    width,
+                    height,
+                    grow,
+                } => {
+                    assert_eq!(width, 640.0);
+                    assert_eq!(height, 360.0);
+                    assert!(grow);
+                    assert_eq!(commands.len(), 2);
+                }
+                other => panic!("expected Canvas root, got {other:?}"),
+            },
+            other => panic!("expected ComponentTree, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn component_event_serializes_correctly() {
         let event = PlexiEvent::ComponentEvent {
             node_id: "btn1".into(),

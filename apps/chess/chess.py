@@ -220,7 +220,7 @@ def _draw_board(pos: Position, data: dict) -> list:
                         PIECE_GLYPHS[piece],
                         size=38.0,
                         color=color,
-                        align="center",
+                        align="center_center",
                     )
                 )
     for idx, file_name in enumerate(FILES):

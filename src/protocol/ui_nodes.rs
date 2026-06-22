@@ -12,6 +12,14 @@ fn default_space_xl() -> f32 {
     24.0 // SPACE_XL — keep in sync with src/ui/style.rs
 }
 
+fn default_canvas_width() -> f32 {
+    640.0
+}
+
+fn default_canvas_height() -> f32 {
+    360.0
+}
+
 /// Single shortcut entry for `UiNode::FooterKeys`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct FooterKeyEntry {
@@ -116,6 +124,17 @@ pub enum UiNode {
     },
     /// Escape hatch: embed a flat `RenderCommand` inside the tree.
     Raw { command: Box<RenderCommand> },
+    /// CPU canvas with local draw commands. The host allocates a layout rect
+    /// for the node, then renders commands relative to that rect.
+    Canvas {
+        commands: Vec<RenderCommand>,
+        #[serde(default = "default_canvas_width")]
+        width: f32,
+        #[serde(default = "default_canvas_height")]
+        height: f32,
+        #[serde(default = "default_true")]
+        grow: bool,
+    },
     /// Future GPU surface placeholder — reserved, not yet rendered.
     Surface { id: String },
     /// Pinned layout wrapper. In a vertical Stack, `Pinned { edge: Bottom }` children
@@ -323,6 +342,23 @@ impl PartialEq for UiNode {
                     _ => false,
                 }
             }
+            (
+                UiNode::Canvas {
+                    commands: c1,
+                    width: w1,
+                    height: h1,
+                    grow: g1,
+                },
+                UiNode::Canvas {
+                    commands: c2,
+                    width: w2,
+                    height: h2,
+                    grow: g2,
+                },
+            ) => match (serde_json::to_string(c1), serde_json::to_string(c2)) {
+                (Ok(s1), Ok(s2)) => s1 == s2 && w1 == w2 && h1 == h2 && g1 == g2,
+                _ => false,
+            },
             (UiNode::Surface { id: i1 }, UiNode::Surface { id: i2 }) => i1 == i2,
             (
                 UiNode::Button {

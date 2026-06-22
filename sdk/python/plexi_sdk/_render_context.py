@@ -582,7 +582,7 @@ class RenderContext:
         self._queue({"type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                      "color": color, "width": width})
 
-    # ── SDK v2 declarative UI entry point ──
+    # ── SDK v3 declarative UI entry point ──
     def render(self, tree: Any, fill: "str | None" = None) -> None:
         """Render a declarative UI tree (see `plexi_sdk.ui`). Clears the pane
         to `fill` first, then lays out `tree` into the full pane rect.
