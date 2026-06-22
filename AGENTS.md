@@ -64,6 +64,8 @@ Every new feature must be instrumented. No new capability, command, or user-visi
 
 **Full reference: [`src/testing/TESTING.md`](src/testing/TESTING.md).** Observable state → TOML scene. Return value or invariant → Rust `#[test]`. `cargo test --bin plexi` must be green before any push.
 
+**`just pr-install <N>` must run from the relevant feature worktree.** The recipe runs pre-install tests against the current working tree before building. Running it from alpha/root validates and installs the wrong tree.
+
 Test-first for host logic. Define done by the test, not the code. No partial merges.
 
 ## Panic Discipline
