@@ -191,6 +191,42 @@ pub(crate) fn render_component_tree(
             ui.add(egui::Label::new(rich).selectable(true));
         }
 
+        UiNode::Markdown {
+            text,
+            base_size,
+            color,
+            padding,
+        } => {
+            let size = egui::vec2(ui.available_width(), ui.available_height());
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            let content = rect.shrink((*padding).max(0.0));
+            if content.is_positive() {
+                let text_color = if color.is_empty() {
+                    colors.text_primary
+                } else {
+                    parse_color(color).unwrap_or(colors.text_primary)
+                };
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(content)
+                        .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                );
+                child.set_clip_rect(content);
+                crate::ui::markdown::show(
+                    &mut child,
+                    raw_caches.commonmark_cache,
+                    colors,
+                    text,
+                    text_color,
+                    if *base_size > 0.0 {
+                        *base_size
+                    } else {
+                        style::TEXT_BODY
+                    },
+                );
+            }
+        }
+
         UiNode::Interactive {
             node_id,
             child,
@@ -653,7 +689,7 @@ pub(crate) fn render_component_tree(
             padding_top,
             padding,
         } => {
-            log::info!(
+            log::trace!(
                 "render_components: Column {} children gap={gap} padding_top={padding_top} padding={padding}",
                 children.len()
             );
@@ -1250,7 +1286,7 @@ fn render_stack(
                         raw_caches,
                     ));
                 }
-                log::info!(
+                log::trace!(
                     "render_components: render_stack vertical pinned body_h={body_h:.0} footer_h={total_pinned_h:.0}"
                 );
             } else {

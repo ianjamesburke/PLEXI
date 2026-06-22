@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Calculator — SDK v3 state-backed four-function calculator."""
+"""Calculator — SDK v3 runtime-state four-function calculator."""
 
 from __future__ import annotations
 

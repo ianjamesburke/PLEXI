@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import plexi_sdk as sdk  # noqa: E402
 from plexi_sdk import _v3_state  # noqa: E402
-from plexi_sdk.effects import SetState  # noqa: E402
+from plexi_sdk.effects import PersistState  # noqa: E402
 from plexi_sdk.events import KeyEvent, UiAction, UiValueChange  # noqa: E402
 
 import todo  # noqa: E402
@@ -24,7 +24,7 @@ def _set_state(values: dict) -> None:
 
 
 def _state_effect(effects: list) -> dict:
-    effect = next(effect for effect in effects if isinstance(effect, SetState))
+    effect = next(effect for effect in effects if isinstance(effect, PersistState))
     return effect.data
 
 

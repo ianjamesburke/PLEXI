@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from plexi_sdk import state
-from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
+from plexi_sdk.effects import PersistState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import FocusChanged, KeyEvent, TimerFired
 from plexi_sdk.ui import AppBar, Column, SelectList, Spacer, Text
 
@@ -43,7 +43,7 @@ def init(size, args) -> list:
     if state.get("day_start_hour", None) is None:
         missing["day_start_hour"] = DAY_START_HOUR
     if missing:
-        effects.append(SetState(missing))
+        effects.append(PersistState(missing))
     return effects
 
 
@@ -52,7 +52,7 @@ def update(event) -> list:
         focus_events = list(state.get("focus_events", []))
         focus_events.append(_event_from_focus_changed(event))
         return [
-            SetState({"focus_events": focus_events[-5000:]}),
+            PersistState({"focus_events": focus_events[-5000:]}),
             SetStatus(_summary_text(_compute_metrics(focus_events, _day_start_hour()))),
         ]
     if isinstance(event, TimerFired) and event.id == REFRESH_TIMER_ID:

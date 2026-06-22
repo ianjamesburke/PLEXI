@@ -840,6 +840,8 @@ fn context_transition_rescans_registry() {
         "name = \"Test App A\"\n",
         "entry = \"app.py\"\n",
         "type = \"app\"\n",
+        "[runtime]\n",
+        "python_compat = true\n",
     );
     let manifest_b = concat!(
         "schema_version = 1\n",
@@ -848,6 +850,8 @@ fn context_transition_rescans_registry() {
         "name = \"Test App B\"\n",
         "entry = \"app.py\"\n",
         "type = \"app\"\n",
+        "[runtime]\n",
+        "python_compat = true\n",
     );
 
     let apps_a = crate::app::registry::workspace_apps_dir(&dir_a);

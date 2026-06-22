@@ -20,6 +20,14 @@ fn default_canvas_height() -> f32 {
     360.0
 }
 
+fn default_markdown_base_size() -> f32 {
+    14.0
+}
+
+fn default_markdown_padding() -> f32 {
+    12.0
+}
+
 /// Single shortcut entry for `UiNode::FooterKeys`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct FooterKeyEntry {
@@ -112,6 +120,16 @@ pub enum UiNode {
         bold: bool,
         #[serde(default)]
         monospace: bool,
+    },
+    /// Host-rendered markdown block.
+    Markdown {
+        text: String,
+        #[serde(default = "default_markdown_base_size")]
+        base_size: f32,
+        #[serde(default)]
+        color: String,
+        #[serde(default = "default_markdown_padding")]
+        padding: f32,
     },
     /// Interaction wrapper — host fires `ComponentEvent` for click/hover.
     Interactive {
@@ -318,6 +336,20 @@ impl PartialEq for UiNode {
                     monospace: m2,
                 },
             ) => t1 == t2 && s1 == s2 && co1 == co2 && b1 == b2 && m1 == m2,
+            (
+                UiNode::Markdown {
+                    text: t1,
+                    base_size: s1,
+                    color: c1,
+                    padding: p1,
+                },
+                UiNode::Markdown {
+                    text: t2,
+                    base_size: s2,
+                    color: c2,
+                    padding: p2,
+                },
+            ) => t1 == t2 && s1 == s2 && c1 == c2 && p1 == p2,
             (
                 UiNode::Interactive {
                     node_id: n1,

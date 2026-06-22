@@ -1490,6 +1490,25 @@ class ChatBubble(Component):
         ctx.markdown(text_x, text_y, text_w, self.text, base_size=fs, color=fg)
 
 
+@dataclass
+class Markdown(Component):
+    """Host-rendered markdown block for SDK v3 component trees."""
+
+    text: str
+    padding: float = SPACE_MD
+    base_size: float = TEXT_BODY
+    color: str = ""
+
+    def to_node(self) -> dict:
+        return {
+            "type": "markdown",
+            "text": self.text,
+            "padding": self.padding,
+            "base_size": self.base_size,
+            "color": self.color,
+        }
+
+
 class SelectList(Component):
     """Keyboard-navigable scrollable list. Stateful — create in on_init, not on_render.
 
@@ -2268,7 +2287,7 @@ __all__ = [
     "AppBar", "Section", "KeyRow", "Heading", "Label",
     "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
     "CanvasText", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
-    "ListItem", "Row", "TextInput", "TextEdit", "ChatBubble",
+    "ListItem", "Row", "TextInput", "TextEdit", "ChatBubble", "Markdown",
     "SelectList", "FormField",
     "InfoTable", "ButtonRow",
     # badge primitive

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Permissions — SDK v3 state-backed permission grant browser."""
+"""Permissions — SDK v3 runtime-state permission grant browser."""
 
 from __future__ import annotations
 

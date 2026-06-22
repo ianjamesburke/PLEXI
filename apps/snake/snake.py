@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Snake — SDK v3 state-backed canvas game."""
+"""Snake — SDK v3 runtime-state canvas game."""
 
 from __future__ import annotations
 

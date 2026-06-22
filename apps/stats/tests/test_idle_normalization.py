@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import plexi_sdk as sdk  # noqa: E402
 from plexi_sdk import _v3_state  # noqa: E402
-from plexi_sdk.effects import SetState  # noqa: E402
+from plexi_sdk.effects import PersistState  # noqa: E402
 from plexi_sdk.events import FocusChanged  # noqa: E402
 
 import stats as stats_app  # noqa: E402
@@ -109,7 +109,7 @@ def test_focus_changed_event_appends_state_event():
         )
     )
 
-    state_effect = next(effect for effect in effects if isinstance(effect, SetState))
+    state_effect = next(effect for effect in effects if isinstance(effect, PersistState))
     assert state_effect.data["focus_events"] == [
         {
             "kind": "focus_changed",
