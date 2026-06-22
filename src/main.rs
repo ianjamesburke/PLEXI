@@ -331,6 +331,8 @@ fn main() -> eframe::Result {
                                 tab,
                                 window,
                                 from: from_pane_id,
+                                dry_run,
+                                auto_pay_cents,
                                 extra_args,
                             } => {
                                 let layout: Option<String> = if down {
@@ -362,6 +364,20 @@ fn main() -> eframe::Result {
                                     std::process::exit(2);
                                 }
                                 if let Some(tid) = type_id {
+                                    if tid.starts_with('@') {
+                                        exit_if_feature_disabled(
+                                            crate::release::ReleaseFeature::Marketplace,
+                                        );
+                                        log::info!("app_open:cli: registry app={tid} dry_run={dry_run}");
+                                        std::process::exit(cli::app::registry_app_open_cli(
+                                            &tid,
+                                            &extra_args,
+                                            dry_run,
+                                            auto_pay_cents,
+                                            layout.as_deref(),
+                                            from_pane_id,
+                                        ));
+                                    }
                                     // Prefix routing: cli:, mcp:, app:, or bare name
                                     match cli::parse_prefix(&tid) {
                                         cli::OpenPrefix::Cli(name) => {
@@ -447,6 +463,8 @@ fn main() -> eframe::Result {
                                 pack,
                                 version,
                                 yes,
+                                dry_run,
+                                auto_pay_cents,
                             } => {
                                 if let Some(p) = pack {
                                     log::info!("app_install:cli: pack={p}");
@@ -458,6 +476,17 @@ fn main() -> eframe::Result {
                                         std::process::exit(cli::install_workspace_pack_cli());
                                     }
                                     Some(s) => {
+                                        if s.starts_with('@') {
+                                            exit_if_feature_disabled(
+                                                crate::release::ReleaseFeature::Marketplace,
+                                            );
+                                            log::info!("app_install:cli: registry app={s} dry_run={dry_run}");
+                                            std::process::exit(cli::app::registry_app_install_cli(
+                                                &s,
+                                                dry_run,
+                                                auto_pay_cents,
+                                            ));
+                                        }
                                         // .plexipkg artifact: validate fail-closed, then install (stint 0015).
                                         if s.ends_with(".plexipkg") {
                                             log::info!(
@@ -974,6 +1003,17 @@ fn main() -> eframe::Result {
                     Commands::Registry { cmd } => match cmd {
                         RegistryCmd::Watch { cli: only } => {
                             std::process::exit(cli::registry::watch_cli(only.as_deref()));
+                        }
+                        RegistryCmd::Stub { port, paid } => {
+                            std::process::exit(match crate::registry::stub::serve_blocking(
+                                port, paid,
+                            ) {
+                                Ok(()) => 0,
+                                Err(e) => {
+                                    eprintln!("error: registry stub failed: {e}");
+                                    1
+                                }
+                            });
                         }
                     },
                     Commands::Context { cmd } => match cmd {

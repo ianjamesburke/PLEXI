@@ -83,9 +83,20 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "pane_gap",
     "pane_title_font_size",
     "osc_pane_title",
+    "marketplace",
 ];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
 const KNOWN_CLI: &[&str] = &["tips"];
+const KNOWN_MARKETPLACE: &[&str] = &[
+    "registry_url",
+    "cdn_url",
+    "wasm_registry_url",
+    "wasm_cdn_url",
+    "submit_url",
+    "payment_backend",
+    "account_backend",
+    "account_email",
+];
 const KNOWN_THEME: &[&str] = &[
     "preset",
     "bg_darkest",
@@ -260,6 +271,9 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             }
             if let Some(toml::Value::Table(t)) = table.get("cli") {
                 check_unknown_keys(t, "cli", KNOWN_CLI, &path_str, &mut diags);
+            }
+            if let Some(toml::Value::Table(t)) = table.get("marketplace") {
+                check_unknown_keys(t, "marketplace", KNOWN_MARKETPLACE, &path_str, &mut diags);
             }
             if table.contains_key("quick_note") {
                 diags.push(ConfigDiagnostic::DeprecatedSection {
@@ -505,6 +519,10 @@ pub struct MarketplaceConfig {
     pub registry_url: Option<String>,
     /// Override the package CDN base. Default: official `plexiapp.com` CDN.
     pub cdn_url: Option<String>,
+    /// Override the WASM registry metadata base. Default: official WASM registry.
+    pub wasm_registry_url: Option<String>,
+    /// Override the WASM bundle CDN base. Default: official WASM CDN.
+    pub wasm_cdn_url: Option<String>,
     /// Publisher submission endpoint. Unset = publishing prepared locally but
     /// not uploaded (fails closed with a clear message).
     pub submit_url: Option<String>,
@@ -1347,6 +1365,8 @@ impl MarketplaceConfig {
         }
         overlay_field!(registry_url);
         overlay_field!(cdn_url);
+        overlay_field!(wasm_registry_url);
+        overlay_field!(wasm_cdn_url);
         overlay_field!(submit_url);
         overlay_field!(payment_backend);
         overlay_field!(account_backend);
@@ -1370,6 +1390,16 @@ pub fn marketplace_registry_url() -> Option<String> {
 /// Package CDN base override, if set.
 pub fn marketplace_cdn_url() -> Option<String> {
     marketplace_config().cdn_url
+}
+
+/// WASM registry metadata base URL override, if set.
+pub fn marketplace_wasm_registry_url() -> Option<String> {
+    marketplace_config().wasm_registry_url
+}
+
+/// WASM registry bundle CDN base URL override, if set.
+pub fn marketplace_wasm_cdn_url() -> Option<String> {
+    marketplace_config().wasm_cdn_url
 }
 
 /// Publisher submission endpoint, if configured. `None` = publishing fails

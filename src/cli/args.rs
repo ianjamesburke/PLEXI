@@ -422,6 +422,12 @@ pub enum AppCmd {
         /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
         #[arg(long, value_name = "PANE_ID")]
         from: Option<u64>,
+        /// Resolve, fetch, verify, and print the launch plan without opening a pane.
+        #[arg(long)]
+        dry_run: bool,
+        /// Auto-authorize registry 402 payment retries up to this many cents.
+        #[arg(long, default_value_t = 0)]
+        auto_pay_cents: u64,
         /// Extra arguments passed through to the app (only valid with an app id)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
         extra_args: Vec<String>,
@@ -448,6 +454,12 @@ pub enum AppCmd {
         /// install fails closed instead of proceeding silently.
         #[arg(long = "yes", short = 'y')]
         yes: bool,
+        /// Resolve, fetch, verify, and print the install plan without installing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Auto-authorize registry 402 payment retries up to this many cents.
+        #[arg(long, default_value_t = 0)]
+        auto_pay_cents: u64,
     },
     /// Remove an installed app by id.
     ///
@@ -973,6 +985,15 @@ pub enum RegistryCmd {
     Watch {
         /// Only check this one CLI tool instead of all of them
         cli: Option<String>,
+    },
+    /// Run a local WASM marketplace registry stub for POC testing.
+    Stub {
+        /// TCP port to bind on 127.0.0.1. Use 0 to pick an available port.
+        #[arg(long, default_value_t = 8787)]
+        port: u16,
+        /// Require the 402 payment retry flow before serving the manifest/bundle.
+        #[arg(long, default_value_t = true)]
+        paid: bool,
     },
 }
 

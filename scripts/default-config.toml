@@ -84,6 +84,10 @@ tips = true
 # so leave these unset to use it. Override only to point at a private registry.
 # registry_url    = "https://plexiapp.com/registry/v1/index.json"
 # cdn_url         = "https://plexiapp.com/registry/v1/packages"
+# WASM marketplace registry POC endpoints. `just registry-stub` prints local
+# override values for these.
+# wasm_registry_url = "http://127.0.0.1:8787"
+# wasm_cdn_url      = "http://127.0.0.1:8787"
 # Publisher submission endpoint. Unset = `plexi app publish` prepares the package
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"

@@ -78,6 +78,21 @@ pub fn run_list_commands() -> i32 {
 }
 
 pub fn run_command(command_name: &str, extra_args: &[String]) -> i32 {
+    if command_name.starts_with('@') {
+        let (dry_run, auto_pay_cents, forwarded_args) = parse_registry_run_args(extra_args);
+        log::info!(
+            "run_command: registry app spec={command_name} dry_run={dry_run} auto_pay_cents={auto_pay_cents}"
+        );
+        return crate::cli::app::registry_app_open_cli(
+            command_name,
+            &forwarded_args,
+            dry_run,
+            auto_pay_cents,
+            None,
+            None,
+        );
+    }
+
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -283,6 +298,27 @@ pub fn run_command(command_name: &str, extra_args: &[String]) -> i32 {
             1
         }
     }
+}
+
+fn parse_registry_run_args(extra_args: &[String]) -> (bool, u64, Vec<String>) {
+    let mut dry_run = false;
+    let mut auto_pay_cents = 0;
+    let mut forwarded = Vec::new();
+    let mut i = 0;
+    while i < extra_args.len() {
+        match extra_args[i].as_str() {
+            "--dry-run" => dry_run = true,
+            "--auto-pay-cents" => {
+                if let Some(value) = extra_args.get(i + 1) {
+                    auto_pay_cents = value.parse().unwrap_or(0);
+                    i += 1;
+                }
+            }
+            arg => forwarded.push(arg.to_string()),
+        }
+        i += 1;
+    }
+    (dry_run, auto_pay_cents, forwarded)
 }
 
 // ── plexi routine subcommands ─────────────────────────────────────────────────

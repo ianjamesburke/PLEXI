@@ -769,6 +769,93 @@ pub fn app_inspect_cli(path: &str) -> i32 {
     }
 }
 
+pub fn registry_app_open_cli(
+    spec: &str,
+    args: &[String],
+    dry_run: bool,
+    auto_pay_cents: u64,
+    layout: Option<&str>,
+    from_pane_id: Option<u64>,
+) -> i32 {
+    let prepared = match prepare_registry_app(spec, auto_pay_cents) {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            eprintln!("error: registry app prepare failed for {spec}: {e}");
+            return 1;
+        }
+    };
+    print_registry_prepare(&prepared, dry_run);
+    if dry_run {
+        return 0;
+    }
+    let bundle = prepared.bundle_path.to_string_lossy().to_string();
+    crate::cli::open_cli(&bundle, args, layout, from_pane_id, None)
+}
+
+pub fn registry_app_install_cli(spec: &str, dry_run: bool, auto_pay_cents: u64) -> i32 {
+    let prepared = match prepare_registry_app(spec, auto_pay_cents) {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            eprintln!("error: registry app prepare failed for {spec}: {e}");
+            return 1;
+        }
+    };
+    print_registry_prepare(&prepared, dry_run);
+    if dry_run {
+        return 0;
+    }
+    println!(
+        "Cached and verified '{}'. Persistent registry installs are not wired yet; run it with `plexi app open {}`.",
+        prepared.manifest.id, prepared.requested
+    );
+    0
+}
+
+fn prepare_registry_app(
+    spec: &str,
+    auto_pay_cents: u64,
+) -> Result<crate::registry::PreparedRegistryApp, crate::registry::RegistryClientError> {
+    let registry_base = crate::config::marketplace_wasm_registry_url()
+        .unwrap_or_else(|| crate::registry::DEFAULT_REGISTRY_BASE_URL.to_string());
+    let cdn_base = crate::config::marketplace_wasm_cdn_url()
+        .unwrap_or_else(|| crate::registry::DEFAULT_CDN_BASE_URL.to_string());
+    let cache_dir = crate::config::config_dir()
+        .join("registry")
+        .join("bundles");
+    log::info!(
+        "registry_app: prepare spec={spec} registry_base={registry_base} cdn_base={cdn_base} cache_dir={} auto_pay_cents={auto_pay_cents}",
+        cache_dir.display()
+    );
+    let client = crate::registry::RegistryClient::with_transport(
+        registry_base,
+        cdn_base,
+        cache_dir,
+        crate::registry::UreqTransport,
+    );
+    client.prepare(spec, auto_pay_cents)
+}
+
+fn print_registry_prepare(prepared: &crate::registry::PreparedRegistryApp, dry_run: bool) {
+    println!("Prepared registry app {}", prepared.requested);
+    println!("  id: {}", prepared.manifest.id);
+    println!("  version: {}", prepared.manifest.version);
+    println!("  publisher: {}", prepared.manifest.publisher);
+    println!("  hash: {}", prepared.manifest.hash);
+    println!("  bundle: {}", prepared.bundle_path.display());
+    println!("  signature: verified");
+    if let Some(payment) = &prepared.payment {
+        println!(
+            "  payment: {} {} cents authorized",
+            payment.model, payment.price_usd_cents
+        );
+    } else {
+        println!("  payment: not required");
+    }
+    if dry_run {
+        println!("  launch: skipped (--dry-run)");
+    }
+}
+
 /// `plexi app install <path> [--version X.Y.Z] [--yes]`
 ///
 /// When `pin` is `None` (the common case) this is a plain install.

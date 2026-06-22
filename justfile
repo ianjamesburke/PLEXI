@@ -291,6 +291,10 @@ trim-targets:
 channel-list:
     bash scripts/channel-list.sh
 
+# Run a local WASM marketplace registry stub for POC testing.
+registry-stub port="8787":
+    bash scripts/registry-stub.sh {{port}}
+
 # Remove ALL Plexi channels plus shell integration and completions.
 # Same as: just uninstall all
 channel-uninstall channel="all":

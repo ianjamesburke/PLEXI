@@ -1,9 +1,10 @@
 //! v2 WASM registry client primitives.
 
 pub mod payment;
+pub mod stub;
 pub mod verify;
 
-use crate::registry::payment::PaymentRequired;
+use crate::registry::payment::{PaymentRequired, PaymentSession};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -38,6 +39,25 @@ pub enum RegistryClientError {
     },
     #[error("payment required: {0:?}")]
     PaymentRequired(PaymentRequired),
+    #[error(
+        "payment declined for {endpoint}: price {price_usd_cents} cents exceeds auto-pay threshold {threshold_cents} cents"
+    )]
+    PaymentDeclined {
+        endpoint: String,
+        price_usd_cents: u64,
+        threshold_cents: u64,
+    },
+    #[error("publisher key missing for '{0}'")]
+    PublisherKeyMissing(String),
+    #[error("bundle signature missing for '{0}'")]
+    SignatureMissing(String),
+    #[error("signature decode failed for {field}: {message}")]
+    SignatureDecode {
+        field: &'static str,
+        message: String,
+    },
+    #[error("bundle signature verification failed: {0}")]
+    Verify(#[from] verify::VerifyError),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,6 +88,21 @@ pub struct RegistryManifest {
     pub python_compat: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublisherKey {
+    pub publisher: String,
+    pub ed25519_public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedRegistryApp {
+    pub requested: String,
+    pub manifest: RegistryManifest,
+    pub bundle_path: PathBuf,
+    pub publisher_key: PublisherKey,
+    pub payment: Option<PaymentRequired>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum TrustTier {
@@ -79,6 +114,7 @@ pub enum TrustTier {
 
 pub trait HttpTransport {
     fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, String>;
+    fn post(&self, url: &str, body: &[u8], bearer: Option<&str>) -> Result<HttpResponse, String>;
 }
 
 pub struct HttpResponse {
@@ -99,6 +135,35 @@ impl HttpTransport for UreqTransport {
             req = req.set("authorization", &format!("Bearer {token}"));
         }
         match req.call() {
+            Ok(resp) => {
+                let status = resp.status();
+                let mut body = Vec::new();
+                resp.into_reader()
+                    .read_to_end(&mut body)
+                    .map_err(|e| e.to_string())?;
+                Ok(HttpResponse { status, body })
+            }
+            Err(ureq::Error::Status(status, resp)) => {
+                let mut body = Vec::new();
+                resp.into_reader()
+                    .read_to_end(&mut body)
+                    .map_err(|e| e.to_string())?;
+                Ok(HttpResponse { status, body })
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn post(&self, url: &str, body: &[u8], bearer: Option<&str>) -> Result<HttpResponse, String> {
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
+            .build();
+        let mut req = agent.post(url);
+        if let Some(token) = bearer {
+            req = req.set("authorization", &format!("Bearer {token}"));
+        }
+        match req.send_bytes(body) {
             Ok(resp) => {
                 let status = resp.status();
                 let mut body = Vec::new();
@@ -152,11 +217,63 @@ impl<T: HttpTransport> RegistryClient<T> {
         }
     }
 
+    pub fn prepare(
+        &self,
+        name: &str,
+        auto_pay_threshold_cents: u64,
+    ) -> Result<PreparedRegistryApp, RegistryClientError> {
+        let (manifest, bearer, payment) =
+            self.resolve_with_payment(name, auto_pay_threshold_cents)?;
+        let dest = self.cache_path(&manifest.hash);
+        let bundle_path = self.fetch_bundle_authorized(
+            &manifest.hash,
+            &dest,
+            bearer.as_deref(),
+            auto_pay_threshold_cents,
+        )?;
+        let publisher_key = self.fetch_publisher_key(&manifest.publisher)?;
+        let signature =
+            decode_hex_field(&manifest.signature, "manifest.signature").and_then(|sig| {
+                if sig.is_empty() {
+                    Err(RegistryClientError::SignatureMissing(manifest.id.clone()))
+                } else {
+                    Ok(sig)
+                }
+            })?;
+        let public_key = decode_hex_field(
+            &publisher_key.ed25519_public_key,
+            "publisher.ed25519_public_key",
+        )?;
+        verify::verify_bundle(&bundle_path, &signature, &public_key)?;
+        log::info!(
+            "registry: prepared app={} hash={} bundle={} payment={}",
+            manifest.id,
+            manifest.hash,
+            bundle_path.display(),
+            payment.is_some()
+        );
+        Ok(PreparedRegistryApp {
+            requested: name.to_string(),
+            manifest,
+            bundle_path,
+            publisher_key,
+            payment,
+        })
+    }
+
     pub fn resolve(&self, name: &str) -> Result<RegistryManifest, RegistryClientError> {
-        if !name.starts_with('@') || !name.contains('/') {
-            return Err(RegistryClientError::InvalidName(name.to_string()));
-        }
-        let index_url = format!("{}/index/{}", self.registry_base, name);
+        self.resolve_with_payment(name, 0)
+            .map(|(manifest, _, _)| manifest)
+    }
+
+    fn resolve_with_payment(
+        &self,
+        name: &str,
+        auto_pay_threshold_cents: u64,
+    ) -> Result<(RegistryManifest, Option<String>, Option<PaymentRequired>), RegistryClientError>
+    {
+        let (alias, version) = parse_registry_name(name)?;
+        let index_url = format!("{}/index/{}", self.registry_base, alias);
         log::info!("registry: resolving {name} via {index_url}");
         let index_resp = self.get_ok(&index_url, None)?;
         let index: RegistryIndex =
@@ -164,8 +281,17 @@ impl<T: HttpTransport> RegistryClient<T> {
                 url: index_url.clone(),
                 message: e.to_string(),
             })?;
-        let manifest_url = format!("{}/manifests/{}.toml", self.registry_base, index.latest);
-        let manifest_resp = self.get_ok(&manifest_url, None)?;
+        let hash = match version {
+            Some(version) => index
+                .versions
+                .get(version)
+                .cloned()
+                .ok_or_else(|| RegistryClientError::InvalidName(name.to_string()))?,
+            None => index.latest,
+        };
+        let manifest_url = format!("{}/manifests/{}.toml", self.registry_base, hash);
+        let (manifest_resp, bearer, payment) =
+            self.get_ok_with_payment(&manifest_url, auto_pay_threshold_cents)?;
         let manifest_text =
             std::str::from_utf8(&manifest_resp.body).map_err(|e| RegistryClientError::Parse {
                 url: manifest_url.clone(),
@@ -177,10 +303,20 @@ impl<T: HttpTransport> RegistryClient<T> {
                 message: e.to_string(),
             })?;
         log::info!("registry: resolved {name} to hash={}", manifest.hash);
-        Ok(manifest)
+        Ok((manifest, bearer, payment))
     }
 
     pub fn fetch_bundle(&self, hash: &str, dest: &Path) -> Result<PathBuf, RegistryClientError> {
+        self.fetch_bundle_authorized(hash, dest, None, 0)
+    }
+
+    fn fetch_bundle_authorized(
+        &self,
+        hash: &str,
+        dest: &Path,
+        bearer: Option<&str>,
+        auto_pay_threshold_cents: u64,
+    ) -> Result<PathBuf, RegistryClientError> {
         if dest.exists() && sha256_file(dest)? == hash {
             log::info!(
                 "registry: bundle cache hit hash={} path={}",
@@ -193,7 +329,7 @@ impl<T: HttpTransport> RegistryClient<T> {
         log::info!("registry: fetching bundle hash={} from {url}", hash);
         let response =
             self.transport
-                .get(&url, None)
+                .get(&url, bearer)
                 .map_err(|message| RegistryClientError::Request {
                     url: url.clone(),
                     message,
@@ -205,7 +341,13 @@ impl<T: HttpTransport> RegistryClient<T> {
                     message,
                 }
             })?;
-            return Err(RegistryClientError::PaymentRequired(payment));
+            let session = self.pay(&payment, auto_pay_threshold_cents)?;
+            return self.fetch_bundle_authorized(
+                hash,
+                dest,
+                Some(&session.session_jwt),
+                auto_pay_threshold_cents,
+            );
         }
         if response.status >= 400 {
             return Err(RegistryClientError::Request {
@@ -221,22 +363,152 @@ impl<T: HttpTransport> RegistryClient<T> {
         self.cache_dir.join(format!("{hash}.wasm"))
     }
 
-    fn get_ok(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, RegistryClientError> {
+    fn fetch_publisher_key(&self, publisher: &str) -> Result<PublisherKey, RegistryClientError> {
+        let url = format!("{}/publishers/{}.json", self.registry_base, publisher);
+        let response = self.get_ok(&url, None)?;
+        let key: PublisherKey =
+            serde_json::from_slice(&response.body).map_err(|e| RegistryClientError::Parse {
+                url: url.clone(),
+                message: e.to_string(),
+            })?;
+        if key.ed25519_public_key.is_empty() {
+            return Err(RegistryClientError::PublisherKeyMissing(
+                publisher.to_string(),
+            ));
+        }
+        Ok(key)
+    }
+
+    fn get_ok(
+        &self,
+        url: &str,
+        _bearer: Option<&str>,
+    ) -> Result<HttpResponse, RegistryClientError> {
+        self.get_ok_with_payment(url, 0)
+            .map(|(response, _, _)| response)
+    }
+
+    fn get_ok_with_payment(
+        &self,
+        url: &str,
+        auto_pay_threshold_cents: u64,
+    ) -> Result<(HttpResponse, Option<String>, Option<PaymentRequired>), RegistryClientError> {
         let response =
             self.transport
-                .get(url, bearer)
+                .get(url, None)
                 .map_err(|message| RegistryClientError::Request {
                     url: url.to_string(),
                     message,
                 })?;
+        if response.status == 402 {
+            let payment = payment::parse_payment_required(&response.body).map_err(|message| {
+                RegistryClientError::Parse {
+                    url: url.to_string(),
+                    message,
+                }
+            })?;
+            let session = self.pay(&payment, auto_pay_threshold_cents)?;
+            let retry = self
+                .transport
+                .get(url, Some(&session.session_jwt))
+                .map_err(|message| RegistryClientError::Request {
+                    url: url.to_string(),
+                    message,
+                })?;
+            if retry.status >= 400 {
+                return Err(RegistryClientError::Request {
+                    url: url.to_string(),
+                    message: format!("http {}", retry.status),
+                });
+            }
+            return Ok((retry, Some(session.session_jwt), Some(payment)));
+        }
         if response.status >= 400 {
             return Err(RegistryClientError::Request {
                 url: url.to_string(),
                 message: format!("http {}", response.status),
             });
         }
-        Ok(response)
+        Ok((response, None, None))
     }
+
+    fn pay(
+        &self,
+        payment: &PaymentRequired,
+        auto_pay_threshold_cents: u64,
+    ) -> Result<PaymentSession, RegistryClientError> {
+        if !payment::should_auto_pay(payment.price_usd_cents, auto_pay_threshold_cents) {
+            return Err(RegistryClientError::PaymentDeclined {
+                endpoint: payment.payment_endpoint.clone(),
+                price_usd_cents: payment.price_usd_cents,
+                threshold_cents: auto_pay_threshold_cents,
+            });
+        }
+        log::info!(
+            "registry: auto-paying {} cents via {}",
+            payment.price_usd_cents,
+            payment.payment_endpoint
+        );
+        let response = self
+            .transport
+            .post(&payment.payment_endpoint, b"{}", None)
+            .map_err(|message| RegistryClientError::Request {
+                url: payment.payment_endpoint.clone(),
+                message,
+            })?;
+        if response.status >= 400 {
+            return Err(RegistryClientError::Request {
+                url: payment.payment_endpoint.clone(),
+                message: format!("http {}", response.status),
+            });
+        }
+        serde_json::from_slice(&response.body).map_err(|e| RegistryClientError::Parse {
+            url: payment.payment_endpoint.clone(),
+            message: e.to_string(),
+        })
+    }
+}
+
+fn parse_registry_name(name: &str) -> Result<(&str, Option<&str>), RegistryClientError> {
+    if !name.starts_with('@') || !name.contains('/') {
+        return Err(RegistryClientError::InvalidName(name.to_string()));
+    }
+    let slash = name
+        .find('/')
+        .ok_or_else(|| RegistryClientError::InvalidName(name.to_string()))?;
+    let version_marker = name[slash + 1..].rfind('@').map(|idx| slash + 1 + idx);
+    match version_marker {
+        Some(idx) => Ok((&name[..idx], Some(&name[idx + 1..]))),
+        None => Ok((name, None)),
+    }
+}
+
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_hex_field(value: &str, field: &'static str) -> Result<Vec<u8>, RegistryClientError> {
+    if value.len() % 2 != 0 {
+        return Err(RegistryClientError::SignatureDecode {
+            field,
+            message: "hex string has odd length".to_string(),
+        });
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let text =
+                std::str::from_utf8(pair).map_err(|e| RegistryClientError::SignatureDecode {
+                    field,
+                    message: e.to_string(),
+                })?;
+            u8::from_str_radix(text, 16).map_err(|e| RegistryClientError::SignatureDecode {
+                field,
+                message: e.to_string(),
+            })
+        })
+        .collect()
 }
 
 fn write_verified_bundle(
@@ -321,6 +593,15 @@ mod tests {
                 })
                 .ok_or_else(|| format!("missing mock response for {url}"))
         }
+
+        fn post(
+            &self,
+            url: &str,
+            _body: &[u8],
+            _bearer: Option<&str>,
+        ) -> Result<HttpResponse, String> {
+            self.get(url, None)
+        }
     }
 
     #[test]
@@ -373,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn fetch_bundle_surfaces_payment_required() {
+    fn fetch_bundle_declines_payment_without_threshold() {
         let hash = "abc";
         let mut transport = MockTransport::default();
         transport.responses.insert(
@@ -395,6 +676,25 @@ mod tests {
         let err = client
             .fetch_bundle(hash, &dir.path().join("x.wasm"))
             .unwrap_err();
-        assert!(matches!(err, RegistryClientError::PaymentRequired(_)));
+        assert!(matches!(err, RegistryClientError::PaymentDeclined { .. }));
+    }
+
+    #[test]
+    fn prepare_retries_payment_and_verifies_signature() {
+        let addr = stub::spawn_for_test(true).unwrap();
+        let base = format!("http://{addr}");
+        let dir = tempfile::tempdir().unwrap();
+        let client = RegistryClient::with_transport(
+            base.clone(),
+            base,
+            dir.path().join("cache"),
+            UreqTransport,
+        );
+
+        let prepared = client.prepare("@mock/paid-tool", 25).unwrap();
+
+        assert_eq!(prepared.manifest.id, "com.mock.paid-tool");
+        assert!(prepared.payment.is_some());
+        assert!(prepared.bundle_path.exists());
     }
 }
