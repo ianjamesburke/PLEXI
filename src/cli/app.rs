@@ -319,9 +319,8 @@ fn scaffold_agent_python_app(app_dir: &std::path::Path, name: &str) -> io::Resul
         mp = marketplace_placeholder(),
     ))?;
 
-    let template = include_str!("../../sdk/python/plexi_sdk/templates/agent_init.py");
+    let template = include_str!("../../sdk/python/plexi_sdk/templates/app_init.py");
     let main_py = template
-        .replace("__CLASS_NAME__", &to_struct_name(name))
         .replace("__DISPLAY_NAME__", &to_title_case(name));
     let main_path = app_dir.join("main.py");
     std::fs::write(&main_path, main_py)?;

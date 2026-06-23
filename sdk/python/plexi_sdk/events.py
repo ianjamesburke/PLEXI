@@ -73,6 +73,12 @@ class TimerFired:
 
 
 @dataclass
+class RenderFrame:
+    frame_id: int
+    elapsed: float
+
+
+@dataclass
 class SystemStats:
     cpu_usage_pct: float
     memory_used_bytes: int

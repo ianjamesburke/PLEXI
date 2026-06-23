@@ -15,6 +15,12 @@ class PersistState:
 
 
 @dataclass
+class SetSchedulerMode:
+    mode: str
+    fps: int | None = None
+
+
+@dataclass
 class FileRead:
     path: str
 

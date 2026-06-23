@@ -43,6 +43,8 @@ def view():
 
 `SetState` is process-local runtime state. Use `PersistState` when a key must survive app restart.
 
+Games and animations should return `SetSchedulerMode("continuous", fps=60)` from `init()` and update runtime state from `RenderFrame` events. Do not build animation loops with timers.
+
 ## Keyboard Conventions
 
 Keys arrive in `update(event)` as `KeyEvent`. Key strings are lowercase canonical.

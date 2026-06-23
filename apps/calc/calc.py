@@ -32,7 +32,7 @@ class ButtonRow(Component):
         return {
             "type": "row",
             "children": [
-                Button(label, f"calc:key:{label}", style=_button_style(label))
+                Button(label, f"calc:key:{label}", style=_button_style(label)).to_node()
                 for label in self.labels
             ],
             "gap": 8.0,

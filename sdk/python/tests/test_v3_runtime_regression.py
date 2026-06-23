@@ -154,16 +154,6 @@ class TestEffects:
         finally:
             proc.kill()
 
-    def test_set_pip_status(self, tmp_path):
-        app = self._app_with_init_effects(tmp_path, 'SetPipStatus("yellow")')
-        proc = _spawn_v3_app(app)
-        try:
-            events = _init_and_render(proc)
-            pips = _find_events(events, "set_pip_status")
-            assert any(p.get("status") == "yellow" for p in pips)
-        finally:
-            proc.kill()
-
     def test_set_timer(self, tmp_path):
         app = self._app_with_init_effects(tmp_path, 'SetTimer(id=42, delay_ms=1000, repeat=True)')
         proc = _spawn_v3_app(app)
@@ -204,19 +194,6 @@ class TestEffects:
             events = _init_and_render(proc)
             reqs = _find_events(events, "http_request")
             assert any(r.get("url") == "https://example.com/api" for r in reqs)
-        finally:
-            proc.kill()
-
-    def test_open_url(self, tmp_path):
-        app = self._app_with_init_effects(
-            tmp_path,
-            'OpenUrl(url="https://github.com/plexi/plexi/issues/1")',
-        )
-        proc = _spawn_v3_app(app)
-        try:
-            events = _init_and_render(proc)
-            reqs = _find_events(events, "open_url")
-            assert reqs == [{"type": "open_url", "url": "https://github.com/plexi/plexi/issues/1"}]
         finally:
             proc.kill()
 
@@ -339,101 +316,15 @@ class TestEventDispatch:
         finally:
             proc.kill()
 
-    def test_host_action_dispatches_ui_action_event(self, tmp_path):
-        app = self._app_that_echoes_event_type(tmp_path)
-        proc = _spawn_v3_app(app)
-        try:
-            _init_app(proc)
-            _send_event(proc, {"type": "action", "action": "counter-increment"})
-            events = _render(proc)
-            trees = _find_events(events, "component_tree")
-            assert any("UiAction" in json.dumps(t) for t in trees), (
-                f"Expected host Action to dispatch UiAction in {[json.dumps(t)[:100] for t in trees]}"
-            )
-        finally:
-            proc.kill()
-
-    def test_host_action_args_are_available_on_ui_action(self, tmp_path):
-        app = tmp_path / "action_args_app.py"
-        app.write_text(textwrap.dedent("""
-            from plexi_sdk.events import UiAction
-            from plexi_sdk.ui import Text
-
-            _seen = ""
-
-            def init(size, args):
-                return []
-
-            def update(event):
-                global _seen
-                if isinstance(event, UiAction):
-                    _seen = f"{event.handler_id}:{','.join(event.args)}"
-                return []
-
-            def view():
-                return Text(_seen)
-        """).lstrip())
-        proc = _spawn_v3_app(app)
-        try:
-            _init_app(proc)
-            _send_event(proc, {"type": "action", "action": "navigate-to", "args": ["/docs", 3]})
-            events = _render(proc)
-            trees = _find_events(events, "component_tree")
-            assert any("navigate-to:/docs,3" in json.dumps(t) for t in trees), (
-                f"Expected action args on UiAction in {[json.dumps(t)[:100] for t in trees]}"
-            )
-        finally:
-            proc.kill()
-
     def test_ui_value_change_event(self, tmp_path):
         app = self._app_that_echoes_event_type(tmp_path)
         proc = _spawn_v3_app(app)
         try:
             _init_app(proc)
-            _send_event(proc, {"type": "component_event", "node_id": "input_1", "event_type": "change", "payload": {"value": "hello"}})
+            _send_event(proc, {"type": "text_submitted", "id": "input_1", "value": "hello"})
             events = _render(proc)
             trees = _find_events(events, "component_tree")
             assert any("UiValueChange" in json.dumps(t) for t in trees), f"Expected UiValueChange in {[json.dumps(t)[:100] for t in trees]}"
-        finally:
-            proc.kill()
-
-    def test_list_select_event(self, tmp_path):
-        app = self._app_that_echoes_event_type(tmp_path)
-        proc = _spawn_v3_app(app)
-        try:
-            _init_app(proc)
-            _send_event(proc, {"type": "list_select", "id": "issues", "index": 2})
-            events = _render(proc)
-            trees = _find_events(events, "component_tree")
-            assert any("ListSelect" in json.dumps(t) for t in trees), (
-                f"Expected ListSelect in {[json.dumps(t)[:100] for t in trees]}"
-            )
-        finally:
-            proc.kill()
-
-    def test_list_activate_event(self, tmp_path):
-        app = self._app_that_echoes_event_type(tmp_path)
-        proc = _spawn_v3_app(app)
-        try:
-            _init_app(proc)
-            _send_event(proc, {"type": "list_activate", "id": "issues", "index": 2})
-            events = _render(proc)
-            trees = _find_events(events, "component_tree")
-            assert any("ListActivate" in json.dumps(t) for t in trees), (
-                f"Expected ListActivate in {[json.dumps(t)[:100] for t in trees]}"
-            )
-        finally:
-            proc.kill()
-
-    def test_component_event_submit_dispatches_ui_action(self, tmp_path):
-        app = self._app_that_echoes_event_type(tmp_path)
-        proc = _spawn_v3_app(app)
-        try:
-            _init_app(proc)
-            _send_event(proc, {"type": "component_event", "node_id": "input_1", "event_type": "submit", "payload": {"value": "hello"}})
-            events = _render(proc)
-            trees = _find_events(events, "component_tree")
-            assert any("UiAction" in json.dumps(t) for t in trees), f"Expected UiAction in {[json.dumps(t)[:100] for t in trees]}"
         finally:
             proc.kill()
 
@@ -613,10 +504,10 @@ class TestFrameTiming:
         finally:
             proc.kill()
 
-    def test_balls_physics_progresses(self):
+    def test_balls_physics_progresses(self, tmp_path):
         """The balls app physics must actually advance between frames."""
         from plexi_sdk.testing import AppHarness
-        balls_path = REPO_ROOT / "apps" / "dev" / "balls" / "balls.py"
+        balls_path = REPO_ROOT / "apps" / "balls" / "balls.py"
         with AppHarness(balls_path, timeout=3.0) as h:
             cmds1 = h.run(1)
             time.sleep(0.05)
@@ -627,7 +518,7 @@ class TestFrameTiming:
                 if cmd.get("type") == "component_tree":
                     text = json.dumps(cmd)
                     import re
-                    m = re.search(r"tick[s]? (\d+)", text)
+                    m = re.search(r"ticks (\d+)", text)
                     if m:
                         return int(m.group(1))
             return None
@@ -693,12 +584,16 @@ class TestTimers:
 
 
 @pytest.mark.parametrize("relative_path", [
-    "apps/dev/balls/balls.py",
+    "apps/balls/balls.py",
+    "apps/snake/snake.py",
+    "apps/tetris/tetris.py",
+    "apps/chess/chess.py",
     "apps/calc/calc.py",
     "apps/csv_viewer/csv_viewer.py",
     "apps/todo/todo.py",
     "apps/stats/stats.py",
     "apps/logs/logs.py",
+    "apps/kraken/main.py",
     "apps/github-issues/main.py",
     "apps/permissions/main.py",
     "apps/wikipedia/wikipedia.py",
@@ -717,7 +612,10 @@ def test_core_app_boots_and_renders(relative_path: str) -> None:
 
 
 @pytest.mark.parametrize("relative_path,expected_effect", [
-    ("apps/dev/balls/balls.py", "set_scheduler_mode"),
+    ("apps/balls/balls.py", "set_scheduler_mode"),
+    ("apps/snake/snake.py", "set_timer"),
+    ("apps/tetris/tetris.py", "set_timer"),
+    ("apps/kraken/main.py", "set_timer"),
     ("apps/logs/logs.py", "set_timer"),
     ("apps/stats/stats.py", "set_timer"),
 ])
@@ -736,6 +634,7 @@ def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str
 
 @pytest.mark.parametrize("relative_path,key", [
     ("apps/calc/calc.py", "1"),
+    ("apps/tetris/tetris.py", "left"),
 ])
 def test_core_app_responds_to_key(relative_path: str, key: str) -> None:
     """Interactive apps must change their rendered output on key press."""

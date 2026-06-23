@@ -1,40 +1,7 @@
-"""Plexi SDK v3 — declarative UI primitives.
+"""Declarative UI primitives.
 
-A component tree that the host lays out and renders. Apps describe *what* the
-screen should be; the host owns geometry, theme, input, and rendering.
-
-Design goals:
-  - Hard to make ugly UI. Defaults do the right thing.
-  - Compose: a `Card` can hold `KeyRow`s, a `Column` can hold `Card`s.
-  - Responsive: components truncate, wrap, or scroll instead of clipping.
-  - Canvas: games and visualizations use typed canvas commands inside the same
-    component-tree protocol.
-
-Usage:
-    from plexi_sdk import App
-    from plexi_sdk.ui import Column, Header, Card, KeyRow, Section, Spacer, Footer
-
-    class MyApp(App):
-        def view(self):
-            return Column([
-                Header("My App", "Short subtitle"),
-                Card([
-                    KeyRow("m", "Message"),
-                    KeyRow("c", "Choice"),
-                ]),
-                Section("Events"),
-                Spacer(grow=True),
-                Footer("Status line"),
-            ])
-
-## Component measurement
-
-Each component reports a `measure(avail_w) -> height` used in a single
-top-to-bottom pass. `Spacer(grow=True)` reports 0 and is expanded in a
-second pass to consume whatever slack is left. When the pane is smaller
-than the total fixed-height content, grow spacers collapse to 0 and
-content at the bottom may not render — keep the total intentionally
-below the minimum pane size, or use `ScrollLog` for variable content.
+Apps return a component tree from ``view()``. The host owns layout,
+theme, input, and rendering.
 """
 
 from dataclasses import dataclass, field
@@ -73,7 +40,7 @@ RADIUS_LG = 12.0
 # Badge-specific radius — between tag-chip (4) and full-stadium (8). At
 # TEXT_HINT size the pill height is ~17 px; RADIUS_MD makes it 94% of
 # max-oval (cliché). 6.0 gives visible corners while staying clearly rounded.
-# Keep in sync with src/style.rs RADIUS_BADGE and _render_context.py badge().
+# Keep in sync with src/style.rs RADIUS_BADGE.
 RADIUS_BADGE = 6.0
 
 # Live host theme — populated from the Init payload (light/dark + user overrides).
@@ -722,8 +689,8 @@ class Scrollable(Component):
     scrollbar indicator is drawn on the right edge.
 
     Scroll offset is persisted on the instance, so the `Scrollable` must be
-    stable across renders — create it once in `on_init` (or as a class
-    attribute), not inside `on_render`.
+    stable across renders — create it once at module level or in `init()`,
+    not inside `view()`.
 
     Keyboard scroll: j/k or arrow-down/up keys update `scroll_offset`.
     Apps drive this by calling `handle_key(key)` from their `on_key` handler.
@@ -1167,7 +1134,7 @@ def badge(
     (text_w + padding), and centres the text — no Python width math.
 
     Args:
-        ctx:       A ``RenderContext`` instance.
+        ctx:       Canvas context.
         x:         Left edge of the badge.
         y_center:  Vertical centre of the badge (e.g. the commit-node ``cy``).
         label:     Text to display inside the pill.
@@ -1217,7 +1184,7 @@ def loading_pill(ctx, x: float, y: float, label: str = "Fetching…") -> float:
     content. When the fetch completes, just stop calling it.
 
     Args:
-        ctx:   RenderContext.
+        ctx:   Canvas context.
         x, y:  Top-left of the pill (NOT y-centre — easier to anchor).
         label: Text shown after the spinner glyph.
     """
@@ -1510,7 +1477,7 @@ class Markdown(Component):
 
 
 class SelectList(Component):
-    """Keyboard-navigable scrollable list. Stateful — create in on_init, not on_render.
+    """Keyboard-navigable scrollable list. Stateful -- create at module level or in init().
 
     items: list of dicts with keys: name (str), description (str, optional),
            leading (str, optional), trailing (str, optional)
@@ -1969,7 +1936,7 @@ class RowChip:
 
 @dataclass
 class ListRow:
-    """Typed row descriptor for :meth:`RenderContext.list_view`.
+    """Typed row descriptor for list views.
 
     Example::
 
