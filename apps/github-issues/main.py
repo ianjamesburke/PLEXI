@@ -246,10 +246,28 @@ def _fetch_detail(repo: str, number: int) -> HttpFetch:
 
 def _headers() -> dict:
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "Plexi"}
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    token = _github_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _github_token() -> str:
+    env_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if env_token:
+        return env_token
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
 
 
 def _handle_http(data: dict, event: HttpResponse) -> dict:

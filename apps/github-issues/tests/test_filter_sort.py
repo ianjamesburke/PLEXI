@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -275,6 +276,11 @@ def test_headers_are_unauthenticated_without_token(monkeypatch):
     app = _load_app_module()
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        app.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=""),
+    )
 
     headers = app._headers()
 
@@ -289,6 +295,39 @@ def test_headers_use_github_token_when_available(monkeypatch):
     headers = app._headers()
 
     assert headers["Authorization"] == "Bearer test-token"
+
+
+def test_headers_fall_back_to_gh_cli_token(monkeypatch):
+    app = _load_app_module()
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    def fake_run(args, **kwargs):
+        assert args == ["gh", "auth", "token"]
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        return SimpleNamespace(returncode=0, stdout="cli-token\n")
+
+    monkeypatch.setattr(app.subprocess, "run", fake_run)
+
+    headers = app._headers()
+
+    assert headers["Authorization"] == "Bearer cli-token"
+
+
+def test_headers_ignore_failed_gh_cli_token(monkeypatch):
+    app = _load_app_module()
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        app.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=""),
+    )
+
+    headers = app._headers()
+
+    assert "Authorization" not in headers
 
 
 def test_picker_toggle_and_apply_filters_by_label():
