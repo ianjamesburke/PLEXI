@@ -402,6 +402,47 @@
           "type": "object"
         },
         {
+          "description": "Read a file through the native ProcessApp host. Requires `fs.read` and\nthe resolved path must stay inside the app's workspace root.",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "file_read",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "List a directory through the native ProcessApp host. Requires `fs.read`\nand the resolved path must stay inside the app's workspace root.",
+          "properties": {
+            "extensions": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "file_list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Save app state. Host writes to workspace or global JSON file.",
           "properties": {
             "payload": true,
@@ -1633,6 +1674,23 @@
           "type": "object"
         },
         {
+          "description": "Open an HTTP(S) URL in the user's default browser.\n\nCapability: `net.http`. The URL host must pass the same\n`allowed_hosts` check used by `HttpRequest`.",
+          "properties": {
+            "type": {
+              "const": "open_url",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
           "description": "v3.3 brokered AI call. Requires `ai.query` capability.\n\nThe host routes this to the active Plexi AI backend, appends an\n`AgentTurn` row to `ai-ledger.jsonl`, and replies with\n`PlexiEvent::AiResponse { request_id, content, tokens_in, tokens_out, error }`.\n\nAll fields are required — no `serde(default)`. `tools` may be empty;\nnon-empty `tools` causes the broker to dispatch through a tool loop\n(#399) — the AI can call tools on any pane that exposed them via\n`DrawCommand::ExposeTools`.",
           "properties": {
             "messages": {
@@ -2836,6 +2894,23 @@
             "type"
           ],
           "type": "object"
+        },
+        {
+          "description": "Set the display name (tab title) of this app's own pane.\nEmitted by the SDK v3 runtime when the app calls `emit.set_title(title)`.",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "set_title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title"
+          ],
+          "type": "object"
         }
       ],
       "title": "ControlCommand"
@@ -2918,6 +2993,33 @@
             "Done"
           ],
           "type": "string"
+        },
+        "FileListEntry": {
+          "properties": {
+            "is_dir": {
+              "default": false,
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "size_bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "path"
+          ],
+          "type": "object"
         },
         "MidiPortWire": {
           "description": "On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives\non the protocol surface so SDKs in other languages can map it without\ndepending on the midi module.",
@@ -3106,6 +3208,12 @@
               },
               "type": "array"
             },
+            "height": {
+              "default": 0.0,
+              "description": "Initial pane height in logical pixels.",
+              "format": "float",
+              "type": "number"
+            },
             "protocol": {
               "description": "Protocol version string, e.g. \"pgap/3\". App must refuse unknown versions.",
               "type": "string"
@@ -3130,6 +3238,12 @@
               "const": "init",
               "type": "string"
             },
+            "width": {
+              "default": 0.0,
+              "description": "Initial pane width in logical pixels. Apps use this to size\nlayout before the first Resize event arrives.",
+              "format": "float",
+              "type": "number"
+            },
             "workspace_root": {
               "description": "The workspace root this app was launched from.\nHard invariant: all SecretGet calls are scoped to this directory.",
               "type": "string"
@@ -3148,6 +3262,18 @@
         {
           "description": "Request a new frame. App replies with DrawCommands terminated by FrameDone.",
           "properties": {
+            "canvas_height": {
+              "default": 0.0,
+              "description": "Actual rendered canvas height from the previous frame's component tree.\nZero on the first frame (no prior render). SDK exposes as sdk.canvas_height.",
+              "format": "float",
+              "type": "number"
+            },
+            "canvas_width": {
+              "default": 0.0,
+              "description": "Actual rendered canvas width from the previous frame's component tree.\nZero on the first frame (no prior render). SDK exposes as sdk.canvas_width.",
+              "format": "float",
+              "type": "number"
+            },
             "frame_id": {
               "format": "uint64",
               "minimum": 0,
@@ -3201,6 +3327,9 @@
             "modifiers": {
               "$ref": "#/$defs/Modifiers"
             },
+            "pressed": {
+              "type": "boolean"
+            },
             "type": {
               "const": "key",
               "type": "string"
@@ -3209,7 +3338,8 @@
           "required": [
             "type",
             "key",
-            "modifiers"
+            "modifiers",
+            "pressed"
           ],
           "type": "object"
         },
@@ -3381,6 +3511,9 @@
         {
           "description": "Response to a runtime CapabilityRequest.",
           "properties": {
+            "capability": {
+              "type": "string"
+            },
             "granted": {
               "type": "boolean"
             },
@@ -3395,6 +3528,7 @@
           "required": [
             "type",
             "request_id",
+            "capability",
             "granted"
           ],
           "type": "object"
@@ -3419,6 +3553,65 @@
           "required": [
             "type",
             "key"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Native ProcessApp file read result.",
+          "properties": {
+            "content": {
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "file_read_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Native ProcessApp directory listing result.",
+          "properties": {
+            "entries": {
+              "items": {
+                "$ref": "#/$defs/FileListEntry"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "file_list_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
           ],
           "type": "object"
         },
@@ -3857,73 +4050,6 @@
             "type",
             "request_id",
             "height"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "User pressed Enter inside a `DrawCommand::TextInput` field.\n\n`id` matches the `id` the app supplied on the `TextInput` command.\n`value` is the buffered text at submission time. The host clears its\nbuffer for `id` after emitting this event so the field is empty for\nthe next input.",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "type": {
-              "const": "text_submitted",
-              "type": "string"
-            },
-            "value": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "id",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "User edited a `DrawCommand::TextInput` field.\n\n`id` matches the `id` the app supplied on the `TextInput` command.\n`value` is the live buffered text after the edit.",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "type": {
-              "const": "text_changed",
-              "type": "string"
-            },
-            "value": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "id",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "User pressed a control key while focused in a `DrawCommand::TextInput`.\n\nUsed for app-owned completion menus without forwarding ordinary typing\nthrough `on_key`.",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "key": {
-              "type": "string"
-            },
-            "modifiers": {
-              "$ref": "#/$defs/Modifiers"
-            },
-            "type": {
-              "const": "text_input_key",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "id",
-            "key",
-            "modifiers"
           ],
           "type": "object"
         },
@@ -5323,6 +5449,37 @@
               "type": "object"
             },
             {
+              "description": "Host-rendered markdown block.",
+              "properties": {
+                "base_size": {
+                  "default": 14.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "color": {
+                  "default": "",
+                  "type": "string"
+                },
+                "padding": {
+                  "default": 12.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "markdown",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Interaction wrapper — host fires `ComponentEvent` for click/hover.",
               "properties": {
                 "child": {
@@ -5365,6 +5522,40 @@
               "required": [
                 "type",
                 "command"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "CPU canvas with local draw commands. The host allocates a layout rect\nfor the node, then renders commands relative to that rect.",
+              "properties": {
+                "commands": {
+                  "items": {
+                    "$ref": "#"
+                  },
+                  "type": "array"
+                },
+                "grow": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "height": {
+                  "default": 360.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "type": {
+                  "const": "canvas",
+                  "type": "string"
+                },
+                "width": {
+                  "default": 640.0,
+                  "format": "float",
+                  "type": "number"
+                }
+              },
+              "required": [
+                "type",
+                "commands"
               ],
               "type": "object"
             },
@@ -5454,6 +5645,10 @@
                 "node_id": {
                   "type": "string"
                 },
+                "style": {
+                  "default": "",
+                  "type": "string"
+                },
                 "type": {
                   "const": "button",
                   "type": "string"
@@ -5463,31 +5658,6 @@
                 "type",
                 "node_id",
                 "label"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Host-rendered text input.",
-              "properties": {
-                "node_id": {
-                  "type": "string"
-                },
-                "placeholder": {
-                  "default": "",
-                  "type": "string"
-                },
-                "type": {
-                  "const": "input",
-                  "type": "string"
-                },
-                "value": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "node_id",
-                "value"
               ],
               "type": "object"
             },
@@ -6686,60 +6856,6 @@
             "type",
             "rect",
             "pipe_id"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Text input field (host-owned buffer, submit-only).\n\nEmitted by the app each frame at `(x, y)` with width `w`. The host\nowns the underlying buffer keyed on `id` — typed characters never\nreach the app between frames. On Enter the host emits\n`PlexiEvent::TextSubmitted { id, value }` and clears its buffer.\n\nWhen `multiline` is `false` (the default), the host renders a\nsingle-line `TextEdit` and Enter submits. When `multiline` is `true`,\nthe host renders a multi-line `TextEdit`; Enter still submits but\nShift+Enter inserts a newline.",
-          "properties": {
-            "h": {
-              "default": 24.0,
-              "description": "Height of the input widget in pixels. Defaults to 24.0 for\nbackwards compatibility with older SDKs that don't send `h`.",
-              "format": "float",
-              "type": "number"
-            },
-            "id": {
-              "type": "string"
-            },
-            "multiline": {
-              "default": false,
-              "description": "When `true`, render as a multi-line editor. Enter submits;\nShift+Enter inserts a newline. Defaults to `false` so existing\ndraw commands without this field continue to work.",
-              "type": "boolean"
-            },
-            "placeholder": {
-              "type": "string"
-            },
-            "type": {
-              "const": "text_input",
-              "type": "string"
-            },
-            "value": {
-              "description": "Optional one-shot value override for host-owned buffers. SDK apps\nuse this for completions; ordinary text input leaves it unset.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "w": {
-              "format": "float",
-              "type": "number"
-            },
-            "x": {
-              "format": "float",
-              "type": "number"
-            },
-            "y": {
-              "format": "float",
-              "type": "number"
-            }
-          },
-          "required": [
-            "type",
-            "id",
-            "x",
-            "y",
-            "w",
-            "placeholder"
           ],
           "type": "object"
         },

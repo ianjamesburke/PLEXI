@@ -3,6 +3,12 @@
 Apps expose module-level ``init(size, args)``, ``update(event)``, and ``view()``
 functions. The V3AppRuntime drives the event loop: host sends JSON events on
 stdin, app responds with effects and component trees on stdout.
+
+SDK v3 Python apps run through native ProcessApp. Capabilities gate PGAP host
+APIs; they are not a process sandbox.
+
+A future CPython-in-WASM compatibility runtime may provide a sandboxed Python
+app route. That work is deferred and is not the current SDK v3 execution path.
 """
 
 __version__ = "4.0.0"
