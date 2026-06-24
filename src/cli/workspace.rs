@@ -532,10 +532,6 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
 
 // ── plexi app subcommands ─────────────────────────────────────────────────────
 
-/// Returns true if `plexi_sdk` is importable in the current `python3` environment.
-/// If not, attempts installation via `uv pip install plexi-sdk`, falling back to
-/// `pip install plexi-sdk`. Prints a single line describing what happened.
-/// Returns false only if python3 is absent or all install attempts fail.
 #[cfg(test)]
 mod secret_set_tests {
     use super::{secret_list_scope, SecretListScope};

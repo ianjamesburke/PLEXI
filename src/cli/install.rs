@@ -1,4 +1,4 @@
-use super::app::{app_is_python, ensure_plexi_sdk, is_bare_id, is_github_shorthand};
+use super::app::{is_bare_id, is_github_shorthand};
 use super::print_tip;
 use std::io::{self, Write};
 
@@ -56,9 +56,6 @@ pub fn install_cli(spec: &str) -> i32 {
         Ok(outcome) => match outcome.status {
             crate::cli::install_host::InstallStatus::Installed(path) => {
                 println!("installed '{}' at {}", outcome.id, path.display());
-                if app_is_python(&path) {
-                    ensure_plexi_sdk();
-                }
                 print_tip(&format!(
                     "open your app with `plexi app open {}`.",
                     outcome.id
