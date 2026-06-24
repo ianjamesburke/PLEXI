@@ -32,7 +32,7 @@ When work begins: `stint start <task-id>`. When done: `stint done <task-id>`. Us
 | `src/testing/` | Test infrastructure, TESTING.md reference, scene format |
 | `src/process_app/` | PGAP lifecycle, capability gating, security model, shell execution inventory |
 | `src/render/` | CLI renderer app contract |
-| `sdk/python/` | SDK traps, SDK_QUICKSTART.md, SDK_V2.md reference |
+| `sdk/python/` | SDK traps, SDK_V3.md reference |
 | `apps/` | App rules, Core 9 policy, design philosophy |
 | `scripts/` | Build channels, branch workflow, releases, install, RELEASE_CHANNELS.md |
 | `registry/` | CLI descriptor guide, embedded descriptor registry |
