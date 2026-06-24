@@ -2897,6 +2897,9 @@ fn resolve_workspace_path(
     workspace_root: &std::path::Path,
     requested: &str,
 ) -> Result<std::path::PathBuf, String> {
+    let workspace_root = workspace_root
+        .canonicalize()
+        .map_err(|source| format!("resolve workspace {}: {source}", workspace_root.display()))?;
     let raw = std::path::Path::new(requested);
     let joined = if raw.is_absolute() {
         raw.to_path_buf()
@@ -2906,7 +2909,7 @@ fn resolve_workspace_path(
     let resolved = joined
         .canonicalize()
         .map_err(|source| format!("resolve {}: {source}", joined.display()))?;
-    if !resolved.starts_with(workspace_root) {
+    if !resolved.starts_with(&workspace_root) {
         return Err(format!(
             "path {} is outside workspace {}",
             resolved.display(),
@@ -3141,6 +3144,21 @@ mod allowed_hosts_tests {
         let err =
             resolve_workspace_path(workspace.path(), outside.path().to_str().unwrap()).unwrap_err();
         assert!(err.contains("outside workspace"), "{err}");
+    }
+
+    #[test]
+    fn file_path_resolution_accepts_non_canonical_workspace_root() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(workspace.path().join("nested")).unwrap();
+        std::fs::write(workspace.path().join("data.csv"), b"id,name\n").unwrap();
+
+        let alias_root = workspace.path().join("nested").join("..");
+        let resolved = resolve_workspace_path(&alias_root, "data.csv").unwrap();
+
+        assert_eq!(
+            resolved,
+            workspace.path().join("data.csv").canonicalize().unwrap()
+        );
     }
 
     #[test]
