@@ -1726,5 +1726,14 @@ mod tests {
         // Empty pane name falls back to the runtime display name.
         let (name, _) = pane_row_identity(&make_app("notes", ""), &[]);
         assert_eq!(name, "Test App");
+
+        // User-renamed app pane uses the assigned name in palette search.
+        let (name, chip) = pane_row_identity(&make_app("assistant", "chad"), &[]);
+        assert_eq!((name.as_str(), chip), ("chad", "app"));
+        let search = searchable_text(&[name.as_str(), "work"]);
+        assert!(
+            search.contains("chad"),
+            "renamed pane title must appear in palette search_text; got: {search:?}"
+        );
     }
 }
