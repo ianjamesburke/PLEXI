@@ -10,7 +10,7 @@ Before editing any file, read the `AGENTS.md` in its directory if one exists. Ch
 - **Product direction** → `NORTH_STAR.md`
 - **Feature specs** → `docs/*.md` (active PRMs; see `docs/AGENTS.md` for lifecycle rules)
 - **Sprint graph** → `.stint/` (`stint next`, `stint status`)
-- **Implementation tickets** → GitHub issues
+- **Implementation tickets** → `.stint/` tasks (GitHub issues are optional; stint is authoritative)
 
 Do not track in-progress work or completion status in this file.
 
@@ -52,7 +52,7 @@ Always use the `/create-stint` skill to create tasks. It owns the full flow: dup
 
 ## Planning
 
-Read the relevant PRM first. Use `stint next` for the next claimable task. GitHub issues are implementation tickets. Pipeline labels (`pipeline:implement`, `pipeline:open-pr`, `pipeline:validate`, `pipeline:merge`) are the live work state.
+Read the relevant PRM first. Use `stint next` for the next claimable task. Stint tasks are the primary implementation tickets; GitHub issues are optional. Pipeline labels (`pipeline:implement`, `pipeline:open-pr`, `pipeline:validate`, `pipeline:merge`) are the live work state.
 
 ## Logging
 
@@ -96,7 +96,7 @@ Document failures in the issue **body** under `## Prior Attempts`, not in commen
 - **Pipeline phases flow inline.** implement → open-pr → validate → merge. No stopping to ask.
 - **Match user energy.** When the user says "do it," start building.
 - **Sequential sub-agents only.** Never parallel in one worktree.
-- **Ideas become issues, not tangents.**
+- **Ideas become stint tasks, not tangents.**
 - **Direct-to-alpha when user is watching.**
 - **Own the build.** If your change breaks something, fix it.
 
@@ -104,7 +104,7 @@ Document failures in the issue **body** under `## Prior Attempts`, not in commen
 
 Every fact lives in exactly one place. Other files reference it; they never restate it. If you find yourself writing something that exists elsewhere, replace it with a pointer. Inline command help (justfile recipe comments) is exempt — it serves `just --list`, not agent orientation.
 
-**One progress tracker per unit of work.** Work lives in a stint task or in a GitHub issue — never in both, never tracked inside a spec doc. A PRM describes destination state; it never tracks what is done. No checklists, no strikethrough, no status tables inside PRMs. The stint task is the single delete trigger for its PRM.
+**One progress tracker per unit of work.** Work lives in a stint task — never in a GitHub issue, never tracked inside a spec doc. A PRM describes destination state; it never tracks what is done. No checklists, no strikethrough, no status tables inside PRMs. The stint task is the single delete trigger for its PRM.
 
 ## Traps
 
