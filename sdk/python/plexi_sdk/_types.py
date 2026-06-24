@@ -14,10 +14,9 @@ class CapabilityDeniedError(RuntimeError):
 
 @dataclass
 class VideoHandle:
-    """Result of `Emitter.open_video`. `handle_id` is opaque — pass it back to
-    `set_video_state` and `close_video`. The associated `Pipe` delivers
-    decoded RGBA8 frames (one frame per `pipe.read_frame()`) of length
-    `width * height * 4`."""
+    """Video handle. ``handle_id`` is opaque, passed back to video control
+    effects. ``pipe`` delivers decoded RGBA8 frames of length
+    ``width * height * 4``."""
     handle_id: int
     width: int
     height: int
@@ -94,24 +93,6 @@ class BadgeCommand:
             raise ValueError(f"BadgeCommand: font_size must be positive, got {self.font_size}")
         if self.radius < 0:
             raise ValueError(f"BadgeCommand: radius must be non-negative, got {self.radius}")
-
-
-@dataclass
-class TextInputSpec:
-    """Typed constructor for ctx.text_input()."""
-    id: str
-    x: float
-    y: float
-    w: float
-    placeholder: str = ""
-    multiline: bool = False
-    h: float = 24.0
-
-    def __post_init__(self) -> None:
-        if not self.id:
-            raise ValueError("TextInputSpec: id must be a non-empty string")
-        if self.w <= 0:
-            raise ValueError(f"TextInputSpec: w must be positive, got {self.w}")
 
 
 @dataclass

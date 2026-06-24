@@ -1,6 +1,6 @@
 # plexi-sdk
 
-Python SDK v3 for building Plexi apps running inside the CPython-in-WASM runtime.
+Python SDK v3 for building Plexi apps running through native `ProcessApp`.
 
 Full design spec: [`SDK_V3.md`](SDK_V3.md)
 
@@ -41,6 +41,10 @@ def view():
     ], grow=True)
 ```
 
+`SetState` is process-local runtime state. Use `PersistState` when a key must survive app restart.
+
+Games and animations should return `SetSchedulerMode("continuous", fps=60)` from `init()` and update runtime state from `RenderFrame` events. Do not build animation loops with timers.
+
 ## Keyboard Conventions
 
 Keys arrive in `update(event)` as `KeyEvent`. Key strings are lowercase canonical.
@@ -59,4 +63,4 @@ Keys arrive in `update(event)` as `KeyEvent`. Key strings are lowercase canonica
 plexi app init myapp
 ```
 
-Generates `myapp/main.py` + `myapp/manifest.toml` with `python_compat = true`.
+Generates `myapp/main.py` + `myapp/manifest.toml` as a normal `[app] type = "app"` Python app.

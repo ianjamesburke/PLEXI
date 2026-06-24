@@ -5,11 +5,11 @@ id = "csv_viewer"
 type = "app"
 name = "CSV Viewer"
 version = "0.1.0"
-description = "Browse and inspect CSV files in the current directory."
+description = "Browse and inspect CSV files through host-scoped file listing."
 entry = "csv_viewer.py"
 
 [app.capabilities]
-capabilities = []
+capabilities = ["fs.read"]
 
 [launch]
 

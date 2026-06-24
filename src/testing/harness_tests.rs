@@ -2062,7 +2062,7 @@ fn capability_request_auto_granted_from_broker_record() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            PlexiEvent::CapabilityDecision { request_id, granted: true }
+            PlexiEvent::CapabilityDecision { request_id, granted: true, .. }
                 if request_id == "cap-1"
         )),
         "broker allow record must auto-grant without a modal: {events:?}"
@@ -2139,7 +2139,7 @@ fn capability_request_auto_denied_from_broker_record() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            PlexiEvent::CapabilityDecision { request_id, granted: false }
+            PlexiEvent::CapabilityDecision { request_id, granted: false, .. }
                 if request_id == "cap-2"
         )),
         "broker deny record must auto-deny without a modal: {events:?}"
@@ -2239,7 +2239,7 @@ fn capability_request_denied_by_posture() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            PlexiEvent::CapabilityDecision { request_id, granted: false }
+            PlexiEvent::CapabilityDecision { request_id, granted: false, .. }
                 if request_id == "cap-4"
         )),
         "posture deny must auto-deny without a modal: {events:?}"

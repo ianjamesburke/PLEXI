@@ -1,46 +1,4 @@
 use super::super::*;
-use std::collections::HashSet;
-use std::path::PathBuf;
-
-fn make_app() -> Option<ProcessApp> {
-    let sh = ["/bin/sh", "/usr/bin/sh"]
-        .iter()
-        .find(|p| std::path::Path::new(p).exists())
-        .map(PathBuf::from)?;
-    let workspace_root = std::env::temp_dir();
-    ProcessApp::launch(
-        "test_render_session",
-        "Test RenderSession",
-        &sh,
-        &workspace_root,
-        &["-c".to_string(), "sleep 1".to_string()],
-        workspace_root.clone(),
-        HashSet::new(),
-        false,
-        None,
-    )
-    .ok()
-}
-
-#[test]
-fn render_session_submit_produces_event() {
-    let Some(mut app) = make_app() else {
-        eprintln!("skipping: no /bin/sh available");
-        return;
-    };
-    app.render_session
-        .text_input_buffers
-        .insert("x".to_string(), "hello".to_string());
-    app.submit_text_input("x");
-    let evt = app.outbound_events.pop_back().expect("event queued");
-    match evt {
-        crate::app_protocol::PlexiEvent::TextSubmitted { id, value } => {
-            assert_eq!(id, "x");
-            assert_eq!(value, "hello");
-        }
-        other => panic!("expected TextSubmitted, got {other:?}"),
-    }
-}
 
 /// Recursively collect painted galley texts from an egui shape tree.
 fn collect_shape_texts(shape: &egui::Shape, out: &mut Vec<String>) {
@@ -56,12 +14,11 @@ fn collect_shape_texts(shape: &egui::Shape, out: &mut Vec<String>) {
 }
 
 /// Allocation-reduction regression test (#2024): a PGAP frame with many list
-/// rows, elided/wrapped text, a TextInput, and a ComponentTree containing a
+/// rows, elided/wrapped text, and a ComponentTree containing a
 /// TextEdit and a Raw text node must render identically across frames and
 /// emit no spurious events. Exercises:
 /// - ListView primary-text galley reuse + elision
 /// - Text `max_width`/`elide` and `max_lines` truncation paths
-/// - TextInput visibility scratch-set rotation
 /// - Raw-node persistent cache threading (`RawNodeCaches`)
 /// - TextEdit buffer seeding without per-frame key clones
 #[test]
@@ -124,16 +81,6 @@ fn render_session_pgap_frame_stable_output_no_spurious_events() {
         text_cmd(440.0, long.clone(), None, Some(2)),
         // Fitting text → galley-reuse fast path.
         text_cmd(560.0, "short fits".to_string(), Some(400.0), None),
-        RenderCommand::TextInput {
-            id: "ti-1".to_string(),
-            x: 0.0,
-            y: 580.0,
-            w: 200.0,
-            h: 24.0,
-            placeholder: "type here".to_string(),
-            multiline: false,
-            value: None,
-        },
         RenderCommand::ComponentTree {
             root: UiNode::Column {
                 children: vec![
@@ -247,18 +194,4 @@ fn render_session_pgap_frame_stable_output_no_spurious_events() {
         texts_per_pass[0], texts_per_pass[1],
         "painted text output must be stable across frames"
     );
-}
-
-#[test]
-fn render_session_process_app_has_no_text_input_fields() {
-    // Compile-time proof: ProcessApp::render_session owns the state.
-    // This test just exercises the field path — if mod.rs still had
-    // text_input_buffers directly on ProcessApp this wouldn't compile.
-    let Some(mut app) = make_app() else {
-        return;
-    };
-    app.render_session
-        .text_input_buffers
-        .insert("k".to_string(), "v".to_string());
-    assert!(app.render_session.text_input_buffers.contains_key("k"));
 }

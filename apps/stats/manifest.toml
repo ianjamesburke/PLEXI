@@ -9,7 +9,7 @@ description = "Activity dashboard: focus level, time, streak, top projects, and 
 entry = "stats.py"
 
 [app.capabilities]
-capabilities = []
+capabilities = ["timer"]
 
 [launch]
 

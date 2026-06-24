@@ -9,7 +9,8 @@ description = "GitHub Issues viewer for the workspace repo."
 entry = "main.py"
 
 [app.capabilities]
-capabilities = []
+capabilities = ["net.http"]
+allowed_hosts = ["api.github.com"]
 
 [launch]
 

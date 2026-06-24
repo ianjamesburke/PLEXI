@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// Build a minimal `ProcessApp` for tests. Mirrors the helper in
-/// `text_input_tests` — spawns `/bin/sh -c "sleep 1"` so lifecycle
+/// render-session lifecycle tests spawn `/bin/sh -c "sleep 1"` so lifecycle
 /// machinery is happy, then ignores the subprocess.
 fn make_app() -> Option<ProcessApp> {
     let sh = ["/bin/sh", "/usr/bin/sh"]

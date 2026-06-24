@@ -455,6 +455,8 @@ mod tests {
                 let mut events = Vec::new();
                 let mut te_buf = std::collections::HashMap::new();
                 let mut te_focus = crate::render::components::TextEditFocusCtx::new();
+                let mut canvas_width = 0.0;
+                let mut canvas_height = 0.0;
                 let rect = ui.max_rect();
                 crate::process_app::render::render_draw_commands(
                     ui,
@@ -471,6 +473,8 @@ mod tests {
                     &mut events,
                     &mut te_buf,
                     &mut te_focus,
+                    &mut canvas_width,
+                    &mut canvas_height,
                 );
             });
         harness.run();
@@ -602,7 +606,10 @@ mod tests {
             .join("tests/wasm-fixtures/breakout.wasm");
         let config_dir = tempfile::tempdir().expect("temp config dir");
         let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
-        let app_id = fixture.file_stem().and_then(|s| s.to_str()).unwrap_or("wasm");
+        let app_id = fixture
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("wasm");
         let workspace_root = fixture.parent().expect("fixture parent");
         let grants = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
             .expect("inspect fixture grants");
@@ -665,7 +672,10 @@ mod tests {
             .join("tests/wasm-fixtures/breakout.wasm");
         let config_dir = tempfile::tempdir().expect("temp config dir");
         let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
-        let app_id = fixture.file_stem().and_then(|s| s.to_str()).unwrap_or("wasm");
+        let app_id = fixture
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("wasm");
         let workspace_root = fixture.parent().expect("fixture parent");
         let grants = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
             .expect("inspect fixture grants");

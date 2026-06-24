@@ -1164,6 +1164,7 @@ impl PlexiApp {
                                 crate::app_protocol::PlexiEvent::Key {
                                     key: key_str,
                                     modifiers,
+                                    pressed: true,
                                 },
                             );
                             Ok(())

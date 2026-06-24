@@ -350,6 +350,7 @@ pub(crate) fn show_prompt_modal(
                 });
                 outbound_events.push_back(PlexiEvent::CapabilityDecision {
                     request_id,
+                    capability: capability.clone(),
                     granted: actually_granted,
                 });
                 // Drain any AiQuery requests that were withheld pending this consent.

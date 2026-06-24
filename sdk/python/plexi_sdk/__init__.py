@@ -1,48 +1,16 @@
-"""Python SDK v2 for Plexi PGAP apps.
+"""Plexi Python SDK.
 
-Normal apps implement ``view()`` and return a component tree:
-
-    from plexi_sdk import App
-    from plexi_sdk.ui import AppBar, Column, FooterKeys, Label, Spacer
-
-    class CounterApp(App):
-        def on_init(self) -> None:
-            self.count = self.state.get("count", 0)
-
-        def view(self):
-            return Column([
-                AppBar("Counter"),
-                Spacer(grow=True),
-                Label(str(self.count), bold=True),
-                Spacer(grow=True),
-                FooterKeys([("+", "increment"), ("-", "decrement")]),
-            ])
-
-        def on_key(self, key: str, mods: dict) -> None:
-            if key in ("plus", "equals"):
-                self.count += 1
-            elif key == "minus":
-                self.count -= 1
-            self.state.save({"count": self.count})
-            self.emit.schedule_render()
-
-    CounterApp().run()
-
-Use ``on_render(ctx)`` only for games, animations, realtime visualizations, or
-other pixel-control apps. Never override both ``view()`` and ``on_render(ctx)``.
-
-Host-brokered actions live on ``self.emit``:
-
-    await self.emit.http_get(url)       # requires net.http
-    await self.emit.secret_get("KEY")   # requires secrets.get
-    await self.emit.ai_query("low", system, messages)  # requires ai.query
-
-Capabilities gate PGAP host APIs. Python apps are native subprocesses, not a
-process sandbox.
+Apps expose module-level ``init(size, args)``, ``update(event)``, and ``view()``
+functions. The V3AppRuntime drives the event loop: host sends JSON events on
+stdin, app responds with effects and component trees on stdout.
 """
 
-__version__ = "0.5.0"
+__version__ = "4.0.0"
 SDK_ID = f"plexi-sdk-py/{__version__}"
+
+from ._v3_state import StateSnapshot, log, state
+from . import effects as effects
+from . import events as events
 
 from ._constants import (
     TITLE, HEADING, BODY, CAPTION, HINT, MONO_BODY, MONO_SMALL,
@@ -53,14 +21,9 @@ from ._constants import (
 )
 from ._types import (
     CapabilityDeniedError, VideoHandle,
-    RectCommand, TextCommand, BadgeCommand, TextInputSpec, ShortcutPair, NotifyOption,
+    RectCommand, TextCommand, BadgeCommand, ShortcutPair, NotifyOption,
 )
 from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, AudioDeviceInfo, AudioDeviceList, PROTOCOL_VERSION
-from ._emitter import Emitter, _emit, _make_async_queue, _LOCK
-from ._pipe import Pipe
-from ._render_context import RenderContext, COMPACT_DEFAULT, REGULAR_DEFAULT
-from ._app import App, Arg
-from ._state import State as State
 from .ui import (
     Tabs as Tabs,
     Grid as Grid,
@@ -70,3 +33,12 @@ from .ui import (
     TextEdit as TextEdit,
 )
 from ._theme import theme, Theme, AppPalette
+
+_workspace_root: str = ""
+pane_width: float = 0.0
+pane_height: float = 0.0
+canvas_width: float = 0.0
+canvas_height: float = 0.0
+keys_held: set[str] = set()
+_state: StateSnapshot | None = None
+_in_view: bool = False

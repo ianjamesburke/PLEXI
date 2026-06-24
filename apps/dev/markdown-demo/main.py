@@ -5,7 +5,9 @@ Exercises the same fenced TOML / JSON / Python markdown body used as the
 visual fixture for issue #293. Used by the `markdown_demo_styling`
 screenshot test to verify code-block cards, syntax colour, and spacing.
 """
-from plexi_sdk import App, RenderContext, PAD
+from plexi_sdk import log
+from plexi_sdk.effects import SetTitle
+from plexi_sdk.ui import Markdown
 
 SAMPLE = """\
 ---
@@ -53,14 +55,14 @@ Enables proactive/periodic behavior without busy-looping. A productivity partner
 """
 
 
-class MarkdownDemo(App):
-    async def on_init(self) -> None:
-        self.emit.info("markdown-demo initialized")
-
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(ctx.theme.bg)
-        ctx.markdown(PAD, PAD, ctx.w - PAD * 2, SAMPLE, color=ctx.theme.fg)
+def init(size, args):
+    log.info("markdown-demo initialized")
+    return [SetTitle("Markdown Demo")]
 
 
-if __name__ == "__main__":
-    MarkdownDemo().run()
+def update(event):
+    return []
+
+
+def view():
+    return Markdown(SAMPLE)

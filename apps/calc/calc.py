@@ -1,205 +1,222 @@
 #!/usr/bin/env python3
-"""Calculator — button grid with state machine evaluation."""
-from plexi_sdk import App
-from plexi_sdk.ui import (
-    Column, Card, AppBar, Heading, FooterKeys, ButtonRow, Spacer, Component,
-    SPACE_SM, SPACE_MD, theme,
-)
+"""Calculator — SDK v3 runtime-state four-function calculator."""
 
-# Grid geometry — fixed per-button size; gap matches Card inner gap default.
-BTN_W = 64.0
-BTN_H = 48.0
-BTN_GAP = 8.0
-COLS = 4
+from __future__ import annotations
 
-# Button layout: (label, col, row)  — same as original
-BUTTONS = [
-    ("C",  0, 0), ("±",  1, 0), ("%",  2, 0), ("÷",  3, 0),
-    ("7",  0, 1), ("8",  1, 1), ("9",  2, 1), ("×",  3, 1),
-    ("4",  0, 2), ("5",  1, 2), ("6",  2, 2), ("−",  3, 2),
-    ("1",  0, 3), ("2",  1, 3), ("3",  2, 3), ("+",  3, 3),
-    ("0",  0, 4), (".",  2, 4), ("=",  3, 4),
+from plexi_sdk import log, state
+from plexi_sdk.effects import SetState, SetStatus, SetTitle
+from plexi_sdk.events import KeyEvent, UiAction
+from plexi_sdk.ui import Button, Column, Component, FooterKeys, Text
+
+BUTTON_ROWS = [
+    ["C", "+/-", "%", "/"],
+    ["7", "8", "9", "*"],
+    ["4", "5", "6", "-"],
+    ["1", "2", "3", "+"],
+    ["0", ".", "="],
 ]
 
-ROWS = 5  # 0-indexed rows 0..4
+DEFAULT_STATE = {
+    "display": "0",
+    "pending": None,
+    "op": None,
+    "fresh": True,
+}
 
 
-def _is_op(label: str) -> bool:
-    return label in ("÷", "×", "+", "−", "=")
+class ButtonRow(Component):
+    def __init__(self, labels: list[str]) -> None:
+        self.labels = labels
+
+    def to_node(self) -> dict:
+        return {
+            "type": "row",
+            "children": [
+                Button(label, f"calc:key:{label}", style=_button_style(label)).to_node()
+                for label in self.labels
+            ],
+            "gap": 8.0,
+            "align": "start",
+            "grow": False,
+        }
 
 
-def _is_clear(label: str) -> bool:
-    return label == "C"
+def init(size, args) -> list:
+    data = _state()
+    missing = {
+        key: value
+        for key, value in DEFAULT_STATE.items()
+        if state.get(key, None) is None
+    }
+    log.info("calc: SDK v3 initialized")
+    effects: list = [SetTitle("Calculator"), SetStatus(_status(data))]
+    if missing:
+        effects.append(SetState(missing))
+    return effects
 
 
-class ButtonGrid(Component):
-    """Renders pre-created ButtonRow widgets in a fixed 4-column calculator grid.
-
-    Stateful ButtonRow instances are created once in on_init and passed in here.
-    Each render call positions them according to the BUTTONS layout and delegates
-    to ButtonRow.render() so click state is captured correctly.
-    """
-
-    def __init__(self, buttons: dict[str, ButtonRow]) -> None:
-        # buttons: label -> ButtonRow
-        self._buttons = buttons
-
-    def measure(self, _avail_w: float) -> float:
-        return ROWS * BTN_H + (ROWS - 1) * BTN_GAP
-
-    def render(self, ctx, x: float, y: float, _w: float, _h: float) -> None:
-        # "0" spans columns 0-1; everything else is single-column.
-        for label, col, row in BUTTONS:
-            spans = 2 if (label == "0") else 1
-            bx = x + col * (BTN_W + BTN_GAP)
-            by = y + row * (BTN_H + BTN_GAP)
-            bw = BTN_W * spans + BTN_GAP * (spans - 1)
-            btn = self._buttons[label]
-            btn.render(ctx, bx, by, bw, BTN_H)
+def update(event) -> list:
+    label = _event_label(event)
+    if label is None:
+        return []
+    data = _state()
+    _press(data, label)
+    return [SetState(data), SetStatus(_status(data))]
 
 
-class CalcApp(App):
-    def on_init(self) -> None:
-        self.display = "0"
-        self.pending_op: str | None = None
-        self.pending_val: float | None = None
-        self.fresh = True  # next digit starts a new number
+def view():
+    data = _state()
+    subtitle = f"{_format_number(data['pending'])} {data['op']}" if data["op"] else ""
+    return Column(
+        [
+            Text("Calculator", bold=True, size=15.0),
+            Text(subtitle or "ready", size=11.0),
+            Text(data["display"], size=28.0, bold=True, align="end", truncate=True),
+            *[ButtonRow(row) for row in BUTTON_ROWS],
+            FooterKeys(
+                [("0-9", "digits"), ("ops", "queue"), ("enter", "equals"), ("backspace", "delete")]
+            ),
+        ],
+        gap=8.0,
+        grow=True,
+    )
 
-        self.emit.set_mouse_tracking(True)
 
-        self._btns: dict[str, ButtonRow] = {}
-        for label, _, _ in BUTTONS:
-            if label in self._btns:
-                continue
-            if _is_op(label):
-                fill = theme.accent
-                hover_fill = theme.highlight
-                text_color = theme.bg
-            elif _is_clear(label):
-                fill = theme.danger
-                hover_fill = theme.surface
-                text_color = theme.bg
-            else:
-                fill = theme.surface
-                hover_fill = theme.highlight
-                text_color = theme.fg
+def _state() -> dict:
+    data = dict(DEFAULT_STATE)
+    for key, value in DEFAULT_STATE.items():
+        data[key] = state.get(key, value)
+    data["display"] = str(data.get("display") or "0")
+    data["op"] = data.get("op") if data.get("op") in {"+", "-", "*", "/"} else None
+    data["pending"] = _coerce_pending(data.get("pending"))
+    data["fresh"] = bool(data.get("fresh", True))
+    return data
 
-            self._btns[label] = ButtonRow(
-                id=f"btn_{label}",
-                label=label,
-                fill=fill,
-                hover_fill=hover_fill,
-                text_color=text_color,
-                radius=6.0,
-                height=BTN_H,
-            )
 
-        self._grid = ButtonGrid(self._btns)
-        self.emit.info("CalcApp ready (L1)")
+def _event_label(event) -> str | None:
+    if isinstance(event, UiAction) and event.handler_id.startswith("calc:key:"):
+        return event.handler_id.removeprefix("calc:key:")
+    if not isinstance(event, KeyEvent) or not event.pressed:
+        return None
+    key = event.key
+    if key in "0123456789":
+        return key
+    if key in {".", "+", "-", "*", "/", "%"}:
+        return key
+    if key in {"=", "return", "enter"}:
+        return "="
+    if key == "backspace":
+        return "backspace"
+    if key == "escape":
+        return "C"
+    return None
 
-    def _press(self, label: str) -> None:
-        if label.isdigit():
-            if self.fresh:
-                self.display = label
-                self.fresh = False
-            else:
-                self.display = (self.display + label).lstrip("0") or "0"
-        elif label == ".":
-            if self.fresh:
-                self.display = "0."
-                self.fresh = False
-            elif "." not in self.display:
-                self.display += "."
-        elif label == "C":
-            self.display = "0"
-            self.pending_op = None
-            self.pending_val = None
-            self.fresh = True
-        elif label == "±":
-            val = float(self.display)
-            self.display = str(-val) if val != 0 else "0"
-        elif label == "%":
-            self.display = str(float(self.display) / 100)
-            self.fresh = True
-        elif label in ("÷", "×", "+", "−"):
-            self.pending_val = float(self.display)
-            self.pending_op = label
-            self.fresh = True
-        elif label == "=":
-            if self.pending_op and self.pending_val is not None:
-                cur = float(self.display)
-                op = self.pending_op
-                if op == "+":
-                    result = self.pending_val + cur
-                elif op == "−":
-                    result = self.pending_val - cur
-                elif op == "×":
-                    result = self.pending_val * cur
-                elif op == "÷":
-                    result = self.pending_val / cur if cur != 0 else float("inf")
-                else:
-                    result = cur
-                # Trim unnecessary decimal
-                self.display = (
-                    str(int(result))
-                    if result == int(result) and abs(result) < 1e15
-                    else str(result)
-                )
-                self.pending_op = None
-                self.pending_val = None
-                self.fresh = True
 
-    def on_escape(self):
-        if self.display != "0" or self.pending_op is not None:
-            self._press("C")
-            return True
-        return False
-
-    def on_render(self, ctx) -> None:
-        subtitle = f"op: {self.pending_op}" if self.pending_op else None
-        ctx.render(Column([
-            AppBar("Calculator", subtitle=subtitle),
-            Heading(self.display, level=1),
-            Card([self._grid], padding=SPACE_MD, gap=BTN_GAP),
-            Spacer(grow=True),
-            FooterKeys([
-                ("0-9", "digit"),
-                ("+ - * /", "operator"),
-                ("Enter", "equals"),
-                ("Backspace", "delete"),
-                ("Esc", "clear"),
-            ]),
-        ], padding=SPACE_MD, gap=SPACE_SM))
-
-        # Check button clicks after render
-        for label, _, _ in BUTTONS:
-            if self._btns[label].clicked:
-                self._press(label)
-
-    def _backspace(self) -> None:
-        if self.fresh or self.display == "0":
-            return
-        self.display = self.display[:-1] or "0"
-
-    def on_key(self, key: str, _mods: dict) -> None:
-        if key in "0123456789":
-            self._press(key)
-        elif key == ".":
-            self._press(".")
-        elif key == "+":
-            self._press("+")
-        elif key == "-":
-            self._press("−")
-        elif key == "*":
-            self._press("×")
-        elif key == "/":
-            self._press("÷")
-        elif key in ("=", "return", "enter"):
-            self._press("=")
-        elif key == "backspace":
-            self._backspace()
+def _press(data: dict, label: str) -> None:
+    if label.isdigit():
+        if data["fresh"] or data["display"] == "0":
+            data["display"] = label
         else:
-            self.emit.debug(f"calc: unhandled key {key!r}")
+            data["display"] += label
+        data["fresh"] = False
+        return
+
+    if label == ".":
+        if data["fresh"]:
+            data["display"] = "0."
+            data["fresh"] = False
+        elif "." not in data["display"]:
+            data["display"] += "."
+        return
+
+    if label == "backspace":
+        if not data["fresh"]:
+            data["display"] = data["display"][:-1] or "0"
+        return
+
+    if label == "C":
+        data.update(dict(DEFAULT_STATE))
+        return
+
+    if label == "+/-":
+        value = -_display_value(data)
+        data["display"] = _format_number(value)
+        return
+
+    if label == "%":
+        data["display"] = _format_number(_display_value(data) / 100.0)
+        data["fresh"] = True
+        return
+
+    if label in {"+", "-", "*", "/"}:
+        _apply_pending(data)
+        data["pending"] = _display_value(data)
+        data["op"] = label
+        data["fresh"] = True
+        return
+
+    if label == "=":
+        _apply_pending(data)
 
 
-CalcApp().run()
+def _apply_pending(data: dict) -> None:
+    if data["op"] is None or data["pending"] is None:
+        return
+    current = _display_value(data)
+    pending = float(data["pending"])
+    if data["op"] == "+":
+        result = pending + current
+    elif data["op"] == "-":
+        result = pending - current
+    elif data["op"] == "*":
+        result = pending * current
+    elif data["op"] == "/":
+        result = pending / current if current != 0 else float("inf")
+    else:
+        result = current
+    data["display"] = _format_number(result)
+    data["pending"] = None
+    data["op"] = None
+    data["fresh"] = True
+
+
+def _display_value(data: dict) -> float:
+    try:
+        return float(data["display"])
+    except ValueError:
+        return 0.0
+
+
+def _coerce_pending(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_number(value: float | None) -> str:
+    if value is None:
+        return "0"
+    if value == float("inf"):
+        return "Infinity"
+    if value == float("-inf"):
+        return "-Infinity"
+    if value == int(value) and abs(value) < 1e15:
+        return str(int(value))
+    return f"{value:.12g}"
+
+
+def _button_style(label: str) -> str:
+    if label in {"+", "-", "*", "/", "="}:
+        return "primary"
+    if label == "C":
+        return "danger"
+    return "secondary"
+
+
+def _status(data: dict) -> str:
+    if data["op"] and data["pending"] is not None:
+        return f"{_format_number(data['pending'])} {data['op']}"
+    return data["display"]

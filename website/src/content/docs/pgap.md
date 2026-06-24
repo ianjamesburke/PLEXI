@@ -40,15 +40,16 @@ these at runtime:
 capabilities = ["secrets.get", "net.http"]
 ```
 
-Capabilities gate PGAP host APIs; they do not restrict what a native Python
-process can do outside PGAP. The **Cap** column in the tables below shows
+Capabilities gate PGAP host APIs; native Python apps are not sandboxed and can
+still act outside PGAP with the user's process permissions. The **Cap** column in the tables below shows
 which capability is required. Requests without a cap are available to all apps.
 
 ## The Python SDK
 
 The recommended way to write a Plexi app is with the Python SDK. It wraps
-PGAP into idiomatic Python — subclass `App`, implement `view()`, and return
-a component tree. See the [SDK reference](/docs/sdk) for the full API.
+PGAP into idiomatic Python: define module-level `init`, `update`, and `view`
+functions, then return a component tree. See the [SDK reference](/docs/sdk)
+for the full API.
 
 ## App → Host Requests
 

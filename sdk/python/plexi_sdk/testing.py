@@ -4,6 +4,7 @@ Spawns the plexi binary with `--render`, feeds it DrawCommand JSON,
 reads back PNG bytes. Provides pixel-level assertions and snapshot file helpers.
 """
 
+import ast
 import json
 import os
 import queue
@@ -56,6 +57,18 @@ def _find_renderer() -> str:
         "  cargo build --release\n"
         f"Expected at: {release}"
     )
+
+
+def _is_v3_module_app(app_path: "str | Path") -> bool:
+    try:
+        source = Path(app_path).read_text()
+        tree = ast.parse(source)
+    except (OSError, SyntaxError):
+        return False
+    module_functions = {
+        node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    return {"init", "update", "view"}.issubset(module_functions)
 
 
 # ---------------------------------------------------------------------------
@@ -331,8 +344,17 @@ class AppHarness:
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join(sys.path)
 
+        command = [sys.executable, str(app_path)]
+        if _is_v3_module_app(app_path):
+            command = [
+                sys.executable,
+                "-m",
+                "plexi_sdk._v3_process",
+                str(app_path),
+            ]
+
         self._proc = _subprocess.Popen(
-            [sys.executable, str(app_path)],
+            command,
             stdin=_subprocess.PIPE,
             stdout=_subprocess.PIPE,
             stderr=_subprocess.PIPE,
@@ -477,10 +499,6 @@ class AppHarness:
     def key(self, key: str, modifiers: "dict | None" = None) -> None:
         """Inject a synthetic key event."""
         self._send({"type": "key", "key": key, "modifiers": modifiers or {}})
-
-    def text_submit(self, id: str, value: str) -> None:
-        """Inject a synthetic text_submitted event (user pressed Enter in a TextInput)."""
-        self._send({"type": "text_submitted", "id": id, "value": value})
 
     def screenshot(self) -> bytes:
         """Render current draw commands to PNG. Requires the plexi binary."""

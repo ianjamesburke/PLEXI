@@ -434,38 +434,6 @@ pub enum RenderCommand {
     /// Render an amplitude meter reading from a binary pipe.
     AudioMeter { rect: Rect, pipe_id: String },
 
-    /// Text input field (host-owned buffer, submit-only).
-    ///
-    /// Emitted by the app each frame at `(x, y)` with width `w`. The host
-    /// owns the underlying buffer keyed on `id` — typed characters never
-    /// reach the app between frames. On Enter the host emits
-    /// `PlexiEvent::TextSubmitted { id, value }` and clears its buffer.
-    ///
-    /// When `multiline` is `false` (the default), the host renders a
-    /// single-line `TextEdit` and Enter submits. When `multiline` is `true`,
-    /// the host renders a multi-line `TextEdit`; Enter still submits but
-    /// Shift+Enter inserts a newline.
-    TextInput {
-        id: String,
-        x: f32,
-        y: f32,
-        w: f32,
-        /// Height of the input widget in pixels. Defaults to 24.0 for
-        /// backwards compatibility with older SDKs that don't send `h`.
-        #[serde(default = "default_text_input_h")]
-        h: f32,
-        placeholder: String,
-        /// When `true`, render as a multi-line editor. Enter submits;
-        /// Shift+Enter inserts a newline. Defaults to `false` so existing
-        /// draw commands without this field continue to work.
-        #[serde(default)]
-        multiline: bool,
-        /// Optional one-shot value override for host-owned buffers. SDK apps
-        /// use this for completions; ordinary text input leaves it unset.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        value: Option<String>,
-    },
-
     // ── Host-managed scroll regions (#446) ───────────────────────────────
     /// Begin a host-managed vertical scroll region.
     ///
@@ -605,6 +573,16 @@ pub enum AppRequest {
     },
     /// Request a workspace-scoped secret. Scoped to Init.workspace_root automatically.
     SecretGet { key: String },
+    /// Read a file through the native ProcessApp host. Requires `fs.read` and
+    /// the resolved path must stay inside the app's workspace root.
+    FileRead { path: String },
+    /// List a directory through the native ProcessApp host. Requires `fs.read`
+    /// and the resolved path must stay inside the app's workspace root.
+    FileList {
+        path: String,
+        #[serde(default)]
+        extensions: Vec<String>,
+    },
     /// Save app state. Host writes to workspace or global JSON file.
     SaveAppState { payload: serde_json::Value },
     /// Request to start a run. Host surfaces in Run palette (Cmd+R).
@@ -1632,6 +1610,9 @@ pub enum ControlCommand {
     /// The host closes the pane on the next frame via the wants_close path.
     /// Use instead of sys.exit() to avoid triggering crash-restart on watched panes.
     CloseSelf,
+    /// Set the display name (tab title) of this app's own pane.
+    /// Emitted by the SDK v3 runtime when the app calls `emit.set_title(title)`.
+    SetTitle { title: String },
 }
 
 /// Top-level wire type. The `type` field is globally unique across all three
@@ -1890,10 +1871,6 @@ fn default_volume() -> f32 {
     1.0
 }
 
-fn default_text_input_h() -> f32 {
-    24.0
-}
-
 fn default_skeleton_radius() -> f32 {
     4.0
 }
@@ -1904,60 +1881,9 @@ mod tests {
     //! text additions (#200 + #146). These pin the on-the-wire shape — every
     //! field is required and must be present. No `#[serde(default)]` papering
     //! over missing fields.
+    use crate::protocol::PlexiEvent;
+
     use super::*;
-    use crate::protocol::events::PlexiEvent;
-
-    #[test]
-    fn text_input_value_override_round_trips_serde() {
-        let json = r#"{"type":"text_input","id":"chat","x":1.0,"y":2.0,"w":320.0,"h":72.0,"placeholder":"Message","multiline":true,"value":"/hello-world "}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::TextInput {
-                id,
-                multiline,
-                value,
-                ..
-            }) => {
-                assert_eq!(id, "chat");
-                assert!(*multiline);
-                assert_eq!(value.as_deref(), Some("/hello-world "));
-            }
-            other => panic!("expected TextInput, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&cmd).expect("serialise");
-        assert!(
-            serialised.contains(r#""value":"/hello-world ""#),
-            "value override must stay on the wire: {serialised}"
-        );
-    }
-
-    #[test]
-    fn text_input_live_events_round_trip_serde() {
-        let changed_json = r#"{"type":"text_changed","id":"chat","value":"/hel"}"#;
-        let changed: PlexiEvent = serde_json::from_str(changed_json).expect("deserialise");
-        match &changed {
-            PlexiEvent::TextChanged { id, value } => {
-                assert_eq!(id, "chat");
-                assert_eq!(value, "/hel");
-            }
-            other => panic!("expected TextChanged, got {other:?}"),
-        }
-
-        let key_json = r#"{"type":"text_input_key","id":"chat","key":"tab","modifiers":{"shift":false,"ctrl":false,"alt":false,"cmd":false}}"#;
-        let key: PlexiEvent = serde_json::from_str(key_json).expect("deserialise");
-        match &key {
-            PlexiEvent::TextInputKey { id, key, modifiers } => {
-                assert_eq!(id, "chat");
-                assert_eq!(key, "tab");
-                assert!(!modifiers.shift);
-                assert!(!modifiers.ctrl);
-                assert!(!modifiers.alt);
-                assert!(!modifiers.cmd);
-            }
-            other => panic!("expected TextInputKey, got {other:?}"),
-        }
-    }
-
     #[test]
     fn paste_event_round_trips_serde() {
         let json = r#"{"type":"paste","text":"hello world"}"#;
@@ -3844,6 +3770,29 @@ mod ui_node_tests {
             DrawCommand::Render(RenderCommand::ComponentTree { root: r }) => match r {
                 UiNode::Text { text, .. } => assert_eq!(text, "hi"),
                 other => panic!("expected Text root, got {other:?}"),
+            },
+            other => panic!("expected ComponentTree, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn draw_command_render_component_tree_canvas_deserializes() {
+        let json = r##"{"type":"component_tree","root":{"type":"canvas","width":640.0,"height":360.0,"grow":true,"commands":[{"type":"rect","x":0.0,"y":0.0,"w":640.0,"h":360.0,"fill":"#000000","radius":0.0},{"type":"circle","cx":10.0,"cy":20.0,"r":5.0,"fill":"#ffffff"}]}}"##;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialize DrawCommand");
+        match cmd {
+            DrawCommand::Render(RenderCommand::ComponentTree { root }) => match root {
+                UiNode::Canvas {
+                    commands,
+                    width,
+                    height,
+                    grow,
+                } => {
+                    assert_eq!(width, 640.0);
+                    assert_eq!(height, 360.0);
+                    assert!(grow);
+                    assert_eq!(commands.len(), 2);
+                }
+                other => panic!("expected Canvas root, got {other:?}"),
             },
             other => panic!("expected ComponentTree, got {other:?}"),
         }

@@ -1,8 +1,7 @@
-"""ListView — stateful scrollable list widget.
+"""ListView -- stateful scrollable list widget.
 
-Create once in ``on_init()``, call ``render(items)`` from ``view()`` inside
+Create once at module level, call ``render(items)`` from ``view()`` inside
 ``Column([...])``.
-handle_key / hit_test / set_selected give full keyboard and pointer control.
 """
 
 from __future__ import annotations
@@ -33,26 +32,16 @@ class ListView:
 
     Usage::
 
-        class MyApp(App):
-            def on_init(self):
-                self._list = ListView(item_height=48.0)
+        _list = ListView(item_height=48.0)
 
-            def view(self):
-                return Column([
-                    AppBar("Title"),
-                    self._list.render([
-                        ListItem(title=items[i], selected=i == self._list.selected_index)
-                        for i in range(len(items))
-                    ]),
-                ])
-
-            def on_key(self, key, mods):
-                if self._list.handle_key(key):
-                    self.emit.schedule_render(after_ms=16)
-
-            def on_click(self, x, y, button):
-                idx = self._list.hit_test(y)
-                if idx is not None:
+        def view():
+            return Column([
+                AppBar("Title"),
+                _list.render([
+                    ListItem(title=items[i], selected=i == _list.selected_index)
+                    for i in range(len(items))
+                ]),
+            ])
                     self._list.set_selected(idx)
     """
 

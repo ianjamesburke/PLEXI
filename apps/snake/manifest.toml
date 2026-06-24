@@ -9,7 +9,7 @@ description = "Classic snake game — proves input + draw primitives."
 entry = "snake.py"
 
 [app.capabilities]
-capabilities = ["pipe.open"]
+capabilities = ["pipe.open", "timer"]
 
 [launch]
 

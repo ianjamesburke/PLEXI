@@ -461,7 +461,6 @@ publisher = "publisher-name"
 [runtime]
 target = "wasm32-wasip2"            # WASM Component Model target
 execution = "local"                 # local | cloud | preferred-local
-python_compat = false               # true = CPython WASM shim (deprecated path)
 
 [capabilities]
 required = [
@@ -523,30 +522,30 @@ The registry takes a platform cut and remits the remainder to the publisher. The
 
 ## Python Compatibility Layer  ⬜ NOT BUILT (G8 deferred)
 
-Python apps must continue to work through the v1 → v2 transition. CPython 3.12 compiles to WASM (wasm32-wasip1/wasip2). The compat layer wraps it.
+Python apps currently continue to run through native `ProcessApp` and the Python SDK v3 PGAP bridge. CPython-in-WASM is deferred G8 work, not part of the current SDK v3 app API.
 
 ### How it works
 
 1. The shared CPython WASM runtime is a separate registry bundle (~40MB). It is cached once per device, versioned independently of any app. It is not downloaded per-app.
 
-2. A Python Plexi app ships: Python bytecode (`.pyc`, typically < 200KB) + `manifest.toml` with `python_compat = true`.
+2. A future Python WASM app may ship Python bytecode (`.pyc`, typically < 200KB) plus a manifest flag or runtime target that routes to this compatibility layer. That manifest contract is not shipped.
 
 3. The compat bundle is a WASM Component that embeds CPython, implements the `plexi:app/lifecycle` interface, and drives the Python app through a thin adapter. The adapter:
    - Calls `app.view()` in Python → converts the return value to a `ui-node`
    - Calls `app.update(event)` in Python → converts effects from Python dicts to typed `effect` variants
    - Exposes the state/capability imports as Python objects through the existing SDK API
 
-4. The Python SDK (`ctx.info()`, `emit.view()`, etc.) is unchanged. Python app authors do not need to modify their apps to run on the v2 runtime.
+4. The Python SDK surface should remain source-compatible where possible, but the runtime route is future work.
 
 5. PGAP (the JSON stdio protocol) is not used. The Python app's SDK calls go through the in-process adapter, not through a subprocess pipe. The Python process is not a subprocess — it is CPython running inside a WASM instance inside the host.
 
 ### What changes for Python authors
 
-Nothing, unless they were using raw PGAP directly. Apps written against the SDK (`from plexi import App, ctx`) work without modification. `manifest.toml` gets `python_compat = true` added to `[runtime]`. The `plexi app init` scaffold generates this automatically for Python apps.
+Nothing today. SDK v3 Python apps are normal `[app] type = "app"` manifests and run through native `ProcessApp`.
 
 ### Compatibility
 
-`python_compat = true` is a bridge for running Python-authored apps inside the WASM runtime. It does not remove the existing PGAP/Python runtime. New apps can choose PGAP/Python for the simple reviewed-native path or WIT/WASM for the sandbox/performance path.
+The future compatibility bridge must not remove the existing PGAP/Python runtime until a later, explicit boundary decision. New apps can choose SDK v3 Python through native `ProcessApp` or WIT/WASM for the sandbox/performance path.
 
 The compat shim can be retired at a later v3 boundary if Core apps and marketplace apps no longer need it.
 
@@ -816,20 +815,20 @@ snapshot = "pong-running.png"
 
 ### G8 — Python compat: existing stats app unchanged  ⬜ NOT BUILT (deferred mission)
 
-**What it proves:** `apps/stats/stats.py` runs on the v2 runtime with `python_compat = true` and produces visually identical output to the v1 runtime.
+**What it proves:** `apps/stats/stats.py` runs through a future CPython-in-WASM compatibility runtime and produces visually identical output to native `ProcessApp`.
 
 **Test:** Run `apps/stats/stats.py` on both runtimes, screenshot both, diff:
 ```bash
-# v1 runtime
-plexi-v1 app open stats
-# capture screenshot → stats-v1.png
+# native ProcessApp
+plexi app open stats
+# capture screenshot -> stats-native.png
 
-# v2 runtime with python_compat = true
-plexi-v2 app open stats
-# capture screenshot → stats-v2.png
+# future CPython-in-WASM compatibility runtime
+plexi app open stats --runtime python-wasm
+# capture screenshot -> stats-wasm-python.png
 
 # diff — must be pixel-identical within font rendering tolerance
-image-diff stats-v1.png stats-v2.png --max-delta 2
+image-diff stats-native.png stats-wasm-python.png --max-delta 2
 ```
 
 **Pass condition:** Screenshots are pixel-identical (or within anti-aliasing tolerance). No SDK changes to `stats.py`.

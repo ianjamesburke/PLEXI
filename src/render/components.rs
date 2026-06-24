@@ -39,6 +39,15 @@ pub(crate) struct ComponentEventPayload {
     pub(crate) payload: Option<serde_json::Value>,
 }
 
+/// Result from rendering a component tree — includes both interaction events
+/// and layout feedback (e.g. the actual rendered canvas dimensions).
+pub(crate) struct ComponentTreeResult {
+    pub(crate) events: Vec<ComponentEventPayload>,
+    /// Actual rendered canvas dimensions (0×0 if tree had no Canvas node).
+    pub(crate) canvas_width: f32,
+    pub(crate) canvas_height: f32,
+}
+
 /// Focus and styling context for `UiNode::TextEdit` nodes within a component
 /// tree render pass. Tracks auto-focus state so only the first newly-visible
 /// TextEdit gets focused, and reports back whether any TextEdit has egui focus
@@ -83,8 +92,7 @@ impl TextEditFocusCtx {
 
 /// Render a `UiNode` tree into the provided egui `Ui`.
 ///
-/// Returns any interaction events that occurred during this frame so the
-/// caller can forward them to the app as `PlexiEvent::ComponentEvent`.
+/// Returns a `ComponentTreeResult` with interaction events and canvas dimensions.
 ///
 /// `colors` is the active host theme — passed through so L1 sugar nodes and
 /// `Raw` escape-hatch nodes have consistent theming.
@@ -102,6 +110,35 @@ pub(crate) fn render_component_tree(
     text_edit_buffers: &mut std::collections::HashMap<String, String>,
     focus_ctx: &mut TextEditFocusCtx,
     raw_caches: &mut RawNodeCaches<'_>,
+) -> ComponentTreeResult {
+    let mut canvas_width = 0.0f32;
+    let mut canvas_height = 0.0f32;
+    let events = render_component_tree_inner(
+        ui,
+        node,
+        colors,
+        text_edit_buffers,
+        focus_ctx,
+        raw_caches,
+        &mut canvas_width,
+        &mut canvas_height,
+    );
+    ComponentTreeResult {
+        events,
+        canvas_width,
+        canvas_height,
+    }
+}
+
+fn render_component_tree_inner(
+    ui: &mut Ui,
+    node: &UiNode,
+    colors: &Colors,
+    text_edit_buffers: &mut std::collections::HashMap<String, String>,
+    focus_ctx: &mut TextEditFocusCtx,
+    raw_caches: &mut RawNodeCaches<'_>,
+    canvas_w: &mut f32,
+    canvas_h: &mut f32,
 ) -> Vec<ComponentEventPayload> {
     let mut events: Vec<ComponentEventPayload> = Vec::new();
 
@@ -130,6 +167,8 @@ pub(crate) fn render_component_tree(
                         text_edit_buffers,
                         focus_ctx,
                         raw_caches,
+                        canvas_w,
+                        canvas_h,
                     ));
                 });
         }
@@ -141,13 +180,15 @@ pub(crate) fn render_component_tree(
                 egui::ScrollArea::vertical()
             };
             scroll.show(ui, |ui| {
-                events.extend(render_component_tree(
+                events.extend(render_component_tree_inner(
                     ui,
                     child,
                     colors,
                     text_edit_buffers,
                     focus_ctx,
                     raw_caches,
+                    canvas_w,
+                    canvas_h,
                 ));
             });
         }
@@ -155,13 +196,15 @@ pub(crate) fn render_component_tree(
         UiNode::Layer { children } => {
             // V1: sequential rendering (true Z-stacking is a future improvement).
             for child in children {
-                events.extend(render_component_tree(
+                events.extend(render_component_tree_inner(
                     ui,
                     child,
                     colors,
                     text_edit_buffers,
                     focus_ctx,
                     raw_caches,
+                    canvas_w,
+                    canvas_h,
                 ));
             }
         }
@@ -191,6 +234,42 @@ pub(crate) fn render_component_tree(
             ui.add(egui::Label::new(rich).selectable(true));
         }
 
+        UiNode::Markdown {
+            text,
+            base_size,
+            color,
+            padding,
+        } => {
+            let size = egui::vec2(ui.available_width(), ui.available_height());
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            let content = rect.shrink((*padding).max(0.0));
+            if content.is_positive() {
+                let text_color = if color.is_empty() {
+                    colors.text_primary
+                } else {
+                    parse_color(color).unwrap_or(colors.text_primary)
+                };
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(content)
+                        .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                );
+                child.set_clip_rect(content);
+                crate::ui::markdown::show(
+                    &mut child,
+                    raw_caches.commonmark_cache,
+                    colors,
+                    text,
+                    text_color,
+                    if *base_size > 0.0 {
+                        *base_size
+                    } else {
+                        style::TEXT_BODY
+                    },
+                );
+            }
+        }
+
         UiNode::Interactive {
             node_id,
             child,
@@ -200,13 +279,15 @@ pub(crate) fn render_component_tree(
             // Render the child inside an interact-sense scope so we get a
             // Response covering the child's bounding rect.
             let child_response = ui.scope(|ui| {
-                let child_evts = render_component_tree(
+                let child_evts = render_component_tree_inner(
                     ui,
                     child,
                     colors,
                     text_edit_buffers,
                     focus_ctx,
                     raw_caches,
+                    canvas_w,
+                    canvas_h,
                 );
                 // Bubble child events up.
                 (child_evts, ui.min_rect())
@@ -245,13 +326,15 @@ pub(crate) fn render_component_tree(
                 "render_components: Pinned {:?} rendered inline (no enclosing vertical Stack)",
                 edge
             );
-            events.extend(render_component_tree(
+            events.extend(render_component_tree_inner(
                 ui,
                 child,
                 colors,
                 text_edit_buffers,
                 focus_ctx,
                 raw_caches,
+                canvas_w,
+                canvas_h,
             ));
         }
 
@@ -280,11 +363,73 @@ pub(crate) fn render_component_tree(
                 &mut raw_events,
                 text_edit_buffers,
                 &mut raw_focus_ctx,
+                &mut 0.0f32,
+                &mut 0.0f32,
             );
             // Convert any ComponentEvent payloads back from PlexiEvent (unlikely
             // from a Raw draw command, but keep the pipeline consistent).
             // Non-ComponentEvent PlexiEvents are intentionally dropped here,
             // preserving pre-existing Raw-node behavior.
+            for evt in raw_events {
+                if let crate::app_protocol::PlexiEvent::ComponentEvent {
+                    node_id,
+                    event_type,
+                    payload,
+                } = evt
+                {
+                    events.push(ComponentEventPayload {
+                        node_id,
+                        event_type,
+                        payload,
+                    });
+                }
+            }
+        }
+
+        UiNode::Canvas {
+            commands,
+            width,
+            height,
+            grow,
+        } => {
+            let node_canvas_w = if *grow {
+                ui.available_width()
+            } else {
+                (*width).min(ui.available_width())
+            }
+            .max(0.0);
+            let node_canvas_h = if *grow {
+                ui.available_height().max(*height)
+            } else {
+                *height
+            }
+            .max(0.0);
+            *canvas_w = node_canvas_w;
+            *canvas_h = node_canvas_h;
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(node_canvas_w, node_canvas_h),
+                egui::Sense::hover(),
+            );
+            let mut raw_events: Vec<crate::app_protocol::PlexiEvent> = Vec::new();
+            let mut raw_focus_ctx = TextEditFocusCtx::new();
+            crate::process_app::render::render_draw_commands(
+                ui,
+                rect,
+                commands,
+                colors,
+                &mut *raw_caches.commonmark_cache,
+                raw_caches.audio_peaks,
+                &mut *raw_caches.image_cache,
+                raw_caches.workspace_root,
+                raw_caches.net_http_granted,
+                &mut *raw_caches.list_view_scroll_offsets,
+                &mut *raw_caches.list_view_last_aligned_sel,
+                &mut raw_events,
+                text_edit_buffers,
+                &mut raw_focus_ctx,
+                &mut 0.0f32,
+                &mut 0.0f32,
+            );
             for evt in raw_events {
                 if let crate::app_protocol::PlexiEvent::ComponentEvent {
                     node_id,
@@ -311,6 +456,7 @@ pub(crate) fn render_component_tree(
             node_id,
             label,
             disabled,
+            style: button_style,
             ..
         } => {
             const BTN_PAD_V: f32 = 5.0;
@@ -334,15 +480,40 @@ pub(crate) fn render_component_tree(
             let is_just_pressed =
                 is_hovered && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
             let painter = ui.painter();
-            let fill = if is_down {
+            let style_name = button_style.as_str();
+            let is_primary = style_name == "primary";
+            let is_danger = style_name == "danger";
+            let is_ghost = style_name == "ghost";
+            let danger = egui::Color32::from_rgb(210, 78, 78);
+            let fill = if *disabled {
+                colors.bg_active.gamma_multiply(0.55)
+            } else if is_down {
+                if is_danger {
+                    danger.gamma_multiply(0.85)
+                } else if is_primary {
+                    colors.accent.gamma_multiply(0.85)
+                } else {
+                    colors.bg_hover
+                }
+            } else if is_primary {
                 colors.accent
+            } else if is_danger {
+                danger
+            } else if is_ghost {
+                egui::Color32::TRANSPARENT
             } else {
                 colors.bg_active
             };
             painter.rect_filled(rect, crate::ui::style::RADIUS_MD, fill);
             if !*disabled {
                 let stroke_color = if is_hovered {
-                    colors.accent
+                    if is_danger {
+                        danger
+                    } else {
+                        colors.accent
+                    }
+                } else if is_ghost {
+                    egui::Color32::TRANSPARENT
                 } else {
                     colors.border
                 };
@@ -358,7 +529,7 @@ pub(crate) fn render_component_tree(
             }
             let text_color = if *disabled {
                 colors.text_dim
-            } else if is_down {
+            } else if is_primary || is_danger {
                 colors.bg_active
             } else {
                 colors.text_primary
@@ -374,38 +545,6 @@ pub(crate) fn render_component_tree(
                     node_id: node_id.clone(),
                     event_type: "click".into(),
                     payload: None,
-                });
-            }
-        }
-
-        UiNode::Input {
-            node_id,
-            value,
-            placeholder,
-            ..
-        } => {
-            let mut val_buf = value.clone();
-            let response = crate::ui::text_field::styled_text_input(
-                ui,
-                &mut val_buf,
-                placeholder.as_str(),
-                egui::Id::new(node_id.as_str()),
-                colors,
-            );
-            if response.changed() {
-                log::debug!("render_components: Input change node_id={node_id} value={val_buf:?}");
-                events.push(ComponentEventPayload {
-                    node_id: node_id.clone(),
-                    event_type: "change".into(),
-                    payload: Some(serde_json::json!({ "value": val_buf })),
-                });
-            }
-            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                log::info!("render_components: Input submit node_id={node_id} value={val_buf:?}");
-                events.push(ComponentEventPayload {
-                    node_id: node_id.clone(),
-                    event_type: "submit".into(),
-                    payload: Some(serde_json::json!({ "value": val_buf })),
                 });
             }
         }
@@ -604,7 +743,7 @@ pub(crate) fn render_component_tree(
             padding_top,
             padding,
         } => {
-            log::info!(
+            log::trace!(
                 "render_components: Column {} children gap={gap} padding_top={padding_top} padding={padding}",
                 children.len()
             );
@@ -634,6 +773,8 @@ pub(crate) fn render_component_tree(
                         text_edit_buffers,
                         focus_ctx,
                         raw_caches,
+                        canvas_w,
+                        canvas_h,
                     ));
                 });
         }
@@ -712,8 +853,7 @@ pub(crate) fn render_component_tree(
         UiNode::FooterKeys {
             entries, divider, ..
         } => {
-            let chip_h = style::TEXT_HINT + 4.0;
-            let chip_row_h = style::TEXT_HINT + 6.0;
+            let chip_row_h = chip_row_height(ui);
             let total_h = if *divider {
                 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
             } else {
@@ -757,7 +897,9 @@ pub(crate) fn render_component_tree(
                             .size()
                             .x
                     });
-                    content_w += (tw + 8.0).max(chip_h);
+                    content_w += (tw + style::KEYCHIP_PAD_H * 2.0)
+                        .max(chip_row_h)
+                        .max(style::KEYCHIP_MIN_W);
                 }
                 content_w += 4.0;
                 content_w += ui.fonts(|f| {
@@ -774,12 +916,18 @@ pub(crate) fn render_component_tree(
                 }
             }
 
-            // Center the content group inside the full-bleed band; clamp left edge.
+            // Center the content group inside the usable area (below divider if present).
             let left =
                 (full_rect.center().x - content_w / 2.0).max(full_rect.min.x + style::SPACE_MD);
+            let usable_top = if *divider {
+                full_rect.min.y + 1.0
+            } else {
+                full_rect.min.y
+            };
+            let usable_center_y = (usable_top + full_rect.max.y) / 2.0;
             let content_rect = egui::Rect::from_min_size(
-                egui::pos2(left, full_rect.center().y - chip_h / 2.0),
-                egui::vec2(content_w, chip_h),
+                egui::pos2(left, usable_center_y - chip_row_h / 2.0),
+                egui::vec2(content_w, chip_row_h),
             );
 
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
@@ -950,13 +1098,15 @@ pub(crate) fn render_component_tree(
                 .inner_margin(egui::Margin::same(pad as i8))
                 .show(ui, |ui| {
                     for child in children {
-                        events.extend(render_component_tree(
+                        events.extend(render_component_tree_inner(
                             ui,
                             child,
                             colors,
                             text_edit_buffers,
                             focus_ctx,
                             raw_caches,
+                            canvas_w,
+                            canvas_h,
                         ));
                     }
                 });
@@ -1079,16 +1229,32 @@ pub(crate) fn render_component_tree(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+/// Measures the actual chip row height for footer key chips by querying font metrics.
+/// This is the single source of truth for chip height — both `bottom_pin_height`
+/// and the `FooterKeys` renderer must use this instead of estimating from TEXT_HINT.
+fn chip_row_height(ui: &egui::Ui) -> f32 {
+    let text_h = ui.fonts(|f| {
+        f.layout_no_wrap(
+            "X".to_string(),
+            egui::FontId::monospace(style::TEXT_HINT),
+            egui::Color32::WHITE,
+        )
+        .size()
+        .y
+    });
+    text_h + style::KEYCHIP_PAD_V * 2.0
+}
+
 /// Returns the known fixed height of a node that can be bottom-pinned, or `None`
 /// if the height cannot be determined without rendering.
-fn bottom_pin_height(node: &UiNode) -> Option<f32> {
+fn bottom_pin_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
     match node {
         UiNode::FooterKeys { divider, .. } => {
-            let chip_row_h = style::TEXT_HINT + 6.0;
+            let crh = chip_row_height(ui);
             Some(if *divider {
-                1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
+                1.0 + style::SPACE_SM + crh + style::SPACE_SM
             } else {
-                style::SPACE_SM + chip_row_h + style::SPACE_SM
+                style::SPACE_SM + crh + style::SPACE_SM
             })
         }
         UiNode::Footer { .. } => {
@@ -1096,6 +1262,132 @@ fn bottom_pin_height(node: &UiNode) -> Option<f32> {
         }
         _ => None,
     }
+}
+
+fn vertical_grow_node(node: &UiNode) -> bool {
+    match node {
+        UiNode::Spacer { grow, .. } => *grow,
+        UiNode::Scroll { .. } => true,
+        UiNode::SelectList { .. } => true,
+        UiNode::Canvas { grow, .. } => *grow,
+        _ => false,
+    }
+}
+
+fn vertical_fixed_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
+    match node {
+        UiNode::AppBar { subtitle, .. } => {
+            let band_h = if subtitle.is_empty() { 34.0 } else { 48.0 };
+            Some(band_h + 1.0)
+        }
+        UiNode::Button { .. } => Some(32.0),
+        UiNode::TextEdit { multiline, .. } => Some(if *multiline { 96.0 } else { 32.0 }),
+        UiNode::Spacer { size, grow } => {
+            if *grow {
+                None
+            } else {
+                Some(if *size > 0.0 { *size } else { style::SPACE_MD })
+            }
+        }
+        UiNode::FooterKeys { .. } | UiNode::Footer { .. } => bottom_pin_height(ui, node),
+        UiNode::Divider { .. } => Some(1.0),
+        UiNode::Section { .. } => {
+            Some(style::SPACE_SM + style::TEXT_HINT + style::SPACE_XS + 1.0 + style::SPACE_XS)
+        }
+        UiNode::Text { size, .. } => Some(if *size > 0.0 {
+            *size + 4.0
+        } else {
+            style::TEXT_BODY + 4.0
+        }),
+        UiNode::Badge { .. } => Some(style::TEXT_CAPTION + style::BADGE_PAD_V * 2.0 + 2.0),
+        UiNode::Dot { size, .. } => Some(if *size > 0.0 { *size } else { 8.0 }),
+        UiNode::Canvas { height, grow, .. } => {
+            if *grow {
+                None
+            } else {
+                Some(*height)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn render_vertical_children(
+    ui: &mut Ui,
+    children: &[&UiNode],
+    gap: f32,
+    colors: &Colors,
+    text_edit_buffers: &mut std::collections::HashMap<String, String>,
+    focus_ctx: &mut TextEditFocusCtx,
+    raw_caches: &mut RawNodeCaches<'_>,
+    canvas_w: &mut f32,
+    canvas_h: &mut f32,
+) -> Vec<ComponentEventPayload> {
+    let mut events = Vec::new();
+    if children.is_empty() {
+        return events;
+    }
+
+    let available_h = ui.available_height().max(0.0);
+    let gap_total = gap * children.len().saturating_sub(1) as f32;
+    let mut fixed_total = gap_total;
+    let mut grow_count = 0usize;
+
+    for child in children {
+        if vertical_grow_node(child) {
+            grow_count += 1;
+        } else if let Some(h) = vertical_fixed_height(ui, child) {
+            fixed_total += h;
+        }
+    }
+
+    let grow_h = if grow_count > 0 {
+        ((available_h - fixed_total).max(0.0)) / grow_count as f32
+    } else {
+        0.0
+    };
+
+    for (i, child) in children.iter().enumerate() {
+        if i > 0 && gap > 0.0 {
+            ui.add_space(gap);
+        }
+
+        let allocated_h = if vertical_grow_node(child) {
+            Some(grow_h)
+        } else {
+            vertical_fixed_height(ui, child)
+        };
+
+        if let Some(h) = allocated_h {
+            ui.allocate_ui(egui::vec2(ui.available_width(), h.max(0.0)), |ui| {
+                ui.set_min_height(h.max(0.0));
+                ui.set_max_height(h.max(0.0));
+                events.extend(render_component_tree_inner(
+                    ui,
+                    child,
+                    colors,
+                    text_edit_buffers,
+                    focus_ctx,
+                    raw_caches,
+                    canvas_w,
+                    canvas_h,
+                ));
+            });
+        } else {
+            events.extend(render_component_tree_inner(
+                ui,
+                child,
+                colors,
+                text_edit_buffers,
+                focus_ctx,
+                raw_caches,
+                canvas_w,
+                canvas_h,
+            ));
+        }
+    }
+
+    events
 }
 
 fn render_stack(
@@ -1107,6 +1399,8 @@ fn render_stack(
     text_edit_buffers: &mut std::collections::HashMap<String, String>,
     focus_ctx: &mut TextEditFocusCtx,
     raw_caches: &mut RawNodeCaches<'_>,
+    canvas_w: &mut f32,
+    canvas_h: &mut f32,
 ) -> Vec<ComponentEventPayload> {
     let mut events = Vec::new();
     match direction {
@@ -1116,13 +1410,15 @@ fn render_stack(
                     if i > 0 && gap > 0.0 {
                         ui.add_space(gap);
                     }
-                    events.extend(render_component_tree(
+                    events.extend(render_component_tree_inner(
                         ui,
                         child,
                         colors,
                         text_edit_buffers,
                         focus_ctx,
                         raw_caches,
+                        canvas_w,
+                        canvas_h,
                     ));
                 }
             });
@@ -1135,7 +1431,7 @@ fn render_stack(
             // Two sources of pinning:
             //   1. Explicit: `Pinned { edge: Bottom, child }` wrapper
             //   2. Implicit: FooterKeys/Footer at the tail of the children list
-            //      (the SDK doesn't wrap them in Pinned, but they always pin to bottom)
+            //      (kept for hand-authored protocol trees; SDK footers use Pinned)
             let mut pinned_bottom: Vec<(f32, &UiNode)> = Vec::new();
             let mut body_children: Vec<&UiNode> = Vec::new();
 
@@ -1145,7 +1441,7 @@ fn render_stack(
                     child: inner,
                 } = child
                 {
-                    if let Some(h) = bottom_pin_height(inner) {
+                    if let Some(h) = bottom_pin_height(ui, inner) {
                         pinned_bottom.push((h, inner.as_ref()));
                         continue;
                     } else {
@@ -1159,7 +1455,7 @@ fn render_stack(
 
             // Auto-pin: pull FooterKeys/Footer off the tail of body_children
             while let Some(last) = body_children.last() {
-                if let Some(h) = bottom_pin_height(last) {
+                if let Some(h) = bottom_pin_height(ui, last) {
                     pinned_bottom.push((h, body_children.pop().unwrap()));
                 } else {
                     break;
@@ -1177,49 +1473,47 @@ fn render_stack(
                 // content is short, ensuring the footer renders flush to the bottom.
                 ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
                     ui.set_min_height(body_h);
-                    for (i, child) in body_children.iter().enumerate() {
-                        if i > 0 && gap > 0.0 {
-                            ui.add_space(gap);
-                        }
-                        events.extend(render_component_tree(
-                            ui,
-                            child,
-                            colors,
-                            text_edit_buffers,
-                            focus_ctx,
-                            raw_caches,
-                        ));
-                    }
+                    ui.set_max_height(body_h);
+                    events.extend(render_vertical_children(
+                        ui,
+                        &body_children,
+                        gap,
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                        raw_caches,
+                        canvas_w,
+                        canvas_h,
+                    ));
                 });
                 for (_, inner) in &pinned_bottom {
-                    events.extend(render_component_tree(
+                    events.extend(render_component_tree_inner(
                         ui,
                         inner,
                         colors,
                         text_edit_buffers,
                         focus_ctx,
                         raw_caches,
+                        canvas_w,
+                        canvas_h,
                     ));
                 }
-                log::info!(
+                log::trace!(
                     "render_components: render_stack vertical pinned body_h={body_h:.0} footer_h={total_pinned_h:.0}"
                 );
             } else {
-                ui.vertical(|ui| {
-                    for (i, child) in children.iter().enumerate() {
-                        if i > 0 && gap > 0.0 {
-                            ui.add_space(gap);
-                        }
-                        events.extend(render_component_tree(
-                            ui,
-                            child,
-                            colors,
-                            text_edit_buffers,
-                            focus_ctx,
-                            raw_caches,
-                        ));
-                    }
-                });
+                let child_refs: Vec<&UiNode> = children.iter().collect();
+                events.extend(render_vertical_children(
+                    ui,
+                    &child_refs,
+                    gap,
+                    colors,
+                    text_edit_buffers,
+                    focus_ctx,
+                    raw_caches,
+                    canvas_w,
+                    canvas_h,
+                ));
             }
         }
     }
@@ -1365,6 +1659,7 @@ mod render_component_tree_tests {
             node_id: "btn1".into(),
             label: "Click me".into(),
             disabled: false,
+            style: "primary".into(),
         };
         if let UiNode::Button {
             node_id,
@@ -1541,7 +1836,7 @@ mod render_component_tree_tests {
     /// `bottom_pin_height` returns correct heights for FooterKeys and Footer.
     #[test]
     fn bottom_pin_height_known_nodes() {
-        use super::bottom_pin_height;
+        use super::{bottom_pin_height, chip_row_height};
         use crate::ui::style;
         let fk_with_div = UiNode::FooterKeys {
             entries: vec![],
@@ -1565,15 +1860,21 @@ mod render_component_tree_tests {
             max_lines: 0,
         };
 
-        let chip_row_h = style::TEXT_HINT + 6.0;
-        let expected_with_div = 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM;
-        let expected_no_div = style::SPACE_SM + chip_row_h + style::SPACE_SM;
         let expected_footer = style::SPACE_MD + 1.0 + style::SPACE_MD + style::TEXT_CAPTION + 5.0;
 
-        assert_eq!(bottom_pin_height(&fk_with_div), Some(expected_with_div));
-        assert_eq!(bottom_pin_height(&fk_no_div), Some(expected_no_div));
-        assert_eq!(bottom_pin_height(&footer), Some(expected_footer));
-        assert_eq!(bottom_pin_height(&label), None);
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            let crh = chip_row_height(ui);
+            let expected_with_div = 1.0 + style::SPACE_SM + crh + style::SPACE_SM;
+            let expected_no_div = style::SPACE_SM + crh + style::SPACE_SM;
+
+            assert_eq!(bottom_pin_height(ui, &fk_with_div), Some(expected_with_div));
+            assert_eq!(bottom_pin_height(ui, &fk_no_div), Some(expected_no_div));
+            assert_eq!(bottom_pin_height(ui, &footer), Some(expected_footer));
+            assert_eq!(bottom_pin_height(ui, &label), None);
+        });
+        let _ = ctx.end_pass();
     }
 
     /// `UiNode::TextEdit` PartialEq works.

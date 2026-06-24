@@ -1,575 +1,259 @@
 #!/usr/bin/env python3
-"""Logs — live tail of the Plexi host log, newest-first, color-coded by level."""
+"""Logs — SDK v3 runtime-state live tail of the Plexi host log."""
+
+from __future__ import annotations
 
 import os
 import re
 
-from plexi_sdk import App
-from plexi_sdk.ui import (
-    TEXT_HINT, TEXT_CAPTION,
-    SPACE_SM,
-    AppBar, FooterKeys,
-)
+from plexi_sdk import log, state
+from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
+from plexi_sdk.events import KeyEvent, TimerFired, UiValueChange
+from plexi_sdk.ui import AppBar, Column, FooterKeys, Scrollable, Spacer, Text, TextEdit
 
-# ── Constants ──────────────────────────────────────────────────────────────────
-
-POLL_MS  = 2_000
-TIMER_ID = "poll"
+POLL_MS = 2_000
+TIMER_ID = 1
 MAX_LINES = 500
 TAIL_BYTES = 256 * 1024
+VISIBLE_LINES = 28
+FILTERS = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
+FILTER_KEY = {"a": "ALL", "e": "ERROR", "w": "WARN", "i": "INFO", "d": "DEBUG"}
 
-ROW_H    = 20.0
-BAR_H    = 34.0   # AppBar single-line band height
-FOOT_H   = 32.0   # FooterKeys band height (TOP_GAP + 1 + TOP_GAP + ROW_H + TOP_GAP)
-PAD      = SPACE_SM
-CHIP_W    = 54.0   # fixed-width filter buttons — consistent across all labels
-CHIP_GAP  = 4.0
-COL_GAP   = SPACE_SM  # uniform inter-column gap for all table columns
-# Level badge: fixed pixel width so all badges (ERROR/WARN/INFO/DEBUG) render
-# in a uniform column. We draw a rect + centred text rather than ctx.badge()
-# which auto-sizes to label width and would produce ragged column edges.
-BADGE_W   = 46.0   # fixed badge width (px)
-BADGE_H   = 14.0   # fixed badge height (px); fits comfortably inside ROW_H=20
-BADGE_R   = 3.0    # corner radius
-# Total column advance: badge + gap before next column
-BADGE_ADV = BADGE_W + COL_GAP
-
-FILTERS    = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
-FILTER_KEY = {"a": 0, "e": 1, "w": 2, "i": 3, "d": 4}
-
-APP_FILTER_KEY = "t"   # cycle through unique targets with 't'
-
-ROW_ALT        = "#1a1a2a"
-COPY_ROW_BG    = "#1e2d1e"   # subtle green tint for copy-mode selected rows
-COPY_CURSOR_BG = "#253525"   # slightly brighter for the active cursor row
-COPY_ROW_FG    = "#a6e3a1"   # soft green text for selected row
-
-_LOG_RE = re.compile(
+LOG_RE = re.compile(
     r"^\[(\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}))\] \[(\w+)\] \[([^\]]+)\] (.*)$"
 )
 
-# ── Log path detection ─────────────────────────────────────────────────────────
+DEFAULT_STATE = {
+    "path": "",
+    "lines": [],
+    "filter": "ALL",
+    "query": "",
+    "searching": False,
+    "offset": 0,
+    "follow": True,
+    "signature": None,
+}
 
-SCROLL_ID = "logs-list"
+
+def init(size, args) -> list:
+    path = args[0] if args else _detect_log_path()
+    data = _state()
+    data["path"] = data["path"] or path
+    data.update(_refresh(data))
+    log.info(f"logs: SDK v3 initialized path={data['path']!r}")
+    return [
+        SetTitle("Logs"),
+        SetTimer(TIMER_ID, POLL_MS, repeat=True),
+        SetStatus(_status(data)),
+        SetState(data),
+    ]
 
 
-def _channel_log_path() -> "str | None":
-    channel = os.environ.get("PLEXI_CHANNEL", "").strip()
-    if not channel:
-        return None
-    profile = ".plexi" if channel in ("main", "default") else f".plexi-{channel}"
-    return os.path.expanduser(os.path.join("~", profile, "plexi.log"))
+def update(event) -> list:
+    data = _state()
+    if isinstance(event, TimerFired) and event.id == TIMER_ID:
+        refreshed = _refresh(data)
+        if refreshed["signature"] == data["signature"]:
+            return []
+        data.update(refreshed)
+        return [SetState(data), SetStatus(_status(data))]
+
+    if isinstance(event, UiValueChange) and event.handler_id == "logs-search":
+        data["query"] = event.value
+        data["offset"] = 0
+        data["follow"] = False
+        return [SetState(data), SetStatus(_status(data))]
+
+    if not isinstance(event, KeyEvent) or not event.pressed:
+        return []
+
+    key = event.key
+    if data["searching"]:
+        if key == "escape":
+            data["searching"] = False
+            data["query"] = ""
+            data["offset"] = 0
+            data["follow"] = True
+            return [SetState(data), SetStatus(_status(data))]
+        return []
+
+    if key in FILTER_KEY:
+        data["filter"] = FILTER_KEY[key]
+        data["offset"] = 0
+    elif key == "/":
+        data["searching"] = True
+        data["follow"] = False
+    elif key == "escape" and data["query"]:
+        data["query"] = ""
+        data["offset"] = 0
+        data["follow"] = True
+    elif key in ("down", "j"):
+        data["offset"] = min(_max_offset(data), data["offset"] + 1)
+        data["follow"] = False
+    elif key in ("up", "k"):
+        data["offset"] = max(0, data["offset"] - 1)
+        data["follow"] = False
+    elif key == "g" and event.modifiers.shift:
+        data["offset"] = _max_offset(data)
+        data["follow"] = False
+    elif key == "g":
+        data["offset"] = 0
+        data["follow"] = True
+    elif key == "f":
+        data["follow"] = not data["follow"]
+        if data["follow"]:
+            data["offset"] = 0
+    elif key == "r":
+        data.update(_refresh(data, force=True))
+    else:
+        return []
+    return [SetState(data), SetStatus(_status(data))]
+
+
+def view():
+    data = _state()
+    title = "Search" if data["searching"] else _subtitle(data)
+    children = [AppBar("Logs", title)]
+    if data["searching"]:
+        children.append(
+            TextEdit(
+                "logs-search",
+                value=data["query"],
+                placeholder="filter by target or message",
+            )
+        )
+    children.extend(
+        [
+            Scrollable(Text(_visible_text(data), size=11.0)),
+            FooterKeys(
+                [
+                    ("a/e/w/i/d", "level"),
+                    ("/", "search"),
+                    ("j/k", "scroll"),
+                    ("f", "follow"),
+                ]
+            ),
+        ]
+    )
+    return Column(children, grow=True, padding=0)
+
+
+def _state() -> dict:
+    data = dict(DEFAULT_STATE)
+    for key, value in DEFAULT_STATE.items():
+        data[key] = state.get(key, value)
+    data["lines"] = [dict(line) for line in data.get("lines") or []]
+    data["filter"] = str(data.get("filter") or "ALL")
+    if data["filter"] not in FILTERS:
+        data["filter"] = "ALL"
+    data["query"] = str(data.get("query") or "")
+    data["offset"] = max(0, int(data.get("offset") or 0))
+    data["follow"] = bool(data.get("follow"))
+    data["searching"] = bool(data.get("searching"))
+    return data
 
 
 def _detect_log_path() -> str:
-    env = os.environ.get("PLEXI_CONFIG_DIR")
-    if env:
-        return os.path.join(env, "plexi.log")
-    channel_path = _channel_log_path()
-    if channel_path:
-        return channel_path
+    config_dir = os.environ.get("PLEXI_CONFIG_DIR")
+    if config_dir:
+        return os.path.join(config_dir, "plexi.log")
+    channel = os.environ.get("PLEXI_CHANNEL", "").strip()
+    if channel:
+        profile = ".plexi" if channel in ("main", "default") else f".plexi-{channel}"
+        return os.path.expanduser(os.path.join("~", profile, "plexi.log"))
     candidates = [
-        os.path.expanduser(p) for p in (
-            "~/.plexi-alpha/plexi.log",
-            "~/.plexi-beta/plexi.log",
-            "~/.plexi/plexi.log",
-        )
+        os.path.expanduser("~/.plexi-alpha/plexi.log"),
+        os.path.expanduser("~/.plexi-beta/plexi.log"),
+        os.path.expanduser("~/.plexi/plexi.log"),
     ]
-    existing = [(os.path.getmtime(p), p) for p in candidates if os.path.exists(p)]
+    existing = [
+        (os.path.getmtime(path), path) for path in candidates if os.path.exists(path)
+    ]
     return max(existing)[1] if existing else candidates[0]
 
 
-LOG_PATH = _detect_log_path()
-
-
-def _log_signature() -> "tuple[int, int] | None":
+def _signature(path: str):
     try:
-        stat = os.stat(LOG_PATH)
+        stat = os.stat(path)
     except OSError:
         return None
-    return stat.st_size, stat.st_mtime_ns
-
-# ── Data ───────────────────────────────────────────────────────────────────────
-
-class LogLine:
-    __slots__ = ("time", "level", "target", "message")
-
-    def __init__(self, time: str, level: str, target: str, message: str) -> None:
-        self.time    = time
-        self.level   = level
-        self.target  = target
-        self.message = message
-
-    def as_text(self) -> str:
-        return f"[{self.time}] [{self.level}] [{self.target}] {self.message}"
+    return [stat.st_size, stat.st_mtime_ns]
 
 
-def _parse(raw: str) -> "LogLine | None":
-    m = _LOG_RE.match(raw.rstrip())
-    if not m:
-        return None
-    _, time, level, target, message = m.groups()
-    return LogLine(time, level, target, message)
+def _refresh(data: dict, force: bool = False) -> dict:
+    signature = _signature(data["path"])
+    if not force and signature == data.get("signature"):
+        return {"signature": signature, "lines": data["lines"]}
+    lines = _read_log(data["path"])
+    if data.get("follow", True):
+        data["offset"] = 0
+    return {"signature": signature, "lines": lines}
 
 
-def _read_log(max_lines: int = MAX_LINES) -> list[LogLine]:
+def _read_log(path: str) -> list[dict]:
     try:
-        size = os.path.getsize(LOG_PATH)
-        with open(LOG_PATH, "rb") as f:
+        size = os.path.getsize(path)
+        with open(path, "rb") as handle:
             if size > TAIL_BYTES:
-                f.seek(-TAIL_BYTES, os.SEEK_END)
-                f.readline()
-            tail = f.readlines()[-max_lines:]
+                handle.seek(-TAIL_BYTES, os.SEEK_END)
+                handle.readline()
+            raw_lines = handle.readlines()[-MAX_LINES:]
     except OSError:
         return []
-    out: list[LogLine] = []
-    for raw in reversed(tail):
-        ll = _parse(raw.decode("utf-8", errors="replace"))
-        if ll:
-            out.append(ll)
-    return out
-
-# ── App ────────────────────────────────────────────────────────────────────────
-
-# AppBar.BAND_H for single-line = 34.0; DIVIDER_H = 1.0 → total = 35.0
-_APPBAR_H = AppBar.BAND_H + AppBar.DIVIDER_H
+    parsed = []
+    for raw in reversed(raw_lines):
+        item = _parse(raw.decode("utf-8", errors="replace"))
+        if item:
+            parsed.append(item)
+    return parsed
 
 
-class LogsApp(App):
-    def on_init(self) -> None:
-        self._lines:       list[LogLine] = []
-        self._filter_idx:  int   = 0
-        self._scroll:      float = 0.0
-        self._viewport_h:  float = 400.0
-        # search
-        self._search_mode: bool = False
-        self._search_q:    str  = ""
-        # app/target filter
-        self._targets:     list[str] = ["ALL"]   # ["ALL", ...unique targets...]
-        self._target_idx:  int       = 0         # index into _targets
-        # copy mode
-        self._copy_mode:   bool           = False
-        self._copy_row:    int            = 0    # active cursor / drag end
-        self._copy_anchor: "int | None"   = None  # selection start; None = single row
-        self._is_dragging: bool           = False
-        self._last_log_signature: "tuple[int, int] | None" = None
-        self.emit.set_mouse_tracking(True)
-        self.emit.status_summary("Logs")
-        self.emit.set_timer(TIMER_ID, 50)
-        self.emit.info(f"logs: ready — {LOG_PATH}")
-
-    def on_timer(self, timer_id: str) -> None:
-        if timer_id != TIMER_ID:
-            return
-        signature = _log_signature()
-        if signature != self._last_log_signature:
-            self._last_log_signature = signature
-            self._lines = _read_log(MAX_LINES) if signature is not None else []
-            self._refresh_targets()
-            self._clamp()
-        self.emit.set_timer(TIMER_ID, POLL_MS)
-
-    def _refresh_targets(self) -> None:
-        """Rebuild the unique target list; preserve current selection if still valid."""
-        seen: list[str] = []
-        for ll in self._lines:
-            if ll.target not in seen:
-                seen.append(ll.target)
-        new_targets = ["ALL"] + seen
-        current = self._targets[self._target_idx] if self._target_idx < len(self._targets) else "ALL"
-        self._targets = new_targets
-        # Preserve selection if the target is still present; otherwise reset to ALL.
-        try:
-            self._target_idx = new_targets.index(current)
-        except ValueError:
-            self._target_idx = 0
-
-    def on_text_submitted(self, id: str, text: str) -> None:
-        if id == "search":
-            self._search_q    = text.strip()
-            self._search_mode = False
-            self._scroll      = 0.0
-            self._copy_row    = 0
-            self._copy_anchor = None
-
-    def on_escape(self):
-        if self._search_mode:
-            self._search_mode = False
-            self._search_q    = ""
-            self._scroll      = 0.0
-            self._copy_row    = 0
-            self._copy_anchor = None
-            return True
-        if self._copy_mode:
-            self._copy_mode   = False
-            self._copy_anchor = None
-            return True
-        if self._search_q:
-            self._search_q    = ""
-            self._scroll      = 0.0
-            self._copy_row    = 0
-            self._copy_anchor = None
-            return True
-        return False
-
-    def on_key(self, key: str, mods: dict) -> None:
-        shift = mods.get("shift", False)
-
-        # ── search mode: host owns the text field ────────────────────────
-        if self._search_mode:
-            return
-
-        # ── copy mode ─────────────────────────────────────────────────────
-        if self._copy_mode:
-            filtered = self._filtered()
-            if key in ("j", "down", "k", "up"):
-                if shift and self._copy_anchor is None:
-                    self._copy_anchor = self._copy_row
-                elif not shift:
-                    self._copy_anchor = None
-                delta = 1 if key in ("j", "down") else -1
-                self._copy_row = max(0, min(len(filtered) - 1, self._copy_row + delta))
-                self._ensure_copy_row_visible()
-            elif key == "y":
-                if filtered:
-                    lo, hi = self._copy_range(len(filtered))
-                    text = "\n".join(filtered[i].as_text() for i in range(lo, hi + 1))
-                    self.emit.copy_to_clipboard(text)
-                    self.emit.info(f"logs: copied {hi - lo + 1} line(s) to clipboard")
-                self._copy_mode   = False
-                self._copy_anchor = None
-            return
-
-        # ── normal mode ───────────────────────────────────────────────────
-        step = ROW_H * 4
-        if key in ("j", "down"):
-            self._scroll += step
-            self._clamp()
-        elif key in ("k", "up"):
-            self._scroll = max(0.0, self._scroll - step)
-        elif key == "g":
-            self._scroll = 0.0
-        elif key == "G":
-            self._scroll = 999_999.0
-            self._clamp()
-        elif key in FILTER_KEY:
-            self._filter_idx = FILTER_KEY[key]
-            self._scroll      = 0.0
-            self._copy_row    = 0
-            self._copy_anchor = None
-        elif key == APP_FILTER_KEY:
-            if len(self._targets) > 1:
-                self._target_idx = (self._target_idx + 1) % len(self._targets)
-                self._scroll      = 0.0
-                self._copy_row    = 0
-                self._copy_anchor = None
-        elif key == "/":
-            self._search_mode = True
-        elif key == "y":
-            filtered = self._filtered()
-            if filtered:
-                self._copy_mode   = True
-                self._copy_row    = min(self._copy_row, len(filtered) - 1)
-                self._copy_anchor = None
-
-    def on_mouse_down(self, _x: float, y: float, button: str, mods: dict = {}) -> None:
-        if button not in ("left", "primary"):
-            return
-        row = self._row_at_y(y)
-        if row is None:
-            return
-        self._copy_mode   = True
-        self._is_dragging = True
-        if mods.get("shift") and self._copy_anchor is not None:
-            self._copy_row = row
-            self.emit.info(f"logs: shift-click extend selection to row {row}")
-        else:
-            self._copy_anchor = row
-            self._copy_row    = row
-            self.emit.info(f"logs: mouse select started at row {row}")
-
-    def on_mouse_move(self, _x: float, y: float, buttons: list, _mods: dict = {}) -> None:
-        if not self._is_dragging or not any(b in buttons for b in ("left", "primary")):
-            self._is_dragging = False
-            return
-        row = self._row_at_y(y)
-        if row is not None:
-            self._copy_row = row
-            self._ensure_copy_row_visible()
-
-    def on_mouse_up(self, _x: float, _y: float, button: str, _mods: dict = {}) -> None:
-        if button in ("left", "primary"):
-            self._is_dragging = False
-
-    def _row_at_y(self, y: float) -> "int | None":
-        list_y = _APPBAR_H
-        if y < list_y or y > list_y + self._viewport_h:
-            return None
-        row = int((y - list_y + self._scroll) / ROW_H)
-        filtered = self._filtered()
-        if 0 <= row < len(filtered):
-            return row
+def _parse(raw: str) -> dict | None:
+    match = LOG_RE.match(raw.rstrip())
+    if not match:
         return None
+    _, time, level, target, message = match.groups()
+    return {"time": time, "level": level, "target": target, "message": message}
 
-    def _copy_range(self, total: int) -> "tuple[int, int]":
-        """Return (lo, hi) inclusive row indices for the current selection."""
-        if total == 0:
-            return 0, -1
-        if self._copy_anchor is None:
-            r = max(0, min(total - 1, self._copy_row))
-            return r, r
-        lo = max(0, min(self._copy_anchor, self._copy_row))
-        hi = min(total - 1, max(self._copy_anchor, self._copy_row))
-        return lo, hi
 
-    def _ensure_copy_row_visible(self) -> None:
-        row_top = self._copy_row * ROW_H
-        row_bot = row_top + ROW_H
-        if row_top < self._scroll:
-            self._scroll = row_top
-        elif row_bot > self._scroll + self._viewport_h:
-            self._scroll = row_bot - self._viewport_h
-        self._clamp()
-
-    def _clamp(self) -> None:
-        filtered = self._filtered()
-        max_s = max(0.0, len(filtered) * ROW_H - self._viewport_h)
-        self._scroll = max(0.0, min(self._scroll, max_s))
-
-    def _scroll_by_delta(self, delta_y: float) -> None:
-        self._scroll = max(0.0, self._scroll - delta_y)
-        self._clamp()
-
-    def on_scroll(self, id: str, offset_y: float) -> None:
-        if id == SCROLL_ID:
-            self._scroll = offset_y
-            self._clamp()
-
-    def on_scroll_delta(self, delta_y: float) -> None:
-        self._scroll_by_delta(delta_y)
-
-    def _filtered(self) -> list[LogLine]:
-        level = FILTERS[self._filter_idx]
-        lines = self._lines if level == "ALL" else [
-            ll for ll in self._lines if ll.level == level
+def _filtered(data: dict) -> list[dict]:
+    lines = data["lines"]
+    if data["filter"] != "ALL":
+        lines = [line for line in lines if line["level"] == data["filter"]]
+    query = data["query"].lower().strip()
+    if query:
+        lines = [
+            line
+            for line in lines
+            if query in line["target"].lower() or query in line["message"].lower()
         ]
-        target = self._targets[self._target_idx] if self._target_idx < len(self._targets) else "ALL"
-        if target != "ALL":
-            lines = [ll for ll in lines if ll.target == target]
-        if not self._search_q:
-            return lines
-        q = self._search_q.lower()
-        return [ll for ll in lines if q in ll.target.lower() or q in ll.message.lower()]
-
-    def _subtitle(self) -> str:
-        """Build AppBar subtitle showing active filter / target / search query."""
-        parts: list[str] = []
-        if self._filter_idx != 0:
-            parts.append(FILTERS[self._filter_idx])
-        target = self._targets[self._target_idx] if self._target_idx < len(self._targets) else "ALL"
-        if target != "ALL":
-            parts.append(f"@{target}")
-        if self._search_q:
-            parts.append(f"/{self._search_q}")
-        return "  ".join(parts) if parts else LOG_PATH
-
-    def _footer_shortcuts(self) -> list[tuple]:
-        if self._copy_mode:
-            return [
-                (["j", "k"], "move"),
-                (["⇧j", "⇧k"], "extend"),
-                (["y"], "copy"),
-                (["esc"], "exit"),
-            ]
-        if self._search_mode:
-            return [
-                (["enter"], "apply"),
-                (["esc"], "cancel"),
-            ]
-        return [
-            (["a", "e", "w", "i", "d"], "level"),
-            (["t"], "target"),
-            (["j", "k"], "scroll"),
-            (["g", "G"], "top/btm"),
-            (["/"], "search"),
-            (["y"], "copy"),
-        ]
-
-    def on_render(self, ctx) -> None:
-        w, h = ctx.w, ctx.h
-        filtered = self._filtered()
-
-        level_badge_fill = {
-            "ERROR": ctx.theme.danger,
-            "WARN":  ctx.theme.warning,
-            "INFO":  ctx.theme.accent,
-            "DEBUG": ctx.theme.text_section,
-            "TRACE": ctx.theme.highlight,
-        }
-
-        # ── L1 header ───────────────────────────────────────────────────────
-        appbar = AppBar(
-            title="Logs",
-            subtitle=self._subtitle() if not self._search_mode else None,
-        )
-        appbar_h = appbar.render_into(ctx, 0.0, 0.0, w)
-
-        # ── Search input (replaces the bar when search mode is active) ──────
-        if self._search_mode:
-            # Draw "/" prefix then the text input inline in the bar area.
-            bar_y = 0.0
-            ctx.rect(0, bar_y, w, _APPBAR_H, ctx.theme.surface)
-            ctx.text(PAD, _APPBAR_H / 2 - TEXT_CAPTION / 2, "/",
-                     size=TEXT_CAPTION, color=ctx.theme.accent, bold=True)
-            search_x = PAD + 14.0
-            submitted = ctx.text_input(
-                "search",
-                x=search_x, y=4.0,
-                w=w - search_x - PAD,
-                placeholder="filter by target or message…",
-                h=_APPBAR_H - 8.0,
-            )
-            ctx.rect(0, _APPBAR_H - 1.0, w, 1.0, ctx.theme.highlight)
-            if submitted is not None:
-                self._search_q    = submitted.strip()
-                self._search_mode = False
-                self._scroll      = 0.0
-                self._copy_row    = 0
-                self._copy_anchor = None
-        else:
-            # ── filter chip buttons (rendered below the AppBar divider) ─────
-            # They live inside the AppBar band — rendered on top after AppBar.
-            chip_x = 56.0   # leave room for "Logs" title
-            for i, label in enumerate(FILTERS):
-                active = i == self._filter_idx
-                if ctx.button(
-                    f"filter_{i}", chip_x, 5.0, CHIP_W, AppBar.BAND_H - 10.0, label,
-                    fill=ctx.theme.accent if active else ctx.theme.highlight,
-                    hover_fill="#a6c5f5" if active else "#45475a",
-                    active_fill="#6ea8f5" if active else "#585b70",
-                    text_color=ctx.theme.bg if active else ctx.theme.muted,
-                    font_size=12.0,
-                    radius=5.0,
-                ):
-                    self._filter_idx = i
-                    self._scroll      = 0.0
-                    self._copy_row    = 0
-                    self._copy_anchor = None
-                chip_x += CHIP_W + CHIP_GAP
-
-            # right-side indicators: active target and/or search query
-            right_parts: list[str] = []
-            active_target = self._targets[self._target_idx] if self._target_idx < len(self._targets) else "ALL"
-            if active_target != "ALL":
-                right_parts.append(f"@{active_target}")
-            if self._search_q:
-                right_parts.append(f"/{self._search_q}")
-            if right_parts:
-                ctx.text(w - PAD, AppBar.BAND_H / 2 - TEXT_HINT / 2,
-                         "  ".join(right_parts),
-                         size=TEXT_HINT, color=ctx.theme.accent, align="right_top")
-
-        # ── L1 footer ───────────────────────────────────────────────────────
-        footer = FooterKeys(self._footer_shortcuts())
-        foot_h = footer.measure(w)
-        foot_y = h - foot_h
-        footer.render(ctx, 0.0, foot_y, w, foot_h)
-
-        # Copy-mode status label (right side of footer)
-        if self._copy_mode:
-            lo, hi = self._copy_range(len(filtered))
-            n_sel = hi - lo + 1
-            label = f"COPY — {n_sel} line{'s' if n_sel != 1 else ''}"
-            ctx.text(w - PAD, foot_y + foot_h / 2 - TEXT_HINT / 2,
-                     label, size=TEXT_HINT, color=COPY_ROW_FG, align="right_top")
-        elif self._search_mode:
-            ctx.text(w - PAD, foot_y + foot_h / 2 - TEXT_HINT / 2,
-                     "SEARCH", size=TEXT_HINT, color=ctx.theme.accent, align="right_top")
-        else:
-            ctx.text(w - PAD, foot_y + foot_h / 2 - TEXT_HINT / 2,
-                     f"{len(filtered)} lines", size=TEXT_HINT, color=ctx.theme.muted,
-                     align="right_top")
-
-        # ── log rows ────────────────────────────────────────────────────────
-        # Custom pixel-level rendering: timestamp column, colored level badges,
-        # target column, message column, copy-mode row highlighting.
-        # No L1 equivalent exists for this dense columnar layout with per-row
-        # background changes and inline badge rendering.
-        list_y = appbar_h
-        list_h = foot_y - list_y
-        self._viewport_h = list_h
-
-        if not filtered:
-            ctx.text(PAD, list_y + 16, "no log entries",
-                     size=TEXT_CAPTION, color=ctx.theme.muted)
-            return
-
-        n        = len(filtered)
-        total_h  = n * ROW_H
-        time_w   = 66.0
-        target_w = 140.0
-        first    = int(self._scroll / ROW_H)
-        count    = int(list_h / ROW_H) + 2
-        sel_lo, sel_hi = self._copy_range(n)
-
-        ctx.begin_scroll(SCROLL_ID, 0, list_y, w, list_h, total_h)
-
-        for i in range(first, min(first + count, n)):
-            ll    = filtered[i]
-            row_y = list_y + i * ROW_H - self._scroll
-
-            in_selection  = self._copy_mode and sel_lo <= i <= sel_hi
-            is_cursor_row = self._copy_mode and i == self._copy_row
-
-            if is_cursor_row:
-                ctx.rect(0, row_y, w, ROW_H, COPY_CURSOR_BG)
-            elif in_selection:
-                ctx.rect(0, row_y, w, ROW_H, COPY_ROW_BG)
-            elif i % 2 == 0:
-                ctx.rect(0, row_y, w, ROW_H, ROW_ALT)
-
-            x      = PAD
-            text_y = row_y + ROW_H / 2 - TEXT_HINT / 2
-            dim_fg = COPY_ROW_FG if in_selection else ctx.theme.muted
-            msg_fg = COPY_ROW_FG if in_selection else ctx.theme.fg
-
-            # timestamp
-            ctx.text(x, text_y, ll.time,
-                     size=TEXT_HINT, color=dim_fg, monospace=True)
-            x += time_w + COL_GAP
-
-            # level badge — fixed-width rect + centred text so all level labels
-            # (ERROR/WARN/INFO/DEBUG) occupy an identical column width.
-            badge_fill = level_badge_fill.get(ll.level, ctx.theme.highlight)
-            badge_fg   = ctx.theme.bg if ll.level in ("ERROR", "WARN", "INFO") else ctx.theme.fg
-            badge_y    = row_y + (ROW_H - BADGE_H) / 2
-            ctx.rect(x, badge_y, BADGE_W, BADGE_H, badge_fill, radius=BADGE_R)
-            ctx.text(x + BADGE_W / 2, badge_y + BADGE_H / 2,
-                     ll.level[:4], size=10.0, color=badge_fg,
-                     bold=True, monospace=True, align="center_center")
-            x += BADGE_ADV
-
-            # target
-            ctx.text(x, text_y, ll.target,
-                     size=TEXT_HINT, color=dim_fg,
-                     max_width=target_w, elide=True)
-            x += target_w + COL_GAP
-
-            # message
-            ctx.text(x, text_y, ll.message,
-                     size=TEXT_HINT, color=msg_fg,
-                     max_width=w - x - PAD, elide=True)
-
-        ctx.end_scroll()
-
-        # scrollbar
-        if total_h > list_h and list_h > 0:
-            thumb_ratio = list_h / total_h
-            thumb_h     = max(20.0, list_h * thumb_ratio)
-            thumb_y     = list_y + (self._scroll / total_h) * list_h
-            thumb_y     = min(thumb_y, list_y + list_h - thumb_h)
-            ctx.rect(w - 4, list_y, 4, list_h, ctx.theme.highlight)
-            ctx.rect(w - 4, thumb_y, 4, thumb_h, ctx.theme.muted)
+    return lines
 
 
-LogsApp().run()
+def _visible_text(data: dict) -> str:
+    lines = _filtered(data)
+    if not lines:
+        return f"No log entries at {data['path']}"
+    offset = min(data["offset"], _max_offset(data))
+    visible = lines[offset : offset + VISIBLE_LINES]
+    return "\n".join(
+        f"{line['time']} {line['level']:<5} {line['target']:<24} {line['message']}"
+        for line in visible
+    )
+
+
+def _max_offset(data: dict) -> int:
+    return max(0, len(_filtered(data)) - VISIBLE_LINES)
+
+
+def _subtitle(data: dict) -> str:
+    parts = [data["filter"]]
+    if data["query"]:
+        parts.append(f"/{data['query']}")
+    if data["follow"]:
+        parts.append("follow")
+    return " · ".join(parts)
+
+
+def _status(data: dict) -> str:
+    return f"{len(_filtered(data))} lines"
