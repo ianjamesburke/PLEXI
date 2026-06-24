@@ -357,12 +357,12 @@ def _build_dial(m: "Metrics", x: float, y: float, w: float, h: float) -> "list":
 
     # Baseline ring
     sw = max(2.5, math.tau * r0 / n * 1.6)
-    cmds.extend(_arc_lines(cx, cy, r0, 0, math.tau, dim(accent, 70), max(3.0, sw), steps=80))
+    cmds.extend(_arc_lines(cx, cy, r0, 0, math.tau, dim(accent, 70), max(3.0, sw), steps=240))
 
     # Waveform spokes
     for i in range(n):
         a = smooth[i]
-        if a <= 0:
+        if a < 0.5:
             continue
         color = m.wave[i][1]
         ang = clock_ang(i + 0.5)
