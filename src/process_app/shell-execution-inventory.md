@@ -35,6 +35,21 @@ to execute shell commands on the user's behalf. The capability prompt is shown
 at first use and remembered per workspace. An undeclared app hits the denial
 path — no subprocess is ever spawned.
 
+### `DrawCommand::OpenUrl` → `open` / `xdg-open`
+
+| Field | Value |
+|---|---|
+| File | `src/process_app/routing.rs` — `ProcessApp::route_command`, `AppRequest::OpenUrl` arm |
+| Class | **app-requested** |
+| Capability gate | `Capability::NetHttp` (`net.http`) plus manifest `allowed_hosts` |
+| Denial path | Drops the request before spawning when capability is absent, URL is malformed, scheme is not HTTP(S), or host is outside `allowed_hosts` |
+| Logging | `log::warn!` on denial; `log::info!` with app id + URL on allow |
+| Test | `open_url_denied_without_net_http`, `open_url_rejects_malformed_url_before_spawning`, `open_url_rejects_hosts_outside_manifest_allowlist` in `src/process_app/routing.rs` |
+
+`OpenUrl` is for browser navigation only. It accepts only HTTP(S) URLs, validates
+the target host with the same allowlist matcher as `HttpRequest`, and never
+executes through a shell.
+
 ---
 
 ## User-authored paths

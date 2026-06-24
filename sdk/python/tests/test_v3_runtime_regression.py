@@ -197,6 +197,19 @@ class TestEffects:
         finally:
             proc.kill()
 
+    def test_open_url(self, tmp_path):
+        app = self._app_with_init_effects(
+            tmp_path,
+            'OpenUrl(url="https://github.com/plexi/plexi/issues/1")',
+        )
+        proc = _spawn_v3_app(app)
+        try:
+            events = _init_and_render(proc)
+            reqs = _find_events(events, "open_url")
+            assert reqs == [{"type": "open_url", "url": "https://github.com/plexi/plexi/issues/1"}]
+        finally:
+            proc.kill()
+
     def test_request_capability(self, tmp_path):
         app = self._app_with_init_effects(tmp_path, 'RequestCapability(name="net.http")')
         proc = _spawn_v3_app(app)

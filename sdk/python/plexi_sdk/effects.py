@@ -51,6 +51,11 @@ class HttpFetch:
 
 
 @dataclass
+class OpenUrl:
+    url: str
+
+
+@dataclass
 class AiMessage:
     role: str
     content: str

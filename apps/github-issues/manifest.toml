@@ -10,7 +10,7 @@ entry = "main.py"
 
 [app.capabilities]
 capabilities = ["net.http"]
-allowed_hosts = ["api.github.com"]
+allowed_hosts = ["api.github.com", "github.com"]
 
 [launch]
 

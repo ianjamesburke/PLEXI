@@ -354,3 +354,63 @@ def test_list_rows_include_alpha_style_issue_metadata():
 
     assert "v1.0" in description
     assert "+2" in description
+
+
+def test_toggle_filter_preserves_selected_issue_when_it_remains_visible():
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues(), "selected": 1})
+
+    app._toggle_filter_from_selection(data)
+
+    assert data["filter_labels"] == ["bug",]
+    assert app._selected_issue(data)["number"] == 5
+
+
+def test_issue_url_uses_api_html_url_when_present():
+    app = _load_app_module()
+    data = {"repo": "owner/repo"}
+    issue = {"number": 7, "html_url": "https://github.com/owner/repo/issues/7"}
+
+    assert app._issue_url(data, issue) == "https://github.com/owner/repo/issues/7"
+
+
+def test_issue_url_falls_back_to_repo_and_number():
+    app = _load_app_module()
+
+    assert (
+        app._issue_url({"repo": "owner/repo"}, {"number": 7})
+        == "https://github.com/owner/repo/issues/7"
+    )
+
+
+def test_new_issue_url_points_to_github_repo():
+    app = _load_app_module()
+
+    assert app._new_issue_url({"repo": "owner/repo"}) == "https://github.com/owner/repo/issues/new"
+
+
+def test_o_key_opens_selected_issue_via_host_open_url(monkeypatch):
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues(), "selected": 0})
+    monkeypatch.setattr(app.state, "get", lambda key, default=None: data.get(key, default))
+
+    effects = app.update(app.KeyEvent(key="o", pressed=True))
+
+    open_urls = [effect for effect in effects if isinstance(effect, app.OpenUrl)]
+    assert len(open_urls) == 1
+    assert open_urls[0].url == "https://github.com/owner/repo/issues/9"
+
+
+def test_n_key_opens_new_issue_via_host_open_url(monkeypatch):
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues()})
+    monkeypatch.setattr(app.state, "get", lambda key, default=None: data.get(key, default))
+
+    effects = app.update(app.KeyEvent(key="n", pressed=True))
+
+    open_urls = [effect for effect in effects if isinstance(effect, app.OpenUrl)]
+    assert len(open_urls) == 1
+    assert open_urls[0].url == "https://github.com/owner/repo/issues/new"

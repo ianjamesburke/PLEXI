@@ -1038,6 +1038,11 @@ pub enum AppRequest {
         #[serde(default)]
         body: Option<String>,
     },
+    /// Open an HTTP(S) URL in the user's default browser.
+    ///
+    /// Capability: `net.http`. The URL host must pass the same
+    /// `allowed_hosts` check used by `HttpRequest`.
+    OpenUrl { url: String },
     /// v3.3 brokered AI call. Requires `ai.query` capability.
     ///
     /// The host routes this to the active Plexi AI backend, appends an

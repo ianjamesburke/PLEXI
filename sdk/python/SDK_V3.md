@@ -146,6 +146,10 @@ class HttpFetch:
     # → http-fetch-effect { url, method, headers: list<tuple<string,string>>, body: option<list<u8>> }
     # adapter converts headers dict to list[tuple[str,str]]
 
+@dataclass
+class OpenUrl:
+    url: str  # host opens an HTTP(S) URL in the default browser after allowlist checks
+
 # ── AI ────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -621,11 +625,15 @@ SDK v3 Python apps run through native `ProcessApp`: the host starts the system P
 - `PlexiEvent::Init` calls `init((width, height), args)` and applies returned effects.
 - `PlexiEvent::Render` dispatches `RenderFrame` through `update(event)`, then calls `view()` and emits a `component_tree` draw command.
 - Input events decode to typed SDK events such as `KeyEvent`, `UiAction`, `UiValueChange`, `FileListResult`, and `FileReadResult`.
-- Effects encode back to existing PGAP host/control commands, including `set_state`, `save_app_state`, `set_title`, `file_list`, `file_read`, `http_request`, and `set_scheduler_mode`.
+- Effects encode back to existing PGAP host/control commands, including `set_state`, `save_app_state`, `set_title`, `file_list`, `file_read`, `http_request`, `open_url`, and `set_scheduler_mode`.
 
 ### File effects
 
 `FileList(path, extensions=[])` and `FileRead(path)` are native ProcessApp host requests. The host requires `fs.read`, resolves the requested path inside `workspace_root`, and returns `FileListResult(entries, error)` or `FileReadResult(content, error)`. Directory listings are sorted with directories first, then files by name.
+
+### URL effects
+
+`OpenUrl(url)` is a native ProcessApp host request for opening HTTP(S) URLs in the user's default browser. The host requires `net.http`, rejects non-HTTP(S) URLs, and applies the manifest `allowed_hosts` matcher before spawning the platform opener.
 
 ### Deferred WASM Python boundary
 

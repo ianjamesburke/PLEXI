@@ -9,7 +9,7 @@ import subprocess
 from urllib.parse import quote
 
 from plexi_sdk import log, state
-from plexi_sdk.effects import HttpFetch, RequestCapability, SetState, SetStatus, SetTitle
+from plexi_sdk.effects import HttpFetch, OpenUrl, RequestCapability, SetState, SetStatus, SetTitle
 from plexi_sdk.events import CapabilityDenied, CapabilityGranted, HttpResponse, KeyEvent, UiValueChange
 from plexi_sdk.ui import (
     AppBar,
@@ -142,6 +142,10 @@ def update(event) -> list:
             data["view"] = "list"
             data["detail"] = None
             return [SetState(data), SetStatus(_status(data))]
+        if key == "o" and data.get("detail"):
+            url = _issue_url(data, data["detail"])
+            if url:
+                return [SetState(data), SetStatus(f"Opening #{data['detail']['number']}"), OpenUrl(url)]
         return []
 
     visible = _visible_issues(data)
@@ -183,6 +187,17 @@ def update(event) -> list:
         data["filter"] = ""
         data["filter_labels"] = []
         data["selected"] = 0
+    elif key == "o" and visible:
+        issue = visible[data["selected"]]
+        url = _issue_url(data, issue)
+        if not url:
+            return []
+        return [SetState(data), SetStatus(f"Opening #{issue['number']}"), OpenUrl(url)]
+    elif key == "n":
+        url = _new_issue_url(data)
+        if not url:
+            return []
+        return [SetState(data), SetStatus("Opening new issue"), OpenUrl(url)]
     else:
         return []
     return [SetState(data), SetStatus(_status(data))]
@@ -364,6 +379,8 @@ def _list_view(data: dict):
                     ("s", "sort"),
                     ("f", "filter"),
                     ("l", "labels"),
+                    ("o", "browser"),
+                    ("n", "new"),
                     ("r", "refresh"),
                     ("c", "clear"),
                 ]
@@ -400,7 +417,7 @@ def _detail_view(data: dict):
         [
             AppBar("Issue Detail", f"#{detail['number']}" if detail else ""),
             body,
-            FooterKeys([("esc", "back")]),
+            FooterKeys([("o", "browser"), ("esc", "back")]),
         ],
         grow=True,
         padding=0,
@@ -552,13 +569,14 @@ def _toggle_filter_from_selection(data: dict) -> None:
     labels = _issue_labels(issue)
     if not labels:
         return
+    keep_number = issue.get("number")
     current = data["filter_labels"][0] if len(data.get("filter_labels") or []) == 1 else None
     if current in labels:
         idx = labels.index(current)
         data["filter_labels"] = [] if idx == len(labels) - 1 else [labels[idx + 1]]
     else:
         data["filter_labels"] = [labels[0]]
-    data["selected"] = _clamp(data["selected"], len(_visible_issues(data)))
+    _select_issue_number(data, keep_number)
 
 
 def _selected_issue(data: dict) -> dict | None:
@@ -566,6 +584,34 @@ def _selected_issue(data: dict) -> dict | None:
     if not visible:
         return None
     return visible[_clamp(data["selected"], len(visible))]
+
+
+def _select_issue_number(data: dict, number: int | None) -> None:
+    visible = _visible_issues(data)
+    if number is not None:
+        for idx, issue in enumerate(visible):
+            if issue.get("number") == number:
+                data["selected"] = idx
+                return
+    data["selected"] = _clamp(data["selected"], len(visible))
+
+
+def _issue_url(data: dict, issue: dict) -> str:
+    existing = str(issue.get("html_url") or "")
+    if existing:
+        return existing
+    repo = str(data.get("repo") or "").strip("/")
+    number = int(issue.get("number") or 0)
+    if not repo or number <= 0:
+        return ""
+    return f"https://github.com/{quote(repo, safe='/')}/issues/{number}"
+
+
+def _new_issue_url(data: dict) -> str:
+    repo = str(data.get("repo") or "").strip("/")
+    if not repo:
+        return ""
+    return f"https://github.com/{quote(repo, safe='/')}/issues/new"
 
 
 def _picker_filtered_labels(data: dict) -> list[str]:

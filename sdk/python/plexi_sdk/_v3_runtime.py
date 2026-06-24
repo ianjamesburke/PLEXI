@@ -367,6 +367,8 @@ class V3AppRuntime:
                 if effect.body is not None:
                     payload["body"] = effect.body.decode("utf-8")
                 _emit(payload)
+            elif isinstance(effect, effects.OpenUrl):
+                _emit({"type": "open_url", "url": effect.url})
             elif isinstance(effect, effects.FileList):
                 _emit({
                     "type": "file_list",

@@ -1067,6 +1067,37 @@ impl ProcessApp {
                         }
                     }).expect("failed to spawn http thread");
             }
+            AppRequest::OpenUrl { url } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::NetHttp)
+                {
+                    log::warn!("ProcessApp[{}]: OpenUrl denied — {reason}", self.type_id);
+                    return;
+                }
+
+                let host = match extract_host_normalized(&url) {
+                    Some(h) => h,
+                    None => {
+                        log::warn!(
+                            "ProcessApp[{}]: OpenUrl denied — malformed URL or unsupported scheme '{url}'",
+                            self.type_id
+                        );
+                        return;
+                    }
+                };
+
+                if !host_allowed_by_manifest(&self.permissions.allowed_hosts, &host) {
+                    log::warn!(
+                        "ProcessApp[{}]: OpenUrl denied — host '{}' not in allowed_hosts",
+                        self.type_id,
+                        host
+                    );
+                    return;
+                }
+
+                log::info!("ProcessApp[{}]: OpenUrl {url}", self.type_id);
+                open_url_in_default_browser(&url);
+            }
             // ── ai.query broker (#284) ─────────────────────────────────────
             AppRequest::AiQuery {
                 request_id,
@@ -2963,6 +2994,43 @@ fn extract_host_normalized(url: &str) -> Option<String> {
     Some(normalized.to_string())
 }
 
+fn host_allowed_by_manifest(allowed_hosts: &[String], host: &str) -> bool {
+    if allowed_hosts.is_empty() {
+        return true;
+    }
+    allowed_hosts
+        .iter()
+        .map(|p| p.to_lowercase().trim_end_matches('.').to_string())
+        .any(|pattern| host_matches(host, &pattern))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn open_url_in_default_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        match std::process::Command::new("open").arg(url).spawn() {
+            Ok(_) => log::debug!("OpenUrl: spawned `open` for {url}"),
+            Err(e) => log::error!("OpenUrl: `open` failed for {url}: {e}"),
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        match std::process::Command::new("xdg-open").arg(url).spawn() {
+            Ok(_) => log::debug!("OpenUrl: spawned xdg-open for {url}"),
+            Err(e) => log::error!("OpenUrl: xdg-open failed for {url}: {e}"),
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        log::warn!("OpenUrl: unsupported platform for {url}");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn open_url_in_default_browser(url: &str) {
+    log::warn!("OpenUrl: unsupported wasm host for {url}");
+}
+
 /// Check if `host` matches `pattern`.
 /// `host` must already be normalized (lowercase, no trailing dot).
 /// Supports exact match and `*.domain.com` wildcards.
@@ -3177,5 +3245,64 @@ mod allowed_hosts_tests {
         // localhost must be explicit
         assert!(!host_matches("localhost", "127.0.0.1"));
         assert!(host_matches("localhost", "localhost"));
+    }
+
+    #[test]
+    fn host_allowed_by_manifest_uses_existing_http_allowlist_rules() {
+        assert!(host_allowed_by_manifest(&[], "example.com"));
+        assert!(host_allowed_by_manifest(
+            &[String::from("github.com")],
+            "github.com"
+        ));
+        assert!(host_allowed_by_manifest(
+            &[String::from("*.github.com")],
+            "api.github.com"
+        ));
+        assert!(!host_allowed_by_manifest(
+            &[String::from("github.com")],
+            "example.com"
+        ));
+    }
+
+    #[test]
+    fn open_url_denied_without_net_http() {
+        let (mut app, _tx) =
+            ProcessApp::new_for_test(42, crate::app::permissions::AppPermissions::default());
+
+        app.route_command(AppRequest::OpenUrl {
+            url: "https://github.com/plexi/plexi/issues/1".to_string(),
+        });
+
+        assert!(app.pending_commands.is_empty());
+        assert!(app.outbound_events.is_empty());
+    }
+
+    #[test]
+    fn open_url_rejects_malformed_url_before_spawning() {
+        let mut perms = crate::app::permissions::AppPermissions::default();
+        perms.capabilities.insert(Capability::NetHttp);
+        let (mut app, _tx) = ProcessApp::new_for_test(42, perms);
+
+        app.route_command(AppRequest::OpenUrl {
+            url: "file:///tmp/nope".to_string(),
+        });
+
+        assert!(app.pending_commands.is_empty());
+        assert!(app.outbound_events.is_empty());
+    }
+
+    #[test]
+    fn open_url_rejects_hosts_outside_manifest_allowlist() {
+        let mut perms = crate::app::permissions::AppPermissions::default();
+        perms.capabilities.insert(Capability::NetHttp);
+        perms.allowed_hosts = vec!["github.com".to_string()];
+        let (mut app, _tx) = ProcessApp::new_for_test(42, perms);
+
+        app.route_command(AppRequest::OpenUrl {
+            url: "https://example.com/".to_string(),
+        });
+
+        assert!(app.pending_commands.is_empty());
+        assert!(app.outbound_events.is_empty());
     }
 }
