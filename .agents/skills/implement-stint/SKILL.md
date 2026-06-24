@@ -1,6 +1,6 @@
 ---
 name: implement-stint
-description: "Phase 1 of the PLEXI ship pipeline when work is selected from .stint. Resolves a stint task, starts and commits the task timing on alpha, branches a feature worktree from that claim commit, implements the task, pushes the branch, then hands off to /open-pr."
+description: "Phase 1 of the PLEXI ship pipeline when work is selected from .stint. Resolves a stint task, claims it (stint owns state — no git commit needed), branches a feature worktree from alpha HEAD, implements the task, pushes the branch, then hands off to /open-pr."
 risk: medium
 source: local
 date_added: "2026-06-10"
@@ -12,8 +12,8 @@ Use this when the requested work is a `.stint` task, or when no specific GitHub 
 
 | Invocation | Behavior |
 |---|---|
-| `/implement-stint` | Run `stint next`, pick the first ready task, claim it on alpha, commit the claim, then create a worktree from that commit |
-| `/implement-stint <task-id>` | Use that task directly, claim it on alpha, commit the claim, then create a worktree from that commit |
+| `/implement-stint` | Run `stint next`, pick the first ready task, claim it (`stint claim` owns state), then create a worktree from alpha HEAD |
+| `/implement-stint <task-id>` | Use that task directly, claim it, then create a worktree from alpha HEAD |
 
 Output on successful implementation:
 
@@ -24,13 +24,12 @@ Files changed: <N>
 Pipeline: pushed; invoking /open-pr inline
 ```
 
-This skill is not complete when the worktree exists. Completion means the task was claimed on alpha, the claim was committed, the implementation branch was created from that commit, the task was implemented, committed, pushed, and handed to `/open-pr`.
+This skill is not complete when the worktree exists. Completion means the task was claimed (`stint claim` owns state — no git commit), the implementation branch was created from alpha HEAD, the task was implemented, committed, pushed, and handed to `/open-pr`.
 
 ## Non-Negotiables
 
-- Run `stint claim <task-id>` from alpha before creating a fresh worktree.
-- Immediately commit only the resulting `.stint/tasks/<task-id>-*.md` change directly to alpha with `git commit .stint/tasks/<task-id>-*.md -m "chore: claim stint <task-id>"`.
-- Create the implementation worktree from that alpha claim commit.
+- Run `stint claim <task-id>` from alpha before creating a fresh worktree. `stint` owns task state — no git commit.
+- Create the implementation worktree from alpha HEAD immediately after claiming.
 - Default validation should use an isolated PR build. Do not install from a feature worktree, and do not replace alpha/main as proof of the change. Only mark install skippable when tests and scenes fully cover the behavior.
 - Before claiming, check whether a matching local worktree or branch already exists. If it is dirty, ahead, or the user is clearly resuming, use resume mode instead of creating a new worktree.
 - Name the Plexi pane before coding:
@@ -136,18 +135,13 @@ Stop if the linked issue is closed or already labeled `in progress`, unless this
 
 Build a short slug from the task title: lowercase, ASCII, words separated by `-`, no punctuation, max about 8 words.
 
-For fresh work, claiming and committing are one uninterrupted step from alpha. Do not do more discovery between `stint claim` and the claim commit:
+For fresh work, claim then immediately create the worktree. `stint` owns task state; no git commit is needed:
 
 ```bash
 stint claim <task-id>
-git status --short
-git diff -- .stint/tasks/<task-id>-*.md
-git commit .stint/tasks/<task-id>-*.md -m "chore: claim stint <task-id>"
 ```
 
-The claim commit must contain only that task file. If `git status --short` shows any other change, stop before committing. Do not include code, docs, config, generated files, or unrelated task updates in the claim commit.
-
-Create the worktree from the alpha claim commit:
+Create the worktree from alpha HEAD:
 
 ```bash
 wtp add -b feature/stint-<task-id>-<short-slug> HEAD
@@ -184,7 +178,7 @@ Run `stint check` in the implementation worktree. Do not run `stint claim` there
 If the implementation worktree already exists:
 
 - Check the canonical task file on alpha. If it already has `status: in-progress` and `started_at`, keep it.
-- If the canonical task file is still backlog or missing `started_at`, run `stint claim <task-id>` on alpha and immediately commit only that `.stint/tasks/<task-id>-*.md` change.
+- If the task is still unclaimed, run `stint claim <task-id>` on alpha. No git commit needed.
 - Preserve dirty implementation work before rebasing or merging the existing worktree onto the claim commit.
 - Keep setup reads short: `status --short --branch`, `diff --stat`, and targeted `rg` before full diffs or issue bodies.
 - Continue implementation in the existing worktree.
