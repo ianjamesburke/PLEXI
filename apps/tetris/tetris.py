@@ -15,6 +15,7 @@ ROWS = 20
 COLS = 10
 TIMER_ID = 1
 TICK_MS = 100
+HARD_DROP_KEYS = ("space", "enter", "return")
 
 PIECES = {
     "I": {
@@ -105,6 +106,7 @@ def _initial() -> dict:
         "alive": True,
         "paused": False,
         "fall_ticks": 0,
+        "hard_drop_held": False,
     }
 
 
@@ -119,6 +121,7 @@ def _game() -> dict:
         data[key] = int(data[key])
     data["alive"] = bool(data["alive"])
     data["paused"] = bool(data["paused"])
+    data["hard_drop_held"] = bool(data["hard_drop_held"])
     return data
 
 
@@ -152,9 +155,14 @@ def update(event) -> list:
             data = _soft_drop(data, score=False)
         return _set(data)
 
-    if not isinstance(event, KeyEvent) or not event.pressed:
+    if not isinstance(event, KeyEvent):
         return []
     key = event.key
+    if not event.pressed:
+        if key in HARD_DROP_KEYS and data["hard_drop_held"]:
+            data["hard_drop_held"] = False
+            return _set(data)
+        return []
     if key == "r":
         data = _initial()
         log.info("tetris: restarted")
@@ -172,7 +180,10 @@ def update(event) -> list:
         return _set(_soft_drop(data, score=True))
     if key in ("up", "k", "x"):
         return _set(_rotate(data))
-    if key in ("space", "enter", "return"):
+    if key in HARD_DROP_KEYS:
+        if data["hard_drop_held"]:
+            return []
+        data["hard_drop_held"] = True
         while _valid(data, _shift(data["current"], dr=1)):
             data["current"]["row"] += 1
             data["score"] += 2
