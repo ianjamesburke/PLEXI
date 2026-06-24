@@ -4,7 +4,7 @@ import base64
 import importlib
 import json
 from dataclasses import asdict, fields, is_dataclass
-from typing import Any
+from typing import Any, cast
 
 import plexi_sdk as sdk
 
@@ -83,7 +83,7 @@ def _encode_effect(effect: Any) -> dict[str, Any]:
         raise TypeError(f"Unknown effect type: {type(effect).__name__}")
     if getattr(effect_types, type(effect).__name__, None) is not type(effect):
         raise TypeError(f"Unknown effect type: {type(effect).__name__}")
-    payload = _jsonable(asdict(effect))
+    payload = _jsonable(asdict(cast(Any, effect)))
     payload["type"] = type(effect).__name__
     return payload
 
@@ -104,10 +104,10 @@ def _decode_event(payload: dict[str, Any]) -> Any:
     event_type = payload.get("type")
     if not isinstance(event_type, str):
         raise TypeError("event payload missing string 'type'")
-    cls = getattr(event_types, event_type, None)
+    cls: Any = getattr(event_types, event_type, None)
     if cls is None or not is_dataclass(cls):
         raise TypeError(f"Unknown event type: {event_type}")
-    kwargs = {f.name: payload[f.name] for f in fields(cls) if f.name in payload}
+    kwargs = {f.name: payload[f.name] for f in fields(cast(Any, cls)) if f.name in payload}
     if cls is event_types.KeyEvent and isinstance(kwargs.get("modifiers"), dict):
         kwargs["modifiers"] = event_types.Modifiers(**kwargs["modifiers"])
     if cls is event_types.Resize:
@@ -146,7 +146,7 @@ def _encode_uitree(root: Any) -> dict[str, Any]:
         elif hasattr(node, "to_node"):
             data = node.to_node()
         elif is_dataclass(node):
-            data = asdict(node)
+            data = asdict(cast(Any, node))
             data["type"] = type(node).__name__
         else:
             raise TypeError(f"Unknown UINode type: {type(node).__name__}")

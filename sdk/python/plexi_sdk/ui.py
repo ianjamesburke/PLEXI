@@ -5,7 +5,7 @@ theme, input, and rendering.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Protocol, Union, runtime_checkable
+from typing import List, Optional, Protocol, Union, cast, runtime_checkable
 
 
 @runtime_checkable
@@ -1592,14 +1592,14 @@ class FormField(Component):
 
     def to_node(self) -> dict:
         req_suffix = " *" if self.required else ""
-        return Column(
+        return cast(dict, Column(
             [
                 Label(f"{self.label}{req_suffix}", tone="hint"),
                 self._input,
             ],
             gap=self.LABEL_GAP,
             padding=0,
-        ).to_node()
+        ).to_node())
 
 
 @dataclass
