@@ -32,8 +32,14 @@ PALETTE = [
 _runtime: dict | None = None
 
 
+def _canvas_size() -> tuple[float, float]:
+    w = sdk.canvas_width or sdk.pane_width or 640.0
+    h = sdk.canvas_height or sdk.pane_height or 360.0
+    return max(1.0, float(w)), max(1.0, float(h))
+
+
 def _initial(count: int = 10) -> dict:
-    w, h = sdk.canvas_width, sdk.canvas_height
+    w, h = _canvas_size()
     rng = random.Random(7)
     balls = []
     for idx in range(max(1, min(count, MAX_BALLS))):
@@ -63,7 +69,7 @@ def _add_ball(x: float | None = None, y: float | None = None) -> None:
     if len(data["balls"]) >= MAX_BALLS:
         return
     rng = random.Random()
-    w, h = sdk.canvas_width, sdk.canvas_height
+    w, h = _canvas_size()
     radius = rng.uniform(14.0, 36.0)
     bx = x if x is not None else rng.uniform(radius, max(radius + 1, w - radius))
     by = y if y is not None else rng.uniform(radius, max(radius + 1, h * 0.3))
@@ -145,7 +151,7 @@ def update(event) -> list:
 
 
 def _step(data: dict, dt: float = TARGET_DT) -> dict:
-    w, h = sdk.canvas_width, sdk.canvas_height
+    w, h = _canvas_size()
     balls = data["balls"]
     for ball in balls:
         ball["vy"] += GRAVITY * dt
@@ -212,7 +218,7 @@ def _collide(a: dict, b: dict) -> None:
 
 def view():
     data = _sim()
-    w, h = sdk.canvas_width, sdk.canvas_height
+    w, h = _canvas_size()
     return Column(
         [
             Canvas(_draw(data, w, h), width=w, height=100.0, grow=True),

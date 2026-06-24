@@ -61,3 +61,22 @@ def test_button_actions_decimal_backspace_and_clear() -> None:
     _set_state(dict(calc.DEFAULT_STATE, display="123", fresh=False))
     effects = calc.update(KeyEvent("backspace"))
     assert _state_effect(effects)["display"] == "12"
+
+
+def test_view_serializes_button_rows_as_component_tree_stacks() -> None:
+    _set_state(dict(calc.DEFAULT_STATE))
+
+    root = calc.view().to_node()
+
+    def walk(node: dict) -> list[dict]:
+        children = []
+        for child in node.get("children", []):
+            children.extend(walk(child))
+        return [node, *children]
+
+    nodes = walk(root)
+    assert all(node.get("type") != "row" for node in nodes)
+    assert any(
+        node.get("type") == "stack" and node.get("direction") == "horizontal"
+        for node in nodes
+    )

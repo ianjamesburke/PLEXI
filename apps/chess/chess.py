@@ -20,6 +20,7 @@ from plexi_sdk.ui import (
 )
 
 MIN_CELL = 24.0
+FIRST_FRAME_CHROME_RESERVE = 180.0
 
 PIECE_GLYPHS = {
     "K": "♔",
@@ -223,8 +224,12 @@ def view():
 
 
 def _canvas_size() -> tuple[float, float]:
-    w = sdk.canvas_width or sdk.pane_width or 480.0
-    h = sdk.canvas_height or sdk.pane_height or 480.0
+    pane_w = sdk.pane_width or 480.0
+    pane_h = sdk.pane_height or 480.0
+    w = sdk.canvas_width or pane_w
+    h = sdk.canvas_height or pane_h
+    if sdk.pane_height and h >= sdk.pane_height - 1.0:
+        h = max(MIN_CELL * 8, sdk.pane_height - FIRST_FRAME_CHROME_RESERVE)
     return max(1.0, float(w)), max(1.0, float(h))
 
 

@@ -132,8 +132,8 @@ fn spawn_and_collect_frame(
         theme: render_colors().to_theme_map(),
         args: vec![],
         state: seed_state,
-        width: 0.0,
-        height: 0.0,
+        width: width as f32,
+        height: height as f32,
     };
     let init_json =
         serde_json::to_string(&init).map_err(|e| format!("failed to serialize Init: {e}"))?;
@@ -178,8 +178,8 @@ fn spawn_and_collect_frame(
             w: width as f32,
             h: height as f32,
         },
-        canvas_width: 0.0,
-        canvas_height: 0.0,
+        canvas_width: width as f32,
+        canvas_height: height as f32,
     };
     let render_json =
         serde_json::to_string(&render).map_err(|e| format!("failed to serialize Render: {e}"))?;

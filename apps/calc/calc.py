@@ -30,14 +30,13 @@ class ButtonRow(Component):
 
     def to_node(self) -> dict:
         return {
-            "type": "row",
+            "type": "stack",
+            "direction": "horizontal",
             "children": [
                 Button(label, f"calc:key:{label}", style=_button_style(label)).to_node()
                 for label in self.labels
             ],
             "gap": 8.0,
-            "align": "start",
-            "grow": False,
         }
 
 

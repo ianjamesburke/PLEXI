@@ -55,6 +55,19 @@ def test_init_uses_continuous_scheduler_not_timers() -> None:
     assert not any(type(effect).__name__ == "SetTimer" for effect in effects)
 
 
+def test_initial_positions_use_pane_size_before_canvas_feedback() -> None:
+    sdk.pane_width = 640.0
+    sdk.pane_height = 360.0
+    sdk.canvas_width = 0.0
+    sdk.canvas_height = 0.0
+
+    data = balls._initial(6)
+
+    assert all(ball["x"] > ball["r"] for ball in data["balls"])
+    assert any(ball["x"] > 100.0 for ball in data["balls"])
+    assert any(ball["y"] > 80.0 for ball in data["balls"])
+
+
 def test_resize_updates_bounds() -> None:
     _reset(3)
     # Simulate what the runtime does: set SDK vars before dispatching Resize

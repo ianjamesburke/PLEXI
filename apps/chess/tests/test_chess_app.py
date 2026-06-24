@@ -62,6 +62,8 @@ def test_keyboard_selects_and_moves_piece() -> None:
 
 def test_view_returns_canvas_tree() -> None:
     _with_state(chess._initial())
+    sdk.pane_width = 640.0
+    sdk.pane_height = 360.0
     sdk.canvas_width = 640.0
     sdk.canvas_height = 360.0
 
@@ -76,11 +78,16 @@ def test_view_returns_canvas_tree() -> None:
         for cmd in canvas["commands"]
     )
     assert canvas["width"] == 640.0
-    assert canvas["height"] == 360.0
+    assert canvas["height"] == 192.0
+    _ox, _oy, cell, board = chess._board_geometry(canvas["width"], canvas["height"])
+    assert board <= canvas["height"]
+    assert cell >= chess.MIN_CELL
 
 
 def test_drag_moves_piece_using_pane_sized_board() -> None:
     _with_state(chess._initial())
+    sdk.pane_width = 640.0
+    sdk.pane_height = 360.0
     sdk.canvas_width = 640.0
     sdk.canvas_height = 360.0
     ox, oy, cell, _board = chess._board_geometry()
