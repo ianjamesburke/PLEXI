@@ -1,85 +1,5 @@
 use std::io::{self, Write};
 
-pub(super) fn ensure_plexi_sdk() -> bool {
-    let check = std::process::Command::new("python3")
-        .args(["-c", "import plexi_sdk"])
-        .stderr(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .status();
-
-    match check {
-        Ok(s) if s.success() => {
-            log::info!("ensure_plexi_sdk: already importable");
-            return true;
-        }
-        Err(e) => {
-            log::warn!("ensure_plexi_sdk: python3 not found: {e}");
-            eprintln!(
-                "warning: python3 not found — install plexi-sdk manually: pip install plexi-sdk"
-            );
-            return false;
-        }
-        Ok(_) => {}
-    }
-
-    log::info!("ensure_plexi_sdk: plexi_sdk not importable, attempting install");
-
-    // Try uv pip install first; suppress output so noisy venv warnings don't surface.
-    let uv_ok = std::process::Command::new("uv")
-        .args(["pip", "install", "plexi-sdk"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if uv_ok {
-        println!("Installed plexi-sdk (via uv).");
-        log::info!("ensure_plexi_sdk: installed via uv pip");
-        return true;
-    }
-
-    // Fallback: python3 -m pip to guarantee the same environment that python3 checked.
-    match std::process::Command::new("python3")
-        .args(["-m", "pip", "install", "plexi-sdk"])
-        .status()
-    {
-        Ok(s) if s.success() => {
-            println!("Installed plexi-sdk (via pip).");
-            log::info!("ensure_plexi_sdk: installed via python3 -m pip");
-            true
-        }
-        Ok(_) => {
-            eprintln!(
-                "warning: could not install plexi-sdk — install manually: pip install plexi-sdk"
-            );
-            log::warn!("ensure_plexi_sdk: python3 -m pip install failed");
-            false
-        }
-        Err(e) => {
-            eprintln!("warning: pip not available ({e}) — install manually: pip install plexi-sdk");
-            log::warn!("ensure_plexi_sdk: python3 -m pip not available: {e}");
-            false
-        }
-    }
-}
-
-/// Returns true if the app at `app_dir` has a Python entry point (entry ending in `.py`).
-pub(super) fn app_is_python(app_dir: &std::path::Path) -> bool {
-    let Ok(s) = std::fs::read_to_string(app_dir.join("manifest.toml")) else {
-        return false;
-    };
-    let Ok(manifest) = toml::from_str::<toml::Value>(&s) else {
-        return false;
-    };
-    let entry = manifest
-        .get("app")
-        .and_then(|a| a.get("entry"))
-        .and_then(|e| e.as_str())
-        .unwrap_or("");
-    entry.ends_with(".py")
-}
-
 /// Detect the channel config dir name from the running binary name.
 pub(super) fn app_init_config_dir() -> String {
     crate::config::config_dir()
@@ -195,7 +115,6 @@ pub fn app_init(
                 println!("  cargo build --release");
                 println!("  plexi app open {}", app_dir.display());
             } else {
-                ensure_plexi_sdk();
                 if open {
                     let path_str = app_dir.to_string_lossy().to_string();
                     log::info!("app_init: opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
@@ -249,6 +168,7 @@ pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
 
     let mut cmd = std::process::Command::new("uv");
     cmd.args(["run", "pytest", "tests/"]).current_dir(app_dir);
+    cmd.env("PYTHONPATH", crate::config::build_pythonpath(None));
     if snapshot {
         cmd.env("PLEXI_UPDATE_SNAPSHOTS", "1");
     }
@@ -940,9 +860,6 @@ fn app_install_with_pin_inner(
         "Installed '{app_id}' v{app_version} from {}.",
         src.display()
     );
-    if app_is_python(&dest) {
-        ensure_plexi_sdk();
-    }
     println!("Run `plexi app open {app_id}` to launch it.");
     0
 }
