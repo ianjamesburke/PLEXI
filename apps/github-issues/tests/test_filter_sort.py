@@ -98,7 +98,7 @@ def test_sort_cycle_uses_documented_order():
         order.append(app.SORT_LABELS[mode])
         mode = app._next_sort_mode(mode)
 
-    assert order == ["created ↓", "created ↑", "number ↓", "number ↑"]
+    assert order == ["created desc", "created asc", "number desc", "number asc"]
 
 
 def test_issue_list_limit_is_large_enough_for_active_repos():
@@ -269,3 +269,49 @@ def test_fuzzy_match_substring():
     assert app._fuzzy_match("enhance", "enhancement")
     assert app._fuzzy_match("p1", "P1")
     assert not app._fuzzy_match("p1", "P2")
+
+
+def test_headers_are_unauthenticated_without_token(monkeypatch):
+    app = _load_app_module()
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    headers = app._headers()
+
+    assert "Authorization" not in headers
+
+
+def test_headers_use_github_token_when_available(monkeypatch):
+    app = _load_app_module()
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+
+    headers = app._headers()
+
+    assert headers["Authorization"] == "Bearer test-token"
+
+
+def test_picker_toggle_and_apply_filters_by_label():
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    data.update({"issues": _issues(), "view": "picker"})
+
+    effects = app._handle_picker_key(data, "space")
+    assert data["picker_staged"] == ["bug"]
+    assert effects
+
+    app._handle_picker_key(data, "enter")
+
+    assert data["view"] == "list"
+    assert data["filter_labels"] == ["bug"]
+    assert [issue["number"] for issue in app._visible_issues(data)] == [5, 1]
+
+
+def test_list_rows_include_alpha_style_issue_metadata():
+    app = _load_app_module()
+    issue = _many_label_issues()[0]
+
+    description = app._issue_description(issue, {"v1.0"})
+
+    assert "v1.0" in description
+    assert "+2" in description
