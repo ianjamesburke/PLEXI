@@ -33,8 +33,6 @@ wasm-fixtures:
     cp target/wasm32-wasip1/release/audio_synth.wasm tests/wasm-fixtures/audio-synth.wasm
     cd apps/wasm-poc/pong && cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/pong.wasm tests/wasm-fixtures/pong.wasm
-    cd apps/wasm-poc/breakout && cargo component build --release --target wasm32-wasip2
-    cp target/wasm32-wasip1/release/breakout.wasm tests/wasm-fixtures/breakout.wasm
     cd apps/wasm-poc/counter && cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/counter.wasm tests/wasm-fixtures/counter.wasm
 

@@ -658,7 +658,7 @@ mod open_cli_tests {
         // Use the real fixture — a stub `\0asm` blob is not a valid WASM component
         // and wasmtime will reject it before the socket payload is ever sent.
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/wasm-fixtures/breakout.wasm");
+            .join("tests/wasm-fixtures/sysmon.wasm");
         let app_id = fixture.file_stem().and_then(|s| s.to_str()).unwrap_or("wasm");
         let workspace_root = fixture.parent().expect("fixture parent");
 
@@ -679,7 +679,7 @@ mod open_cli_tests {
         store.save();
 
         let wasm_path_str = fixture.to_string_lossy().into_owned();
-        let args = vec!["--blocks".to_string(), "96".to_string()];
+        let args = vec!["--sample".to_string(), "96".to_string()];
 
         let (code, payload) =
             capture_spawn_payload(|| open_cli(&wasm_path_str, &args, None, None, None));
@@ -687,7 +687,7 @@ mod open_cli_tests {
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "spawn_pane");
         assert_eq!(payload["path"], wasm_path_str);
-        assert_eq!(payload["args"], serde_json::json!(["--blocks", "96"]));
+        assert_eq!(payload["args"], serde_json::json!(["--sample", "96"]));
     }
 
     #[test]

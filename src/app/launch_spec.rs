@@ -174,15 +174,15 @@ mod tests {
 
     #[test]
     fn from_spawn_pane_preserves_path_args() {
-        let request = spawn_pane("", Some("/tmp/breakout.wasm"), &["--blocks", "96"]);
+        let request = spawn_pane("", Some("/tmp/app.wasm"), &["--sample", "96"]);
 
         let spec = PaneLaunchSpec::from_spawn_pane(&request).expect("valid launch spec");
 
         assert_eq!(
             spec.target,
-            PaneLaunchTarget::Path("/tmp/breakout.wasm".into())
+            PaneLaunchTarget::Path("/tmp/app.wasm".into())
         );
-        assert_eq!(spec.args, ["--blocks", "96"]);
+        assert_eq!(spec.args, ["--sample", "96"]);
     }
 
     #[test]
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn from_spawn_pane_rejects_app_id_and_path_conflict() {
-        let request = spawn_pane("breakout", Some("/tmp/breakout.wasm"), &[]);
+        let request = spawn_pane("demo", Some("/tmp/app.wasm"), &[]);
 
         let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
 

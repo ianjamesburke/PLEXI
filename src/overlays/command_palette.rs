@@ -186,19 +186,6 @@ fn palette_command_matches(query: &str) -> Vec<PaletteCommand> {
         .collect()
 }
 
-#[cfg(test)]
-fn builtin_palette_app_ids(query: &str) -> Vec<&'static str> {
-    BUILTIN_APPS
-        .iter()
-        .filter(|entry| crate::release::feature_enabled(entry.gate))
-        .filter(|entry| {
-            query.is_empty()
-                || searchable_text(&[entry.name, entry.id, entry.description]).contains(query)
-        })
-        .map(|entry| entry.id)
-        .collect()
-}
-
 struct BuiltinPaletteApp {
     id: &'static str,
     name: &'static str,
@@ -214,18 +201,7 @@ const BUILTIN_APPS: &[BuiltinPaletteApp] = &[
         description: "Host-native AI chat for this workspace",
         gate: crate::release::ReleaseFeature::Assistant,
     },
-    BuiltinPaletteApp {
-        id: "breakout",
-        name: "Breakout Benchmark",
-        description: "WASM GPU surface benchmark with configurable brick count",
-        gate: crate::release::ReleaseFeature::WasmBenchmarks,
-    },
 ];
-
-fn breakout_fixture_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/wasm-fixtures/breakout.wasm")
-}
 
 pub(crate) fn app_metadata_chips(
     running_in_background: bool,
@@ -1280,34 +1256,6 @@ impl PlexiApp {
                     log::info!("assistant: palette launch blocked by stable release gate");
                 }
             }
-            "breakout" => {
-                if !crate::release::feature_enabled(crate::release::ReleaseFeature::WasmBenchmarks)
-                {
-                    log::info!("breakout: palette launch blocked by release gate");
-                    return;
-                }
-                let fixture = breakout_fixture_path();
-                if !fixture.is_file() {
-                    log::error!(
-                        "breakout: fixture missing at {}; run `just wasm-fixtures`",
-                        fixture.display()
-                    );
-                    return;
-                }
-                let workspace_root = self
-                    .palette_workspace_root
-                    .clone()
-                    .or_else(dirs::home_dir)
-                    .unwrap_or_else(|| std::path::PathBuf::from("."));
-                match self.open_wasm_app_pane("breakout", &fixture, workspace_root, Vec::new()) {
-                    Ok(pane_id) => {
-                        log::info!("breakout: palette launched WASM pane {pane_id}");
-                    }
-                    Err(e) => {
-                        log::error!("breakout: palette launch failed: {e}");
-                    }
-                }
-            }
             other => log::warn!("palette: unknown builtin app id '{other}'"),
         }
     }
@@ -1453,19 +1401,6 @@ mod tests {
                 entry.search_text.to_lowercase(),
                 "palette command search text must be pre-lowercased"
             );
-        }
-    }
-
-    #[test]
-    fn wasm_benchmark_builtin_is_palette_searchable_only_on_alpha_tier() {
-        {
-            let _guard = crate::config::set_test_channel("beta");
-            assert!(!builtin_palette_app_ids("breakout").contains(&"breakout"));
-        }
-        {
-            let _guard = crate::config::set_test_channel("pr-2300");
-            assert!(builtin_palette_app_ids("breakout").contains(&"breakout"));
-            assert!(builtin_palette_app_ids("benchmark").contains(&"breakout"));
         }
     }
 

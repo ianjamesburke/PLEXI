@@ -1403,9 +1403,9 @@ mod tests {
             "plexi",
             "app",
             "open",
-            "tests/wasm-fixtures/breakout.wasm",
+            "tests/wasm-fixtures/sysmon.wasm",
             "--",
-            "--blocks",
+            "--sample",
             "96",
         ])
         .unwrap();
@@ -1423,9 +1423,9 @@ mod tests {
         };
         assert_eq!(
             type_id.as_deref(),
-            Some("tests/wasm-fixtures/breakout.wasm")
+            Some("tests/wasm-fixtures/sysmon.wasm")
         );
-        assert_eq!(extra_args, ["--blocks", "96"]);
+        assert_eq!(extra_args, ["--sample", "96"]);
     }
 
     #[test]

@@ -1,0 +1,14 @@
+schema_version = 1
+
+[app]
+id = "breakout"
+type = "app"
+name = "Breakout"
+version = "0.1.0"
+description = "Classic brick-breaking arcade game with paddle, ball, and colorful brick grid."
+entry = "breakout.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
