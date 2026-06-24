@@ -282,8 +282,12 @@ impl RenderSession {
                 continue;
             };
 
-            // This frame has a list_view — host intercepts j/k/enter
-            self.list_view_intercepts_nav = true;
+            // This frame has a ListView. It owns j/k/enter only when no
+            // TextEdit has focus; otherwise those keys are text input.
+            let list_view_can_intercept_nav = !self.text_edit_focus_ctx.any_has_focus;
+            if list_view_can_intercept_nav {
+                self.list_view_intercepts_nav = true;
+            }
 
             let list_w = if *w > 0.0 { *w } else { pane_rect.width() };
             let list_h = if *h > 0.0 { *h } else { pane_rect.height() - y };
@@ -348,7 +352,7 @@ impl RenderSession {
                 }
             }
 
-            if handled_nav || *loading || items.is_empty() {
+            if handled_nav || *loading || items.is_empty() || !list_view_can_intercept_nav {
                 continue;
             }
 

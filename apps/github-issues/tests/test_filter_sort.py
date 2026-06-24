@@ -177,6 +177,7 @@ def test_chip_selection_priority_labels_before_rest():
 
     assert "bug" in chip_labels
     assert "P0" in chip_labels
+    assert chips[0].color == app.COLOR_DANGER
 
 
 def test_chip_selection_overflow_count():
@@ -354,6 +355,72 @@ def test_list_rows_include_alpha_style_issue_metadata():
 
     assert "v1.0" in description
     assert "+2" in description
+
+
+def test_issue_rows_emit_host_list_view_badges_and_colored_chips():
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    data.update({"filter_labels": ["P0"]})
+
+    rows = app._issue_rows(data, [_many_label_issues()[0]])
+
+    assert rows[0]["type"] == "row"
+    assert rows[0]["leading"] == {
+        "variant": "badge",
+        "label": "#10",
+        "color": app.COLOR_ACCENT,
+    }
+    assert rows[0]["chips"][0] == {"label": "P0", "color": app.COLOR_DANGER}
+    assert rows[0]["chips"][-1] == {"label": "+2", "color": app.COLOR_MUTED}
+
+
+def test_slash_toggles_filter_mode_without_clearing_query(monkeypatch):
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "filter": "bug", "filter_active": False})
+    monkeypatch.setattr(app.state, "get", lambda key, default=None: data.get(key, default))
+
+    effects = app.update(app.KeyEvent(key="/", pressed=True))
+    next_state = [effect for effect in effects if isinstance(effect, app.SetState)][0].data
+
+    assert next_state["filter_active"] is True
+    assert next_state["filter"] == "bug"
+
+
+def test_filter_submit_returns_to_navigation_mode(monkeypatch):
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues(), "filter": "bug", "filter_active": True})
+    monkeypatch.setattr(app.state, "get", lambda key, default=None: data.get(key, default))
+
+    effects = app.update(app.UiAction(handler_id="issues-filter"))
+    next_state = [effect for effect in effects if isinstance(effect, app.SetState)][0].data
+
+    assert next_state["filter_active"] is False
+    assert app._visible_issues(next_state)
+
+
+def test_host_list_select_updates_selected_index():
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues(), "selected": 0})
+
+    effects = app._handle_list_select(data, app.ListSelect(id="issues", index=2))
+
+    assert data["selected"] == 2
+    assert effects
+
+
+def test_host_list_activate_opens_detail_fetch():
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues(), "selected": 0})
+
+    effects = app._handle_list_activate(data, app.ListActivate(id="issues", index=1))
+
+    assert data["view"] == "detail"
+    assert data["pending"] == "detail:5"
+    assert any(isinstance(effect, app.HttpFetch) for effect in effects)
 
 
 def test_toggle_filter_preserves_selected_issue_when_it_remains_visible():

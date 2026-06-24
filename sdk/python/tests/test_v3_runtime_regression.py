@@ -341,6 +341,34 @@ class TestEventDispatch:
         finally:
             proc.kill()
 
+    def test_list_select_event(self, tmp_path):
+        app = self._app_that_echoes_event_type(tmp_path)
+        proc = _spawn_v3_app(app)
+        try:
+            _init_app(proc)
+            _send_event(proc, {"type": "list_select", "id": "issues", "index": 2})
+            events = _render(proc)
+            trees = _find_events(events, "component_tree")
+            assert any("ListSelect" in json.dumps(t) for t in trees), (
+                f"Expected ListSelect in {[json.dumps(t)[:100] for t in trees]}"
+            )
+        finally:
+            proc.kill()
+
+    def test_list_activate_event(self, tmp_path):
+        app = self._app_that_echoes_event_type(tmp_path)
+        proc = _spawn_v3_app(app)
+        try:
+            _init_app(proc)
+            _send_event(proc, {"type": "list_activate", "id": "issues", "index": 2})
+            events = _render(proc)
+            trees = _find_events(events, "component_tree")
+            assert any("ListActivate" in json.dumps(t) for t in trees), (
+                f"Expected ListActivate in {[json.dumps(t)[:100] for t in trees]}"
+            )
+        finally:
+            proc.kill()
+
     def test_component_event_submit_dispatches_ui_action(self, tmp_path):
         app = self._app_that_echoes_event_type(tmp_path)
         proc = _spawn_v3_app(app)

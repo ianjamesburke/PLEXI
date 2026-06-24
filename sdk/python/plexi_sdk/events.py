@@ -41,6 +41,18 @@ class UiValueChange:
 
 
 @dataclass
+class ListSelect:
+    id: str
+    index: int
+
+
+@dataclass
+class ListActivate:
+    id: str
+    index: int
+
+
+@dataclass
 class Resize:
     width: float
     height: float

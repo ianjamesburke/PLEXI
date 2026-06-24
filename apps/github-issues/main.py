@@ -10,14 +10,26 @@ from urllib.parse import quote
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import HttpFetch, OpenUrl, RequestCapability, SetState, SetStatus, SetTitle
-from plexi_sdk.events import CapabilityDenied, CapabilityGranted, HttpResponse, KeyEvent, UiValueChange
+from plexi_sdk.events import (
+    CapabilityDenied,
+    CapabilityGranted,
+    HttpResponse,
+    KeyEvent,
+    ListActivate,
+    ListSelect,
+    UiAction,
+    UiValueChange,
+)
 from plexi_sdk.ui import (
     AppBar,
     Column,
+    Component,
     FooterKeys,
+    LeadingBadge,
+    ListRow,
     Markdown,
+    RowChip,
     Scrollable,
-    SelectList,
     Text,
     TextEdit,
 )
@@ -33,6 +45,37 @@ SORT_LABELS = {
 }
 PRIORITY_PREFIXES = ("p0", "p1", "p2", "p3", "p4", "bug", "enhancement", "feat", "fix")
 MAX_VISIBLE_CHIPS = 3
+COLOR_ACCENT = "#89b4fa"
+COLOR_DANGER = "#f38ba8"
+COLOR_WARNING = "#f9e2af"
+COLOR_SUCCESS = "#a6e3a1"
+COLOR_MUTED = "#6c7086"
+
+
+class HostListView(Component):
+    def __init__(self, list_id: str, rows: list[dict], selected: int) -> None:
+        self.list_id = list_id
+        self.rows = rows
+        self.selected = selected
+
+    def is_grow(self) -> bool:
+        return True
+
+    def measure(self, avail_w: float) -> float:
+        return 0.0
+
+    def to_node(self) -> dict:
+        return {
+            "type": "raw",
+            "command": {
+                "type": "list_view",
+                "id": self.list_id,
+                "items": self.rows,
+                "selected": self.selected,
+                "loading": False,
+                "error": None,
+            },
+        }
 
 def _detect_repo() -> str:
     try:
@@ -69,6 +112,7 @@ DEFAULT_STATE = {
     "pending": "",
     "error": "",
     "filter": "",
+    "filter_active": False,
     "filter_labels": [],
     "sort_mode": "created_desc",
     "view": "list",
@@ -77,12 +121,6 @@ DEFAULT_STATE = {
     "picker_selected": 0,
     "picker_staged": [],
 }
-
-
-class RowChip:
-    def __init__(self, label: str, color: str = "neutral") -> None:
-        self.label = label
-        self.color = color
 
 
 def init(size, args) -> list:
@@ -123,12 +161,21 @@ def update(event) -> list:
 
     if isinstance(event, UiValueChange) and event.handler_id == "issues-filter":
         data["filter"] = event.value
+        data["filter_active"] = True
         data["selected"] = 0
+        return [SetState(data), SetStatus(_status(data))]
+    if isinstance(event, UiAction) and event.handler_id == "issues-filter":
+        data["filter_active"] = False
+        data["selected"] = _clamp(data["selected"], len(_visible_issues(data)))
         return [SetState(data), SetStatus(_status(data))]
     if isinstance(event, UiValueChange) and event.handler_id == "issues-picker-query":
         data["picker_query"] = event.value
         data["picker_selected"] = 0
         return [SetState(data), SetStatus(_status(data))]
+    if isinstance(event, ListSelect):
+        return _handle_list_select(data, event)
+    if isinstance(event, ListActivate):
+        return _handle_list_activate(data, event)
 
     if not isinstance(event, KeyEvent) or not event.pressed:
         return []
@@ -147,6 +194,13 @@ def update(event) -> list:
             if url:
                 return [SetState(data), SetStatus(f"Opening #{data['detail']['number']}"), OpenUrl(url)]
         return []
+
+    if key == "/":
+        data["filter_active"] = not data.get("filter_active")
+        return [SetState(data), SetStatus("Filtering issues")]
+    if key == "escape" and data.get("filter_active"):
+        data["filter_active"] = False
+        return [SetState(data), SetStatus(_status(data))]
 
     visible = _visible_issues(data)
     if key in ("down", "j"):
@@ -185,6 +239,7 @@ def update(event) -> list:
         data["picker_staged"] = list(data["filter_labels"])
     elif key == "c":
         data["filter"] = ""
+        data["filter_active"] = False
         data["filter_labels"] = []
         data["selected"] = 0
     elif key == "o" and visible:
@@ -232,6 +287,7 @@ def _state() -> dict:
     data["issues"] = [dict(issue) for issue in data.get("issues") or []]
     data["selected"] = max(0, int(data.get("selected") or 0))
     data["filter"] = str(data.get("filter") or "")
+    data["filter_active"] = bool(data.get("filter_active", False))
     data["filter_labels"] = [
         str(label) for label in data.get("filter_labels") or [] if str(label)
     ]
@@ -349,33 +405,31 @@ def _normalize_issue(issue: dict) -> dict:
 
 def _list_view(data: dict):
     visible = _visible_issues(data)
-    rows = [
-        {
-            "leading": f"#{issue['number']}",
-            "name": issue["title"],
-            "description": _issue_description(issue, set(data["filter_labels"])),
-            "trailing": (issue.get("createdAt") or "")[:10],
-        }
-        for issue in visible
-    ]
+    rows = _issue_rows(data, visible)
     body = (
-        SelectList(rows, selected_idx=data["selected"])
+        _raw_list_view("issues", rows, data["selected"])
         if rows
         else Text(_empty_text(data), size=12.0)
     )
-    return Column(
-        [
-            AppBar("GitHub Issues", _list_subtitle(data)),
+    filter_controls = []
+    if data.get("filter_active"):
+        filter_controls.append(
             TextEdit(
                 "issues-filter",
                 value=data["filter"],
                 placeholder="filter labels or title",
-            ),
+            )
+        )
+    return Column(
+        [
+            AppBar("GitHub Issues", _list_subtitle(data)),
+            *filter_controls,
             body,
             FooterKeys(
                 [
                     ("j/k", "select"),
-                    ("enter", "detail"),
+                    ("enter", "apply" if data.get("filter_active") else "detail"),
+                    ("/", "filter"),
                     ("s", "sort"),
                     ("f", "filter"),
                     ("l", "labels"),
@@ -429,14 +483,22 @@ def _picker_view(data: dict):
     data["picker_selected"] = _clamp(data["picker_selected"], len(labels))
     staged = set(data["picker_staged"])
     rows = [
-        {
-            "leading": "x" if label in staged else "",
-            "name": label,
-            "description": "selected" if label in staged else "",
-        }
-        for label in labels
+        ListRow(
+            id=f"label-{idx}",
+            leading=LeadingBadge(
+                "x" if label in staged else " ",
+                color=_label_color(label) if label in staged else COLOR_MUTED,
+            ),
+            primary=label,
+            chips=[RowChip(label, _label_color(label))],
+        ).to_dict()
+        for idx, label in enumerate(labels)
     ]
-    body = SelectList(rows, selected_idx=data["picker_selected"]) if rows else Text("No matching labels.", size=12.0)
+    body = (
+        _raw_list_view("label-picker", rows, data["picker_selected"])
+        if rows
+        else Text("No matching labels.", size=12.0)
+    )
     return Column(
         [
             AppBar("Labels", _picker_subtitle(data)),
@@ -457,6 +519,57 @@ def _picker_view(data: dict):
         grow=True,
         padding=0,
     )
+
+
+def _handle_list_select(data: dict, event: ListSelect) -> list:
+    if event.id == "issues":
+        data["selected"] = _clamp(event.index, len(_visible_issues(data)))
+    elif event.id == "label-picker":
+        data["picker_selected"] = _clamp(event.index, len(_picker_filtered_labels(data)))
+    else:
+        return []
+    return [SetState(data), SetStatus(_status(data))]
+
+
+def _handle_list_activate(data: dict, event: ListActivate) -> list:
+    if event.id == "issues":
+        visible = _visible_issues(data)
+        if not visible:
+            return []
+        data["selected"] = _clamp(event.index, len(visible))
+        issue = visible[data["selected"]]
+        data["view"] = "detail"
+        data["detail"] = None
+        data["loading"] = True
+        data["pending"] = f"detail:{issue['number']}"
+        return [
+            SetState(data),
+            SetStatus(f"Loading #{issue['number']}"),
+            _fetch_detail(data["repo"], issue["number"]),
+        ]
+    if event.id == "label-picker":
+        data["picker_selected"] = _clamp(event.index, len(_picker_filtered_labels(data)))
+        return _handle_picker_key(data, "enter")
+    return []
+
+
+def _issue_rows(data: dict, visible: list[dict]) -> list[dict]:
+    active_filters = set(data["filter_labels"])
+    return [
+        ListRow(
+            id=f"issue-{issue['number']}",
+            leading=LeadingBadge(f"#{issue['number']}", color=COLOR_ACCENT),
+            primary=issue["title"],
+            secondary=_issue_secondary(issue),
+            chips=_select_visible_chips(issue, active_filters),
+            trailing=(issue.get("createdAt") or "")[:10],
+        ).to_dict()
+        for issue in visible
+    ]
+
+
+def _raw_list_view(list_id: str, rows: list[dict], selected: int) -> dict:
+    return HostListView(list_id, rows, selected)
 
 
 def _visible_issues(data: dict) -> list[dict]:
@@ -528,6 +641,17 @@ def _fuzzy_match(query: str, label: str) -> bool:
     return query.lower() in label.lower()
 
 
+def _label_color(name: str) -> str:
+    lowered = name.lower()
+    if any(token in lowered for token in ("bug", "error", "p0", "p1")):
+        return COLOR_DANGER
+    if any(token in lowered for token in ("p2", "enhancement", "feat")):
+        return COLOR_WARNING
+    if any(token in lowered for token in ("ready", "done", "p3", "p4")):
+        return COLOR_SUCCESS
+    return COLOR_ACCENT
+
+
 def _is_priority_label(name: str) -> bool:
     return name.lower().startswith(PRIORITY_PREFIXES)
 
@@ -546,11 +670,18 @@ def _select_visible_chips(issue: dict, active_filters: set[str]) -> list[RowChip
         if label not in active_filters and not _is_priority_label(label)
     ]
     visible = (active + priority + rest)[:MAX_VISIBLE_CHIPS]
-    chips = [RowChip(label) for label in visible]
+    chips = [RowChip(label, _label_color(label)) for label in visible]
     hidden = len(all_labels) - len(visible)
     if hidden > 0:
-        chips.append(RowChip(f"+{hidden}"))
+        chips.append(RowChip(f"+{hidden}", COLOR_MUTED))
     return chips
+
+
+def _issue_secondary(issue: dict) -> str:
+    assignees = ", ".join(a["login"] for a in issue.get("assignees", []))
+    labels = len(_issue_labels(issue))
+    label_text = f"{labels} label" if labels == 1 else f"{labels} labels"
+    return f"{assignees} · {label_text}" if assignees else label_text
 
 
 def _issue_description(issue: dict, active_filters: set[str]) -> str:

@@ -342,7 +342,15 @@ fn render_component_tree_inner(
             // Delegate to the existing flat renderer for a single draw command,
             // threading the pane's persistent caches so markdown/image/list
             // state survives across frames instead of being rebuilt per node.
-            let pane_rect = ui.clip_rect();
+            let raw_h = match command.as_ref() {
+                crate::app_protocol::RenderCommand::ListView { h, .. } if *h > 0.0 => *h,
+                crate::app_protocol::RenderCommand::ListView { .. } => ui.available_height(),
+                _ => ui.available_height(),
+            };
+            let (pane_rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), raw_h.max(0.0)),
+                egui::Sense::hover(),
+            );
             let mut raw_events: Vec<crate::app_protocol::PlexiEvent> = Vec::new();
             // Raw escape-hatch uses a throwaway focus ctx — focus tracking doesn't
             // apply to legacy draw commands embedded inside a component tree.
@@ -1270,6 +1278,10 @@ fn vertical_grow_node(node: &UiNode) -> bool {
         UiNode::Scroll { .. } => true,
         UiNode::SelectList { .. } => true,
         UiNode::Canvas { grow, .. } => *grow,
+        UiNode::Raw { command } => matches!(
+            command.as_ref(),
+            crate::app_protocol::RenderCommand::ListView { .. }
+        ),
         _ => false,
     }
 }

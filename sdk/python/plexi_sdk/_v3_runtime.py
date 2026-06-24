@@ -100,6 +100,10 @@ class V3AppRuntime:
             self._handle_capability_decision(ev)
         elif t == "ui_action":
             self._handle_ui_action(ev)
+        elif t == "list_select":
+            self._handle_list_select(ev)
+        elif t == "list_activate":
+            self._handle_list_activate(ev)
         elif t == "focus_changed":
             self._handle_focus_changed(ev)
         elif t == "capability_granted":
@@ -234,6 +238,16 @@ class V3AppRuntime:
         handler_id = ev.get("handler_id", "")
         if handler_id:
             self._dispatch(events.UiAction(handler_id=handler_id))
+
+    def _handle_list_select(self, ev: dict) -> None:
+        list_id = ev.get("id", "")
+        if list_id:
+            self._dispatch(events.ListSelect(id=list_id, index=int(ev.get("index", 0))))
+
+    def _handle_list_activate(self, ev: dict) -> None:
+        list_id = ev.get("id", "")
+        if list_id:
+            self._dispatch(events.ListActivate(id=list_id, index=int(ev.get("index", 0))))
 
     def _handle_focus_changed(self, ev: dict) -> None:
         self._dispatch(events.FocusChanged(

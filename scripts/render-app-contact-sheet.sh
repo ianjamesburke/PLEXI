@@ -160,6 +160,102 @@ JSON
   "detail": null
 }
 JSON
+
+  cat > "$out_dir/github-filter-active-state.json" <<'JSON'
+{
+  "repo": "plexi/app",
+  "issues": [
+    {
+      "number": 285,
+      "title": "SDK v3 native apps visual audit",
+      "state": "open",
+      "body": "Audit every core app render before merge.",
+      "createdAt": "2026-06-23T15:00:00Z",
+      "labels": [{"name": "p1"}, {"name": "sdk-v3"}, {"name": "ui"}],
+      "assignees": [{"login": "ian"}],
+      "html_url": "https://github.com/example/plexi/issues/285"
+    },
+    {
+      "number": 284,
+      "title": "FileList should enforce scoped reads",
+      "state": "open",
+      "body": "Native ProcessApp FileList must stay inside workspace permissions.",
+      "createdAt": "2026-06-22T20:00:00Z",
+      "labels": [{"name": "bug"}, {"name": "host"}],
+      "assignees": [],
+      "html_url": "https://github.com/example/plexi/issues/284"
+    },
+    {
+      "number": 280,
+      "title": "Polish canvas app first-frame sizing",
+      "state": "open",
+      "body": "Canvas apps need pane fallback before canvas feedback arrives.",
+      "createdAt": "2026-06-20T11:00:00Z",
+      "labels": [{"name": "enhancement"}, {"name": "canvas"}],
+      "assignees": [{"login": "agent"}],
+      "html_url": "https://github.com/example/plexi/issues/280"
+    }
+  ],
+  "selected": 0,
+  "loading": false,
+  "pending": "",
+  "error": "",
+  "filter": "bug",
+  "filter_active": true,
+  "sort_mode": "created_desc",
+  "view": "list",
+  "detail": null
+}
+JSON
+
+  cat > "$out_dir/github-picker-state.json" <<'JSON'
+{
+  "repo": "plexi/app",
+  "issues": [
+    {
+      "number": 285,
+      "title": "SDK v3 native apps visual audit",
+      "state": "open",
+      "body": "Audit every core app render before merge.",
+      "createdAt": "2026-06-23T15:00:00Z",
+      "labels": [{"name": "p1"}, {"name": "sdk-v3"}, {"name": "ui"}],
+      "assignees": [{"login": "ian"}],
+      "html_url": "https://github.com/example/plexi/issues/285"
+    },
+    {
+      "number": 284,
+      "title": "FileList should enforce scoped reads",
+      "state": "open",
+      "body": "Native ProcessApp FileList must stay inside workspace permissions.",
+      "createdAt": "2026-06-22T20:00:00Z",
+      "labels": [{"name": "bug"}, {"name": "host"}],
+      "assignees": [],
+      "html_url": "https://github.com/example/plexi/issues/284"
+    },
+    {
+      "number": 280,
+      "title": "Polish canvas app first-frame sizing",
+      "state": "open",
+      "body": "Canvas apps need pane fallback before canvas feedback arrives.",
+      "createdAt": "2026-06-20T11:00:00Z",
+      "labels": [{"name": "enhancement"}, {"name": "canvas"}],
+      "assignees": [{"login": "agent"}],
+      "html_url": "https://github.com/example/plexi/issues/280"
+    }
+  ],
+  "selected": 0,
+  "loading": false,
+  "pending": "",
+  "error": "",
+  "filter": "",
+  "sort_mode": "created_desc",
+  "view": "picker",
+  "detail": null,
+  "picker_query": "",
+  "picker_selected": 1,
+  "picker_staged": ["bug", "host"]
+}
+JSON
 }
 
 make_contact_sheet() {
@@ -203,6 +299,8 @@ render_app "github-detail" "$repo_root/apps/github-issues" "$out_dir/github-deta
 render_app "github-loading" "$repo_root/apps/github-issues" "$out_dir/github-loading-state.json"
 render_app "github-error" "$repo_root/apps/github-issues" "$out_dir/github-error-state.json"
 render_app "github-filtered-empty" "$repo_root/apps/github-issues" "$out_dir/github-filtered-empty-state.json"
+render_app "github-filter-active" "$repo_root/apps/github-issues" "$out_dir/github-filter-active-state.json"
+render_app "github-picker" "$repo_root/apps/github-issues" "$out_dir/github-picker-state.json"
 
 core_pngs=()
 for app in "${apps[@]}"; do
@@ -215,6 +313,8 @@ state_pngs=(
   "$out_dir/github-loading.png"
   "$out_dir/github-error.png"
   "$out_dir/github-filtered-empty.png"
+  "$out_dir/github-filter-active.png"
+  "$out_dir/github-picker.png"
 )
 
 make_contact_sheet "$out_dir/core-apps-contact.png" "${core_pngs[@]}"

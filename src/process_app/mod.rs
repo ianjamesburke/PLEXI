@@ -2334,6 +2334,7 @@ impl App for ProcessApp {
                     // forwarding — the list_view pass already handled these host-side.
                     if *pressed
                         && self.render_session.list_view_intercepts_nav
+                        && !self.render_session.text_edit_has_focus
                         && !modifiers.ctrl
                         && !modifiers.command
                     {
@@ -2386,6 +2387,7 @@ impl App for ProcessApp {
                         }
                         // Suppress j/k text events when a ListView is active
                         if self.render_session.list_view_intercepts_nav
+                            && !self.render_session.text_edit_has_focus
                             && matches!(ch, 'j' | 'k' | 'J' | 'K')
                         {
                             continue;
