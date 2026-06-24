@@ -248,7 +248,7 @@ class Metrics:
             m.switches_today += 1
             label = _context_label(ev)
             offset = (local - day_start).total_seconds()
-            if 0 <= offset < 86400.0:
+            if 0 <= offset < 86400.0 and ev.get("reason") == "pane_switch":
                 b = min(WAVE_BUCKETS - 1, int(offset / bucket_secs))
                 wave_count[b] += 1
                 wave_ctx[b][label] = wave_ctx[b].get(label, 0.0) + max(secs, 1.0)
