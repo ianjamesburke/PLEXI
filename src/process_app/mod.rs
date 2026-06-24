@@ -323,7 +323,7 @@ pub struct ProcessApp {
     commonmark_cache: egui_commonmark::CommonMarkCache,
     /// Image load cache for `RenderCommand::Image` (#1144).
     pub(crate) image_cache: image_cache::ImageCache,
-    /// Per-frame rendering state — TextInput buffers, scroll offsets, and
+    /// Per-frame rendering state — component buffers, scroll offsets, and
     /// accumulated outbound events from widget passes. Extracted from
     /// `ProcessApp` so each concern has a clear owner.
     pub(crate) render_session: RenderSession,
@@ -472,9 +472,12 @@ impl ProcessApp {
             None
         };
         let mut cmd = if let Some(ref py) = py_exe {
-            log::info!("ProcessApp[{type_id}]: launching .py entry via {:?}", py);
+            log::info!(
+                "ProcessApp[{type_id}]: launching .py entry via {:?} with SDK v3 native adapter",
+                py,
+            );
             let mut c = std::process::Command::new(py);
-            c.arg(bin_path);
+            c.arg("-m").arg("plexi_sdk._v3_process").arg(bin_path);
             c
         } else {
             std::process::Command::new(bin_path)
@@ -551,31 +554,10 @@ impl ProcessApp {
         let pythonpath = crate::config::build_pythonpath(bundle_sdk.as_deref());
         log::info!("process_app[{type_id}]: PYTHONPATH={pythonpath}");
 
-        // Static capability validation — runs before the real spawn.
-        // For Python apps only; non-Python apps skip. Subprocess failures log warn and proceed.
-        if let Some(ref py) = py_exe {
-            let path_env = {
-                let host_path = std::env::var("PATH").unwrap_or_default();
-                if let Some(ref py_bin) = bundled_py_bin {
-                    if py_bin.exists() {
-                        format!("{}:{}", py_bin.display(), host_path)
-                    } else {
-                        host_path
-                    }
-                } else {
-                    host_path
-                }
-            };
-            if let Err(e) = static_capability_check(
-                &type_id,
-                bin_path,
-                py.as_ref(),
-                &pythonpath,
-                &path_env,
-                &capabilities,
-            ) {
-                return Err(e);
-            }
+        if py_exe.is_some() {
+            log::info!(
+                "ProcessApp[{type_id}]: static capability check skipped for SDK v3 native adapter; manifest capabilities are authoritative"
+            );
         }
 
         cmd.env("PYTHONPATH", pythonpath);
@@ -1233,6 +1215,8 @@ impl ProcessApp {
                         w: size.x,
                         h: size.y,
                     },
+                    canvas_width: self.render_session.last_canvas_width,
+                    canvas_height: self.render_session.last_canvas_height,
                 });
                 self.render_diag.record_render_sent(
                     frame_id,
@@ -1404,13 +1388,8 @@ impl ProcessApp {
     }
 
     fn flush_outbound_events(&mut self) {
-        let mut flushed = false;
         while let Some(event) = self.outbound_events.pop_front() {
             self.send_event(&event);
-            flushed = true;
-        }
-        if flushed {
-            self.mark_render_needed("outbound_event");
         }
     }
 
@@ -1606,16 +1585,6 @@ impl ProcessApp {
         painter.galley(egui::pos2(text_x, text_y), galley, fg_color);
     }
 
-    /// Drain the buffer for `id` and queue a `TextSubmitted` event. Default
-    /// UX is "field clears on submit" — the next TextInput emit with the
-    /// same id starts empty. Public to the crate for unit tests that
-    /// don't go through egui rendering.
-    #[cfg(test)]
-    pub(crate) fn submit_text_input(&mut self, id: &str) {
-        let ev = self.render_session.submit_text_input(id);
-        self.outbound_events.push_back(ev);
-    }
-
     /// Test hook: shift the in-flight render's start time into the past so
     /// the render-in-flight timeout can be exercised without sleeping.
     #[cfg(test)]
@@ -1775,6 +1744,8 @@ impl App for ProcessApp {
                 theme: ctx.colors.to_theme_map(),
                 args: self.launch_args.clone(),
                 state: None,
+                width: size.x,
+                height: size.y,
             });
             // Inject persisted state before first render so on_inject runs with data.
             let state = load_app_state(&self.type_id, &self.workspace_root);
@@ -1784,6 +1755,10 @@ impl App for ProcessApp {
                 "ProcessApp[{}]: injected persisted state at startup",
                 self.type_id
             );
+            self.send_event(&PlexiEvent::Resize {
+                width: size.x,
+                height: size.y,
+            });
         }
 
         if (size - self.last_size).length() > 1.0 {
@@ -2243,7 +2218,7 @@ impl App for ProcessApp {
 
         // Deliver any subscribed app events queued for this pane, then flush
         // events accumulated during this frame (broker AiResponse,
-        // TextSubmitted, ScrollOffset, etc.) so apps receive them without
+        // ScrollOffset, etc.) so apps receive them without
         // waiting for the next frame's start-of-ui flush.
         self.deliver_subscribed_events();
         self.flush_outbound_events();
@@ -2282,11 +2257,11 @@ impl App for ProcessApp {
 
     fn handle_key(&mut self, input: &egui::InputState) -> crate::app::app_trait::KeyDisposition {
         use crate::app::app_trait::KeyDisposition;
-        // When a TextInput widget has focus, egui owns the keyboard — all
-        // text and key events are consumed by the TextEdit widget. Don't
+        // When a TextEdit widget has focus, egui owns the keyboard — all
+        // text and key events are consumed by the widget. Don't
         // forward them to the app's on_key handler (typing "h" in the chat
         // input shouldn't trigger a tier change, for example).
-        if self.render_session.text_input_has_focus {
+        if self.render_session.text_edit_has_focus {
             return KeyDisposition::Passthrough;
         }
         let mut consumed = false;
@@ -2294,7 +2269,7 @@ impl App for ProcessApp {
             match event {
                 egui::Event::Key {
                     key,
-                    pressed: true,
+                    pressed,
                     modifiers,
                     ..
                 } => {
@@ -2357,7 +2332,9 @@ impl App for ProcessApp {
                     );
                     // When a ListView is active, suppress bare j/k/up/down/enter
                     // forwarding — the list_view pass already handled these host-side.
-                    if self.render_session.list_view_intercepts_nav
+                    if *pressed
+                        && self.render_session.list_view_intercepts_nav
+                        && !self.render_session.text_edit_has_focus
                         && !modifiers.ctrl
                         && !modifiers.command
                     {
@@ -2375,11 +2352,19 @@ impl App for ProcessApp {
                         }
                     }
 
+                    // Bare Escape is host-managed: ClosePane checks
+                    // nav_stack_depth and either sends NavBack (sub-view)
+                    // or closes the pane (root). Don't forward to the app
+                    // and don't set `consumed` so it stays in InputState.
+                    if *key == egui::Key::Escape && !modifiers.command {
+                        continue;
+                    }
+
                     // Cmd-modified chords are reserved for host shortcuts
                     // (Cmd+Enter zoom, Cmd+P palette, Cmd+Shift+A notifications,
                     // etc.). Apps can't shadow a host keybind; they use bare
                     // letters or non-Cmd modifiers instead.
-                    if (!is_printable_key || modifiers.ctrl) && !modifiers.command {
+                    if (!is_printable_key || modifiers.ctrl || !*pressed) && !modifiers.command {
                         self.send_event(&PlexiEvent::Key {
                             key: format!("{key:?}"),
                             modifiers: Modifiers {
@@ -2388,9 +2373,12 @@ impl App for ProcessApp {
                                 alt: modifiers.alt,
                                 cmd: modifiers.command,
                             },
+                            pressed: *pressed,
                         });
                     }
-                    consumed = true;
+                    if *pressed {
+                        consumed = true;
+                    }
                 }
                 egui::Event::Text(text) => {
                     for ch in text.chars() {
@@ -2399,6 +2387,7 @@ impl App for ProcessApp {
                         }
                         // Suppress j/k text events when a ListView is active
                         if self.render_session.list_view_intercepts_nav
+                            && !self.render_session.text_edit_has_focus
                             && matches!(ch, 'j' | 'k' | 'J' | 'K')
                         {
                             continue;
@@ -2406,6 +2395,7 @@ impl App for ProcessApp {
                         self.send_event(&PlexiEvent::Key {
                             key: ch.to_string(),
                             modifiers: Modifiers::default(),
+                            pressed: true,
                         });
                     }
                     consumed = true;
@@ -2639,172 +2629,6 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
     }
     log::debug!("load_app_state[{type_id}]: no usable state file found, starting empty");
     serde_json::Value::Object(serde_json::Map::new())
-}
-
-fn cap_example_method(cap: &str) -> &'static str {
-    match cap {
-        "net.http" => "http_get",
-        "ai.query" => "ai_query",
-        "secrets.get" => "secret_get",
-        "fs.pick" => "open_file_picker",
-        "fs.read" => "fs_read",
-        "fs.write" => "fs_write",
-        "panes.spawn" => "spawn_pane",
-        "panes.read" => "list_panes",
-        "panes.control" => "send_to_pane",
-        "midi.in" => "open_midi_input",
-        "midi.out" => "send_midi",
-        "video.playback" => "open_video",
-        "audio.record" => "audio_capture",
-        "audio.playback" => "audio_play",
-        "timer" => "set_timer",
-        "pipe.open" => "pipe_open",
-        "terminal.bindings" => "request_linked_terminal",
-        "llm" => "llm_query",
-        _ => "related emit method",
-    }
-}
-
-/// Run the app in introspect mode to detect required capabilities, then diff
-/// against the manifest-declared set. Returns `Err` if required capabilities are
-/// missing from the manifest; returns `Ok` for all infra failures (subprocess
-/// error, timeout, bad JSON) — those are logged as warnings and never block launch.
-pub(crate) fn static_capability_check(
-    type_id: &str,
-    bin_path: &std::path::Path,
-    py_exe: &std::ffi::OsStr,
-    pythonpath: &str,
-    path_env: &str,
-    declared: &std::collections::HashSet<crate::app::permissions::Capability>,
-) -> Result<(), std::io::Error> {
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    log::info!("ProcessApp[{type_id}]: running static capability check");
-
-    const INTROSPECT_ENV_WHITELIST: &[&str] =
-        &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
-    let mut cmd = std::process::Command::new(py_exe);
-    cmd.arg(bin_path)
-        .arg("--plexi-introspect")
-        .env_clear()
-        .env("PYTHONPATH", pythonpath)
-        .env("PATH", path_env)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::null());
-    for var in INTROSPECT_ENV_WHITELIST {
-        if let Ok(v) = std::env::var(var) {
-            cmd.env(var, v);
-        }
-    }
-
-    let child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            log::warn!(
-                "ProcessApp[{type_id}]: static capability check spawn failed: {e} — skipping"
-            );
-            return Ok(());
-        }
-    };
-    let pid = child.id();
-
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-
-    let output = match rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => {
-            log::warn!("ProcessApp[{type_id}]: static capability check failed: {e} — skipping");
-            return Ok(());
-        }
-        Err(_) => {
-            log::warn!("ProcessApp[{type_id}]: static capability check timed out (pid {pid}) — killing and skipping");
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGKILL);
-            }
-            return Ok(());
-        }
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log::warn!(
-            "ProcessApp[{type_id}]: static capability check exited with {:?} — skipping\nstderr: {}",
-            output.status.code(),
-            stderr.trim(),
-        );
-        return Ok(());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = match serde_json::from_str(stdout.trim()) {
-        Ok(v) => v,
-        Err(e) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log::warn!(
-                "ProcessApp[{type_id}]: static capability check invalid JSON ({e}) — skipping\nstdout: {}\nstderr: {}",
-                stdout.trim(),
-                stderr.trim(),
-            );
-            return Ok(());
-        }
-    };
-
-    let required_caps: Vec<String> = json
-        .get("required_capabilities")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    log::info!(
-        "ProcessApp[{type_id}]: introspect found required capabilities: {:?}",
-        required_caps
-    );
-
-    let declared_strs: std::collections::HashSet<&str> =
-        declared.iter().map(|c| c.as_str()).collect();
-    let required_set: std::collections::HashSet<&str> =
-        required_caps.iter().map(|s| s.as_str()).collect();
-
-    for cap in declared {
-        if !required_set.contains(cap.as_str()) {
-            log::warn!(
-                "ProcessApp[{type_id}]: capability '{}' declared in manifest but not detected in code",
-                cap.as_str()
-            );
-        }
-    }
-
-    let missing: Vec<&str> = required_caps
-        .iter()
-        .map(|s| s.as_str())
-        .filter(|s| !declared_strs.contains(s))
-        .collect();
-
-    if !missing.is_empty() {
-        let msg = missing.iter()
-            .map(|cap| {
-                let example_method = cap_example_method(cap);
-                format!(
-                    "App declares no '{cap}' capability but calls emit.{example_method}(). Add '{cap}' to manifest.toml [app.capabilities].",
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        log::error!("ProcessApp[{type_id}]: static capability validation failed:\n{msg}");
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, msg));
-    }
-
-    log::info!("ProcessApp[{type_id}]: static capability check passed");
-    Ok(())
 }
 
 #[cfg(test)]

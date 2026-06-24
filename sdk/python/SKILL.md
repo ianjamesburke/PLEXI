@@ -18,16 +18,16 @@ patterns are established or when a recurring mistake is worth preventing.
 
 - For list+detail navigation: use `SelectList` from `plexi_sdk.ui` — it handles j/k/arrow keys, scrolling, and click hit-testing. Never reimplement this by hand.
 - For raw draw-only list: `ctx.list_view()` with `ListItem` dicts.
-- For text entry: `ctx.text_input()` or `widgets.TextInput`. Never read raw keys for text — use `on_text_submitted`.
+- For text entry: use `ui.TextEdit` in the component tree. Never read raw keys for text.
 
 ## State
 
-- Stateful widgets (`SelectList`, `ListView`, `TextArea`, `Keymap`) must be created in `on_init`, not `on_render`. Creating them per frame resets state every render.
+- Keep state in `plexi_sdk.state` and update it by returning `SetState` / `state.set(...)` effects from `update(event)`. `view()` must stay pure.
 
 ## Logging
 
-- Always log at init and key state transitions: `ctx.info(...)` inside a frame, `emit.info(...)` outside.
-- Log escapes and errors: `ctx.warn("app_id: exiting detail view")` on Escape, `ctx.error(...)` on unrecoverable failures.
+- Always log at init and key state transitions with `plexi_sdk.log`.
+- Log escapes and errors: `log.warn("app_id: exiting detail view")` on Escape, `log.error(...)` on unrecoverable failures.
 
 ## Known Gotchas
 

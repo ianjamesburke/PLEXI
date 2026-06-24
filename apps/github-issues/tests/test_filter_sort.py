@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -70,25 +71,8 @@ def _many_label_issues():
     ]
 
 
-def _make_app(app_module, issues=None):
-    """Create a GhIssues instance with mocked state, ready for interaction."""
-    gh = app_module.GhIssues()
-    gh._issues = issues if issues is not None else _issues()
-    gh._sel = 0
-    gh._filter_labels = set()
-    gh._sort_mode = "created_desc"
-    gh._view = gh.VIEW_LIST
-    gh._loading = False
-    gh._detail_loading = False
-    gh._error = None
-    gh._detail = None
-    gh._picker_query = ""
-    gh._picker_sel = 0
-    gh._picker_staged = set()
-    return gh
-
-
 # ── filter + sort (existing) ────────────────────────────────────────────────
+
 
 def test_filter_and_sort_defaults_to_newest_created_first():
     app = _load_app_module()
@@ -115,7 +99,7 @@ def test_sort_cycle_uses_documented_order():
         order.append(app.SORT_LABELS[mode])
         mode = app._next_sort_mode(mode)
 
-    assert order == ["created ↓", "created ↑", "number ↓", "number ↑"]
+    assert order == ["created desc", "created asc", "number desc", "number asc"]
 
 
 def test_issue_list_limit_is_large_enough_for_active_repos():
@@ -124,47 +108,26 @@ def test_issue_list_limit_is_large_enough_for_active_repos():
     assert app.ISSUE_LIST_LIMIT == "500"
 
 
-def test_app_sort_preserves_selected_index():
+def test_next_sort_mode_cycles_documented_order():
     app = _load_app_module()
-    gh = _make_app(app)
 
-    gh._cycle_sort()
+    mode = "created_desc"
+    modes = []
+    for _ in range(5):
+        modes.append(mode)
+        mode = app._next_sort_mode(mode)
 
-    assert gh._sort_mode == "created_asc"
-    assert gh._sel == 0
-    assert gh._selected_issue()["number"] == 1
-
-    gh._cycle_sort()
-
-    assert gh._sort_mode == "number_desc"
-    assert gh._sel == 0
-    assert gh._selected_issue()["number"] == 9
-
-
-def test_app_filter_cycles_selected_issue_labels_then_clears():
-    app = _load_app_module()
-    gh = _make_app(app)
-    gh._sel = 1
-
-    gh._toggle_filter_from_selection()
-
-    assert gh._filter_labels == {"bug"}
-    assert [issue["number"] for issue in gh._visible_issues()] == [5, 1]
-    assert gh._selected_issue()["number"] == 5
-
-    gh._toggle_filter_from_selection()
-
-    assert gh._filter_labels == {"P1"}
-    assert [issue["number"] for issue in gh._visible_issues()] == [5]
-    assert gh._selected_issue()["number"] == 5
-
-    gh._toggle_filter_from_selection()
-
-    assert gh._filter_labels == set()
-    assert gh._selected_issue()["number"] == 5
+    assert modes == [
+        "created_desc",
+        "created_asc",
+        "number_desc",
+        "number_asc",
+        "created_desc",
+    ]
 
 
 # ── multi-label AND filter ───────────────────────────────────────────────────
+
 
 def test_multi_label_and_filter():
     app = _load_app_module()
@@ -195,6 +158,7 @@ def test_empty_filter_returns_all():
 
 # ── smart chip selection ─────────────────────────────────────────────────────
 
+
 def test_chip_selection_prioritizes_active_filter():
     app = _load_app_module()
     issue = _many_label_issues()[0]
@@ -213,6 +177,7 @@ def test_chip_selection_priority_labels_before_rest():
 
     assert "bug" in chip_labels
     assert "P0" in chip_labels
+    assert chips[0].color == app.COLOR_DANGER
 
 
 def test_chip_selection_overflow_count():
@@ -238,6 +203,23 @@ def test_chip_selection_no_overflow_when_few_labels():
     assert len(overflow) == 0
 
 
+def test_normalize_issues_drops_pull_requests():
+    app = _load_app_module()
+    raw = [
+        {
+            "number": 1,
+            "title": "issue",
+            "labels": [],
+            "created_at": "2026-01-01T00:00:00Z",
+        },
+        {"number": 2, "title": "pr", "labels": [], "pull_request": {}},
+    ]
+
+    normalized = app._normalize_issues(raw)
+
+    assert [issue["number"] for issue in normalized] == [1]
+
+
 def test_chip_selection_no_labels():
     app = _load_app_module()
     issue = _many_label_issues()[2]
@@ -248,6 +230,7 @@ def test_chip_selection_no_labels():
 
 
 # ── unique label collection ──────────────────────────────────────────────────
+
 
 def test_collect_unique_labels_sorted():
     app = _load_app_module()
@@ -273,6 +256,7 @@ def test_collect_unique_labels_dedupes():
 
 # ── fuzzy match ──────────────────────────────────────────────────────────────
 
+
 def test_fuzzy_match_case_insensitive():
     app = _load_app_module()
 
@@ -289,325 +273,211 @@ def test_fuzzy_match_substring():
     assert not app._fuzzy_match("p1", "P2")
 
 
-# ── picker state ─────────────────────────────────────────────────────────────
-
-def test_picker_opens_with_current_filters():
+def test_headers_are_unauthenticated_without_token(monkeypatch):
     app = _load_app_module()
-    gh = _make_app(app)
-    gh._filter_labels = {"bug"}
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        app.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=""),
+    )
 
-    gh._open_picker()
+    headers = app._headers()
 
-    assert gh._view == gh.VIEW_PICKER
-    assert gh._picker_staged == {"bug"}
-    assert gh._picker_query == ""
-    assert gh._picker_sel == 0
+    assert "Authorization" not in headers
 
 
-def test_picker_apply_sets_filters():
+def test_headers_use_github_token_when_available(monkeypatch):
     app = _load_app_module()
-    gh = _make_app(app)
-    gh._view = gh.VIEW_PICKER
-    gh._picker_staged = {"bug", "P1"}
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "test-token")
 
-    gh._apply_picker()
+    headers = app._headers()
 
-    assert gh._view == gh.VIEW_LIST
-    assert gh._filter_labels == {"bug", "P1"}
+    assert headers["Authorization"] == "Bearer test-token"
 
 
-def test_picker_toggle_adds_and_removes():
-    """Space toggles the selected label in the picker (SDK normalizes ' ' to 'space')."""
+def test_headers_fall_back_to_gh_cli_token(monkeypatch):
     app = _load_app_module()
-    gh = _make_app(app)
-    gh._view = gh.VIEW_PICKER
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
-    filtered = gh._picker_filtered_labels()
-    first_label = filtered[0]
+    def fake_run(args, **kwargs):
+        assert args == ["gh", "auth", "token"]
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        return SimpleNamespace(returncode=0, stdout="cli-token\n")
 
-    gh._handle_picker_key("space")
-    assert first_label in gh._picker_staged
+    monkeypatch.setattr(app.subprocess, "run", fake_run)
 
-    gh._handle_picker_key("space")
-    assert first_label not in gh._picker_staged
+    headers = app._headers()
+
+    assert headers["Authorization"] == "Bearer cli-token"
 
 
-def test_picker_text_filter_narrows_labels():
+def test_headers_ignore_failed_gh_cli_token(monkeypatch):
     app = _load_app_module()
-    gh = _make_app(app)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        app.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=""),
+    )
 
-    all_labels = gh._picker_filtered_labels()
+    headers = app._headers()
 
-    gh._picker_query = "bug"
-    filtered = gh._picker_filtered_labels()
-
-    assert len(filtered) < len(all_labels)
-    assert all("bug" in l.lower() for l in filtered)
+    assert "Authorization" not in headers
 
 
-def test_picker_backspace_removes_char():
-    """SDK normalizes 'Backspace' to 'backspace'."""
+def test_picker_toggle_and_apply_filters_by_label():
     app = _load_app_module()
-    gh = _make_app(app)
-    gh._picker_query = "bug"
+    data = dict(app.DEFAULT_STATE)
+    data.update({"issues": _issues(), "view": "picker"})
 
-    gh._handle_picker_key("backspace")
+    effects = app._handle_picker_key(data, "space")
+    assert data["picker_staged"] == ["bug"]
+    assert effects
 
-    assert gh._picker_query == "bu"
+    app._handle_picker_key(data, "enter")
+
+    assert data["view"] == "list"
+    assert data["filter_labels"] == ["bug"]
+    assert [issue["number"] for issue in app._visible_issues(data)] == [5, 1]
 
 
-def test_picker_typing_appends_chars():
+def test_list_rows_include_alpha_style_issue_metadata():
     app = _load_app_module()
-    gh = _make_app(app)
+    issue = _many_label_issues()[0]
 
-    gh._handle_picker_key("b")
-    gh._handle_picker_key("u")
+    description = app._issue_description(issue, {"v1.0"})
 
-    assert gh._picker_query == "bu"
+    assert "v1.0" in description
+    assert "+2" in description
 
 
-# ── subtitle with multi-label ────────────────────────────────────────────────
-
-def test_subtitle_shows_multi_label_joined():
+def test_issue_rows_emit_host_list_view_badges_and_colored_chips():
     app = _load_app_module()
-    gh = _make_app(app)
-    gh._filter_labels = {"P1", "bug"}
+    data = dict(app.DEFAULT_STATE)
+    data.update({"filter_labels": ["P0"]})
 
-    subtitle = gh._list_subtitle()
+    rows = app._issue_rows(data, [_many_label_issues()[0]])
 
-    assert "label:P1+bug" in subtitle
+    assert rows[0]["type"] == "row"
+    assert rows[0]["leading"] == {
+        "variant": "badge",
+        "label": "#10",
+        "color": app.COLOR_ACCENT,
+    }
+    assert rows[0]["chips"][0] == {"label": "P0", "color": app.COLOR_DANGER}
+    assert rows[0]["chips"][-1] == {"label": "+2", "color": app.COLOR_MUTED}
 
 
-def test_subtitle_no_label_when_empty_filter():
+def test_slash_toggles_filter_mode_without_clearing_query(monkeypatch):
     app = _load_app_module()
-    gh = _make_app(app)
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "filter": "bug", "filter_active": False})
+    monkeypatch.setattr(app.state, "get", lambda key, default=None: data.get(key, default))
 
-    subtitle = gh._list_subtitle()
+    effects = app.update(app.KeyEvent(key="/", pressed=True))
+    next_state = [effect for effect in effects if isinstance(effect, app.SetState)][0].data
 
-    assert "label:" not in subtitle
+    assert next_state["filter_active"] is True
+    assert next_state["filter"] == "bug"
 
 
-# ── end-to-end interaction flows ─────────────────────────────────────────────
-# These simulate the exact event sequence the host sends to the SDK.
-# Key names use SDK-normalized form (what on_key actually receives).
-
-def test_e2e_open_picker_toggle_apply():
-    """Full flow: l → navigate → space toggle → enter apply."""
+def test_filter_submit_returns_to_navigation_mode(monkeypatch):
     app = _load_app_module()
-    gh = _make_app(app)
-    assert gh._view == gh.VIEW_LIST
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues(), "filter": "bug", "filter_active": True})
+    monkeypatch.setattr(app.state, "get", lambda key, default=None: data.get(key, default))
 
-    # User presses 'l' → opens picker
-    gh._open_picker()
-    assert gh._view == gh.VIEW_PICKER
-    assert gh._picker_staged == set()
+    effects = app.update(app.UiAction(handler_id="issues-filter"))
+    next_state = [effect for effect in effects if isinstance(effect, app.SetState)][0].data
 
-    # Picker shows all labels sorted. Get the list.
-    labels = gh._picker_filtered_labels()
-    assert len(labels) == 3  # bug, docs, P1
-    assert labels == sorted(labels, key=str.lower)
-
-    # Host sends list_select for j/k navigation
-    gh.on_list_select("label-picker", 0)
-    assert gh._picker_sel == 0
-
-    # User presses space to toggle first label
-    gh._handle_picker_key("space")
-    assert labels[0] in gh._picker_staged
-    assert len(gh._picker_staged) == 1
-
-    # Navigate to second label
-    gh.on_list_select("label-picker", 1)
-    assert gh._picker_sel == 1
-
-    # Toggle second label
-    gh._handle_picker_key("space")
-    assert labels[1] in gh._picker_staged
-    assert len(gh._picker_staged) == 2
-
-    # User presses enter → host sends list_activate
-    gh.on_list_activate("label-picker", 1)
-    assert gh._view == gh.VIEW_LIST
-    assert gh._filter_labels == {labels[0], labels[1]}
-
-    # Visible issues filtered by AND of both labels
-    visible = gh._visible_issues()
-    for issue in visible:
-        issue_labels = set(app._issue_labels(issue))
-        assert gh._filter_labels <= issue_labels
+    assert next_state["filter_active"] is False
+    assert app._visible_issues(next_state)
 
 
-def test_e2e_picker_cancel_preserves_filter():
-    """Escape from picker does not change existing filter."""
+def test_host_list_select_updates_selected_index():
     app = _load_app_module()
-    gh = _make_app(app)
-    gh._filter_labels = {"bug"}
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues(), "selected": 0})
 
-    gh._open_picker()
-    assert gh._picker_staged == {"bug"}
+    effects = app._handle_list_select(data, app.ListSelect(id="issues", index=2))
 
-    # Toggle off the existing filter in picker
-    labels = gh._picker_filtered_labels()
-    bug_idx = labels.index("bug")
-    gh.on_list_select("label-picker", bug_idx)
-    gh._handle_picker_key("space")
-    assert "bug" not in gh._picker_staged
-
-    # Escape cancels without applying
-    gh.on_escape()
-    assert gh._view == gh.VIEW_LIST
-    assert gh._filter_labels == {"bug"}
+    assert data["selected"] == 2
+    assert effects
 
 
-def test_e2e_picker_type_to_filter_then_toggle():
-    """Type characters to narrow the label list, then toggle."""
+def test_host_list_activate_opens_detail_fetch():
     app = _load_app_module()
-    gh = _make_app(app)
-    gh._open_picker()
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues(), "selected": 0})
 
-    # Type "bu" to filter
-    gh._handle_picker_key("b")
-    gh._handle_picker_key("u")
-    assert gh._picker_query == "bu"
+    effects = app._handle_list_activate(data, app.ListActivate(id="issues", index=1))
 
-    filtered = gh._picker_filtered_labels()
-    assert len(filtered) == 1
-    assert filtered[0] == "bug"
-
-    # Toggle the filtered result
-    gh._handle_picker_key("space")
-    assert "bug" in gh._picker_staged
-
-    # Apply
-    gh.on_list_activate("label-picker", 0)
-    assert gh._filter_labels == {"bug"}
-    assert gh._view == gh.VIEW_LIST
+    assert data["view"] == "detail"
+    assert data["pending"] == "detail:5"
+    assert any(isinstance(effect, app.HttpFetch) for effect in effects)
 
 
-def test_e2e_picker_backspace_widens_filter():
-    """Backspace removes last char from query, widening the label list."""
+def test_toggle_filter_preserves_selected_issue_when_it_remains_visible():
     app = _load_app_module()
-    gh = _make_app(app)
-    gh._open_picker()
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues(), "selected": 1})
 
-    gh._handle_picker_key("b")
-    gh._handle_picker_key("u")
-    gh._handle_picker_key("g")
-    assert gh._picker_query == "bug"
-    assert len(gh._picker_filtered_labels()) == 1
+    app._toggle_filter_from_selection(data)
 
-    gh._handle_picker_key("backspace")
-    assert gh._picker_query == "bu"
-    assert len(gh._picker_filtered_labels()) == 1
-
-    gh._handle_picker_key("backspace")
-    assert gh._picker_query == "b"
-    assert len(gh._picker_filtered_labels()) == 1  # still just "bug"
-
-    gh._handle_picker_key("backspace")
-    assert gh._picker_query == ""
-    assert len(gh._picker_filtered_labels()) == 3  # all labels
+    assert data["filter_labels"] == ["bug",]
+    assert app._selected_issue(data)["number"] == 5
 
 
-def test_e2e_f_still_cycles_after_picker():
-    """f key still works after using the picker."""
+def test_issue_url_uses_api_html_url_when_present():
     app = _load_app_module()
-    gh = _make_app(app)
+    data = {"repo": "owner/repo"}
+    issue = {"number": 7, "html_url": "https://github.com/owner/repo/issues/7"}
 
-    # Use picker to set a multi-label filter
-    gh._open_picker()
-    gh._handle_picker_key("space")
-    gh.on_list_activate("label-picker", 0)
-    assert len(gh._filter_labels) == 1
-
-    # Clear filter first so all issues are visible, then select issue #5
-    gh._clear_filter()
-    # Visible issues (created_desc): [#9, #5, #1]. #5 is at index 1.
-    gh._sel = 1
-    assert gh._selected_issue()["number"] == 5
-
-    # Press f — should set filter to first label of issue #5 (bug)
-    gh._toggle_filter_from_selection()
-    assert gh._filter_labels == {"bug"}
-
-    # Press f again — should cycle to next label (P1)
-    gh._toggle_filter_from_selection()
-    assert gh._filter_labels == {"P1"}
+    assert app._issue_url(data, issue) == "https://github.com/owner/repo/issues/7"
 
 
-def test_e2e_clear_clears_picker_filters():
-    """c key clears multi-label filters set by picker."""
+def test_issue_url_falls_back_to_repo_and_number():
     app = _load_app_module()
-    gh = _make_app(app)
 
-    # Apply multi-label filter via picker
-    gh._open_picker()
-    gh._handle_picker_key("space")
-    gh.on_list_select("label-picker", 1)
-    gh._handle_picker_key("space")
-    gh.on_list_activate("label-picker", 1)
-    assert len(gh._filter_labels) == 2
-
-    # Clear
-    gh._clear_filter()
-    assert gh._filter_labels == set()
-    assert len(gh._visible_issues()) == 3
+    assert (
+        app._issue_url({"repo": "owner/repo"}, {"number": 7})
+        == "https://github.com/owner/repo/issues/7"
+    )
 
 
-def test_e2e_picker_preserves_selection_after_apply():
-    """After applying a filter, the selected issue is clamped to visible range."""
+def test_new_issue_url_points_to_github_repo():
     app = _load_app_module()
-    gh = _make_app(app)
-    gh._sel = 2  # last issue
 
-    # Filter to only issues with "docs" label (just issue #9)
-    gh._open_picker()
-    labels = gh._picker_filtered_labels()
-    docs_idx = labels.index("docs")
-    gh.on_list_select("label-picker", docs_idx)
-    gh._handle_picker_key("space")
-    gh.on_list_activate("label-picker", docs_idx)
-
-    assert gh._filter_labels == {"docs"}
-    visible = gh._visible_issues()
-    assert len(visible) == 1
-    assert gh._sel <= len(visible) - 1
+    assert app._new_issue_url({"repo": "owner/repo"}) == "https://github.com/owner/repo/issues/new"
 
 
-def test_e2e_list_events_route_to_correct_view():
-    """list_select/list_activate route to picker vs issues list by id."""
+def test_o_key_opens_selected_issue_via_host_open_url(monkeypatch):
     app = _load_app_module()
-    gh = _make_app(app)
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues(), "selected": 0})
+    monkeypatch.setattr(app.state, "get", lambda key, default=None: data.get(key, default))
 
-    # In list view, list events go to issues
-    gh.on_list_select("issues", 1)
-    assert gh._sel == 1
-    assert gh._picker_sel == 0
+    effects = app.update(app.KeyEvent(key="o", pressed=True))
 
-    # In picker view, list events go to picker
-    gh._open_picker()
-    gh.on_list_select("label-picker", 2)
-    assert gh._picker_sel == 2
-    assert gh._sel == 1  # unchanged
-
-    # Activate on picker applies, activate on issues opens detail
-    gh.on_list_activate("label-picker", 2)
-    assert gh._view == gh.VIEW_LIST
+    open_urls = [effect for effect in effects if isinstance(effect, app.OpenUrl)]
+    assert len(open_urls) == 1
+    assert open_urls[0].url == "https://github.com/owner/repo/issues/9"
 
 
-def test_e2e_sort_composes_with_multi_label_filter():
-    """Sort mode works correctly with multi-label AND filter."""
+def test_n_key_opens_new_issue_via_host_open_url(monkeypatch):
     app = _load_app_module()
-    gh = _make_app(app, issues=_many_label_issues())
+    data = dict(app.DEFAULT_STATE)
+    data.update({"repo": "owner/repo", "issues": _issues()})
+    monkeypatch.setattr(app.state, "get", lambda key, default=None: data.get(key, default))
 
-    # Filter to issues with both "bug" and "P0" (only issue #10)
-    gh._filter_labels = {"bug", "P0"}
-    visible = gh._visible_issues()
-    assert len(visible) == 1
-    assert visible[0]["number"] == 10
+    effects = app.update(app.KeyEvent(key="n", pressed=True))
 
-    # Changing sort shouldn't break the filter
-    gh._cycle_sort()
-    visible = gh._visible_issues()
-    assert len(visible) == 1
-    assert visible[0]["number"] == 10
+    open_urls = [effect for effect in effects if isinstance(effect, app.OpenUrl)]
+    assert len(open_urls) == 1
+    assert open_urls[0].url == "https://github.com/owner/repo/issues/new"

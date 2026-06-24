@@ -217,11 +217,11 @@ def test_textedit_to_node_fields() -> None:
     }
 
 
-def test_textedit_nested_in_column_no_fallback() -> None:
+def test_textedit_nested_in_column_is_native() -> None:
     te = TextEdit("body", placeholder="Type...", multiline=True, height=120.0)
     col = Column([te])
     node = col.to_node()
-    assert node is not None, "Column.to_node() returned None — TextEdit triggered L0 fallback"
+    assert node is not None
     child_node = node["children"][0]
     assert child_node["type"] == "text_edit"
     assert child_node["node_id"] == "body"

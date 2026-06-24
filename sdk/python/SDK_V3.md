@@ -12,8 +12,8 @@ A Python app is three module-level functions. No class, no inheritance.
 
 ```python
 from plexi_sdk import state, log
-from plexi_sdk.effects import SetTitle, SetTimer
-from plexi_sdk.events import KeyEvent, TimerFired
+from plexi_sdk.effects import SetTitle
+from plexi_sdk.events import KeyEvent
 from plexi_sdk.ui import Column, Text, Button, AppBar, FooterKeys
 
 def init(size: tuple[float, float], args: list[str]) -> list:
@@ -41,6 +41,7 @@ def view():
 - The adapter calls `init(size, args)` on launch, passing the pane size and any args from `plexi run`.
 - Before every `update(event)` call, the adapter sets `plexi_sdk._state` to the current `StateSnapshot`.
 - Before every `view()` call, the adapter sets `plexi_sdk._state` to the current `StateSnapshot`.
+- Before every `view()` call, the adapter dispatches `RenderFrame` through `update(event)` without auto-scheduling another render. Continuous apps opt into host-paced animation with `SetSchedulerMode("continuous", fps=60)`.
 - `state` in `plexi_sdk` is a module-level proxy that reads `plexi_sdk._state`.
 - The adapter flattens the `UINode` tree returned by `view()` into a WIT `ui-tree` arena.
 
@@ -55,23 +56,28 @@ def view():
 from plexi_sdk import state   # StateProxy instance
 
 state.get(key: str, default=None) -> any       # JSON-decode value, return default if absent
-state.set(key: str, value: any) -> SetState    # returns a SetState effect (does NOT mutate immediately)
+state.set(key: str, value: any) -> SetState    # returns a runtime-state effect (does NOT mutate immediately)
 state.all() -> dict[str, any]                  # all keys decoded
 state.raw(key: str) -> bytes | None            # raw bytes, no decode
 ```
 
-**`state.set()` returns an effect, it does not mutate.** The app returns `[state.set("count", 5)]` from `update()`. The adapter executes it via `host-state::set`, then rebuilds the snapshot and calls `view()`.
+**`state.set()` returns an effect, it does not mutate immediately.** The app returns `[state.set("count", 5)]` from `update()`. The adapter applies the update to the process-local SDK snapshot, then calls `view()`.
 
-**`SetState` effect:** convenience shorthand. Equivalent to returning a list of `HostStateSet` effects. Implemented as:
+**`SetState` effect:** process-local runtime state. Use it for view/update data, game state, caches, and animation state. It never writes host app-state files.
 
 ```python
 @dataclass
 class SetState:
-    """Set one or more state keys. Values are JSON-encoded by the adapter."""
     data: dict  # {key: value} — values must be JSON-serializable
 ```
 
-The adapter serializes each value as JSON bytes and calls `host-state::set(key, json_bytes)` for each entry.
+**`PersistState` effect:** explicit durable state. It updates the same runtime snapshot and writes the full app-state snapshot through the host.
+
+```python
+@dataclass
+class PersistState:
+    data: dict
+```
 
 **State in `view()`:** `state.get()` reads the snapshot set by the adapter before the call. It is read-only inside `view()` — calling `state.set()` inside `view()` raises `RuntimeError("state.set() called inside view() — return SetState from update() instead")`.
 
@@ -107,13 +113,22 @@ from typing import Optional
 
 @dataclass
 class SetState:
-    data: dict  # {key: any} — JSON-encoded per key by adapter
+    data: dict  # process-local runtime state
+
+@dataclass
+class PersistState:
+    data: dict  # runtime state plus explicit durable app-state save
 
 # ── File I/O ──────────────────────────────────────────────────────────────────
 
 @dataclass
 class FileRead:
     path: str   # → file-read-effect { path }
+
+@dataclass
+class FileList:
+    path: str
+    extensions: list = field(default_factory=list)  # host filters files by extension
 
 @dataclass
 class FileWrite:
@@ -130,6 +145,10 @@ class HttpFetch:
     body: Optional[bytes] = None
     # → http-fetch-effect { url, method, headers: list<tuple<string,string>>, body: option<list<u8>> }
     # adapter converts headers dict to list[tuple[str,str]]
+
+@dataclass
+class OpenUrl:
+    url: str  # host opens an HTTP(S) URL in the default browser after allowlist checks
 
 # ── AI ────────────────────────────────────────────────────────────────────────
 
@@ -158,6 +177,14 @@ class SetTimer:
 @dataclass
 class CancelTimer:
     id: int         # → cancel-timer(u32)
+
+# ── Rendering ────────────────────────────────────────────────────────────────
+
+@dataclass
+class SetSchedulerMode:
+    mode: str       # "idle" | "scheduled" | "continuous"
+    fps: int | None = None
+    # continuous is for games/animations; it drives RenderFrame events.
 
 # ── System ────────────────────────────────────────────────────────────────────
 
@@ -278,6 +305,11 @@ class FocusLost:
 @dataclass
 class TimerFired:
     id: int             # → input-event::timer-fired(u32)
+
+@dataclass
+class RenderFrame:
+    frame_id: int       # process-local monotonically increasing frame id
+    elapsed: float      # seconds since previous render frame
 
 @dataclass
 class SystemStats:
@@ -443,13 +475,13 @@ class Button:
     # → ui-node-data::button(button-node)
 
 @dataclass
-class TextInput:
-    value: str
+class TextEdit:
+    node_id: str
+    value: str = ""
     placeholder: str = ""
-    on_change: str = ""     # handler_id — matched by UiValueChange event
-    on_submit: str = ""     # handler_id — matched by UiAction event
-    password: bool = False
-    # → ui-node-data::text-input(text-input-node)
+    multiline: bool = False
+    max_length: int = 0
+    # → ui-node-data::text-edit(text-edit-node)
 
 @dataclass
 class ProgressBar:
@@ -577,155 +609,96 @@ Reset `_next_id` to 0 before each `view()` call. Keys are positional by default;
 
 ---
 
-## 7. Adapter Bridge Protocol
+## 7. Native ProcessApp Bridge Protocol
 
-The CPython-in-WASM adapter (`src/host/wasm_python.rs`) drives Python via the CPython C API exposed inside WASM. The bridge between Rust and Python uses JSON over the WASM linear memory. This is the exact protocol — implement exactly this.
+SDK v3 Python apps run through native `ProcessApp`: the host starts the system Python interpreter as a subprocess and invokes `python -m plexi_sdk._v3_process <entry.py>`. PGAP remains the process transport. WASM-contained Python is not part of this contract.
 
 ### Bootstrap sequence
 
-1. Adapter loads `app/main.py` (or the entry file from `manifest.toml`) by calling CPython's `PyRun_SimpleFile`.
-2. Adapter imports `plexi_sdk._adapter` (internal module pre-loaded into CPython).
-3. All lifecycle calls go through `plexi_sdk._adapter.call_lifecycle(fn_name, json_arg) -> str`.
+1. `ProcessApp::launch` resolves the `.py` entry from the manifest and launches it with the SDK path on `PYTHONPATH`.
+2. `plexi_sdk._v3_process` loads the app module from that entry file.
+3. The runtime reads PGAP JSON events from stdin and emits PGAP JSON commands on stdout.
+4. Lifecycle calls are ordinary Python function calls into module-level `init(size, args)`, `update(event)`, and `view()`.
 
-### `_adapter.py` interface (internal, not app-facing)
+### Runtime protocol
 
-```python
-# plexi_sdk/_adapter.py — called by Rust adapter, not by app code
+- `PlexiEvent::Init` calls `init((width, height), args)` and applies returned effects.
+- `PlexiEvent::Render` dispatches `RenderFrame` through `update(event)`, then calls `view()` and emits a `component_tree` draw command.
+- Input events decode to typed SDK events such as `KeyEvent`, `UiAction`, `UiValueChange`, `FileListResult`, and `FileReadResult`.
+- Effects encode back to existing PGAP host/control commands, including `set_state`, `save_app_state`, `set_title`, `file_list`, `file_read`, `http_request`, `open_url`, and `set_scheduler_mode`.
 
-import json
-import sys
+### File effects
 
-_module = None  # the loaded app module
+`FileList(path, extensions=[])` and `FileRead(path)` are native ProcessApp host requests. The host requires `fs.read`, resolves the requested path inside `workspace_root`, and returns `FileListResult(entries, error)` or `FileReadResult(content, error)`. Directory listings are sorted with directories first, then files by name.
 
-def load_app(module_name: str):
-    global _module
-    _module = __import__(module_name)
+### URL effects
 
-def call_lifecycle(fn_name: str, json_arg: str) -> str:
-    """
-    fn_name: "init" | "update" | "view"
-    json_arg: JSON-encoded argument (see below)
-    returns: JSON-encoded return value
-    """
-    fn = getattr(_module, fn_name)
-    arg = json.loads(json_arg) if json_arg else None
+`OpenUrl(url)` is a native ProcessApp host request for opening HTTP(S) URLs in the user's default browser. The host requires `net.http`, rejects non-HTTP(S) URLs, and applies the manifest `allowed_hosts` matcher before spawning the platform opener.
 
-    if fn_name == "init":
-        # arg: {"state": {key: value_b64}, "size": [w, h], "args": [...]}
-        import plexi_sdk as sdk
-        sdk._state = _decode_state(arg["state"])
-        sdk._in_view = False
-        result = fn((arg["size"][0], arg["size"][1]), arg["args"])
-        return json.dumps([_encode_effect(e) for e in result])
+### Deferred WASM Python boundary
 
-    elif fn_name == "update":
-        # arg: {"type": "KeyEvent", "key": "a", ...}
-        import plexi_sdk as sdk
-        sdk._state = _decode_state(arg["state"])
-        sdk._in_view = False
-        event = _decode_event(arg["event"])
-        result = fn(event)
-        return json.dumps([_encode_effect(e) for e in result])
-
-    elif fn_name == "view":
-        # arg: {"state": {key: value_b64}}
-        import plexi_sdk as sdk
-        sdk._state = _decode_state(arg["state"])
-        sdk._in_view = True
-        tree = fn()
-        sdk._in_view = False
-        return json.dumps(_encode_uitree(tree))
-```
-
-**JSON encoding for state values:** values are base64-encoded JSON bytes. `_decode_state` calls `json.loads(base64.b64decode(v))` for each entry. State keys that are not valid JSON (raw bytes) are passed through as base64 strings with a `"b64:"` prefix.
-
-**JSON encoding for effects:** each effect encodes as `{"type": "ClassName", ...fields}`. Example: `SetTitle(title="hello")` → `{"type": "SetTitle", "title": "hello"}`.
-
-**JSON encoding for UINode:** the flattened arena as `{"root": 0, "nodes": [{"id": 0, "key": "0", "data": {"type": "Column", "children": [1,2], "gap": 0.0, ...}}, ...]}`.
-
-**JSON encoding for events:** each event decodes from `{"type": "ClassName", ...fields}`. The Rust adapter serializes the WIT `input-event` to this JSON before calling Python.
-
-The Rust side reads the returned JSON string from WASM linear memory via a shared buffer. Implementation detail for `wasm_python.rs`: pass JSON in/out via a pre-allocated 4MB linear memory buffer. Write JSON to offset 0, call Python function, read JSON response from offset 0 of the response buffer.
+CPython-in-WASM remains deferred G8 runtime work. Do not add `[runtime] python_compat = true` for SDK v3 apps, do not route Python app manifests to a `WasmPythonAdapter`, and do not require CPython bundle or shim fixtures for this SDK contract.
 
 ---
 
 ## 8. Manifest Schema
 
-`manifest.toml` for Python apps:
+Current Python SDK v3 apps use the existing app manifest shape:
 
 ```toml
-schema_version = "2"
-id = "com.publisher.app-name"
-version = "1.0.0"
-name = "App Name"
+schema_version = 1
+
+[app]
+id = "my_app"
+type = "app"
+name = "My App"
+version = "0.1.0"
 description = "One sentence."
-publisher = "publisher-name"
+entry = "main.py"
 
-[runtime]
-entry = "main.py"            # entry file; adapter does __import__(stem)
-python_compat = true         # required for Python apps
+[app.capabilities]
+capabilities = []
 
-[capabilities]
-required = []
-optional = []
+[launch]
 ```
 
-`[runtime] python_compat = true` is the sole flag that routes to `WasmPythonAdapter` instead of `LiveWasmPane`. No other manifest change needed.
-
-`entry` field: defaults to `"main.py"` if absent. The adapter strips the `.py` suffix and calls `__import__` on the stem. Multi-module apps: the entry module imports helpers from the same directory; WASI preopens mount the app dir as `"."`.
+`[app] type = "app"` plus a `.py` entry launches through native `ProcessApp`. `[app] type = "wasm"` is the separate component-model WASM runtime. SDK v3 is the current Python app API; it is not a WASM execution mode.
 
 ---
 
-## 9. CPython WASM Bundle
+## 9. WASM-Contained Python Status
 
-**Source:** `https://github.com/brettcannon/cpython-wasi-build/releases` — use the latest `cpython-3.12.x-wasm32-wasip1` release asset named `python-3.12.x-wasm32-wasip1.zip`. If that release is unavailable, fall back to building CPython from source: `./configure --host=wasm32-wasip1 CC=clang --disable-test-modules --prefix=/opt/wasm` then `make install`.
-
-**Version pin:** `CPYTHON_BUNDLE_VERSION = "3.12.3"` as a constant in `src/host/wasm_python.rs`. Hash is SHA256 of the `.wasm` file, hardcoded alongside the version.
-
-**Cache path:** `~/.plexi/wasm-bundles/cpython-3.12.wasm`. The adapter checks this path on first use. If absent or SHA256 mismatch: download from the releases URL to a temp file, verify SHA256, move to cache path. If download fails: panic with `"CPython WASM bundle unavailable — run: just fetch-cpython-bundle"`.
-
-**Bundle wrapping:** if the upstream asset is a raw WASM module (not a Component), wrap it: `wasm-tools component new python.wasm --adapt wasi_snapshot_preview1=wasi_preview1_component_adapter.wasm -o cpython-3.12.wasm`. The `wasi_preview1_component_adapter.wasm` is from `bytecodealliance/wasmtime` releases. Both the adapted bundle and the adapter binary are cached locally.
-
-**`just fetch-cpython-bundle`:** shell recipe that downloads, verifies, and wraps. Not called at build time — called explicitly by the developer or CI.
+Deferred. A future G8 may add a CPython-in-WASM compatibility layer, bundle management, and manifest routing. That work is outside this SDK v3 native landing and must not be advertised as shipped.
 
 ---
 
 ## 10. Hot Reload
 
-Dev mode only (`plexi app dev <path>`). Not active for registry-installed apps.
-
-1. Host watches `<app-dir>/**/*.py` for `inotify`/`kqueue` events.
-2. On any change: capture the current state snapshot from the `WasmPythonAdapter` (`adapter.snapshot()`).
-3. Tear down the existing `wasmtime::Store` (drop it — microseconds).
-4. Create a new `Store`, re-mount the app dir via WASI preopens.
-5. Call `init(snapshot, last_size, last_args)` — passes previous state so in-progress work is preserved.
-6. `view()` called → host repaints.
-7. User sees the update. Total latency: WASM instance reset (~1ms) + `init` + `view` (~10ms typical).
-
-`file-watch` effect (WIT stub, implement in `src/host/wasm_app.rs`): WASM apps can also self-declare a file-watch. For Python dev mode, the host initiates the watch without the app asking — the app does not need to emit a `file-watch` effect.
+Dev mode is the existing watched ProcessApp subprocess flow. On Python source changes, the host restarts the app subprocess and reinjects persisted/runtime state where supported by the ProcessApp lifecycle. There is no wasmtime store reset or CPython bundle reload in the current SDK v3 path.
 
 ---
 
 ## 11. Scaffold Template (`plexi app init <name>`)
 
-`src/cli/app.rs` — `init` subcommand for Python apps generates exactly:
+`src/cli/app.rs` — `init` subcommand for Python apps generates a normal native app manifest and SDK v3 entry point.
 
 **`<name>/manifest.toml`:**
 ```toml
-schema_version = "2"
-id = "com.youname.{name}"
-version = "0.1.0"
+schema_version = 1
+
+[app]
+id = "{name}"
+type = "app"
 name = "{Name}"
-description = "A Plexi app."
-publisher = "yourname"
-
-[runtime]
 entry = "main.py"
-python_compat = true
+version = "0.1.0"
+description = "A Plexi app"
+watch = true
 
-[capabilities]
-required = []
-optional = []
+[app.capabilities]
+capabilities = []
+
+[launch]
 ```
 
 **`<name>/main.py`:**
@@ -737,81 +710,59 @@ from plexi_sdk.ui import Column, AppBar, Text, FooterKeys
 
 
 def init(size, args):
-    return [
-        SetTitle("{Name}"),
-        SetState({"count": 0}),
-    ]
+    log.info("app initialized")
+    return [SetTitle("{Name}"), SetState({"count": 0})]
 
 
 def update(event):
-    if isinstance(event, KeyEvent) and event.key == "plus" and event.pressed:
-        return [SetState({"count": state.get("count", 0) + 1})]
-    if isinstance(event, KeyEvent) and event.key == "minus" and event.pressed:
-        return [SetState({"count": state.get("count", 0) - 1})]
+    if isinstance(event, KeyEvent) and event.key == "return" and event.pressed:
+        return [state.set("count", state.get("count", 0) + 1)]
     return []
 
 
 def view():
-    count = state.get("count", 0)
     return Column([
         AppBar("{Name}"),
-        Text(str(count), bold=True, align="center"),
-        FooterKeys([("+", "increment"), ("-", "decrement")]),
+        Text(str(state.get("count", 0)), bold=True),
+        FooterKeys([("return", "increment")]),
     ], grow=True)
 ```
-
-**`<name>/pyproject.toml`:**
-```toml
-[project]
-name = "{name}"
-version = "0.1.0"
-requires-python = ">=3.12"
-dependencies = ["plexi-sdk>=3.0"]
-```
-
-No other files. No `__init__.py`. No `requirements.txt`.
 
 ---
 
 ## 12. SDK Package Layout
 
-`sdk/python/plexi_sdk/` replaces the existing package entirely:
+`sdk/python/plexi_sdk/` is the SDK v3 package used by native ProcessApp apps:
 
 ```
 plexi_sdk/
-  __init__.py        # exports: state (StateProxy), log (LogProxy), _state, _in_view
-  effects.py         # all Effect dataclasses (section 4)
-  events.py          # all Event dataclasses (section 5)
-  ui/
-    __init__.py      # all UINode dataclasses + AppBar/FooterKeys/Section helpers (section 6)
-  _adapter.py        # internal: call_lifecycle, load_app, encode/decode helpers
-  _state.py          # StateProxy, StateSnapshot implementation
-  _log.py            # LogProxy implementation (calls host-log via ctypes/WASM import)
+  __init__.py        # exports state, log, sizing helpers, and public SDK symbols
+  effects.py         # Effect dataclasses (section 4)
+  events.py          # Event dataclasses (section 5)
+  ui.py              # UINode dataclasses and layout primitives (section 6)
+  _v3_process.py     # native ProcessApp entry point
+  _v3_runtime.py     # PGAP event/effect runtime
+  _v3_state.py       # StateProxy and StateSnapshot implementation
+  _adapter.py        # test/helper encode/decode surface
 ```
 
-**Files to delete** (not rename, not keep — delete entirely):
+**Superseded legacy files to delete** (not rename, not keep):
 - `plexi_sdk/_pipe.py`
-- `plexi_sdk/_protocol.py`
 - `plexi_sdk/_emitter.py`
 - `plexi_sdk/_render_context.py`
-- `plexi_sdk/_constants.py` (constants move inline to `ui/__init__.py` where needed)
-- `plexi_sdk/_types.py` (replaced by `effects.py` + `events.py`)
+- `plexi_sdk/_app.py`
+- `plexi_sdk/_state.py`
+- legacy widget modules replaced by `ui.py` primitives
 
-**`pyproject.toml` version:** bump to `3.0.0`. Add `python_requires = ">=3.12"`.
+**`pyproject.toml` version:** `3.0.0`. Python requirement remains repo-standard `>=3.11`.
 
 ---
 
-## 13. PGAP Deletion
+## 13. Runtime Boundary
 
-After all Core apps pass under the new runtime, delete:
+Do not delete `src/process_app/`. SDK v3 Python apps still run through native `ProcessApp`; PGAP is the current transport for Python apps.
 
-- `src/process_app/` — entire directory
-- All `AppRuntime::Process` / `AppRuntime::ProcessApp` enum variants and match arms
-- `src/host/pgap.rs` or equivalent PGAP parser
-- Subprocess spawn code (search for `std::process::Command` in `src/` — anything spawning a Python process)
-- The `PackageRuntime::Native` variant if it was only used to gate subprocess Python execution (it maps to `NativeUnreviewed` trust label — if no native runtime exists post-deletion, remove the variant and the label)
-
-Run `cargo build` after deletion. All dead code errors are additional deletions. Do not use `#[allow(dead_code)]`.
+The WASM runtime remains available for `[app] type = "wasm"` component-model apps. CPython-in-WASM remains deferred G8 work and must not be described as shipped by SDK v3.
 
 ---
 
@@ -819,31 +770,15 @@ Run `cargo build` after deletion. All dead code errors are additional deletions.
 
 ### SDK unit tests (`sdk/python/tests/`)
 
-- `test_effects.py`: instantiate every Effect class, call `_encode_effect(e)`, assert JSON shape matches expected.
-- `test_events.py`: for each Event class, call `_decode_event(json_dict)`, assert correct Python type and field values.
-- `test_ui.py`: instantiate `Column([Text("hi"), Button("x", "click")])`, call `_encode_uitree(node)`, assert arena has 3 nodes with correct IDs and types.
-- `test_state.py`: `StateProxy.get()` with present key, absent key, default value. `state.set()` returns `SetState`. `state.set()` inside `view()` context raises `RuntimeError`.
+- `test_v3_adapter.py`: instantiate effects/events/UI nodes and assert encoded wire shape.
+- `test_v3_runtime_regression.py`: run runtime event/effect regressions, including state, key normalization, sizing, canvas, and file results.
 
-### Host unit tests (`src/host/wasm_python.rs #[cfg(test)]`)
+### Host unit tests
 
-Load `tests/fixtures/apps/hello_wasm_python/main.py`:
-```python
-from plexi_sdk.effects import SetTitle
-from plexi_sdk.events import KeyEvent
-from plexi_sdk.ui import Text
+- `src/process_app/routing.rs`: native `FileList` / `FileRead` enforce `fs.read` and workspace scoping.
+- `src/process_app/mod.rs`: regression coverage proves Python SDK v3 apps launch through `ProcessApp`, not a WASM adapter.
+- `src/protocol/events.rs` and `src/protocol/commands.rs`: serde round-trips for new event/request fields.
 
-def init(size, args):
-    return [SetTitle("hello")]
+### App tests
 
-def update(event):
-    return []
-
-def view():
-    return Text("ok")
-```
-
-Test: `init` returns WIT `list<effect>` with one `set-title("hello")`. `update(key-event{key:"q"})` returns empty list. `view()` returns `ui-tree` with one `text-node{text:"ok"}`.
-
-### G8 gate
-
-`apps/stats/stats.py` rewritten against v3 SDK, launches under `WasmPythonAdapter`, screenshot of the activity clock matches reference. Test is a `#[test]` in `src/ui_tests.rs` that calls `PlexiUiHarness`, opens the stats app, waits for `TimerFired`, screenshots, asserts non-blank canvas region.
+Each touched core app has a focused SDK v3 test under `apps/<app>/tests/`. Canvas/game apps must prove size-aware canvas behavior; file apps must prove `FileList` / `FileRead` effects; keyboard apps must use normalized lowercase key strings.

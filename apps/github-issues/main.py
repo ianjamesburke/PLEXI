@@ -1,140 +1,790 @@
 #!/usr/bin/env python3
-"""gh-issues — GitHub Issues viewer for the workspace repo.
+"""GitHub Issues — SDK v3 HTTP-backed issue browser."""
 
-Three views:
-  - LIST: scrollable issue rows with number badge, title, labels
-  - DETAIL: metadata card + scrollable markdown body
-  - PICKER: label selector for multi-label AND filtering
+from __future__ import annotations
 
-Keys: j/k navigate · Enter open detail · Esc back · o open in browser
-      s sort · f filter · l label picker · c clear filter · r refresh · n new
-"""
-import asyncio
 import json
+import os
 import subprocess
-from typing import Optional
+from urllib.parse import quote
 
-from plexi_sdk import (
-    App, RenderContext, Arg,
-    theme,
-    BODY, CAPTION, HINT,
-    PAD, PAD_TIGHT,
+from plexi_sdk import log, state
+from plexi_sdk.effects import HttpFetch, OpenUrl, RequestCapability, SetState, SetStatus, SetTitle
+from plexi_sdk.events import (
+    CapabilityDenied,
+    CapabilityGranted,
+    HttpResponse,
+    KeyEvent,
+    ListActivate,
+    ListSelect,
+    UiAction,
+    UiValueChange,
 )
 from plexi_sdk.ui import (
-    AppBar, FooterKeys, InfoTable, Section,
-    Scrollable, Column, Label, Spacer,
-    ListRow, RowChip, LeadingBadge,
+    AppBar,
+    Column,
     Component,
-    TEXT_BODY,
-    SPACE_MD,
-    _markdown_measure_lines,
+    FooterKeys,
+    LeadingBadge,
+    ListRow,
+    Markdown,
+    RowChip,
+    Scrollable,
+    Text,
+    TextEdit,
 )
 
+API = "https://api.github.com"
+ISSUE_LIST_LIMIT = "500"
+SORT_MODES = ("created_desc", "created_asc", "number_desc", "number_asc")
+SORT_LABELS = {
+    "created_desc": "created desc",
+    "created_asc": "created asc",
+    "number_desc": "number desc",
+    "number_asc": "number asc",
+}
+PRIORITY_PREFIXES = ("p0", "p1", "p2", "p3", "p4", "bug", "enhancement", "feat", "fix")
+MAX_VISIBLE_CHIPS = 3
+COLOR_ACCENT = "#89b4fa"
+COLOR_DANGER = "#f38ba8"
+COLOR_WARNING = "#f9e2af"
+COLOR_SUCCESS = "#a6e3a1"
+COLOR_MUTED = "#6c7086"
 
-# ── Private markdown component ────────────────────────────────────────────────
 
-class _MarkdownBlock(Component):
-    """Embeds ctx.markdown() in the declarative component tree."""
+class HostListView(Component):
+    def __init__(self, list_id: str, rows: list[dict], selected: int) -> None:
+        self.list_id = list_id
+        self.rows = rows
+        self.selected = selected
 
-    def __init__(self, text: str) -> None:
-        self.text = text
+    def is_grow(self) -> bool:
+        return True
 
     def measure(self, avail_w: float) -> float:
-        if not self.text:
-            return 0.0
-        lines = _markdown_measure_lines(self.text, avail_w, TEXT_BODY, max_lines=400)
-        return max(1, lines) * (TEXT_BODY + 5.0)
+        return 0.0
 
-    def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
-        if self.text:
-            ctx.markdown(x, y, w, self.text)
+    def to_node(self) -> dict:
+        return {
+            "type": "raw",
+            "command": {
+                "type": "list_view",
+                "id": self.list_id,
+                "items": self.rows,
+                "selected": self.selected,
+                "loading": False,
+                "error": None,
+            },
+        }
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _gh(*args: str, cwd: Optional[str] = None, timeout: float = 15.0) -> tuple[int, str, str]:
-    """Run gh CLI. Returns (returncode, stdout, stderr). Never raises."""
+def _detect_repo() -> str:
     try:
-        p = subprocess.run(
-            ["gh", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout,
+        import plexi_sdk
+        workspace_root = plexi_sdk._workspace_root
+        if not workspace_root:
+            return ""
+        result = subprocess.run(
+            ["git", "-C", workspace_root, "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
         )
-        return p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired:
-        return -1, "", "timeout after 15s"
-    except Exception as exc:
-        return -1, "", str(exc)
+        if result.returncode != 0:
+            return ""
+        url = result.stdout.strip()
+        if url.startswith("git@github.com:"):
+            path = url[len("git@github.com:"):]
+        elif "github.com/" in url:
+            path = url.split("github.com/", 1)[1]
+        else:
+            return ""
+        if path.endswith(".git"):
+            path = path[:-4]
+        return path.strip("/")
+    except Exception:
+        return ""
 
 
-def _label_color(name: str) -> str:
-    n = name.lower()
-    if any(w in n for w in ("bug", "error", "p0", "p1")):
-        return theme.danger
-    if any(w in n for w in ("p2", "enhancement", "feat")):
-        return theme.warning
-    if any(w in n for w in ("ready", "done", "p3", "p4")):
-        return theme.success
-    return theme.accent
-
-
-SORT_MODES = ("created_desc", "created_asc", "number_desc", "number_asc")
-ISSUE_LIST_LIMIT = "500"
-
-SORT_LABELS = {
-    "created_desc": "created ↓",
-    "created_asc": "created ↑",
-    "number_desc": "number ↓",
-    "number_asc": "number ↑",
+DEFAULT_STATE = {
+    "repo": "",
+    "issues": [],
+    "selected": 0,
+    "loading": False,
+    "pending": "",
+    "error": "",
+    "filter": "",
+    "filter_active": False,
+    "filter_labels": [],
+    "sort_mode": "created_desc",
+    "view": "list",
+    "detail": None,
+    "picker_query": "",
+    "picker_selected": 0,
+    "picker_staged": [],
 }
 
 
-PRIORITY_PREFIXES = ("p0", "p1", "p2", "p3", "p4", "bug", "enhancement", "feat", "fix")
-MAX_VISIBLE_CHIPS = 3
+def init(size, args) -> list:
+    repo = args[0] if args else state.get("repo", "")
+    if not repo:
+        repo = _detect_repo()
+    data = _state()
+    if repo:
+        data["repo"] = repo
+    effects: list = [SetTitle("GitHub Issues")]
+    if data["repo"]:
+        data["error"] = ""
+        effects.append(SetState(data))
+        effects.append(RequestCapability("net.http"))
+        effects.append(SetStatus("Requesting network access"))
+        log.info(f"github-issues: SDK v3 initialized repo={data['repo']}")
+    else:
+        effects.extend([SetState(data), SetStatus("No repo detected — set context root to a git repo")])
+        log.info("github-issues: initialized without repo arg")
+    return effects
+
+
+def update(event) -> list:
+    data = _state()
+    if isinstance(event, CapabilityGranted) and event.name == "net.http":
+        if data["repo"]:
+            data["loading"] = True
+            data["pending"] = "list"
+            data["error"] = ""
+            return [SetState(data), SetStatus("Loading issues"), _fetch_list(data["repo"])]
+        return []
+    if isinstance(event, CapabilityDenied) and event.name == "net.http":
+        data["error"] = "Network access denied"
+        return [SetState(data), SetStatus("Network access denied")]
+    if isinstance(event, HttpResponse):
+        data.update(_handle_http(data, event))
+        return [SetState(data), SetStatus(_status(data))]
+
+    if isinstance(event, UiValueChange) and event.handler_id == "issues-filter":
+        data["filter"] = event.value
+        data["filter_active"] = True
+        data["selected"] = 0
+        return [SetState(data), SetStatus(_status(data))]
+    if isinstance(event, UiAction) and event.handler_id == "issues-filter":
+        data["filter_active"] = False
+        data["selected"] = _clamp(data["selected"], len(_visible_issues(data)))
+        return [SetState(data), SetStatus(_status(data))]
+    if isinstance(event, UiValueChange) and event.handler_id == "issues-picker-query":
+        data["picker_query"] = event.value
+        data["picker_selected"] = 0
+        return [SetState(data), SetStatus(_status(data))]
+    if isinstance(event, ListSelect):
+        return _handle_list_select(data, event)
+    if isinstance(event, ListActivate):
+        return _handle_list_activate(data, event)
+
+    if not isinstance(event, KeyEvent) or not event.pressed:
+        return []
+
+    key = event.key
+    if data["view"] == "picker":
+        return _handle_picker_key(data, key)
+
+    if data["view"] == "detail":
+        if key == "escape":
+            data["view"] = "list"
+            data["detail"] = None
+            return [SetState(data), SetStatus(_status(data))]
+        if key == "o" and data.get("detail"):
+            url = _issue_url(data, data["detail"])
+            if url:
+                return [SetState(data), SetStatus(f"Opening #{data['detail']['number']}"), OpenUrl(url)]
+        return []
+
+    if key == "/":
+        data["filter_active"] = not data.get("filter_active")
+        return [SetState(data), SetStatus("Filtering issues")]
+    if key == "escape" and data.get("filter_active"):
+        data["filter_active"] = False
+        return [SetState(data), SetStatus(_status(data))]
+
+    visible = _visible_issues(data)
+    if key in ("down", "j"):
+        data["selected"] = _clamp(data["selected"] + 1, len(visible))
+    elif key in ("up", "k"):
+        data["selected"] = _clamp(data["selected"] - 1, len(visible))
+    elif key in ("return", "enter") and visible:
+        issue = visible[data["selected"]]
+        data["view"] = "detail"
+        data["detail"] = None
+        data["loading"] = True
+        data["pending"] = f"detail:{issue['number']}"
+        return [
+            SetState(data),
+            SetStatus(f"Loading #{issue['number']}"),
+            _fetch_detail(data["repo"], issue["number"]),
+        ]
+    elif key == "r" and data["repo"]:
+        data["loading"] = True
+        data["pending"] = "list"
+        data["error"] = ""
+        return [
+            SetState(data),
+            SetStatus("Refreshing issues"),
+            _fetch_list(data["repo"]),
+        ]
+    elif key == "s":
+        data["sort_mode"] = _next_sort_mode(data["sort_mode"])
+        data["selected"] = _clamp(data["selected"], len(_visible_issues(data)))
+    elif key == "f":
+        _toggle_filter_from_selection(data)
+    elif key == "l":
+        data["view"] = "picker"
+        data["picker_query"] = ""
+        data["picker_selected"] = 0
+        data["picker_staged"] = list(data["filter_labels"])
+    elif key == "c":
+        data["filter"] = ""
+        data["filter_active"] = False
+        data["filter_labels"] = []
+        data["selected"] = 0
+    elif key == "o" and visible:
+        issue = visible[data["selected"]]
+        url = _issue_url(data, issue)
+        if not url:
+            return []
+        return [SetState(data), SetStatus(f"Opening #{issue['number']}"), OpenUrl(url)]
+    elif key == "n":
+        url = _new_issue_url(data)
+        if not url:
+            return []
+        return [SetState(data), SetStatus("Opening new issue"), OpenUrl(url)]
+    else:
+        return []
+    return [SetState(data), SetStatus(_status(data))]
+
+
+def view():
+    data = _state()
+    if not data["repo"]:
+        return Column(
+            [
+                AppBar("GitHub Issues", "no repo detected"),
+                Text(
+                    "Set a context root to a GitHub repo, or launch with:\n"
+                    "  plexi app open github-issues owner/repo",
+                    size=12.0,
+                ),
+            ],
+            grow=True,
+            padding=0,
+        )
+    if data["view"] == "detail":
+        return _detail_view(data)
+    if data["view"] == "picker":
+        return _picker_view(data)
+    return _list_view(data)
+
+
+def _state() -> dict:
+    data = dict(DEFAULT_STATE)
+    for key, value in DEFAULT_STATE.items():
+        data[key] = state.get(key, value)
+    data["issues"] = [dict(issue) for issue in data.get("issues") or []]
+    data["selected"] = max(0, int(data.get("selected") or 0))
+    data["filter"] = str(data.get("filter") or "")
+    data["filter_active"] = bool(data.get("filter_active", False))
+    data["filter_labels"] = [
+        str(label) for label in data.get("filter_labels") or [] if str(label)
+    ]
+    data["picker_query"] = str(data.get("picker_query") or "")
+    data["picker_selected"] = max(0, int(data.get("picker_selected") or 0))
+    data["picker_staged"] = [
+        str(label) for label in data.get("picker_staged") or [] if str(label)
+    ]
+    data["sort_mode"] = (
+        data.get("sort_mode") if data.get("sort_mode") in SORT_MODES else "created_desc"
+    )
+    return data
+
+
+def _fetch_list(repo: str) -> HttpFetch:
+    return HttpFetch(
+        f"{API}/repos/{quote(repo, safe='/')}/issues?state=open&per_page={ISSUE_LIST_LIMIT}",
+        headers=_headers(),
+    )
+
+
+def _fetch_detail(repo: str, number: int) -> HttpFetch:
+    return HttpFetch(
+        f"{API}/repos/{quote(repo, safe='/')}/issues/{number}", headers=_headers()
+    )
+
+
+def _headers() -> dict:
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "Plexi"}
+    token = _github_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_token() -> str:
+    env_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if env_token:
+        return env_token
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _handle_http(data: dict, event: HttpResponse) -> dict:
+    if event.status < 200 or event.status >= 300:
+        data["loading"] = False
+        data["error"] = f"HTTP {event.status}: {_body_text(event)[:240]}"
+        data["pending"] = ""
+        log.warn(f"github-issues: request failed {event.status}")
+        return data
+    try:
+        payload = json.loads(_body_text(event))
+    except json.JSONDecodeError as exc:
+        data["loading"] = False
+        data["error"] = str(exc)
+        data["pending"] = ""
+        return data
+    pending = data["pending"]
+    if pending == "list":
+        data["issues"] = _normalize_issues(payload if isinstance(payload, list) else [])
+        data["selected"] = _clamp(data["selected"], len(_visible_issues(data)))
+        log.info(f"github-issues: loaded {len(data['issues'])} issues")
+    elif pending.startswith("detail:") and isinstance(payload, dict):
+        data["detail"] = _normalize_issue(payload)
+        log.info(f"github-issues: loaded detail #{data['detail'].get('number')}")
+    data["loading"] = False
+    data["pending"] = ""
+    data["error"] = ""
+    return data
+
+
+def _body_text(event: HttpResponse) -> str:
+    body = event.body
+    if isinstance(body, bytes):
+        return body.decode("utf-8", errors="replace")
+    if isinstance(body, list):
+        return bytes(body).decode("utf-8", errors="replace")
+    return str(body)
+
+
+def _normalize_issues(raw: list[dict]) -> list[dict]:
+    return [_normalize_issue(issue) for issue in raw if "pull_request" not in issue]
+
+
+def _normalize_issue(issue: dict) -> dict:
+    return {
+        "number": int(issue.get("number") or 0),
+        "title": str(issue.get("title") or ""),
+        "state": str(issue.get("state") or "open"),
+        "body": str(issue.get("body") or ""),
+        "createdAt": str(issue.get("created_at") or issue.get("createdAt") or ""),
+        "labels": [
+            {"name": str(label.get("name") or "")}
+            for label in issue.get("labels") or []
+            if isinstance(label, dict)
+        ],
+        "assignees": [
+            {"login": str(assignee.get("login") or "")}
+            for assignee in issue.get("assignees") or []
+            if isinstance(assignee, dict)
+        ],
+        "html_url": str(issue.get("html_url") or ""),
+    }
+
+
+def _list_view(data: dict):
+    visible = _visible_issues(data)
+    rows = _issue_rows(data, visible)
+    body = (
+        _raw_list_view("issues", rows, data["selected"])
+        if rows
+        else Text(_empty_text(data), size=12.0)
+    )
+    filter_controls = []
+    if data.get("filter_active"):
+        filter_controls.append(
+            TextEdit(
+                "issues-filter",
+                value=data["filter"],
+                placeholder="filter labels or title",
+            )
+        )
+    return Column(
+        [
+            AppBar("GitHub Issues", _list_subtitle(data)),
+            *filter_controls,
+            body,
+            FooterKeys(
+                [
+                    ("j/k", "select"),
+                    ("enter", "apply" if data.get("filter_active") else "detail"),
+                    ("/", "filter"),
+                    ("s", "sort"),
+                    ("f", "filter"),
+                    ("l", "labels"),
+                    ("o", "browser"),
+                    ("n", "new"),
+                    ("r", "refresh"),
+                    ("c", "clear"),
+                ]
+            ),
+        ],
+        grow=True,
+        padding=0,
+    )
+
+
+def _detail_view(data: dict):
+    detail = data.get("detail")
+    if data["loading"]:
+        body = Text("Loading issue...", size=12.0)
+    elif data["error"]:
+        body = Text(data["error"], size=12.0)
+    elif not detail:
+        body = Text("No detail loaded.", size=12.0)
+    else:
+        labels = ", ".join(_issue_labels(detail)) or "none"
+        assignees = (
+            ", ".join(a["login"] for a in detail.get("assignees", [])) or "unassigned"
+        )
+        body = Scrollable(
+            Markdown(
+                f"## #{detail['number']} {detail['title']}\n\n"
+                f"**state:** {detail['state']}  \n"
+                f"**labels:** {labels}  \n"
+                f"**assignees:** {assignees}\n\n"
+                f"{detail.get('body') or '_No body._'}",
+            )
+        )
+    return Column(
+        [
+            AppBar("Issue Detail", f"#{detail['number']}" if detail else ""),
+            body,
+            FooterKeys([("o", "browser"), ("esc", "back")]),
+        ],
+        grow=True,
+        padding=0,
+    )
+
+
+def _picker_view(data: dict):
+    labels = _picker_filtered_labels(data)
+    data["picker_selected"] = _clamp(data["picker_selected"], len(labels))
+    staged = set(data["picker_staged"])
+    rows = [
+        ListRow(
+            id=f"label-{idx}",
+            leading=LeadingBadge(
+                "x" if label in staged else " ",
+                color=_label_color(label) if label in staged else COLOR_MUTED,
+            ),
+            primary=label,
+            chips=[RowChip(label, _label_color(label))],
+        ).to_dict()
+        for idx, label in enumerate(labels)
+    ]
+    body = (
+        _raw_list_view("label-picker", rows, data["picker_selected"])
+        if rows
+        else Text("No matching labels.", size=12.0)
+    )
+    return Column(
+        [
+            AppBar("Labels", _picker_subtitle(data)),
+            TextEdit(
+                "issues-picker-query",
+                value=data["picker_query"],
+                placeholder="filter labels",
+            ),
+            body,
+            FooterKeys(
+                [
+                    ("space", "toggle"),
+                    ("enter", "apply"),
+                    ("esc", "cancel"),
+                ]
+            ),
+        ],
+        grow=True,
+        padding=0,
+    )
+
+
+def _handle_list_select(data: dict, event: ListSelect) -> list:
+    if event.id == "issues":
+        data["selected"] = _clamp(event.index, len(_visible_issues(data)))
+    elif event.id == "label-picker":
+        data["picker_selected"] = _clamp(event.index, len(_picker_filtered_labels(data)))
+    else:
+        return []
+    return [SetState(data), SetStatus(_status(data))]
+
+
+def _handle_list_activate(data: dict, event: ListActivate) -> list:
+    if event.id == "issues":
+        visible = _visible_issues(data)
+        if not visible:
+            return []
+        data["selected"] = _clamp(event.index, len(visible))
+        issue = visible[data["selected"]]
+        data["view"] = "detail"
+        data["detail"] = None
+        data["loading"] = True
+        data["pending"] = f"detail:{issue['number']}"
+        return [
+            SetState(data),
+            SetStatus(f"Loading #{issue['number']}"),
+            _fetch_detail(data["repo"], issue["number"]),
+        ]
+    if event.id == "label-picker":
+        data["picker_selected"] = _clamp(event.index, len(_picker_filtered_labels(data)))
+        return _handle_picker_key(data, "enter")
+    return []
+
+
+def _issue_rows(data: dict, visible: list[dict]) -> list[dict]:
+    active_filters = set(data["filter_labels"])
+    return [
+        ListRow(
+            id=f"issue-{issue['number']}",
+            leading=LeadingBadge(f"#{issue['number']}", color=COLOR_ACCENT),
+            primary=issue["title"],
+            secondary=_issue_secondary(issue),
+            chips=_select_visible_chips(issue, active_filters),
+            trailing=(issue.get("createdAt") or "")[:10],
+        ).to_dict()
+        for issue in visible
+    ]
+
+
+def _raw_list_view(list_id: str, rows: list[dict], selected: int) -> dict:
+    return HostListView(list_id, rows, selected)
+
+
+def _visible_issues(data: dict) -> list[dict]:
+    labels = set(data.get("filter_labels") or [])
+    if data.get("filter") and not _is_text_filter(data["filter"]):
+        labels.add(data["filter"])
+    visible = _filter_and_sort_issues(data["issues"], labels, data["sort_mode"])
+    query = data["filter"].lower().strip()
+    if query and _is_text_filter(query):
+        visible = [
+            issue
+            for issue in visible
+            if query in issue["title"].lower()
+            or query in " ".join(_issue_labels(issue)).lower()
+        ]
+    return visible
+
+
+def _is_text_filter(value: str) -> bool:
+    return " " in value or ":" not in value
+
+
+def _list_subtitle(data: dict) -> str:
+    parts = [f"{len(_visible_issues(data))} open"]
+    if data.get("filter_labels"):
+        parts.append("label:" + "+".join(sorted(data["filter_labels"])))
+    parts.append(SORT_LABELS[data["sort_mode"]])
+    return " · ".join(parts)
+
+
+def _empty_text(data: dict) -> str:
+    if data["loading"]:
+        return "Loading issues..."
+    if data["error"]:
+        return data["error"]
+    return "No matching issues."
+
+
+def _status(data: dict) -> str:
+    if data["loading"]:
+        return "Loading"
+    if data["error"]:
+        return "Error"
+    return f"{len(_visible_issues(data))} open issues"
+
+
+def _clamp(selected: int, total: int) -> int:
+    if total <= 0:
+        return 0
+    return max(0, min(selected, total - 1))
 
 
 def _issue_labels(issue: dict) -> list[str]:
     return [
         str(label.get("name", ""))
         for label in (issue.get("labels") or [])
-        if label and label.get("name")
+        if isinstance(label, dict) and label.get("name")
     ]
+
+
+def _collect_unique_labels(issues: list[dict]) -> list[str]:
+    labels = set()
+    for issue in issues:
+        labels.update(_issue_labels(issue))
+    return sorted(labels, key=str.lower)
+
+
+def _fuzzy_match(query: str, label: str) -> bool:
+    return query.lower() in label.lower()
+
+
+def _label_color(name: str) -> str:
+    lowered = name.lower()
+    if any(token in lowered for token in ("bug", "error", "p0", "p1")):
+        return COLOR_DANGER
+    if any(token in lowered for token in ("p2", "enhancement", "feat")):
+        return COLOR_WARNING
+    if any(token in lowered for token in ("ready", "done", "p3", "p4")):
+        return COLOR_SUCCESS
+    return COLOR_ACCENT
 
 
 def _is_priority_label(name: str) -> bool:
     return name.lower().startswith(PRIORITY_PREFIXES)
 
 
-def _select_visible_chips(
-    issue: dict, active_filters: set[str],
-) -> list[RowChip]:
+def _select_visible_chips(issue: dict, active_filters: set[str]) -> list[RowChip]:
     all_labels = _issue_labels(issue)
-    if not all_labels:
-        return []
-    active = [l for l in all_labels if l in active_filters]
-    priority = [l for l in all_labels if l not in active_filters and _is_priority_label(l)]
-    rest = [l for l in all_labels if l not in active_filters and not _is_priority_label(l)]
-    ordered = active + priority + rest
-    visible = ordered[:MAX_VISIBLE_CHIPS]
-    hidden_count = len(all_labels) - len(visible)
-    chips = [RowChip(name, _label_color(name)) for name in visible]
-    if hidden_count > 0:
-        chips.append(RowChip(f"+{hidden_count}", theme.muted))
+    active = [label for label in all_labels if label in active_filters]
+    priority = [
+        label
+        for label in all_labels
+        if label not in active_filters and _is_priority_label(label)
+    ]
+    rest = [
+        label
+        for label in all_labels
+        if label not in active_filters and not _is_priority_label(label)
+    ]
+    visible = (active + priority + rest)[:MAX_VISIBLE_CHIPS]
+    chips = [RowChip(label, _label_color(label)) for label in visible]
+    hidden = len(all_labels) - len(visible)
+    if hidden > 0:
+        chips.append(RowChip(f"+{hidden}", COLOR_MUTED))
     return chips
 
 
-def _collect_unique_labels(issues: list[dict]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for issue in issues:
-        for label in _issue_labels(issue):
-            if label not in seen:
-                seen.add(label)
-                result.append(label)
-    result.sort(key=str.lower)
-    return result
+def _issue_secondary(issue: dict) -> str:
+    assignees = ", ".join(a["login"] for a in issue.get("assignees", []))
+    labels = len(_issue_labels(issue))
+    label_text = f"{labels} label" if labels == 1 else f"{labels} labels"
+    return f"{assignees} · {label_text}" if assignees else label_text
 
 
-def _fuzzy_match(query: str, label: str) -> bool:
-    return query.lower() in label.lower()
+def _issue_description(issue: dict, active_filters: set[str]) -> str:
+    chips = _select_visible_chips(issue, active_filters)
+    labels = "  ".join(chip.label for chip in chips)
+    assignees = ", ".join(a["login"] for a in issue.get("assignees", [])) or ""
+    if labels and assignees:
+        return f"{labels} · {assignees}"
+    return labels or assignees or "no labels"
+
+
+def _toggle_filter_from_selection(data: dict) -> None:
+    issue = _selected_issue(data)
+    if not issue:
+        return
+    labels = _issue_labels(issue)
+    if not labels:
+        return
+    keep_number = issue.get("number")
+    current = data["filter_labels"][0] if len(data.get("filter_labels") or []) == 1 else None
+    if current in labels:
+        idx = labels.index(current)
+        data["filter_labels"] = [] if idx == len(labels) - 1 else [labels[idx + 1]]
+    else:
+        data["filter_labels"] = [labels[0]]
+    _select_issue_number(data, keep_number)
+
+
+def _selected_issue(data: dict) -> dict | None:
+    visible = _visible_issues(data)
+    if not visible:
+        return None
+    return visible[_clamp(data["selected"], len(visible))]
+
+
+def _select_issue_number(data: dict, number: int | None) -> None:
+    visible = _visible_issues(data)
+    if number is not None:
+        for idx, issue in enumerate(visible):
+            if issue.get("number") == number:
+                data["selected"] = idx
+                return
+    data["selected"] = _clamp(data["selected"], len(visible))
+
+
+def _issue_url(data: dict, issue: dict) -> str:
+    existing = str(issue.get("html_url") or "")
+    if existing:
+        return existing
+    repo = str(data.get("repo") or "").strip("/")
+    number = int(issue.get("number") or 0)
+    if not repo or number <= 0:
+        return ""
+    return f"https://github.com/{quote(repo, safe='/')}/issues/{number}"
+
+
+def _new_issue_url(data: dict) -> str:
+    repo = str(data.get("repo") or "").strip("/")
+    if not repo:
+        return ""
+    return f"https://github.com/{quote(repo, safe='/')}/issues/new"
+
+
+def _picker_filtered_labels(data: dict) -> list[str]:
+    labels = _collect_unique_labels(data["issues"])
+    query = data["picker_query"].strip()
+    if not query:
+        return labels
+    return [label for label in labels if _fuzzy_match(query, label)]
+
+
+def _picker_subtitle(data: dict) -> str:
+    selected = len(data.get("picker_staged") or [])
+    if selected:
+        return f"{selected} selected"
+    return "type to filter"
+
+
+def _handle_picker_key(data: dict, key: str) -> list:
+    labels = _picker_filtered_labels(data)
+    if key in ("down", "j"):
+        data["picker_selected"] = _clamp(data["picker_selected"] + 1, len(labels))
+    elif key in ("up", "k"):
+        data["picker_selected"] = _clamp(data["picker_selected"] - 1, len(labels))
+    elif key == "space":
+        if labels:
+            label = labels[_clamp(data["picker_selected"], len(labels))]
+            staged = set(data["picker_staged"])
+            if label in staged:
+                staged.remove(label)
+            else:
+                staged.add(label)
+            data["picker_staged"] = sorted(staged, key=str.lower)
+    elif key in ("return", "enter"):
+        data["filter_labels"] = list(data["picker_staged"])
+        data["selected"] = 0
+        data["view"] = "list"
+    elif key == "escape":
+        data["view"] = "list"
+        data["picker_staged"] = list(data["filter_labels"])
+    else:
+        return []
+    return [SetState(data), SetStatus(_status(data))]
 
 
 def _next_sort_mode(mode: str) -> str:
@@ -152,480 +802,14 @@ def _sort_key(issue: dict, mode: str) -> tuple:
 
 
 def _filter_and_sort_issues(
-    issues: list[dict],
-    filter_labels: set[str],
-    sort_mode: str,
+    issues: list[dict], filter_labels: set[str], sort_mode: str
 ) -> list[dict]:
     visible = list(issues)
     if filter_labels:
         visible = [
-            issue for issue in visible
-            if filter_labels <= set(_issue_labels(issue))
+            issue for issue in visible if filter_labels <= set(_issue_labels(issue))
         ]
     reverse = sort_mode in ("created_desc", "number_desc")
-    return sorted(visible, key=lambda issue: _sort_key(issue, sort_mode), reverse=reverse)
-
-
-# ── App ───────────────────────────────────────────────────────────────────────
-
-class GhIssues(App):
-    VIEW_LIST   = "list"
-    VIEW_DETAIL = "detail"
-    VIEW_PICKER = "picker"
-
-    repo_dir: Arg[Optional[str]] = Arg("--repo-dir", default=lambda ctx: ctx.workspace_root)
-
-    async def on_init(self) -> None:
-        self._view           = self.VIEW_LIST
-        self._issues         : list[dict] = []
-        self._sel            = 0
-        self._loading        = True
-        self._detail_loading = False
-        self._error          : str | None = None
-        self._detail         : dict | None = None
-        self._root           = self.repo_dir or ""
-        self._filter_labels  : set[str] = set()
-        self._sort_mode      = "created_desc"
-        self._body_scroll    = Scrollable(Label(""))
-        self._picker_query   = ""
-        self._picker_sel     = 0
-        self._picker_staged  : set[str] = set()
-        self.emit.status_summary("Loading…")
-        self.emit.info(f"gh-issues init workspace={self._root!r}")
-        self._fetch()
-
-    # ── data ──────────────────────────────────────────────────────────────────
-
-    def _fetch(self) -> None:
-        self._loading       = True
-        self._error         = None
-        self._filter_labels = set()
-        asyncio.create_task(asyncio.to_thread(self._load_list))
-
-    def _load_list(self) -> None:
-        rc, out, err = _gh(
-            "issue", "list", "--state", "open",
-            "--json", "number,title,state,labels,assignees,createdAt",
-            "--limit", ISSUE_LIST_LIMIT,
-            cwd=self._root or None,
-        )
-        if rc != 0:
-            self.emit.warn(f"gh issue list failed rc={rc} stderr={err!r}")
-            self._error   = err.strip() or f"exit {rc}"
-            self._loading = False
-            self.emit.schedule_render()
-            return
-        try:
-            self._issues = json.loads(out)
-            self._clamp_selection()
-        except Exception as exc:
-            self.emit.warn(f"gh issue list json parse error: {exc}")
-            self._error = str(exc)
-        self._loading = False
-        self.emit.info(f"gh-issues loaded {len(self._issues)} open issues")
-        self.emit.schedule_render()
-
-    def _visible_issues(self) -> list[dict]:
-        return _filter_and_sort_issues(self._issues, self._filter_labels, self._sort_mode)
-
-    def _clamp_selection(self) -> None:
-        visible = self._visible_issues()
-        self._sel = max(0, min(self._sel, len(visible) - 1)) if visible else 0
-
-    def _selected_issue(self) -> Optional[dict]:
-        visible = self._visible_issues()
-        if not visible:
-            return None
-        self._sel = max(0, min(self._sel, len(visible) - 1))
-        return visible[self._sel]
-
-    def _select_issue_number(self, number: Optional[int]) -> None:
-        visible = self._visible_issues()
-        if number is not None:
-            for idx, issue in enumerate(visible):
-                if issue.get("number") == number:
-                    self._sel = idx
-                    return
-        self._clamp_selection()
-
-    def _list_subtitle(self) -> str:
-        count = len(self._visible_issues())
-        parts = [f"{count} open"]
-        if self._filter_labels:
-            label_str = "+".join(sorted(self._filter_labels))
-            parts.append(f"label:{label_str}")
-        parts.append(SORT_LABELS.get(self._sort_mode, SORT_LABELS["created_desc"]))
-        return " · ".join(parts)
-
-    def _load_detail(self, number: int) -> None:
-        rc, out, err = _gh(
-            "issue", "view", str(number),
-            "--json", "number,title,state,body,labels,assignees,createdAt",
-            cwd=self._root or None,
-        )
-        if rc != 0:
-            self.emit.warn(f"gh issue view {number} failed rc={rc} stderr={err!r}")
-            self._error = err.strip() or f"exit {rc}"
-            self._detail_loading = False
-            self.emit.schedule_render()
-            return
-        try:
-            self._detail = json.loads(out)
-            self.emit.info(f"gh-issues loaded detail #{number}")
-        except Exception as exc:
-            self.emit.warn(f"gh issue view {number} json parse error: {exc}")
-            self._error = str(exc)
-        self._detail_loading = False
-        self.emit.schedule_render()
-
-    # ── render ────────────────────────────────────────────────────────────────
-
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(theme.bg)
-
-        # No-repo message when context root has no GitHub repo.
-        if not self._root:
-            ctx.render(Column([
-                AppBar("GitHub Issues", accent=theme.accent),
-                Spacer(size=SPACE_MD),
-                Label(
-                    "Set the context root to a directory with a GitHub repo in order to see issues.",
-                    tone="body",
-                    color=theme.muted,
-                ),
-            ], padding_top=0))
-            return
-
-        if self._view == self.VIEW_PICKER:
-            self._draw_picker(ctx)
-            return
-
-        if self._view == self.VIEW_DETAIL:
-            if self._detail_loading:
-                ctx.render(Column([
-                    AppBar("Issues", accent=theme.accent),
-                    Spacer(size=SPACE_MD),
-                    Label("Loading issue…", tone="body", color=theme.muted),
-                ], padding_top=0))
-            elif self._error:
-                ctx.render(Column([
-                    AppBar("Error", accent=theme.accent),
-                    Spacer(size=SPACE_MD),
-                    Label(f"Error: {self._error}", tone="body", color=theme.danger),
-                    Spacer(grow=True),
-                    FooterKeys([("escape", "back")]),
-                ], padding_top=0))
-            else:
-                self._draw_detail(ctx)
-            return
-
-        # Header: AppBar (title + count). Shortcuts live in a bottom footer.
-        appbar = AppBar(
-            "Issues",
-            subtitle=self._list_subtitle() if not self._loading else None,
-            accent=theme.accent,
-        )
-        footer = FooterKeys([
-            ("↩", "detail"),
-            ("s", "sort"),
-            ("f", "filter"),
-            ("l", "labels"),
-            ("c", "clear"),
-            ("o", "browser"),
-            ("r", "refresh"),
-            ("n", "new"),
-        ])
-        appbar_h  = appbar.measure(ctx.w)
-        footer_h  = footer.measure(ctx.w)
-        list_top  = appbar_h
-        appbar.render(ctx, 0.0, 0.0, ctx.w, appbar_h)
-        footer.render(ctx, 0.0, ctx.h - footer_h, ctx.w, footer_h)
-
-        if self._loading:
-            ctx.text(PAD, list_top + PAD, "Loading…", size=BODY, color=theme.muted)
-            return
-        if self._error:
-            ctx.text(PAD, list_top + PAD, f"Error: {self._error}",
-                     size=CAPTION, color=theme.danger, max_width=ctx.w - PAD * 2)
-            ctx.text(PAD, list_top + PAD + BODY + PAD_TIGHT,
-                     "r — retry", size=HINT, color=theme.muted)
-            return
-
-        self._draw_list(ctx, list_top, footer_h)
-
-    def _draw_list(self, ctx: RenderContext, list_top: float, footer_h: float) -> None:
-        visible = self._visible_issues()
-        self._clamp_selection()
-        rows = [
-            ListRow(
-                id=f"issue-{issue['number']}",
-                leading=LeadingBadge(f"#{issue['number']}", color=theme.accent),
-                primary=issue.get("title", ""),
-                chips=_select_visible_chips(issue, self._filter_labels),
-            ).to_dict()
-            for issue in visible
-        ]
-        list_h = max(0.0, ctx.h - list_top - footer_h)
-        ctx.list_view("issues", rows, selected=self._sel,
-                      y=float(list_top), h=float(list_h))
-
-    def _draw_detail(self, ctx: RenderContext) -> None:
-        if self._detail is None:
-            return
-        d             = self._detail
-        labels_str    = ", ".join(lb.get("name", "") for lb in d.get("labels", []) if lb) or "none"
-        assignees_str = ", ".join(a.get("login", "") for a in d.get("assignees", []) if a) or "unassigned"
-        body_text     = (d.get("body") or "").strip()
-        number        = d.get("number", "")
-        title         = d.get("title", "")
-
-        self._body_scroll.child = (
-            _MarkdownBlock(body_text) if body_text
-            else Label("No body.", tone="caption", color=theme.muted)
-        )
-
-        ctx.render(Column([
-            AppBar(f"← #{number}  {title}", accent=theme.accent),
-            InfoTable([
-                ("number",    f"#{number}"),
-                ("state",     d.get("state", "open")),
-                ("labels",    labels_str),
-                ("assignees", assignees_str),
-                ("opened",    (d.get("createdAt") or "")[:10]),
-            ]),
-            Section("Body"),
-            self._body_scroll,
-            FooterKeys([("o", "open in browser"), ("escape", "back")]),
-        ], padding_top=0))
-
-    def _picker_filtered_labels(self) -> list[str]:
-        all_labels = _collect_unique_labels(self._issues)
-        if not self._picker_query:
-            return all_labels
-        return [l for l in all_labels if _fuzzy_match(self._picker_query, l)]
-
-    def _draw_picker(self, ctx: RenderContext) -> None:
-        filtered = self._picker_filtered_labels()
-        self._picker_sel = max(0, min(self._picker_sel, len(filtered) - 1)) if filtered else 0
-
-        query_display = self._picker_query or ""
-        subtitle = f"{len(self._picker_staged)} selected" if self._picker_staged else "type to filter"
-        if query_display:
-            subtitle = f'"{query_display}" · {subtitle}'
-
-        appbar = AppBar("Labels", subtitle=subtitle, accent=theme.accent)
-        footer = FooterKeys([
-            ("↩", "apply"),
-            ("space", "toggle"),
-            ("escape", "cancel"),
-        ])
-        appbar_h = appbar.measure(ctx.w)
-        footer_h = footer.measure(ctx.w)
-        appbar.render(ctx, 0.0, 0.0, ctx.w, appbar_h)
-        footer.render(ctx, 0.0, ctx.h - footer_h, ctx.w, footer_h)
-
-        rows = [
-            ListRow(
-                id=f"label-{i}",
-                leading=LeadingBadge("✓" if label in self._picker_staged else " ", color=theme.accent if label in self._picker_staged else theme.muted),
-                primary=label,
-                chips=[RowChip(label, _label_color(label))],
-            ).to_dict()
-            for i, label in enumerate(filtered)
-        ]
-        list_h = max(0.0, ctx.h - appbar_h - footer_h)
-        if rows:
-            ctx.list_view("label-picker", rows, selected=self._picker_sel,
-                          y=float(appbar_h), h=float(list_h))
-        else:
-            ctx.text(PAD, appbar_h + PAD, "No matching labels.", size=BODY, color=theme.muted)
-
-    # ── input ─────────────────────────────────────────────────────────────────
-
-    def on_escape(self) -> bool:
-        if self._view == self.VIEW_PICKER:
-            self._view = self.VIEW_LIST
-            self.emit.info("gh-issues: picker cancelled")
-            self.emit.schedule_render()
-            return True
-        if self._view == self.VIEW_DETAIL:
-            self._view   = self.VIEW_LIST
-            self._detail = None
-            self._error  = None
-            self.emit.info("gh-issues: back to list")
-            self.emit.status_summary("Issues")
-            self.emit.schedule_render()
-            return True
-        return False
-
-    async def on_key(self, key: str, _mods: dict) -> None:
-        if self._loading:
-            return
-
-        if self._view == self.VIEW_PICKER:
-            self._handle_picker_key(key)
-            return
-
-        if self._view == self.VIEW_LIST:
-            if key == "o":
-                await self._open_browser()
-            elif key == "s":
-                self._cycle_sort()
-            elif key == "f":
-                self._toggle_filter_from_selection()
-            elif key == "l":
-                self._open_picker()
-            elif key == "c":
-                self._clear_filter()
-            elif key == "r":
-                self.emit.info("gh-issues: refresh")
-                self._fetch()
-            elif key == "n":
-                self._new_issue()
-
-        elif self._view == self.VIEW_DETAIL:
-            if key == "o":
-                if self._detail:
-                    num = self._detail["number"]
-                    rc, _, _ = await asyncio.to_thread(
-                        _gh, "issue", "view", str(num), "--web", cwd=self._root or None,
-                    )
-                    self.emit.info(f"gh-issues: open #{num} in browser rc={rc}")
-            else:
-                if self._body_scroll.handle_key(key):
-                    self.emit.schedule_render()
-
-    def on_list_select(self, list_id: str, index: int) -> None:
-        if list_id == "label-picker":
-            self._picker_sel = index
-            self.emit.schedule_render()
-            return
-        self._sel = index
-        issue = self._selected_issue()
-        if issue:
-            self.emit.status_summary(issue["title"])
-        self.emit.schedule_render()
-
-    def on_list_activate(self, list_id: str, _index: int) -> None:
-        if list_id == "label-picker":
-            self._apply_picker()
-            return
-        self._open_detail()
-
-    def on_click(self, _x: float, _y: float, _button: str) -> None:
-        pass
-
-    # ── actions ───────────────────────────────────────────────────────────────
-
-    def _cycle_sort(self) -> None:
-        self._sort_mode = _next_sort_mode(self._sort_mode)
-        self._clamp_selection()
-        self.emit.info(f"gh-issues: sort {SORT_LABELS[self._sort_mode]}")
-        self.emit.schedule_render()
-
-    def _toggle_filter_from_selection(self) -> None:
-        issue = self._selected_issue()
-        if not issue:
-            return
-        labels = _issue_labels(issue)
-        if not labels:
-            self.emit.info("gh-issues: selected issue has no labels to filter")
-            return
-        keep_number = issue.get("number")
-        current = next(iter(self._filter_labels), None) if len(self._filter_labels) == 1 else None
-        if current in labels:
-            idx = labels.index(current)
-            if idx == len(labels) - 1:
-                self._filter_labels = set()
-                self._select_issue_number(keep_number)
-                self.emit.info(f"gh-issues: cleared filter label:{current}")
-                self.emit.schedule_render()
-                return
-            self._filter_labels = {labels[idx + 1]}
-        else:
-            self._filter_labels = {labels[0]}
-        self._select_issue_number(keep_number)
-        label_str = next(iter(self._filter_labels))
-        self.emit.info(f"gh-issues: filter label:{label_str}")
-        self.emit.schedule_render()
-
-    def _clear_filter(self) -> None:
-        if not self._filter_labels:
-            return
-        issue = self._selected_issue()
-        keep_number = issue.get("number") if issue else None
-        cleared = "+".join(sorted(self._filter_labels))
-        self._filter_labels = set()
-        self._select_issue_number(keep_number)
-        self.emit.info(f"gh-issues: cleared filter label:{cleared}")
-        self.emit.schedule_render()
-
-    def _open_picker(self) -> None:
-        self._view = self.VIEW_PICKER
-        self._picker_query = ""
-        self._picker_sel = 0
-        self._picker_staged = set(self._filter_labels)
-        self.emit.info("gh-issues: label picker opened")
-        self.emit.schedule_render()
-
-    def _apply_picker(self) -> None:
-        self._filter_labels = set(self._picker_staged)
-        self._view = self.VIEW_LIST
-        self._clamp_selection()
-        label_str = "+".join(sorted(self._filter_labels)) if self._filter_labels else "none"
-        self.emit.info(f"gh-issues: picker applied labels:{label_str}")
-        self.emit.schedule_render()
-
-    def _handle_picker_key(self, key: str) -> None:
-        filtered = self._picker_filtered_labels()
-        if key == "space":
-            if filtered and 0 <= self._picker_sel < len(filtered):
-                label = filtered[self._picker_sel]
-                if label in self._picker_staged:
-                    self._picker_staged.discard(label)
-                    self.emit.info(f"gh-issues: picker deselected {label!r}")
-                else:
-                    self._picker_staged.add(label)
-                    self.emit.info(f"gh-issues: picker selected {label!r}")
-            self.emit.schedule_render()
-        elif key == "backspace":
-            if self._picker_query:
-                self._picker_query = self._picker_query[:-1]
-                self._picker_sel = 0
-                self.emit.schedule_render()
-        elif len(key) == 1 and key.isprintable():
-            self._picker_query += key
-            self._picker_sel = 0
-            self.emit.schedule_render()
-
-    def _open_detail(self) -> None:
-        issue = self._selected_issue()
-        if not issue:
-            return
-        self.emit.info(f"gh-issues: open detail #{issue['number']}")
-        self._view                      = self.VIEW_DETAIL
-        self._detail                    = None
-        self._detail_loading            = True
-        self._error                     = None
-        self._body_scroll.scroll_offset = 0.0
-        asyncio.create_task(
-            asyncio.to_thread(self._load_detail, issue["number"])
-        )
-
-    async def _open_browser(self) -> None:
-        issue = self._selected_issue()
-        if not issue:
-            return
-        num = issue["number"]
-        rc, _, _ = await asyncio.to_thread(
-            _gh, "issue", "view", str(num), "--web", cwd=self._root or None,
-        )
-        self.emit.info(f"gh-issues: open #{num} in browser rc={rc}")
-
-    def _new_issue(self) -> None:
-        self.emit.info("gh-issues: new issue")
-        self.emit.run_in_terminal("gh issue create")
-
-
-if __name__ == "__main__":
-    GhIssues().run()
+    return sorted(
+        visible, key=lambda issue: _sort_key(issue, sort_mode), reverse=reverse
+    )

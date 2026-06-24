@@ -155,6 +155,8 @@ fn render_events_coalesced_non_render_events_preserved() {
         app.send_event(&PlexiEvent::Render {
             frame_id,
             rect: rect.clone(),
+            canvas_width: 0.0,
+            canvas_height: 0.0,
         });
     }
 
@@ -179,6 +181,7 @@ fn render_events_coalesced_non_render_events_preserved() {
     app.send_event(&PlexiEvent::Key {
         key: "j".to_string(),
         modifiers: crate::app_protocol::Modifiers::default(),
+        pressed: true,
     });
 
     // event_tx must still be live — the Key was enqueued successfully.

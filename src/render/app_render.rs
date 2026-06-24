@@ -50,8 +50,8 @@ fn spawn_and_collect_frame(
 ) -> Result<Vec<RenderCommand>, String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    // Mirror the env setup from ProcessApp::launch so Python apps can import plexi_sdk.
-    // .py entries are launched via python3 — no shebang or execute bit required (mirrors ProcessApp::launch).
+    // Mirror the env setup from ProcessApp::launch so Python apps can import
+    // plexi_sdk and run through the SDK v3 native adapter.
     const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
     let bundle_contents = std::env::current_exe().ok().and_then(|exe| {
         exe.parent()
@@ -83,9 +83,12 @@ fn spawn_and_collect_frame(
                     .map(std::ffi::OsString::from)
             })
             .unwrap_or_else(|| std::ffi::OsString::from("python3"));
-        log::info!("app_render[{app_id}]: launching .py entry via {:?}", py);
+        log::info!(
+            "app_render[{app_id}]: launching .py entry via {:?} with SDK v3 native adapter",
+            py
+        );
         let mut c = Command::new(py);
-        c.arg(bin_path);
+        c.arg("-m").arg("plexi_sdk._v3_process").arg(bin_path);
         c
     } else {
         Command::new(bin_path)
@@ -129,6 +132,8 @@ fn spawn_and_collect_frame(
         theme: render_colors().to_theme_map(),
         args: vec![],
         state: seed_state,
+        width: width as f32,
+        height: height as f32,
     };
     let init_json =
         serde_json::to_string(&init).map_err(|e| format!("failed to serialize Init: {e}"))?;
@@ -173,6 +178,8 @@ fn spawn_and_collect_frame(
             w: width as f32,
             h: height as f32,
         },
+        canvas_width: width as f32,
+        canvas_height: height as f32,
     };
     let render_json =
         serde_json::to_string(&render).map_err(|e| format!("failed to serialize Render: {e}"))?;
@@ -269,6 +276,8 @@ fn render_commands_to_png(
                     &mut Vec::new(),
                     &mut te_buffers,
                     &mut te_focus_ctx,
+                    &mut 0.0f32,
+                    &mut 0.0f32,
                 );
             });
     });

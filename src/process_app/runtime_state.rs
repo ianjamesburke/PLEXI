@@ -286,21 +286,18 @@ impl PgapRuntime {
     }
 
     pub(crate) fn pending_repaint_delay(&self) -> Option<Duration> {
+        self.pending_repaint_delay_at(Instant::now())
+    }
+
+    pub(crate) fn pending_repaint_delay_at(&self, now: Instant) -> Option<Duration> {
         match self.state {
             RuntimeState::Waiting { next_deadline } => {
-                Some(next_deadline.saturating_duration_since(Instant::now()))
+                Some(next_deadline.saturating_duration_since(now))
             }
             RuntimeState::Rendering {
                 followup_deadline: Some(next_deadline),
                 ..
-            } => {
-                let delay = next_deadline.saturating_duration_since(Instant::now());
-                if delay.is_zero() {
-                    None
-                } else {
-                    Some(delay)
-                }
-            }
+            } => Some(next_deadline.saturating_duration_since(now)),
             _ => None,
         }
     }
@@ -402,6 +399,19 @@ mod tests {
         assert_eq!(
             runtime.poll_render(commit),
             RenderPoll::Send { frame_id: 2 }
+        );
+    }
+
+    #[test]
+    fn due_followup_while_rendering_requests_immediate_repaint() {
+        let mut runtime = PgapRuntime::ready_for_test_with_initial_render();
+        let t0 = Instant::now();
+        assert_eq!(runtime.poll_render(t0), RenderPoll::Send { frame_id: 1 });
+        runtime.request_render_at(t0 + Duration::from_millis(16));
+
+        assert_eq!(
+            runtime.pending_repaint_delay_at(t0 + Duration::from_millis(20)),
+            Some(Duration::ZERO)
         );
     }
 

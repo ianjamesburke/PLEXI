@@ -9,7 +9,7 @@ description = "Classic Tetris — demonstrates ScheduleRender game loop at 60 fp
 entry = "tetris.py"
 
 [app.capabilities]
-capabilities = []
+capabilities = ["timer"]
 
 [launch]
 

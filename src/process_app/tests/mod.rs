@@ -1,12 +1,10 @@
 mod ai_tests;
 mod app_state_tests;
 mod canvas_bindings_tests;
-mod capability_check_tests;
 mod clipboard_tests;
 mod env_isolation_tests;
 mod image_cache_tests;
 mod midi_tests;
 mod reload_tests;
 mod render_session_tests;
-mod text_input_tests;
 mod video_tests;

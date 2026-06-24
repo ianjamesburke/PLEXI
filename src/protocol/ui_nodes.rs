@@ -12,6 +12,22 @@ fn default_space_xl() -> f32 {
     24.0 // SPACE_XL — keep in sync with src/ui/style.rs
 }
 
+fn default_canvas_width() -> f32 {
+    640.0
+}
+
+fn default_canvas_height() -> f32 {
+    360.0
+}
+
+fn default_markdown_base_size() -> f32 {
+    14.0
+}
+
+fn default_markdown_padding() -> f32 {
+    12.0
+}
+
 /// Single shortcut entry for `UiNode::FooterKeys`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct FooterKeyEntry {
@@ -105,6 +121,16 @@ pub enum UiNode {
         #[serde(default)]
         monospace: bool,
     },
+    /// Host-rendered markdown block.
+    Markdown {
+        text: String,
+        #[serde(default = "default_markdown_base_size")]
+        base_size: f32,
+        #[serde(default)]
+        color: String,
+        #[serde(default = "default_markdown_padding")]
+        padding: f32,
+    },
     /// Interaction wrapper — host fires `ComponentEvent` for click/hover.
     Interactive {
         node_id: String,
@@ -116,6 +142,17 @@ pub enum UiNode {
     },
     /// Escape hatch: embed a flat `RenderCommand` inside the tree.
     Raw { command: Box<RenderCommand> },
+    /// CPU canvas with local draw commands. The host allocates a layout rect
+    /// for the node, then renders commands relative to that rect.
+    Canvas {
+        commands: Vec<RenderCommand>,
+        #[serde(default = "default_canvas_width")]
+        width: f32,
+        #[serde(default = "default_canvas_height")]
+        height: f32,
+        #[serde(default = "default_true")]
+        grow: bool,
+    },
     /// Future GPU surface placeholder — reserved, not yet rendered.
     Surface { id: String },
     /// Pinned layout wrapper. In a vertical Stack, `Pinned { edge: Bottom }` children
@@ -144,13 +181,8 @@ pub enum UiNode {
         label: String,
         #[serde(default)]
         disabled: bool,
-    },
-    /// Host-rendered text input.
-    Input {
-        node_id: String,
         #[serde(default)]
-        placeholder: String,
-        value: String,
+        style: String,
     },
     /// Host-rendered text editor with multiline and max_length support.
     ///
@@ -300,6 +332,20 @@ impl PartialEq for UiNode {
                 },
             ) => t1 == t2 && s1 == s2 && co1 == co2 && b1 == b2 && m1 == m2,
             (
+                UiNode::Markdown {
+                    text: t1,
+                    base_size: s1,
+                    color: c1,
+                    padding: p1,
+                },
+                UiNode::Markdown {
+                    text: t2,
+                    base_size: s2,
+                    color: c2,
+                    padding: p2,
+                },
+            ) => t1 == t2 && s1 == s2 && c1 == c2 && p1 == p2,
+            (
                 UiNode::Interactive {
                     node_id: n1,
                     child: c1,
@@ -323,31 +369,38 @@ impl PartialEq for UiNode {
                     _ => false,
                 }
             }
+            (
+                UiNode::Canvas {
+                    commands: c1,
+                    width: w1,
+                    height: h1,
+                    grow: g1,
+                },
+                UiNode::Canvas {
+                    commands: c2,
+                    width: w2,
+                    height: h2,
+                    grow: g2,
+                },
+            ) => match (serde_json::to_string(c1), serde_json::to_string(c2)) {
+                (Ok(s1), Ok(s2)) => s1 == s2 && w1 == w2 && h1 == h2 && g1 == g2,
+                _ => false,
+            },
             (UiNode::Surface { id: i1 }, UiNode::Surface { id: i2 }) => i1 == i2,
             (
                 UiNode::Button {
                     node_id: n1,
                     label: l1,
                     disabled: d1,
+                    style: s1,
                 },
                 UiNode::Button {
                     node_id: n2,
                     label: l2,
                     disabled: d2,
+                    style: s2,
                 },
-            ) => n1 == n2 && l1 == l2 && d1 == d2,
-            (
-                UiNode::Input {
-                    node_id: n1,
-                    placeholder: ph1,
-                    value: v1,
-                },
-                UiNode::Input {
-                    node_id: n2,
-                    placeholder: ph2,
-                    value: v2,
-                },
-            ) => n1 == n2 && ph1 == ph2 && v1 == v2,
+            ) => n1 == n2 && l1 == l2 && d1 == d2 && s1 == s2,
             (
                 UiNode::TextEdit {
                     node_id: n1,

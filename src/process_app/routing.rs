@@ -5,7 +5,9 @@
 
 use crate::app::app_trait::AppCommand;
 use crate::app::permissions::{check, is_blocked, Capability, PermissionCheck};
-use crate::app_protocol::{AppRequest, AudioDeviceWire, MidiPortWire, PlexiEvent, StreamChannel};
+use crate::app_protocol::{
+    AppRequest, AudioDeviceWire, FileListEntry, MidiPortWire, PlexiEvent, StreamChannel,
+};
 use crate::host::event_log::{self, HostEvent};
 use crate::host::typed_pipes::PipeDirection;
 use crate::media::audio::AudioCaptureRequest;
@@ -42,6 +44,7 @@ impl ProcessApp {
                         self.outbound_events
                             .push_back(PlexiEvent::CapabilityDecision {
                                 request_id,
+                                capability: capability.clone(),
                                 granted: true,
                             });
                     } else if is_blocked(&self.permissions, cap) {
@@ -53,6 +56,7 @@ impl ProcessApp {
                         self.outbound_events
                             .push_back(PlexiEvent::CapabilityDecision {
                                 request_id,
+                                capability: capability.clone(),
                                 granted: false,
                             });
                     } else {
@@ -75,6 +79,7 @@ impl ProcessApp {
                                 self.outbound_events
                                     .push_back(PlexiEvent::CapabilityDecision {
                                         request_id,
+                                        capability: capability.clone(),
                                         granted: false,
                                     });
                             }
@@ -88,6 +93,7 @@ impl ProcessApp {
                                 self.outbound_events
                                     .push_back(PlexiEvent::CapabilityDecision {
                                         request_id,
+                                        capability: capability.clone(),
                                         granted: true,
                                     });
                             }
@@ -109,6 +115,7 @@ impl ProcessApp {
                     self.outbound_events
                         .push_back(PlexiEvent::CapabilityDecision {
                             request_id,
+                            capability,
                             granted: false,
                         });
                 }
@@ -232,6 +239,15 @@ impl ProcessApp {
                     self.outbound_events
                         .push_back(PlexiEvent::SecretValue { key, value: None });
                 }
+            }
+
+            // ── Native file I/O ────────────────────────────────────────────
+            AppRequest::FileRead { path } => {
+                self.handle_file_read_request(path);
+            }
+
+            AppRequest::FileList { path, extensions } => {
+                self.handle_file_list_request(path, extensions);
             }
 
             // ── Run get ────────────────────────────────────────────────────
@@ -1050,6 +1066,37 @@ impl ProcessApp {
                             current_url = next_url;
                         }
                     }).expect("failed to spawn http thread");
+            }
+            AppRequest::OpenUrl { url } => {
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::NetHttp)
+                {
+                    log::warn!("ProcessApp[{}]: OpenUrl denied — {reason}", self.type_id);
+                    return;
+                }
+
+                let host = match extract_host_normalized(&url) {
+                    Some(h) => h,
+                    None => {
+                        log::warn!(
+                            "ProcessApp[{}]: OpenUrl denied — malformed URL or unsupported scheme '{url}'",
+                            self.type_id
+                        );
+                        return;
+                    }
+                };
+
+                if !host_allowed_by_manifest(&self.permissions.allowed_hosts, &host) {
+                    log::warn!(
+                        "ProcessApp[{}]: OpenUrl denied — host '{}' not in allowed_hosts",
+                        self.type_id,
+                        host
+                    );
+                    return;
+                }
+
+                log::info!("ProcessApp[{}]: OpenUrl {url}", self.type_id);
+                open_url_in_default_browser(&url);
             }
             // ── ai.query broker (#284) ─────────────────────────────────────
             AppRequest::AiQuery {
@@ -2767,6 +2814,160 @@ pub(crate) fn write_pane_request_denial(type_id: &str, request: &AppRequest, cap
     }
 }
 
+impl ProcessApp {
+    fn handle_file_read_request(&mut self, path: String) {
+        if let Err(error) = self.ensure_fs_read_allowed() {
+            log::warn!("ProcessApp[{}]: FileRead denied — {error}", self.type_id);
+            self.outbound_events.push_back(PlexiEvent::FileReadResult {
+                content: None,
+                error: Some(error),
+            });
+            return;
+        }
+
+        match resolve_workspace_path(&self.workspace_root, &path).and_then(|path| {
+            std::fs::read(&path).map_err(|source| format!("read {}: {source}", path.display()))
+        }) {
+            Ok(content) => {
+                log::info!(
+                    "ProcessApp[{}]: FileRead served path='{}' bytes={}",
+                    self.type_id,
+                    path,
+                    content.len()
+                );
+                self.outbound_events.push_back(PlexiEvent::FileReadResult {
+                    content: Some(content),
+                    error: None,
+                });
+            }
+            Err(error) => {
+                log::warn!("ProcessApp[{}]: FileRead failed — {error}", self.type_id);
+                self.outbound_events.push_back(PlexiEvent::FileReadResult {
+                    content: None,
+                    error: Some(error),
+                });
+            }
+        }
+    }
+
+    fn handle_file_list_request(&mut self, path: String, extensions: Vec<String>) {
+        if let Err(error) = self.ensure_fs_read_allowed() {
+            log::warn!("ProcessApp[{}]: FileList denied — {error}", self.type_id);
+            self.outbound_events.push_back(PlexiEvent::FileListResult {
+                entries: None,
+                error: Some(error),
+            });
+            return;
+        }
+
+        match resolve_workspace_path(&self.workspace_root, &path)
+            .and_then(|path| list_workspace_dir(&path, &extensions))
+        {
+            Ok(entries) => {
+                log::info!(
+                    "ProcessApp[{}]: FileList served path='{}' entries={}",
+                    self.type_id,
+                    path,
+                    entries.len()
+                );
+                self.outbound_events.push_back(PlexiEvent::FileListResult {
+                    entries: Some(entries),
+                    error: None,
+                });
+            }
+            Err(error) => {
+                log::warn!("ProcessApp[{}]: FileList failed — {error}", self.type_id);
+                self.outbound_events.push_back(PlexiEvent::FileListResult {
+                    entries: None,
+                    error: Some(error),
+                });
+            }
+        }
+    }
+
+    fn ensure_fs_read_allowed(&self) -> Result<(), String> {
+        match check(&self.permissions, Capability::FsRead) {
+            PermissionCheck::Allowed => Ok(()),
+            PermissionCheck::Denied(reason) => Err(format!("fs.read capability denied: {reason}")),
+        }
+    }
+}
+
+fn resolve_workspace_path(
+    workspace_root: &std::path::Path,
+    requested: &str,
+) -> Result<std::path::PathBuf, String> {
+    let workspace_root = workspace_root
+        .canonicalize()
+        .map_err(|source| format!("resolve workspace {}: {source}", workspace_root.display()))?;
+    let raw = std::path::Path::new(requested);
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        workspace_root.join(raw)
+    };
+    let resolved = joined
+        .canonicalize()
+        .map_err(|source| format!("resolve {}: {source}", joined.display()))?;
+    if !resolved.starts_with(&workspace_root) {
+        return Err(format!(
+            "path {} is outside workspace {}",
+            resolved.display(),
+            workspace_root.display()
+        ));
+    }
+    Ok(resolved)
+}
+
+fn list_workspace_dir(
+    path: &std::path::Path,
+    extensions: &[String],
+) -> Result<Vec<FileListEntry>, String> {
+    let mut entries = Vec::new();
+    let normalized_exts: Vec<String> = extensions
+        .iter()
+        .map(|ext| ext.trim_start_matches('.').to_ascii_lowercase())
+        .filter(|ext| !ext.is_empty())
+        .collect();
+    for entry in
+        std::fs::read_dir(path).map_err(|source| format!("list {}: {source}", path.display()))?
+    {
+        let entry = entry.map_err(|source| format!("read directory entry: {source}"))?;
+        let metadata = entry
+            .metadata()
+            .map_err(|source| format!("stat {}: {source}", entry.path().display()))?;
+        let is_dir = metadata.is_dir();
+        if !is_dir && !normalized_exts.is_empty() {
+            let ext = entry
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if !normalized_exts.iter().any(|allowed| allowed == &ext) {
+                continue;
+            }
+        }
+        entries.push(FileListEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            path: entry.path().display().to_string(),
+            is_dir,
+            size_bytes: if is_dir { None } else { Some(metadata.len()) },
+        });
+    }
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| {
+                a.name
+                    .to_ascii_lowercase()
+                    .cmp(&b.name.to_ascii_lowercase())
+            })
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(entries)
+}
+
 /// Extract and normalize the hostname from a URL string.
 /// Returns `None` if the URL is malformed, uses an unsupported scheme,
 /// or has no resolvable host.
@@ -2794,6 +2995,43 @@ fn extract_host_normalized(url: &str) -> Option<String> {
         return None;
     }
     Some(normalized.to_string())
+}
+
+fn host_allowed_by_manifest(allowed_hosts: &[String], host: &str) -> bool {
+    if allowed_hosts.is_empty() {
+        return true;
+    }
+    allowed_hosts
+        .iter()
+        .map(|p| p.to_lowercase().trim_end_matches('.').to_string())
+        .any(|pattern| host_matches(host, &pattern))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn open_url_in_default_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        match std::process::Command::new("open").arg(url).spawn() {
+            Ok(_) => log::debug!("OpenUrl: spawned `open` for {url}"),
+            Err(e) => log::error!("OpenUrl: `open` failed for {url}: {e}"),
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        match std::process::Command::new("xdg-open").arg(url).spawn() {
+            Ok(_) => log::debug!("OpenUrl: spawned xdg-open for {url}"),
+            Err(e) => log::error!("OpenUrl: xdg-open failed for {url}: {e}"),
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        log::warn!("OpenUrl: unsupported platform for {url}");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn open_url_in_default_browser(url: &str) {
+    log::warn!("OpenUrl: unsupported wasm host for {url}");
 }
 
 /// Check if `host` matches `pattern`.
@@ -2883,6 +3121,45 @@ fn pick_files(filter: &[String], multiple: bool) -> Option<Vec<String>> {
 #[cfg(test)]
 mod allowed_hosts_tests {
     use super::*;
+
+    #[test]
+    fn file_list_filters_extensions_and_sorts_dirs_first() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(temp.path().join("nested")).unwrap();
+        std::fs::write(temp.path().join("b.csv"), b"b").unwrap();
+        std::fs::write(temp.path().join("a.csv"), b"a").unwrap();
+        std::fs::write(temp.path().join("notes.txt"), b"skip").unwrap();
+
+        let entries = list_workspace_dir(temp.path(), &[String::from("csv")]).unwrap();
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["nested", "a.csv", "b.csv"]);
+        assert!(entries[0].is_dir);
+        assert_eq!(entries[1].size_bytes, Some(1));
+    }
+
+    #[test]
+    fn file_path_resolution_rejects_workspace_escape() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let err =
+            resolve_workspace_path(workspace.path(), outside.path().to_str().unwrap()).unwrap_err();
+        assert!(err.contains("outside workspace"), "{err}");
+    }
+
+    #[test]
+    fn file_path_resolution_accepts_non_canonical_workspace_root() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(workspace.path().join("nested")).unwrap();
+        std::fs::write(workspace.path().join("data.csv"), b"id,name\n").unwrap();
+
+        let alias_root = workspace.path().join("nested").join("..");
+        let resolved = resolve_workspace_path(&alias_root, "data.csv").unwrap();
+
+        assert_eq!(
+            resolved,
+            workspace.path().join("data.csv").canonicalize().unwrap()
+        );
+    }
 
     #[test]
     fn extract_host_basic() {
@@ -2986,5 +3263,64 @@ mod allowed_hosts_tests {
         // localhost must be explicit
         assert!(!host_matches("localhost", "127.0.0.1"));
         assert!(host_matches("localhost", "localhost"));
+    }
+
+    #[test]
+    fn host_allowed_by_manifest_uses_existing_http_allowlist_rules() {
+        assert!(host_allowed_by_manifest(&[], "example.com"));
+        assert!(host_allowed_by_manifest(
+            &[String::from("github.com")],
+            "github.com"
+        ));
+        assert!(host_allowed_by_manifest(
+            &[String::from("*.github.com")],
+            "api.github.com"
+        ));
+        assert!(!host_allowed_by_manifest(
+            &[String::from("github.com")],
+            "example.com"
+        ));
+    }
+
+    #[test]
+    fn open_url_denied_without_net_http() {
+        let (mut app, _tx) =
+            ProcessApp::new_for_test(42, crate::app::permissions::AppPermissions::default());
+
+        app.route_command(AppRequest::OpenUrl {
+            url: "https://github.com/plexi/plexi/issues/1".to_string(),
+        });
+
+        assert!(app.pending_commands.is_empty());
+        assert!(app.outbound_events.is_empty());
+    }
+
+    #[test]
+    fn open_url_rejects_malformed_url_before_spawning() {
+        let mut perms = crate::app::permissions::AppPermissions::default();
+        perms.capabilities.insert(Capability::NetHttp);
+        let (mut app, _tx) = ProcessApp::new_for_test(42, perms);
+
+        app.route_command(AppRequest::OpenUrl {
+            url: "file:///tmp/nope".to_string(),
+        });
+
+        assert!(app.pending_commands.is_empty());
+        assert!(app.outbound_events.is_empty());
+    }
+
+    #[test]
+    fn open_url_rejects_hosts_outside_manifest_allowlist() {
+        let mut perms = crate::app::permissions::AppPermissions::default();
+        perms.capabilities.insert(Capability::NetHttp);
+        perms.allowed_hosts = vec!["github.com".to_string()];
+        let (mut app, _tx) = ProcessApp::new_for_test(42, perms);
+
+        app.route_command(AppRequest::OpenUrl {
+            url: "https://example.com/".to_string(),
+        });
+
+        assert!(app.pending_commands.is_empty());
+        assert!(app.outbound_events.is_empty());
     }
 }

@@ -255,4 +255,73 @@ mod tests {
             RepaintDecision::After(ASYNC_WAKE_POLL)
         );
     }
+
+    /// Simulate 120 frames of a continuous 60fps app (balls). Verifies
+    /// that the runtime + animation clock + decide_repaint never drops
+    /// to idle and sustains the expected cadence.
+    #[test]
+    fn continuous_60fps_never_idles() {
+        use super::super::runtime_state::{PgapRuntime, RenderPoll};
+
+        let t0 = Instant::now();
+        let interval = FRAME;
+        let mut runtime = PgapRuntime::spawned_with_initial_render();
+        let mut clock = AnimationClock::new(interval, t0);
+        let mut now = t0;
+
+        // Startup: Ready → Waiting
+        runtime.mark_ready();
+
+        let mut sends = 0u32;
+        let mut commits = 0u32;
+        let mut idles = 0u32;
+
+        for _ in 0..240 {
+            // Try to send
+            match runtime.poll_render(now) {
+                RenderPoll::Send { frame_id } => {
+                    sends += 1;
+                    let deadline = clock.deadline_after_send(now);
+                    runtime.request_render_at(deadline);
+                    // Simulate Python responding 1ms later
+                    let done_time = now + Duration::from_millis(1);
+                    runtime.complete_frame(frame_id);
+                    commits += 1;
+                    // Advance time to the next repaint decision
+                    let delay = runtime.pending_repaint_delay_at(done_time);
+                    match delay {
+                        Some(d) => now = done_time + d,
+                        None => {
+                            // Check if we went idle
+                            let decision = decide_repaint(RepaintInputs {
+                                click_now: false,
+                                click_awaiting_frame: false,
+                                pointer_tracking: false,
+                                render_delay: None,
+                                render_in_flight: runtime.is_rendering(),
+                                async_wake: false,
+                            });
+                            if decision == RepaintDecision::None {
+                                idles += 1;
+                            }
+                            now = done_time + interval;
+                        }
+                    }
+                }
+                RenderPoll::Waiting { remaining } => {
+                    now += remaining;
+                }
+                other => {
+                    panic!("unexpected poll result: {other:?} at sends={sends} commits={commits}");
+                }
+            }
+        }
+
+        assert!(
+            sends >= 119,
+            "expected ~120 sends for 240 iterations, got {sends}"
+        );
+        assert_eq!(sends, commits, "every send should commit");
+        assert_eq!(idles, 0, "continuous app should never idle");
+    }
 }

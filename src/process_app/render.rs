@@ -48,6 +48,8 @@ pub(crate) fn render_draw_commands(
     outbound_events: &mut Vec<crate::app_protocol::PlexiEvent>,
     text_edit_buffers: &mut HashMap<String, String>,
     text_edit_focus_ctx: &mut crate::render::components::TextEditFocusCtx,
+    canvas_width: &mut f32,
+    canvas_height: &mut f32,
 ) {
     let origin = pane_rect.min;
 
@@ -318,7 +320,16 @@ pub(crate) fn render_draw_commands(
                 );
             }
 
-            RenderCommand::Circle { cx, cy, r, fill, stroke, stroke_width, glow_color, glow_radius } => {
+            RenderCommand::Circle {
+                cx,
+                cy,
+                r,
+                fill,
+                stroke,
+                stroke_width,
+                glow_color,
+                glow_radius,
+            } => {
                 let center = egui::pos2(origin.x + cx, origin.y + cy);
                 let painter = ui.painter().with_clip_rect(clip);
                 // 1. Glow behind fill (concentric rings)
@@ -1026,12 +1037,6 @@ pub(crate) fn render_draw_commands(
                 );
             }
 
-            // TextInput is rendered as an interactive egui widget by
-            // `process_app::mod` after this painter pass finishes — it
-            // can't share the painter-only path because it needs a
-            // mutable buffer + focus tracking. See `render_text_inputs`.
-            RenderCommand::TextInput { .. } => {}
-
             RenderCommand::Image {
                 src,
                 x,
@@ -1222,7 +1227,7 @@ pub(crate) fn render_draw_commands(
             }
 
             RenderCommand::ComponentTree { root } => {
-                log::info!(
+                log::trace!(
                     "render: ComponentTree received; rendering via render_component_tree; pane_origin={:?}",
                     pane_rect.min
                 );
@@ -1237,7 +1242,7 @@ pub(crate) fn render_draw_commands(
                     list_view_scroll_offsets: &mut *list_view_scroll_offsets,
                     list_view_last_aligned_sel: &mut *list_view_last_aligned_sel,
                 };
-                let component_events = crate::render::components::render_component_tree(
+                let result = crate::render::components::render_component_tree(
                     ui,
                     root,
                     colors,
@@ -1245,7 +1250,9 @@ pub(crate) fn render_draw_commands(
                     text_edit_focus_ctx,
                     &mut raw_caches,
                 );
-                for evt in component_events {
+                *canvas_width = result.canvas_width;
+                *canvas_height = result.canvas_height;
+                for evt in result.events {
                     log::info!(
                         "render: ComponentEvent node_id={} event_type={}",
                         evt.node_id,
@@ -2088,14 +2095,26 @@ fn paint_gradient_rect(
     // the correct UV for solid-color mesh vertices with the default texture.
     let white_uv = egui::pos2(0.0, 0.0);
     let mut mesh = egui::Mesh::default();
-    mesh.vertices
-        .push(egui::epaint::Vertex { pos: rect.left_top(),     uv: white_uv, color: tl });
-    mesh.vertices
-        .push(egui::epaint::Vertex { pos: rect.right_top(),    uv: white_uv, color: tr });
-    mesh.vertices
-        .push(egui::epaint::Vertex { pos: rect.right_bottom(), uv: white_uv, color: br });
-    mesh.vertices
-        .push(egui::epaint::Vertex { pos: rect.left_bottom(),  uv: white_uv, color: bl });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_top(),
+        uv: white_uv,
+        color: tl,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_top(),
+        uv: white_uv,
+        color: tr,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.right_bottom(),
+        uv: white_uv,
+        color: br,
+    });
+    mesh.vertices.push(egui::epaint::Vertex {
+        pos: rect.left_bottom(),
+        uv: white_uv,
+        color: bl,
+    });
     mesh.indices = vec![0, 1, 2, 0, 2, 3];
     painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
 }

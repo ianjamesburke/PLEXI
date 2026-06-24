@@ -33,8 +33,6 @@ wasm-fixtures:
     cp target/wasm32-wasip1/release/audio_synth.wasm tests/wasm-fixtures/audio-synth.wasm
     cd apps/wasm-poc/pong && cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/pong.wasm tests/wasm-fixtures/pong.wasm
-    cd apps/wasm-poc/breakout && cargo component build --release --target wasm32-wasip2
-    cp target/wasm32-wasip1/release/breakout.wasm tests/wasm-fixtures/breakout.wasm
     cd apps/wasm-poc/counter && cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/counter.wasm tests/wasm-fixtures/counter.wasm
 
@@ -209,7 +207,7 @@ sdk-dev:
 # Pin to the bundled runtime's minor version so uv never falls back to a
 # system Python (e.g. CommandLineTools 3.9) that predates the SDK's floor.
 sdk-smoke:
-    uv run --python 3.12 --project sdk/python --with pytest --with pytest-asyncio pytest sdk/python/tests/test_app_harness.py -q
+    uv run --python 3.12 --project sdk/python --with pytest --with pytest-asyncio pytest sdk/python/tests/test_v3_adapter.py sdk/python/tests/test_v3_runtime_regression.py -q
 
 # Build and install the current worktree as a testable PR build.
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.

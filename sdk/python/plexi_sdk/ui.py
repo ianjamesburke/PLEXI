@@ -1,47 +1,11 @@
-"""Plexi SDK v2 — declarative UI primitives.
+"""Declarative UI primitives.
 
-A component tree that lays itself out and emits low-level `DrawCommand`s.
-Apps describe *what* the screen should look like; the SDK handles *where*.
-
-Design goals:
-  - Hard to make ugly UI. Defaults do the right thing.
-  - Compose: a `Card` can hold `KeyRow`s, a `Column` can hold `Card`s.
-  - Responsive: components truncate, wrap, or scroll instead of clipping.
-  - Escape hatch: apps that need pixel control still have `ctx.rect` /
-    `ctx.text` from the lower-level API.
-
-Usage:
-    from plexi_sdk import App
-    from plexi_sdk.ui import Column, Header, Card, KeyRow, Section, Spacer, Footer
-
-    class MyApp(App):
-        def view(self):
-            return Column([
-                Header("My App", "Short subtitle"),
-                Card([
-                    KeyRow("m", "Message"),
-                    KeyRow("c", "Choice"),
-                ]),
-                Section("Events"),
-                Spacer(grow=True),
-                Footer("Status line"),
-            ])
-
-Canvas, games, and visualizations can still override ``on_render(ctx)`` and
-use lower-level draw calls.
-
-## Component measurement
-
-Each component reports a `measure(avail_w) -> height` used in a single
-top-to-bottom pass. `Spacer(grow=True)` reports 0 and is expanded in a
-second pass to consume whatever slack is left. When the pane is smaller
-than the total fixed-height content, grow spacers collapse to 0 and
-content at the bottom may not render — keep the total intentionally
-below the minimum pane size, or use `ScrollLog` for variable content.
+Apps return a component tree from ``view()``. The host owns layout,
+theme, input, and rendering.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional, Protocol, Union, runtime_checkable
+from typing import List, Optional, Protocol, Union, cast, runtime_checkable
 
 
 @runtime_checkable
@@ -76,13 +40,13 @@ RADIUS_LG = 12.0
 # Badge-specific radius — between tag-chip (4) and full-stadium (8). At
 # TEXT_HINT size the pill height is ~17 px; RADIUS_MD makes it 94% of
 # max-oval (cliché). 6.0 gives visible corners while staying clearly rounded.
-# Keep in sync with src/style.rs RADIUS_BADGE and _render_context.py badge().
+# Keep in sync with src/style.rs RADIUS_BADGE.
 RADIUS_BADGE = 6.0
 
 # Live host theme — populated from the Init payload (light/dark + user overrides).
 # Components read theme.<role> at render time so they track the active theme.
-from ._theme import theme
-from ._constants import BG, FG, ACCENT, SURFACE, HIGHLIGHT, MUTED, GREEN, RED, YELLOW
+from ._theme import theme  # noqa: E402
+from ._constants import BG, FG, ACCENT, SURFACE, HIGHLIGHT, MUTED, GREEN, RED, YELLOW  # noqa: E402
 
 # ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -122,7 +86,7 @@ def _wrap_to_width(text: str, avail_px: float, font_size: float,
         lines.append(current)
 
     if len(lines) == max_lines and (
-        sum(len(l) for l in lines) + len(lines) - 1 < len(text)
+        sum(len(line) for line in lines) + len(lines) - 1 < len(text)
     ):
         last = lines[-1]
         if not last.endswith("…"):
@@ -195,7 +159,7 @@ class Component:
         raise NotImplementedError
 
     def to_node(self) -> "dict | None":
-        """Return a UiNode dict for host-side rendering, or None for L0 fallback."""
+        """Return a UiNode dict for host-side rendering."""
         return None
 
     def render_into(self, ctx, x: float, y: float, w: float) -> float:
@@ -354,6 +318,55 @@ class Label(Component):
 
 
 @dataclass
+class Text(Label):
+    """SDK v3 inline text node."""
+
+    size: Optional[float] = None
+    truncate: bool = False
+    align: str = "start"
+    key: str = ""
+
+    def _font_size(self) -> float:
+        return self.size if self.size is not None else super()._font_size()
+
+    def to_node(self) -> dict:
+        return {
+            "type": "text",
+            "text": self.text,
+            "size": self._font_size(),
+            "color": self.color or "",
+            "bold": self.bold,
+            "monospace": False,
+        }
+
+
+@dataclass
+class Button(Component):
+    label: str
+    on_click: str
+    style: str = "secondary"
+    disabled: bool = False
+    key: str = ""
+
+    def measure(self, _avail_w: float) -> float:
+        return 28.0
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        fill = theme.accent if self.style == "primary" else theme.surface
+        ctx.rect(x, y, w, h, fill=fill, radius=RADIUS_SM)
+        ctx.text(x + SPACE_SM, y + 7.0, self.label, size=TEXT_BODY, color=theme.fg, bold=False)
+
+    def to_node(self) -> dict:
+        return {
+            "type": "button",
+            "node_id": self.on_click,
+            "label": self.label,
+            "style": self.style,
+            "disabled": self.disabled,
+        }
+
+
+@dataclass
 class Spacer(Component):
     """Fixed or flex gap. `grow=True` expands to consume remaining space."""
     size: float = SPACE_MD
@@ -370,6 +383,31 @@ class Spacer(Component):
 
     def to_node(self) -> dict:
         return {"type": "spacer", "size": self.size, "grow": self.grow}
+
+
+@dataclass
+class Badge(Component):
+    text: str
+    color: str = "neutral"
+    tone: "str | None" = None
+    key: str = ""
+
+    def __post_init__(self) -> None:
+        if self.tone is not None:
+            self.color = self.tone
+
+    def measure(self, _avail_w: float) -> float:
+        return 18.0
+
+    def render(self, ctx, x: float, y: float, _w: float, _h: float) -> None:
+        fill = theme.accent if self.color == "accent" else theme.surface
+        ctx.rect(x, y, max(18.0, len(self.text) * 7.0 + 12.0), 18.0,
+                 fill=fill, radius=RADIUS_SM)
+        ctx.text(x + 6.0, y + 4.0, self.text, size=TEXT_HINT, color=theme.fg)
+
+    def to_node(self) -> dict:
+        return {"type": "badge", "text": self.text,
+                "color": self.color, "key": self.key}
 
 
 @dataclass
@@ -390,34 +428,105 @@ class Divider(Component):
 
 
 @dataclass
+class CanvasRect:
+    x: float
+    y: float
+    width: float
+    height: float
+    fill: str
+    radius: float = 0.0
+
+    def to_command(self) -> dict:
+        return {"type": "rect", "x": self.x, "y": self.y,
+                "w": self.width, "h": self.height,
+                "fill": self.fill, "radius": self.radius}
+
+
+@dataclass
+class CanvasCircle:
+    x: float
+    y: float
+    radius: float
+    fill: str
+
+    def to_command(self) -> dict:
+        return {"type": "circle", "cx": self.x, "cy": self.y,
+                "r": self.radius, "fill": self.fill}
+
+
+@dataclass
+class CanvasLine:
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    color: str
+    width: float = 1.0
+
+    def to_command(self) -> dict:
+        return {"type": "line", "x1": self.x1, "y1": self.y1,
+                "x2": self.x2, "y2": self.y2,
+                "color": self.color, "width": self.width}
+
+
+@dataclass
+class CanvasText:
+    x: float
+    y: float
+    text: str
+    size: float = 14.0
+    color: str = "#ffffff"
+    bold: bool = False
+    align: str = "left_top"
+
+    def to_command(self) -> dict:
+        return {"type": "text", "x": self.x, "y": self.y,
+                "text": self.text, "size": self.size,
+                "color": self.color, "bold": self.bold,
+                "align": self.align, "monospace": False,
+                "max_width": None, "elide": True, "selectable": False}
+
+
 class Canvas(Component):
-    """Leaf component for custom drawing. The draw callable receives
-    ``(ctx, x, y, w, h)`` and emits draw commands directly.
+    """SDK v3 CPU canvas node.
 
-    ``grow=True`` (default) makes the Canvas fill remaining vertical space.
-    ``height`` fixes the height in pixels when grow is False.
-
-    Example::
-
-        def draw_grid(ctx, x, y, w, h):
-            for i in range(5):
-                cx = x + (i + 0.5) * w / 5
-                ctx.circle(cx, y + h / 2, 4.0, "#89b4fa")
-
-        Canvas(draw=draw_grid)
+    Pass typed drawing commands for host-side rendering from ``view()``.
     """
-    draw: "Callable[[Any, float, float, float, float], None]"
-    grow: bool = True
-    height: "float | None" = None
+
+    def __init__(
+        self,
+        commands: "list | None" = None,
+        *,
+        width: float = 640.0,
+        height: float = 360.0,
+        grow: bool = True,
+        key: str = "",
+    ) -> None:
+        if callable(commands):
+            raise TypeError("Canvas expects typed canvas commands, not a draw callback")
+        self.commands = list(commands or [])
+        self.width = width
+        self.height = height
+        self.grow = grow
+        self.key = key
 
     def measure(self, _avail_w: float) -> float:
-        return self.height if self.height is not None else 0.0
+        return self.height
 
     def is_grow(self) -> bool:
-        return self.grow and self.height is None
+        return self.grow
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        self.draw(ctx, x, y, w, h)
+        raise RuntimeError("Canvas renders only through the SDK v3 component-tree path")
+
+    def to_node(self) -> dict:
+        return {
+            "type": "canvas",
+            "width": self.width,
+            "height": self.height,
+            "grow": self.grow,
+            "commands": [c.to_command() for c in self.commands],
+        }
 
 
 @dataclass
@@ -579,8 +688,8 @@ class Scrollable(Component):
     scrollbar indicator is drawn on the right edge.
 
     Scroll offset is persisted on the instance, so the `Scrollable` must be
-    stable across renders — create it once in `on_init` (or as a class
-    attribute), not inside `on_render`.
+    stable across renders — create it once at module level or in `init()`,
+    not inside `view()`.
 
     Keyboard scroll: j/k or arrow-down/up keys update `scroll_offset`.
     Apps drive this by calling `handle_key(key)` from their `on_key` handler.
@@ -1024,7 +1133,7 @@ def badge(
     (text_w + padding), and centres the text — no Python width math.
 
     Args:
-        ctx:       A ``RenderContext`` instance.
+        ctx:       Canvas context.
         x:         Left edge of the badge.
         y_center:  Vertical centre of the badge (e.g. the commit-node ``cy``).
         label:     Text to display inside the pill.
@@ -1059,7 +1168,7 @@ def badge(
 # revalidate: the boundary stays mounted with current content; the only
 # visual signal is a small pill instead of a destructive remount.
 
-import time as _ct_time  # `time` collides with some example apps' imports
+import time as _ct_time  # noqa: E402  # `time` collides with some example apps' imports
 
 
 def loading_pill(ctx, x: float, y: float, label: str = "Fetching…") -> float:
@@ -1074,7 +1183,7 @@ def loading_pill(ctx, x: float, y: float, label: str = "Fetching…") -> float:
     content. When the fetch completes, just stop calling it.
 
     Args:
-        ctx:   RenderContext.
+        ctx:   Canvas context.
         x, y:  Top-left of the pill (NOT y-centre — easier to anchor).
         label: Text shown after the spinner glyph.
     """
@@ -1159,43 +1268,6 @@ class Card(Component):
 
 
 @dataclass
-class TextInput(Component):
-    """Layout-aware text input. Place inside a Column like any other child.
-
-    Return it from ``view()`` inside a component tree. After the render pass,
-    read ``.submitted`` to get the text the user submitted (pressed Enter), or
-    ``None`` if nothing was submitted this frame.
-
-    Create once (in ``on_init``) and update ``placeholder`` as needed — the
-    instance is stable across renders so the host can track focus state.
-
-    When ``multiline=True``, Shift+Enter inserts a newline and Enter submits.
-    """
-    id: str
-    placeholder: str = ""
-    height: float = 48.0
-    multiline: bool = False
-    value: Optional[str] = None
-
-    _submitted: Optional[str] = field(default=None, init=False, repr=False)
-
-    def measure(self, avail_w: float) -> float:
-        return self.height
-
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        self._submitted = ctx.text_input(self.id, x=x, y=y, w=w,
-                                         placeholder=self.placeholder, h=h,
-                                         multiline=self.multiline,
-                                         value=self.value)
-        self.value = None
-
-    @property
-    def submitted(self) -> Optional[str]:
-        """Text submitted this frame (user pressed Enter), else None."""
-        return self._submitted
-
-
-@dataclass
 class TextEdit(Component):
     """Host-rendered text editor. Use inside ``view()`` like any other component.
 
@@ -1227,14 +1299,9 @@ class TextEdit(Component):
     def measure(self, _avail_w: float) -> float:
         return self.height
 
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        self._submitted = ctx.text_input(self.node_id, x=x, y=y, w=w,
-                                         placeholder=self.placeholder,
-                                         h=h, multiline=self.multiline)
-
     @property
     def submitted(self) -> Optional[str]:
-        """Text submitted this frame (user pressed Enter) during L0 fallback, else None."""
+        """Text submitted this frame (user pressed Enter), else None."""
         return self._submitted
 
     def to_node(self) -> dict:
@@ -1334,8 +1401,27 @@ class ChatBubble(Component):
         ctx.markdown(text_x, text_y, text_w, self.text, base_size=fs, color=fg)
 
 
+@dataclass
+class Markdown(Component):
+    """Host-rendered markdown block for SDK v3 component trees."""
+
+    text: str
+    padding: float = SPACE_MD
+    base_size: float = TEXT_BODY
+    color: str = ""
+
+    def to_node(self) -> dict:
+        return {
+            "type": "markdown",
+            "text": self.text,
+            "padding": self.padding,
+            "base_size": self.base_size,
+            "color": self.color,
+        }
+
+
 class SelectList(Component):
-    """Keyboard-navigable scrollable list. Stateful — create in on_init, not on_render.
+    """Keyboard-navigable scrollable list. Stateful -- create at module level or in init().
 
     items: list of dicts with keys: name (str), description (str, optional),
            leading (str, optional), trailing (str, optional)
@@ -1478,7 +1564,7 @@ class SelectList(Component):
 
 @dataclass
 class FormField(Component):
-    """Label + TextInput row. Create in on_init (stable across renders).
+    """Label + TextEdit row. Create in on_init (stable across renders).
 
     Read .submitted after the render pass; it contains the text entered by the
     user when they pressed Enter, or None if no submission this frame.
@@ -1494,7 +1580,7 @@ class FormField(Component):
     BOTTOM_PAD: float = SPACE_LG          # 16px below input before next item
 
     def __post_init__(self) -> None:
-        self._input: TextInput = TextInput(self.id, placeholder=self.placeholder, height=self.height)
+        self._input: TextEdit = TextEdit(self.id, placeholder=self.placeholder, height=self.height)
 
     @property
     def submitted(self) -> Optional[str]:
@@ -1504,12 +1590,16 @@ class FormField(Component):
     def measure(self, avail_w: float) -> float:
         return self.LABEL_H + self.LABEL_GAP + self.height + self.BOTTOM_PAD
 
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+    def to_node(self) -> dict:
         req_suffix = " *" if self.required else ""
-        ctx.text(x, y, f"{self.label}{req_suffix}",
-                 size=TEXT_HINT, color=theme.muted)
-        input_y = y + self.LABEL_H + self.LABEL_GAP
-        self._input.render(ctx, x, input_y, w, self.height)
+        return cast(dict, Column(
+            [
+                Label(f"{self.label}{req_suffix}", tone="hint"),
+                self._input,
+            ],
+            gap=self.LABEL_GAP,
+            padding=0,
+        ).to_node())
 
 
 @dataclass
@@ -1527,6 +1617,9 @@ class Column(Component):
     padding: float = SPACE_XL
     padding_top: Optional[float] = None
     gap: float = SPACE_MD
+    align: str = "start"
+    grow: bool = False
+    key: str = ""
 
     def __post_init__(self):
         self.children = list(self.children)
@@ -1605,9 +1698,8 @@ def render_tree(ctx, root: Component, fill: Optional[str] = None) -> None:
     `fill` defaults to the active host theme background (`theme.bg`).
     Apps normally call `ctx.render(root)` instead, which calls this.
 
-    If the root component (and all descendants) support ``to_node()``, the tree
-    is emitted as a single ``ComponentTree`` command and the host renders it
-    natively with consistent theming. Otherwise falls back to L0 draw commands.
+    The root component and every descendant must support ``to_node()``. The SDK
+    emits a single ``ComponentTree`` command and the host renders it natively.
     """
     if not isinstance(root, Component):
         raise TypeError(
@@ -1616,18 +1708,12 @@ def render_tree(ctx, root: Component, fill: Optional[str] = None) -> None:
         )
     ctx.clear(fill or theme.bg)
     node = root.to_node()
-    if node is not None:
-        ctx.render_tree(node)
-        return
-    if getattr(ctx._app, "_l0_fallback_warned", False) is not True:
-        setattr(ctx._app, "_l0_fallback_warned", True)
-        ctx.warn(
-            "ctx.render() fell back to L0 draw commands because "
-            f"{type(root).__name__}.to_node() returned None. "
-            "Use UiNode-native components for ordinary app UI; reserve raw "
-            "drawing for games, visualizations, or explicitly documented escape hatches."
+    if node is None:
+        raise TypeError(
+            f"{type(root).__name__}.to_node() returned None. SDK v3 requires "
+            "a host-native component tree."
         )
-    root.render(ctx, 0.0, 0.0, ctx.w, ctx.h)
+    ctx.render_tree(node)
 
 
 @dataclass
@@ -1798,7 +1884,7 @@ class RowChip:
 
 @dataclass
 class ListRow:
-    """Typed row descriptor for :meth:`RenderContext.list_view`.
+    """Typed row descriptor for list views.
 
     Example::
 
@@ -2114,8 +2200,9 @@ __all__ = [
     # components
     "Component", "Column", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
-    "Spacer", "Divider", "Canvas", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
-    "ListItem", "Row", "TextInput", "TextEdit", "ChatBubble",
+    "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
+    "CanvasText", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
+    "ListItem", "Row", "TextEdit", "ChatBubble", "Markdown",
     "SelectList", "FormField",
     "InfoTable", "ButtonRow",
     # badge primitive

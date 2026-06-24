@@ -19,24 +19,23 @@ SDK_ROOT = REPO_ROOT / "sdk" / "python" / "plexi_sdk"
 OUTPUT_PATH = REPO_ROOT / "website" / "src" / "content" / "docs" / "sdk.md"
 
 # Files processed in section order. Each entry is (path-relative-to-SDK_ROOT, section-title).
-# Private helper files (_pipe, _state, etc.) are included selectively.
+# Private helper files are included selectively.
 SECTIONS: list[tuple[str, str]] = [
     ("__init__.py",        "Overview"),
-    ("_app.py",            "App"),
-    ("_emitter.py",        "Emitter"),
-    ("_render_context.py", "RenderContext"),
+    ("effects.py",         "Effects"),
+    ("events.py",          "Events"),
+    ("_v3_state.py",       "State and Logging"),
     ("ui.py",              "UI Components"),
     ("testing.py",         "Testing"),
-    ("midi.py",            "MIDI"),
     ("_types.py",          "Types"),
+    ("_theme.py",          "Theme"),
     ("_constants.py",      "Constants"),
     ("_protocol.py",       "Protocol Types"),
 ]
 
 # Classes whose public methods are expanded with individual subsections.
 EXPAND_CLASSES = {
-    "App", "Emitter", "RenderContext", "Pipe",
-    "Theme", "AppPalette", "State", "Arg",
+    "Theme", "AppPalette", "StateProxy", "LogProxy",
 }
 
 # Methods to skip even on expanded classes (internal plumbing).
@@ -201,7 +200,7 @@ def process_file(path: Path, section_title: str) -> list[str]:
 FRONTMATTER = """\
 ---
 title: Python SDK
-description: Reference for the Plexi Python SDK — App, Emitter, RenderContext, and UI components.
+description: Reference for the Plexi Python SDK v3 native app API.
 order: 6
 ---
 """

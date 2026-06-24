@@ -1,21 +1,13 @@
 """Live theme singleton.
 
-Populated from the host ``Init`` payload so app-drawn chrome tracks the host
-theme (light/dark + user ``[theme]`` overrides in ``config.toml``). Until ``Init``
-arrives the attributes hold the built-in dark defaults, so apps
-and ``ui.py`` components still render correctly pre-handshake.
+Populated from the host Init payload so app chrome tracks the host theme
+(light/dark + user overrides in config.toml). Until Init arrives the
+attributes hold the built-in dark defaults.
 
-The module exposes a single process-wide instance, ``theme``, which is mutated
-**in place** on ``Init``. Every module that did ``from ._theme import theme`` sees
-the update — so never rebind the name, only set attributes.
+Process-wide instance ``theme`` is mutated in place on Init. Never rebind
+the name, only set attributes.
 
-Apps read colors via ``ctx.theme.<role>`` (e.g. ``ctx.theme.accent``). Both the
-SDK-semantic names (``bg``/``surface``/``muted``/...) and ANSI aliases
-(``red``/``green``/``yellow``) are available; pick whichever reads best.
-
-``ctx.theme.is_dark`` — ``True`` when the active theme has a dark background.
-Use this to branch between your own light/dark color tokens, or use
-``AppPalette`` which does the selection automatically.
+``theme.is_dark`` is True when the background luminance is below 0.5.
 """
 
 from __future__ import annotations
@@ -109,26 +101,8 @@ class Theme:
 class AppPalette:
     """Light/dark palette for app-defined color tokens.
 
-    Declare a palette once at module level, then call ``resolve(ctx.theme)``
-    each frame to get the correct set of colors for the active host theme.
-
-    Manual drawing usage::
-
-        from plexi_sdk import AppPalette
-
-        PALETTE = AppPalette(
-            dark={"card": "#1e1e2e", "label": "#cdd6f4", "accent": "#7aa2f7"},
-            light={"card": "#eff1f5", "label": "#4c4f69", "accent": "#1e66f5"},
-        )
-
-        def on_render(self, ctx):
-            c = PALETTE.resolve(ctx.theme)
-            ctx.clear(ctx.theme.bg)
-            ctx.rect(16, 16, ctx.w - 32, 80, c["card"], radius=8.0)
-            ctx.text(28, 40, "Hello", size=15.0, color=c["label"])
-
-    Both dicts must have the same keys. Access is by plain dict lookup so
-    any key name is valid — no registration or schema required.
+    Both dicts must have the same keys. ``resolve(theme)`` returns the
+    matching set based on ``theme.is_dark``.
     """
 
     def __init__(self, dark: "dict[str, str]", light: "dict[str, str]") -> None:

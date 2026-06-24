@@ -11,6 +11,12 @@ sys.path.insert(
 )
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import plexi_sdk as sdk  # noqa: E402
+from plexi_sdk import _v3_state  # noqa: E402
+from plexi_sdk.effects import PersistState  # noqa: E402
+from plexi_sdk.events import FocusChanged  # noqa: E402
+
+import stats as stats_app  # noqa: E402
 from stats import _normalize_focus_events, _timeline_fractions  # noqa: E402
 
 
@@ -88,3 +94,31 @@ def test_clamped_timeline_counted_slice_starts_at_raw_segment_start():
     assert abs((raw_end - raw_start) - (1800 / 86400)) < 0.000001
     assert counted_start == raw_start
     assert abs((counted_end - counted_start) - (60 / 86400)) < 0.000001
+
+
+def test_focus_changed_event_appends_state_event():
+    _v3_state._state = sdk.StateSnapshot({"focus_events": []}, {"focus_events": b"[]"})
+    _v3_state._in_view = False
+
+    effects = stats_app.update(
+        FocusChanged(
+            timestamp=datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc).isoformat(),
+            duration_secs=90,
+            reason="pane_switch",
+            context_name="PLEXI",
+        )
+    )
+
+    state_effect = next(effect for effect in effects if isinstance(effect, PersistState))
+    assert state_effect.data["focus_events"] == [
+        {
+            "kind": "focus_changed",
+            "timestamp": "2026-06-10T12:00:00+00:00",
+            "duration_secs": 90,
+            "reason": "pane_switch",
+            "pane_id": None,
+            "context_name": "PLEXI",
+            "context_root": None,
+            "cwd": None,
+        }
+    ]

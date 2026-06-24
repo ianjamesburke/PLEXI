@@ -136,6 +136,10 @@ impl ProcessApp {
                 );
                 self.wants_close_self = true;
             }
+            ControlCommand::SetTitle { title } => {
+                log::info!("ProcessApp[{}]: SetTitle → {:?}", self.type_id, title);
+                self.display_name = title;
+            }
         }
     }
 }

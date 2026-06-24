@@ -42,17 +42,36 @@ pub enum PlexiEvent {
         /// Omitted in live (non-headless) Init events.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         state: Option<serde_json::Value>,
+        /// Initial pane width in logical pixels. Apps use this to size
+        /// layout before the first Resize event arrives.
+        #[serde(default)]
+        width: f32,
+        /// Initial pane height in logical pixels.
+        #[serde(default)]
+        height: f32,
     },
     /// Request a new frame. App replies with DrawCommands terminated by FrameDone.
     Render {
         frame_id: u64,
         /// Current surface rect the app should draw into.
         rect: Rect,
+        /// Actual rendered canvas width from the previous frame's component tree.
+        /// Zero on the first frame (no prior render). SDK exposes as sdk.canvas_width.
+        #[serde(default)]
+        canvas_width: f32,
+        /// Actual rendered canvas height from the previous frame's component tree.
+        /// Zero on the first frame (no prior render). SDK exposes as sdk.canvas_height.
+        #[serde(default)]
+        canvas_height: f32,
     },
     /// Surface was resized. App should re-layout and request a new frame.
     Resize { width: f32, height: f32 },
     /// User input event.
-    Key { key: String, modifiers: Modifiers },
+    Key {
+        key: String,
+        modifiers: Modifiers,
+        pressed: bool,
+    },
     /// Mouse click at logical coordinates within the app surface.
     Click { x: f32, y: f32, button: MouseButton },
     /// Pointer button pressed (fires on the frame the button goes down).
@@ -91,9 +110,27 @@ pub enum PlexiEvent {
         args: Vec<String>,
     },
     /// Response to a runtime CapabilityRequest.
-    CapabilityDecision { request_id: String, granted: bool },
+    CapabilityDecision {
+        request_id: String,
+        capability: String,
+        granted: bool,
+    },
     /// Secret broker response. value is None when denied.
     SecretValue { key: String, value: Option<String> },
+    /// Native ProcessApp file read result.
+    FileReadResult {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<Vec<u8>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Native ProcessApp directory listing result.
+    FileListResult {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entries: Option<Vec<FileListEntry>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Run lifecycle update from the host.
     RunUpdate {
         run_id: String,
@@ -204,27 +241,6 @@ pub enum PlexiEvent {
     /// `height` is the pixel height of the text when wrapped at the requested width,
     /// clamped to `max_lines` rows if specified.
     TextWrappedMeasured { request_id: String, height: f32 },
-    /// User pressed Enter inside a `DrawCommand::TextInput` field.
-    ///
-    /// `id` matches the `id` the app supplied on the `TextInput` command.
-    /// `value` is the buffered text at submission time. The host clears its
-    /// buffer for `id` after emitting this event so the field is empty for
-    /// the next input.
-    TextSubmitted { id: String, value: String },
-    /// User edited a `DrawCommand::TextInput` field.
-    ///
-    /// `id` matches the `id` the app supplied on the `TextInput` command.
-    /// `value` is the live buffered text after the edit.
-    TextChanged { id: String, value: String },
-    /// User pressed a control key while focused in a `DrawCommand::TextInput`.
-    ///
-    /// Used for app-owned completion menus without forwarding ordinary typing
-    /// through `on_key`.
-    TextInputKey {
-        id: String,
-        key: String,
-        modifiers: Modifiers,
-    },
     /// Clipboard paste forwarded into the focused app pane.
     ///
     /// Emitted whenever the host observes `egui::Event::Paste(text)` while an
@@ -506,4 +522,54 @@ pub enum PlexiEvent {
         request_id: String,
         checkpoints: Vec<serde_json::Value>,
     },
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
+pub struct FileListEntry {
+    pub name: String,
+    pub path: String,
+    #[serde(default)]
+    pub is_dir: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn init_event_serializes_pane_dimensions() {
+        let event = PlexiEvent::Init {
+            protocol: "pgap/3".to_string(),
+            app_id: "test".to_string(),
+            workspace_root: std::path::PathBuf::from("/tmp"),
+            capabilities: vec![],
+            feature_flags: vec![],
+            compact_threshold: 280.0,
+            regular_threshold: 480.0,
+            theme: std::collections::HashMap::new(),
+            args: vec![],
+            state: None,
+            width: 800.0,
+            height: 450.0,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["width"], 800.0);
+        assert_eq!(v["height"], 450.0);
+    }
+
+    #[test]
+    fn init_event_deserializes_without_dimensions() {
+        let json = r#"{"type":"init","protocol":"pgap/3","app_id":"test","workspace_root":"/tmp","capabilities":[],"feature_flags":[]}"#;
+        let event: PlexiEvent = serde_json::from_str(json).unwrap();
+        match event {
+            PlexiEvent::Init { width, height, .. } => {
+                assert_eq!(width, 0.0);
+                assert_eq!(height, 0.0);
+            }
+            _ => panic!("expected Init"),
+        }
+    }
 }

@@ -95,12 +95,14 @@ impl PlexiApp {
             return;
         };
         let active = self.active_window;
-        if let Some((_tile_id, existing_pane_id)) =
+        if let Some((existing_tile_id, existing_pane_id)) =
             self.find_open_text_editor_tile(active, &entry.path)
         {
             log::info!(
                 "notes_picker: refusing to delete open note in pane {existing_pane_id} — close it first"
             );
+            self.set_window_focused_pane(active, existing_tile_id);
+            self.pop_focus_layer(&FocusLayer::NotesPicker);
             return;
         }
 

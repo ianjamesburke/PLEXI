@@ -992,7 +992,7 @@ mod install_tests {
     fn python_app_venv_version_matches_sdk_floor() {
         let sdk_pyproject = include_str!("../../sdk/python/pyproject.toml");
         assert!(
-            sdk_pyproject.contains(r#"requires-python = ">=3.12""#),
+            sdk_pyproject.contains(r#"requires-python = ">=3.11""#),
             "update this test when the SDK Python floor changes"
         );
         assert_eq!(PYTHON_APP_VENV_VERSION, "3.12");
