@@ -284,55 +284,95 @@ impl PlexiApp {
             .escape(true)
             .show_scroll_body(ctx, &self.colors.clone(), 420.0, "changelog_body", |ui| {
                 if let Some(ref latest) = self.update_available.clone() {
+                    let has_error = self.update_install_error.is_some();
+                    let frame_fill = if has_error {
+                        self.colors.danger.gamma_multiply(0.12)
+                    } else {
+                        self.colors.accent.gamma_multiply(0.15)
+                    };
+                    let frame_stroke = if has_error {
+                        self.colors.danger.gamma_multiply(0.4)
+                    } else {
+                        self.colors.accent.gamma_multiply(0.4)
+                    };
                     egui::Frame::new()
-                        .fill(self.colors.accent.gamma_multiply(0.15))
-                        .stroke(Stroke::new(1.0, self.colors.accent.gamma_multiply(0.4)))
+                        .fill(frame_fill)
+                        .stroke(Stroke::new(1.0, frame_stroke))
                         .corner_radius(R6)
                         .inner_margin(egui::Margin::symmetric(12, 8))
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                let label_text = if self.update_installing {
-                                    "Updating — Plexi will restart shortly...".to_string()
-                                } else {
-                                    format!("v{latest} is available")
-                                };
-                                ui.label(
-                                    RichText::new(label_text)
-                                        .size(style::TEXT_HINT)
-                                        .color(self.colors.accent),
-                                );
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if self.update_installing {
-                                            ui.label(
-                                                RichText::new("installing...")
-                                                    .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_dim),
-                                            );
-                                        } else {
+                            if let Some(ref err) = self.update_install_error.clone() {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Update failed: {err}"))
+                                            .size(style::TEXT_HINT)
+                                            .color(self.colors.danger),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
                                             let btn = egui::Button::new(
-                                                RichText::new(format!("Update to v{latest}"))
+                                                RichText::new("Try again")
                                                     .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_on(self.colors.accent)),
+                                                    .color(self.colors.text_on(self.colors.danger)),
                                             )
-                                            .fill(self.colors.accent)
+                                            .fill(self.colors.danger)
                                             .corner_radius(egui::CornerRadius::same(4));
                                             if ui.add(btn).clicked() {
+                                                self.update_install_error = None;
                                                 self.update_installing = true;
                                                 let (tx, rx) = std::sync::mpsc::channel();
                                                 self.update_install_rx = Some(rx);
                                                 let latest_clone = latest.clone();
                                                 std::thread::spawn(move || {
-                                                    log::info!("ui: one-click update to v{latest_clone} started");
+                                                    log::info!("ui: one-click update retry to v{latest_clone}");
                                                     let result = crate::cli::install::run_self_update(true);
                                                     let _ = tx.send(result);
                                                 });
                                             }
-                                        }
-                                    },
-                                );
-                            });
+                                        },
+                                    );
+                                });
+                            } else {
+                                ui.horizontal(|ui| {
+                                    let label_text = if self.update_installing {
+                                        "Building update — Plexi will relaunch when ready.".to_string()
+                                    } else {
+                                        format!("v{latest} is available")
+                                    };
+                                    let label_color = self.colors.accent;
+                                    ui.label(
+                                        RichText::new(label_text)
+                                            .size(style::TEXT_HINT)
+                                            .color(label_color),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if !self.update_installing {
+                                                let btn = egui::Button::new(
+                                                    RichText::new(format!("Quit & Update to v{latest}"))
+                                                        .size(style::TEXT_HINT)
+                                                        .color(self.colors.text_on(self.colors.accent)),
+                                                )
+                                                .fill(self.colors.accent)
+                                                .corner_radius(egui::CornerRadius::same(4));
+                                                if ui.add(btn).clicked() {
+                                                    self.update_installing = true;
+                                                    let (tx, rx) = std::sync::mpsc::channel();
+                                                    self.update_install_rx = Some(rx);
+                                                    let latest_clone = latest.clone();
+                                                    std::thread::spawn(move || {
+                                                        log::info!("ui: one-click update to v{latest_clone} started");
+                                                        let result = crate::cli::install::run_self_update(true);
+                                                        let _ = tx.send(result);
+                                                    });
+                                                }
+                                            }
+                                        },
+                                    );
+                                });
+                            }
                         });
                     ui.add_space(style::SPACE_SM);
                 }

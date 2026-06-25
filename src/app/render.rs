@@ -65,11 +65,16 @@ impl PlexiApp {
         if let Some(ref rx) = self.update_install_rx {
             if let Ok(result) = rx.try_recv() {
                 self.update_installing = false;
-                if let Err(ref e) = result {
-                    log::warn!("ui: one-click update failed: {e}");
+                match result {
+                    Ok(msg) => {
+                        log::info!("ui: one-click update: {msg}");
+                        self.update_install_error = None;
+                    }
+                    Err(e) => {
+                        log::warn!("ui: one-click update failed: {e}");
+                        self.update_install_error = Some(e);
+                    }
                 }
-                // result logged; modal stays open so user sees outcome via update_available clearing
-                drop(result);
             }
         }
         self.drain_pty_events();
