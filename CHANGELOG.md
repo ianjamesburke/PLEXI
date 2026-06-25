@@ -1,6 +1,22 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.8] — 2026-06-25
+
+### Changes
+- fix: stats app UI broken after SDK v2→v3 migration (#2328)
+- fix: remove global SDK import/install fallback from app CLI (#2327)
+- feat: palette search matches renamed pane titles (#2319)
+- fix: website build uses stale SDK docs generator (#2325)
+- Land SDK v3 as native Python app API (#2324)
+- feat: app framework trust labels and bypass scan (#2317)
+- fix(sdk): re-export color constants BG/FG/ACCENT/SURFACE/HIGHLIGHT/MUTED/GREEN/RED/YELLOW (#2312)
+- fix: workspace-scoped config.toml ignored on initial load (#2315)
+- fix: scratchpad scroll-beyond-cursor breaks after filling initial padding (#2322)
+- feat: bundled agent definitions and install-time discovery (#2320)
+- infra: generate PGAP capability reference docs from protocol schema (#2321)
+- feat: assistant app connector protocol (#2311)
+- fix(terminal): multi-line URL links broken at wrap boundary (#2310)
 ## [0.1.7] — 2026-06-20
 
 ### Changes
