@@ -7,6 +7,30 @@ use std::time::Duration;
 
 pub(crate) const FOCUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
+/// Format a Unix timestamp (seconds since epoch) as an ISO-8601 UTC string.
+/// Minimal implementation with no external dependencies.
+fn unix_secs_to_iso(secs: u64) -> String {
+    // Days since epoch → Gregorian date via the Zeller / proleptic algorithm.
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let days = secs / 86400;
+
+    // Algorithm: http://howardhinnant.github.io/date_algorithms.html (civil_from_days)
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = if mo <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FocusLogOutcome {
     Unchanged,
@@ -18,7 +42,6 @@ pub(crate) enum FocusLogOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FocusSegmentReason {
     PaneSwitch,
-    Heartbeat,
     Shutdown,
 }
 
@@ -26,7 +49,6 @@ impl FocusSegmentReason {
     fn as_str(self) -> &'static str {
         match self {
             Self::PaneSwitch => "pane_switch",
-            Self::Heartbeat => "heartbeat",
             Self::Shutdown => "shutdown",
         }
     }
@@ -108,28 +130,33 @@ pub(crate) struct PendingRawWasmLaunch {
     pub launch_args: Vec<String>,
 }
 
+/// Pane metadata snapshot used for both journal checkpoints and event emission.
+pub(crate) struct PaneMetadata {
+    pub pane_id: u64,
+    pub context_name: String,
+    pub context_description: String,
+    pub context_root: Option<String>,
+    pub cwd: Option<String>,
+    pub pty_title: Option<String>,
+    pub pane_name: Option<String>,
+    pub app_type_id: Option<String>,
+}
+
 impl PlexiApp {
     /// Collect metadata for the pane at `tile_id` in the window identified by
-    /// stable `window_id` and emit a `FocusChanged` event. Called when the
-    /// focused pane changes and on shutdown.
-    pub(super) fn emit_focus_changed_for_tile(
+    /// stable `window_id`. Returns `None` if the window or tile is missing.
+    pub(super) fn collect_pane_metadata(
         &self,
         window_id: u64,
         tile_id: egui_tiles::TileId,
-        duration_secs: u64,
-        reason: FocusSegmentReason,
-    ) {
+    ) -> Option<PaneMetadata> {
         use egui_tiles::Tile;
-        let Some(win) = self.windows.iter().find(|w| w.window_id == window_id) else {
-            return;
-        };
+        let win = self.windows.iter().find(|w| w.window_id == window_id)?;
         let pane_id = match win.tree.tiles.get(tile_id) {
             Some(Tile::Pane(id)) => *id,
-            _ => return,
+            _ => return None,
         };
-        let Some(pane) = win.panes.get(&pane_id) else {
-            return;
-        };
+        let pane = win.panes.get(&pane_id)?;
         let context_name = self.context_name_for(win.context_id);
         let context_description = self.context_description_for(win.context_id);
         let context_root = self
@@ -150,11 +177,7 @@ impl PlexiApp {
             crate::host::pane::Pane::Portal(_) => (None, None, None, None),
         };
 
-        log::info!(
-            "focus_changed: pane_id={pane_id} reason={} context={context_name:?} context_root={context_root:?} duration_secs={duration_secs} pty_title={pty_title:?} pane_name={pane_name:?} app_type_id={app_type_id:?}",
-            reason.as_str()
-        );
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::FocusChanged {
+        Some(PaneMetadata {
             pane_id,
             context_name,
             context_description,
@@ -163,10 +186,96 @@ impl PlexiApp {
             pty_title,
             pane_name,
             app_type_id,
+        })
+    }
+
+    /// Collect metadata and emit a `FocusChanged` event. Called when the
+    /// focused pane changes and on shutdown. Clears the focus journal on clean
+    /// transitions so crash-recovery only fires if the process was killed.
+    pub(super) fn emit_focus_changed_for_tile(
+        &self,
+        window_id: u64,
+        tile_id: egui_tiles::TileId,
+        duration_secs: u64,
+        reason: FocusSegmentReason,
+    ) {
+        let Some(meta) = self.collect_pane_metadata(window_id, tile_id) else {
+            return;
+        };
+
+        log::info!(
+            "focus_changed: pane_id={} reason={} context={:?} context_root={:?} duration_secs={duration_secs} pty_title={:?} pane_name={:?} app_type_id={:?}",
+            meta.pane_id,
+            reason.as_str(),
+            meta.context_name,
+            meta.context_root,
+            meta.pty_title,
+            meta.pane_name,
+            meta.app_type_id,
+        );
+        // On a clean close the journal is no longer needed — delete it so we
+        // don't emit a spurious crash_recovery on the next startup.
+        crate::app::focus_journal::clear_journal(&self.focus_journal_path);
+
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::FocusChanged {
+            pane_id: meta.pane_id,
+            context_name: meta.context_name,
+            context_description: meta.context_description,
+            context_root: meta.context_root,
+            cwd: meta.cwd,
+            pty_title: meta.pty_title,
+            pane_name: meta.pane_name,
+            app_type_id: meta.app_type_id,
             reason: Some(reason.as_str().to_string()),
             duration_secs,
             timestamp: crate::host::event_log::now_timestamp(),
         });
+    }
+
+    /// Write (or overwrite) the focus journal checkpoint for the pane currently
+    /// in focus. The journal records the segment start time plus a `last_checkpoint_at`
+    /// so crash recovery can compute duration to now.
+    ///
+    /// `segment_start` is the `Instant` when this focus segment began. We convert
+    /// it to a wall-clock ISO timestamp by subtracting elapsed time from now.
+    pub(super) fn write_focus_journal_checkpoint(
+        &self,
+        window_id: u64,
+        tile_id: egui_tiles::TileId,
+        segment_start: std::time::Instant,
+    ) {
+        let Some(meta) = self.collect_pane_metadata(window_id, tile_id) else {
+            return;
+        };
+
+        // Convert Instant → wall clock by anchoring to SystemTime::now().
+        let elapsed_since_start = segment_start.elapsed();
+        let started_at_wall = std::time::SystemTime::now()
+            .checked_sub(elapsed_since_start)
+            .unwrap_or(std::time::SystemTime::now());
+
+        let to_iso = |t: std::time::SystemTime| -> String {
+            let secs = t
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            // Minimal ISO-8601 UTC formatter without external deps.
+            unix_secs_to_iso(secs)
+        };
+
+        let entry = crate::app::focus_journal::FocusJournalEntry {
+            pane_id: meta.pane_id,
+            context_name: meta.context_name,
+            context_description: meta.context_description,
+            context_root: meta.context_root,
+            cwd: meta.cwd,
+            pty_title: meta.pty_title,
+            pane_name: meta.pane_name,
+            app_type_id: meta.app_type_id,
+            started_at: to_iso(started_at_wall),
+            last_checkpoint_at: to_iso(std::time::SystemTime::now()),
+        };
+        crate::app::focus_journal::write_checkpoint(&self.focus_journal_path, &entry);
     }
 
     pub(crate) fn current_focus_target(&self) -> Option<(u64, egui_tiles::TileId)> {
@@ -199,6 +308,10 @@ impl PlexiApp {
             }
             self.last_logged_focus = current_focus;
             self.focus_started_at = current_focus.map(|_| now);
+            // Start a journal checkpoint for the new focus segment.
+            if let Some((window_id, tile_id)) = current_focus {
+                self.write_focus_journal_checkpoint(window_id, tile_id, now);
+            }
             return if had_previous_focus {
                 FocusLogOutcome::Transition
             } else {
@@ -221,13 +334,10 @@ impl PlexiApp {
             return FocusLogOutcome::Unchanged;
         }
 
-        self.emit_focus_changed_for_tile(
-            window_id,
-            tile_id,
-            elapsed.as_secs(),
-            FocusSegmentReason::Heartbeat,
-        );
-        self.focus_started_at = Some(now);
+        // Heartbeat: update the journal checkpoint only — do NOT emit to events.jsonl.
+        // Do NOT reset focus_started_at so the journal always records the full
+        // segment start; crash recovery can then compute the true total duration.
+        self.write_focus_journal_checkpoint(window_id, tile_id, started_at);
         FocusLogOutcome::Heartbeat
     }
 

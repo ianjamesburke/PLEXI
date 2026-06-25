@@ -4,6 +4,7 @@ mod canvas_bindings;
 mod dispatch;
 pub mod file_handlers;
 mod focus;
+pub(crate) mod focus_journal;
 pub mod host_mcp;
 pub mod host_version;
 pub(crate) mod launch_spec;
@@ -378,6 +379,10 @@ pub struct PlexiApp {
     pub(crate) last_logged_focus: Option<(u64, egui_tiles::TileId)>,
     /// When the current focus session started. Reset on each FocusChanged emit.
     pub(crate) focus_started_at: Option<std::time::Instant>,
+    /// Path to the focus journal file used for crash-recovery checkpoints.
+    /// Written on every heartbeat and on clean pane transitions; deleted on
+    /// clean shutdown. If present at startup → emit crash_recovery event.
+    pub(crate) focus_journal_path: std::path::PathBuf,
     /// Last observed system theme for auto-switching catppuccin variants (#1776).
     pub(crate) last_system_theme: Option<egui::Theme>,
     /// App commands held while a modal overlay owns keyboard input. Released and
@@ -835,6 +840,13 @@ impl PlexiApp {
             crate::host::event_log::init_global(global_path, workspace_path);
         }
 
+        // Check for an unclean shutdown from the previous session.
+        // If the focus journal has an unclosed segment, emit a crash_recovery event.
+        {
+            let journal_path = crate::config::config_dir().join("focus-journal.jsonl");
+            crate::app::focus_journal::recover_from_focus_journal(&journal_path);
+        }
+
         // Spawn background update check. Sends the latest version once if newer.
         let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
         crate::cli::updater::spawn_update_check(crate::config::config_dir(), update_tx);
@@ -1191,6 +1203,8 @@ impl PlexiApp {
                     pending_raw_wasm_launches: std::collections::VecDeque::new(),
                     last_logged_focus: None,
                     focus_started_at: None,
+                    focus_journal_path: crate::config::config_dir()
+                        .join("focus-journal.jsonl"),
                     last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
                     agent_host: crate::agent::AgentHost::production(config.ai),
@@ -1432,6 +1446,7 @@ impl PlexiApp {
             pending_raw_wasm_launches: std::collections::VecDeque::new(),
             last_logged_focus: None,
             focus_started_at: None,
+            focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
             last_system_theme: None,
             overlay_held_cmds: Vec::new(),
             agent_host,
@@ -1649,6 +1664,7 @@ impl PlexiApp {
                 pending_raw_wasm_launches: std::collections::VecDeque::new(),
                 last_logged_focus: None,
                 focus_started_at: None,
+                focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
                 last_system_theme: None,
                 overlay_held_cmds: Vec::new(),
                 agent_host: crate::agent::AgentHost::inert(),
