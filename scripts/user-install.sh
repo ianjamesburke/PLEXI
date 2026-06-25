@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Install Plexi from GitHub releases.
 # Usage: curl -fsSL https://plexiapp.com/install | sh
+#        curl -fsSL https://plexiapp.com/install | sh -s -- --channel beta
+#
+# --channel stable  (default) installs the latest stable release from a prebuilt zip.
+# --channel beta    installs the latest beta (or newer stable) prerelease by source build.
+# --channel alpha   installs the latest alpha/beta/stable prerelease by source build.
+#
+# Prerelease channels have no prebuilt assets, so they build from source.
+# Source builds require Rust (https://rustup.rs) and Xcode command line tools.
 set -euo pipefail
 
 REPO="ianjamesburke/PLEXI"
@@ -20,11 +28,68 @@ require() {
     command -v "$1" &>/dev/null || die "required tool not found: $1"
 }
 
+# ── parse args ────────────────────────────────────────────────────────────────
+
+CHANNEL="stable"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --channel) CHANNEL="${2:-}"; shift 2 ;;
+        --channel=*) CHANNEL="${1#--channel=}"; shift ;;
+        *) die "unknown argument: $1" ;;
+    esac
+done
+case "$CHANNEL" in
+    stable|beta|alpha) ;;
+    *) die "unknown channel '$CHANNEL' — must be: stable | beta | alpha" ;;
+esac
+
 # ── preflight ─────────────────────────────────────────────────────────────────
 
 [[ "$(uname)" == "Darwin" ]] || die "Plexi is macOS only."
 require curl
 require unzip
+
+# Mirror UpdateChannel::accepts from src/cli/release_resolver.rs.
+# stable: only vX.Y.Z   beta: beta + stable   alpha: alpha + beta + stable
+channel_accepts() {
+    local tag="$1"
+    case "$tag" in
+        *-alpha.*) [[ "$CHANNEL" == "alpha" ]] ;;
+        *-beta.*)  [[ "$CHANNEL" == "alpha" || "$CHANNEL" == "beta" ]] ;;
+        *)         true ;;
+    esac
+}
+
+# ── source-build path for prerelease channels ─────────────────────────────────
+
+if [[ "$CHANNEL" != "stable" ]]; then
+    require git
+    command -v cargo &>/dev/null || die "Rust is required for the $CHANNEL channel — install from https://rustup.rs"
+
+    info "Resolving latest $CHANNEL release..."
+    TAGS=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=100" \
+        | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    [[ -n "$TAGS" ]] || die "Could not list releases."
+
+    TAG=""
+    while IFS= read -r t; do
+        [[ -n "$t" ]] || continue
+        channel_accepts "$t" && { TAG="$t"; break; }
+    done <<< "$(echo "$TAGS" | sort -V -r)"
+    [[ -n "$TAG" ]] || die "No release found for channel '$CHANNEL'."
+
+    info "Building Plexi $TAG from source (channel: $CHANNEL)..."
+    SRC="$HOME/.plexi-src"
+    if [[ -d "$SRC/.git" ]]; then
+        git -C "$SRC" fetch origin --tags --force
+    else
+        git clone "https://github.com/$REPO.git" "$SRC"
+    fi
+    git -C "$SRC" checkout --force "$TAG"
+    bash "$SRC/scripts/install.sh" "$CHANNEL"
+    ok "Plexi $TAG installed (channel: $CHANNEL). Run: plexi-$CHANNEL --version"
+    exit 0
+fi
 
 # ── fetch version (needed for banner) ────────────────────────────────────────
 
