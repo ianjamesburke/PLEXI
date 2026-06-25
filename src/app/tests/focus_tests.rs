@@ -167,18 +167,22 @@ fn focus_log_heartbeats_for_same_pane_after_threshold() {
 
     app.windows[0].focused_pane = Some(tile_a);
     app.last_logged_focus = Some((win_id, tile_a));
-    app.focus_started_at =
-        Some(std::time::Instant::now() - std::time::Duration::from_secs(15 * 60 + 1));
+    let original_start =
+        std::time::Instant::now() - std::time::Duration::from_secs(15 * 60 + 1);
+    app.focus_started_at = Some(original_start);
 
     let outcome = app.reconcile_focus_logging(std::time::Duration::from_secs(15 * 60));
 
     assert_eq!(outcome, FocusLogOutcome::Heartbeat);
     assert_eq!(app.last_logged_focus, Some((win_id, tile_a)));
-    assert!(
+    // Heartbeat no longer resets focus_started_at — the segment start is preserved
+    // so crash recovery can compute the full continuous duration from the
+    // original segment start to now (not just from the last heartbeat).
+    assert_eq!(
         app.focus_started_at
-            .expect("heartbeat should restart the focus segment")
-            .elapsed()
-            < std::time::Duration::from_secs(5)
+            .expect("focus_started_at must remain set after heartbeat"),
+        original_start,
+        "focus_started_at must not be reset on heartbeat so crash recovery duration is correct"
     );
 }
 
