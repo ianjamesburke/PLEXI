@@ -15,7 +15,7 @@ pub fn spawn_update_check(cache_dir: std::path::PathBuf, tx: mpsc::Sender<String
             let channel = detect_channel();
             let cache_path = cache_dir.join("update_cache.json");
             let current_raw = installed_tag_or_cargo_version(&cache_dir);
-            match cached_or_fetch(&cache_path, channel) {
+            match cached_or_fetch(&cache_path, channel, &current_raw) {
                 Some(latest) => {
                     let current = ReleaseTag::parse(&current_raw);
                     let latest_tag = ReleaseTag::parse(&latest);
@@ -64,7 +64,7 @@ fn detect_channel() -> UpdateChannel {
 
 /// Returns the best candidate tag (e.g. `v0.1.13-beta.1`) for `channel`, or
 /// `None` when the cache is fresh and held no candidate or the fetch found none.
-fn cached_or_fetch(cache_path: &Path, channel: UpdateChannel) -> Option<String> {
+fn cached_or_fetch(cache_path: &Path, channel: UpdateChannel, current_raw: &str) -> Option<String> {
     if let Ok(bytes) = std::fs::read(cache_path) {
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
             let checked_at = json["checked_at"].as_u64().unwrap_or(0);
@@ -79,7 +79,7 @@ fn cached_or_fetch(cache_path: &Path, channel: UpdateChannel) -> Option<String> 
             }
         }
     }
-    fetch_and_cache(cache_path, channel)
+    fetch_and_cache(cache_path, channel, current_raw)
 }
 
 fn channel_key(channel: UpdateChannel) -> &'static str {
@@ -90,7 +90,7 @@ fn channel_key(channel: UpdateChannel) -> &'static str {
     }
 }
 
-fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel) -> Option<String> {
+fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel, current_raw: &str) -> Option<String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(5))
         .build();
@@ -98,7 +98,7 @@ fn fetch_and_cache(cache_path: &Path, channel: UpdateChannel) -> Option<String> 
         .map_err(|e| log::warn!("update check: {e}"))
         .ok()?;
 
-    let current = ReleaseTag::parse(&format!("v{}", env!("CARGO_PKG_VERSION")))?;
+    let current = ReleaseTag::parse(current_raw)?;
     let best = release_resolver::resolve_best(&releases, channel, &current);
 
     let now = SystemTime::now()
