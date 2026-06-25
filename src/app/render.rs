@@ -69,6 +69,7 @@ impl PlexiApp {
                     Ok(msg) => {
                         log::info!("ui: one-click update: {msg}");
                         self.update_install_error = None;
+                        self.update_quit_pending = true;
                     }
                     Err(e) => {
                         log::warn!("ui: one-click update failed: {e}");
@@ -76,6 +77,10 @@ impl PlexiApp {
                     }
                 }
             }
+        }
+        if self.update_quit_pending {
+            self.save_workspace();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.drain_pty_events();
 

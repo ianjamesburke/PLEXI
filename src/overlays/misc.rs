@@ -333,6 +333,47 @@ impl PlexiApp {
                                         },
                                     );
                                 });
+                            } else if self.update_confirm_prompt {
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        RichText::new("Plexi will quit, build the update, and relaunch. Your workspace will be saved.")
+                                            .size(style::TEXT_HINT)
+                                            .color(self.colors.accent),
+                                    );
+                                    ui.add_space(4.0);
+                                    ui.horizontal(|ui| {
+                                        let confirm_btn = egui::Button::new(
+                                            RichText::new(format!("Quit & Update to v{latest}"))
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_on(self.colors.accent)),
+                                        )
+                                        .fill(self.colors.accent)
+                                        .corner_radius(egui::CornerRadius::same(4));
+                                        if ui.add(confirm_btn).clicked() {
+                                            self.update_confirm_prompt = false;
+                                            self.update_installing = true;
+                                            let (tx, rx) = std::sync::mpsc::channel();
+                                            self.update_install_rx = Some(rx);
+                                            let latest_clone = latest.clone();
+                                            std::thread::spawn(move || {
+                                                log::info!("ui: one-click update to v{latest_clone} started");
+                                                let result = crate::cli::install::run_self_update(true);
+                                                let _ = tx.send(result);
+                                            });
+                                        }
+                                        let cancel_btn = egui::Button::new(
+                                            RichText::new("Cancel")
+                                                .size(style::TEXT_HINT)
+                                                .color(self.colors.text_dim),
+                                        )
+                                        .fill(egui::Color32::TRANSPARENT)
+                                        .stroke(Stroke::new(1.0, self.colors.border))
+                                        .corner_radius(egui::CornerRadius::same(4));
+                                        if ui.add(cancel_btn).clicked() {
+                                            self.update_confirm_prompt = false;
+                                        }
+                                    });
+                                });
                             } else {
                                 ui.horizontal(|ui| {
                                     let label_text = if self.update_installing {
@@ -351,22 +392,14 @@ impl PlexiApp {
                                         |ui| {
                                             if !self.update_installing {
                                                 let btn = egui::Button::new(
-                                                    RichText::new(format!("Quit & Update to v{latest}"))
+                                                    RichText::new(format!("Update to v{latest}"))
                                                         .size(style::TEXT_HINT)
                                                         .color(self.colors.text_on(self.colors.accent)),
                                                 )
                                                 .fill(self.colors.accent)
                                                 .corner_radius(egui::CornerRadius::same(4));
                                                 if ui.add(btn).clicked() {
-                                                    self.update_installing = true;
-                                                    let (tx, rx) = std::sync::mpsc::channel();
-                                                    self.update_install_rx = Some(rx);
-                                                    let latest_clone = latest.clone();
-                                                    std::thread::spawn(move || {
-                                                        log::info!("ui: one-click update to v{latest_clone} started");
-                                                        let result = crate::cli::install::run_self_update(true);
-                                                        let _ = tx.send(result);
-                                                    });
+                                                    self.update_confirm_prompt = true;
                                                 }
                                             }
                                         },

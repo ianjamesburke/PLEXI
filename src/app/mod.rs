@@ -357,6 +357,8 @@ pub struct PlexiApp {
     pub(crate) update_installing: bool,
     /// Error from the last failed one-click update attempt, shown in the modal.
     pub(crate) update_install_error: Option<String>,
+    pub(crate) update_quit_pending: bool,
+    pub(crate) update_confirm_prompt: bool,
     /// Receiver for AppRequests sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
     pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::AppRequest>,
@@ -1200,6 +1202,8 @@ impl PlexiApp {
                     update_install_rx: None,
                     update_installing: false,
                     update_install_error: None,
+                    update_quit_pending: false,
+                    update_confirm_prompt: false,
                     pane_ipc_rx,
                     host_subscriptions,
                     event_subscribe_rx,
@@ -1444,6 +1448,8 @@ impl PlexiApp {
             update_install_rx: None,
             update_installing: false,
             update_install_error: None,
+            update_quit_pending: false,
+            update_confirm_prompt: false,
             pane_ipc_rx,
             host_subscriptions,
             event_subscribe_rx,

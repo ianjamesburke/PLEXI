@@ -600,9 +600,6 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| format!("error: failed to launch relaunch script: {e}"))?;
-        let _ = std::process::Command::new("osascript")
-            .args(["-e", &format!("tell application \"{app_display_name}\" to quit")])
-            .status();
         return Ok("Building update in background — Plexi will relaunch when ready.".to_string());
     }
 
