@@ -558,14 +558,20 @@ enum Durability {
 /// Convert a note title into a safe lowercase filename slug (no `.md` suffix).
 /// Non-alphanumeric characters become `-`; leading/trailing and consecutive
 /// dashes are collapsed; falls back to `"note"` for an all-symbol title.
-/// Returns the leading whitespace (spaces/tabs) of the line that contains
-/// the char at `char_idx`. Used for auto-indent on Enter.
-fn leading_whitespace_at(content: &str, char_idx: usize) -> String {
-    let byte_idx = content
+/// Converts a char index (as returned by `CCursor.index`) to a byte offset
+/// suitable for `String::insert_str`. Returns `content.len()` when out of range.
+fn char_to_byte(content: &str, char_idx: usize) -> usize {
+    content
         .char_indices()
         .nth(char_idx)
         .map(|(b, _)| b)
-        .unwrap_or(content.len());
+        .unwrap_or(content.len())
+}
+
+/// Returns the leading whitespace (spaces/tabs) of the line that contains
+/// the char at `char_idx`. Used for auto-indent on Enter.
+fn leading_whitespace_at(content: &str, char_idx: usize) -> String {
+    let byte_idx = char_to_byte(content, char_idx);
     let line_start = content[..byte_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
     content[line_start..]
         .chars()
@@ -858,26 +864,29 @@ impl App for TextEditorApp {
                 // Intercept Tab and Enter before TextEdit consumes them for
                 // focus traversal / bare newlines respectively.
                 if ui.ctx().memory(|m| m.has_focus(te_id)) && self.find_bar.is_none() {
-                    let cursor_idx = egui::TextEdit::load_state(ui.ctx(), te_id)
+                    // CCursor.index is a char index; String mutation needs byte offsets.
+                    let cursor_char = egui::TextEdit::load_state(ui.ctx(), te_id)
                         .and_then(|s| s.cursor.char_range())
                         .map(|r| r.primary.index);
 
                     let tab_presses =
                         ui.input_mut(|i| i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Tab));
                     if tab_presses > 0 {
-                        if let Some(idx) = cursor_idx {
+                        if let Some(char_idx) = cursor_char {
+                            let byte_idx = char_to_byte(&self.content, char_idx);
                             let indent = "    ";
                             for _ in 0..tab_presses {
-                                self.content.insert_str(idx, indent);
+                                self.content.insert_str(byte_idx, indent);
                             }
-                            let new_idx = idx + indent.len() * tab_presses;
+                            // Inserted text is ASCII so char count == byte count.
+                            let new_char_idx = char_idx + indent.len() * tab_presses;
                             let mut state =
                                 egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
-                            let c = egui::text::CCursor::new(new_idx);
+                            let c = egui::text::CCursor::new(new_char_idx);
                             state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
                             egui::TextEdit::store_state(ui.ctx(), te_id, state);
                             self.last_edit = Some(Instant::now());
-                            log::info!("TextEditorApp: Tab — inserted {} spaces at {}", indent.len() * tab_presses, idx);
+                            log::info!("TextEditorApp: Tab — inserted {} spaces at char {}", indent.len() * tab_presses, char_idx);
                         }
                     }
 
@@ -885,21 +894,23 @@ impl App for TextEditorApp {
                         i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Enter)
                     });
                     if enter_presses > 0 {
-                        if let Some(idx) = cursor_idx {
-                            let leading = leading_whitespace_at(&self.content, idx);
+                        if let Some(char_idx) = cursor_char {
+                            let byte_idx = char_to_byte(&self.content, char_idx);
+                            let leading = leading_whitespace_at(&self.content, char_idx);
                             let insert = format!("\n{leading}");
-                            let insert_len = insert.len();
+                            // Insert is ASCII (\n + spaces/tabs) so char count == byte count.
+                            let insert_chars = insert.chars().count();
                             for _ in 0..enter_presses {
-                                self.content.insert_str(idx, &insert);
+                                self.content.insert_str(byte_idx, &insert);
                             }
-                            let new_idx = idx + insert_len * enter_presses;
+                            let new_char_idx = char_idx + insert_chars * enter_presses;
                             let mut state =
                                 egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
-                            let c = egui::text::CCursor::new(new_idx);
+                            let c = egui::text::CCursor::new(new_char_idx);
                             state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
                             egui::TextEdit::store_state(ui.ctx(), te_id, state);
                             self.last_edit = Some(Instant::now());
-                            log::info!("TextEditorApp: Enter — auto-indent {} chars at {}", leading.len(), idx);
+                            log::info!("TextEditorApp: Enter — auto-indent {} chars at char {}", leading.len(), char_idx);
                         }
                     }
                 }
