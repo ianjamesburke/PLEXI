@@ -295,12 +295,17 @@ install_agents() {
 
 install_agents
 
-# Record the release tag that produced this install so the updater can compare
-# against prerelease tags of the same base version. Written by self-update and
-# user-install.sh when installing from a release tag; absent for source builds.
+# Record the release tag so the updater knows the exact installed version.
+# Priority: env var (set by user-install.sh / self-update) > git tag at HEAD.
 if [[ -n "${PLEXI_INSTALL_TAG:-}" ]]; then
   echo "$PLEXI_INSTALL_TAG" > "$profile_dir/installed_tag"
   echo "Release tag: $PLEXI_INSTALL_TAG"
+else
+  _head_tag="$(git -C "$REPO_ROOT" describe --tags --exact-match HEAD 2>/dev/null || true)"
+  if [[ -n "$_head_tag" ]]; then
+    echo "$_head_tag" > "$profile_dir/installed_tag"
+    echo "Release tag: $_head_tag (from git)"
+  fi
 fi
 
 echo "Installed $app_dest"
