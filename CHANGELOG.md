@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.10] — 2026-06-25
+
+### Changes
+- feat(app): standardize SDK v3 creation flow
 ## [0.1.9] — 2026-06-25
 
 ### Changes
