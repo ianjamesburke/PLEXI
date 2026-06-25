@@ -1,13 +1,47 @@
 #!/usr/bin/env bash
-# Push the version tag for the current Cargo.toml version.
-# Tags main HEAD if needed, then pushes the tag to trigger the GitHub Actions release workflow.
-# Run `just promote main` first to ensure main is up to date.
+# Push a version tag to trigger the GitHub Actions release workflow.
+#
+# Stable tags (vX.Y.Z) are pushed from the main worktree (run `just promote main`
+# first). Prerelease tags (vX.Y.Z-alpha.N / vX.Y.Z-beta.N) are pushed from alpha,
+# where they were cut by `scripts/release-version.sh --alpha|--beta`.
 set -euo pipefail
 
 REPO_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
+ALPHA_TREE="$REPO_ROOT"
 MAIN_TREE="$REPO_ROOT/worktrees/main"
 
 die() { echo "error: $*" >&2; exit 1; }
+
+push_tag() {
+    local tree="$1" tag="$2"
+    remote_tag=$(git ls-remote --tags origin "refs/tags/$tag" | awk '{print $1}')
+    if [[ -n "$remote_tag" ]]; then
+        echo "Tag $tag already on remote — GitHub Actions release already triggered."
+    else
+        echo "Pushing tag $tag to origin..."
+        git -C "$tree" push origin "$tag"
+        echo "GitHub Actions release workflow triggered for $tag."
+    fi
+}
+
+# ── prerelease flow: newest alpha/beta tag on alpha ───────────────────────────
+
+base=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/' | sed 's/-.*//')
+pre_tag=$(git -C "$ALPHA_TREE" tag -l "v${base}-alpha.*" "v${base}-beta.*" --sort=-v:refname | head -1)
+
+if [[ -n "$pre_tag" ]]; then
+    tagged_commit=$(git -C "$ALPHA_TREE" rev-list -n 1 "$pre_tag")
+    head_commit=$(git -C "$ALPHA_TREE" rev-parse HEAD)
+    remote_tag=$(git ls-remote --tags origin "refs/tags/$pre_tag" | awk '{print $1}')
+    if [[ -z "$remote_tag" ]]; then
+        [[ "$tagged_commit" == "$head_commit" ]] \
+            || die "$pre_tag points at $tagged_commit, not alpha HEAD $head_commit — re-cut the prerelease"
+        push_tag "$ALPHA_TREE" "$pre_tag"
+        exit 0
+    fi
+fi
+
+# ── stable flow: vX.Y.Z from the main worktree ────────────────────────────────
 
 [[ $(git -C "$MAIN_TREE" rev-parse --abbrev-ref HEAD) == "main" ]] \
     || die "main worktree is not on 'main' branch"
@@ -31,11 +65,4 @@ else
     git -C "$MAIN_TREE" tag "v$version"
 fi
 
-remote_tag=$(git ls-remote --tags origin "refs/tags/v$version" | awk '{print $1}')
-if [[ -n "$remote_tag" ]]; then
-    echo "Tag v$version already on remote — GitHub Actions release already triggered."
-else
-    echo "Pushing tag v$version to origin..."
-    git -C "$MAIN_TREE" push origin "v$version"
-    echo "GitHub Actions release workflow triggered for v$version."
-fi
+push_tag "$MAIN_TREE" "v$version"

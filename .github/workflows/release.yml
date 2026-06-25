@@ -13,15 +13,55 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Extract version from tag
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Classify tag
+        id: classify
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "make_latest=true" >> "$GITHUB_OUTPUT"
+            echo "title=v${{ steps.version.outputs.version }}" >> "$GITHUB_OUTPUT"
+            PREV=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${TAG}$" | head -1)
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "make_latest=false" >> "$GITHUB_OUTPUT"
+            echo "title=${TAG} (beta)" >> "$GITHUB_OUTPUT"
+            PREV=$(git tag -l 'v*-beta.*' --sort=-v:refname | grep -v "^${TAG}$" | head -1)
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "make_latest=false" >> "$GITHUB_OUTPUT"
+            echo "title=${TAG} (alpha)" >> "$GITHUB_OUTPUT"
+            PREV=$(git tag -l 'v*-alpha.*' --sort=-v:refname | grep -v "^${TAG}$" | head -1)
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "make_latest=false" >> "$GITHUB_OUTPUT"
+            echo "title=${TAG}" >> "$GITHUB_OUTPUT"
+            PREV=""
+          fi
+          if [[ -n "${PREV:-}" ]]; then
+            echo "notes_start_tag=$PREV" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "v${{ steps.version.outputs.version }}" \
+          ARGS=(
+            --title "${{ steps.classify.outputs.title }}"
             --generate-notes
+          )
+          if [[ "${{ steps.classify.outputs.prerelease }}" == "true" ]]; then
+            ARGS+=(--prerelease)
+          fi
+          ARGS+=(--latest=${{ steps.classify.outputs.make_latest }})
+          if [[ -n "${{ steps.classify.outputs.notes_start_tag }}" ]]; then
+            ARGS+=(--notes-start-tag "${{ steps.classify.outputs.notes_start_tag }}")
+          fi
+          gh release create "$GITHUB_REF_NAME" "${ARGS[@]}"

@@ -18,11 +18,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Check tag is stable
+        id: gate
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping SDK publish for prerelease tag: $TAG"
+          fi
+
       - name: Install uv
+        if: steps.gate.outputs.stable == 'true'
         uses: astral-sh/setup-uv@v8.2.0
 
       - name: Check if SDK version already published
         id: check
+        if: steps.gate.outputs.stable == 'true'
         working-directory: sdk/python
         run: |
           VERSION=$(grep '^version' pyproject.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')

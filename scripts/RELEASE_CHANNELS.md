@@ -104,15 +104,64 @@ running instance. Binary-local behavior, such as config paths, workspace paths,
 update/install behavior, and release gates, comes from whichever binary the
 shim executes.
 
-## Stable Release Flow
+## Public Release Lanes
 
-1. Finish release polish on `alpha`.
-2. Run tests.
-3. Run `just bump minor` for `0.1.0`.
-4. Install and test `rc-010`.
-5. Promote alpha to beta with `just promote beta`.
-6. Test beta.
-7. Promote beta to main with `just promote main`.
+Three lanes publish GitHub releases. Each is a tag push handled by
+`.github/workflows/release.yml`, which classifies the tag and marks prereleases.
 
-Do not use `plexi-beta update` to test unreleased alpha work. `plexi update`
-downloads the latest public GitHub release.
+| Lane | Tag scheme | GitHub release | Branch tagged from |
+|---|---|---|---|
+| Alpha | `vX.Y.Z-alpha.N` | prerelease | `alpha` |
+| Beta | `vX.Y.Z-beta.N` | prerelease | `alpha` |
+| Stable | `vX.Y.Z` | latest | `main` |
+
+The base `X.Y.Z` is the current `Cargo.toml` version. Prerelease tags do **not**
+bump `Cargo.toml` or touch the changelog — they pin a commit on `alpha` for
+testing the next version. The stable bump (`just bump`) sets the base version and
+regenerates the changelog.
+
+SemVer ordering: `vX.Y.Z-alpha.1 < alpha.2 < beta.1 < beta.2 < vX.Y.Z`.
+The Python SDK publishes only on stable tags; prerelease tags skip
+`publish-sdk.yml`.
+
+### Cutting a release
+
+```sh
+just release-alpha      # tag next vX.Y.Z-alpha.N from alpha, push
+just release-beta       # tag next vX.Y.Z-beta.N from alpha, push
+just bump minor         # bump base version + changelog on alpha
+just promote main       # fast-forward main
+just release            # tag vX.Y.Z at main HEAD, push
+```
+
+## Channel Update Policy
+
+A binary updates only to releases its channel accepts. The policy lives in
+`UpdateChannel::accepts` (`src/cli/release_resolver.rs`); the table below mirrors
+it.
+
+| Binary channel | Accepts |
+|---|---|
+| `plexi` (stable) | stable only |
+| `plexi-beta` | beta + stable |
+| `plexi-alpha`, `plexi-pr-*` | alpha + beta + stable |
+
+`plexi update` lists all releases (not just `/latest`), filters by the running
+binary's channel, picks the highest SemVer candidate newer than the current
+version, checks out that exact tag in `~/.plexi-src`, and rebuilds. The install
+target channel is always the running binary's channel — updating `plexi-alpha`
+to a stable tag still installs as `alpha`.
+
+Do not use `plexi-beta update` to test unreleased alpha work — beta never
+accepts alpha tags.
+
+## User Install by Channel
+
+```sh
+curl -fsSL https://plexiapp.com/install | sh                          # stable, prebuilt
+curl -fsSL https://plexiapp.com/install | sh -s -- --channel beta     # beta, source build
+curl -fsSL https://plexiapp.com/install | sh -s -- --channel alpha    # alpha, source build
+```
+
+Prerelease channels have no prebuilt assets, so they build from source and
+require Rust (https://rustup.rs) and Xcode command line tools.

@@ -318,6 +318,16 @@ promote to="" install="":
 release:
     bash scripts/release-tag.sh
 
+# Cut an alpha prerelease tag from the current version and push it.
+release-alpha:
+    bash scripts/release-version.sh --alpha
+    bash scripts/release-tag.sh
+
+# Cut a beta prerelease tag from the current version and push it.
+release-beta:
+    bash scripts/release-version.sh --beta
+    bash scripts/release-tag.sh
+
 # Remove a Plexi channel and its profile dir, app bundle, and CLI binary.
 # Defaults to removing all channels plus shell integration and completions.
 # Backlog folders inside profile dirs are archived to ~/plexi-backlog-archive/.

@@ -225,6 +225,7 @@ pub mod notify;
 pub mod open;
 pub mod pane;
 pub mod registry_watch;
+pub mod release_resolver;
 pub mod routine;
 pub mod run;
 pub mod updater;

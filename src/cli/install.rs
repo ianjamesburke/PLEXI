@@ -1,5 +1,6 @@
 use super::app::{is_bare_id, is_github_shorthand};
 use super::print_tip;
+use crate::cli::release_resolver;
 use std::io::{self, Write};
 
 pub fn install_cli(spec: &str) -> i32 {
@@ -496,44 +497,52 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
         log::info!("ui: one-click update triggered from changelog modal");
     }
 
-    if binary_name.contains("alpha") || binary_name.contains("pr-") {
-        return Err(
-            "Self-update is not available for dev builds.\nUpdate from source: git pull && just install"
-                .to_string(),
-        );
+    // Guard: when running inside a channel PTY, the binary name must match the
+    // PTY channel — otherwise a stray binary could update the wrong channel.
+    if let Ok(pty_channel) = std::env::var("PLEXI_CHANNEL") {
+        if !pty_channel.is_empty() && pty_channel != channel {
+            return Err(format!(
+                "error: PLEXI_CHANNEL={pty_channel} but this binary is '{binary_name}' (channel {channel}).\nRun the matching channel binary to self-update."
+            ));
+        }
     }
 
-    let current_version = env!("CARGO_PKG_VERSION");
-    println!("Checking for updates...");
-    println!("Current: v{current_version}");
+    let update_channel = release_resolver::UpdateChannel::from_binary_name(binary_name);
+    log::info!(
+        "cli: self-update input channel={channel} update_channel={update_channel:?} install_target={channel}"
+    );
 
-    // Check latest release tag via GitHub API (no asset download needed).
+    // Read the installed release tag if available (written by previous self-update),
+    // falling back to CARGO_PKG_VERSION for source builds.
+    let profile_dir = dirs::home_dir()
+        .unwrap_or_default()
+        .join(format!(".plexi{}", if suffix.is_empty() { String::new() } else { format!("-{channel}") }));
+    let current_version_raw = std::fs::read_to_string(profile_dir.join("installed_tag"))
+        .ok()
+        .and_then(|s| {
+            let t = s.trim().to_string();
+            release_resolver::ReleaseTag::parse(&t).map(|_| t)
+        })
+        .unwrap_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")));
+    println!("Checking for updates...");
+    println!("Current: {current_version_raw}");
+
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30))
         .build();
 
-    let release_body = agent
-        .get("https://api.github.com/repos/ianjamesburke/PLEXI/releases/latest")
-        .set("User-Agent", "plexi-self-update")
-        .set("Accept", "application/vnd.github+json")
-        .call()
-        .map_err(|e| format!("error: failed to fetch release info: {e}"))?
-        .into_string()
-        .map_err(|e| format!("error: failed to read release response: {e}"))?;
-
-    let release: serde_json::Value = serde_json::from_str(&release_body)
-        .map_err(|e| format!("error: failed to parse release response: {e}"))?;
-
-    let tag_name = release["tag_name"]
-        .as_str()
-        .ok_or_else(|| "error: release has no tag_name".to_string())?
-        .to_string();
-
-    let latest_version = tag_name.trim_start_matches('v');
-    if latest_version == current_version {
-        return Ok(format!("Already up to date (v{current_version})."));
-    }
+    let releases = release_resolver::fetch_releases(&agent)
+        .map_err(|e| format!("error: {e}"))?;
+    let current_tag = release_resolver::ReleaseTag::parse(&current_version_raw)
+        .ok_or_else(|| format!("error: could not parse current version {current_version_raw}"))?;
+    let selected = match release_resolver::resolve_best(&releases, update_channel, &current_tag) {
+        Some(t) => t,
+        None => return Ok(format!("Already up to date ({current_version_raw}).")),
+    };
+    let tag_name = selected.raw.clone();
+    let latest_version = tag_name.trim_start_matches('v').to_string();
+    log::info!("cli: self-update selected tag={tag_name} install_target_channel={channel}");
     println!("Latest:  {tag_name}");
 
     // Build from the persistent source clone (~/.plexi-src) so the user's local
@@ -560,16 +569,16 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
              set -euo pipefail\n\
              while pgrep -x '{binary_name}' > /dev/null 2>&1; do sleep 0.3; done\n\
              if [[ -d '{src}/.git' ]]; then\n\
-               git -C '{src}' fetch origin\n\
-               git -C '{src}' checkout '{channel}' 2>/dev/null || git -C '{src}' checkout -b '{channel}' 'origin/{channel}'\n\
-               git -C '{src}' reset --hard 'origin/{channel}'\n\
+               git -C '{src}' fetch origin --tags --force\n\
              else\n\
-               git clone --branch '{channel}' '{repo}' '{src}'\n\
+               git clone '{repo}' '{src}'\n\
              fi\n\
-             bash '{src}/scripts/install.sh' '{channel}'\n\
+             git -C '{src}' checkout --force '{tag}'\n\
+             PLEXI_INSTALL_TAG='{tag}' bash '{src}/scripts/install.sh' '{channel}'\n\
              open '/Applications/{app_display_name}.app'\n",
             binary_name = binary_name,
             src = src_dir.display(),
+            tag = tag_name,
             channel = channel,
             repo = repo,
             app_display_name = app_display_name,
@@ -597,42 +606,40 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
         return Ok("Building update in background — Plexi will relaunch when ready.".to_string());
     }
 
-    // CLI path: update source and build inline.
+    // CLI path: update source and build inline. Check out the exact release
+    // tag (not the channel branch) so the build matches the resolved release.
     println!("Updating source...");
     if src_dir.join(".git").is_dir() {
         let fetch = std::process::Command::new("git")
-            .args(["-C", &src_dir.to_string_lossy(), "fetch", "origin"])
+            .args(["-C", &src_dir.to_string_lossy(), "fetch", "origin", "--tags", "--force"])
             .status()
             .map_err(|e| format!("error: git fetch failed: {e}"))?;
         if !fetch.success() {
             return Err("error: git fetch failed".to_string());
         }
-        // checkout may fail if branch doesn't exist locally yet; fall through to reset
-        let _ = std::process::Command::new("git")
-            .args(["-C", &src_dir.to_string_lossy(), "checkout", &channel])
-            .status();
-        let reset = std::process::Command::new("git")
-            .args(["-C", &src_dir.to_string_lossy(), "reset", "--hard", &format!("origin/{channel}")])
-            .status()
-            .map_err(|e| format!("error: git reset failed: {e}"))?;
-        if !reset.success() {
-            return Err("error: git reset failed".to_string());
-        }
     } else {
         println!("Cloning source to ~/.plexi-src...");
         let clone = std::process::Command::new("git")
-            .args(["clone", "--branch", &channel, repo, &src_dir.to_string_lossy()])
+            .args(["clone", repo, &src_dir.to_string_lossy()])
             .status()
             .map_err(|e| format!("error: git clone failed: {e}"))?;
         if !clone.success() {
             return Err("error: git clone failed".to_string());
         }
     }
+    let checkout = std::process::Command::new("git")
+        .args(["-C", &src_dir.to_string_lossy(), "checkout", "--force", &tag_name])
+        .status()
+        .map_err(|e| format!("error: git checkout failed: {e}"))?;
+    if !checkout.success() {
+        return Err(format!("error: git checkout of tag {tag_name} failed"));
+    }
 
     println!("Building v{latest_version} (this takes a few minutes)...");
     let install = std::process::Command::new("bash")
         .arg(&install_script)
         .arg(&channel)
+        .env("PLEXI_INSTALL_TAG", &tag_name)
         .current_dir(&src_dir)
         .status()
         .map_err(|e| format!("error: failed to run install script: {e}"))?;
