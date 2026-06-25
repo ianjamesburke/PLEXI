@@ -3706,11 +3706,7 @@ impl eframe::App for PlexiApp {
                 std::env::current_dir()
                     .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
             });
-            log::info!(
-                "app_registry_watcher: rescanning registry for root={}",
-                root.display()
-            );
-            self.registry = crate::app::registry::AppRegistry::load(&root);
+            self.reload_app_registry_for_root(&root);
         }
 
         // Handle window close request (X button or macOS Cmd+Q OS event).

@@ -632,7 +632,42 @@ impl PlexiApp {
             .root
             .clone()
             .or_else(crate::config::active_workspace_root);
+        self.sync_app_registry_for_active_context(active_workspace.as_deref());
         self.reload_config_for_workspace(active_workspace.as_deref());
+    }
+
+    pub(crate) fn reload_app_registry_for_root(&mut self, root: &Path) {
+        log::info!(
+            "app_registry: rescanning registry for root={}",
+            root.display()
+        );
+        self.registry = crate::app::registry::AppRegistry::load(root);
+        match crate::app::registry_watcher::start(crate::app::registry::registry_watch_dirs(root)) {
+            Some((watcher, rx)) => {
+                self._registry_watcher = Some(watcher);
+                self.registry_reload_rx = Some(rx);
+            }
+            None => {
+                self._registry_watcher = None;
+                self.registry_reload_rx = None;
+            }
+        }
+    }
+
+    fn sync_app_registry_for_active_context(&mut self, active_workspace: Option<&Path>) {
+        let fallback;
+        let root = match active_workspace {
+            Some(root) => root,
+            None => {
+                fallback = std::env::current_dir()
+                    .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+                fallback.as_path()
+            }
+        };
+        let expected_workspace = crate::app::registry::resolve_workspace_root(root);
+        if self.registry.loaded_workspace.as_ref() != expected_workspace.as_ref() {
+            self.reload_app_registry_for_root(root);
+        }
     }
 
     pub(crate) fn reload_config_for_workspace(&mut self, active_workspace: Option<&Path>) {

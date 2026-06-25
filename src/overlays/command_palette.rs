@@ -194,14 +194,12 @@ struct BuiltinPaletteApp {
 }
 
 /// Builtin host apps surfaced in the palette alongside registry apps.
-const BUILTIN_APPS: &[BuiltinPaletteApp] = &[
-    BuiltinPaletteApp {
-        id: "assistant",
-        name: "Assistant",
-        description: "Host-native AI chat for this workspace",
-        gate: crate::release::ReleaseFeature::Assistant,
-    },
-];
+const BUILTIN_APPS: &[BuiltinPaletteApp] = &[BuiltinPaletteApp {
+    id: "assistant",
+    name: "Assistant",
+    description: "Host-native AI chat for this workspace",
+    gate: crate::release::ReleaseFeature::Assistant,
+}];
 
 pub(crate) fn app_metadata_chips(
     running_in_background: bool,
@@ -648,14 +646,14 @@ impl PlexiApp {
         // ── Workspace-aware app entries ────────────────────────────────────
         // Use the workspace root cached at palette-open time (not re-resolved
         // per frame) to avoid filesystem traversal in the egui draw loop.
-        let focused_workspace_root = self.palette_workspace_root.as_ref();
+        let focused_workspace_root = self.palette_workspace_root.clone();
 
         // If the cached workspace differs from what the registry was last loaded
         // for, rescan once now so local apps for this workspace appear.
-        if focused_workspace_root != self.registry.loaded_workspace.as_ref() {
+        if focused_workspace_root.as_ref() != self.registry.loaded_workspace.as_ref() {
             let home = dirs::home_dir();
             let rescan_cwd = focused_workspace_root
-                .map(|p| p.as_path())
+                .as_deref()
                 .or_else(|| home.as_deref())
                 .unwrap_or(std::path::Path::new("/"));
             log::info!(
@@ -663,7 +661,7 @@ impl PlexiApp {
                 self.registry.loaded_workspace,
                 focused_workspace_root,
             );
-            self.registry = crate::app::registry::AppRegistry::load(rescan_cwd);
+            self.reload_app_registry_for_root(rescan_cwd);
         }
 
         let app_entries: Vec<(String, String, String, bool, String)> = self
@@ -677,7 +675,7 @@ impl PlexiApp {
                     crate::app::registry::RegistrySource::Global => true,
                     crate::app::registry::RegistrySource::LocalApp
                     | crate::app::registry::RegistrySource::LocalAgent => {
-                        app.workspace_root.as_ref() == focused_workspace_root
+                        app.workspace_root.as_ref() == focused_workspace_root.as_ref()
                     }
                 };
                 if !workspace_visible {

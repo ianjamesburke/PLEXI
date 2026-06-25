@@ -55,6 +55,59 @@ fn workspace_config_applies_when_switching_contexts() {
     );
 }
 
+#[test]
+fn switching_contexts_refreshes_workspace_app_registry() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_a = tempfile::tempdir().expect("root a");
+    let root_b = tempfile::tempdir().expect("root b");
+    std::fs::create_dir_all(root_a.path().join(crate::config::workspace_channel_dir()))
+        .expect("create root a workspace dir");
+    write_registry_app(root_b.path(), "local-tool", "Local Tool");
+
+    app.router.get_mut(0).root = Some(root_a.path().to_path_buf());
+    app.windows[0].path = root_a.path().to_path_buf();
+    app.reload_config();
+    assert!(
+        app.registry.get("local-tool").is_none(),
+        "root B app must not leak into root A registry"
+    );
+
+    let ctx_b_id = 2;
+    let win_b_id = 2;
+    app.router.push(crate::host::context::Context {
+        name: "Context B".into(),
+        path: root_b.path().to_path_buf(),
+        root: Some(root_b.path().to_path_buf()),
+        description: None,
+        context_id: ctx_b_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.windows.push(Window {
+        name: "Context B".into(),
+        path: root_b.path().to_path_buf(),
+        tree: egui_tiles::Tree::empty("workspace_app_registry_b"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: win_b_id,
+        context_id: ctx_b_id,
+    });
+
+    app.switch_workspace(1);
+
+    assert!(
+        app.registry.get("local-tool").is_some(),
+        "switching into a workspace should refresh palette-visible local apps immediately"
+    );
+}
+
 fn write_workspace_config(root: &std::path::Path, accent: &str) {
     let config_dir = root.join(crate::config::workspace_channel_dir());
     std::fs::create_dir_all(&config_dir).expect("create workspace config dir");
@@ -63,6 +116,22 @@ fn write_workspace_config(root: &std::path::Path, accent: &str) {
         format!("[theme]\naccent = \"{accent}\"\n"),
     )
     .expect("write workspace config");
+}
+
+fn write_registry_app(root: &std::path::Path, id: &str, name: &str) {
+    let app_dir = root
+        .join(crate::config::workspace_channel_dir())
+        .join("apps")
+        .join(id);
+    std::fs::create_dir_all(&app_dir).expect("create app dir");
+    std::fs::write(
+        app_dir.join("manifest.toml"),
+        format!(
+            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{name}\"\nversion = \"0.0.1\"\nentry = \"main.py\"\n"
+        ),
+    )
+    .expect("write manifest");
+    std::fs::write(app_dir.join("main.py"), "#!/usr/bin/env python3\n").expect("write entry");
 }
 
 /// Issue #1392: creating a child context must NOT remove or replace the parent's
@@ -1986,10 +2055,7 @@ fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
 /// not at the end — even when another sibling context (child2) already exists.
 #[test]
 fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
-    fn push_ipc(
-        h: &mut crate::testing::HostHarness,
-        pane_id: crate::spatial::tiling::PaneId,
-    ) {
+    fn push_ipc(h: &mut crate::testing::HostHarness, pane_id: crate::spatial::tiling::PaneId) {
         let req: crate::app_protocol::AppRequest = serde_json::from_value(serde_json::json!({
             "type": "push_pane_to_subcontext",
             "pane_id": pane_id,
@@ -2020,7 +2086,11 @@ fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     // [root, child1, grandchild, child2].
     // Without the fix, grandchild would append at the end: [root, child1, child2, grandchild].
     push_ipc(&mut h, pane_a);
-    assert_eq!(h.app.router.len(), 4, "root + child1 + grandchild + child2 = 4 contexts");
+    assert_eq!(
+        h.app.router.len(),
+        4,
+        "root + child1 + grandchild + child2 = 4 contexts"
+    );
 
     let ids: Vec<u64> = h.app.router.iter().map(|c| c.context_id).collect();
     let grandchild = h
@@ -2032,7 +2102,10 @@ fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     assert_eq!(grandchild.depth, 2, "grandchild depth must be 2");
 
     let child1_pos = ids.iter().position(|&id| id == child1_id).unwrap();
-    let grandchild_pos = ids.iter().position(|&id| id == grandchild.context_id).unwrap();
+    let grandchild_pos = ids
+        .iter()
+        .position(|&id| id == grandchild.context_id)
+        .unwrap();
     let child2_pos = ids.iter().position(|&id| id == child2_id).unwrap();
     let root_pos = ids.iter().position(|&id| id == root_id).unwrap();
 

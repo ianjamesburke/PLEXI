@@ -601,7 +601,9 @@ impl AppRegistry {
     /// leading dot. Backs resolution tier (b) of the File Explorer open path
     /// (#2283).
     pub fn handler_for_ext(&self, ext: &str) -> Option<&str> {
-        self.extension_map.get(&ext.to_lowercase()).map(|s| s.as_str())
+        self.extension_map
+            .get(&ext.to_lowercase())
+            .map(|s| s.as_str())
     }
 
     /// Returns true when the app's manifest sets `[app] watch = true`.
@@ -779,13 +781,16 @@ pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// Returns the directories that [`load`] would scan for the given `cwd`.
-/// Passed to `app_registry_watcher::start()` so the watcher covers exactly the
-/// same paths the registry uses — no independent workspace detection.
+/// Passed to `app_registry_watcher::start()` so the watcher follows the same
+/// workspace detection as the registry. The workspace channel root is included
+/// to catch first-time creation of `apps/` or `agents/`; the host restarts the
+/// watcher after each reload so those new child dirs become direct watches.
 pub fn registry_watch_dirs(cwd: &Path) -> Vec<PathBuf> {
     let mut dirs = vec![apps_dir()];
     let channel_dir = registry_config_dir();
     if let Some(root) = resolve_workspace_root_with_channel(cwd, &channel_dir) {
         let channel_root = root.join(&channel_dir);
+        dirs.push(channel_root.clone());
         dirs.push(channel_root.join("apps"));
         dirs.push(channel_root.join("agents"));
     }
@@ -1425,6 +1430,25 @@ startup_message = \"Starting Greeter…\"
         assert_eq!(
             loaded.canonicalize().unwrap(),
             workspace.path().canonicalize().unwrap(),
+        );
+    }
+
+    #[test]
+    fn registry_watch_dirs_include_workspace_channel_root() {
+        let workspace = tempfile::tempdir().unwrap();
+        let channel_dir = registry_config_dir();
+        let channel_root = workspace.path().join(&channel_dir);
+        fs::create_dir_all(&channel_root).unwrap();
+
+        let dirs = registry_watch_dirs(workspace.path());
+
+        assert!(
+            dirs.contains(&channel_root),
+            "watcher must observe channel root so first-time apps/ creation triggers registry reload"
+        );
+        assert!(
+            dirs.contains(&channel_root.join("apps")),
+            "watcher should directly observe apps/ after it exists"
         );
     }
 
