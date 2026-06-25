@@ -474,18 +474,14 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
 /// Returns `Ok(human_readable_message)` on success and `Err(error_message)` on
 /// failure so callers can surface the outcome appropriately.
 pub fn run_self_update(from_gui: bool) -> Result<String, String> {
-    use std::io::Read;
-
     // Detect channel from binary name (mirrors config_dir_name in config.rs).
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
     let binary_name = binary.as_deref().unwrap_or("plexi");
 
-    // Derive channel-specific values from the binary name.
-    // Mirrors the channel detection in plexi_uninstall_cli() and install.sh.
     let suffix = if binary_name == "plexi" {
-        String::new() // main channel
+        String::new()
     } else {
         binary_name.strip_prefix("plexi").unwrap_or("").to_string()
     };
@@ -494,18 +490,8 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
     } else {
         suffix.strip_prefix('-').unwrap_or("unknown").to_string()
     };
-    let cap = if let Some(n) = suffix.strip_prefix("-pr-") {
-        format!(" PR{n}")
-    } else {
-        match suffix.as_str() {
-            "-alpha" => " Alpha".to_string(),
-            "-beta" => " Beta".to_string(),
-            _ => String::new(),
-        }
-    };
-    let display = format!("Plexi{cap}");
-    let bundle_id = format!("com.ianjamesburke.plexi{suffix}");
-    log::info!("cli: self-update channel={channel} suffix={suffix} display={display}");
+
+    log::info!("cli: self-update channel={channel} suffix={suffix}");
     if from_gui {
         log::info!("ui: one-click update triggered from changelog modal");
     }
@@ -521,41 +507,28 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
     println!("Checking for updates...");
     println!("Current: v{current_version}");
 
+    // Check latest release tag via GitHub API (no asset download needed).
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30))
         .build();
 
-    let release_body = match agent
+    let release_body = agent
         .get("https://api.github.com/repos/ianjamesburke/PLEXI/releases/latest")
         .set("User-Agent", "plexi-self-update")
         .set("Accept", "application/vnd.github+json")
         .call()
-    {
-        Ok(r) => match r.into_string() {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(format!("error: failed to read release response: {e}"));
-            }
-        },
-        Err(e) => {
-            return Err(format!("error: failed to fetch release info: {e}"));
-        }
-    };
+        .map_err(|e| format!("error: failed to fetch release info: {e}"))?
+        .into_string()
+        .map_err(|e| format!("error: failed to read release response: {e}"))?;
 
-    let release: serde_json::Value = match serde_json::from_str(&release_body) {
-        Ok(v) => v,
-        Err(e) => {
-            return Err(format!("error: failed to parse release response: {e}"));
-        }
-    };
+    let release: serde_json::Value = serde_json::from_str(&release_body)
+        .map_err(|e| format!("error: failed to parse release response: {e}"))?;
 
-    let tag_name = match release["tag_name"].as_str() {
-        Some(t) => t.to_string(),
-        None => {
-            return Err("error: release has no tag_name".to_string());
-        }
-    };
+    let tag_name = release["tag_name"]
+        .as_str()
+        .ok_or_else(|| "error: release has no tag_name".to_string())?
+        .to_string();
 
     let latest_version = tag_name.trim_start_matches('v');
     if latest_version == current_version {
@@ -563,303 +536,110 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
     }
     println!("Latest:  {tag_name}");
 
-    // Find the zip asset in the release.
-    let asset_name = format!("Plexi-{tag_name}.zip");
-    let download_url = match release["assets"]
-        .as_array()
-        .and_then(|arr| {
-            arr.iter()
-                .find(|a| a["name"].as_str() == Some(asset_name.as_str()))
-        })
-        .and_then(|a| a["browser_download_url"].as_str())
-    {
-        Some(url) => url.to_string(),
-        None => {
-            return Err(format!(
-                "error: no asset named {asset_name} in release {tag_name}\nCheck: https://github.com/ianjamesburke/PLEXI/releases/tag/{tag_name}"
-            ));
-        }
-    };
+    // Build from the persistent source clone (~/.plexi-src) so the user's local
+    // cargo cache is reused — no pre-built binaries needed on GitHub releases.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let src_dir = std::path::PathBuf::from(&home).join(".plexi-src");
+    let repo = "https://github.com/ianjamesburke/PLEXI.git";
+    let install_script = src_dir.join("scripts/install.sh");
 
-    // Determine the installed app bundle path.
-    //
-    // Direct bundle install: current_exe() == .../Plexi.app/Contents/MacOS/plexi
-    // One-liner (wrapper) install: current_exe() == /usr/local/bin/plexi (a shell
-    // script that exec-chains to /Applications/Plexi.app/Contents/MacOS/plexi).
-    // In the wrapper case the 3-level walk-up fails, so we fall back to the
-    // canonical one-liner bundle path.
-    let current_exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            return Err(format!(
-                "error: could not determine current binary path: {e}"
-            ));
-        }
-    };
-    let bundle_from_exe = current_exe
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
-        .filter(|p| p.extension().map_or(false, |e| e == "app"))
-        .map(|p| p.to_path_buf());
-
-    const ONELINER_BUNDLE: &str = "/Applications/Plexi.app";
-    const ONELINER_BINARY: &str = "/Applications/Plexi.app/Contents/MacOS/plexi";
-
-    let app_bundle = if let Some(p) = bundle_from_exe {
-        log::info!("cli: self-update — bundle path from current_exe: {}", p.display());
-        p
-    } else {
-        let oneliner_path = std::path::Path::new(ONELINER_BINARY);
-        if oneliner_path.is_file() {
-            let bundle = std::path::PathBuf::from(ONELINER_BUNDLE);
-            log::info!(
-                "cli: self-update — current_exe is wrapper ({}); using one-liner bundle path: {}",
-                current_exe.display(),
-                bundle.display()
-            );
-            bundle
-        } else {
-            log::info!("cli: self-update skipped — not a bundle install (current_exe: {})", current_exe.display());
-            return Ok(
-                "Self-update requires a bundled .app installation.\nFor a dev install, update from source: git pull && just install"
-                    .to_string(),
-            );
-        }
-    };
-
-    println!("Downloading {asset_name}...");
-
-    let download_resp = match agent
-        .get(&download_url)
-        .set("User-Agent", "plexi-self-update")
-        .call()
-    {
-        Ok(r) => r,
-        Err(e) => {
-            return Err(format!("error: failed to download {asset_name}: {e}"));
-        }
-    };
-
-    // Write zip to a temp directory.
-    let tmp_dir = std::env::temp_dir().join("plexi-update");
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-    if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
-        return Err(format!("error: failed to create temp dir: {e}"));
-    }
-    let zip_path = tmp_dir.join(&asset_name);
-    let mut zip_file = match std::fs::File::create(&zip_path) {
-        Ok(f) => f,
-        Err(e) => {
-            return Err(format!("error: failed to create temp file: {e}"));
-        }
-    };
-    let mut buf = Vec::new();
-    if let Err(e) = download_resp.into_reader().read_to_end(&mut buf) {
-        return Err(format!("error: failed to download file: {e}"));
-    }
-    if let Err(e) = std::io::Write::write_all(&mut zip_file, &buf) {
-        return Err(format!("error: failed to write download to disk: {e}"));
-    }
-    drop(zip_file);
-
-    // Extract using system unzip.
-    println!("Installing...");
-    let extract_dir = tmp_dir.join("extracted");
-    let _ = std::fs::create_dir_all(&extract_dir);
-    let unzip_out = std::process::Command::new("unzip")
-        .arg("-o")
-        .arg(&zip_path)
-        .arg("-d")
-        .arg(&extract_dir)
-        .output();
-    match unzip_out {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            return Err(format!(
-                "error: unzip failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-        Err(e) => {
-            return Err(format!("error: failed to run unzip: {e}"));
-        }
-    }
-
-    let extracted_app = extract_dir.join("Plexi.app");
-    if !extracted_app.is_dir() {
-        return Err("error: Plexi.app not found in downloaded archive".to_string());
-    }
-
-    // Replace the installed app bundle. Write to a temp path first so that
-    // if cp fails we still have the old bundle to fall back to.
-    let app_parent = app_bundle
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("/Applications"));
-    let staging = app_parent.join("Plexi.app.update-staging");
-    let _ = std::fs::remove_dir_all(&staging);
-    let cp_stage = std::process::Command::new("cp")
-        .arg("-R")
-        .arg(&extracted_app)
-        .arg(&staging)
-        .output();
-    match cp_stage {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            return Err(format!(
-                "error: failed to stage new app (permission denied?): {}\nRun with sudo if /Applications is not user-writable.",
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-        Err(e) => {
-            return Err(format!("error: failed to run cp: {e}"));
-        }
-    }
-
-    // For non-main channels, patch the bundle's Info.plist and rename the binary
-    // inside it. This mirrors the per-channel patching in scripts/install.sh.
-    // If any patch fails, abort — a misconfigured bundle would break the channel.
-    if !suffix.is_empty() {
-        log::info!("cli: self-update patching bundle for channel={channel}");
-        let plist = staging.join("Contents/Info.plist");
-        if !plist.exists() {
-            let _ = std::fs::remove_dir_all(&staging);
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            return Err(format!(
-                "error: Info.plist not found in staged bundle at {}",
-                plist.display()
-            ));
-        }
-        let plist_str = plist.to_string_lossy();
-        for (key, val) in [
-            ("CFBundleName", display.as_str()),
-            ("CFBundleDisplayName", display.as_str()),
-            ("CFBundleIdentifier", bundle_id.as_str()),
-            ("CFBundleExecutable", binary_name),
-        ] {
-            let plutil_out = std::process::Command::new("/usr/bin/plutil")
-                .args(["-replace", key, "-string", val, &plist_str])
-                .output();
-            match plutil_out {
-                Ok(out) if out.status.success() => {}
-                Ok(out) => {
-                    let _ = std::fs::remove_dir_all(&staging);
-                    let _ = std::fs::remove_dir_all(&tmp_dir);
-                    return Err(format!(
-                        "error: plutil -replace {key} failed: {}",
-                        String::from_utf8_lossy(&out.stderr)
-                    ));
-                }
-                Err(e) => {
-                    let _ = std::fs::remove_dir_all(&staging);
-                    let _ = std::fs::remove_dir_all(&tmp_dir);
-                    return Err(format!("error: failed to run plutil: {e}"));
-                }
-            }
-        }
-        // Rename the binary inside the bundle from plexi → plexi-<channel>.
-        let macos_dir = staging.join("Contents/MacOS");
-        let old_bin = macos_dir.join("plexi");
-        let new_bin = macos_dir.join(binary_name);
-        if old_bin.exists() && old_bin != new_bin {
-            if let Err(e) = std::fs::rename(&old_bin, &new_bin) {
-                let _ = std::fs::remove_dir_all(&staging);
-                let _ = std::fs::remove_dir_all(&tmp_dir);
-                return Err(format!("error: failed to rename binary in bundle: {e}"));
-            }
-        }
-    }
-
-    // When running inside Plexi the bundle can't be replaced while the app is live.
-    // Write a relaunch script, launch it detached, trigger app quit, and exit.
-    // `from_gui` replaces the PLEXI_RUNNING env-var check — if called from the GUI,
-    // the app is definitionally running.
+    // When called from the GUI, detach a background script that waits for Plexi
+    // to quit, runs the build+install, then relaunches the app.
     if from_gui || std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        let app_display_name = app_bundle
-            .file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or("Plexi");
+        let app_display_name = std::env::current_exe()
+            .ok()
+            .and_then(|p| {
+                p.ancestors()
+                    .find(|a| a.extension().map_or(false, |e| e == "app"))
+                    .and_then(|a| a.file_stem().map(|n| n.to_string_lossy().into_owned()))
+            })
+            .unwrap_or_else(|| "Plexi".to_string());
+
         let script = format!(
             "#!/bin/bash\n\
+             set -euo pipefail\n\
              while pgrep -x '{binary_name}' > /dev/null 2>&1; do sleep 0.3; done\n\
-             rm -rf '{bundle}'\n\
-             mv '{staging_path}' '{bundle}'\n\
-             ln -sf '{bundle}/Contents/MacOS/{binary_name}' /usr/local/bin/{binary_name} 2>/dev/null || true\n\
-             open '{bundle}'\n",
+             if [[ -d '{src}/.git' ]]; then\n\
+               git -C '{src}' fetch origin\n\
+               git -C '{src}' checkout '{channel}' 2>/dev/null || git -C '{src}' checkout -b '{channel}' 'origin/{channel}'\n\
+               git -C '{src}' reset --hard 'origin/{channel}'\n\
+             else\n\
+               git clone --branch '{channel}' '{repo}' '{src}'\n\
+             fi\n\
+             bash '{src}/scripts/install.sh' '{channel}'\n\
+             open '/Applications/{app_display_name}.app'\n",
             binary_name = binary_name,
-            staging_path = staging.display(),
-            bundle = app_bundle.display(),
+            src = src_dir.display(),
+            channel = channel,
+            repo = repo,
+            app_display_name = app_display_name,
         );
-        let script_path = tmp_dir.join("plexi-relaunch.sh");
-        if let Err(e) = std::fs::write(&script_path, &script) {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(format!("error: failed to write relaunch script: {e}"));
-        }
+
+        let tmp_script = std::path::PathBuf::from(std::env::temp_dir()).join("plexi-relaunch.sh");
+        std::fs::write(&tmp_script, &script)
+            .map_err(|e| format!("error: failed to write relaunch script: {e}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::set_permissions(&tmp_script, std::fs::Permissions::from_mode(0o755));
         }
-        match std::process::Command::new("nohup")
+        std::process::Command::new("nohup")
             .arg("bash")
-            .arg(&script_path)
+            .arg(&tmp_script)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-        {
-            Ok(_) => {}
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&staging);
-                return Err(format!("error: failed to launch relaunch script: {e}"));
-            }
-        }
+            .map_err(|e| format!("error: failed to launch relaunch script: {e}"))?;
         let _ = std::process::Command::new("osascript")
-            .args([
-                "-e",
-                &format!("tell application \"{app_display_name}\" to quit"),
-            ])
+            .args(["-e", &format!("tell application \"{app_display_name}\" to quit")])
             .status();
-        return Ok("Plexi will restart to apply the update.".to_string());
+        return Ok("Building update in background — Plexi will relaunch when ready.".to_string());
     }
 
-    if let Err(e) = std::fs::remove_dir_all(&app_bundle) {
-        let _ = std::fs::remove_dir_all(&staging);
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        return Err(format!(
-            "error: failed to remove old app bundle: {e}\nRun with sudo if /Applications is not user-writable."
-        ));
-    }
-    if let Err(e) = std::fs::rename(&staging, &app_bundle) {
-        return Err(format!(
-            "error: failed to move new app into place: {e}\nStaged bundle is at {}. Move it manually to {}.",
-            staging.display(),
-            app_bundle.display()
-        ));
-    }
-
-    // Re-symlink the CLI binary at /usr/local/bin/plexi{suffix} (non-fatal if missing).
-    let new_binary = app_bundle.join("Contents/MacOS").join(binary_name);
-    let bin_link = std::path::Path::new("/usr/local/bin").join(binary_name);
-    if bin_link.is_symlink() || bin_link.exists() {
-        let _ = std::fs::remove_file(&bin_link);
-        if let Err(e) = std::os::unix::fs::symlink(&new_binary, &bin_link) {
-            eprintln!("warning: could not update CLI symlink: {e}");
+    // CLI path: update source and build inline.
+    println!("Updating source...");
+    if src_dir.join(".git").is_dir() {
+        let fetch = std::process::Command::new("git")
+            .args(["-C", &src_dir.to_string_lossy(), "fetch", "origin"])
+            .status()
+            .map_err(|e| format!("error: git fetch failed: {e}"))?;
+        if !fetch.success() {
+            return Err("error: git fetch failed".to_string());
         }
-    }
-    // Main channel also owns the bare `plexi` symlink.
-    if suffix.is_empty() {
-        let bare_link = std::path::Path::new("/usr/local/bin/plexi");
-        if bare_link.is_symlink() || bare_link.exists() {
-            let _ = std::fs::remove_file(bare_link);
-            if let Err(e) = std::os::unix::fs::symlink(&new_binary, bare_link) {
-                eprintln!("warning: could not update bare plexi symlink: {e}");
-            }
+        // checkout may fail if branch doesn't exist locally yet; fall through to reset
+        let _ = std::process::Command::new("git")
+            .args(["-C", &src_dir.to_string_lossy(), "checkout", &channel])
+            .status();
+        let reset = std::process::Command::new("git")
+            .args(["-C", &src_dir.to_string_lossy(), "reset", "--hard", &format!("origin/{channel}")])
+            .status()
+            .map_err(|e| format!("error: git reset failed: {e}"))?;
+        if !reset.success() {
+            return Err("error: git reset failed".to_string());
+        }
+    } else {
+        println!("Cloning source to ~/.plexi-src...");
+        let clone = std::process::Command::new("git")
+            .args(["clone", "--branch", &channel, repo, &src_dir.to_string_lossy()])
+            .status()
+            .map_err(|e| format!("error: git clone failed: {e}"))?;
+        if !clone.success() {
+            return Err("error: git clone failed".to_string());
         }
     }
 
-    let _ = std::fs::remove_dir_all(&tmp_dir);
+    println!("Building v{latest_version} (this takes a few minutes)...");
+    let install = std::process::Command::new("bash")
+        .arg(&install_script)
+        .arg(&channel)
+        .current_dir(&src_dir)
+        .status()
+        .map_err(|e| format!("error: failed to run install script: {e}"))?;
+    if !install.success() {
+        return Err("error: install script failed — check output above".to_string());
+    }
+
     Ok(format!("Installed v{latest_version}. Restart Plexi to apply."))
 }
 

@@ -99,17 +99,27 @@ if ! command -v cargo &>/dev/null; then
   esac
 fi
 
-# If we're not inside the repo, clone the requested branch to a temp dir
+# If we're not inside the repo, use a persistent source directory so cargo's
+# incremental build cache survives between installs (~500 MB, saves minutes on
+# repeat runs).
 if [ ! -f "Cargo.toml" ] || ! grep -q 'name = "plexi"' Cargo.toml 2>/dev/null; then
-  TMP=$(mktemp -d)
-  trap 'rm -rf "$TMP"' EXIT
-  echo "Cloning Plexi ($CHANNEL)..."
-  if ! git clone --depth=1 --branch "$CHANNEL" "$REPO" "$TMP/PLEXI"; then
-    echo "Error: git clone failed for branch '$CHANNEL'."
-    echo "  Check your network connection and that $REPO is accessible."
-    exit 1
+  SRC_DIR="$HOME/.plexi-src"
+  if [[ -d "$SRC_DIR/.git" ]]; then
+    echo "Updating Plexi source ($CHANNEL)..."
+    git -C "$SRC_DIR" fetch origin
+    if ! git -C "$SRC_DIR" checkout "$CHANNEL" 2>/dev/null; then
+      git -C "$SRC_DIR" checkout -b "$CHANNEL" "origin/$CHANNEL"
+    fi
+    git -C "$SRC_DIR" reset --hard "origin/$CHANNEL"
+  else
+    echo "Cloning Plexi ($CHANNEL)..."
+    if ! git clone --branch "$CHANNEL" "$REPO" "$SRC_DIR"; then
+      echo "Error: git clone failed for branch '$CHANNEL'."
+      echo "  Check your network connection and that $REPO is accessible."
+      exit 1
+    fi
   fi
-  cd "$TMP/PLEXI"
+  cd "$SRC_DIR"
 fi
 
 # Install cargo-bundle if needed
