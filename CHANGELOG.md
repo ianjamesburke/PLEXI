@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.11] — 2026-06-25
+
+### Changes
+- fix(app): refresh workspace app registry for palette
 ## [0.1.10] — 2026-06-25
 
 ### Changes
