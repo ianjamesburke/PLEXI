@@ -57,33 +57,7 @@ Declare `secrets.get` in your app's `manifest.toml`:
 capabilities = ["secrets.get"]
 ```
 
-Then read secrets from an async hook via the emitter:
-
-```python
-from plexi_sdk import App
-from plexi_sdk.ui import AppBar, Column, Label
-
-
-class MyApp(App):
-    def on_init(self) -> None:
-        self.api_key = None
-
-    async def on_key(self, key, mods):
-        if key == "s":
-            self.api_key = await self.emit.secret_get("MY_API_KEY")
-            self.emit.schedule_render()
-
-    def view(self):
-        return Column([
-            AppBar("Secrets"),
-            Label("Secret loaded" if self.api_key else "Press s to request secret"),
-        ])
-
-
-MyApp().run()
-```
-
-If the secret does not exist or the app lacks the capability, `secret_get()` returns `None`.
+SDK v3 apps use module-level `init(size, args)`, `update(event)`, and `view()`. The public Python SDK does not yet expose a module-level secret-read effect; until that lands, this page is the source of truth for CLI storage, workspace scoping, and manifest capability declaration.
 
 ## Workspace Scoping
 

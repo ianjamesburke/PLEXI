@@ -108,6 +108,45 @@ pub fn app_init(
 
     match result {
         Ok(()) => {
+            if lang != "rust" {
+                match crate::app::python_env::ensure_app_venv(name, &app_dir, &[]) {
+                    Ok(python) => {
+                        println!("  Python venv: {}", python.display());
+                    }
+                    Err(e) => {
+                        let entry_path = app_dir.join("main.py");
+                        match crate::app::python_env::resolve_python_runtime(
+                            name,
+                            &entry_path,
+                            false,
+                            &[],
+                        ) {
+                            Ok(runtime) => {
+                                log::warn!(
+                                    "app_init[{name}]: Python venv setup failed: {e}; using {} ({})",
+                                    runtime.label,
+                                    runtime.version
+                                );
+                                eprintln!(
+                                    "warning: Python venv setup failed: {e}; using {} ({})",
+                                    runtime.label, runtime.version
+                                );
+                            }
+                            Err(runtime_err) => {
+                                log::error!(
+                                    "app_init[{name}]: Python environment setup failed: {e}; no fallback runtime: {runtime_err}"
+                                );
+                                eprintln!(
+                                    "error: app created, but no compatible Python runtime is available."
+                                );
+                                eprintln!("  venv setup: {e}");
+                                eprintln!("  fallback: {runtime_err}");
+                                return 1;
+                            }
+                        }
+                    }
+                }
+            }
             println!("Created app '{name}' at {}", app_dir.display());
             if lang == "rust" {
                 println!("\nNext steps:");
@@ -134,6 +173,10 @@ pub fn app_init(
                     println!("  Open with: plexi app open {}", app_dir.display());
                 }
                 println!("  Test with: plexi app test {}", app_dir.display());
+                println!(
+                    "  Check visuals: plexi app check {} --png-dir /tmp/{name}-shots",
+                    app_dir.display()
+                );
             }
             0
         }
@@ -1121,8 +1164,14 @@ pub fn app_render(
                 return 1;
             }
         };
-        match serde_json::from_str(&json) {
-            Ok(v) => Some(v),
+        match serde_json::from_str::<serde_json::Value>(&json) {
+            Ok(v) if v.is_object() => Some(v),
+            Ok(_) => {
+                eprintln!(
+                    "error: --state must be a plain JSON object, for example {{\"count\": 3}}"
+                );
+                return 1;
+            }
             Err(e) => {
                 eprintln!("error: invalid JSON in state file '{s}': {e}");
                 return 1;
@@ -1136,7 +1185,8 @@ pub fn app_render(
     // A path is detected by prefix (./  ../  /) or by existing as a directory.
     // Path: more than one component (./foo, ../foo, /abs/path) OR an existing directory.
     // Using components() instead of prefix checks is portable across platforms.
-    let (app_id, app_bin) = if std::path::Path::new(app).components().count() > 1
+    let (app_id, app_bin, python_dependencies) = if std::path::Path::new(app).components().count()
+        > 1
         || std::path::Path::new(app).is_dir()
     {
         let app_dir = match std::path::Path::new(app).canonicalize() {
@@ -1192,13 +1242,17 @@ pub fn app_render(
             return 1;
         }
         log::info!("app_render[{}]: loaded from path '{app}'", manifest.app.id);
-        (manifest.app.id, entry)
+        (manifest.app.id, entry, manifest.app.dependencies)
     } else {
         // ID-based: registry lookup
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let registry = crate::app::registry::AppRegistry::load(&cwd);
         match registry.list().into_iter().find(|a| a.manifest.id == app) {
-            Some(a) => (a.manifest.id.clone(), a.bin_path.clone()),
+            Some(a) => (
+                a.manifest.id.clone(),
+                a.bin_path.clone(),
+                a.manifest.dependencies.clone(),
+            ),
             None => {
                 eprintln!(
                     "error: app '{app}' not found — run `plexi app list` to see installed apps"
@@ -1211,7 +1265,12 @@ pub fn app_render(
     if png {
         // PNG mode: rasterize and write binary
         let png_bytes = match crate::render::app_render::render_app_to_png(
-            &app_id, &app_bin, width, height, seed_state,
+            &app_id,
+            &app_bin,
+            width,
+            height,
+            seed_state,
+            &python_dependencies,
         ) {
             Ok(b) => b,
             Err(e) => {
@@ -1243,7 +1302,12 @@ pub fn app_render(
     } else {
         // JSON mode (default): return raw frame commands
         let json = match crate::render::app_render::render_app_to_json(
-            &app_id, &app_bin, width, height, seed_state,
+            &app_id,
+            &app_bin,
+            width,
+            height,
+            seed_state,
+            &python_dependencies,
         ) {
             Ok(j) => j,
             Err(e) => {

@@ -25,7 +25,7 @@ The local-first rule stays intact. Installed apps and user data live on disk. Ho
 
 - PGAP remains Plexi's native app protocol.
 - WASM remains a first-class sandbox/performance runtime, not a forced replacement for PGAP.
-- SDK v3 is the canonical authoring path. A normal app implements `view()` and returns L1 UI. `on_render(ctx)` is for games, realtime canvases, visualizations, and other explicit pixel-control apps.
+- SDK v3 is the canonical authoring path. Apps expose module-level `init(size, args)`, `update(event)`, and `view()` functions. Normal apps return L1 UI from `view()`; games and realtime canvases return `Canvas(...)` from `view()` and update from `RenderFrame` events.
 - `Raw` stays as an escape hatch. It is not the default path for generated apps.
 - MCPUI is a v2 interop lane. First export Plexi apps as MCPUI resources. Later host MCPUI apps in Plexi through WebView panes.
 - WASM is the third-party sandbox and performance runtime. It shares packaging, trust labels, capability review, and app identity with PGAP apps.
@@ -42,7 +42,7 @@ The app framework is finished when:
 - `sdk/python/SDK_V3.md` plus the scaffold template are enough for an agent to build a working app without reading Rust.
 - Core apps are clean references for common patterns: list, form, text edit, table/data, network fetch, AI chat, state persistence, and canvas escape hatch.
 - Normal apps do not hand-place pixels.
-- Canvas and game apps use `on_render(ctx)` intentionally and are labeled that way in docs and tests.
+- Canvas and game apps use `Canvas(...)` plus `RenderFrame` intentionally and are labeled that way in docs and tests.
 - `TextEdit` works as a normal component in the tree.
 - App authoring tests prove generated apps render, handle input, save state, and avoid layout overlap at small and normal pane sizes.
 
@@ -70,9 +70,9 @@ The marketplace plan is finished when:
 
 Make one path obvious:
 
-- Keep `view()` as the default hook for normal apps.
-- Keep `on_render(ctx)` for explicit canvas/realtime apps.
-- Keep "never override both" as a hard SDK rule.
+- Keep module-level `view()` as the only render entrypoint.
+- Keep `Canvas(...)` as the explicit canvas/realtime path inside `view()`.
+- Reject legacy `App` subclasses in `plexi app check`.
 - Make the scaffold short, stateful, and visually correct.
 - Keep `plexi app render`, `plexi pane state`, `plexi pane key`, and `plexi app action` as the agent drive loop: render, inspect, act, inspect again.
 - Move normal Core apps to `view()` + L1 UI.
@@ -228,8 +228,8 @@ SDK tests:
 - L1 component events dispatch correctly
 - `TextEdit` works inside a normal component tree
 - small-pane rendering has no text overlap or footer clipping
-- legacy canvas apps still render through `on_render(ctx)`
-- an app that overrides both `view()` and `on_render(ctx)` fails loudly
+- canvas apps render through `Canvas(...)` returned from `view()`
+- an app that subclasses legacy `App` fails loudly
 
 Permission tests:
 

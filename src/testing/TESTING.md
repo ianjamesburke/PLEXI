@@ -75,7 +75,7 @@ Every run writes `<out>/<scene>.json` (`schema_version: 1`): pass/fail per step,
 
 ## Real App Processes in Tests
 
-`open_app` (and `PlexiUiHarness::open_app_at`) uses the production path: manifest load → `ProcessApp::launch` → real child process, IPC threads, L1 render pipeline. Outside an installed bundle the repo SDK is exported via `PLEXI_SDK_PATH=sdk/python` automatically. Python resolution follows production order: per-app `.venv` → bundled python → system `python3`.
+`open_app` (and `PlexiUiHarness::open_app_at`) uses the production path: manifest load → `ProcessApp::launch` → real child process, IPC threads, L1 render pipeline. Outside an installed bundle the repo SDK is exported via `PLEXI_SDK_PATH=sdk/python` automatically. Python resolution comes from `src/app/python_env.rs`: per-app `.venv` → bundled python → system `python3`, with Python >=3.11 required.
 
 ## Pre-Push Evidence
 

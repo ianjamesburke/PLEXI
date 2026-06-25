@@ -16,6 +16,7 @@ pub mod package;
 pub mod packs;
 pub mod permissions;
 pub mod plexi_descriptor;
+pub(crate) mod python_env;
 pub mod registry;
 pub mod registry_watcher;
 mod render;

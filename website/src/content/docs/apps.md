@@ -24,6 +24,14 @@ This scaffolds a new app folder with:
 my-app/
   manifest.toml    ← capabilities, entry point, metadata
   main.py          ← your app code
+  tests/test_app.py ← AppHarness smoke tests
+  .venv/           ← isolated Python runtime
+```
+
+Validate the app and write screenshots:
+
+```sh
+plexi app check ./my-app --png-dir /tmp/my-app-shots
 ```
 
 ## Open an App
@@ -38,25 +46,37 @@ The app opens in a pane. Use this during development; no marketplace install is 
 
 ## The App Pattern
 
-Normal apps implement `view()` and return a component tree:
+SDK v3 apps are module-level `init`, `update`, and `view` functions. `view()` returns a component tree and must stay pure:
 
 ```python
-from plexi_sdk import App
-from plexi_sdk.ui import AppBar, Column, Label
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from plexi_sdk import state
+from plexi_sdk.effects import SetState, SetTitle
+from plexi_sdk.events import KeyEvent
+from plexi_sdk.ui import AppBar, Column, FooterKeys, Text
 
 
-class MyApp(App):
-    def view(self):
-        return Column([
-            AppBar("My App"),
-            Label("Hello from my-app"),
-        ])
+def init(size, args):
+    return [SetTitle("My App"), SetState({"count": 0})]
 
 
-MyApp().run()
+def update(event):
+    if isinstance(event, KeyEvent) and event.key == "return" and event.pressed:
+        return [SetState({"count": state.get("count", 0) + 1})]
+    return []
+
+
+def view():
+    return Column([
+        AppBar("My App"),
+        Text(str(state.get("count", 0)), bold=True),
+        FooterKeys([("return", "increment")]),
+    ], grow=True)
 ```
 
-Use `on_render(ctx)` only for games, animations, realtime visualizations, or other pixel-control apps.
+Canvas apps also return from `view()`: use `Canvas(...)` components and `RenderFrame` events for animation.
 
 ## Capabilities
 
@@ -71,21 +91,15 @@ Common capabilities: `secrets.get`, `net.http`, `fs.read`, `fs.write`, `ai.query
 
 ## Logging
 
-Use `self.emit.info()`, `self.emit.warn()`, `self.emit.error()` from any method. Log lines are tagged `app::my-app` in the host log.
+Use `plexi_sdk.log` from `init()` or `update()`. Log lines are tagged with the app process in the host log.
 
 ```python
-from plexi_sdk import App
+from plexi_sdk import log
 
 
-class MyApp(App):
-    def on_init(self) -> None:
-        self.emit.info("my-app initialized")
-
-    def view(self):
-        ...
-
-
-MyApp().run()
+def init(size, args):
+    log.info("my-app initialized")
+    return []
 ```
 
 See also: [PGAP](/docs/pgap), [Secrets](/docs/secrets)

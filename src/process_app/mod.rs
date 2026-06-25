@@ -428,55 +428,24 @@ impl ProcessApp {
         // host credential — apps must use the iq.query / llm broker, never direct API access.
         const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
 
-        // Resolve the bundled Python interpreter path — used both to build the
-        // python3 command for .py entries and to prepend to PATH for PYTHONPATH setup.
-        let bundle_contents = std::env::current_exe().ok().and_then(|exe| {
-            exe.parent()
-                .and_then(|p| p.parent())
-                .map(|p| p.to_path_buf())
-        });
-        let bundled_py_bin = bundle_contents.as_ref().map(|c| {
-            c.join("Resources")
-                .join("assets")
-                .join("python")
-                .join("bin")
-        });
-
-        // .py entries are launched via python3 directly — no shebang or executable bit required.
+        // .py entries are launched through the SDK v3 adapter using the shared
+        // Python runtime resolver; no shebang or executable bit is required.
         let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
-        let py_exe: Option<std::ffi::OsString> = if is_python {
-            // Prefer the per-app venv Python when it exists (D2: per-app venv via uv).
-            let venv_python = bin_path
-                .parent()
-                .map(|app_dir| app_dir.join(".venv").join("bin").join("python"))
-                .filter(|p| p.exists());
-            if let Some(ref vp) = venv_python {
-                log::info!(
-                    "ProcessApp[{type_id}]: using per-app venv Python at {}",
-                    vp.display()
-                );
-            }
+        let python_runtime = if is_python {
             Some(
-                venv_python
-                    .map(std::ffi::OsString::from)
-                    .or_else(|| {
-                        bundled_py_bin
-                            .as_ref()
-                            .map(|b| b.join("python3"))
-                            .filter(|p| p.exists())
-                            .map(std::ffi::OsString::from)
-                    })
-                    .unwrap_or_else(|| std::ffi::OsString::from("python3")),
+                crate::app::python_env::resolve_python_runtime(&type_id, bin_path, false, &[])
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
             )
         } else {
             None
         };
-        let mut cmd = if let Some(ref py) = py_exe {
+        let mut cmd = if let Some(ref runtime) = python_runtime {
             log::info!(
-                "ProcessApp[{type_id}]: launching .py entry via {:?} with SDK v3 native adapter",
-                py,
+                "ProcessApp[{type_id}]: launching .py entry via {} ({}) with SDK v3 native adapter",
+                runtime.label,
+                runtime.version,
             );
-            let mut c = std::process::Command::new(py);
+            let mut c = std::process::Command::new(&runtime.executable);
             c.arg("-m").arg("plexi_sdk._v3_process").arg(bin_path);
             c
         } else {
@@ -541,20 +510,20 @@ impl ProcessApp {
         // Prepend the bundled Python interpreter's bin/ dir to PATH so that
         // dev-mode .py entries without the bundle still resolve python3 correctly.
         // Falls back silently to host PATH if the bundle runtime isn't present.
-        if let Some(ref py_bin) = bundled_py_bin {
+        if let Some(ref py_bin) = crate::app::python_env::bundled_python_bin_dir() {
             if py_bin.exists() {
                 let host_path = std::env::var("PATH").unwrap_or_default();
                 cmd.env("PATH", format!("{}:{}", py_bin.display(), host_path));
             }
         }
 
-        let bundle_sdk = bundle_contents
+        let pythonpath = python_runtime
             .as_ref()
-            .map(|p| p.join("Resources").join("sdk").join("python"));
-        let pythonpath = crate::config::build_pythonpath(bundle_sdk.as_deref());
+            .map(|runtime| runtime.pythonpath.clone())
+            .unwrap_or_else(crate::app::python_env::pythonpath_for_current_exe);
         log::info!("process_app[{type_id}]: PYTHONPATH={pythonpath}");
 
-        if py_exe.is_some() {
+        if python_runtime.is_some() {
             log::info!(
                 "ProcessApp[{type_id}]: static capability check skipped for SDK v3 native adapter; manifest capabilities are authoritative"
             );

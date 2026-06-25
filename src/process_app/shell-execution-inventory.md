@@ -108,6 +108,7 @@ these exec calls.
 | `src/install.rs` — app install helpers | `git` | App install / update lifecycle |
 | `src/cli.rs` — app bundle extraction | `unzip`, `cp` | App bundle extraction |
 | `src/cli.rs` — self-relaunch after update | `nohup`, `osascript` | Self-relaunch after update |
+| `src/app/python_env.rs` — app Python runtime helper | `uv`, resolved Python binary | Create/check per-app `.venv`, install declared deps, and verify Python version |
 | `src/app_render.rs` — `AppRenderer::spawn` | Resolved Python binary | Spawn the app subprocess |
 | `src/process_app/mod.rs` — `ProcessApp::launch` | Python binary or explicit bin_path | Spawn the app subprocess |
 | `src/cli_help_parser.rs` — `parse_help` | CLI binary being probed | Harvest `--help` output for completions |
@@ -117,7 +118,6 @@ these exec calls.
 | `src/cli.rs` — `jq` pretty-printer | `jq` | Pretty-print JSON output |
 | `src/cli.rs` — secret input echo suppression | `stty` | Terminal echo control during secret input |
 | `src/cli.rs` — `plexi doctor` tool checks | Probed tool binary | Check tool availability for doctor command |
-| `src/cli.rs` — `plexi app init` | `python3` | Check Python version during app scaffolding |
 
 None of these accept app-supplied strings at the exec boundary. The set of binaries
 is fixed at compile time or resolved from user config (shell path, Python path);

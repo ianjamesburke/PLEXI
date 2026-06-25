@@ -6,28 +6,18 @@ const DEFAULT_CHECK_SIZES: &[(u32, u32)] = &[(320, 240), (480, 320), (800, 600),
 
 #[derive(Debug, Default)]
 struct SdkAnalysis {
-    app_classes: Vec<PythonAppClass>,
+    has_init: bool,
+    has_update: bool,
+    has_view: bool,
+    legacy_app_classes: Vec<String>,
     errors: Vec<String>,
     warnings: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PythonAstReport {
-    classes: Vec<PythonClassReport>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PythonClassReport {
-    name: String,
-    bases: Vec<String>,
-    methods: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-struct PythonAppClass {
-    name: String,
-    has_view: bool,
-    has_on_render: bool,
+    functions: Vec<String>,
+    legacy_app_classes: Vec<String>,
 }
 
 pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32 {
@@ -74,23 +64,16 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
     println!("✓ manifest — {} ({})", manifest.app.id, manifest.app.name);
 
     if entry_path.extension().and_then(|ext| ext.to_str()) == Some("py") {
-        match analyze_python_entry(&entry_path) {
+        match analyze_python_entry(&manifest.app.id, &entry_path, &manifest.app.dependencies) {
             Ok(analysis) => {
-                if analysis.app_classes.is_empty() {
-                    errors.push(format!(
-                        "SDK — {} does not define a class that subclasses App",
-                        entry_path.display()
-                    ));
-                } else {
-                    for class in analysis.app_classes {
-                        if class.has_view {
-                            println!("✓ SDK — {} uses view()", class.name);
-                        } else if class.has_on_render {
-                            warnings.push(format!(
-                                "SDK — {} uses on_render(ctx); use this only for canvas, games, animation, or visual tools",
-                                class.name
-                            ));
-                        }
+                if analysis.has_init && analysis.has_update && analysis.has_view {
+                    println!("✓ SDK — module-level init/update/view");
+                }
+                if !analysis.legacy_app_classes.is_empty() {
+                    for class in &analysis.legacy_app_classes {
+                        errors.push(format!(
+                            "SDK — {class} subclasses legacy App; SDK v3 apps use module-level init/update/view functions"
+                        ));
                     }
                 }
                 errors.extend(analysis.errors);
@@ -113,6 +96,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
             width,
             height,
             None,
+            &manifest.app.dependencies,
         ) {
             Ok(json) => {
                 let frame: serde_json::Value = match serde_json::from_str(&json) {
@@ -143,6 +127,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                         width,
                         height,
                         None,
+                        &manifest.app.dependencies,
                     ) {
                         Ok(bytes) => match std::fs::write(&png_path, bytes) {
                             Ok(()) => println!("✓ png {label} — {}", png_path.display()),
@@ -253,7 +238,21 @@ fn load_local_app(app_dir: &Path) -> Result<(AppManifest, PathBuf), String> {
     Ok((manifest, entry_path))
 }
 
-fn analyze_python_entry(entry_path: &Path) -> Result<SdkAnalysis, String> {
+fn analyze_python_entry(
+    app_id: &str,
+    entry_path: &Path,
+    python_dependencies: &[String],
+) -> Result<SdkAnalysis, String> {
+    let runtime = crate::app::python_env::resolve_python_runtime(
+        app_id,
+        entry_path,
+        true,
+        python_dependencies,
+    )?;
+    analyze_python_entry_with(&entry_path, Path::new(&runtime.executable))
+}
+
+fn analyze_python_entry_with(entry_path: &Path, python: &Path) -> Result<SdkAnalysis, String> {
     let script = r#"
 import ast
 import json
@@ -274,29 +273,24 @@ def base_name(node):
         return base_name(node.func)
     return ""
 
-classes = []
-for node in ast.walk(tree):
+functions = []
+legacy_app_classes = []
+for node in tree.body:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        functions.append(node.name)
     if isinstance(node, ast.ClassDef):
-        methods = [
-            child.name
-            for child in node.body
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
-        classes.append({
-            "name": node.name,
-            "bases": [base_name(base) for base in node.bases],
-            "methods": methods,
-        })
+        if any(base_name(base) == "App" for base in node.bases):
+            legacy_app_classes.append(node.name)
 
-json.dump({"classes": classes}, sys.stdout)
+json.dump({"functions": functions, "legacy_app_classes": legacy_app_classes}, sys.stdout)
 "#;
 
-    let output = std::process::Command::new("python3")
+    let output = std::process::Command::new(python)
         .arg("-c")
         .arg(script)
         .arg(entry_path)
         .output()
-        .map_err(|e| format!("could not run python3 for AST analysis: {e}"))?;
+        .map_err(|e| format!("could not run {} for AST analysis: {e}", python.display()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -311,29 +305,17 @@ json.dump({"classes": classes}, sys.stdout)
         .map_err(|e| format!("could not parse AST report: {e}"))?;
 
     let mut analysis = SdkAnalysis::default();
-    for class in report.classes {
-        if !class.bases.iter().any(|base| base == "App") {
-            continue;
-        }
-        let has_view = class.methods.iter().any(|method| method == "view");
-        let has_on_render = class.methods.iter().any(|method| method == "on_render");
-        if has_view && has_on_render {
+    analysis.has_init = report.functions.iter().any(|name| name == "init");
+    analysis.has_update = report.functions.iter().any(|name| name == "update");
+    analysis.has_view = report.functions.iter().any(|name| name == "view");
+    analysis.legacy_app_classes = report.legacy_app_classes;
+
+    for required in ["init", "update", "view"] {
+        if !report.functions.iter().any(|name| name == required) {
             analysis.errors.push(format!(
-                "SDK — {} defines both view() and on_render(ctx); pick one render path",
-                class.name
+                "SDK — missing module-level {required}(); SDK v3 apps define init(size, args), update(event), and view()"
             ));
         }
-        if !has_view && !has_on_render {
-            analysis.errors.push(format!(
-                "SDK — {} defines neither view() nor on_render(ctx)",
-                class.name
-            ));
-        }
-        analysis.app_classes.push(PythonAppClass {
-            name: class.name,
-            has_view,
-            has_on_render,
-        });
     }
 
     Ok(analysis)
@@ -444,27 +426,31 @@ mod app_check_tests {
     }
 
     #[test]
-    fn sdk_analysis_accepts_view_only_app() {
+    fn sdk_analysis_accepts_module_level_v3_app() {
         let dir = TempDir::new().unwrap();
         let entry = dir.path().join("main.py");
         fs::write(
             &entry,
             r#"
-from plexi_sdk import App
+def init(size, args):
+    return []
 
-class Good(App):
-    def view(self):
-        return None
+def update(event):
+    return []
+
+def view():
+    return None
 "#,
         )
         .unwrap();
 
-        let analysis = super::analyze_python_entry(&entry).expect("analysis should run");
+        let analysis = super::analyze_python_entry_with(&entry, std::path::Path::new("python3"))
+            .expect("analysis should run");
         assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     }
 
     #[test]
-    fn sdk_analysis_rejects_app_that_overrides_both_render_paths() {
+    fn sdk_analysis_rejects_legacy_app_subclass() {
         let dir = TempDir::new().unwrap();
         let entry = dir.path().join("main.py");
         fs::write(
@@ -473,21 +459,55 @@ class Good(App):
 from plexi_sdk import App
 
 class Bad(App):
-    def view(self):
-        return None
+    pass
 
-    def on_render(self, ctx):
-        pass
+def init(size, args):
+    return []
+
+def update(event):
+    return []
+
+def view():
+    return None
 "#,
         )
         .unwrap();
 
-        let analysis = super::analyze_python_entry(&entry).expect("analysis should run");
+        let analysis = super::analyze_python_entry_with(&entry, std::path::Path::new("python3"))
+            .expect("analysis should run");
+        assert!(
+            analysis
+                .legacy_app_classes
+                .iter()
+                .any(|class| class == "Bad"),
+            "{:?}",
+            analysis.legacy_app_classes
+        );
+    }
+
+    #[test]
+    fn sdk_analysis_rejects_missing_update() {
+        let dir = TempDir::new().unwrap();
+        let entry = dir.path().join("main.py");
+        fs::write(
+            &entry,
+            r#"
+def init(size, args):
+    return []
+
+def view():
+    return None
+"#,
+        )
+        .unwrap();
+
+        let analysis = super::analyze_python_entry_with(&entry, std::path::Path::new("python3"))
+            .expect("analysis should run");
         assert!(
             analysis
                 .errors
                 .iter()
-                .any(|error| error.contains("defines both view() and on_render(ctx)")),
+                .any(|error| error.contains("missing module-level update()")),
             "{:?}",
             analysis.errors
         );

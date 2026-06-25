@@ -522,49 +522,46 @@ pub enum AppCmd {
     #[command(after_long_help = r#"APP DEVELOPMENT GUIDE:
 
   Two rendering modes (pick one per app):
-    view(self)         Declarative UI trees: forms, lists, dashboards
-    on_render(self, ctx)  Canvas drawing: games, animations, visualizations
+    view()                  Declarative UI trees: forms, lists, dashboards
+    view() + Canvas(...)    Canvas drawing: games, animations, visualizations
 
-  UI components (view mode):
+  SDK v3 module functions:
+    init(size, args)   Return startup effects such as SetTitle/SetState
+    update(event)      Return effects after key, mouse, timer, and render events
+    view()             Return the current component tree; keep it pure
+
+  UI components:
     Read plexi_sdk/ui.py for the full API. Key widgets:
     AppBar, Column, Row, Label, Spacer, FooterKeys, SelectList, TextInput,
     Card, Section, Tabs, Grid, Toggle, ScrollLog, ChatBubble, InfoTable,
-    FormField, ButtonRow, ProgressBar, Clickable, Divider, Scrollable
+    FormField, ButtonRow, ProgressBar, Clickable, Divider, Scrollable,
+    Canvas, CanvasRect, CanvasText, CanvasCircle
 
-  Key names (use these exact strings in on_key):
+  Key names (use these exact strings in KeyEvent handlers):
     space, return, escape, up, down, left, right, backspace, tab
     a-z (lowercase), plus, minus, equals, f1-f12
 
-  State persistence:
-    self.state.get("key", default)   Load on init
-    self.state.save({"key": val})    Persist after changes
+  State:
+    state.get("key", default)        Read runtime state
+    SetState({"key": value})         Update process-local runtime state
+    PersistState({"key": value})     Save state across app restarts
 
-  Canvas API (on_render mode only):
-    ctx.rect/text/circle/line | self.w, self.h | ctx.elapsed
-    self.emit.schedule_render(after_ms=16)  # game loop
+  Canvas apps:
+    Return Canvas([...]) from view().
+    For animation, return SetSchedulerMode("continuous", fps=60) from init()
+    and update simulation state from RenderFrame events.
 
-  Hooks (override any of these):
-    on_init(self)              Called once at startup
-    on_key(self, key, mods)    Keyboard input
-    on_click(self, x, y, btn)  Mouse input
-    on_escape(self) -> bool    Return True to consume
-    on_text_submitted(self, id, text)  TextInput submission
-    on_path_changed(self, cwd) Working directory changed
-    on_shutdown(self)          Cleanup
-
-  Emit methods:
-    self.emit.schedule_render()         Request a redraw
-    self.emit.notify(title, priority, body)
-    self.emit.info/warn/error(msg)      Logging
-    self.emit.http_get(url)             Network requests
-    self.emit.ai_query(tier, sys, msgs) LLM queries
+  Effects:
+    SetTitle, SetStatus, SetTimer, SetSchedulerMode, SetState, PersistState,
+    LogInfo/LogWarn/LogError, HttpRequest, AiQuery, FileRead, FileWrite
 
   Headless testing:
     plexi app check <path>                             Validate SDK shape + render size matrix
-    plexi app render <id>                           JSON frame tree to stdout
-    plexi app render <id> --png --output shot.png   PNG image to file
-    Use --state file.json to pre-populate app state before on_init.
-    The JSON is available via self.state.get() — no special handler needed.
+    plexi app check <path> --png-dir /tmp/my-app     Write visual snapshots
+    plexi app render <path>                          JSON frame tree to stdout
+    plexi app render <path> --png --output shot.png  PNG image to file
+    Use --state file.json to pre-populate state before init().
+    The state file is a plain JSON object, e.g. {"count": 3}.
 "#)]
     Init {
         name: String,
@@ -1421,10 +1418,7 @@ mod tests {
         else {
             panic!("expected app open command");
         };
-        assert_eq!(
-            type_id.as_deref(),
-            Some("tests/wasm-fixtures/sysmon.wasm")
-        );
+        assert_eq!(type_id.as_deref(), Some("tests/wasm-fixtures/sysmon.wasm"));
         assert_eq!(extra_args, ["--sample", "96"]);
     }
 

@@ -7,9 +7,10 @@ use crate::app_protocol::{
 };
 use crate::ui::theme::Colors;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Cursor, Write as IoWrite};
+use std::io::{BufRead, BufReader, Cursor, Read, Write as IoWrite};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -23,8 +24,16 @@ pub fn render_app_to_json(
     width: u32,
     height: u32,
     seed_state: Option<serde_json::Value>,
+    python_dependencies: &[String],
 ) -> Result<String, String> {
-    let commands = spawn_and_collect_frame(app_id, bin_path, width, height, seed_state)?;
+    let commands = spawn_and_collect_frame(
+        app_id,
+        bin_path,
+        width,
+        height,
+        seed_state,
+        python_dependencies,
+    )?;
     serde_json::to_string_pretty(&commands).map_err(|e| format!("failed to serialize frame: {e}"))
 }
 
@@ -35,8 +44,16 @@ pub fn render_app_to_png(
     width: u32,
     height: u32,
     seed_state: Option<serde_json::Value>,
+    python_dependencies: &[String],
 ) -> Result<Vec<u8>, String> {
-    let commands = spawn_and_collect_frame(app_id, bin_path, width, height, seed_state)?;
+    let commands = spawn_and_collect_frame(
+        app_id,
+        bin_path,
+        width,
+        height,
+        seed_state,
+        python_dependencies,
+    )?;
     render_commands_to_png(&commands, width, height)
 }
 
@@ -47,48 +64,30 @@ fn spawn_and_collect_frame(
     width: u32,
     height: u32,
     seed_state: Option<serde_json::Value>,
+    python_dependencies: &[String],
 ) -> Result<Vec<RenderCommand>, String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     // Mirror the env setup from ProcessApp::launch so Python apps can import
     // plexi_sdk and run through the SDK v3 native adapter.
     const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
-    let bundle_contents = std::env::current_exe().ok().and_then(|exe| {
-        exe.parent()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf())
-    });
-    let bundled_py_bin = bundle_contents.as_ref().map(|c| {
-        c.join("Resources")
-            .join("assets")
-            .join("python")
-            .join("bin")
-    });
-    let bundle_sdk = bundle_contents
-        .as_ref()
-        .map(|c| c.join("Resources").join("sdk").join("python"));
     let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
+    let mut runtime: Option<crate::app::python_env::PythonRuntime> = None;
     let mut cmd = if is_python {
-        let venv_python = bin_path
-            .parent()
-            .map(|app_dir| app_dir.join(".venv").join("bin").join("python"))
-            .filter(|p| p.exists());
-        let py = venv_python
-            .map(std::ffi::OsString::from)
-            .or_else(|| {
-                bundled_py_bin
-                    .as_ref()
-                    .map(|b| b.join("python3"))
-                    .filter(|p| p.exists())
-                    .map(std::ffi::OsString::from)
-            })
-            .unwrap_or_else(|| std::ffi::OsString::from("python3"));
+        let resolved = crate::app::python_env::resolve_python_runtime(
+            app_id,
+            bin_path,
+            true,
+            python_dependencies,
+        )?;
         log::info!(
-            "app_render[{app_id}]: launching .py entry via {:?} with SDK v3 native adapter",
-            py
+            "app_render[{app_id}]: launching .py entry via {} ({}) with SDK v3 native adapter",
+            resolved.label,
+            resolved.version,
         );
-        let mut c = Command::new(py);
+        let mut c = Command::new(&resolved.executable);
         c.arg("-m").arg("plexi_sdk._v3_process").arg(bin_path);
+        runtime = Some(resolved);
         c
     } else {
         Command::new(bin_path)
@@ -96,7 +95,7 @@ fn spawn_and_collect_frame(
     cmd.current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .env_clear();
     for var in ENV_WHITELIST {
         if let Ok(v) = std::env::var(var) {
@@ -108,7 +107,16 @@ fn spawn_and_collect_frame(
             cmd.env(k, v);
         }
     }
-    let pythonpath = crate::config::build_pythonpath(bundle_sdk.as_deref());
+    if let Some(ref py_bin) = crate::app::python_env::bundled_python_bin_dir() {
+        if py_bin.exists() {
+            let host_path = std::env::var("PATH").unwrap_or_default();
+            cmd.env("PATH", format!("{}:{}", py_bin.display(), host_path));
+        }
+    }
+    let pythonpath = runtime
+        .as_ref()
+        .map(|runtime| runtime.pythonpath.clone())
+        .unwrap_or_else(crate::app::python_env::pythonpath_for_current_exe);
     cmd.env("PYTHONPATH", &pythonpath);
     log::info!("app_render[{app_id}]: PYTHONPATH={pythonpath}");
 
@@ -118,6 +126,8 @@ fn spawn_and_collect_frame(
 
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
     let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take();
+    let stderr_rx = stderr.map(spawn_stderr_collector);
     let mut reader = BufReader::new(stdout);
 
     // Send Init (with optional seed state embedded)
@@ -145,14 +155,28 @@ fn spawn_and_collect_frame(
     loop {
         if Instant::now() > deadline {
             let _ = child.kill();
+            let _ = child.wait();
             return Err(format!(
-                "app '{app_id}' did not send Ready within {BOOT_TIMEOUT:?}"
+                "app '{app_id}' did not send Ready within {BOOT_TIMEOUT:?}{}",
+                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
             ));
         }
         let mut line = String::new();
-        reader
-            .read_line(&mut line)
-            .map_err(|e| format!("read error waiting for Ready: {e}"))?;
+        reader.read_line(&mut line).map_err(|e| {
+            let _ = child.kill();
+            let _ = child.wait();
+            format!(
+                "read error waiting for Ready: {e}{}",
+                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
+            )
+        })?;
+        if line.is_empty() {
+            let _ = child.wait();
+            return Err(format!(
+                "app '{app_id}' exited before Ready{}",
+                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
+            ));
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -192,14 +216,28 @@ fn spawn_and_collect_frame(
     loop {
         if Instant::now() > deadline {
             let _ = child.kill();
+            let _ = child.wait();
             return Err(format!(
-                "app '{app_id}' did not emit FrameDone within {FRAME_TIMEOUT:?}"
+                "app '{app_id}' did not emit FrameDone within {FRAME_TIMEOUT:?}{}",
+                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
             ));
         }
         let mut line = String::new();
-        reader
-            .read_line(&mut line)
-            .map_err(|e| format!("read error collecting frame: {e}"))?;
+        reader.read_line(&mut line).map_err(|e| {
+            let _ = child.kill();
+            let _ = child.wait();
+            format!(
+                "read error collecting frame: {e}{}",
+                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
+            )
+        })?;
+        if line.is_empty() {
+            let _ = child.wait();
+            return Err(format!(
+                "app '{app_id}' exited before FrameDone{}",
+                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
+            ));
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -223,7 +261,51 @@ fn spawn_and_collect_frame(
     }
 
     let _ = child.kill();
+    let _ = child.wait();
     Ok(render_commands)
+}
+
+fn spawn_stderr_collector(stderr: impl Read + Send + 'static) -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut buf = String::new();
+        let _ = reader.read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+    rx
+}
+
+fn render_failure_context(
+    runtime: &Option<crate::app::python_env::PythonRuntime>,
+    bin_path: &Path,
+    pythonpath: &str,
+    stderr_rx: Option<&mpsc::Receiver<String>>,
+) -> String {
+    let stderr = stderr_rx
+        .and_then(|rx| rx.try_recv().ok())
+        .unwrap_or_default();
+    let stderr = stderr.trim();
+    let runtime_line = runtime
+        .as_ref()
+        .map(|runtime| format!("\n  python: {} ({})", runtime.label, runtime.version))
+        .unwrap_or_default();
+    let stderr_line = if stderr.is_empty() {
+        "\n  stderr: <empty>".to_string()
+    } else {
+        format!("\n  stderr:\n{}", indent(stderr, "    "))
+    };
+    format!(
+        "{runtime_line}\n  entry: {}\n  PYTHONPATH: {pythonpath}{stderr_line}",
+        bin_path.display()
+    )
+}
+
+fn indent(text: &str, prefix: &str) -> String {
+    text.lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Render RenderCommands to PNG bytes via a headless egui context + wgpu offscreen surface.

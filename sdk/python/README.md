@@ -17,6 +17,9 @@ Changes to `sdk/python/plexi_sdk/` take effect immediately.
 An app is three module-level functions:
 
 ```python
+#!/usr/bin/env python3
+from __future__ import annotations
+
 from plexi_sdk import state
 from plexi_sdk.effects import SetTitle, SetState
 from plexi_sdk.events import KeyEvent
@@ -61,6 +64,8 @@ Keys arrive in `update(event)` as `KeyEvent`. Key strings are lowercase canonica
 
 ```sh
 plexi app init myapp
+plexi app check myapp --png-dir /tmp/myapp-shots
+plexi app open myapp
 ```
 
-Generates `myapp/main.py` + `myapp/manifest.toml` as a normal `[app] type = "app"` Python app.
+Generates `myapp/main.py`, `myapp/manifest.toml`, `myapp/tests/test_app.py`, and a per-app `.venv/` for Python isolation. `plexi app check` validates the SDK v3 shape, renders the size matrix, and can write PNG snapshots for visual review.

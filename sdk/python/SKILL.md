@@ -13,11 +13,12 @@ patterns are established or when a recurring mistake is worth preventing.
 - Key canonical names are **lowercase**: `"return"`, `"escape"`, `"backspace"`. Never match `"Enter"` or `"Escape"` — the SDK normalizes those from egui's internal names.
 - Enter = open/confirm. Escape (+ optional Backspace) = exit/cancel. Every focused sub-view must be escapable.
 - See `README.md` for the full keyboard conventions table.
+- SDK v3 apps are module-level `init(size, args)`, `update(event)`, and `view()` functions. Do not subclass `App`, define `on_render`, or call `.run()`.
 
 ## Widget Selection
 
 - For list+detail navigation: use `SelectList` from `plexi_sdk.ui` — it handles j/k/arrow keys, scrolling, and click hit-testing. Never reimplement this by hand.
-- For raw draw-only list: `ctx.list_view()` with `ListItem` dicts.
+- For raw drawing or games: return a `Canvas(...)` from `view()` and update runtime state from `RenderFrame` events.
 - For text entry: use `ui.TextEdit` in the component tree. Never read raw keys for text.
 
 ## State
@@ -27,7 +28,7 @@ patterns are established or when a recurring mistake is worth preventing.
 ## Logging
 
 - Always log at init and key state transitions with `plexi_sdk.log`.
-- Log escapes and errors: `log.warn("app_id: exiting detail view")` on Escape, `log.error(...)` on unrecoverable failures.
+- Log escapes and errors from `update(event)`: `log.warn("app_id: exiting detail view")` on Escape, `log.error(...)` on unrecoverable failures.
 
 ## Known Gotchas
 

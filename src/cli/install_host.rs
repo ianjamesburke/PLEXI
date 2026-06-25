@@ -364,14 +364,6 @@ fn chmod_python_entries(app_dir: &Path) {
 #[cfg(not(unix))]
 fn chmod_python_entries(_app_dir: &Path) {}
 
-/// Create a per-app Python venv using `uv` when the app has a `.py` entry.
-///
-/// - If `.venv` already exists (re-install): logs `info!` and skips creation.
-/// - If `uv` is not on PATH: logs `warn!` and returns — never fails the install.
-/// - If venv creation or dep install fails: logs `warn!` — never fails the install.
-/// - If `dependencies` is non-empty: runs `uv pip install` into the venv.
-const PYTHON_APP_VENV_VERSION: &str = "3.12";
-
 fn provision_venv(app_id: &str, app_dir: &Path, manifest: &AppManifest) {
     let entry = &manifest.app.entry;
     let is_python = entry.ends_with(".py");
@@ -379,104 +371,15 @@ fn provision_venv(app_id: &str, app_dir: &Path, manifest: &AppManifest) {
         return;
     }
 
-    let venv_path = app_dir.join(".venv");
-
-    // Skip if venv already exists (idempotent re-install).
-    if venv_path.exists() {
-        log::info!(
-            "install[{app_id}]: venv already exists at {}; skipping creation",
-            venv_path.display()
-        );
-        // Still attempt dep install in case deps changed — best-effort, warn on failure.
-        if !manifest.app.dependencies.is_empty() {
-            install_deps_into_venv(app_id, &venv_path, &manifest.app.dependencies);
-        }
-        return;
-    }
-
-    // Check uv is available.
-    let uv_check = Command::new("uv").arg("--version").output();
-    if uv_check.is_err()
-        || !uv_check
-            .as_ref()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    {
-        log::warn!(
-            "install[{app_id}]: `uv` not found on PATH — skipping venv creation. \
-             Install uv (https://docs.astral.sh/uv/getting-started/installation/) to enable \
-             isolated Python environments for Plexi apps."
-        );
-        return;
-    }
-
-    // Create the venv.
-    let status = Command::new("uv")
-        .args(["venv", "--python", PYTHON_APP_VENV_VERSION])
-        .arg(&venv_path)
-        .status();
-    match status {
-        Err(e) => {
-            log::warn!(
-                "install[{app_id}]: failed to run `uv venv`: {e} — app will use system Python"
-            );
-            return;
-        }
-        Ok(s) if !s.success() => {
-            // uv may refuse the pinned interpreter if not installed; fall back to default Python.
-            log::warn!(
-                "install[{app_id}]: `uv venv --python {PYTHON_APP_VENV_VERSION}` failed (exit {}); \
-                 retrying without version pin",
-                s.code().unwrap_or(-1)
-            );
-            let retry = Command::new("uv").arg("venv").arg(&venv_path).status();
-            match retry {
-                Err(e) => {
-                    log::warn!(
-                        "install[{app_id}]: `uv venv` retry failed: {e} — app will use system Python"
-                    );
-                    return;
-                }
-                Ok(s2) if !s2.success() => {
-                    log::warn!(
-                        "install[{app_id}]: `uv venv` retry exit {} — app will use system Python",
-                        s2.code().unwrap_or(-1)
-                    );
-                    return;
-                }
-                _ => {}
-            }
-        }
-        _ => {}
-    }
-
-    log::info!("install[{app_id}]: created venv at {}", venv_path.display());
-
-    if !manifest.app.dependencies.is_empty() {
-        install_deps_into_venv(app_id, &venv_path, &manifest.app.dependencies);
-    }
-}
-
-/// Install `deps` into an existing venv using `uv pip install`. Best-effort —
-/// logs `warn!` on failure but never panics or propagates.
-fn install_deps_into_venv(app_id: &str, venv_path: &Path, deps: &[String]) {
-    let python = venv_path.join("bin").join("python");
-    let mut cmd = Command::new("uv");
-    cmd.args(["pip", "install", "--python"]);
-    cmd.arg(&python);
-    cmd.args(deps);
-    log::info!(
-        "install[{app_id}]: installing {} dep(s): {}",
-        deps.len(),
-        deps.join(", ")
-    );
-    match cmd.status() {
-        Err(e) => log::warn!("install[{app_id}]: `uv pip install` failed to run: {e}"),
-        Ok(s) if !s.success() => log::warn!(
-            "install[{app_id}]: `uv pip install` exit {} — deps may be missing",
-            s.code().unwrap_or(-1)
+    match crate::app::python_env::ensure_app_venv(app_id, app_dir, &manifest.app.dependencies) {
+        Ok(python) => log::info!(
+            "install[{app_id}]: Python app environment ready at {}",
+            python.display()
         ),
-        Ok(_) => log::info!("install[{app_id}]: deps installed successfully"),
+        Err(e) => log::warn!(
+            "install[{app_id}]: Python app environment setup failed: {e}; app may not launch until `plexi app check {}` succeeds",
+            app_dir.display()
+        ),
     }
 }
 
@@ -995,7 +898,7 @@ mod install_tests {
             sdk_pyproject.contains(r#"requires-python = ">=3.11""#),
             "update this test when the SDK Python floor changes"
         );
-        assert_eq!(PYTHON_APP_VENV_VERSION, "3.12");
+        assert_eq!(crate::app::python_env::PYTHON_APP_VENV_VERSION, "3.12");
     }
 
     #[test]
