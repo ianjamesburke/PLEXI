@@ -449,22 +449,6 @@ mod tests {
     }
 
     #[test]
-    fn current_line_is_blank_pure_indent() {
-        assert!(current_line_is_blank("    ", 4));
-    }
-
-    #[test]
-    fn current_line_is_blank_with_content() {
-        assert!(!current_line_is_blank("    hello", 9));
-    }
-
-    #[test]
-    fn current_line_is_blank_mid_indent() {
-        // Cursor at char 2 of "    "; line still pure whitespace before cursor.
-        assert!(current_line_is_blank("    ", 2));
-    }
-
-    #[test]
     fn spaces_before_cursor_pure_four_spaces() {
         // "    " with cursor at end → 4 spaces → returns 4
         assert_eq!(spaces_before_cursor("    ", 4), 4);
@@ -605,16 +589,6 @@ fn char_to_byte(content: &str, char_idx: usize) -> usize {
         .nth(char_idx)
         .map(|(b, _)| b)
         .unwrap_or(content.len())
-}
-
-/// Returns true when every character on the current line before `char_idx`
-/// is a space or tab (i.e. the cursor is at the end of a blank-indent line).
-fn current_line_is_blank(content: &str, char_idx: usize) -> bool {
-    let byte_idx = char_to_byte(content, char_idx);
-    let line_start = content[..byte_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    content[line_start..byte_idx]
-        .chars()
-        .all(|c| c == ' ' || c == '\t')
 }
 
 /// Returns the number of leading spaces on the current line immediately before
@@ -958,60 +932,35 @@ impl App for TextEditorApp {
                         if let Some(char_idx) = cursor_char {
                             let byte_idx = char_to_byte(&self.content, char_idx);
                             let leading = leading_whitespace_at(&self.content, char_idx);
-                            // If the cursor sits at the end of a line that is pure
-                            // whitespace (blank indented line), strip that indent and
-                            // produce a bare newline — "escape" from the indent level.
-                            let line_is_blank = current_line_is_blank(&self.content, char_idx);
-                            let (insert, stripped_chars) = if line_is_blank && !leading.is_empty() {
-                                let line_start_byte = byte_idx - leading.len();
-                                let strip_len = leading.len();
-                                self.content.drain(line_start_byte..byte_idx);
-                                log::info!("TextEditorApp: Enter on blank-indent line — stripped {} spaces", strip_len);
-                                // After stripping, byte_idx is no longer valid; recompute.
-                                let stripped_byte = line_start_byte;
-                                self.content.insert_str(stripped_byte, "\n");
-                                (String::new(), strip_len)
-                            } else {
-                                (format!("\n{leading}"), 0)
-                            };
-
-                            if stripped_chars > 0 {
-                                // Cursor is now right after the inserted '\n', at char_idx - stripped_chars + 1.
-                                let new_char_idx = char_idx.saturating_sub(stripped_chars) + 1;
-                                let mut state =
-                                    egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
-                                let c = egui::text::CCursor::new(new_char_idx);
-                                state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
-                                egui::TextEdit::store_state(ui.ctx(), te_id, state);
-                                // Only one press handled when stripping; remaining handled next frame.
-                            } else {
-                                // Insert is ASCII (\n + spaces/tabs) so char count == byte count.
-                                let insert_chars = insert.chars().count();
-                                for _ in 0..enter_presses {
-                                    self.content.insert_str(byte_idx, &insert);
-                                }
-                                let new_char_idx = char_idx + insert_chars * enter_presses;
-                                let mut state =
-                                    egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
-                                let c = egui::text::CCursor::new(new_char_idx);
-                                state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
-                                egui::TextEdit::store_state(ui.ctx(), te_id, state);
+                            // Always carry the current line's indent onto the new line.
+                            let insert = format!("\n{leading}");
+                            // insert is ASCII (\n + spaces/tabs) so char count == byte count.
+                            let insert_chars = insert.chars().count();
+                            for _ in 0..enter_presses {
+                                self.content.insert_str(byte_idx, &insert);
                             }
+                            let new_char_idx = char_idx + insert_chars * enter_presses;
+                            let mut state =
+                                egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
+                            let c = egui::text::CCursor::new(new_char_idx);
+                            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
+                            egui::TextEdit::store_state(ui.ctx(), te_id, state);
                             self.last_edit = Some(Instant::now());
-                            log::info!("TextEditorApp: Enter — leading={:?} blank_line={} at char {}", leading, line_is_blank, char_idx);
+                            log::info!("TextEditorApp: Enter — leading={:?} at char {}", leading, char_idx);
                         }
                     }
 
-                    // Smart backspace: if the chars before cursor on the current line are
-                    // all spaces (1–4), delete them all in one keypress.
-                    let backspace_presses = ui.input_mut(|i| {
-                        i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
-                    });
-                    if backspace_presses > 0 {
-                        if let Some(char_idx) = cursor_char {
-                            let spaces = spaces_before_cursor(&self.content, char_idx);
-                            if spaces > 1 {
-                                // Remove the indent block; remaining presses handled by TextEdit next frame.
+                    // Smart backspace: if the line prefix up to the cursor is pure spaces
+                    // (2–4), remove the whole block in one keypress. Only consume the key
+                    // when we handle it ourselves — if we consumed it unconditionally,
+                    // single-char deletes (spaces == 0 or 1) would be silently swallowed.
+                    if let Some(char_idx) = cursor_char {
+                        let spaces = spaces_before_cursor(&self.content, char_idx);
+                        if spaces > 1 {
+                            let backspace_presses = ui.input_mut(|i| {
+                                i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+                            });
+                            if backspace_presses > 0 {
                                 let byte_end = char_to_byte(&self.content, char_idx);
                                 let byte_start = byte_end - spaces;
                                 self.content.drain(byte_start..byte_end);
@@ -1024,8 +973,8 @@ impl App for TextEditorApp {
                                 self.last_edit = Some(Instant::now());
                                 log::info!("TextEditorApp: smart backspace — removed {} spaces at char {}", spaces, char_idx);
                             }
-                            // spaces == 1 or 0: let TextEdit handle it normally (single char delete).
                         }
+                        // spaces <= 1: don't consume — TextEdit handles the delete normally.
                     }
                 }
 
