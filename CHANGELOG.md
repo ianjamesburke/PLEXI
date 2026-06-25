@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.9] — 2026-06-25
+
+### Changes
+- feat: source-build update flow, persistent compile cache, release CI
 ## [0.1.8] — 2026-06-25
 
 ### Changes
