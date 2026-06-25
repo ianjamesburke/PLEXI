@@ -14,9 +14,9 @@ pub fn spawn_update_check(cache_dir: std::path::PathBuf, tx: mpsc::Sender<String
         .spawn(move || {
             let channel = detect_channel();
             let cache_path = cache_dir.join("update_cache.json");
+            let current_raw = installed_tag_or_cargo_version(&cache_dir);
             match cached_or_fetch(&cache_path, channel) {
                 Some(latest) => {
-                    let current_raw = format!("v{}", env!("CARGO_PKG_VERSION"));
                     let current = ReleaseTag::parse(&current_raw);
                     let latest_tag = ReleaseTag::parse(&latest);
                     let newer = match (&latest_tag, &current) {
@@ -38,6 +38,20 @@ pub fn spawn_update_check(cache_dir: std::path::PathBuf, tx: mpsc::Sender<String
             }
         })
         .ok();
+}
+
+/// Read the installed release tag from `<profile>/installed_tag`, falling back
+/// to `CARGO_PKG_VERSION` for source builds that don't write the tag file.
+fn installed_tag_or_cargo_version(cache_dir: &Path) -> String {
+    let tag_path = cache_dir.join("installed_tag");
+    if let Ok(tag) = std::fs::read_to_string(&tag_path) {
+        let trimmed = tag.trim().to_string();
+        if ReleaseTag::parse(&trimmed).is_some() {
+            log::info!("update check: using installed tag from {}", tag_path.display());
+            return trimmed;
+        }
+    }
+    format!("v{}", env!("CARGO_PKG_VERSION"))
 }
 
 fn detect_channel() -> UpdateChannel {

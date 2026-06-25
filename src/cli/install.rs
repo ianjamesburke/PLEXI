@@ -512,9 +512,20 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
         "cli: self-update input channel={channel} update_channel={update_channel:?} install_target={channel}"
     );
 
-    let current_version = env!("CARGO_PKG_VERSION");
+    // Read the installed release tag if available (written by previous self-update),
+    // falling back to CARGO_PKG_VERSION for source builds.
+    let profile_dir = dirs::home_dir()
+        .unwrap_or_default()
+        .join(format!(".plexi{}", if suffix.is_empty() { String::new() } else { format!("-{channel}") }));
+    let current_version_raw = std::fs::read_to_string(profile_dir.join("installed_tag"))
+        .ok()
+        .and_then(|s| {
+            let t = s.trim().to_string();
+            release_resolver::ReleaseTag::parse(&t).map(|_| t)
+        })
+        .unwrap_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")));
     println!("Checking for updates...");
-    println!("Current: v{current_version}");
+    println!("Current: {current_version_raw}");
 
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))
@@ -523,11 +534,11 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
 
     let releases = release_resolver::fetch_releases(&agent)
         .map_err(|e| format!("error: {e}"))?;
-    let current_tag = release_resolver::ReleaseTag::parse(&format!("v{current_version}"))
-        .ok_or_else(|| format!("error: could not parse current version v{current_version}"))?;
+    let current_tag = release_resolver::ReleaseTag::parse(&current_version_raw)
+        .ok_or_else(|| format!("error: could not parse current version {current_version_raw}"))?;
     let selected = match release_resolver::resolve_best(&releases, update_channel, &current_tag) {
         Some(t) => t,
-        None => return Ok(format!("Already up to date (v{current_version}).")),
+        None => return Ok(format!("Already up to date ({current_version_raw}).")),
     };
     let tag_name = selected.raw.clone();
     let latest_version = tag_name.trim_start_matches('v').to_string();
@@ -563,7 +574,7 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
                git clone '{repo}' '{src}'\n\
              fi\n\
              git -C '{src}' checkout --force '{tag}'\n\
-             bash '{src}/scripts/install.sh' '{channel}'\n\
+             PLEXI_INSTALL_TAG='{tag}' bash '{src}/scripts/install.sh' '{channel}'\n\
              open '/Applications/{app_display_name}.app'\n",
             binary_name = binary_name,
             src = src_dir.display(),
@@ -628,6 +639,7 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
     let install = std::process::Command::new("bash")
         .arg(&install_script)
         .arg(&channel)
+        .env("PLEXI_INSTALL_TAG", &tag_name)
         .current_dir(&src_dir)
         .status()
         .map_err(|e| format!("error: failed to run install script: {e}"))?;

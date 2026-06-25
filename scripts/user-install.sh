@@ -71,11 +71,17 @@ if [[ "$CHANNEL" != "stable" ]]; then
         | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
     [[ -n "$TAGS" ]] || die "Could not list releases."
 
+    # SemVer: stable > beta > alpha for the same base version, but sort -V
+    # inverts this (prereleases sort above). Separate stable and prerelease tags,
+    # sort each group, then prefer stable over prerelease within the same base.
+    STABLE_TAGS=$(echo "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V -r)
+    PRE_TAGS=$(echo "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta)\.' | sort -V -r)
+    SORTED_TAGS=$(printf '%s\n%s' "$STABLE_TAGS" "$PRE_TAGS" | sed '/^$/d')
     TAG=""
     while IFS= read -r t; do
         [[ -n "$t" ]] || continue
         channel_accepts "$t" && { TAG="$t"; break; }
-    done <<< "$(echo "$TAGS" | sort -V -r)"
+    done <<< "$SORTED_TAGS"
     [[ -n "$TAG" ]] || die "No release found for channel '$CHANNEL'."
 
     info "Building Plexi $TAG from source (channel: $CHANNEL)..."
@@ -86,7 +92,7 @@ if [[ "$CHANNEL" != "stable" ]]; then
         git clone "https://github.com/$REPO.git" "$SRC"
     fi
     git -C "$SRC" checkout --force "$TAG"
-    bash "$SRC/scripts/install.sh" "$CHANNEL"
+    PLEXI_INSTALL_TAG="$TAG" bash "$SRC/scripts/install.sh" "$CHANNEL"
     ok "Plexi $TAG installed (channel: $CHANNEL). Run: plexi-$CHANNEL --version"
     exit 0
 fi

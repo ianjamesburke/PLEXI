@@ -295,6 +295,14 @@ install_agents() {
 
 install_agents
 
+# Record the release tag that produced this install so the updater can compare
+# against prerelease tags of the same base version. Written by self-update and
+# user-install.sh when installing from a release tag; absent for source builds.
+if [[ -n "${PLEXI_INSTALL_TAG:-}" ]]; then
+  echo "$PLEXI_INSTALL_TAG" > "$profile_dir/installed_tag"
+  echo "Release tag: $PLEXI_INSTALL_TAG"
+fi
+
 echo "Installed $app_dest"
 echo "CLI: $bin_dest"
 echo "Config dir: $profile_dir/"
