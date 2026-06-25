@@ -447,6 +447,55 @@ mod tests {
     fn slugify_empty_falls_back_to_note() {
         assert_eq!(slugify_title("---"), "note");
     }
+
+    #[test]
+    fn spaces_before_cursor_pure_four_spaces() {
+        // "    " with cursor at end → 4 spaces → returns 4
+        assert_eq!(spaces_before_cursor("    ", 4), 4);
+    }
+
+    #[test]
+    fn spaces_before_cursor_two_spaces() {
+        assert_eq!(spaces_before_cursor("  ", 2), 2);
+    }
+
+    #[test]
+    fn spaces_before_cursor_mixed_line_returns_zero() {
+        // "foo   " — prefix has content, not pure indent, so no dedent
+        assert_eq!(spaces_before_cursor("foo   ", 6), 0);
+    }
+
+    #[test]
+    fn spaces_before_cursor_after_newline() {
+        // second line is "    " pure indent
+        assert_eq!(spaces_before_cursor("line\n    ", 9), 4);
+    }
+
+    #[test]
+    fn leading_whitespace_at_first_line() {
+        let s = "    hello";
+        assert_eq!(leading_whitespace_at(s, 0), "    ");
+    }
+
+    #[test]
+    fn leading_whitespace_at_second_line() {
+        let s = "line1\n  indented";
+        // char index 6 = 'i' in "indented"
+        assert_eq!(leading_whitespace_at(s, 6), "  ");
+    }
+
+    #[test]
+    fn leading_whitespace_at_empty_line() {
+        let s = "a\n\nb";
+        assert_eq!(leading_whitespace_at(s, 2), "");
+    }
+
+    #[test]
+    fn leading_whitespace_at_mid_word() {
+        let s = "    hello world";
+        // char 8 = 'o' in "hello"; line start is col 0 with 4-space indent
+        assert_eq!(leading_whitespace_at(s, 8), "    ");
+    }
 }
 
 /// Split a note document into its raw frontmatter block (kept out of the
@@ -532,6 +581,39 @@ enum Durability {
 /// Convert a note title into a safe lowercase filename slug (no `.md` suffix).
 /// Non-alphanumeric characters become `-`; leading/trailing and consecutive
 /// dashes are collapsed; falls back to `"note"` for an all-symbol title.
+/// Converts a char index (as returned by `CCursor.index`) to a byte offset
+/// suitable for `String::insert_str`. Returns `content.len()` when out of range.
+fn char_to_byte(content: &str, char_idx: usize) -> usize {
+    content
+        .char_indices()
+        .nth(char_idx)
+        .map(|(b, _)| b)
+        .unwrap_or(content.len())
+}
+
+/// Returns the number of leading spaces on the current line immediately before
+/// `char_idx`, capped at 4. Used for smart backspace dedent.
+fn spaces_before_cursor(content: &str, char_idx: usize) -> usize {
+    let byte_idx = char_to_byte(content, char_idx);
+    let line_start = content[..byte_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let before = &content[line_start..byte_idx];
+    // Count trailing spaces (the ones immediately preceding cursor on this line).
+    let spaces = before.chars().rev().take_while(|c| *c == ' ').count();
+    // Only dedent if those spaces are ALL that's on the line prefix (pure indent).
+    if before.chars().all(|c| c == ' ') { spaces.min(4) } else { 0 }
+}
+
+/// Returns the leading whitespace (spaces/tabs) of the line that contains
+/// the char at `char_idx`. Used for auto-indent on Enter.
+fn leading_whitespace_at(content: &str, char_idx: usize) -> String {
+    let byte_idx = char_to_byte(content, char_idx);
+    let line_start = content[..byte_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    content[line_start..]
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect()
+}
+
 fn slugify_title(title: &str) -> String {
     let slug: String = title
         .chars()
@@ -814,6 +896,88 @@ impl App for TextEditorApp {
             .auto_shrink([false, false])
             .max_height(editor_height)
             .show(ui, |ui| {
+                // Intercept Tab and Enter before TextEdit consumes them for
+                // focus traversal / bare newlines respectively.
+                if ui.ctx().memory(|m| m.has_focus(te_id)) && self.find_bar.is_none() {
+                    // CCursor.index is a char index; String mutation needs byte offsets.
+                    let cursor_char = egui::TextEdit::load_state(ui.ctx(), te_id)
+                        .and_then(|s| s.cursor.char_range())
+                        .map(|r| r.primary.index);
+
+                    let tab_presses =
+                        ui.input_mut(|i| i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+                    if tab_presses > 0 {
+                        if let Some(char_idx) = cursor_char {
+                            let byte_idx = char_to_byte(&self.content, char_idx);
+                            let indent = "    ";
+                            for _ in 0..tab_presses {
+                                self.content.insert_str(byte_idx, indent);
+                            }
+                            // Inserted text is ASCII so char count == byte count.
+                            let new_char_idx = char_idx + indent.len() * tab_presses;
+                            let mut state =
+                                egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
+                            let c = egui::text::CCursor::new(new_char_idx);
+                            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
+                            egui::TextEdit::store_state(ui.ctx(), te_id, state);
+                            self.last_edit = Some(Instant::now());
+                            log::info!("TextEditorApp: Tab — inserted {} spaces at char {}", indent.len() * tab_presses, char_idx);
+                        }
+                    }
+
+                    let enter_presses = ui.input_mut(|i| {
+                        i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                    });
+                    if enter_presses > 0 {
+                        if let Some(char_idx) = cursor_char {
+                            let byte_idx = char_to_byte(&self.content, char_idx);
+                            let leading = leading_whitespace_at(&self.content, char_idx);
+                            // Always carry the current line's indent onto the new line.
+                            let insert = format!("\n{leading}");
+                            // insert is ASCII (\n + spaces/tabs) so char count == byte count.
+                            let insert_chars = insert.chars().count();
+                            for _ in 0..enter_presses {
+                                self.content.insert_str(byte_idx, &insert);
+                            }
+                            let new_char_idx = char_idx + insert_chars * enter_presses;
+                            let mut state =
+                                egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
+                            let c = egui::text::CCursor::new(new_char_idx);
+                            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
+                            egui::TextEdit::store_state(ui.ctx(), te_id, state);
+                            self.last_edit = Some(Instant::now());
+                            log::info!("TextEditorApp: Enter — leading={:?} at char {}", leading, char_idx);
+                        }
+                    }
+
+                    // Smart backspace: if the line prefix up to the cursor is pure spaces
+                    // (2–4), remove the whole block in one keypress. Only consume the key
+                    // when we handle it ourselves — if we consumed it unconditionally,
+                    // single-char deletes (spaces == 0 or 1) would be silently swallowed.
+                    if let Some(char_idx) = cursor_char {
+                        let spaces = spaces_before_cursor(&self.content, char_idx);
+                        if spaces > 1 {
+                            let backspace_presses = ui.input_mut(|i| {
+                                i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+                            });
+                            if backspace_presses > 0 {
+                                let byte_end = char_to_byte(&self.content, char_idx);
+                                let byte_start = byte_end - spaces;
+                                self.content.drain(byte_start..byte_end);
+                                let new_char_idx = char_idx - spaces;
+                                let mut state =
+                                    egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
+                                let c = egui::text::CCursor::new(new_char_idx);
+                                state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
+                                egui::TextEdit::store_state(ui.ctx(), te_id, state);
+                                self.last_edit = Some(Instant::now());
+                                log::info!("TextEditorApp: smart backspace — removed {} spaces at char {}", spaces, char_idx);
+                            }
+                        }
+                        // spaces <= 1: don't consume — TextEdit handles the delete normally.
+                    }
+                }
+
                 // egui's caret is hidden (transparent, non-blinking) and
                 // draw_text_caret paints a glyph-height replacement on top.
                 let output = ui
