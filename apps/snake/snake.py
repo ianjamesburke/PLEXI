@@ -186,8 +186,8 @@ def _draw(data: dict) -> list:
     grid_h = ROWS * cell
     commands: list = [
         CanvasRect(0, 0, sdk.canvas_width, sdk.canvas_height, "#0d0d1a"),
-        CanvasRect(ox - 2, oy - 2, grid_w + 4, grid_h + 4, "#6c7086", radius=2.0),
-        CanvasRect(ox, oy, grid_w, grid_h, "#11111b"),
+        CanvasRect(ox, oy, grid_w, grid_h, "#11111b", radius=2.0,
+                   border_color="#6c7086", border_width=2.0),
     ]
     fx, fy = data["food"]
     commands.append(
