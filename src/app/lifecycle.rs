@@ -865,10 +865,13 @@ impl PlexiApp {
                     let layout_str = spec.layout.as_deref().unwrap_or("split_h");
                     let initial_cmd = super::cmd_from_args(&spec.args);
                     if layout_str == "new_window" {
-                        // Create a new spatial grid window to the right of the
-                        // current context row instead of splitting the active pane.
-                        let ws_id = self.router.active().context_id;
-                        let active_y = self.windows[self.active_window].grid_y;
+                        // Derive context from the calling pane's window; fall back to active.
+                        let target_win_idx = spec
+                            .from_pane_id
+                            .and_then(|fid| self.find_pane_in_any_window(fid).map(|(idx, _)| idx))
+                            .unwrap_or(self.active_window);
+                        let ws_id = self.windows[target_win_idx].context_id;
+                        let active_y = self.windows[target_win_idx].grid_y;
                         let max_x = self
                             .windows
                             .iter()
@@ -876,10 +879,11 @@ impl PlexiApp {
                             .map(|w| w.grid_x)
                             .max();
                         let new_x = max_x.map(|x| x + 1).unwrap_or(1);
-                        log::info!("pane_ipc: spawn_pane terminal layout=new_window grid=({new_x},{active_y}) initial_cmd={initial_cmd:?} ephemeral={}", spec.ephemeral);
+                        log::info!("pane_ipc: spawn_pane terminal layout=new_window context={ws_id} grid=({new_x},{active_y}) initial_cmd={initial_cmd:?} ephemeral={}", spec.ephemeral);
                         self.create_page_at(
                             new_x,
                             active_y,
+                            ws_id,
                             initial_cmd.as_deref(),
                             spec.ephemeral,
                         );
@@ -1604,15 +1608,12 @@ impl PlexiApp {
                     new_ctx_id = self.router.get(self.router.len() - 1).context_id;
                 }
                 if ctx_ok && !windows.is_empty() {
-                    // When no-focus, active context is still the parent — temporarily switch
-                    // to the new context so create_page_at places windows there, then restore.
-                    let need_restore = self.router.active().context_id != new_ctx_id;
-                    if need_restore {
-                        if let Some(idx) = self.router.position(|c| c.context_id == new_ctx_id) {
-                            self.switch_workspace(idx);
-                        }
-                    }
-                    let active_y = self.windows[self.active_window].grid_y;
+                    let active_y = self
+                        .windows
+                        .iter()
+                        .find(|w| w.context_id == new_ctx_id)
+                        .map(|w| w.grid_y)
+                        .unwrap_or_else(|| self.windows[self.active_window].grid_y);
                     let mut new_x = self
                         .windows
                         .iter()
@@ -1625,13 +1626,8 @@ impl PlexiApp {
                         log::info!(
                             "pane_ipc: create_context window ctx_id={new_ctx_id} grid_x={new_x} cmd={cmd:?}"
                         );
-                        self.create_page_at(new_x, active_y, Some(cmd.as_str()), false);
+                        self.create_page_at(new_x, active_y, new_ctx_id, Some(cmd.as_str()), false);
                         new_x += 1;
-                    }
-                    if need_restore {
-                        if let Some(idx) = self.router.position(|c| c.context_id == orig_ctx_id) {
-                            self.switch_workspace(idx);
-                        }
                     }
                 }
                 // Write JSON response for callers that passed a response_file path.

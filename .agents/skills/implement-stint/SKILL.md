@@ -104,6 +104,15 @@ If that worktree is dirty, ahead, or this pane is resuming the task, enter resum
 
 ## Phase 1 - Pre-Flight
 
+**Before proposing any fix**, read the AGENTS.md for every directory the task touches. These files contain traps — patterns that look reasonable but are wrong for this codebase. Checking them first prevents pitching a solution the codebase explicitly prohibits.
+
+```bash
+# Example: task touches src/app/lifecycle.rs and src/pane_ops/workspace.rs
+cat AGENTS.md  # root — cross-cutting traps
+cat src/app/AGENTS.md 2>/dev/null || true
+cat src/pane_ops/AGENTS.md 2>/dev/null || true
+```
+
 Run from repo root:
 
 ```bash
