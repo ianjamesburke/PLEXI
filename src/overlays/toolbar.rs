@@ -60,11 +60,11 @@ impl PlexiApp {
                 }
 
                 let version_label = if self.update_available.is_some() {
-                    RichText::new(format!("\u{2191} v{}", env!("CARGO_PKG_VERSION")))
+                    RichText::new(format!("\u{2191} v{}", self.display_version))
                         .size(10.0)
                         .color(self.colors.accent)
                 } else {
-                    RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                    RichText::new(format!("v{}", self.display_version))
                         .size(10.0)
                         .color(self.colors.text_dim)
                 };

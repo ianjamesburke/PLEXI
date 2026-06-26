@@ -351,6 +351,7 @@ pub struct PlexiApp {
     update_rx: Option<std::sync::mpsc::Receiver<String>>,
     /// Latest available version string, set after the background check resolves.
     /// `None` means either the check hasn't completed or we're already current.
+    pub(crate) display_version: String,
     pub(crate) update_available: Option<String>,
     /// One-click update install state, driven by the changelog modal button.
     pub(crate) update_install_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
@@ -1198,6 +1199,7 @@ impl PlexiApp {
                     edge_pulse: None,
                     click_flash: None,
                     update_rx: Some(update_rx),
+                    display_version: read_display_version(),
                     update_available: None,
                     update_install_rx: None,
                     update_installing: false,
@@ -1444,6 +1446,7 @@ impl PlexiApp {
             edge_pulse: None,
             click_flash: None,
             update_rx: Some(update_rx),
+            display_version: read_display_version(),
             update_available: None,
             update_install_rx: None,
             update_installing: false,
@@ -1665,6 +1668,7 @@ impl PlexiApp {
                 cli_setup_check_result: None,
                 show_completions_banner: false,
                 update_rx: None,
+                display_version: read_display_version(),
                 update_available: None,
                 update_install_rx: None,
                 update_installing: false,
@@ -3763,6 +3767,17 @@ impl eframe::App for PlexiApp {
             );
         }
     }
+}
+
+fn read_display_version() -> String {
+    let tag_path = crate::config::config_dir().join("installed_tag");
+    if let Ok(tag) = std::fs::read_to_string(&tag_path) {
+        let trimmed = tag.trim().to_string();
+        if !trimmed.is_empty() {
+            return trimmed.trim_start_matches('v').to_string();
+        }
+    }
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 impl PlexiApp {
