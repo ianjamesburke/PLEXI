@@ -284,66 +284,23 @@ impl PlexiApp {
             .escape(true)
             .show_scroll_body(ctx, &self.colors.clone(), 420.0, "changelog_body", |ui| {
                 if let Some(ref latest) = self.update_available.clone() {
-                    let has_error = self.update_install_error.is_some();
-                    let frame_fill = if has_error {
-                        self.colors.danger.gamma_multiply(0.12)
-                    } else {
-                        self.colors.accent.gamma_multiply(0.15)
-                    };
-                    let frame_stroke = if has_error {
-                        self.colors.danger.gamma_multiply(0.4)
-                    } else {
-                        self.colors.accent.gamma_multiply(0.4)
-                    };
                     egui::Frame::new()
-                        .fill(frame_fill)
-                        .stroke(Stroke::new(1.0, frame_stroke))
+                        .fill(self.colors.accent.gamma_multiply(0.15))
+                        .stroke(Stroke::new(1.0, self.colors.accent.gamma_multiply(0.4)))
                         .corner_radius(R6)
                         .inner_margin(egui::Margin::symmetric(12, 8))
                         .show(ui, |ui| {
-                            if let Some(ref err) = self.update_install_error.clone() {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Update failed: {err}"))
-                                            .size(style::TEXT_HINT)
-                                            .color(self.colors.danger),
-                                    );
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            let btn = egui::Button::new(
-                                                RichText::new("Try again")
-                                                    .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_on(self.colors.danger)),
-                                            )
-                                            .fill(self.colors.danger)
-                                            .corner_radius(egui::CornerRadius::same(4));
-                                            if ui.add(btn).clicked() {
-                                                self.update_install_error = None;
-                                                self.update_installing = true;
-                                                let (tx, rx) = std::sync::mpsc::channel();
-                                                self.update_install_rx = Some(rx);
-                                                let latest_clone = latest.clone();
-                                                std::thread::spawn(move || {
-                                                    log::info!("ui: one-click update retry to v{latest_clone}");
-                                                    let result = crate::cli::install::run_self_update(true);
-                                                    let _ = tx.send(result);
-                                                });
-                                            }
-                                        },
-                                    );
-                                });
-                            } else if self.update_confirm_prompt {
+                            if self.update_confirm_prompt {
                                 ui.vertical(|ui| {
                                     ui.label(
-                                        RichText::new("Plexi will quit, build the update, and relaunch. Your workspace will be saved.")
+                                        RichText::new("Plexi will restart with the new version. Your workspace will be saved.")
                                             .size(style::TEXT_HINT)
                                             .color(self.colors.accent),
                                     );
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
                                         let confirm_btn = egui::Button::new(
-                                            RichText::new(format!("Quit & Update to v{latest}"))
+                                            RichText::new(format!("Restart to v{latest}"))
                                                 .size(style::TEXT_HINT)
                                                 .color(self.colors.text_on(self.colors.accent)),
                                         )
@@ -351,15 +308,7 @@ impl PlexiApp {
                                         .corner_radius(egui::CornerRadius::same(4));
                                         if ui.add(confirm_btn).clicked() {
                                             self.update_confirm_prompt = false;
-                                            self.update_installing = true;
-                                            let (tx, rx) = std::sync::mpsc::channel();
-                                            self.update_install_rx = Some(rx);
-                                            let latest_clone = latest.clone();
-                                            std::thread::spawn(move || {
-                                                log::info!("ui: one-click update to v{latest_clone} started");
-                                                let result = crate::cli::install::run_self_update(true);
-                                                let _ = tx.send(result);
-                                            });
+                                            self.update_quit_pending = true;
                                         }
                                         let cancel_btn = egui::Button::new(
                                             RichText::new("Cancel")
@@ -376,31 +325,23 @@ impl PlexiApp {
                                 });
                             } else {
                                 ui.horizontal(|ui| {
-                                    let label_text = if self.update_installing {
-                                        "Building update — Plexi will relaunch when ready.".to_string()
-                                    } else {
-                                        format!("v{latest} is available")
-                                    };
-                                    let label_color = self.colors.accent;
                                     ui.label(
-                                        RichText::new(label_text)
+                                        RichText::new(format!("v{latest} is ready"))
                                             .size(style::TEXT_HINT)
-                                            .color(label_color),
+                                            .color(self.colors.accent),
                                     );
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if !self.update_installing {
-                                                let btn = egui::Button::new(
-                                                    RichText::new(format!("Update to v{latest}"))
-                                                        .size(style::TEXT_HINT)
-                                                        .color(self.colors.text_on(self.colors.accent)),
-                                                )
-                                                .fill(self.colors.accent)
-                                                .corner_radius(egui::CornerRadius::same(4));
-                                                if ui.add(btn).clicked() {
-                                                    self.update_confirm_prompt = true;
-                                                }
+                                            let btn = egui::Button::new(
+                                                RichText::new("Restart to update")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(self.colors.text_on(self.colors.accent)),
+                                            )
+                                            .fill(self.colors.accent)
+                                            .corner_radius(egui::CornerRadius::same(4));
+                                            if ui.add(btn).clicked() {
+                                                self.update_confirm_prompt = true;
                                             }
                                         },
                                     );

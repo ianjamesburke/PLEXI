@@ -62,24 +62,26 @@ impl PlexiApp {
                 self.update_available = Some(version);
             }
         }
-        if let Some(ref rx) = self.update_install_rx {
-            if let Ok(result) = rx.try_recv() {
-                self.update_installing = false;
-                match result {
-                    Ok(msg) => {
-                        log::info!("ui: one-click update: {msg}");
-                        self.update_install_error = None;
-                        self.update_quit_pending = true;
-                    }
-                    Err(e) => {
-                        log::warn!("ui: one-click update failed: {e}");
-                        self.update_install_error = Some(e);
-                    }
-                }
-            }
-        }
         if self.update_quit_pending {
             self.save_workspace();
+            log::info!("ui: restarting for update");
+            if let Some(bundle) = std::env::current_exe().ok().and_then(|p| {
+                p.ancestors()
+                    .find(|a| a.extension().map_or(false, |e| e == "app"))
+                    .map(|b| b.to_path_buf())
+            }) {
+                let script = format!(
+                    "while kill -0 {} 2>/dev/null; do sleep 0.2; done; open '{}'",
+                    std::process::id(),
+                    bundle.display(),
+                );
+                let _ = std::process::Command::new("bash")
+                    .args(["-c", &script])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         self.drain_pty_events();

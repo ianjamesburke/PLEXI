@@ -474,8 +474,9 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
 ///
 /// Returns `Ok(human_readable_message)` on success and `Err(error_message)` on
 /// failure so callers can surface the outcome appropriately.
-pub fn run_self_update(from_gui: bool) -> Result<String, String> {
-    // Detect channel from binary name (mirrors config_dir_name in config.rs).
+/// CLI-only self-update: check for a newer release, build, and install inline.
+/// The GUI uses `spawn_update_check` (background build) + restart instead.
+fn run_self_update() -> Result<String, String> {
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -493,12 +494,7 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
     };
 
     log::info!("cli: self-update channel={channel} suffix={suffix}");
-    if from_gui {
-        log::info!("ui: one-click update triggered from changelog modal");
-    }
 
-    // Guard: when running inside a channel PTY, the binary name must match the
-    // PTY channel — otherwise a stray binary could update the wrong channel.
     if let Ok(pty_channel) = std::env::var("PLEXI_CHANNEL") {
         if !pty_channel.is_empty() && pty_channel != channel {
             return Err(format!(
@@ -512,8 +508,6 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
         "cli: self-update input channel={channel} update_channel={update_channel:?} install_target={channel}"
     );
 
-    // Read the installed release tag if available (written by previous self-update),
-    // falling back to CARGO_PKG_VERSION for source builds.
     let profile_dir = dirs::home_dir()
         .unwrap_or_default()
         .join(format!(".plexi{}", if suffix.is_empty() { String::new() } else { format!("-{channel}") }));
@@ -545,75 +539,11 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
     log::info!("cli: self-update selected tag={tag_name} install_target_channel={channel}");
     println!("Latest:  {tag_name}");
 
-    // Build from the persistent source clone (~/.plexi-src) so the user's local
-    // cargo cache is reused — no pre-built binaries needed on GitHub releases.
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let src_dir = std::path::PathBuf::from(&home).join(".plexi-src");
     let repo = "https://github.com/ianjamesburke/PLEXI.git";
     let install_script = src_dir.join("scripts/install.sh");
 
-    // When called from the GUI, detach a background script that waits for Plexi
-    // to quit, runs the build+install, then relaunches the app.
-    if from_gui || std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        let app_display_name = std::env::current_exe()
-            .ok()
-            .and_then(|p| {
-                p.ancestors()
-                    .find(|a| a.extension().map_or(false, |e| e == "app"))
-                    .and_then(|a| a.file_stem().map(|n| n.to_string_lossy().into_owned()))
-            })
-            .unwrap_or_else(|| "Plexi".to_string());
-
-        let pid = std::process::id();
-        let script = format!(
-            "#!/bin/bash\n\
-             set -euo pipefail\n\
-             while kill -0 {pid} 2>/dev/null; do sleep 0.3; done\n\
-             if [[ -d '{src}/.git' ]]; then\n\
-               git -C '{src}' fetch origin --tags --force\n\
-             else\n\
-               git clone '{repo}' '{src}'\n\
-             fi\n\
-             git -C '{src}' checkout --force '{tag}'\n\
-             PLEXI_INSTALL_TAG='{tag}' bash '{src}/scripts/install.sh' '{channel}'\n\
-             open '/Applications/{app_display_name}.app'\n",
-            pid = pid,
-            src = src_dir.display(),
-            tag = tag_name,
-            channel = channel,
-            repo = repo,
-            app_display_name = app_display_name,
-        );
-
-        let tmp_script = std::path::PathBuf::from(std::env::temp_dir()).join("plexi-relaunch.sh");
-        std::fs::write(&tmp_script, &script)
-            .map_err(|e| format!("error: failed to write relaunch script: {e}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp_script, std::fs::Permissions::from_mode(0o755));
-        }
-        let log_path = dirs::home_dir()
-            .unwrap_or_default()
-            .join(format!(".plexi{}", if suffix.is_empty() { String::new() } else { format!("-{channel}") }))
-            .join("update.log");
-        let log_file = std::fs::File::create(&log_path)
-            .map_err(|e| format!("error: failed to create update log: {e}"))?;
-        let log_file_err = log_file.try_clone()
-            .map_err(|e| format!("error: failed to clone log handle: {e}"))?;
-        std::process::Command::new("nohup")
-            .arg("bash")
-            .arg(&tmp_script)
-            .stdin(std::process::Stdio::null())
-            .stdout(log_file)
-            .stderr(log_file_err)
-            .spawn()
-            .map_err(|e| format!("error: failed to launch relaunch script: {e}"))?;
-        return Ok("Building update in background — Plexi will relaunch when ready.".to_string());
-    }
-
-    // CLI path: update source and build inline. Check out the exact release
-    // tag (not the channel branch) so the build matches the resolved release.
     println!("Updating source...");
     if src_dir.join(".git").is_dir() {
         let fetch = std::process::Command::new("git")
@@ -658,7 +588,7 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
 
 /// `plexi update` — thin CLI wrapper around `run_self_update`.
 pub fn self_update_cli() -> i32 {
-    match run_self_update(false) {
+    match run_self_update() {
         Ok(msg) => {
             println!("{msg}");
             0

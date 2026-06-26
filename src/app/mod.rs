@@ -353,11 +353,6 @@ pub struct PlexiApp {
     /// `None` means either the check hasn't completed or we're already current.
     pub(crate) display_version: String,
     pub(crate) update_available: Option<String>,
-    /// One-click update install state, driven by the changelog modal button.
-    pub(crate) update_install_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
-    pub(crate) update_installing: bool,
-    /// Error from the last failed one-click update attempt, shown in the modal.
-    pub(crate) update_install_error: Option<String>,
     pub(crate) update_quit_pending: bool,
     pub(crate) update_confirm_prompt: bool,
     /// Receiver for AppRequests sent over the PLEXI_SOCKET Unix socket listener.
@@ -1201,9 +1196,6 @@ impl PlexiApp {
                     update_rx: Some(update_rx),
                     display_version: read_display_version(),
                     update_available: None,
-                    update_install_rx: None,
-                    update_installing: false,
-                    update_install_error: None,
                     update_quit_pending: false,
                     update_confirm_prompt: false,
                     pane_ipc_rx,
@@ -1448,9 +1440,6 @@ impl PlexiApp {
             update_rx: Some(update_rx),
             display_version: read_display_version(),
             update_available: None,
-            update_install_rx: None,
-            update_installing: false,
-            update_install_error: None,
             update_quit_pending: false,
             update_confirm_prompt: false,
             pane_ipc_rx,
