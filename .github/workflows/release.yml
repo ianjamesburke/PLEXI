@@ -64,4 +64,8 @@ jobs:
           if [[ -n "${{ steps.classify.outputs.notes_start_tag }}" ]]; then
             ARGS+=(--notes-start-tag "${{ steps.classify.outputs.notes_start_tag }}")
           fi
+          if gh release view "$GITHUB_REF_NAME" &>/dev/null; then
+            echo "Release $GITHUB_REF_NAME already exists, skipping."
+            exit 0
+          fi
           gh release create "$GITHUB_REF_NAME" "${ARGS[@]}"
