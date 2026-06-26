@@ -742,6 +742,7 @@ impl PlexiApp {
                         ) {
                             Ok(mut process) => {
                                 process.permissions.allowed_hosts = perms.allowed_hosts;
+                                process.min_sdk_version = installed.manifest.min_sdk_version.clone();
                                 Some(process)
                             }
                             Err(e) => {
@@ -1415,6 +1416,7 @@ impl PlexiApp {
         ) {
             Ok(mut process) => {
                 process.permissions.allowed_hosts = perms.allowed_hosts;
+                process.min_sdk_version = installed.manifest.min_sdk_version.clone();
                 let group = installed.launch.join_group.clone();
                 let watch = installed.manifest.watch.unwrap_or(false);
                 log::info!(
