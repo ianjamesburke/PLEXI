@@ -160,3 +160,82 @@ fn file_browser_opens_at_context_root() {
         "file browser should open at the context root, not the focused pane CWD"
     );
 }
+
+/// When `plexi pane new --window` is called with a `from_pane_id` in a non-active
+/// context, the new window must land in that pane's context — not the active one.
+/// Regression for: `new_window` derived ws_id and grid_y from active_window instead
+/// of from the calling pane's window.
+#[test]
+fn spawn_pane_new_window_uses_caller_context_not_active() {
+    let ctx = egui::Context::default();
+    let ft = crate::platform::logging::new_frame_tick();
+    let (mut app, ipc_tx) = PlexiApp::new_for_test(ctx, ft);
+
+    // Context 1 (id=1) is created by new_for_test at grid_y=0.
+    // Add a pane to context 1's window so we have a valid from_pane_id.
+    let (tile_ctx1, pane_id_ctx1) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_ctx1);
+
+    // Add context 2 at grid_y=1 and make it the active context.
+    let ctx2_id: u64 = 2;
+    app.router.push(crate::host::context::Context {
+        name: "Context 2".into(),
+        path: std::env::temp_dir(),
+        root: None,
+        description: None,
+        context_id: ctx2_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.windows.push(crate::host::context::Window {
+        name: "Context 2".into(),
+        path: std::env::temp_dir(),
+        tree: egui_tiles::Tree::empty("ctx2_tree"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 1,
+        window_id: 10,
+        context_id: ctx2_id,
+    });
+    app.active_window = 1;
+    app.router.set_active(1);
+
+    let windows_before = app.windows.len();
+
+    // Inject a spawn-pane IPC from context 1's pane (pane_id_ctx1) with layout=new_window.
+    let _ = ipc_tx.send(crate::app_protocol::AppRequest::SpawnPane {
+        type_id: "terminal".to_string(),
+        layout: Some("new_window".to_string()),
+        args: vec![],
+        pipe_id: None,
+        from_pane_id: Some(pane_id_ctx1),
+        request_id: None,
+        response_file: None,
+        ephemeral: false,
+        cwd: None,
+        no_focus: false,
+        path: None,
+        workspace_root: None,
+        target_context: None,
+        name: None,
+    });
+    app.drain_pane_cmd_channel();
+
+    // PTY creation may fail in some CI environments; guard before asserting.
+    if app.windows.len() == windows_before {
+        return; // terminal spawn failed; skip remainder
+    }
+
+    let new_win = app.windows.last().expect("new window must exist");
+    assert_eq!(
+        new_win.context_id, 1,
+        "new window must be in context 1 (caller's context), not context 2 (active)"
+    );
+    assert_eq!(
+        new_win.grid_y, 0,
+        "new window must be in row 0 (caller's grid row), not row 1 (active context's row)"
+    );
+}

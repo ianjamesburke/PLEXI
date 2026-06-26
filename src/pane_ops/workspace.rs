@@ -681,15 +681,16 @@ impl PlexiApp {
             Some(x) => x + 1,
             None => 1,
         };
-        self.create_page_at(new_x, active_y, None, false);
+        self.create_page_at(new_x, active_y, ws_id, None, false);
     }
 
-    /// Shared creation helper: create a single-pane context at `(grid_x, grid_y)`
-    /// and make it the active context.
+    /// Shared creation helper: create a single-pane window at `(grid_x, grid_y)` in
+    /// `context_id` and make it the active window.
     pub(crate) fn create_page_at(
         &mut self,
         grid_x: u32,
         grid_y: u32,
+        context_id: u64,
         initial_cmd: Option<&str>,
         close_on_exit: bool,
     ) {
@@ -700,7 +701,7 @@ impl PlexiApp {
             .resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
-        log::info!("create_page_at({grid_x},{grid_y}): cwd={} context_root={:?} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}", cwd.display(), self.router.active().root);
+        log::info!("create_page_at({grid_x},{grid_y}): cwd={} context_id={context_id} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}", cwd.display());
         let Some((tree, panes, root_tile)) =
             self.create_single_pane_tree(Some(cwd.clone()), initial_cmd, close_on_exit)
         else {
@@ -708,7 +709,7 @@ impl PlexiApp {
             return;
         };
         let name = String::new();
-        let ctx_id = self.router.active().context_id;
+        let ctx_id = context_id;
         let win_id = self.next_window_id;
         self.next_window_id += 1;
         self.push_focus_history(old_window_id, old_focus);
