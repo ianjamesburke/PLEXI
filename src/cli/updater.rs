@@ -188,10 +188,14 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
     let log_err = log_file.try_clone()
         .map_err(|e| format!("clone log handle: {e}"))?;
 
+    let install_cmd = format!(
+        "PLEXI_INSTALL_TAG='{}' bash '{}' '{}'",
+        tag,
+        src_dir.join("scripts/install.sh").display(),
+        channel,
+    );
     let status = std::process::Command::new("bash")
-        .arg(src_dir.join("scripts/install.sh"))
-        .arg(&channel)
-        .env("PLEXI_INSTALL_TAG", tag)
+        .args(["-l", "-c", &install_cmd])
         .current_dir(&src_dir)
         .stdout(log_file)
         .stderr(log_err)
