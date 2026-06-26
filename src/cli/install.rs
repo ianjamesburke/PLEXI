@@ -564,10 +564,11 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
             })
             .unwrap_or_else(|| "Plexi".to_string());
 
+        let pid = std::process::id();
         let script = format!(
             "#!/bin/bash\n\
              set -euo pipefail\n\
-             while pgrep -x '{binary_name}' > /dev/null 2>&1; do sleep 0.3; done\n\
+             while kill -0 {pid} 2>/dev/null; do sleep 0.3; done\n\
              if [[ -d '{src}/.git' ]]; then\n\
                git -C '{src}' fetch origin --tags --force\n\
              else\n\
@@ -576,7 +577,7 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
              git -C '{src}' checkout --force '{tag}'\n\
              PLEXI_INSTALL_TAG='{tag}' bash '{src}/scripts/install.sh' '{channel}'\n\
              open '/Applications/{app_display_name}.app'\n",
-            binary_name = binary_name,
+            pid = pid,
             src = src_dir.display(),
             tag = tag_name,
             channel = channel,
@@ -592,12 +593,20 @@ pub fn run_self_update(from_gui: bool) -> Result<String, String> {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&tmp_script, std::fs::Permissions::from_mode(0o755));
         }
+        let log_path = dirs::home_dir()
+            .unwrap_or_default()
+            .join(format!(".plexi{}", if suffix.is_empty() { String::new() } else { format!("-{channel}") }))
+            .join("update.log");
+        let log_file = std::fs::File::create(&log_path)
+            .map_err(|e| format!("error: failed to create update log: {e}"))?;
+        let log_file_err = log_file.try_clone()
+            .map_err(|e| format!("error: failed to clone log handle: {e}"))?;
         std::process::Command::new("nohup")
             .arg("bash")
             .arg(&tmp_script)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(log_file)
+            .stderr(log_file_err)
             .spawn()
             .map_err(|e| format!("error: failed to launch relaunch script: {e}"))?;
         return Ok("Building update in background — Plexi will relaunch when ready.".to_string());
