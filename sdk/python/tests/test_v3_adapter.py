@@ -233,3 +233,76 @@ def test_view_lifecycle_resets_view_guard(
     call_lifecycle("view", json.dumps({"state": {}}))
 
     assert _v3_state._in_view is False
+
+
+# ── Canvas hit_region tests ───────────────────────────────────────────────
+
+
+def test_canvas_rect_hit_region_serialization() -> None:
+    from plexi_sdk.ui import CanvasRect
+
+    rect = CanvasRect(10, 20, 100, 50, fill="#ff0000", hit_region="cell-3-4")
+    cmd = rect.to_command()
+    assert cmd["hit_region"] == "cell-3-4"
+
+    rect_no_region = CanvasRect(0, 0, 10, 10, fill="#000000")
+    cmd2 = rect_no_region.to_command()
+    assert "hit_region" not in cmd2
+
+
+def test_canvas_text_hit_region_serialization() -> None:
+    from plexi_sdk.ui import CanvasText
+
+    text = CanvasText(5, 10, "hello", hit_region="label-1")
+    cmd = text.to_command()
+    assert cmd["hit_region"] == "label-1"
+
+    text_no_region = CanvasText(0, 0, "bye")
+    cmd2 = text_no_region.to_command()
+    assert "hit_region" not in cmd2
+
+
+def test_canvas_button_decomposition() -> None:
+    from plexi_sdk.ui import CanvasButton
+
+    btn = CanvasButton(x=10, y=20, width=100, height=40, label="OK", region="btn-ok")
+    cmds = btn.to_commands()
+    assert len(cmds) == 2
+    rect_cmd = cmds[0].to_command()
+    text_cmd = cmds[1].to_command()
+    assert rect_cmd["type"] == "rect"
+    assert rect_cmd["hit_region"] == "btn-ok"
+    assert text_cmd["type"] == "text"
+    assert text_cmd["hit_region"] == "btn-ok"
+    assert text_cmd["text"] == "OK"
+    assert text_cmd["align"] == "center_center"
+    # Text is centered in the rect
+    assert text_cmd["x"] == 10 + 100 / 2
+    assert text_cmd["y"] == 20 + 40 / 2
+
+
+def test_canvas_button_in_canvas_to_node() -> None:
+    from plexi_sdk.ui import Canvas, CanvasButton, CanvasRect
+
+    btn = CanvasButton(x=0, y=0, width=80, height=30, label="Go", region="go")
+    rect = CanvasRect(0, 0, 10, 10, fill="#000")
+    canvas = Canvas(commands=[rect, btn])
+    node = canvas.to_node()
+    # rect produces 1 command, button produces 2
+    assert len(node["commands"]) == 3
+    assert node["commands"][0]["type"] == "rect"
+    assert "hit_region" not in node["commands"][0]
+    assert node["commands"][1]["type"] == "rect"
+    assert node["commands"][1]["hit_region"] == "go"
+    assert node["commands"][2]["type"] == "text"
+    assert node["commands"][2]["hit_region"] == "go"
+
+
+def test_mouse_event_region_field() -> None:
+    from plexi_sdk.events import MouseEvent
+
+    ev = MouseEvent(x=10, y=20, button="primary", pressed=True, region="btn-ok")
+    assert ev.region == "btn-ok"
+
+    ev_no_region = MouseEvent(x=0, y=0)
+    assert ev_no_region.region is None

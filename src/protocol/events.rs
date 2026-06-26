@@ -73,7 +73,13 @@ pub enum PlexiEvent {
         pressed: bool,
     },
     /// Mouse click at logical coordinates within the app surface.
-    Click { x: f32, y: f32, button: MouseButton },
+    Click {
+        x: f32,
+        y: f32,
+        button: MouseButton,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<String>,
+    },
     /// Pointer button pressed (fires on the frame the button goes down).
     MouseDown {
         x: f32,

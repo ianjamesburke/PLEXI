@@ -2227,6 +2227,21 @@ impl App for ProcessApp {
                 let primary_up = mouse_response.clicked() || mouse_response.drag_stopped();
                 let secondary_up = mouse_response.secondary_clicked()
                     || mouse_response.drag_stopped_by(egui::PointerButton::Secondary);
+                // Resolve canvas hit region: iterate in reverse (last-drawn wins)
+                let hit_region = self
+                    .render_session
+                    .canvas_hit_regions
+                    .iter()
+                    .rev()
+                    .find(|(rect, _)| rect.contains(pos))
+                    .map(|(_, id)| id.clone());
+                if hit_region.is_some() {
+                    log::info!(
+                        "app::{}: click resolved to canvas hit region {:?}",
+                        self.type_id,
+                        hit_region
+                    );
+                }
                 if primary_up {
                     self.send_event(&PlexiEvent::MouseUp {
                         x,
@@ -2238,6 +2253,7 @@ impl App for ProcessApp {
                         x,
                         y,
                         button: crate::app_protocol::MouseButton::Primary,
+                        region: hit_region.clone(),
                     });
                     self.mark_render_needed("mouse_up");
                     needs_click_repaint = true;
@@ -2253,6 +2269,7 @@ impl App for ProcessApp {
                         x,
                         y,
                         button: crate::app_protocol::MouseButton::Secondary,
+                        region: hit_region.clone(),
                     });
                     self.mark_render_needed("mouse_up");
                     needs_click_repaint = true;
