@@ -437,6 +437,7 @@ class CanvasRect:
     radius: float = 0.0
     border_color: Optional[str] = None
     border_width: float = 1.0
+    hit_region: Optional[str] = None
 
     def to_command(self) -> dict:
         cmd = {"type": "rect", "x": self.x, "y": self.y,
@@ -445,6 +446,8 @@ class CanvasRect:
         if self.border_color is not None:
             cmd["stroke"] = self.border_color
             cmd["stroke_width"] = self.border_width
+        if self.hit_region is not None:
+            cmd["hit_region"] = self.hit_region
         return cmd
 
 
@@ -484,13 +487,53 @@ class CanvasText:
     color: str = "#ffffff"
     bold: bool = False
     align: str = "left_top"
+    hit_region: Optional[str] = None
 
     def to_command(self) -> dict:
-        return {"type": "text", "x": self.x, "y": self.y,
-                "text": self.text, "size": self.size,
-                "color": self.color, "bold": self.bold,
-                "align": self.align, "monospace": False,
-                "max_width": None, "elide": True, "selectable": False}
+        cmd = {"type": "text", "x": self.x, "y": self.y,
+               "text": self.text, "size": self.size,
+               "color": self.color, "bold": self.bold,
+               "align": self.align, "monospace": False,
+               "max_width": None, "elide": True, "selectable": False}
+        if self.hit_region is not None:
+            cmd["hit_region"] = self.hit_region
+        return cmd
+
+
+@dataclass
+class CanvasButton:
+    """Convenience primitive: a clickable button on a Canvas.
+
+    Decomposes into a CanvasRect + CanvasText with a shared hit_region.
+    Use ``to_commands()`` (plural) to get the list of underlying primitives.
+    """
+
+    x: float
+    y: float
+    width: float
+    height: float
+    label: str
+    region: str
+    fill: Optional[str] = None
+    text_color: Optional[str] = None
+    text_size: float = 13.0
+    bold: bool = False
+    radius: float = 4.0
+    border_color: Optional[str] = None
+    border_width: float = 0.0
+
+    def to_commands(self) -> list:
+        """Decompose into CanvasRect + CanvasText with shared hit_region."""
+        return [
+            CanvasRect(self.x, self.y, self.width, self.height,
+                       fill=self.fill or "#333333", radius=self.radius,
+                       border_color=self.border_color, border_width=self.border_width,
+                       hit_region=self.region),
+            CanvasText(self.x + self.width / 2, self.y + self.height / 2,
+                       self.label, size=self.text_size,
+                       color=self.text_color or "#ffffff", bold=self.bold,
+                       align="center_center", hit_region=self.region),
+        ]
 
 
 class Canvas(Component):
@@ -531,7 +574,15 @@ class Canvas(Component):
             "width": self.width,
             "height": self.height,
             "grow": self.grow,
-            "commands": [c.to_command() for c in self.commands],
+            "commands": [
+                cmd
+                for c in self.commands
+                for cmd in (
+                    [sub.to_command() for sub in c.to_commands()]
+                    if hasattr(c, "to_commands")
+                    else [c.to_command()]
+                )
+            ],
         }
 
 
@@ -2196,7 +2247,7 @@ __all__ = [
     "Component", "Column", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
     "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
-    "CanvasText", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
+    "CanvasText", "CanvasButton", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
     "ListItem", "Row", "TextEdit", "ChatBubble", "Markdown",
     "SelectList", "FormField",
     "InfoTable", "ButtonRow",

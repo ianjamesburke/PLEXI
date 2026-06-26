@@ -15,28 +15,23 @@ from pathlib import Path
 _DISTRIBUTION_NAME = "plexi-sdk"
 
 
-def _read_from_pyproject() -> str:
+_FALLBACK_VERSION = "0.1.13"
+
+
+def _read_from_pyproject() -> str | None:
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     if not pyproject.is_file():
-        raise RuntimeError(
-            f"cannot resolve SDK version: {_DISTRIBUTION_NAME} is not installed and "
-            f"{pyproject} does not exist"
-        )
+        return None
     with pyproject.open("rb") as f:
         data = tomllib.load(f)
-    try:
-        return str(data["project"]["version"])
-    except KeyError as e:
-        raise RuntimeError(
-            f"cannot resolve SDK version: {pyproject} is missing [project].version"
-        ) from e
+    return str(data.get("project", {}).get("version", _FALLBACK_VERSION))
 
 
 def _resolve_version() -> str:
     try:
         return _dist_version(_DISTRIBUTION_NAME)
     except PackageNotFoundError:
-        return _read_from_pyproject()
+        return _read_from_pyproject() or _FALLBACK_VERSION
 
 
 __version__ = _resolve_version()

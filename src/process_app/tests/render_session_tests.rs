@@ -60,6 +60,7 @@ fn render_session_pgap_frame_stable_output_no_spurious_events() {
             elide: true,
             selectable: false,
             max_lines,
+            hit_region: None,
         }
     };
 

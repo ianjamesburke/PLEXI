@@ -315,7 +315,8 @@ class V3AppRuntime:
         x = float(ev.get("x", 0.0))
         y = float(ev.get("y", 0.0))
         button = ev.get("button", "primary")
-        self._dispatch(events.MouseEvent(x=x, y=y, button=button, pressed=True))
+        region = ev.get("region")
+        self._dispatch(events.MouseEvent(x=x, y=y, button=button, pressed=True, region=region))
 
     def _handle_resize(self, ev: dict) -> None:
         w = float(ev.get("width", 0.0))

@@ -40,6 +40,10 @@ pub(crate) struct RenderSession {
     /// Zero until the first frame containing a Canvas node has been rendered.
     pub(crate) last_canvas_width: f32,
     pub(crate) last_canvas_height: f32,
+    /// Hit regions collected during the last render pass, in paint order.
+    /// Each entry is (bounding_rect_in_screen_coords, region_id).
+    /// Resolved in reverse for z-order (last-drawn wins) during click handling.
+    pub(crate) canvas_hit_regions: Vec<(egui::Rect, String)>,
 }
 
 impl RenderSession {
@@ -56,6 +60,7 @@ impl RenderSession {
             text_edit_focus_ctx: crate::render::components::TextEditFocusCtx::new(),
             last_canvas_width: 0.0,
             last_canvas_height: 0.0,
+            canvas_hit_regions: Vec::new(),
         }
     }
 
@@ -93,6 +98,7 @@ impl RenderSession {
         // ── Pass 1: draw commands ────────────────────────────────────────────
         let mut frame_canvas_w = 0.0f32;
         let mut frame_canvas_h = 0.0f32;
+        self.canvas_hit_regions.clear();
         crate::process_app::render::render_draw_commands(
             ui,
             pane_rect,
@@ -110,6 +116,7 @@ impl RenderSession {
             &mut self.text_edit_focus_ctx,
             &mut frame_canvas_w,
             &mut frame_canvas_h,
+            &mut self.canvas_hit_regions,
         );
         if frame_canvas_w > 0.0 || frame_canvas_h > 0.0 {
             self.last_canvas_width = frame_canvas_w;

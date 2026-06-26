@@ -46,6 +46,8 @@ pub(crate) struct ComponentTreeResult {
     /// Actual rendered canvas dimensions (0×0 if tree had no Canvas node).
     pub(crate) canvas_width: f32,
     pub(crate) canvas_height: f32,
+    /// Hit regions collected from Canvas nodes during rendering.
+    pub(crate) hit_regions: Vec<(egui::Rect, String)>,
 }
 
 /// Focus and styling context for `UiNode::TextEdit` nodes within a component
@@ -113,6 +115,7 @@ pub(crate) fn render_component_tree(
 ) -> ComponentTreeResult {
     let mut canvas_width = 0.0f32;
     let mut canvas_height = 0.0f32;
+    let mut hit_regions: Vec<(egui::Rect, String)> = Vec::new();
     let events = render_component_tree_inner(
         ui,
         node,
@@ -122,11 +125,13 @@ pub(crate) fn render_component_tree(
         raw_caches,
         &mut canvas_width,
         &mut canvas_height,
+        &mut hit_regions,
     );
     ComponentTreeResult {
         events,
         canvas_width,
         canvas_height,
+        hit_regions,
     }
 }
 
@@ -139,6 +144,7 @@ fn render_component_tree_inner(
     raw_caches: &mut RawNodeCaches<'_>,
     canvas_w: &mut f32,
     canvas_h: &mut f32,
+    hit_regions: &mut Vec<(egui::Rect, String)>,
 ) -> Vec<ComponentEventPayload> {
     let mut events: Vec<ComponentEventPayload> = Vec::new();
 
@@ -169,6 +175,7 @@ fn render_component_tree_inner(
                         raw_caches,
                         canvas_w,
                         canvas_h,
+                        hit_regions,
                     ));
                 });
         }
@@ -189,6 +196,7 @@ fn render_component_tree_inner(
                     raw_caches,
                     canvas_w,
                     canvas_h,
+                    hit_regions,
                 ));
             });
         }
@@ -205,6 +213,7 @@ fn render_component_tree_inner(
                     raw_caches,
                     canvas_w,
                     canvas_h,
+                    hit_regions,
                 ));
             }
         }
@@ -288,6 +297,7 @@ fn render_component_tree_inner(
                     raw_caches,
                     canvas_w,
                     canvas_h,
+                    hit_regions,
                 );
                 // Bubble child events up.
                 (child_evts, ui.min_rect())
@@ -335,6 +345,7 @@ fn render_component_tree_inner(
                 raw_caches,
                 canvas_w,
                 canvas_h,
+                hit_regions,
             ));
         }
 
@@ -373,6 +384,7 @@ fn render_component_tree_inner(
                 &mut raw_focus_ctx,
                 &mut 0.0f32,
                 &mut 0.0f32,
+                &mut Vec::new(),
             );
             // Convert any ComponentEvent payloads back from PlexiEvent (unlikely
             // from a Raw draw command, but keep the pipeline consistent).
@@ -416,7 +428,7 @@ fn render_component_tree_inner(
             *canvas_h = node_canvas_h;
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(node_canvas_w, node_canvas_h),
-                egui::Sense::hover(),
+                egui::Sense::click(),
             );
             let mut raw_events: Vec<crate::app_protocol::PlexiEvent> = Vec::new();
             let mut raw_focus_ctx = TextEditFocusCtx::new();
@@ -437,6 +449,7 @@ fn render_component_tree_inner(
                 &mut raw_focus_ctx,
                 &mut 0.0f32,
                 &mut 0.0f32,
+                hit_regions,
             );
             for evt in raw_events {
                 if let crate::app_protocol::PlexiEvent::ComponentEvent {
@@ -783,6 +796,7 @@ fn render_component_tree_inner(
                         raw_caches,
                         canvas_w,
                         canvas_h,
+                        hit_regions,
                     ));
                 });
         }
@@ -1115,6 +1129,7 @@ fn render_component_tree_inner(
                             raw_caches,
                             canvas_w,
                             canvas_h,
+                            hit_regions,
                         ));
                     }
                 });
@@ -1334,6 +1349,7 @@ fn render_vertical_children(
     raw_caches: &mut RawNodeCaches<'_>,
     canvas_w: &mut f32,
     canvas_h: &mut f32,
+    hit_regions: &mut Vec<(egui::Rect, String)>,
 ) -> Vec<ComponentEventPayload> {
     let mut events = Vec::new();
     if children.is_empty() {
@@ -1383,6 +1399,7 @@ fn render_vertical_children(
                     raw_caches,
                     canvas_w,
                     canvas_h,
+                    hit_regions,
                 ));
             });
         } else {
@@ -1395,6 +1412,7 @@ fn render_vertical_children(
                 raw_caches,
                 canvas_w,
                 canvas_h,
+                hit_regions,
             ));
         }
     }
@@ -1413,6 +1431,7 @@ fn render_stack(
     raw_caches: &mut RawNodeCaches<'_>,
     canvas_w: &mut f32,
     canvas_h: &mut f32,
+    hit_regions: &mut Vec<(egui::Rect, String)>,
 ) -> Vec<ComponentEventPayload> {
     let mut events = Vec::new();
     match direction {
@@ -1431,6 +1450,7 @@ fn render_stack(
                         raw_caches,
                         canvas_w,
                         canvas_h,
+                        hit_regions,
                     ));
                 }
             });
@@ -1496,6 +1516,7 @@ fn render_stack(
                         raw_caches,
                         canvas_w,
                         canvas_h,
+                        hit_regions,
                     ));
                 });
                 for (_, inner) in &pinned_bottom {
@@ -1508,6 +1529,7 @@ fn render_stack(
                         raw_caches,
                         canvas_w,
                         canvas_h,
+                        hit_regions,
                     ));
                 }
                 log::trace!(
@@ -1525,6 +1547,7 @@ fn render_stack(
                     raw_caches,
                     canvas_w,
                     canvas_h,
+                    hit_regions,
                 ));
             }
         }

@@ -383,6 +383,7 @@ mod tests {
                 glow_color: None,
                 glow_radius: 0.0,
                 gradient: None,
+                hit_region: None,
             },
             // 1. Horizontal gradient fill.
             RenderCommand::Rect {
@@ -401,6 +402,7 @@ mod tests {
                     to: "#89b4fa".to_string(),
                     dir: GradientDir::Horizontal,
                 }),
+                hit_region: None,
             },
             // 2. Glow + stroke rect.
             RenderCommand::Rect {
@@ -415,6 +417,7 @@ mod tests {
                 glow_color: Some("#a6e3a1".to_string()),
                 glow_radius: 18.0,
                 gradient: None,
+                hit_region: None,
             },
             // 3. Glow + stroke circle.
             RenderCommand::Circle {
@@ -473,6 +476,7 @@ mod tests {
                     &mut te_focus,
                     &mut canvas_width,
                     &mut canvas_height,
+                    &mut Vec::new(),
                 );
             });
         harness.run();

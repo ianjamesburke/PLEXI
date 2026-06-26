@@ -360,6 +360,7 @@ fn render_commands_to_png(
                     &mut te_focus_ctx,
                     &mut 0.0f32,
                     &mut 0.0f32,
+                    &mut Vec::new(),
                 );
             });
     });

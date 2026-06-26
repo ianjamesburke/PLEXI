@@ -27,6 +27,7 @@ class MouseEvent:
     pressed: bool = False
     scroll_x: float = 0.0
     scroll_y: float = 0.0
+    region: Optional[str] = None
 
 
 @dataclass

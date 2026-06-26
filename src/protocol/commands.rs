@@ -148,6 +148,8 @@ pub enum RenderCommand {
         glow_radius: f32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gradient: Option<Gradient>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hit_region: Option<String>,
     },
     /// Draw text at a position.
     ///
@@ -187,6 +189,8 @@ pub enum RenderCommand {
         selectable: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_lines: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hit_region: Option<String>,
     },
     /// Draw a line segment.
     Line {

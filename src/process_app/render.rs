@@ -50,6 +50,7 @@ pub(crate) fn render_draw_commands(
     text_edit_focus_ctx: &mut crate::render::components::TextEditFocusCtx,
     canvas_width: &mut f32,
     canvas_height: &mut f32,
+    hit_regions: &mut Vec<(egui::Rect, String)>,
 ) {
     let origin = pane_rect.min;
 
@@ -92,6 +93,7 @@ pub(crate) fn render_draw_commands(
                 glow_color,
                 glow_radius,
                 gradient,
+                hit_region,
             } => {
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
@@ -124,6 +126,10 @@ pub(crate) fn render_draw_commands(
                         );
                     }
                 }
+                // 4. Collect hit region (paint-order — last-drawn wins)
+                if let Some(region_id) = hit_region {
+                    hit_regions.push((rect, region_id.clone()));
+                }
             }
 
             RenderCommand::Text {
@@ -139,6 +145,7 @@ pub(crate) fn render_draw_commands(
                 elide,
                 selectable,
                 max_lines,
+                hit_region,
             } => {
                 let color = parse_color(color).unwrap_or(colors.text_primary);
                 let family = font_family_for_text(*monospace);
@@ -299,6 +306,26 @@ pub(crate) fn render_draw_commands(
                             color,
                         );
                     }
+                }
+                // Collect hit region for text (paint-order — last-drawn wins)
+                if let Some(region_id) = hit_region {
+                    let galley = ui.fonts(|f| {
+                        f.layout_no_wrap(display_text.to_string(), font_id, color)
+                    });
+                    let sz = galley.size();
+                    let top_left = match anchor {
+                        egui::Align2::CENTER_CENTER => {
+                            egui::pos2(pos.x - sz.x * 0.5, pos.y - sz.y * 0.5)
+                        }
+                        egui::Align2::CENTER_TOP => egui::pos2(pos.x - sz.x * 0.5, pos.y),
+                        egui::Align2::RIGHT_TOP => egui::pos2(pos.x - sz.x, pos.y),
+                        egui::Align2::RIGHT_CENTER => {
+                            egui::pos2(pos.x - sz.x, pos.y - sz.y * 0.5)
+                        }
+                        egui::Align2::LEFT_CENTER => egui::pos2(pos.x, pos.y - sz.y * 0.5),
+                        _ => pos,
+                    };
+                    hit_regions.push((egui::Rect::from_min_size(top_left, sz), region_id.clone()));
                 }
             }
 
@@ -1252,6 +1279,7 @@ pub(crate) fn render_draw_commands(
                 );
                 *canvas_width = result.canvas_width;
                 *canvas_height = result.canvas_height;
+                hit_regions.extend(result.hit_regions);
                 for evt in result.events {
                     log::info!(
                         "render: ComponentEvent node_id={} event_type={}",
