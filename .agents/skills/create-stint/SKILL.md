@@ -202,6 +202,14 @@ Run `stint check` once at the end of the session, not after every individual tas
 stint check 2>&1
 ```
 
+Then confirm each new task is visible to stint:
+
+```bash
+stint list 2>&1 | grep "<NNNN>"
+```
+
+If a task is missing from `stint list`, the file landed in the wrong place. Find it with `find . -name "<NNNN>-*.md"`, move it to `.stint/tasks/`, and re-run validation.
+
 Fix any errors before returning.
 
 ---
