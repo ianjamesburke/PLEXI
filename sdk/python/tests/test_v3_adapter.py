@@ -141,6 +141,27 @@ def test_ui_tree_serializes_canvas_commands() -> None:
     ]
 
 
+def test_canvas_rect_border_serializes_stroke() -> None:
+    tree = _encode_uitree(
+        Canvas(
+            [
+                CanvasRect(0.0, 0.0, 10.0, 10.0, "#11111b",
+                           border_color="#6c7086", border_width=2.0),
+            ],
+        )
+    )
+    cmd = tree["nodes"][0]["data"]["commands"][0]
+    assert cmd["stroke"] == "#6c7086"
+    assert cmd["stroke_width"] == 2.0
+
+
+def test_canvas_rect_without_border_omits_stroke() -> None:
+    tree = _encode_uitree(Canvas([CanvasRect(0.0, 0.0, 10.0, 10.0, "#11111b")]))
+    cmd = tree["nodes"][0]["data"]["commands"][0]
+    assert "stroke" not in cmd
+    assert "stroke_width" not in cmd
+
+
 def test_effects_reject_unknown_dataclass() -> None:
     @dataclass
     class NotAnEffect:

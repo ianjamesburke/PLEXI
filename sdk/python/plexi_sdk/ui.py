@@ -435,11 +435,17 @@ class CanvasRect:
     height: float
     fill: str
     radius: float = 0.0
+    border_color: Optional[str] = None
+    border_width: float = 1.0
 
     def to_command(self) -> dict:
-        return {"type": "rect", "x": self.x, "y": self.y,
-                "w": self.width, "h": self.height,
-                "fill": self.fill, "radius": self.radius}
+        cmd = {"type": "rect", "x": self.x, "y": self.y,
+               "w": self.width, "h": self.height,
+               "fill": self.fill, "radius": self.radius}
+        if self.border_color is not None:
+            cmd["stroke"] = self.border_color
+            cmd["stroke_width"] = self.border_width
+        return cmd
 
 
 @dataclass
@@ -1237,15 +1243,9 @@ class Card(Component):
         return total + 2 * self.padding
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        ctx.rect(x, y, w, h, self.background or theme.surface, radius=self.radius)
         border_color = theme.highlight if self.border == "__theme__" else self.border
-        if border_color:
-            # Top + bottom + left + right 1px strokes. Drawn as four thin
-            # rects because `ctx.rect` doesn't support a separate stroke.
-            ctx.rect(x, y, w, 1.0, border_color)
-            ctx.rect(x, y + h - 1.0, w, 1.0, border_color)
-            ctx.rect(x, y, 1.0, h, border_color)
-            ctx.rect(x + w - 1.0, y, 1.0, h, border_color)
+        ctx.rect(x, y, w, h, self.background or theme.surface, radius=self.radius,
+                 stroke=border_color or None, stroke_width=1.0)
         inner_x = x + self.padding
         inner_y = y + self.padding
         inner_w = w - 2 * self.padding
@@ -1754,14 +1754,9 @@ class InfoTable(Component):
         return self.ROW_H * len(self.rows)
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        # Background + border
         background = self.background or theme.surface
         border = self.border or theme.highlight
-        ctx.rect(x, y, w, h, background, radius=self.radius)
-        ctx.rect(x, y, w, 1.0, border)
-        ctx.rect(x, y + h - 1.0, w, 1.0, border)
-        ctx.rect(x, y, 1.0, h, border)
-        ctx.rect(x + w - 1.0, y, 1.0, h, border)
+        ctx.rect(x, y, w, h, background, radius=self.radius, stroke=border, stroke_width=1.0)
 
         val_x = x + self.PAD_H + self.key_width + self.PAD_H
         val_w = w - self.PAD_H - self.key_width - self.PAD_H * 2

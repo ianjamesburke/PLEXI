@@ -120,7 +120,7 @@ pub(crate) fn render_draw_commands(
                             rect,
                             *radius,
                             egui::Stroke::new(*stroke_width, stroke_color),
-                            egui::StrokeKind::Middle,
+                            egui::StrokeKind::Inside,
                         );
                     }
                 }
