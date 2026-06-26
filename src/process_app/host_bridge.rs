@@ -9,10 +9,12 @@ impl ProcessApp {
     /// that require UI-thread context (font metrics, clipboard, repaint).
     pub(crate) fn handle_control_command(&mut self, ui: &mut egui::Ui, cmd: ControlCommand) {
         match cmd {
-            ControlCommand::Ready { sdk, features_used } => {
-                self.sdk = Some(sdk);
-                self.features_used = features_used;
-                self.runtime.mark_ready();
+            ControlCommand::Ready {
+                sdk,
+                protocol_version,
+                features_used,
+            } => {
+                self.on_ready(sdk, protocol_version, features_used);
                 ui.ctx().request_repaint();
             }
             ControlCommand::FrameDone { frame_id: done_id } => {

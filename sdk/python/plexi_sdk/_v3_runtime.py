@@ -148,6 +148,7 @@ class V3AppRuntime:
         _emit({
             "type": "ready",
             "sdk": sdk.SDK_ID,
+            "protocol_version": sdk.PROTOCOL_VERSION,
             "features_used": [],
         })
 

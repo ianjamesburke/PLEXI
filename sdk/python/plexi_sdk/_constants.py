@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from ._theme import _DEFAULTS as _TD
 
-# ── SDK version (single source of truth) ──────────────────────────────────────
-_SDK_VERSION = "0.5.0"
-
 # ── Font sizes (float, points) ────────────────────────────────────────────────
 TITLE      = 22.0
 HEADING    = 18.0

@@ -1544,6 +1544,11 @@ pub enum ControlCommand {
     Ready {
         #[serde(default)]
         sdk: String,
+        /// Wire protocol version the app was built against (e.g. `"pgap/3"`).
+        /// Lets the host know which protocol features the app may use. Empty
+        /// when an older SDK omits it.
+        #[serde(default)]
+        protocol_version: String,
         #[serde(default)]
         features_used: Vec<String>,
     },
