@@ -35,6 +35,67 @@ use runtime_state::{FrameDoneOutcome, PgapRuntime, RenderPoll};
 pub(crate) use scheduler::RENDER_IN_FLIGHT_TIMEOUT;
 pub(crate) use transport::StdinItem;
 
+/// Check a manifest `min_sdk_version` against the SDK version reported in the
+/// ready handshake. `reported_sdk` is the handshake `sdk` string, e.g.
+/// `"plexi-sdk-py/0.1.13"`; the version after the last `/` is parsed.
+///
+/// Pure and fully testable. Returns `Ok(())` when the running SDK satisfies the
+/// requirement, or `Err(message)` with a user-facing explanation when it does
+/// not (running SDK too old, or either version string is malformed — never a
+/// silent pass).
+fn check_sdk_gate(min: &str, reported_sdk: &str) -> Result<(), String> {
+    use crate::app::host_version::parse_version;
+
+    let Some(min_v) = parse_version(min) else {
+        return Err(format!(
+            "manifest [app].min_sdk_version = \"{min}\" is not a valid major.minor.patch version"
+        ));
+    };
+    let reported = reported_sdk.rsplit('/').next().unwrap_or("");
+    let Some(sdk_v) = parse_version(reported) else {
+        return Err(format!(
+            "could not parse SDK version from ready handshake (sdk = \"{reported_sdk}\"); \
+             this app requires SDK >= {min}"
+        ));
+    };
+    if sdk_v < min_v {
+        return Err(format!(
+            "this app requires Plexi SDK >= {min}, but the running SDK is {reported}. \
+             Update the Plexi SDK to run it."
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod sdk_gate_tests {
+    use super::check_sdk_gate;
+
+    #[test]
+    fn passes_when_sdk_at_or_above_min() {
+        assert!(check_sdk_gate("0.1.13", "plexi-sdk-py/0.1.13").is_ok());
+        assert!(check_sdk_gate("0.1.0", "plexi-sdk-py/0.1.13").is_ok());
+        assert!(check_sdk_gate("0.1.13", "plexi-sdk-py/0.2.0").is_ok());
+    }
+
+    #[test]
+    fn rejects_when_sdk_older_than_min() {
+        let err = check_sdk_gate("0.2.0", "plexi-sdk-py/0.1.13").unwrap_err();
+        assert!(err.contains(">= 0.2.0"), "message: {err}");
+        assert!(err.contains("0.1.13"), "message: {err}");
+    }
+
+    #[test]
+    fn rejects_malformed_min() {
+        assert!(check_sdk_gate("not-a-version", "plexi-sdk-py/0.1.13").is_err());
+    }
+
+    #[test]
+    fn rejects_unparseable_handshake_version() {
+        assert!(check_sdk_gate("0.1.0", "garbage").is_err());
+    }
+}
+
 fn channel_from_config_dir(config_dir: &Path) -> Option<String> {
     config_dir
         .file_name()
@@ -169,7 +230,12 @@ pub struct ProcessApp {
     pub(crate) pending_async_completions: usize,
     idle_render_poll_logged: bool,
     sdk: Option<String>,
+    /// Wire protocol version reported in the ready handshake (e.g. `"pgap/3"`).
+    protocol_version: Option<String>,
     features_used: Vec<String>,
+    /// Minimum SDK version this app requires (manifest `[app].min_sdk_version`).
+    /// `None` → no gate. Checked against the SDK version in the ready handshake.
+    pub(crate) min_sdk_version: Option<String>,
     /// workspace_root sent in Init — scopes all SecretGet calls.
     pub(crate) workspace_root: PathBuf,
     /// Directory containing the app's entry file — used to resolve relative
@@ -646,7 +712,9 @@ impl ProcessApp {
             pending_async_completions: 0,
             idle_render_poll_logged: false,
             sdk: None,
+            protocol_version: None,
             features_used: Vec::new(),
+            min_sdk_version: None,
             workspace_root,
             app_dir: bin_path
                 .parent()
@@ -819,7 +887,9 @@ impl ProcessApp {
             pending_async_completions: 0,
             idle_render_poll_logged: false,
             sdk: None,
+            protocol_version: None,
             features_used: Vec::new(),
+            min_sdk_version: None,
             workspace_root: std::env::temp_dir(),
             app_dir: std::env::temp_dir(),
             permissions,
@@ -1411,6 +1481,39 @@ impl ProcessApp {
         }
     }
 
+    /// Process the SDK ready handshake: record the reported SDK / protocol
+    /// versions, run the `min_sdk_version` gate, and mark the runtime ready
+    /// unless the gate rejected the app. Returns `true` if the app passed the
+    /// gate (or no gate was declared), `false` if it was rejected.
+    pub(crate) fn on_ready(
+        &mut self,
+        sdk: String,
+        protocol_version: String,
+        features_used: Vec<String>,
+    ) -> bool {
+        self.features_used = features_used;
+        self.protocol_version = if protocol_version.is_empty() {
+            None
+        } else {
+            Some(protocol_version)
+        };
+
+        if let Some(min) = self.min_sdk_version.clone() {
+            if let Err(message) = check_sdk_gate(&min, &sdk) {
+                self.sdk = Some(sdk);
+                self.record_fatal_error(
+                    message,
+                    String::from("SDK version gate failed at launch (manifest min_sdk_version)"),
+                );
+                return false;
+            }
+        }
+
+        self.sdk = Some(sdk);
+        self.runtime.mark_ready();
+        true
+    }
+
     fn set_scheduler_mode(&mut self, mode: &str, fps: Option<u32>) {
         match scheduler::AppSchedulerMode::from_wire(mode, fps) {
             Ok(parsed) => {
@@ -1621,10 +1724,12 @@ impl ProcessApp {
                     self.click_awaiting_frame = false;
                     self.lifecycle.on_frame_done();
                 }
-                DrawCommand::Control(ControlCommand::Ready { sdk, features_used }) => {
-                    self.sdk = Some(sdk);
-                    self.features_used = features_used;
-                    self.runtime.mark_ready();
+                DrawCommand::Control(ControlCommand::Ready {
+                    sdk,
+                    protocol_version,
+                    features_used,
+                }) => {
+                    self.on_ready(sdk, protocol_version, features_used);
                 }
                 DrawCommand::Control(ControlCommand::SetSchedulerMode { mode, fps }) => {
                     self.set_scheduler_mode(&mode, fps);

@@ -114,6 +114,13 @@ pub struct AppManifestApp {
     pub manifest_type: ManifestType,
     #[serde(default)]
     pub version: String,
+    /// Optional minimum SDK version this app requires, as a `major.minor.patch`
+    /// string (e.g. `"0.1.13"`). When set, the host compares it against the SDK
+    /// version reported in the ready handshake and rejects the app with a
+    /// user-visible fatal error if the running SDK is older. Absent → no gate;
+    /// the app launches on any SDK version (preserves every existing app).
+    #[serde(default)]
+    pub min_sdk_version: Option<String>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -713,6 +720,7 @@ impl AppRegistry {
         ) {
             Ok(mut app) => {
                 app.permissions.allowed_hosts = perms.allowed_hosts;
+                app.min_sdk_version = installed.manifest.min_sdk_version.clone();
                 app.manifest_min_width = installed.launch.min_width.unwrap_or(120.0);
                 app.manifest_min_height = installed.launch.min_height.unwrap_or(80.0);
                 app.compact_threshold = installed.launch.compact.unwrap_or(280.0);

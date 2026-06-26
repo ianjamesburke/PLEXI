@@ -11,7 +11,8 @@ A future CPython-in-WASM compatibility runtime may provide a sandboxed Python
 app route. That work is deferred and is not the current SDK v3 execution path.
 """
 
-__version__ = "4.0.0"
+from ._version import __version__ as __version__
+
 SDK_ID = f"plexi-sdk-py/{__version__}"
 
 from ._v3_state import StateSnapshot, log, state
