@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.13] — 2026-06-26
+
+### Changes
+- fix(ci): skip release creation when tag already exists
 ## [0.1.11] — 2026-06-25
 
 ### Changes
