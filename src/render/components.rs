@@ -201,6 +201,32 @@ fn render_component_tree_inner(
             });
         }
 
+        UiNode::Sized {
+            width,
+            height,
+            child,
+        } => {
+            let w = width.unwrap_or_else(|| ui.available_width()).max(0.0);
+            let h = height.unwrap_or_else(|| ui.available_height()).max(0.0);
+            ui.allocate_ui(egui::vec2(w, h), |ui| {
+                ui.set_min_width(w);
+                ui.set_max_width(w);
+                ui.set_min_height(h);
+                ui.set_max_height(h);
+                events.extend(render_component_tree_inner(
+                    ui,
+                    child,
+                    colors,
+                    text_edit_buffers,
+                    focus_ctx,
+                    raw_caches,
+                    canvas_w,
+                    canvas_h,
+                    hit_regions,
+                ));
+            });
+        }
+
         UiNode::Layer { children } => {
             // V1: sequential rendering (true Z-stacking is a future improvement).
             for child in children {
@@ -1335,8 +1361,124 @@ fn vertical_fixed_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
                 Some(*height)
             }
         }
+        UiNode::Sized { height, .. } => height.map(|h| h.max(0.0)),
         _ => None,
     }
+}
+
+/// True for nodes that expand to fill remaining *width* in a horizontal Stack.
+fn horizontal_grow_node(node: &UiNode) -> bool {
+    match node {
+        UiNode::Canvas { grow, .. } => *grow,
+        UiNode::Spacer { grow, .. } => *grow,
+        _ => false,
+    }
+}
+
+/// Fixed width (in px) for a node inside a horizontal Stack, or `None` when the
+/// node has no intrinsic width and should render inline. Grow nodes return
+/// `None` here — they are partitioned by [`horizontal_grow_node`].
+fn horizontal_fixed_width(node: &UiNode) -> Option<f32> {
+    match node {
+        UiNode::Sized { width, .. } => width.map(|w| w.max(0.0)),
+        UiNode::Spacer { size, grow } => {
+            if *grow {
+                None
+            } else {
+                Some(if *size > 0.0 { *size } else { style::SPACE_MD })
+            }
+        }
+        UiNode::Canvas { width, grow, .. } => {
+            if *grow {
+                None
+            } else {
+                Some((*width).max(0.0))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn render_horizontal_children(
+    ui: &mut Ui,
+    children: &[UiNode],
+    gap: f32,
+    colors: &Colors,
+    text_edit_buffers: &mut std::collections::HashMap<String, String>,
+    focus_ctx: &mut TextEditFocusCtx,
+    raw_caches: &mut RawNodeCaches<'_>,
+    canvas_w: &mut f32,
+    canvas_h: &mut f32,
+    hit_regions: &mut Vec<(egui::Rect, String)>,
+) -> Vec<ComponentEventPayload> {
+    let mut events = Vec::new();
+    if children.is_empty() {
+        return events;
+    }
+
+    let available_w = ui.available_width().max(0.0);
+    let gap_total = gap * children.len().saturating_sub(1) as f32;
+    let mut fixed_total = 0.0f32;
+    let mut grow_count = 0usize;
+
+    for child in children {
+        if horizontal_grow_node(child) {
+            grow_count += 1;
+        } else if let Some(w) = horizontal_fixed_width(child) {
+            fixed_total += w;
+        }
+    }
+
+    let grow_w = if grow_count > 0 {
+        ((available_w - fixed_total - gap_total).max(0.0)) / grow_count as f32
+    } else {
+        0.0
+    };
+
+    for (i, child) in children.iter().enumerate() {
+        if i > 0 && gap > 0.0 {
+            ui.add_space(gap);
+        }
+
+        let allocated_w = if horizontal_grow_node(child) {
+            Some(grow_w)
+        } else {
+            horizontal_fixed_width(child)
+        };
+
+        if let Some(w) = allocated_w {
+            let h = ui.available_height();
+            ui.allocate_ui(egui::vec2(w.max(0.0), h), |ui| {
+                ui.set_min_width(w.max(0.0));
+                ui.set_max_width(w.max(0.0));
+                events.extend(render_component_tree_inner(
+                    ui,
+                    child,
+                    colors,
+                    text_edit_buffers,
+                    focus_ctx,
+                    raw_caches,
+                    canvas_w,
+                    canvas_h,
+                    hit_regions,
+                ));
+            });
+        } else {
+            events.extend(render_component_tree_inner(
+                ui,
+                child,
+                colors,
+                text_edit_buffers,
+                focus_ctx,
+                raw_caches,
+                canvas_w,
+                canvas_h,
+                hit_regions,
+            ));
+        }
+    }
+
+    events
 }
 
 fn render_vertical_children(
@@ -1437,22 +1579,18 @@ fn render_stack(
     match direction {
         StackDirection::Horizontal => {
             ui.horizontal(|ui| {
-                for (i, child) in children.iter().enumerate() {
-                    if i > 0 && gap > 0.0 {
-                        ui.add_space(gap);
-                    }
-                    events.extend(render_component_tree_inner(
-                        ui,
-                        child,
-                        colors,
-                        text_edit_buffers,
-                        focus_ctx,
-                        raw_caches,
-                        canvas_w,
-                        canvas_h,
-                        hit_regions,
-                    ));
-                }
+                events.extend(render_horizontal_children(
+                    ui,
+                    children,
+                    gap,
+                    colors,
+                    text_edit_buffers,
+                    focus_ctx,
+                    raw_caches,
+                    canvas_w,
+                    canvas_h,
+                    hit_regions,
+                ));
             });
         }
         StackDirection::Vertical => {
@@ -1924,6 +2062,72 @@ mod render_component_tree_tests {
         };
         let b = a.clone();
         assert_eq!(a, b);
+    }
+
+    /// Serde round-trip for `UiNode::Sized` with a null (inherited) height.
+    #[test]
+    fn sized_serde_roundtrip() {
+        let node = UiNode::Sized {
+            width: Some(160.0),
+            height: None,
+            child: Box::new(UiNode::Text {
+                text: "side".into(),
+                size: 0.0,
+                color: String::new(),
+                bold: false,
+                monospace: false,
+            }),
+        };
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(json.contains("\"type\":\"sized\""), "json={json}");
+        let parsed: UiNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(node, parsed);
+    }
+
+    /// Horizontal width partitioning: a `Sized{width:160}` sidebar next to a
+    /// growing `Canvas` gives the Canvas `total_width - 160 - gap`.
+    #[test]
+    fn horizontal_partition_sized_plus_grow_canvas() {
+        use super::{horizontal_fixed_width, horizontal_grow_node};
+        let gap = 12.0_f32;
+        let total_w = 800.0_f32;
+        let sidebar = UiNode::Sized {
+            width: Some(160.0),
+            height: None,
+            child: Box::new(UiNode::Text {
+                text: "side".into(),
+                size: 0.0,
+                color: String::new(),
+                bold: false,
+                monospace: false,
+            }),
+        };
+        let canvas = UiNode::Canvas {
+            commands: vec![],
+            width: 0.0,
+            height: 0.0,
+            grow: true,
+        };
+
+        assert_eq!(horizontal_fixed_width(&sidebar), Some(160.0));
+        assert_eq!(horizontal_fixed_width(&canvas), None);
+        assert!(horizontal_grow_node(&canvas));
+        assert!(!horizontal_grow_node(&sidebar));
+
+        // Mirror render_horizontal_children's arithmetic.
+        let children = [&sidebar, &canvas];
+        let gap_total = gap * (children.len() - 1) as f32;
+        let mut fixed_total = 0.0f32;
+        let mut grow_count = 0usize;
+        for c in &children {
+            if horizontal_grow_node(c) {
+                grow_count += 1;
+            } else if let Some(w) = horizontal_fixed_width(c) {
+                fixed_total += w;
+            }
+        }
+        let grow_w = (total_w - fixed_total - gap_total) / grow_count as f32;
+        assert_eq!(grow_w, total_w - 160.0 - gap);
     }
 
     /// Serde round-trip for `UiNode::TextEdit`.

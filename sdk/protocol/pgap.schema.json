@@ -2652,6 +2652,11 @@
               },
               "type": "array"
             },
+            "protocol_version": {
+              "default": "",
+              "description": "Wire protocol version the app was built against (e.g. `\"pgap/3\"`).\nLets the host know which protocol features the app may use. Empty\nwhen an older SDK omits it.",
+              "type": "string"
+            },
             "sdk": {
               "default": "",
               "type": "string"
@@ -3348,6 +3353,12 @@
           "properties": {
             "button": {
               "$ref": "#/$defs/MouseButton"
+            },
+            "region": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "type": {
               "const": "click",
@@ -5394,6 +5405,39 @@
               "type": "object"
             },
             {
+              "description": "Explicit-size layout wrapper. Constrains its single child to an exact\n`width` and/or `height`. A `null` axis means \"inherit available size\".\nPrimary use: a fixed-width sibling (e.g. a sidebar) alongside a growing\n`Canvas` inside a horizontal `Stack`.",
+              "properties": {
+                "child": {
+                  "$ref": "#/$defs/UiNode"
+                },
+                "height": {
+                  "default": null,
+                  "format": "float",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "sized",
+                  "type": "string"
+                },
+                "width": {
+                  "default": null,
+                  "format": "float",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "child"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Z-stack overlay — children rendered back-to-front at the same position.",
               "properties": {
                 "children": {
@@ -6071,6 +6115,12 @@
               "format": "float",
               "type": "number"
             },
+            "hit_region": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "radius": {
               "default": 0.0,
               "format": "float",
@@ -6130,6 +6180,12 @@
             },
             "elide": {
               "type": "boolean"
+            },
+            "hit_region": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "max_lines": {
               "format": "uint32",
