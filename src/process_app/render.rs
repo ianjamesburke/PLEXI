@@ -102,22 +102,22 @@ pub(crate) fn render_draw_commands(
                 let painter = ui.painter().with_clip_rect(clip);
                 // 1. Glow behind fill
                 if let Some(gc) = glow_color.as_deref().filter(|_| *glow_radius > 0.0) {
-                    if let Some(glow) = parse_color(gc) {
+                    if let Some(glow) = resolve_color(gc, colors) {
                         paint_rect_glow(&painter, rect, *glow_radius, glow);
                     }
                 }
                 // 2. Fill: gradient mesh or solid color
                 if let Some(grad) = gradient {
-                    let color_from = parse_color(&grad.from).unwrap_or(colors.bg_active);
-                    let color_to = parse_color(&grad.to).unwrap_or(colors.bg_active);
+                    let color_from = resolve_color(&grad.from, colors).unwrap_or(colors.bg_active);
+                    let color_to = resolve_color(&grad.to, colors).unwrap_or(colors.bg_active);
                     paint_gradient_rect(&painter, rect, color_from, color_to, &grad.dir);
                 } else {
-                    let color = parse_color(fill).unwrap_or(colors.bg_active);
+                    let color = resolve_color(fill, colors).unwrap_or(colors.bg_active);
                     painter.rect_filled(rect, *radius, color);
                 }
                 // 3. Stroke on top
                 if let Some(sc) = stroke.as_deref() {
-                    if let Some(stroke_color) = parse_color(sc) {
+                    if let Some(stroke_color) = resolve_color(sc, colors) {
                         painter.rect_stroke(
                             rect,
                             *radius,
@@ -147,7 +147,7 @@ pub(crate) fn render_draw_commands(
                 max_lines,
                 hit_region,
             } => {
-                let color = parse_color(color).unwrap_or(colors.text_primary);
+                let color = resolve_color(color, colors).unwrap_or(colors.text_primary);
                 let family = font_family_for_text(*monospace);
                 let font_id = egui::FontId::new(*size, family.clone());
 
@@ -337,7 +337,7 @@ pub(crate) fn render_draw_commands(
                 color,
                 width,
             } => {
-                let color = parse_color(color).unwrap_or(colors.bg_active);
+                let color = resolve_color(color, colors).unwrap_or(colors.bg_active);
                 ui.painter().with_clip_rect(clip).line_segment(
                     [
                         egui::pos2(origin.x + x1, origin.y + y1),
@@ -361,16 +361,16 @@ pub(crate) fn render_draw_commands(
                 let painter = ui.painter().with_clip_rect(clip);
                 // 1. Glow behind fill (concentric rings)
                 if let Some(gc) = glow_color.as_deref().filter(|_| *glow_radius > 0.0) {
-                    if let Some(glow) = parse_color(gc) {
+                    if let Some(glow) = resolve_color(gc, colors) {
                         paint_circle_glow(&painter, center, *r, *glow_radius, glow);
                     }
                 }
                 // 2. Fill
-                let color = parse_color(fill).unwrap_or(colors.accent);
+                let color = resolve_color(fill, colors).unwrap_or(colors.accent);
                 painter.circle_filled(center, *r, color);
                 // 3. Stroke on top
                 if let Some(sc) = stroke.as_deref() {
-                    if let Some(stroke_color) = parse_color(sc) {
+                    if let Some(stroke_color) = resolve_color(sc, colors) {
                         painter.circle_stroke(
                             center,
                             *r,
@@ -388,7 +388,7 @@ pub(crate) fn render_draw_commands(
                 end_angle,
                 fill,
             } => {
-                let color = parse_color(fill).unwrap_or(colors.accent);
+                let color = resolve_color(fill, colors).unwrap_or(colors.accent);
                 let center = egui::pos2(origin.x + cx, origin.y + cy);
                 let span = (end_angle - start_angle).abs();
                 let steps = ((r * span) as usize).max(8).min(128);
@@ -416,7 +416,7 @@ pub(crate) fn render_draw_commands(
                 color,
                 stroke_width,
             } => {
-                let stroke_color = parse_color(color).unwrap_or(colors.accent);
+                let stroke_color = resolve_color(color, colors).unwrap_or(colors.accent);
                 let center = egui::pos2(origin.x + cx, origin.y + cy);
                 let span = (end_angle - start_angle).abs();
                 // ~1 point per 3 degrees (π/60 rad); min 4, max 256
@@ -1033,7 +1033,7 @@ pub(crate) fn render_draw_commands(
                 base_size,
                 color,
             } => {
-                let text_color = parse_color(color).unwrap_or(colors.text_primary);
+                let text_color = resolve_color(color, colors).unwrap_or(colors.text_primary);
                 let requested_rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, pane_rect.max.y - (origin.y + y)),
@@ -1603,7 +1603,7 @@ pub(crate) fn render_text_row(
             egui::FontId::proportional(item.size)
         };
 
-        let color = parse_color(&item.color).unwrap_or(colors.text_primary);
+        let color = resolve_color(&item.color, colors).unwrap_or(colors.text_primary);
 
         let galley = ui.fonts(|f| f.layout_no_wrap(item.text.clone(), font_id, color));
 
@@ -2166,6 +2166,20 @@ pub(crate) fn parse_color(hex: &str) -> Option<Color32> {
     }
 }
 
+/// Resolve a Canvas color field. A `"theme.<token>"` spec resolves to the
+/// live host theme color (e.g. `"theme.accent"`); any other string falls
+/// through to hex parsing so existing `#rrggbb`/`#rrggbbaa` apps are
+/// unaffected. An unrecognized token also falls through to hex parsing,
+/// which yields `None` and lets the call site apply its default.
+pub(crate) fn resolve_color(spec: &str, colors: &Colors) -> Option<Color32> {
+    if let Some(token) = spec.strip_prefix("theme.") {
+        if let Some(c) = colors.theme_token(token) {
+            return Some(c);
+        }
+    }
+    parse_color(spec)
+}
+
 /// Compute destination rect and UV coordinates for an image given a fit mode.
 ///
 /// - `"contain"` (default): scale to fit inside target, preserving aspect ratio (letterbox).
@@ -2223,4 +2237,29 @@ pub(crate) fn select_responsive_tier(
         "square" => true, // fallback — matches anything not caught above
         _ => false,
     })
+}
+
+#[cfg(test)]
+mod resolve_color_tests {
+    use super::*;
+    use crate::config::ThemeConfig;
+
+    /// `theme.<token>` resolves to the live theme color; plain hex still parses;
+    /// an unknown token falls through to hex parsing (here yielding `None` so
+    /// the call site applies its own default). Existing hex apps are untouched.
+    #[test]
+    fn resolve_color_handles_tokens_and_hex() {
+        let colors = Colors::from_config(&ThemeConfig::default());
+        assert_eq!(resolve_color("theme.accent", &colors), Some(colors.accent));
+        assert_eq!(resolve_color("theme.bg", &colors), Some(colors.terminal_bg));
+        assert_eq!(resolve_color("theme.error", &colors), Some(colors.danger));
+        assert_eq!(
+            resolve_color("#ff8800", &colors),
+            Some(Color32::from_rgb(0xff, 0x88, 0x00))
+        );
+        // Unknown token: not a hex string, so falls through to None.
+        assert_eq!(resolve_color("theme.bogus", &colors), None);
+        // Bare names without the `theme.` prefix are treated as hex (None here).
+        assert_eq!(resolve_color("accent", &colors), None);
+    }
 }

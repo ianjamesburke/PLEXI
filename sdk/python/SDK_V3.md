@@ -450,6 +450,16 @@ class Color:
     r: int; g: int; b: int; a: int = 255
     # → types::color { r, g, b, a }
 
+# ── Theme tokens (canvas color fields) ────────────────────────────────────────
+# Canvas color fields (rect/text/line/circle/arc fill, color, stroke, glow) take
+# a string. A "theme.<token>" string resolves to the live host theme color at
+# render time, so app chrome tracks light/dark + user [theme] overrides without
+# hardcoding hex. Any other string is parsed as #rrggbb / #rrggbbaa; an
+# unrecognized token falls through to hex parsing (preserving existing behavior).
+# Tokens: theme.bg, theme.fg, theme.muted, theme.accent, theme.error,
+#         theme.success, theme.surface, theme.highlight
+#   (aliases also resolve: danger/red → error, green → success, border, warning/yellow)
+
 # Alignment values map to WIT enum alignment { start, center, end, stretch }
 # Python: use string literals "start" | "center" | "end" | "stretch"
 
