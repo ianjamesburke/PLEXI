@@ -208,6 +208,7 @@ fn render_component_tree_inner(
         } => {
             let w = width.unwrap_or_else(|| ui.available_width()).max(0.0);
             let h = height.unwrap_or_else(|| ui.available_height()).max(0.0);
+            log::trace!("render Sized: w={w} h={h} avail_w={} avail_h={}", ui.available_width(), ui.available_height());
             ui.allocate_ui(egui::vec2(w, h), |ui| {
                 ui.set_min_width(w);
                 ui.set_max_width(w);
@@ -1403,6 +1404,7 @@ fn render_horizontal_children(
     ui: &mut Ui,
     children: &[UiNode],
     gap: f32,
+    panel_h: f32,
     colors: &Colors,
     text_edit_buffers: &mut std::collections::HashMap<String, String>,
     focus_ctx: &mut TextEditFocusCtx,
@@ -1447,8 +1449,7 @@ fn render_horizontal_children(
         };
 
         if let Some(w) = allocated_w {
-            let h = ui.available_height();
-            ui.allocate_ui(egui::vec2(w.max(0.0), h), |ui| {
+            ui.allocate_ui(egui::vec2(w.max(0.0), panel_h), |ui| {
                 ui.set_min_width(w.max(0.0));
                 ui.set_max_width(w.max(0.0));
                 events.extend(render_component_tree_inner(
@@ -1578,11 +1579,14 @@ fn render_stack(
     let mut events = Vec::new();
     match direction {
         StackDirection::Horizontal => {
+            let panel_h = ui.available_height();
+            log::trace!("render_stack: horizontal panel_h={panel_h}");
             ui.horizontal(|ui| {
                 events.extend(render_horizontal_children(
                     ui,
                     children,
                     gap,
+                    panel_h,
                     colors,
                     text_edit_buffers,
                     focus_ctx,
@@ -1641,12 +1645,48 @@ fn render_stack(
                 // Body gets a constrained-height allocation; pinned fills the rest below.
                 // set_min_height forces the cursor to advance by the full body_h even when
                 // content is short, ensuring the footer renders flush to the bottom.
-                ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
-                    ui.set_min_height(body_h);
-                    ui.set_max_height(body_h);
+                // ui.vertical() resets layout direction in case we're inside a horizontal stack.
+                ui.vertical(|ui| {
+                    ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
+                        ui.set_min_height(body_h);
+                        ui.set_max_height(body_h);
+                        events.extend(render_vertical_children(
+                            ui,
+                            &body_children,
+                            gap,
+                            colors,
+                            text_edit_buffers,
+                            focus_ctx,
+                            raw_caches,
+                            canvas_w,
+                            canvas_h,
+                            hit_regions,
+                        ));
+                    });
+                    for (_, inner) in &pinned_bottom {
+                        events.extend(render_component_tree_inner(
+                            ui,
+                            inner,
+                            colors,
+                            text_edit_buffers,
+                            focus_ctx,
+                            raw_caches,
+                            canvas_w,
+                            canvas_h,
+                            hit_regions,
+                        ));
+                    }
+                });
+                log::trace!(
+                    "render_components: render_stack vertical pinned body_h={body_h:.0} footer_h={total_pinned_h:.0}"
+                );
+            } else {
+                log::trace!("render_stack: vertical no-pin {} children avail_h={}", children.len(), ui.available_height());
+                let child_refs: Vec<&UiNode> = children.iter().collect();
+                ui.vertical(|ui| {
                     events.extend(render_vertical_children(
                         ui,
-                        &body_children,
+                        &child_refs,
                         gap,
                         colors,
                         text_edit_buffers,
@@ -1657,36 +1697,6 @@ fn render_stack(
                         hit_regions,
                     ));
                 });
-                for (_, inner) in &pinned_bottom {
-                    events.extend(render_component_tree_inner(
-                        ui,
-                        inner,
-                        colors,
-                        text_edit_buffers,
-                        focus_ctx,
-                        raw_caches,
-                        canvas_w,
-                        canvas_h,
-                        hit_regions,
-                    ));
-                }
-                log::trace!(
-                    "render_components: render_stack vertical pinned body_h={body_h:.0} footer_h={total_pinned_h:.0}"
-                );
-            } else {
-                let child_refs: Vec<&UiNode> = children.iter().collect();
-                events.extend(render_vertical_children(
-                    ui,
-                    &child_refs,
-                    gap,
-                    colors,
-                    text_edit_buffers,
-                    focus_ctx,
-                    raw_caches,
-                    canvas_w,
-                    canvas_h,
-                    hit_regions,
-                ));
             }
         }
     }
