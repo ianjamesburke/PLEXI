@@ -162,6 +162,12 @@ class V3AppRuntime:
     def _handle_render(self, ev: dict) -> None:
         cw = float(ev.get("canvas_width", 0.0))
         ch = float(ev.get("canvas_height", 0.0))
+        # canvas_width/height are zero on the first frame (no prior render).
+        # Fall back to the pane rect so view() always sees valid dimensions.
+        if cw == 0.0 or ch == 0.0:
+            rect = ev.get("rect") or {}
+            cw = float(rect.get("w", 0.0)) or cw
+            ch = float(rect.get("h", 0.0)) or ch
         if cw > 0.0 and ch > 0.0:
             prev_cw, prev_ch = sdk.canvas_width, sdk.canvas_height
             sdk.canvas_width = cw
