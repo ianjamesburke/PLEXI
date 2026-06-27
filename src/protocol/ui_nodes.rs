@@ -106,6 +106,17 @@ pub enum UiNode {
         #[serde(default)]
         horizontal: bool,
     },
+    /// Explicit-size layout wrapper. Constrains its single child to an exact
+    /// `width` and/or `height`. A `null` axis means "inherit available size".
+    /// Primary use: a fixed-width sibling (e.g. a sidebar) alongside a growing
+    /// `Canvas` inside a horizontal `Stack`.
+    Sized {
+        #[serde(default)]
+        width: Option<f32>,
+        #[serde(default)]
+        height: Option<f32>,
+        child: Box<UiNode>,
+    },
     /// Z-stack overlay — children rendered back-to-front at the same position.
     Layer { children: Vec<UiNode> },
     /// Inline text node.
@@ -314,6 +325,18 @@ impl PartialEq for UiNode {
                     horizontal: h2,
                 },
             ) => c1 == c2 && h1 == h2,
+            (
+                UiNode::Sized {
+                    width: w1,
+                    height: h1,
+                    child: c1,
+                },
+                UiNode::Sized {
+                    width: w2,
+                    height: h2,
+                    child: c2,
+                },
+            ) => w1 == w2 && h1 == h2 && c1 == c2,
             (UiNode::Layer { children: c1 }, UiNode::Layer { children: c2 }) => c1 == c2,
             (
                 UiNode::Text {

@@ -1483,7 +1483,7 @@ class SelectList(Component):
 
     def __init__(self, items: List[dict], selected_idx: int = 0) -> None:
         if not isinstance(items, list):
-            raise TypeError(
+            raise TypeError(  # pyright: ignore[reportUnreachable]
                 f"SelectList items must be a list of dicts, got {type(items).__name__}. "
                 "Each dict needs at least a 'name' key: [{\"name\": \"Item 1\"}, ...]"
             )
@@ -1740,6 +1740,87 @@ class Column(Component):
         }
 
 
+@dataclass
+class HStack(Component):
+    """Horizontal flex container. Lays children left-to-right, partitioning
+    remaining width to any grow children (``Canvas(grow=True)``, ``Spacer(grow=True)``)
+    after fixed-width siblings (e.g. a ``Sized`` sidebar) are subtracted.
+
+    Emits a horizontal ``Stack`` node so the host width-partitions exactly like
+    a vertical Column height-partitions.
+    """
+    children: List[Component]
+    gap: float = SPACE_MD
+    grow: bool = False
+    key: str = ""
+
+    def __post_init__(self):
+        self.children = list(self.children)
+        for child in self.children:
+            if not isinstance(child, Component):
+                raise TypeError(
+                    f"HStack children must subclass Component, got {type(child).__name__}. "
+                    "Ad-hoc widget classes missing to_node() will not render."
+                )
+
+    def is_grow(self) -> bool:
+        return self.grow
+
+    def measure(self, avail_w: float) -> float:
+        return max((c.measure(avail_w) for c in self.children), default=0.0)
+
+    def to_node(self) -> "dict | None":
+        children = []
+        for child in self.children:
+            node = child.to_node()
+            if node is None:
+                return None
+            children.append(node)
+        return {
+            "type": "stack",
+            "direction": "horizontal",
+            "children": children,
+            "gap": self.gap,
+        }
+
+
+@dataclass
+class Sized(Component):
+    """Explicit-size wrapper. Constrains ``child`` to an exact ``width`` and/or
+    ``height``. ``None`` on an axis means "inherit available". Primary use: a
+    fixed-width sidebar beside a growing ``Canvas`` inside an ``HStack``.
+    """
+    child: Component
+    width: Optional[float] = None
+    height: Optional[float] = None
+    key: str = ""
+
+    def __post_init__(self):
+        if not isinstance(self.child, Component):
+            raise TypeError(
+                f"Sized child must subclass Component, got {type(self.child).__name__}."
+            )
+
+    def is_grow(self) -> bool:
+        return False
+
+    def measure(self, avail_w: float) -> float:
+        if self.height is not None:
+            return self.height
+        return self.child.measure(self.width if self.width is not None else avail_w)
+
+    def to_node(self) -> "dict | None":
+        node = self.child.to_node()
+        if node is None:
+            return None
+        return {
+            "type": "sized",
+            "width": self.width,
+            "height": self.height,
+            "child": node,
+        }
+
+
 # ── Public render entry point ──────────────────────────────────────────────
 
 
@@ -1753,7 +1834,7 @@ def render_tree(ctx, root: Component, fill: Optional[str] = None) -> None:
     emits a single ``ComponentTree`` command and the host renders it natively.
     """
     if not isinstance(root, Component):
-        raise TypeError(
+        raise TypeError(  # pyright: ignore[reportUnreachable]
             f"ctx.render() expected a Component (e.g. Column, Card), got {type(root).__name__}. "
             "Wrap your UI elements in Column([...]) or another container that subclasses Component."
         )
@@ -2085,13 +2166,13 @@ class Grid:
         children: "list[HasToNode]",
         gap: float = 8.0,
     ) -> None:
-        if columns < 1:
-            raise ValueError(f"Grid columns must be >= 1, got {columns}")
         if not isinstance(columns, int):
             raise TypeError(
                 f"Grid columns must be an int, got {type(columns).__name__}. "
                 f"Example: Grid(2, [child1, child2])"
             )
+        if columns < 1:
+            raise ValueError(f"Grid columns must be >= 1, got {columns}")
         for i, child in enumerate(children):
             if not isinstance(child, (dict, HasToNode)):
                 raise TypeError(
@@ -2244,7 +2325,7 @@ __all__ = [
     # color constants (dark-mode defaults)
     "BG", "FG", "ACCENT", "SURFACE", "HIGHLIGHT", "MUTED", "GREEN", "RED", "YELLOW",
     # components
-    "Component", "Column", "Card",
+    "Component", "Column", "HStack", "Sized", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
     "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
     "CanvasText", "CanvasButton", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
