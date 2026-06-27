@@ -284,6 +284,7 @@ apps=(
   permissions
   snake
   stats
+  sudoku
   tetris
   todo
   wikipedia
