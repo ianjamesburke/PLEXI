@@ -183,6 +183,28 @@ impl Colors {
         .map(|(k, c)| (k.to_string(), hex(c)))
         .collect()
     }
+
+    /// Resolve a semantic theme-token name (the keys emitted by
+    /// [`Colors::to_theme_map`]) to its live `Color32`. Returns `None` for
+    /// unknown names so callers can fall through to hex parsing. Keep this
+    /// table in sync with `to_theme_map` — both enumerate the same role set.
+    pub fn theme_token(&self, name: &str) -> Option<Color32> {
+        Some(match name {
+            "bg" => self.terminal_bg,
+            "bg_darkest" => self.bg_darkest,
+            "surface" => self.bg_active,
+            "highlight" => self.bg_hover,
+            "border" => self.border,
+            "fg" => self.text_primary,
+            "muted" => self.text_dim,
+            "text_section" => self.text_section,
+            "accent" => self.accent,
+            "danger" | "error" | "red" => self.danger,
+            "success" | "green" => self.success,
+            "warning" | "yellow" => self.warning,
+            _ => return None,
+        })
+    }
 }
 
 /// Resolve the active `Colors` from a loaded config: merges the user's
@@ -1117,6 +1139,27 @@ mod tests {
         assert_eq!(oc.pip_idle, Color32::from_rgb(0x00, 0xff, 0x00));
         assert_eq!(oc.pip_blocked, Color32::from_rgb(0x00, 0x00, 0xff));
         assert!((oc.pip_dim - 0.7).abs() < f32::EPSILON);
+    }
+
+    /// `theme_token` maps semantic names to the live color and stays in sync
+    /// with `to_theme_map`: every key the map emits must resolve, and the
+    /// resolved color must equal the hex the map publishes. Unknown names
+    /// return `None` so callers can fall through to hex parsing.
+    #[test]
+    fn theme_token_matches_theme_map_and_rejects_unknown() {
+        let colors = Colors::from_config(&ThemeConfig::default());
+        let map = colors.to_theme_map();
+        for (name, hex) in &map {
+            let c = colors
+                .theme_token(name)
+                .unwrap_or_else(|| panic!("theme_token missing key {name:?} that to_theme_map emits"));
+            let got = format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
+            assert_eq!(&got, hex, "theme_token({name:?}) disagrees with to_theme_map");
+        }
+        assert_eq!(colors.theme_token("accent"), Some(colors.accent));
+        assert_eq!(colors.theme_token("error"), Some(colors.danger));
+        assert!(colors.theme_token("not_a_token").is_none());
+        assert!(colors.theme_token("").is_none());
     }
 
     /// Every preset's accent button must render legible text: text_on must

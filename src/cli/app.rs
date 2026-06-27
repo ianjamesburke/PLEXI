@@ -326,7 +326,7 @@ fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     let src_dir = app_dir.join("src");
     std::fs::create_dir_all(&src_dir)?;
     std::fs::write(src_dir.join("main.rs"), format!(
-        "use plexi_sdk::{{App, Emitter, Modifiers, RenderContext, run}};\n\nstruct {struct_name};\n\nimpl App for {struct_name} {{\n    fn on_render(&mut self, ctx: &mut RenderContext) {{\n        ctx.rect(0.0, 0.0, ctx.width, ctx.height, \"#1e1e2e\");\n        ctx.text_bold(20.0, 20.0, \"{display}\", 16.0, \"#cdd6f4\");\n        ctx.text(20.0, 50.0, \"Edit src/main.rs to build your app.\", 13.0, \"#6c7086\");\n    }}\n\n    fn on_key(&mut self, _key: &str, _mods: &Modifiers, _emit: &mut Emitter) {{}}\n}}\n\nfn main() {{\n    run(&mut {struct_name});\n}}\n",
+        "use plexi_sdk::{{App, Emitter, Modifiers, RenderContext, run}};\n\nstruct {struct_name};\n\nimpl App for {struct_name} {{\n    fn on_render(&mut self, ctx: &mut RenderContext) {{\n        // Canvas color fields accept \"theme.<token>\" so app chrome tracks the host theme.\n        ctx.rect(0.0, 0.0, ctx.width, ctx.height, \"theme.bg\");\n        ctx.text_bold(20.0, 20.0, \"{display}\", 16.0, \"theme.fg\");\n        ctx.text(20.0, 50.0, \"Edit src/main.rs to build your app.\", 13.0, \"theme.muted\");\n    }}\n\n    fn on_key(&mut self, _key: &str, _mods: &Modifiers, _emit: &mut Emitter) {{}}\n}}\n\nfn main() {{\n    run(&mut {struct_name});\n}}\n",
         struct_name = to_struct_name(name),
         display = to_title_case(name),
     ))?;
