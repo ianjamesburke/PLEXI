@@ -451,8 +451,14 @@ fn render_component_tree_inner(
                 *height
             }
             .max(0.0);
-            *canvas_w = node_canvas_w;
-            *canvas_h = node_canvas_h;
+            // Track the largest canvas — the primary content canvas wins over
+            // small utility canvases (e.g. numpads) that appear later in the tree.
+            if node_canvas_w > *canvas_w {
+                *canvas_w = node_canvas_w;
+            }
+            if node_canvas_h > *canvas_h {
+                *canvas_h = node_canvas_h;
+            }
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(node_canvas_w, node_canvas_h),
                 egui::Sense::click(),
