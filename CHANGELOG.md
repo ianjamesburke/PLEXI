@@ -4,6 +4,17 @@ Newest releases appear first.
 ## [0.1.13] — 2026-06-26
 
 ### Changes
+- feat(sudoku): layered cross highlight, remove 3x3 box tint, sidebar flush layout fixes
+- fix(render): canvas_w/h tracks largest canvas, not last
+- fix(sdk): canvas_width/height fall back to rect on first frame
+- feat: add sudoku as core app (SDK v3 — HStack sidebar, hit regions, theme tokens, min_sdk_version)
+- fix(render): Column layout inside HStack — wrap vertical stack in ui.vertical() and pass panel_h before horizontal context
+- feat: theme token resolution in Canvas fill/color/border (stint 0309)
+- feat: Canvas as L1 node in horizontal HStack layouts (stint 0308)
+- feat: Canvas hit regions for click-to-element mapping (#2335)
+- feat: CanvasRect border_color and border_width support (#2333)
+- fix: SDK versioning unification and min_sdk_version manifest gate (#2334)
+- fix(pane-ops): pane new --window uses caller context, not active context (#2332)
 - fix(ci): skip release creation when tag already exists
 ## [0.1.11] — 2026-06-25
 
