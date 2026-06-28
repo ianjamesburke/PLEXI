@@ -188,7 +188,7 @@ install_completions() {
   fi
 }
 
-if [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" || "$channel" == rc-* ]]; then
+if [[ "$skip_bin_install" != "1" ]] && [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" || "$channel" == rc-* ]]; then
   if [[ "$channel" == "main" ]]; then
     install_completions "$app_dest/Contents/MacOS/plexi"
   else
