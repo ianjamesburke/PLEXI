@@ -1,0 +1,70 @@
+# SDK Evolution PRM
+
+Status: active.
+Stint: 0291 (versioning), 0306 (borders), 0307 (hit regions), 0308 (mixed layouts), 0309 (theme tokens).
+
+This PRM captures the destination state for five SDK gaps exposed by the community sudoku app (`github:ashaweeee/sudoku`). Each gap is a self-contained improvement; together they make the SDK capable enough that Canvas apps no longer require manual pixel-math for borders, hit detection, or sidebar layout.
+
+The sudoku app is the migration canary. Each SDK version bump ships alongside an updated sudoku app that proves the new capability works end-to-end.
+
+---
+
+## SDK Versioning
+
+A single version source of truth exists: `pyproject.toml`. `__init__.py` and `_constants.py` derive from it at build time; they never declare a version independently.
+
+Apps declare `min_sdk_version = "X.Y.Z"` in `manifest.toml`. The host reads this field at PGAP launch and rejects the app with a user-visible error if the installed SDK is older. Apps without `min_sdk_version` launch without a version check; no existing app breaks.
+
+The wire protocol carries a `protocol_version` field so the host knows which features an app may use. Version negotiation happens at handshake time, before the first `view()` call.
+
+---
+
+## CanvasRect Borders
+
+`CanvasRect` accepts two new optional fields: `border_color` (hex string, same format as `fill`) and `border_width` (float, pixels). Both default to absent, preserving existing behavior for all current apps.
+
+The host renders a non-zero `border_width` as an `egui::Stroke` on the rect outline. The stroke is drawn inside the rect bounds so layout math is unchanged.
+
+The SDK's own `Card` and `DetailTable` components use these fields internally. The four-thin-rect and two-rect-overlap border hacks are removed from both components.
+
+---
+
+## Canvas Hit Regions
+
+`CanvasRect` and `CanvasText` accept an optional `hit_region` string. When a click lands inside a primitive that has `hit_region` set, the `MouseEvent` delivered to the app includes a `region` field containing that string. Clicks on primitives without `hit_region` deliver `MouseEvent` with no `region`, matching current behavior.
+
+Apps no longer implement manual bounding-box hit tests. The host owns all coordinate-to-region mapping.
+
+Region strings are arbitrary app-defined identifiers. Multiple primitives may share the same `hit_region` string; the host reports the ID, not which specific primitive was clicked. Z-order follows paint order: the topmost (last-drawn) primitive with `hit_region` wins.
+
+---
+
+## Mixed Canvas + Component Layouts
+
+`Canvas(...)` is a valid L1 node. It can appear anywhere in a component tree — inside a `Row`, `Column`, or `Stack` — alongside other L1 components. The host lays out the tree first, then rasterizes the canvas into the rect the layout engine assigned to the `Canvas` node.
+
+This means a sudoku grid rendered as `Canvas` and a sidebar rendered as `Column` can coexist in a `Row` without either component manually positioning the other. Canvas-internal coordinates are relative to the canvas node's assigned rect, not the pane.
+
+`Canvas` without explicit sizing takes up remaining space in the layout direction, consistent with how `Spacer` works.
+
+---
+
+## Theme Tokens in Canvas Apps
+
+`sdk.theme` exposes a flat set of named color tokens usable in canvas `fill` and `border_color` fields. Token names match the L1 design token names: `bg`, `fg`, `muted`, `accent`, `error`, `success`, `surface`, `border`.
+
+Apps pass a token name as the color value instead of a hex string: `fill="theme.accent"`. The host resolves tokens to hex at render time using the active theme. If a token name is unrecognized, the host treats it as a hex string (existing behavior for hardcoded colors).
+
+Canvas apps that previously hardcoded hex colors migrate by replacing hex literals with token names. The theme module documents the full token list and their semantic meaning.
+
+---
+
+## Definition of Finished
+
+- `pyproject.toml` is the single version source. `sdk.__version__` reads from it. `_constants.py` has no version field.
+- A manifest with `min_sdk_version` newer than the installed SDK causes the host to display a version mismatch error instead of launching the app.
+- `CanvasRect` with `border_color` and `border_width` renders a stroked outline. The `Card` and `DetailTable` components use this; the four-rect hack is gone.
+- A `MouseEvent` from a click on a `CanvasRect` with `hit_region = "cell-3-4"` delivers `event.region == "cell-3-4"`. The sudoku app's `_hit()`, `_num_btn_layout()`, and `_menu_mouse()` methods are removed.
+- The sudoku app's sidebar (difficulty selector, timer, number buttons) renders as a `Column` node inside a `Row`, not as pixel-positioned canvas elements.
+- `fill="theme.accent"` in a canvas primitive renders using the active theme color, not a literal string parse failure.
+- `sdk/python/SDK_V3.md` documents all five capabilities. The scaffold generated by `plexi app init` uses theme tokens, not hardcoded hex.
