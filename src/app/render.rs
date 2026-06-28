@@ -10,6 +10,10 @@ use std::collections::HashMap;
 const FLASH_DUR: f32 = 0.4;
 const FLASH_TAU: f32 = 0.10;
 
+fn update_check_due(last_update_check: std::time::Instant, now: std::time::Instant) -> bool {
+    now.saturating_duration_since(last_update_check) >= crate::cli::updater::CHECK_INTERVAL
+}
+
 impl PlexiApp {
     /// Cwd-derived fallback workspace root, used when the active context has no
     /// explicit `root`. `config::active_workspace_root()` stat-walks the
@@ -49,11 +53,22 @@ impl PlexiApp {
             }
         }
         if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
-            self.last_notify_poll = std::time::Instant::now();
+            let now = std::time::Instant::now();
+            self.last_notify_poll = now;
             self.drain_spawn_queue();
             self.tick_scheduler();
             self.tick_notification_timeouts();
             self.tick_terminal_activity();
+            if update_check_due(self.last_update_check, now) {
+                let config_dir = crate::config::config_dir();
+                if !crate::cli::updater::update_cache_fresh(&config_dir) {
+                    log::info!("update check: scheduling periodic re-check");
+                    let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
+                    crate::cli::updater::spawn_update_check(config_dir, update_tx);
+                    self.update_rx = Some(update_rx);
+                    self.last_update_check = now;
+                }
+            }
         }
         self.drain_pane_cmd_channel();
         if let Some(rx) = &self.update_rx {
@@ -1104,5 +1119,27 @@ impl PlexiApp {
                 ctx.memory_mut(|m| m.request_focus(egui::Id::new("capability_secret_input")));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::update_check_due;
+
+    #[test]
+    fn update_check_due_after_interval() {
+        let last = std::time::Instant::now();
+        let now = last + crate::cli::updater::CHECK_INTERVAL;
+
+        assert!(update_check_due(last, now));
+    }
+
+    #[test]
+    fn update_check_not_due_before_interval() {
+        let last = std::time::Instant::now();
+        let now =
+            last + crate::cli::updater::CHECK_INTERVAL - std::time::Duration::from_secs(1);
+
+        assert!(!update_check_due(last, now));
     }
 }
