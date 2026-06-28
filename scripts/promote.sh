@@ -24,9 +24,15 @@ check_version_bumped() {
     local base
     base=$(echo "$current" | sed 's/-.*//')
     local last_stable
-    last_stable=$(git -C "$tree" tag -l "v[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname \
-        | grep -Ev -- '-(alpha|beta)\.' | head -1 | sed 's/^v//')
-    if [[ "$base" == "$last_stable" ]]; then
+    last_stable=$(git -C "$tree" tag --sort=-v:refname \
+        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+        | { while IFS= read -r tag; do
+              git -C "$tree" merge-base --is-ancestor "$tag" origin/main 2>/dev/null \
+                || git -C "$tree" merge-base --is-ancestor "$tag" origin/beta 2>/dev/null \
+                && echo "$tag" && break
+            done; } \
+        | head -1 | sed 's/^v//')
+    if [[ -n "$last_stable" && "$base" == "$last_stable" ]]; then
         echo ""
         echo "WARNING: Cargo.toml version ($current) matches the last stable tag (v$last_stable)."
         echo "         You may be promoting without a version bump."
@@ -151,7 +157,6 @@ if [[ "$current_branch" == "alpha" ]]; then
     echo ""
 fi
 
-check_version_bumped "$BETA_TREE"
 check_clean "$BETA_TREE" "beta"
 check_pushed "$BETA_TREE" "beta" "beta"
 check_clean "$MAIN_TREE" "main worktree"
