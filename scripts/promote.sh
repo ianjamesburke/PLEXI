@@ -17,6 +17,26 @@ MAIN_TREE="$REPO_ROOT/worktrees/main"
 
 die() { echo "error: $*" >&2; exit 1; }
 
+check_version_bumped() {
+    local tree="$1"
+    local current
+    current=$(grep '^version' "$tree/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
+    local base
+    base=$(echo "$current" | sed 's/-.*//')
+    local last_stable
+    last_stable=$(git -C "$tree" tag -l "v[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname \
+        | grep -Ev -- '-(alpha|beta)\.' | head -1 | sed 's/^v//')
+    if [[ "$base" == "$last_stable" ]]; then
+        echo ""
+        echo "WARNING: Cargo.toml version ($current) matches the last stable tag (v$last_stable)."
+        echo "         You may be promoting without a version bump."
+        echo "         Run 'just bump' first, or proceed if this is intentional."
+        echo ""
+        read -r -p "Continue anyway? [y/N] " confirm
+        [[ "$confirm" == "y" || "$confirm" == "Y" ]] || die "Aborted — run 'just bump' before promoting."
+    fi
+}
+
 check_clean() {
     local tree="$1" label="$2"
     git -C "$tree" diff --quiet && git -C "$tree" diff --cached --quiet \
@@ -70,6 +90,7 @@ esac
 # ── promote alpha → beta ──────────────────────────────────────────────────────
 
 promote_alpha_to_beta() {
+    check_version_bumped "$ALPHA_TREE"
     check_clean "$ALPHA_TREE" "alpha"
     check_cargo_config "$ALPHA_TREE"
     check_pushed "$ALPHA_TREE" "alpha" "alpha"
@@ -130,6 +151,7 @@ if [[ "$current_branch" == "alpha" ]]; then
     echo ""
 fi
 
+check_version_bumped "$BETA_TREE"
 check_clean "$BETA_TREE" "beta"
 check_pushed "$BETA_TREE" "beta" "beta"
 check_clean "$MAIN_TREE" "main worktree"
