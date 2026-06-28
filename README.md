@@ -142,11 +142,7 @@ plexi notify --title "Deploy ready" --body "Review before promoting." \
   --choice "b:Skip"
 ```
 
-**From an app (Python SDK):**
-
-```python
-ctx.notify("Job done", body="Output is ready in ~/out.txt", priority=ctx.PRIORITY_HIGH)
-```
+**From an app (Python SDK):** emit a notification by returning a `Notify` effect from `update`. See [`sdk/python/SDK_V3.md`](sdk/python/SDK_V3.md) for the current effect API.
 
 ### Priority tiers
 
@@ -208,10 +204,10 @@ Creates a Plexi app directory with `manifest.toml` and `main.py` without opening
 
 ```toml
 schema_version = 1
-type = "app"
 
 [app]
 id = "my-app"
+type = "app"
 name = "My App"
 entry = "main.py"
 version = "0.1.0"
@@ -219,32 +215,46 @@ description = "What this app does"
 
 [app.capabilities]
 capabilities = []   # e.g. ["fs.read", "ai.query", "secrets.get"]
-
-[launch]
-layout_hint = { side = "right", split = 0.5 }
 ```
 
 ### App interaction model
 
-Normal apps implement `view()` and return an L1 component tree. The host handles layout, spacing, theme colors, hit testing, and rendering.
+Apps are three module-level functions. The host calls `init` once on launch, `update` for every input event, and `view` after any state change. No class, no inheritance.
 
 ```python
-from plexi_sdk import App
-from plexi_sdk.ui import AppBar, Column, Label
+from plexi_sdk import state, log
+from plexi_sdk.effects import SetState, SetTitle
+from plexi_sdk.events import KeyEvent
+from plexi_sdk.ui import AppBar, Column, Text, FooterKeys
 
-class MyApp(App):
-    def view(self):
-        return Column([
-            AppBar("My App"),
-            Label("Hello from Plexi"),
-        ])
 
-MyApp().run()
+def init(size, args):
+    log.info("my-app initialized")
+    return [SetTitle("My App"), SetState({"count": 0})]
+
+
+def update(event):
+    if isinstance(event, KeyEvent) and event.pressed:
+        if event.key in ("equals", "plus"):
+            return [SetState({"count": state.get("count", 0) + 1})]
+        if event.key == "minus":
+            return [SetState({"count": state.get("count", 0) - 1})]
+    return []
+
+
+def view():
+    return Column([
+        AppBar("My App"),
+        Text(str(state.get("count", 0)), bold=True),
+        FooterKeys([("+", "increment"), ("-", "decrement")]),
+    ], grow=True)
 ```
 
-Use `on_render(ctx)` only for canvas apps, games, realtime visualizations, or other pixel-control surfaces.
+`init` returns effects applied before the first frame. `update` returns effects in response to events — `SetState` mutates process-local runtime state; `PersistState` also writes through to the host. `view` is pure and reads state via `state.get()`.
 
-Use `self.emit.*` for host-brokered actions: `self.emit.notify(...)`, `self.emit.info(...)`, `await self.emit.secret_get(...)`, `await self.emit.ai_query(...)`.
+Use canvas apps (`on_render`) only for pixel-control surfaces like games or realtime visualizations.
+
+For host-brokered actions, return the appropriate effect from `update`: `Notify(...)`, `SecretGet(...)`, `AiQuery(...)`. Full reference: [`sdk/python/SDK_V3.md`](sdk/python/SDK_V3.md).
 
 App logs forward into the host log tagged `app::<app_id>`. Check `~/.plexi/plexi.log` (or `~/.plexi-alpha/plexi.log` on alpha) when debugging.
 
@@ -269,7 +279,7 @@ PGAP is the wire protocol that every Plexi app speaks — built-in or third-part
 6. Out-of-frame commands (`notify`, `secret_get`, `capability_request`, etc.) arrive at any time; host processes them immediately.
 7. On close: host sends `shutdown`; app must exit cleanly within a short timeout.
 
-Current protocol version: **pgap/3**. The Python SDK has its own authoring API version; SDK v2 apps speak PGAP v3. Full reference: `src/protocol/` and [`sdk/python/SDK_V2.md`](sdk/python/SDK_V2.md).
+Current protocol version: **pgap/3**. Full protocol reference: `src/protocol/`. Python SDK authoring reference: [`sdk/python/SDK_V3.md`](sdk/python/SDK_V3.md).
 
 ---
 
@@ -286,11 +296,7 @@ plexi secret list               # list keys scoped to current workspace
 plexi secret delete <KEY>       # remove from Keychain
 ```
 
-**From an app**, request the `secrets.get` capability in the manifest and call:
-
-```python
-value = await self.emit.secret_get("MY_API_KEY")
-```
+**From an app**, request the `secrets.get` capability in the manifest. The SDK effect API for secret access is documented in [`sdk/python/SDK_V3.md`](sdk/python/SDK_V3.md).
 
 The host presents a permission prompt on first access; subsequent calls within the same session use the cached grant.
 
