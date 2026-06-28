@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.14] — 2026-06-28
+
+### Changes
+- fix(updater): skip sudo bin install in background build (#2339) (#2341)
+- feat(promote): warn loudly if version not bumped before promoting
 ## [0.1.13] — 2026-06-26
 
 ### Changes
