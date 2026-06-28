@@ -74,8 +74,15 @@ check_pushed() {
 
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 to="${1:-}"
-do_install="${2:-}"
-do_release="${3:-}"
+do_install=""
+do_release=""
+for arg in "${@:2}"; do
+    case "$arg" in
+        install) do_install="install" ;;
+        release) do_release="release" ;;
+        *) die "unknown flag '$arg' — valid flags: install, release" ;;
+    esac
+done
 
 if [[ -z "$to" ]]; then
     case "$current_branch" in
