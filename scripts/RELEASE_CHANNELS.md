@@ -126,12 +126,32 @@ The Python SDK publishes only on stable tags; prerelease tags skip
 
 ### Cutting a release
 
+Preview unreleased commits without committing anything:
+
 ```sh
-just release-alpha      # tag next vX.Y.Z-alpha.N from alpha, push
-just release-beta       # tag next vX.Y.Z-beta.N from alpha, push
-just bump minor         # bump base version + changelog on alpha
-just promote main       # fast-forward main
-just release            # tag vX.Y.Z at main HEAD, push
+just changelog
+```
+
+Standard release batch:
+
+```sh
+just bump                          # bump Cargo.toml, write CHANGELOG, commit + tag locally
+just promote beta release          # alpha→beta + cut vX.Y.Z-beta.N tag + trigger CI
+just promote main release          # beta→main + cut vX.Y.Z tag + trigger CI
+```
+
+Promote code only (no CI tag, test locally first):
+
+```sh
+just promote beta                  # alpha→beta, no tag
+just promote main                  # beta→main, no tag
+```
+
+Add `install` anywhere to build and install that channel after promoting:
+
+```sh
+just promote beta install release
+just promote main install release
 ```
 
 ## Channel Update Policy

@@ -303,30 +303,17 @@ changelog:
 bump bump="patch":
     bash scripts/release-version.sh "{{bump}}"
 
-# Promote to the next channel. Auto-detects current branch and prompts.
-# Run just bump before promoting if you haven't already.
-#   just promote              — detects alpha→beta or beta→main and confirms
-#   just promote beta         — skip prompt, promote alpha→beta
-#   just promote main         — skip prompt, promote beta→main
-#   just promote beta install — promote and install the target channel
-#   just promote main install — promote and install the target channel
-promote to="" install="":
-    bash scripts/promote.sh "{{to}}" "{{install}}"
-
-# Push the version tag for the current Cargo.toml version and trigger the GitHub Actions release.
-# Run this only when you want a binary release — promote to main first.
-release:
-    bash scripts/release-tag.sh
-
-# Cut an alpha prerelease tag from the current version and push it.
-release-alpha:
-    bash scripts/release-version.sh --alpha
-    bash scripts/release-tag.sh
-
-# Cut a beta prerelease tag from the current version and push it.
-release-beta:
-    bash scripts/release-version.sh --beta
-    bash scripts/release-tag.sh
+# Promote to the next channel. Run `just bump` first if cutting a new version.
+# The `release` flag cuts and pushes the channel's release tag to trigger CI.
+#   just promote              — auto-detect alpha→beta or beta→main, prompt
+#   just promote beta         — promote alpha→beta (code only)
+#   just promote main         — promote beta→main (code only)
+#   just promote beta install — promote + install beta
+#   just promote main install — promote + install main
+#   just promote beta release — promote + cut vX.Y.Z-beta.N tag + trigger CI
+#   just promote main release — promote + cut vX.Y.Z tag + trigger CI
+promote to="" install="" release="":
+    bash scripts/promote.sh "{{to}}" "{{install}}" "{{release}}"
 
 # Remove a Plexi channel and its profile dir, app bundle, and CLI binary.
 # Defaults to removing all channels plus shell integration and completions.

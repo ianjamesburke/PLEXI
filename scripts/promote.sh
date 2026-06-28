@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Plexi channel promotion pipeline.
-# Usage: promote.sh [beta|main]
+# Usage: promote.sh [beta|main] [install] [release]
 #   No argument: auto-detects current branch and prompts for confirmation.
-#   With argument: skips prompt (useful for scripting).
+#   install: build and install the target channel after promoting.
+#   release: cut and push a prerelease tag (beta) or stable tag (main) to trigger CI.
 #
-# Run `just bump` on alpha before promoting to beta if you haven't already.
-# `just bump` creates the version tag locally; main promotion pushes that tag.
+# Run `just bump` on alpha before promoting if you haven't already.
 set -euo pipefail
 
 REPO_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
@@ -49,6 +49,7 @@ check_pushed() {
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 to="${1:-}"
 do_install="${2:-}"
+do_release="${3:-}"
 
 if [[ -z "$to" ]]; then
     case "$current_branch" in
@@ -94,8 +95,26 @@ promote_alpha_to_beta() {
 if [[ "$to" == "beta" ]]; then
     promote_alpha_to_beta
 
+    version=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+    if [[ "$do_release" == "release" || "$do_release" == "true" ]]; then
+        base=$(echo "$version" | sed 's/-.*//')
+        git -C "$ALPHA_TREE" fetch origin --tags --quiet 2>/dev/null || true
+        highest=$(git -C "$ALPHA_TREE" tag -l "v${base}-beta.*" --sort=-v:refname | head -1)
+        if [[ -n "$highest" ]]; then
+            n=$(echo "$highest" | sed 's/.*-beta\.//')
+            next=$((n + 1))
+        else
+            next=1
+        fi
+        tag="v${base}-beta.${next}"
+        echo "Cutting $tag on alpha..."
+        git -C "$ALPHA_TREE" tag "$tag"
+        git -C "$ALPHA_TREE" push origin "$tag"
+        echo "GitHub Actions release workflow triggered for $tag."
+    fi
+
     if [[ "$do_install" == "install" || "$do_install" == "true" ]]; then
-        version=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
         echo ""
         echo "Installing beta (v$version)..."
         (cd "$BETA_TREE" && just install)
@@ -124,17 +143,22 @@ git push origin beta:main
 echo "Syncing main worktree..."
 git -C "$MAIN_TREE" pull origin main
 
-main_commit=$(git -C "$MAIN_TREE" rev-parse HEAD)
-if git -C "$MAIN_TREE" tag -l "v$version" | grep -q "v$version"; then
-    tagged_commit=$(git -C "$MAIN_TREE" rev-list -n 1 "v$version")
-    if [[ "$tagged_commit" != "$main_commit" ]]; then
-        echo "info: tag v$version points at an older commit — re-tagging at main HEAD..."
-        git tag -f "v$version" "$main_commit"
+if [[ "$do_release" == "release" || "$do_release" == "true" ]]; then
+    main_commit=$(git -C "$MAIN_TREE" rev-parse HEAD)
+    if git -C "$MAIN_TREE" tag -l "v$version" | grep -q "v$version"; then
+        tagged_commit=$(git -C "$MAIN_TREE" rev-list -n 1 "v$version")
+        if [[ "$tagged_commit" != "$main_commit" ]]; then
+            echo "info: tag v$version points at an older commit — re-tagging at main HEAD..."
+            git -C "$MAIN_TREE" tag -f "v$version" "$main_commit"
+        fi
+    else
+        echo "Creating tag v$version at main HEAD..."
+        git -C "$MAIN_TREE" tag "v$version"
     fi
     echo "Pushing tag v$version → triggers release CI..."
-    git push origin "v$version" --force
+    git -C "$MAIN_TREE" push origin "v$version" --force
 else
-    echo "No tag for v$version — skipping release CI (run 'just bump' to cut a release)."
+    echo "Code promoted to main. Run 'just promote main release' to tag and trigger CI."
 fi
 
 if [[ "$do_install" == "install" || "$do_install" == "true" ]]; then
