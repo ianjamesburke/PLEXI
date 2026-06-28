@@ -39,7 +39,7 @@ If a near-duplicate issue exists:
 
 ---
 
-## Step 2 -- Research
+## Step 2 -- Research and Confirm Plan
 
 Before drafting, investigate the relevant code:
 
@@ -51,7 +51,7 @@ For bug tasks, verify the root cause by reading code. Never state an unverified 
 
 Grep `GOTCHAS.md` for related pitfalls if it exists.
 
-This research feeds into the task body. It is not a separate deliverable.
+**Before writing the task file, present the decided implementation plan to the user and confirm.** One approach only — no options, no A/B. If multiple approaches exist, pick the best one yourself and state it. Only ask the user if there is a genuine trade-off they must own (e.g., breaking API change, scope that affects other teams). Wait for confirmation before proceeding to Step 3.
 
 ---
 

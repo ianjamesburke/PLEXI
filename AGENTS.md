@@ -118,6 +118,7 @@ Non-obvious discoveries with no single owning directory. When you discover a tra
 - **Issue-referenced code may no longer exist.** When an issue names specific functions or code paths, grep for them in alpha before implementing. The function may have been removed or moved since the issue was filed.
 - **`create_page_at` takes an explicit `context_id`.** Never temporarily switch `active_window` or `router.active` to steer `create_page_at` into a context — pass `context_id: u64` directly. To get the caller-pane's context: `find_pane_in_any_window(from_pane_id)` → `self.windows[win_idx].context_id`.
 - **Don't switch global state to thread data through a function.** When a helper reads from `router.active()` or `active_window`, the fix is to add an explicit parameter — not to temporarily mutate global focus state before calling it. Global-state mutation as a calling convention is always a hack.
+- **`plexi` CLI is almost always running inside a Plexi pane.** Never assume an outside-terminal scenario unless the bug explicitly involves the spawn-queue or `PLEXI_SOCKET` being unset. User-reported issues are about in-pane behavior.
 
 ## Architecture
 

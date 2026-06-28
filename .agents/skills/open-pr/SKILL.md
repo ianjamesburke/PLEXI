@@ -149,3 +149,5 @@ Invoke `/validate-pr <pr-number>` inline in the same pane.
 - Never push to `alpha`, `beta`, or `main` directly
 - Idempotency: re-running on an already-open PR advances labels, never errors
 - All quality review happens in `/validate-pr` — open-pr does not run any review
+
+

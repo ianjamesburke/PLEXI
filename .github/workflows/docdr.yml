@@ -3,7 +3,7 @@ name: DocDr
 on:
   pull_request:
     types: [closed]
-    branches: [main, master]
+    branches: [main, master, alpha]
 
 permissions:
   contents: write
