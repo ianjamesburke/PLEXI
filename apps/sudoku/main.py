@@ -12,12 +12,13 @@ TRANSPARENT = rgba(0, 0, 0, 0)
 from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import KeyEvent, MouseEvent, Resize, TimerFired
 from plexi_sdk.ui import (
-    AppBar, Canvas, CanvasRect, CanvasText, Column, Divider,
-    FooterKeys, HStack, Section, Sized, Text,
+    AppBar, Canvas, CanvasRect, CanvasText, Column,
+    FooterKeys,
 )
 
 TIMER_ID = 1
-SIDEBAR_W = 148
+SIDEBAR_W_MAX = 148
+SIDEBAR_W_MIN = 100
 CLUES = {"easy": 46, "medium": 34, "hard": 26}
 DIFFICULTIES = ["easy", "medium", "hard"]
 DIFF_TONE = {"easy": "success", "medium": "warning", "hard": "danger"}
@@ -317,6 +318,17 @@ def _game_key(d, event):
 
 # ── View ───────────────────────────────────────────────────────────────────
 
+def _compute_layout():
+    """Return (sidebar_w, cell) from current pane dimensions."""
+    pane_w = sdk.pane_width or 800.0
+    pane_h = sdk.pane_height or 600.0
+    sidebar_w = max(SIDEBAR_W_MIN, min(SIDEBAR_W_MAX, int(pane_w * 0.18)))
+    body_h = pane_h - 76.0  # minus AppBar + footer
+    max_grid_w = pane_w - sidebar_w - 20.0
+    cell = max(20.0, min((max_grid_w - 4.0) / 9.0, (body_h - 16.0) / 9.0))
+    return sidebar_w, cell
+
+
 def view():
     d = _load()
     screen = str(d.get("screen", "menu"))
@@ -331,10 +343,9 @@ def view():
         footer = FooterKeys(keys)
     screen = str(d.get("screen", "menu"))
     if screen != "menu":
-        body = HStack([
-            Canvas(_draw_grid(d), grow=True),
-            Sized(width=SIDEBAR_W, child=_sidebar(d)),
-        ], grow=True)
+        # Single canvas for the entire game body: grid + sidebar drawn together.
+        # This avoids HStack grow-distribution fighting with fixed-size children.
+        body = Canvas(_draw_game(d), grow=True)
     else:
         body = Canvas(_draw_menu(d), grow=True)
 
@@ -379,8 +390,87 @@ def _draw_menu(d):
 
 # ── Game drawing ───────────────────────────────────────────────────────────
 
-def _draw_grid(d):
-    """Canvas commands for the sudoku grid only (no sidebar)."""
+def _draw_sidebar_canvas(d, sx, oy, sidebar_w, cell):
+    """Sidebar content as canvas commands anchored at (sx, oy)."""
+    difficulty = str(d.get("difficulty", "easy"))
+    seconds = int(d.get("seconds", 0))
+    notes_mode = bool(d.get("notes_mode", False))
+    board = d.get("board", [[0] * 9] * 9)
+    given = d.get("given", [[True] * 9] * 9)
+    sel_num = int(d.get("sel_num", 0))
+    counts = _count_numbers(board)
+    filled = sum(1 for r in range(9) for c in range(9) if not given[r][c] and board[r][c] != 0)
+    blanks = sum(1 for r in range(9) for c in range(9) if not given[r][c])
+    d_color = getattr(theme, DIFF_TONE.get(difficulty, "accent"))
+
+    cmds = []
+    y = oy
+
+    def section(label):
+        nonlocal y
+        y += 6
+        cmds.append(CanvasText(sx, y, label.upper(), size=10.0, color=theme.muted, bold=True, align="left_top"))
+        y += 13
+        cmds.append(CanvasRect(sx, y, sidebar_w, 1.0, theme.highlight))
+        y += 5
+
+    section("DIFFICULTY")
+    cmds.append(CanvasText(sx, y, difficulty.upper(), size=15.0, color=d_color, bold=True, align="left_top"))
+    y += 22
+
+    section("TIME")
+    cmds.append(CanvasText(sx, y, _fmt(seconds), size=20.0, color=theme.fg, bold=True, align="left_top"))
+    y += 28
+
+    if notes_mode:
+        cmds.append(CanvasText(sx, y, "NOTES ON", size=12.0, color=theme.warning, bold=True, align="left_top"))
+        y += 20
+
+    if blanks > 0:
+        section("PROGRESS")
+        cmds.append(CanvasText(sx, y, f"{filled}/{blanks}", size=13.0, color=theme.accent, align="left_top"))
+        y += 20
+
+    section("NUMBERS")
+    gap = 5.0
+    bw = bh = max(24.0, (sidebar_w - 2 * gap) / 3.0)
+    for i in range(9):
+        num = i + 1
+        col_i = i % 3
+        row_i = i // 3
+        bx = sx + col_i * (bw + gap)
+        by = y + row_i * (bh + gap)
+        done_num = counts[num - 1] >= 9
+        is_sel = num == sel_num and sel_num != 0
+        if done_num:
+            bg, text_col, border = theme.bg, theme.muted, theme.border
+        elif is_sel:
+            bg, text_col, border = theme.highlight, theme.accent, theme.accent
+        else:
+            bg, text_col, border = theme.surface, theme.fg, theme.highlight
+        cmds.append(CanvasRect(bx, by, bw, bh, bg, radius=4.0,
+                               border_color=border, border_width=1.0,
+                               hit_region=f"num-{num}"))
+        cmds.append(CanvasText(bx + bw / 2, by + bh / 2, str(num), size=15.0,
+                               color=text_col, bold=not done_num, align="center_center"))
+    return cmds
+
+
+def _draw_game(d):
+    """Full game body: grid + sidebar on one canvas, sidebar flush right of grid."""
+    sidebar_w, cell = _compute_layout()
+    pane_w = sdk.canvas_width or sdk.pane_width or 800.0
+    gw = cell * 9
+    pair_w = gw + 12.0 + sidebar_w
+    ox = max(8.0, (pane_w - pair_w) / 2.0)
+    oy = 8.0
+    sx = ox + gw + 12.0
+
+    return _draw_grid(d, cell, ox, oy) + _draw_sidebar_canvas(d, sx, oy, sidebar_w, cell)
+
+
+def _draw_grid(d, cell=None, ox=6.0, oy=8.0):
+    """Canvas commands for the sudoku grid."""
     board = d.get("board", [[0] * 9] * 9)
     given = d.get("given", [[True] * 9] * 9)
     errors = d.get("errors", [[False] * 9] * 9)
@@ -393,14 +483,8 @@ def _draw_grid(d):
     seconds = int(d.get("seconds", 0))
     sel_num = int(d.get("sel_num", 0))
 
-    # sdk.canvas_width/height reflect full pane size, not HStack allocation.
-    # Use canvas_width minus sidebar for horizontal sizing, and a fixed
-    # top margin for vertical so the grid never overflows its allocation.
-    grid_w = sdk.canvas_width - SIDEBAR_W - 8
-    TOP_PAD = 24.0
-    cell = min((grid_w - 24) / 9, (sdk.canvas_height * 0.75 - TOP_PAD) / 9)
-    ox = (grid_w - cell * 9) / 2
-    oy = TOP_PAD
+    if cell is None:
+        _, cell = _compute_layout()
     gw = cell * 9
     gh = cell * 9
     cmds = []
@@ -415,12 +499,10 @@ def _draw_grid(d):
             cmds.append(CanvasRect(ox + c * cell, oy + r * cell, cell, cell,
                                    TRANSPARENT, hit_region=f"cell-{r}-{c}"))
 
-    # Highlight row, col, box of selected cell
+    # Row + col cross highlight only — no box tint.
     if sel_r >= 0 and sel_c >= 0 and not paused and screen == "game":
-        cmds.append(CanvasRect(ox, oy + sel_r * cell, gw, cell, theme.border))
-        cmds.append(CanvasRect(ox + sel_c * cell, oy, cell, gh, theme.border))
-        br, bc = (sel_r // 3) * 3, (sel_c // 3) * 3
-        cmds.append(CanvasRect(ox + bc * cell, oy + br * cell, cell * 3, cell * 3, theme.border))
+        cmds.append(CanvasRect(ox, oy + sel_r * cell, gw, cell, theme.surface))
+        cmds.append(CanvasRect(ox + sel_c * cell, oy, cell, gh, theme.surface))
 
     # Same-number highlight
     if sel_num != 0 and not paused:
@@ -429,9 +511,13 @@ def _draw_grid(d):
                 if board[r][c] == sel_num and not (r == sel_r and c == sel_c):
                     cmds.append(CanvasRect(ox + c * cell + 2, oy + r * cell + 2, cell - 4, cell - 4, theme.surface, radius=3.0))
 
-    # Selected cell highlight
+    # Selected cell — highlight fill + muted border, clearly distinct from box tint
     if sel_r >= 0 and sel_c >= 0 and not paused and screen == "game":
-        cmds.append(CanvasRect(ox + sel_c * cell + 1, oy + sel_r * cell + 1, cell - 2, cell - 2, theme.highlight, radius=3.0))
+        cmds.append(CanvasRect(
+            ox + sel_c * cell + 1, oy + sel_r * cell + 1, cell - 2, cell - 2,
+            theme.highlight, radius=3.0,
+            border_color=theme.muted, border_width=2.0,
+        ))
 
     # Cell content
     if not paused:
@@ -460,20 +546,15 @@ def _draw_grid(d):
                             ny = oy + r * cell + nr2 * (cell / 3) + cell / 6
                             cmds.append(CanvasText(nx, ny, str(ni + 1), size=max(7.0, mini * 0.6), color=theme.muted, align="center_center"))
 
-    # Grid lines
+    # Grid lines — box boundaries use fg (2px), cell lines use muted (0.5px) so
+    # they remain visible against the box and selected-cell fills.
     for i in range(10):
         box_line = i % 3 == 0
         lw = 2.0 if box_line else 0.5
-        col = theme.fg if box_line else theme.highlight
+        col = theme.fg if box_line else theme.muted
         cmds.append(CanvasRect(ox, oy + i * cell - lw / 2, gw, lw, col))
         cmds.append(CanvasRect(ox + i * cell - lw / 2, oy, lw, gh, col))
 
-    # Box outline on top
-    if sel_r >= 0 and sel_c >= 0 and not paused and screen == "game":
-        br, bc = (sel_r // 3) * 3, (sel_c // 3) * 3
-        bs = cell * 3
-        cmds.append(CanvasRect(ox + bc * cell, oy + br * cell, bs, bs, TRANSPARENT,
-                               border_color=theme.muted, border_width=2.0))
 
     # Overlay: paused
     cxg = ox + gw / 2
@@ -497,67 +578,3 @@ def _draw_grid(d):
     return cmds
 
 
-def _numpad_canvas(d):
-    """3x3 numpad as a small canvas with hit regions."""
-    board = d.get("board", [[0] * 9] * 9)
-    sel_num = int(d.get("sel_num", 0))
-    counts = _count_numbers(board)
-    bw, bh, gap = 38.0, 38.0, 6.0
-    cmds = []
-    for i in range(9):
-        num = i + 1
-        col = i % 3
-        row = i // 3
-        bx = col * (bw + gap)
-        by = row * (bh + gap)
-        done_num = counts[num - 1] >= 9
-        is_sel = num == sel_num and sel_num != 0
-        if done_num:
-            bg, text_col, border = theme.bg, theme.muted, theme.border
-        elif is_sel:
-            bg, text_col, border = theme.highlight, theme.accent, theme.accent
-        else:
-            bg, text_col, border = theme.surface, theme.fg, theme.highlight
-        cmds.append(CanvasRect(bx, by, bw, bh, bg, radius=4.0,
-                               border_color=border, border_width=1.0,
-                               hit_region=f"num-{num}"))
-        cmds.append(CanvasText(bx + bw / 2, by + bh / 2, str(num), size=15.0,
-                               color=text_col, bold=not done_num, align="center_center"))
-    total_w = 3 * bw + 2 * gap
-    total_h = 3 * bh + 2 * gap
-    return Canvas(cmds, width=total_w, height=total_h)
-
-
-def _sidebar(d):
-    """L1 Column sidebar: difficulty, timer, progress, numpad."""
-    difficulty = str(d.get("difficulty", "easy"))
-    seconds = int(d.get("seconds", 0))
-    notes_mode = bool(d.get("notes_mode", False))
-    board = d.get("board", [[0] * 9] * 9)
-    given = d.get("given", [[True] * 9] * 9)
-
-    filled = sum(1 for r in range(9) for c in range(9) if not given[r][c] and board[r][c] != 0)
-    blanks = sum(1 for r in range(9) for c in range(9) if not given[r][c])
-    d_color = getattr(theme, DIFF_TONE.get(difficulty, "accent"))
-
-    children = [
-        Section("DIFFICULTY"),
-        Text(difficulty.upper(), color=d_color, bold=True, size=15),
-        Divider(),
-        Section("TIME"),
-        Text(_fmt(seconds), bold=True, size=20),
-    ]
-    if notes_mode:
-        children += [Divider(), Text("NOTES ON", color=theme.warning, bold=True)]
-    if blanks > 0:
-        children += [
-            Divider(),
-            Section("PROGRESS"),
-            Text(f"{filled}/{blanks}", color=theme.accent, size=13),
-        ]
-    children += [
-        Divider(),
-        Section("NUMBERS"),
-        _numpad_canvas(d),
-    ]
-    return Column(children, padding=12, gap=6)
