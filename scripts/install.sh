@@ -64,7 +64,12 @@ if [[ ! -d "$bin_dir" || ! -w "$bin_dir" ]]; then
   bin_install_needs_sudo=true
 fi
 
-if $bin_install_needs_sudo; then
+# Non-interactive callers (background updater, CI) set PLEXI_SKIP_BIN_INSTALL=1
+# to skip the sudo credential check and /usr/local/bin write. The .app bundle
+# update is sufficient — the existing shim delegates to /Applications/Plexi.app.
+skip_bin_install="${PLEXI_SKIP_BIN_INSTALL:-0}"
+
+if [[ "$skip_bin_install" != "1" ]] && $bin_install_needs_sudo; then
   echo "CLI install needs admin access for $bin_dir"
   sudo -v
 fi
@@ -99,13 +104,14 @@ if [[ -n "$suffix" ]]; then
   mv "$app_dest/Contents/MacOS/plexi" "$app_dest/Contents/MacOS/plexi${suffix}"
 fi
 
-if [[ "$channel" == "main" ]]; then
-  # Main owns the bare `plexi` PATH command, but installs it as a contextual
-  # shim instead of a symlink. Inside a Plexi PTY, the shim delegates to the
-  # active channel binary from PLEXI_CHANNEL. Outside Plexi, it runs stable.
-  # Remove first so an old symlink is not followed when writing the script.
-  shim_tmp="$(mktemp)"
-  cat > "$shim_tmp" <<'EOF'
+if [[ "$skip_bin_install" != "1" ]]; then
+  if [[ "$channel" == "main" ]]; then
+    # Main owns the bare `plexi` PATH command, but installs it as a contextual
+    # shim instead of a symlink. Inside a Plexi PTY, the shim delegates to the
+    # active channel binary from PLEXI_CHANNEL. Outside Plexi, it runs stable.
+    # Remove first so an old symlink is not followed when writing the script.
+    shim_tmp="$(mktemp)"
+    cat > "$shim_tmp" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -125,24 +131,27 @@ fi
 
 exec "$stable_binary" "$@"
 EOF
-  if $bin_install_needs_sudo; then
-    [[ -d "$bin_dir" ]] || sudo mkdir -p "$bin_dir"
-    sudo rm -f "$bin_dest"
-    sudo install -m 0755 "$shim_tmp" "$bin_dest"
+    if $bin_install_needs_sudo; then
+      [[ -d "$bin_dir" ]] || sudo mkdir -p "$bin_dir"
+      sudo rm -f "$bin_dest"
+      sudo install -m 0755 "$shim_tmp" "$bin_dest"
+    else
+      [[ -d "$bin_dir" ]] || mkdir -p "$bin_dir"
+      rm -f "$bin_dest"
+      install -m 0755 "$shim_tmp" "$bin_dest"
+    fi
+    rm -f "$shim_tmp"
   else
-    [[ -d "$bin_dir" ]] || mkdir -p "$bin_dir"
-    rm -f "$bin_dest"
-    install -m 0755 "$shim_tmp" "$bin_dest"
+    if $bin_install_needs_sudo; then
+      [[ -d "$bin_dir" ]] || sudo mkdir -p "$bin_dir"
+      sudo ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
+    else
+      [[ -d "$bin_dir" ]] || mkdir -p "$bin_dir"
+      ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
+    fi
   fi
-  rm -f "$shim_tmp"
 else
-  if $bin_install_needs_sudo; then
-    [[ -d "$bin_dir" ]] || sudo mkdir -p "$bin_dir"
-    sudo ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
-  else
-    [[ -d "$bin_dir" ]] || mkdir -p "$bin_dir"
-    ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
-  fi
+  echo "Skipping bin install (PLEXI_SKIP_BIN_INSTALL=1 — shim unchanged at $bin_dest)"
 fi
 
 # Install shell completions for production and release-candidate channels.
