@@ -92,6 +92,8 @@ pub struct TextEditorApp {
     /// keep the scroll region at least half a viewport taller than content,
     /// so the cursor can always be centered when at the bottom of a long doc.
     content_pixel_height: f32,
+    /// Cache for CommonMark rendering — reused across frames for performance.
+    common_mark_cache: egui_commonmark::CommonMarkCache,
 }
 
 impl TextEditorApp {
@@ -118,6 +120,7 @@ impl TextEditorApp {
             cursor_was_at_end: false,
             find_bar: None,
             content_pixel_height: 0.0,
+            common_mark_cache: egui_commonmark::CommonMarkCache::default(),
         }
     }
 
@@ -614,6 +617,17 @@ fn leading_whitespace_at(content: &str, char_idx: usize) -> String {
         .collect()
 }
 
+/// Returns true if `s` ends with a common image extension (case-insensitive).
+fn is_image_url(s: &str) -> bool {
+    let lower = s.to_lowercase();
+    lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".webp")
+        || lower.ends_with(".svg")
+}
+
 fn slugify_title(title: &str) -> String {
     let slug: String = title
         .chars()
@@ -891,6 +905,16 @@ impl App for TextEditorApp {
             ui.fonts(|f| f.layout_job(job))
         };
 
+        if self.is_note {
+            egui::ScrollArea::vertical()
+                .id_salt(egui::Id::new("note_viewer_scroll").with(&self.path))
+                .auto_shrink([false, false])
+                .max_height(editor_height)
+                .show(ui, |ui| {
+                    egui_commonmark::CommonMarkViewer::new()
+                        .show(ui, &mut self.common_mark_cache, &self.content);
+                });
+        } else {
         egui::ScrollArea::vertical()
             .id_salt(egui::Id::new("text_editor_scroll").with(&self.path))
             .auto_shrink([false, false])
@@ -1066,6 +1090,7 @@ impl App for TextEditorApp {
                     output.response.request_focus();
                 }
             });
+        } // end else (non-note TextEdit branch)
 
         // Render the find bar below the scroll area.
         if let Some(bar) = &mut self.find_bar {
@@ -1123,6 +1148,30 @@ impl App for TextEditorApp {
                         .color(colors.text_dim),
                 );
             });
+        }
+
+        // Dropped file / URL detection. egui reports dropped items via raw.dropped_files.
+        // URL drops: `file.name` is the URL string; path-based drops use `file.path`.
+        let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
+        for file in dropped {
+            // URL drop: name is the URL.
+            let name = &file.name;
+            if (name.starts_with("http://") || name.starts_with("https://")) && is_image_url(name) {
+                let md = format!("![]({})", name);
+                self.content.push_str(&md);
+                self.last_edit = Some(Instant::now());
+                log::info!("TextEditorApp: dropped image URL — inserted {:?}", md);
+            }
+            // Path-based drop.
+            if let Some(path) = &file.path {
+                let path_str = path.to_string_lossy();
+                if is_image_url(&path_str) {
+                    let md = format!("![]({})", path_str);
+                    self.content.push_str(&md);
+                    self.last_edit = Some(Instant::now());
+                    log::info!("TextEditorApp: dropped image path — inserted {:?}", md);
+                }
+            }
         }
     }
 
