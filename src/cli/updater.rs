@@ -182,14 +182,14 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
         return Err(format!("git checkout {tag} failed"));
     }
 
-    log::info!("background_build: running install.sh for {tag} channel={channel}");
+    log::info!("background_build: running install.sh for {tag} channel={channel} (PLEXI_SKIP_BIN_INSTALL=1 — non-TTY, shim unchanged)");
     let log_file = std::fs::File::create(&log_path)
         .map_err(|e| format!("create update log: {e}"))?;
     let log_err = log_file.try_clone()
         .map_err(|e| format!("clone log handle: {e}"))?;
 
     let install_cmd = format!(
-        "PLEXI_INSTALL_TAG='{}' bash '{}' '{}'",
+        "PLEXI_INSTALL_TAG='{}' PLEXI_SKIP_BIN_INSTALL=1 bash '{}' '{}'",
         tag,
         src_dir.join("scripts/install.sh").display(),
         channel,
