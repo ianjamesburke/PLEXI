@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import random
+
 import plexi_sdk as sdk
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
@@ -141,22 +143,24 @@ def _advance(data: dict) -> dict:
     data["snake"].insert(0, head)
     if head == data["food"]:
         data["score"] += 1
-        data["food"] = _next_food(data["snake"], data["score"])
+        data["food"] = _next_food(data["snake"])
         log.info(f"snake: score={data['score']}")
     else:
         data["snake"].pop()
     return data
 
 
-def _next_food(snake: list[list[int]], score: int) -> list[int]:
+def _next_food(snake: list[list[int]]) -> list[int]:
     occupied = {tuple(cell) for cell in snake}
-    start = (score * 17 + len(snake) * 7) % (COLS * ROWS)
-    for offset in range(COLS * ROWS):
-        idx = (start + offset) % (COLS * ROWS)
-        cell = [idx % COLS, idx // COLS]
-        if tuple(cell) not in occupied:
-            return cell
-    return [-1, -1]
+    free = [
+        [c, r]
+        for r in range(ROWS)
+        for c in range(COLS)
+        if (c, r) not in occupied
+    ]
+    if not free:
+        return [-1, -1]
+    return random.choice(free)
 
 
 def view():
