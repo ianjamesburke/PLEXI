@@ -70,6 +70,17 @@ stint done <task-id>
 
 If estimate was off >2x, add one sentence to the task body explaining why. If no linked task exists, note it in the ship log.
 
+Then update `WHATS_NEXT.md` to reflect the closed task — run the whats-next audit inline:
+
+```bash
+stint list 2>&1
+stint status 2>&1
+git log --oneline -5 2>&1
+gh pr list --state open --limit 20 2>&1
+```
+
+Rewrite `.agents/skills/whats-next/WHATS_NEXT.md` with the current priority stack (same format the `/whats-next` skill produces). This keeps the file in sync without requiring a separate invocation.
+
 ---
 
 ## Step 3 — Unblock Downstream Issues
