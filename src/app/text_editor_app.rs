@@ -78,6 +78,9 @@ pub struct TextEditorApp {
     note_title: String,
     /// True when `path` lives under `<config_dir>/notes/`.
     is_note: bool,
+    /// True when the note frontmatter contains `source: "scratchpad"`.
+    /// Scratchpad panes render via CommonMarkViewer (image preview) instead of TextEdit.
+    is_scratchpad: bool,
     last_edit: Option<Instant>,
     wants_close: bool,
     load_error: Option<String>,
@@ -107,12 +110,14 @@ impl TextEditorApp {
         let notes_dir = crate::config::config_dir().join("notes");
         let is_note = path.starts_with(&notes_dir);
         let (note_header, content, note_title) = split_note(is_note, raw);
+        let is_scratchpad = note_header.as_deref().map_or(false, |h| h.contains("source: \"scratchpad\""));
         Self {
             path,
             content,
             note_header,
             note_title,
             is_note,
+            is_scratchpad,
             last_edit: None,
             wants_close: false,
             load_error,
@@ -905,7 +910,7 @@ impl App for TextEditorApp {
             ui.fonts(|f| f.layout_job(job))
         };
 
-        if self.is_note {
+        if self.is_scratchpad {
             egui::ScrollArea::vertical()
                 .id_salt(egui::Id::new("note_viewer_scroll").with(&self.path))
                 .auto_shrink([false, false])
@@ -1150,9 +1155,17 @@ impl App for TextEditorApp {
             });
         }
 
-        // Dropped file / URL detection. egui reports dropped items via raw.dropped_files.
-        // URL drops: `file.name` is the URL string; path-based drops use `file.path`.
-        let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
+        // Dropped file / URL detection. Gate on pointer being within this pane's rect so
+        // multiple open note panes don't each consume the same drop event.
+        let pane_rect = ui.min_rect();
+        let pointer_in_pane = ui.ctx().input(|i| {
+            i.pointer.hover_pos().map_or(false, |p| pane_rect.contains(p))
+        });
+        let dropped = if pointer_in_pane {
+            ui.ctx().input(|i| i.raw.dropped_files.clone())
+        } else {
+            vec![]
+        };
         for file in dropped {
             // URL drop: name is the URL.
             let name = &file.name;
@@ -1205,6 +1218,7 @@ impl App for TextEditorApp {
                 let notes_dir = crate::config::config_dir().join("notes");
                 self.is_note = new_path.starts_with(&notes_dir);
                 let (note_header, content, note_title) = split_note(self.is_note, raw);
+                self.is_scratchpad = note_header.as_deref().map_or(false, |h| h.contains("source: \"scratchpad\""));
                 self.path = new_path;
                 self.content = content;
                 self.note_header = note_header;
