@@ -1128,16 +1128,17 @@ mod tests {
 
     #[test]
     fn update_check_due_after_interval() {
-        let now = std::time::Instant::now();
-        let last = now - crate::cli::updater::CHECK_INTERVAL;
+        let last = std::time::Instant::now();
+        let now = last + crate::cli::updater::CHECK_INTERVAL;
 
         assert!(update_check_due(last, now));
     }
 
     #[test]
     fn update_check_not_due_before_interval() {
-        let now = std::time::Instant::now();
-        let last = now - crate::cli::updater::CHECK_INTERVAL + std::time::Duration::from_secs(1);
+        let last = std::time::Instant::now();
+        let now =
+            last + crate::cli::updater::CHECK_INTERVAL - std::time::Duration::from_secs(1);
 
         assert!(!update_check_due(last, now));
     }
