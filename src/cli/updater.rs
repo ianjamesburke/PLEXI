@@ -6,7 +6,7 @@ use std::{
 
 use crate::cli::release_resolver::{self, ReleaseTag, UpdateChannel};
 
-const CHECK_INTERVAL: Duration = Duration::from_secs(86_400);
+pub(crate) const CHECK_INTERVAL: Duration = Duration::from_secs(86_400);
 
 /// Spawns a background thread that checks for updates, and if a newer version
 /// is found, builds and installs it silently. Only sends on `tx` when the new
@@ -51,6 +51,14 @@ pub fn spawn_update_check(cache_dir: std::path::PathBuf, tx: mpsc::Sender<String
         .ok();
 }
 
+pub(crate) fn update_cache_fresh(cache_dir: &Path) -> bool {
+    update_cache_fresh_for_channel(
+        &cache_dir.join("update_cache.json"),
+        detect_channel(),
+        unix_now_secs(),
+    )
+}
+
 /// Read the installed release tag from `<profile>/installed_tag`, falling back
 /// to `CARGO_PKG_VERSION` for source builds that don't write the tag file.
 fn installed_tag_or_cargo_version(cache_dir: &Path) -> String {
@@ -78,14 +86,7 @@ fn detect_channel() -> UpdateChannel {
 fn cached_or_fetch(cache_path: &Path, channel: UpdateChannel, current_raw: &str) -> Option<String> {
     if let Ok(bytes) = std::fs::read(cache_path) {
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            let checked_at = json["checked_at"].as_u64().unwrap_or(0);
-            let cached_channel = json["channel"].as_str().unwrap_or("");
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let fresh = Duration::from_secs(now.saturating_sub(checked_at)) < CHECK_INTERVAL;
-            if fresh && cached_channel == channel_key(channel) {
+            if cached_json_fresh_for_channel(&json, channel, unix_now_secs()) {
                 return json["latest"].as_str().map(|s| s.to_string());
             }
         }
@@ -93,11 +94,82 @@ fn cached_or_fetch(cache_path: &Path, channel: UpdateChannel, current_raw: &str)
     fetch_and_cache(cache_path, channel, current_raw)
 }
 
+fn update_cache_fresh_for_channel(cache_path: &Path, channel: UpdateChannel, now: u64) -> bool {
+    std::fs::read(cache_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .map_or(false, |json| {
+            cached_json_fresh_for_channel(&json, channel, now)
+        })
+}
+
+fn cached_json_fresh_for_channel(
+    json: &serde_json::Value,
+    channel: UpdateChannel,
+    now: u64,
+) -> bool {
+    let checked_at = json["checked_at"].as_u64().unwrap_or(0);
+    let cached_channel = json["channel"].as_str().unwrap_or("");
+    let fresh = Duration::from_secs(now.saturating_sub(checked_at)) < CHECK_INTERVAL;
+    fresh && cached_channel == channel_key(channel)
+}
+
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 fn channel_key(channel: UpdateChannel) -> &'static str {
     match channel {
         UpdateChannel::Stable => "stable",
         UpdateChannel::Beta => "beta",
         UpdateChannel::Alpha => "alpha",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_cache(dir: &Path, checked_at: u64, channel: &str) {
+        std::fs::create_dir_all(dir).expect("create temp cache dir");
+        let cache = serde_json::json!({
+            "checked_at": checked_at,
+            "channel": channel,
+            "latest": serde_json::Value::Null,
+        });
+        std::fs::write(dir.join("update_cache.json"), cache.to_string())
+            .expect("write update cache");
+    }
+
+    #[test]
+    fn update_check_cache_fresh_requires_matching_channel_and_interval() {
+        let dir =
+            std::env::temp_dir().join(format!("plexi-update-cache-test-{}", uuid::Uuid::new_v4()));
+        let now = CHECK_INTERVAL.as_secs() * 2;
+
+        write_cache(&dir, now - CHECK_INTERVAL.as_secs() + 1, "alpha");
+        assert!(update_cache_fresh_for_channel(
+            &dir.join("update_cache.json"),
+            UpdateChannel::Alpha,
+            now,
+        ));
+        assert!(!update_cache_fresh_for_channel(
+            &dir.join("update_cache.json"),
+            UpdateChannel::Beta,
+            now,
+        ));
+
+        write_cache(&dir, now - CHECK_INTERVAL.as_secs(), "alpha");
+        assert!(!update_cache_fresh_for_channel(
+            &dir.join("update_cache.json"),
+            UpdateChannel::Alpha,
+            now,
+        ));
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 

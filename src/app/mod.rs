@@ -349,6 +349,9 @@ pub struct PlexiApp {
     /// Channel receiver fed by the background update-check thread. Sends the
     /// latest version string exactly once if a newer release is available.
     update_rx: Option<std::sync::mpsc::Receiver<String>>,
+    /// Last time the host scheduled an update-check thread. Used to re-check
+    /// long-running sessions at the same interval as the updater cache.
+    last_update_check: std::time::Instant,
     /// Latest available version string, set after the background check resolves.
     /// `None` means either the check hasn't completed or we're already current.
     pub(crate) display_version: String,
@@ -851,6 +854,7 @@ impl PlexiApp {
         // Spawn background update check. Sends the latest version once if newer.
         let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
         crate::cli::updater::spawn_update_check(crate::config::config_dir(), update_tx);
+        let last_update_check = std::time::Instant::now();
 
         let (pane_ipc_tx, pane_ipc_rx) =
             std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
@@ -1194,6 +1198,7 @@ impl PlexiApp {
                     edge_pulse: None,
                     click_flash: None,
                     update_rx: Some(update_rx),
+                    last_update_check,
                     display_version: read_display_version(),
                     update_available: None,
                     update_quit_pending: false,
@@ -1438,6 +1443,7 @@ impl PlexiApp {
             edge_pulse: None,
             click_flash: None,
             update_rx: Some(update_rx),
+            last_update_check,
             display_version: read_display_version(),
             update_available: None,
             update_quit_pending: false,
@@ -1657,6 +1663,7 @@ impl PlexiApp {
                 cli_setup_check_result: None,
                 show_completions_banner: false,
                 update_rx: None,
+                last_update_check: std::time::Instant::now(),
                 display_version: read_display_version(),
                 update_available: None,
                 update_quit_pending: false,
