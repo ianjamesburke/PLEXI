@@ -1,6 +1,6 @@
 [project]
 name = "plexi-sdk"
-version = "0.1.14"
+version = "0.1.15"
 description = "Python SDK v3 for Plexi apps running through native ProcessApp"
 readme = "README.md"
 requires-python = ">=3.11"
