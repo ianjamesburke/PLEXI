@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Push a version tag to trigger the GitHub Actions release workflow.
-#
-# Stable tags (vX.Y.Z) are pushed from the main worktree (run `just promote main`
-# first). Prerelease tags (vX.Y.Z-alpha.N / vX.Y.Z-beta.N) are pushed from alpha,
-# where they were cut by `scripts/release-version.sh --alpha|--beta`.
+# Internal helper used by scripts/promote.sh — do not call directly.
+# Use: just promote beta release  OR  just promote main release
 set -euo pipefail
 
 REPO_ROOT=$(dirname "$(git rev-parse --git-common-dir)")
