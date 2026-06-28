@@ -4,7 +4,7 @@
 
 ## Scope
 
-Each app is a directory with a `manifest.toml` (schema_version + `[app]` id/type/name/entry + `[app.capabilities]` + `[launch]`) and a Python entry file. Apps run on the Python SDK in `sdk/python`. Authoring path: `sdk/python/SDK_QUICKSTART.md`, then `sdk/python/SDK_V2.md`, then `docs/app-framework-marketplace.md`.
+Each app is a directory with a `manifest.toml` (schema_version + `[app]` id/type/name/entry + `[app.capabilities]`) and a Python entry file. Apps run on the Python SDK in `sdk/python`. Authoring path: `sdk/python/SDK_QUICKSTART.md`, then `sdk/python/SDK_V3.md`, then `docs/app-framework-marketplace.md`.
 
 ## Rules
 
@@ -13,7 +13,7 @@ Each app is a directory with a `manifest.toml` (schema_version + `[app]` id/type
 - **Core 9 only.** Only fix or improve the maintained Core 9 apps. Everything in `dev/` and `examples/` is a throwaway proof-of-concept — do not maintain it. Touch a `dev/` app only when the change is itself a POC demonstrating a new SDK or host capability.
 - **New capability ⇒ POC in `dev/`, not `examples/`.** Every user-visible host/SDK capability ships a small POC app under `apps/dev/`. The install script only flattens `dev/`, so an `examples/` POC will not be picked up.
 - **PGAP is L1-only.** Build declarative L1 UI trees. L0 is deprecated and its `_l0` fallbacks are gone; the `Raw` escape hatch stays.
-- **Log through the frame.** Use `ctx.info/warn/error/debug(...)` inside a frame and `emit.info(...)` outside one. App logs forward into the host log tagged `app::<app_id>`.
+- **Log through the frame.** Use `log.debug/info/warn/error(...)` from `plexi_sdk`. App logs forward into the host log tagged `app::<app_id>`.
 
 ## Design philosophy (apps + SDK)
 
