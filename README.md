@@ -1,6 +1,6 @@
 <h1 align="center"> under construction </h1>
 
-> **Pre-release:** Plexi is pre-v1 and under active development. APIs, config format, and behavior may change without notice. The version will be reverted to v0 to reflect this.
+> **Pre-release:** Plexi is pre-v1 and under active development. APIs, config format, and behavior may change without notice.
 
 <p align="center">
   <img src="assets/icon.svg" width="80" alt="Plexi" />
