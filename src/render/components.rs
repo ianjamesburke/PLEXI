@@ -5,11 +5,16 @@
 //! `Input`, `Interactive`) fire `ComponentEvent`s back to the app via the
 //! returned `Vec<ComponentEventPayload>` (task A3).
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use egui::Ui;
 
 use crate::app_protocol::{PinnedEdge, StackDirection, UiNode};
+use crate::render::app_chrome::{self, AppChrome};
 use crate::ui::theme::Colors;
 use crate::ui::{button, style};
+
+static APP_CHROME_INFO_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Persistent per-pane render resources threaded into `UiNode::Raw` nodes.
 ///
@@ -452,23 +457,36 @@ fn render_component_tree_inner(
         }
 
         UiNode::Scroll { child, horizontal } => {
+            let size = ui.max_rect().size();
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
             let scroll = if *horizontal {
                 egui::ScrollArea::both()
             } else {
                 egui::ScrollArea::vertical()
             };
-            scroll.show(ui, |ui| {
-                events.extend(render_component_tree_inner(
-                    ui,
-                    child,
-                    colors,
-                    text_edit_buffers,
-                    focus_ctx,
-                    raw_caches,
-                    canvas_w,
-                    canvas_h,
-                    hit_regions,
-                ));
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+                ui.set_clip_rect(rect);
+                ui.set_min_width(rect.width());
+                ui.set_max_width(rect.width());
+                ui.set_min_height(rect.height());
+                ui.set_max_height(rect.height());
+                scroll
+                    .max_width(rect.width())
+                    .max_height(rect.height())
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        events.extend(render_component_tree_inner(
+                            ui,
+                            child,
+                            colors,
+                            text_edit_buffers,
+                            focus_ctx,
+                            raw_caches,
+                            canvas_w,
+                            canvas_h,
+                            hit_regions,
+                        ));
+                    });
             });
         }
 
@@ -527,22 +545,16 @@ fn render_component_tree_inner(
             bold,
             monospace,
         } => {
-            let mut rich = egui::RichText::new(text.as_str());
-            if *size > 0.0 {
-                rich = rich.size(*size);
-            }
-            if !color.is_empty() {
-                if let Some(c) = parse_color(color) {
-                    rich = rich.color(c);
-                }
-            }
-            if *bold {
-                rich = rich.strong();
-            }
-            if *monospace {
-                rich = rich.monospace();
-            }
-            ui.add(egui::Label::new(rich).selectable(true));
+            let chrome = AppChrome::new(colors);
+            chrome.text_label(
+                ui,
+                text,
+                if *size > 0.0 { *size } else { style::TEXT_BODY },
+                chrome.text_color(color, ""),
+                *bold,
+                *monospace,
+                false,
+            );
         }
 
         UiNode::Markdown {
@@ -803,6 +815,7 @@ fn render_component_tree_inner(
                 egui::vec2(ui.available_width(), action_bar_height()),
                 egui::Sense::hover(),
             );
+            AppChrome::new(colors).paint_action_bar_background(ui, rect);
             let mut x = rect.min.x;
             let y = rect.min.y + (action_bar_height() - button_height()) / 2.0;
 
@@ -875,58 +888,15 @@ fn render_component_tree_inner(
 
             let widget_id = egui::Id::new(("text_edit_node", node_id.as_str()));
 
-            // Styling matches QuickNote overlay: frameless, monospace, accent caret,
-            // dim hint text. See src/overlays/quick_note.rs lines 138-154.
-            let response = ui
-                .scope(|ui| {
-                    // egui's caret is hidden (transparent, non-blinking);
-                    // draw_text_caret paints a glyph-height replacement on top.
-                    ui.visuals_mut().text_cursor.blink = false;
-                    ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
-                    let font_id = egui::FontId::monospace(style::TEXT_BODY);
-                    let row_height = ui.fonts(|f| f.row_height(&font_id));
-
-                    let output = if *multiline {
-                        let hint = egui::RichText::new(placeholder.as_str())
-                            .color(colors.text_dim.linear_multiply(0.3))
-                            .size(style::TEXT_BODY);
-                        let mut edit = egui::TextEdit::multiline(buffer)
-                            .id(widget_id)
-                            .font(font_id.clone())
-                            .text_color(colors.text_primary)
-                            .desired_width(f32::INFINITY)
-                            .frame(false)
-                            .hint_text(hint);
-                        if *max_length > 0 {
-                            edit = edit.char_limit(*max_length);
-                        }
-                        edit.show(ui)
-                    } else {
-                        let hint = egui::RichText::new(placeholder.as_str())
-                            .color(colors.text_dim.linear_multiply(0.3))
-                            .size(style::TEXT_BODY);
-                        let mut edit = egui::TextEdit::singleline(buffer)
-                            .id(widget_id)
-                            .font(font_id.clone())
-                            .text_color(colors.text_primary)
-                            .desired_width(f32::INFINITY)
-                            .frame(false)
-                            .hint_text(hint);
-                        if *max_length > 0 {
-                            edit = edit.char_limit(*max_length);
-                        }
-                        edit.show(ui)
-                    };
-                    crate::ui::text_field::draw_text_caret(
-                        ui,
-                        &output,
-                        style::TEXT_BODY,
-                        row_height,
-                        egui::Stroke::new(1.0, colors.accent),
-                    );
-                    output.response
-                })
-                .inner;
+            let chrome_response = AppChrome::new(colors).text_edit(
+                ui,
+                widget_id,
+                placeholder,
+                buffer,
+                *multiline,
+                *max_length,
+            );
+            let response = chrome_response.response;
 
             // Auto-focus: first newly-visible TextEdit, or first TextEdit when
             // the pane just gained keyboard focus.
@@ -942,7 +912,7 @@ fn render_component_tree_inner(
 
             // Click-to-focus: if the user clicked inside the TextEdit area,
             // request focus so the cursor appears and typing works.
-            if response.clicked() {
+            if response.clicked() || chrome_response.frame_clicked {
                 response.request_focus();
                 log::debug!("render_components: TextEdit click-focus node_id={node_id}");
             }
@@ -991,46 +961,11 @@ fn render_component_tree_inner(
         UiNode::Badge {
             label, fill, fg, ..
         } => {
-            let fill_color = if fill.is_empty() {
-                colors.accent
-            } else {
-                parse_color(fill).unwrap_or(colors.accent)
-            };
-            let fg_color = if fg.is_empty() {
-                colors.text_primary
-            } else {
-                parse_color(fg).unwrap_or(colors.text_primary)
-            };
-            egui::Frame::new()
-                .fill(fill_color)
-                .stroke(egui::Stroke::new(1.0, colors.border))
-                .corner_radius(egui::CornerRadius::same(
-                    crate::ui::style::RADIUS_BADGE as u8,
-                ))
-                .inner_margin(egui::Margin::symmetric(
-                    crate::ui::style::BADGE_PAD_H as i8,
-                    crate::ui::style::BADGE_PAD_V as i8,
-                ))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(label.as_str())
-                            .color(fg_color)
-                            .size(crate::ui::style::TEXT_CAPTION),
-                    );
-                });
+            AppChrome::new(colors).paint_badge(ui, label, fill, fg);
         }
 
         UiNode::Dot { color, size, .. } => {
-            let dot_size = if *size > 0.0 { *size } else { 8.0 };
-            let fill = if color.is_empty() {
-                colors.accent
-            } else {
-                parse_color(color).unwrap_or(colors.accent)
-            };
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(dot_size, dot_size), egui::Sense::hover());
-            ui.painter()
-                .circle_filled(rect.center(), dot_size / 2.0, fill);
+            AppChrome::new(colors).paint_dot(ui, color, *size);
         }
 
         // ── L1 layout components ────────────────────────────────────────
@@ -1046,6 +981,11 @@ fn render_component_tree_inner(
             );
             let content_padding = semantic_shell_padding(children, *padding);
             if is_semantic_app_shell(children) {
+                if !APP_CHROME_INFO_LOGGED.swap(true, Ordering::Relaxed) {
+                    log::info!(
+                        "render_components: SDK semantic app chrome routed through host AppChrome"
+                    );
+                }
                 if vertical_stack_needs_full_height(children) {
                     let h = ui.available_height();
                     ui.set_min_height(h);
@@ -1106,211 +1046,21 @@ fn render_component_tree_inner(
         UiNode::AppBar {
             title, subtitle, ..
         } => {
-            const TITLE_SIZE: f32 = 16.0;
-            let has_subtitle = !subtitle.is_empty();
-            let band_h = if has_subtitle { 48.0 } else { 34.0 };
-            let total_h = band_h + 1.0;
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), total_h),
-                egui::Sense::hover(),
-            );
-            let painter = ui.painter();
-            // Full-bleed: expand to clip rect width so AppBar spans the pane edge-to-edge
-            let clip = ui.clip_rect();
-            let full_rect = egui::Rect::from_min_size(
-                egui::pos2(clip.min.x, rect.min.y),
-                egui::vec2(clip.width(), total_h),
-            );
-            painter.rect_filled(full_rect, 0.0, colors.bg_sidebar);
-            let text_x = full_rect.min.x + style::SPACE_MD;
-            let max_w = full_rect.width() - 2.0 * style::SPACE_MD;
-            let title_y = full_rect.min.y + style::SPACE_SM;
-            if has_subtitle {
-                let sub_y = title_y + TITLE_SIZE + style::SPACE_XS;
-                let title_galley = ui.fonts(|f| {
-                    f.layout(
-                        title.clone(),
-                        egui::FontId::proportional(TITLE_SIZE),
-                        colors.text_primary,
-                        max_w,
-                    )
-                });
-                painter.galley(
-                    egui::pos2(text_x, title_y),
-                    title_galley,
-                    colors.text_primary,
-                );
-                let sub_galley = ui.fonts(|f| {
-                    f.layout(
-                        subtitle.clone(),
-                        egui::FontId::proportional(style::TEXT_HINT),
-                        colors.text_dim,
-                        max_w,
-                    )
-                });
-                painter.galley(egui::pos2(text_x, sub_y), sub_galley, colors.text_dim);
-            } else {
-                let title_galley = ui.fonts(|f| {
-                    f.layout(
-                        title.clone(),
-                        egui::FontId::proportional(TITLE_SIZE),
-                        colors.text_primary,
-                        max_w,
-                    )
-                });
-                painter.galley(
-                    egui::pos2(text_x, title_y),
-                    title_galley,
-                    colors.text_primary,
-                );
-            }
-            painter.rect_filled(
-                egui::Rect::from_min_size(
-                    egui::pos2(full_rect.min.x, full_rect.min.y + band_h),
-                    egui::vec2(full_rect.width(), 1.0),
-                ),
-                0.0,
-                colors.border,
-            );
+            AppChrome::new(colors).paint_app_bar(ui, title, subtitle);
         }
 
         UiNode::FooterKeys {
             entries, divider, ..
         } => {
-            let chip_row_h = chip_row_height(ui);
-            let total_h = footer_keys_height(ui, *divider);
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), total_h),
-                egui::Sense::hover(),
-            );
-
-            // Full-bleed: expand to clip rect width so footer spans the pane edge-to-edge
-            let clip = ui.clip_rect();
-            let full_rect = egui::Rect::from_min_size(
-                egui::pos2(clip.min.x, rect.min.y),
-                egui::vec2(clip.width(), total_h),
-            );
-            ui.painter().rect_filled(full_rect, 0.0, colors.bg_sidebar);
-
-            if *divider {
-                let line_y = full_rect.min.y;
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(full_rect.min.x, line_y),
-                        egui::vec2(full_rect.width(), 1.0),
-                    ),
-                    0.0,
-                    colors.border,
-                );
-            }
-
-            // Measure total content width so the group can be horizontally
-            // centered while the row itself stays vertically centered in the
-            // footer chrome.
-            let chip_font = egui::FontId::monospace(style::TEXT_HINT);
-            let desc_font = egui::FontId::proportional(style::TEXT_HINT);
-            let mut content_w: f32 = 0.0;
-            for (ei, entry) in entries.iter().enumerate() {
-                for (ki, key) in entry.keys.iter().enumerate() {
-                    if ki > 0 {
-                        content_w += 2.0;
-                    }
-                    let tw = ui.fonts(|f| {
-                        f.layout_no_wrap(key.clone(), chip_font.clone(), colors.text_primary)
-                            .size()
-                            .x
-                    });
-                    content_w += (tw + style::KEYCHIP_PAD_H * 2.0)
-                        .max(chip_row_h)
-                        .max(style::KEYCHIP_MIN_W);
-                }
-                content_w += 4.0;
-                content_w += ui.fonts(|f| {
-                    f.layout_no_wrap(
-                        entry.description.clone(),
-                        desc_font.clone(),
-                        colors.text_dim,
-                    )
-                    .size()
-                    .x
-                });
-                if ei + 1 < entries.len() {
-                    content_w += style::SPACE_MD;
-                }
-            }
-
-            let content_rect =
-                footer_keys_content_rect(full_rect, content_w, chip_row_h, *divider);
-            paint_footer_keys(ui, content_rect, entries, chip_font, desc_font, colors);
+            AppChrome::new(colors).paint_footer_keys(ui, entries, *divider);
         }
 
         UiNode::Footer { text, color, .. } => {
-            let line_h = style::TEXT_CAPTION + 5.0;
-            let total_h = style::SPACE_MD + 1.0 + style::SPACE_MD + line_h;
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), total_h),
-                egui::Sense::hover(),
-            );
-            let line_y = rect.min.y + style::SPACE_MD;
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(
-                    egui::pos2(rect.min.x, line_y),
-                    egui::vec2(rect.width(), 1.0),
-                ),
-                0.0,
-                colors.border,
-            );
-            let text_color = if color.is_empty() {
-                colors.text_dim
-            } else {
-                parse_color(color).unwrap_or(colors.text_dim)
-            };
-            // Content area sits below the divider line, vertically centered in
-            // the remaining height. egui handles DPI/rounding internally.
-            let content_rect = egui::Rect::from_min_size(
-                egui::pos2(rect.min.x, line_y + 1.0),
-                egui::vec2(rect.width(), style::SPACE_MD + line_h),
-            );
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
-                ui.with_layout(
-                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                    |ui| {
-                        ui.label(
-                            egui::RichText::new(text.clone())
-                                .size(style::TEXT_CAPTION)
-                                .color(text_color),
-                        );
-                    },
-                );
-            });
+            AppChrome::new(colors).paint_footer(ui, text, color);
         }
 
         UiNode::Section { title, .. } => {
-            let total_h =
-                style::SPACE_SM + style::TEXT_HINT + style::SPACE_XS + 1.0 + style::SPACE_XS;
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), total_h),
-                egui::Sense::hover(),
-            );
-            let painter = ui.painter();
-            let label_y = rect.min.y + style::SPACE_SM;
-            let galley = ui.fonts(|f| {
-                f.layout_no_wrap(
-                    title.to_uppercase(),
-                    egui::FontId::proportional(style::TEXT_HINT),
-                    colors.text_dim,
-                )
-            });
-            painter.galley(egui::pos2(rect.min.x, label_y), galley, colors.text_dim);
-            let line_y = label_y + style::TEXT_HINT + style::SPACE_XS;
-            painter.rect_filled(
-                egui::Rect::from_min_size(
-                    egui::pos2(rect.min.x, line_y),
-                    egui::vec2(rect.width(), 1.0),
-                ),
-                0.0,
-                colors.border,
-            );
+            AppChrome::new(colors).paint_section(ui, title);
         }
 
         UiNode::Label {
@@ -1323,31 +1073,33 @@ fn render_component_tree_inner(
             max_lines,
             ..
         } => {
+            let chrome = AppChrome::new(colors);
             let font_size = if *size > 0.0 { *size } else { style::TEXT_BODY };
-            let text_color = if !color.is_empty() {
-                parse_color(color).unwrap_or(colors.text_primary)
-            } else {
-                resolve_tone(tone, colors)
-            };
-            let mut rich = egui::RichText::new(text.as_str())
-                .size(font_size)
-                .color(text_color);
-            if *bold {
-                rich = rich.strong();
-            }
-            if *monospace {
-                rich = rich.monospace();
-            }
-            let label = egui::Label::new(rich).selectable(true).wrap();
             if *max_lines > 0 {
                 let line_h = font_size + 4.0;
                 let max_h = *max_lines as f32 * line_h;
                 ui.scope(|ui| {
                     ui.set_max_height(max_h);
-                    ui.add(label);
+                    chrome.text_label(
+                        ui,
+                        text,
+                        font_size,
+                        chrome.text_color(color, tone),
+                        *bold,
+                        *monospace,
+                        true,
+                    );
                 });
             } else {
-                ui.add(label);
+                chrome.text_label(
+                    ui,
+                    text,
+                    font_size,
+                    chrome.text_color(color, tone),
+                    *bold,
+                    *monospace,
+                    true,
+                );
             }
         }
 
@@ -1363,44 +1115,30 @@ fn render_component_tree_inner(
         UiNode::Divider {
             color: div_color, ..
         } => {
-            let fill = if div_color.is_empty() {
-                colors.border
-            } else {
-                parse_color(div_color).unwrap_or(colors.border)
-            };
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, fill);
+            AppChrome::new(colors).paint_divider(ui, div_color);
         }
 
         UiNode::Card {
             children, padding, ..
         } => {
-            let pad = if *padding > 0.0 {
-                *padding
-            } else {
-                style::SPACE_MD
-            };
-            egui::Frame::new()
-                .fill(colors.bg_sidebar)
-                .stroke(egui::Stroke::new(1.0, colors.border))
-                .corner_radius(style::RADIUS_MD)
-                .inner_margin(egui::Margin::same(pad as i8))
-                .show(ui, |ui| {
-                    for child in children {
-                        events.extend(render_component_tree_inner(
-                            ui,
-                            child,
-                            colors,
-                            text_edit_buffers,
-                            focus_ctx,
-                            raw_caches,
-                            canvas_w,
-                            canvas_h,
-                            hit_regions,
-                        ));
+            AppChrome::new(colors).card(ui, *padding, |ui| {
+                for (idx, child) in children.iter().enumerate() {
+                    if idx > 0 {
+                        ui.add_space(app_chrome::CARD_CHILD_GAP);
                     }
-                });
+                    events.extend(render_component_tree_inner(
+                        ui,
+                        child,
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                        raw_caches,
+                        canvas_w,
+                        canvas_h,
+                        hit_regions,
+                    ));
+                }
+            });
         }
 
         UiNode::SelectList {
@@ -1408,110 +1146,7 @@ fn render_component_tree_inner(
             selected_idx,
             ..
         } => {
-            if items.is_empty() {
-                ui.label(
-                    egui::RichText::new("No items")
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_dim),
-                );
-            } else {
-                let avail = ui.available_size();
-                egui::ScrollArea::vertical()
-                    .max_height(avail.y)
-                    .show(ui, |ui| {
-                        for (i, item) in items.iter().enumerate() {
-                            let selected = i == *selected_idx;
-                            let bg = if selected {
-                                colors.bg_active
-                            } else {
-                                colors.bg_sidebar
-                            };
-                            let (rect, _) = ui.allocate_exact_size(
-                                egui::vec2(
-                                    avail.x,
-                                    if item.description.is_empty() {
-                                        36.0
-                                    } else {
-                                        52.0
-                                    },
-                                ),
-                                egui::Sense::hover(),
-                            );
-                            let painter = ui.painter();
-                            painter.rect_filled(rect, 0.0, bg);
-                            if selected {
-                                painter.rect_filled(
-                                    egui::Rect::from_min_size(
-                                        rect.min,
-                                        egui::vec2(3.0, rect.height()),
-                                    ),
-                                    0.0,
-                                    colors.accent,
-                                );
-                            }
-                            let text_x = rect.min.x + style::SPACE_MD;
-                            let max_w = rect.width() - 2.0 * style::SPACE_MD;
-                            if item.description.is_empty() {
-                                let title_y = rect.center().y - style::TEXT_BODY / 2.0;
-                                let galley = ui.fonts(|f| {
-                                    f.layout(
-                                        item.name.clone(),
-                                        egui::FontId::proportional(style::TEXT_BODY),
-                                        colors.text_primary,
-                                        max_w,
-                                    )
-                                });
-                                painter.galley(
-                                    egui::pos2(text_x, title_y),
-                                    galley,
-                                    colors.text_primary,
-                                );
-                            } else {
-                                let block_h = style::TEXT_BODY + 2.0 + style::TEXT_HINT;
-                                let title_y = rect.center().y - block_h / 2.0;
-                                let desc_y = title_y + style::TEXT_BODY + 2.0;
-                                let galley = ui.fonts(|f| {
-                                    f.layout(
-                                        item.name.clone(),
-                                        egui::FontId::proportional(style::TEXT_BODY),
-                                        colors.text_primary,
-                                        max_w,
-                                    )
-                                });
-                                painter.galley(
-                                    egui::pos2(text_x, title_y),
-                                    galley,
-                                    colors.text_primary,
-                                );
-                                let desc_galley = ui.fonts(|f| {
-                                    f.layout(
-                                        item.description.clone(),
-                                        egui::FontId::proportional(style::TEXT_HINT),
-                                        colors.text_dim,
-                                        max_w,
-                                    )
-                                });
-                                painter.galley(
-                                    egui::pos2(text_x, desc_y),
-                                    desc_galley,
-                                    colors.text_dim,
-                                );
-                            }
-                            if !item.trailing.is_empty() {
-                                let tr_galley = ui.fonts(|f| {
-                                    f.layout_no_wrap(
-                                        item.trailing.clone(),
-                                        egui::FontId::proportional(style::TEXT_HINT),
-                                        colors.text_dim,
-                                    )
-                                });
-                                let tr_x = rect.max.x - style::SPACE_MD - tr_galley.size().x;
-                                let tr_y = rect.center().y - tr_galley.size().y / 2.0;
-                                painter.galley(egui::pos2(tr_x, tr_y), tr_galley, colors.text_dim);
-                            }
-                        }
-                    });
-            }
+            AppChrome::new(colors).select_list(ui, items, *selected_idx);
         }
     }
 
@@ -1521,11 +1156,11 @@ fn render_component_tree_inner(
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn button_height() -> f32 {
-    style::BUTTON_H_MD
+    app_chrome::button_height()
 }
 
 fn action_bar_height() -> f32 {
-    button_height() + style::SPACE_SM
+    app_chrome::action_bar_height()
 }
 
 fn render_button_at(
@@ -1573,126 +1208,15 @@ fn render_button_at(
 }
 
 fn app_button_kind(button_style: &str) -> button::ButtonKind {
-    match button_style {
-        "primary" => button::ButtonKind::Accent,
-        "danger" => button::ButtonKind::Danger,
-        "ghost" => button::ButtonKind::Ghost,
-        _ => button::ButtonKind::Secondary,
-    }
-}
-
-/// Measures the actual chip row height for footer key chips by querying font metrics.
-/// This is the single source of truth for chip height — both `bottom_pin_height`
-/// and the `FooterKeys` renderer must use this instead of estimating from TEXT_HINT.
-fn chip_row_height(ui: &egui::Ui) -> f32 {
-    let text_h = ui.fonts(|f| {
-        f.layout_no_wrap(
-            "X".to_string(),
-            egui::FontId::monospace(style::TEXT_HINT),
-            egui::Color32::WHITE,
-        )
-        .size()
-        .y
-    });
-    text_h + style::KEYCHIP_PAD_V * 2.0
-}
-
-fn footer_keys_content_rect(
-    full_rect: egui::Rect,
-    content_w: f32,
-    chip_row_h: f32,
-    divider: bool,
-) -> egui::Rect {
-    let left_bound = full_rect.min.x + style::SPACE_MD;
-    let right_bound = full_rect.max.x - style::SPACE_MD;
-    let available_w = (right_bound - left_bound).max(0.0);
-    let width = content_w.min(available_w);
-    let left = if content_w <= available_w {
-        (full_rect.center().x - width / 2.0).clamp(left_bound, right_bound - width)
-    } else {
-        left_bound
-    };
-    let chrome_top = full_rect.min.y + if divider { 1.0 } else { 0.0 };
-    let chrome_h = (full_rect.max.y - chrome_top).max(0.0);
-    let top = chrome_top + (chrome_h - chip_row_h).max(0.0) / 2.0;
-    egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, chip_row_h))
-}
-
-fn paint_footer_keys(
-    ui: &egui::Ui,
-    content_rect: egui::Rect,
-    entries: &[crate::app_protocol::FooterKeyEntry],
-    chip_font: egui::FontId,
-    desc_font: egui::FontId,
-    colors: &Colors,
-) {
-    let painter = ui.painter().with_clip_rect(content_rect);
-    let key_color = colors.text_primary.gamma_multiply(0.78);
-    let desc_color = colors.text_primary.gamma_multiply(0.70);
-    let mut x = content_rect.min.x;
-
-    for (ei, entry) in entries.iter().enumerate() {
-        for (ki, key) in entry.keys.iter().enumerate() {
-            if ki > 0 {
-                x += style::KEYCHIP_GAP;
-            }
-            let galley = ui.fonts(|f| f.layout_no_wrap(key.clone(), chip_font.clone(), key_color));
-            let text_size = galley.size();
-            let chip_h = text_size.y + style::KEYCHIP_PAD_V * 2.0;
-            let chip_w = (text_size.x + style::KEYCHIP_PAD_H * 2.0)
-                .max(chip_h)
-                .max(style::KEYCHIP_MIN_W);
-            let chip_rect = egui::Rect::from_min_size(
-                egui::pos2(x, content_rect.center().y - chip_h / 2.0),
-                egui::vec2(chip_w, chip_h),
-            );
-            painter.rect_filled(chip_rect, egui::CornerRadius::same(4), colors.bg_active);
-            painter.galley(
-                egui::pos2(
-                    chip_rect.center().x - text_size.x / 2.0,
-                    chip_rect.center().y - text_size.y / 2.0,
-                ),
-                galley,
-                key_color,
-            );
-            x += chip_w;
-        }
-
-        x += 4.0;
-        let desc_galley = ui.fonts(|f| {
-            f.layout_no_wrap(entry.description.clone(), desc_font.clone(), desc_color)
-        });
-        let desc_size = desc_galley.size();
-        painter.galley(
-            egui::pos2(x, content_rect.center().y - desc_size.y / 2.0),
-            desc_galley,
-            desc_color,
-        );
-        x += desc_size.x;
-
-        if ei + 1 < entries.len() {
-            x += style::SPACE_MD;
-        }
-    }
-}
-
-fn footer_keys_height(ui: &egui::Ui, divider: bool) -> f32 {
-    let row_h = chip_row_height(ui) + 4.0;
-    if divider {
-        1.0 + style::SPACE_SM + row_h + style::SPACE_SM
-    } else {
-        style::SPACE_SM + row_h + style::SPACE_SM
-    }
+    app_chrome::button_kind(button_style)
 }
 
 /// Returns the known fixed height of a node that can be bottom-pinned, or `None`
 /// if the height cannot be determined without rendering.
 fn bottom_pin_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
     match node {
-        UiNode::FooterKeys { divider, .. } => Some(footer_keys_height(ui, *divider)),
-        UiNode::Footer { .. } => {
-            Some(style::SPACE_MD + 1.0 + style::SPACE_MD + style::TEXT_CAPTION + 5.0)
-        }
+        UiNode::FooterKeys { divider, .. } => Some(app_chrome::footer_keys_height(ui, *divider)),
+        UiNode::Footer { .. } => Some(app_chrome::footer_height()),
         _ => None,
     }
 }
@@ -1764,13 +1288,10 @@ fn vertical_fixed_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
             }
             Some(max_h + padding.top + padding.bottom)
         }
-        UiNode::AppBar { subtitle, .. } => {
-            let band_h = if subtitle.is_empty() { 34.0 } else { 48.0 };
-            Some(band_h + 1.0)
-        }
+        UiNode::AppBar { subtitle, .. } => Some(app_chrome::app_bar_height(subtitle)),
         UiNode::Button { .. } => Some(button_height()),
         UiNode::ActionBar { .. } => Some(action_bar_height()),
-        UiNode::TextEdit { multiline, .. } => Some(if *multiline { 96.0 } else { 32.0 }),
+        UiNode::TextEdit { multiline, .. } => Some(app_chrome::text_edit_height(*multiline)),
         UiNode::Spacer { size, grow } => {
             if *grow {
                 None
@@ -1789,6 +1310,14 @@ fn vertical_fixed_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
             style::TEXT_BODY + 4.0
         }),
         UiNode::Badge { .. } => Some(style::TEXT_CAPTION + style::BADGE_PAD_V * 2.0 + 2.0),
+        UiNode::Card { children, padding } => {
+            let child_gap = app_chrome::CARD_CHILD_GAP * children.len().saturating_sub(1) as f32;
+            let mut total = app_chrome::card_padding(*padding) * 2.0 + child_gap;
+            for child in children {
+                total += vertical_fixed_height(ui, child)?;
+            }
+            Some(total)
+        }
         UiNode::Dot { size, .. } => Some(if *size > 0.0 { *size } else { 8.0 }),
         UiNode::Canvas { height, grow, .. } => {
             if *grow {
@@ -2218,18 +1747,6 @@ fn render_stack(
 
 use crate::process_app::render::parse_color;
 
-fn resolve_tone(tone: &str, colors: &Colors) -> egui::Color32 {
-    match tone {
-        "hint" | "dim" | "muted" => colors.text_dim,
-        "danger" | "error" => colors.danger,
-        "success" => colors.success,
-        "warning" => colors.warning,
-        "accent" => colors.accent,
-        "section" => colors.text_section,
-        _ => colors.text_primary,
-    }
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2598,7 +2115,8 @@ mod render_component_tree_tests {
     /// `bottom_pin_height` returns correct heights for FooterKeys and Footer.
     #[test]
     fn bottom_pin_height_known_nodes() {
-        use super::{bottom_pin_height, chip_row_height};
+        use super::bottom_pin_height;
+        use crate::render::app_chrome;
         use crate::ui::style;
         let fk_with_div = UiNode::FooterKeys {
             entries: vec![],
@@ -2627,7 +2145,7 @@ mod render_component_tree_tests {
         let ctx = egui::Context::default();
         ctx.begin_pass(egui::RawInput::default());
         egui::CentralPanel::default().show(&ctx, |ui| {
-            let crh = chip_row_height(ui);
+            let crh = app_chrome::chip_row_height(ui);
             let row_h = crh + 4.0;
             let expected_with_div = 1.0 + style::SPACE_SM + row_h + style::SPACE_SM;
             let expected_no_div = style::SPACE_SM + row_h + style::SPACE_SM;
@@ -2642,9 +2160,9 @@ mod render_component_tree_tests {
 
     #[test]
     fn footer_keys_content_rect_centers_horizontally_and_vertically() {
-        let full_rect =
-            egui::Rect::from_min_size(egui::pos2(0.0, 100.0), egui::vec2(320.0, 40.0));
-        let content = footer_keys_content_rect(full_rect, 150.0, 18.0, true);
+        let full_rect = egui::Rect::from_min_size(egui::pos2(0.0, 100.0), egui::vec2(320.0, 40.0));
+        let content =
+            crate::render::app_chrome::footer_keys_content_rect(full_rect, 150.0, 18.0, true);
 
         assert_eq!(content.center().x, full_rect.center().x);
         let top_pad = content.min.y - (full_rect.min.y + 1.0);
@@ -2706,6 +2224,48 @@ mod render_component_tree_tests {
         ctx.begin_pass(egui::RawInput::default());
         egui::CentralPanel::default().show(&ctx, |ui| {
             assert_eq!(vertical_fixed_height(ui, &node), Some(action_bar_height()));
+        });
+        let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn card_with_known_semantic_children_has_fixed_height() {
+        use super::vertical_fixed_height;
+        use crate::render::app_chrome;
+
+        let node = UiNode::Card {
+            padding: style::SPACE_MD,
+            children: vec![
+                UiNode::Text {
+                    text: "3".into(),
+                    size: 24.0,
+                    color: String::new(),
+                    bold: true,
+                    monospace: false,
+                },
+                UiNode::TextEdit {
+                    node_id: "name".into(),
+                    placeholder: "Type".into(),
+                    value: String::new(),
+                    multiline: false,
+                    max_length: 0,
+                },
+            ],
+        };
+
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            assert_eq!(
+                vertical_fixed_height(ui, &node),
+                Some(
+                    style::SPACE_MD * 2.0
+                        + 24.0
+                        + 4.0
+                        + app_chrome::CARD_CHILD_GAP
+                        + app_chrome::text_edit_height(false)
+                )
+            );
         });
         let _ = ctx.end_pass();
     }

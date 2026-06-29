@@ -7,6 +7,7 @@
 //! and shrinking into the inner UI — these renderers operate on the inner UI
 //! and should not repaint the background.
 
+pub mod app_chrome;
 pub mod app_pane;
 pub mod app_render;
 pub mod cli_renderer_app;

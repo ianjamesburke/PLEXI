@@ -537,7 +537,12 @@ fn elided_galley(
     ui.fonts(|f| f.layout_no_wrap(text, font_id, color))
 }
 
-fn elide_to_width(ui: &egui::Ui, text: &str, font_id: egui::FontId, max_width: f32) -> String {
+pub(crate) fn elide_to_width(
+    ui: &egui::Ui,
+    text: &str,
+    font_id: egui::FontId,
+    max_width: f32,
+) -> String {
     if max_width <= 0.0 {
         return String::new();
     }

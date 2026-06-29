@@ -10,10 +10,31 @@ from __future__ import annotations
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetTitle
-from plexi_sdk.events import KeyEvent, UiAction
-from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, SPACE_MD, Spacer, Text
+from plexi_sdk.events import KeyEvent, UiAction, UiValueChange
+from plexi_sdk.ui import (
+    ActionBar,
+    AppBar,
+    Badge,
+    Button,
+    Card,
+    Column,
+    Divider,
+    FooterKeys,
+    HStack,
+    SPACE_MD,
+    SPACE_SM,
+    Scrollable,
+    Section,
+    SelectList,
+    Sized,
+    Spacer,
+    Text,
+    TextEdit,
+)
 
 COUNT_KEY = "count"
+NOTE_KEY = "note"
+DEFAULT_NOTE = "Draft something small"
 
 
 def init(size, args) -> list:
@@ -29,7 +50,10 @@ def init(size, args) -> list:
         SetTitle("__DISPLAY_NAME__"),
         # Runtime state is a JSON-shaped dict. Prefer stable, small keys; view()
         # reads the snapshot with state.get(...).
-        SetState({COUNT_KEY: state.get(COUNT_KEY, 0)}),
+        SetState({
+            COUNT_KEY: state.get(COUNT_KEY, 0),
+            NOTE_KEY: state.get(NOTE_KEY, DEFAULT_NOTE),
+        }),
     ]
 
 
@@ -39,6 +63,10 @@ def update(event) -> list:
     Do not mutate Plexi state in-place. Return SetState/PersistState or other
     effect objects, and the adapter applies them after ``update`` returns.
     """
+    if isinstance(event, UiValueChange) and event.handler_id == "draft-note":
+        log.debug("draft note changed")
+        return [SetState({NOTE_KEY: event.value})]
+
     if isinstance(event, UiAction):
         if event.handler_id == "counter-increment":
             log.info("counter increment action")
@@ -49,6 +77,9 @@ def update(event) -> list:
         if event.handler_id == "counter-reset":
             log.info("counter reset action")
             return [SetState({COUNT_KEY: 0})]
+        if event.handler_id == "draft-note":
+            log.info("draft note submitted")
+            return []
         log.warn(f"ignored unknown action: {event.handler_id}")
 
     if isinstance(event, KeyEvent) and event.pressed:
@@ -75,13 +106,52 @@ def view():
     if not isinstance(count, int):
         log.error(f"counter state must be an int, got {type(count).__name__}")
         count = 0
+    note = state.get(NOTE_KEY, DEFAULT_NOTE)
+    if not isinstance(note, str):
+        log.warn(f"note state must be a string, got {type(note).__name__}")
+        note = DEFAULT_NOTE
     log.debug(f"render count={count}")
+    selected_idx = abs(count) % 3
     return Column(
         [
             AppBar("__DISPLAY_NAME__"),
-            Text(str(count), size=28.0, bold=True),
-            Text("Runtime state counter", size=12.0),
-            Spacer(grow=True),
+            Scrollable(
+                Column(
+                    [
+                        Card(
+                            [
+                                HStack(
+                                    [
+                                        Text(str(count), size=24.0, bold=True),
+                                        Badge("host", tone="accent"),
+                                        Badge("semantic"),
+                                    ],
+                                    gap=SPACE_SM,
+                                ),
+                                Divider(),
+                                TextEdit("draft-note", value=note, placeholder="Working note"),
+                            ],
+                            padding=SPACE_SM,
+                            gap=SPACE_SM,
+                        ),
+                        Spacer(size=SPACE_MD),
+                        Section("List"),
+                        Sized(
+                            SelectList(
+                                [
+                                    {"name": "AppBar", "description": "full-bleed host chrome"},
+                                    {"name": "Card", "description": "themed surface"},
+                                    {"name": "TextEdit", "description": "host input chrome"},
+                                ],
+                                selected_idx=selected_idx,
+                            ),
+                            height=96.0,
+                        ),
+                    ],
+                    padding=0,
+                    gap=SPACE_SM,
+                )
+            ),
             ActionBar(
                 [
                     Button("Increment", "counter-increment", style="primary"),
@@ -99,4 +169,5 @@ def view():
         ],
         grow=True,
         padding=SPACE_MD,
+        gap=SPACE_SM,
     )

@@ -789,6 +789,22 @@ fn semantic_scaffold_chrome_errors(frame: &serde_json::Value) -> Vec<String> {
     if !action_bar_has_buttons(&children[action_idx]) {
         errors.push("action_bar must contain button actions".to_string());
     }
+    if !contains_node_type(root, "card") {
+        errors.push("current scaffold must include a semantic card surface".to_string());
+    }
+    if !contains_node_type(root, "text_edit") {
+        errors.push("current scaffold must include a host-rendered text_edit".to_string());
+    }
+    for (node_type, label) in [
+        ("section", "semantic section header"),
+        ("badge", "semantic badge"),
+        ("divider", "semantic divider"),
+        ("select_list", "semantic select_list"),
+    ] {
+        if !contains_node_type(root, node_type) {
+            errors.push(format!("current scaffold must include a {label}"));
+        }
+    }
 
     errors
 }
@@ -850,6 +866,26 @@ fn action_bar_has_buttons(value: &serde_json::Value) -> bool {
             .all(|action| node_type(action) == Some("button"))
 }
 
+fn contains_node_type(value: &serde_json::Value, expected_type: &str) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|ty| ty == expected_type)
+            {
+                return true;
+            }
+            map.values()
+                .any(|child| contains_node_type(child, expected_type))
+        }
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|child| contains_node_type(child, expected_type)),
+        _ => false,
+    }
+}
+
 fn semantic_png_chrome_errors(bytes: &[u8], width: u32, height: u32) -> Vec<String> {
     let mut errors = Vec::new();
     let Ok(img) = image::load_from_memory(bytes) else {
@@ -865,7 +901,9 @@ fn semantic_png_chrome_errors(bytes: &[u8], width: u32, height: u32) -> Vec<Stri
         return errors;
     }
     if width < 8 || height < 8 {
-        errors.push(format!("viewport too small for chrome pixel check: {width}x{height}"));
+        errors.push(format!(
+            "viewport too small for chrome pixel check: {width}x{height}"
+        ));
         return errors;
     }
 
@@ -1352,6 +1390,52 @@ profile_dir = ".plexi-beta"
         );
     }
 
+    fn scaffold_proof_body() -> serde_json::Value {
+        serde_json::json!({
+            "type": "scroll",
+            "child": {
+                "type": "column",
+                "padding": 0.0,
+                "gap": 8.0,
+                "children": [
+                    {
+                        "type": "card",
+                        "padding": 8.0,
+                        "children": [
+                            {
+                                "type": "stack",
+                                "direction": "horizontal",
+                                "gap": 8.0,
+                                "children": [
+                                    {"type": "text", "text": "3", "size": 24.0, "bold": true},
+                                    {"type": "badge", "text": "host", "color": "accent"},
+                                    {"type": "badge", "text": "semantic", "color": "neutral"}
+                                ]
+                            },
+                            {"type": "divider"},
+                            {"type": "text_edit", "node_id": "draft-note", "placeholder": "Working note", "value": "Draft something small"}
+                        ]
+                    },
+                    {"type": "spacer", "size": 12.0},
+                    {"type": "section", "title": "List"},
+                    {
+                        "type": "sized",
+                        "height": 96.0,
+                        "child": {
+                            "type": "select_list",
+                            "selected_idx": 0,
+                            "items": [
+                                {"name": "AppBar", "description": "full-bleed host chrome"},
+                                {"name": "Card", "description": "themed surface"},
+                                {"name": "TextEdit", "description": "host input chrome"}
+                            ]
+                        }
+                    }
+                ]
+            }
+        })
+    }
+
     #[test]
     fn semantic_chrome_accepts_scaffold_tree() {
         let frame = serde_json::json!([
@@ -1361,8 +1445,7 @@ profile_dir = ".plexi-beta"
                     "type": "column",
                     "children": [
                         {"type": "app_bar", "title": "Counter"},
-                        {"type": "text", "text": "3"},
-                        {"type": "spacer", "grow": true},
+                        scaffold_proof_body(),
                         {
                             "type": "action_bar",
                             "actions": [
@@ -1392,8 +1475,7 @@ profile_dir = ".plexi-beta"
                     "padding": 0.0,
                     "children": [
                         {"type": "app_bar", "title": "Counter"},
-                        {"type": "text", "text": "3"},
-                        {"type": "spacer", "grow": true},
+                        scaffold_proof_body(),
                         {
                             "type": "action_bar",
                             "actions": [
@@ -1449,7 +1531,7 @@ profile_dir = ".plexi-beta"
                     "padding": 24.0,
                     "children": [
                         {"type": "app_bar", "title": "Counter"},
-                        {"type": "text", "text": "3"},
+                        scaffold_proof_body(),
                         {
                             "type": "stack",
                             "direction": "horizontal",
@@ -1487,8 +1569,7 @@ profile_dir = ".plexi-beta"
                     "padding": 24.0,
                     "children": [
                         {"type": "app_bar", "title": "Counter"},
-                        {"type": "text", "text": "3"},
-                        {"type": "spacer", "grow": true},
+                        scaffold_proof_body(),
                         {
                             "type": "action_bar",
                             "actions": [
@@ -1523,8 +1604,7 @@ profile_dir = ".plexi-beta"
                     "padding": 24.0,
                     "children": [
                         {"type": "app_bar", "title": "Counter"},
-                        {"type": "text", "text": "3"},
-                        {"type": "spacer", "grow": true},
+                        scaffold_proof_body(),
                         {
                             "type": "action_bar",
                             "actions": [

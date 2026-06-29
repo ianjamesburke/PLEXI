@@ -223,8 +223,9 @@ pub enum UiNode {
     },
     /// Host-rendered pill badge.
     Badge {
+        #[serde(alias = "text")]
         label: String,
-        #[serde(default)]
+        #[serde(default, alias = "color")]
         fill: String,
         #[serde(default)]
         fg: String,
@@ -572,5 +573,26 @@ impl PartialEq for UiNode {
             ) => c1 == c2 && g1 == g2 && p1 == p2 && pa1 == pa2,
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UiNode;
+
+    #[test]
+    fn badge_accepts_python_sdk_field_aliases() {
+        let json = r##"{"type":"badge","text":"Ready","color":"#89b4fa"}"##;
+
+        let node: UiNode = serde_json::from_str(json).expect("SDK badge aliases should parse");
+
+        assert_eq!(
+            node,
+            UiNode::Badge {
+                label: "Ready".into(),
+                fill: "#89b4fa".into(),
+                fg: String::new(),
+            }
+        );
     }
 }

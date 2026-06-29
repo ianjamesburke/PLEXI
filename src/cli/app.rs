@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 pub(super) const SCAFFOLD_METADATA_FILE: &str = "plexi.scaffold.toml";
 pub(super) const SCAFFOLD_METADATA_SCHEMA_VERSION: u32 = 1;
-pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 2;
+pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 3;
 
 /// Detect the channel config dir name from the running binary name.
 pub(super) fn app_init_config_dir() -> String {
@@ -2413,6 +2413,38 @@ mod scaffold_marketplace_tests {
             "generated main.py should demonstrate the standard action-row primitive"
         );
         assert!(
+            main_src.contains("Card("),
+            "generated main.py should demonstrate the standard surface primitive"
+        );
+        assert!(
+            main_src.contains("Section("),
+            "generated main.py should demonstrate semantic section chrome"
+        );
+        assert!(
+            main_src.contains("Badge("),
+            "generated main.py should demonstrate semantic badges"
+        );
+        assert!(
+            main_src.contains("Divider("),
+            "generated main.py should demonstrate semantic dividers"
+        );
+        assert!(
+            main_src.contains("TextEdit("),
+            "generated main.py should demonstrate the host-rendered text edit primitive"
+        );
+        assert!(
+            main_src.contains("SelectList("),
+            "generated main.py should demonstrate the host-rendered select list primitive"
+        );
+        assert!(
+            main_src.contains("Scrollable("),
+            "generated main.py should keep proof components inside a scroll body"
+        );
+        assert!(
+            main_src.contains("UiValueChange"),
+            "generated main.py should handle editable component value changes"
+        );
+        assert!(
             main_src.contains("FooterKeys("),
             "generated main.py should keep shortcut hints in the footer"
         );
@@ -2421,8 +2453,8 @@ mod scaffold_marketplace_tests {
             "generated main.py should keep semantic shell content inset"
         );
         assert!(
-            !main_src.contains("padding=0"),
-            "generated main.py must not opt out of semantic shell content padding"
+            main_src.contains("padding=SPACE_MD"),
+            "generated main.py must keep root semantic shell content padding"
         );
         assert!(main_src.contains("log.debug"));
         assert!(main_src.contains("log.info"));
