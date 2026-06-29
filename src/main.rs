@@ -456,38 +456,40 @@ fn main() -> eframe::Result {
                                         std::process::exit(cli::install_workspace_pack_cli());
                                     }
                                     Some(s) => {
-                                        // .plexipkg artifact: validate fail-closed, then install (stint 0015).
-                                        if s.ends_with(".plexipkg") {
-                                            log::info!(
-                                                "app_install:cli: package={s} version={version:?}"
-                                            );
-                                            std::process::exit(cli::app_install_package(
-                                                &s,
-                                                version.as_deref(),
-                                                cli::InstallConfirm::Interactive,
-                                                yes,
-                                            ));
-                                        }
-                                        // Local path: contains a path separator, starts with . or /, or is an existing directory.
-                                        // Using is_dir() (not exists()) avoids misrouting bare app IDs that happen
-                                        // to match a file in the current directory.
-                                        let is_local = s.contains('/')
-                                            || s.starts_with('.')
-                                            || std::path::Path::new(&s).is_dir();
-                                        if is_local {
-                                            log::info!("app_install:cli: local path={s} version={version:?}");
-                                            std::process::exit(cli::app_install_with_pin(
-                                                &s,
-                                                version.as_deref(),
-                                                cli::InstallConfirm::Interactive,
-                                                yes,
-                                            ));
-                                        } else {
-                                            exit_if_feature_disabled(
-                                                crate::release::ReleaseFeature::Marketplace,
-                                            );
-                                            log::info!("app_install:cli: remote spec={s} version={version:?}");
-                                            std::process::exit(cli::install_cli(&s));
+                                        match cli::app::classify_app_install_spec(&s) {
+                                            cli::app::AppInstallSpecKind::Package => {
+                                                log::info!(
+                                                    "app_install:cli: package={s} version={version:?}"
+                                                );
+                                                std::process::exit(cli::app_install_package(
+                                                    &s,
+                                                    version.as_deref(),
+                                                    cli::InstallConfirm::Interactive,
+                                                    yes,
+                                                ));
+                                            }
+                                            cli::app::AppInstallSpecKind::Source => {
+                                                log::info!(
+                                                    "app_install:cli: source spec={s} version={version:?}"
+                                                );
+                                                std::process::exit(cli::install_cli(&s));
+                                            }
+                                            cli::app::AppInstallSpecKind::LocalPath => {
+                                                log::info!("app_install:cli: local path={s} version={version:?}");
+                                                std::process::exit(cli::app_install_with_pin(
+                                                    &s,
+                                                    version.as_deref(),
+                                                    cli::InstallConfirm::Interactive,
+                                                    yes,
+                                                ));
+                                            }
+                                            cli::app::AppInstallSpecKind::MarketplaceId => {
+                                                exit_if_feature_disabled(
+                                                    crate::release::ReleaseFeature::Marketplace,
+                                                );
+                                                log::info!("app_install:cli: marketplace id={s} version={version:?}");
+                                                std::process::exit(cli::install_cli(&s));
+                                            }
                                         }
                                     }
                                 }

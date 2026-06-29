@@ -439,8 +439,7 @@ pub enum AppCmd {
         /// Install from a pack file or 'core'
         #[arg(long)]
         pack: Option<String>,
-        /// Pin the app to a specific version (e.g. --version 1.2.3).
-        /// The pinned version is recorded and shown by `plexi app update`.
+        /// Pin a local path or package install to a specific version (e.g. --version 1.2.3).
         #[arg(long, value_name = "SEMVER")]
         version: Option<String>,
         /// Skip the trust-sheet confirmation prompt. Required for
@@ -646,13 +645,12 @@ pub enum AppCmd {
         #[command(subcommand)]
         cmd: LicenseCmd,
     },
-    /// Check installed apps for available updates.
+    /// Pull git-backed installed apps to their latest source revision.
     ///
-    /// Compares each app's recorded installed version against the version in its manifest.
-    /// In v1 this is a local check only — no network calls are made.
-    /// Use `plexi update apps` for git-checkout apps.
+    /// Canonical app update command. Resolves workspace-local apps when run
+    /// inside a workspace, and skips installed apps that are not git checkouts.
     Update {
-        /// App id to check (omit to check all installed apps)
+        /// App id to update (omit to update all installed apps visible here)
         id: Option<String>,
     },
     /// Send a semantic action to a running app pane.
@@ -676,9 +674,9 @@ pub enum AppCmd {
 
 #[derive(Subcommand)]
 pub enum UpdateCmd {
-    /// Pull the latest version of your installed apps.
+    /// Compatibility alias for `plexi app update`.
     ///
-    /// Omit the app id to update all installed apps at once.
+    /// Omit the app id to update all installed apps visible from the current workspace.
     Apps {
         /// App id to update (omit to update all installed apps)
         id: Option<String>,

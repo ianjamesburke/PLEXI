@@ -388,7 +388,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `browse` | Browse every public app in the hosted marketplace |
 | `search` | Search the public marketplace catalog |
 | `license` | Inspect paid-app licenses stored on this machine |
-| `update` | Check installed apps for available updates |
+| `update` | Pull git-backed installed apps to their latest source revision |
 | `action` | Send a semantic action to a running app pane |
 
 ### `plexi app open`
@@ -586,13 +586,13 @@ Show one license in full
 
 ### `plexi app update`
 
-Check installed apps for available updates.
+Pull git-backed installed apps to their latest source revision.
 
-Compares each app's recorded installed version against the version in its manifest. In v1 this is a local check only — no network calls are made. Use `plexi update apps` for git-checkout apps.
+Canonical app update command. Resolves workspace-local apps when run inside a workspace, and skips installed apps that are not git checkouts.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<id>` | string | no | App id to check (omit to check all installed apps) |
+| `<id>` | string | no | App id to update (omit to update all installed apps visible here) |
 
 ### `plexi app action`
 
@@ -1120,13 +1120,13 @@ Run with the `apps` subcommand to update one or all installed apps. Run with no 
 
 | Subcommand | Description |
 |---|---|
-| `apps` | Pull the latest version of your installed apps |
+| `apps` | Compatibility alias for `plexi app update` |
 
 ### `plexi update apps`
 
-Pull the latest version of your installed apps.
+Compatibility alias for `plexi app update`.
 
-Omit the app id to update all installed apps at once.
+Omit the app id to update all installed apps visible from the current workspace.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|

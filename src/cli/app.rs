@@ -1065,13 +1065,29 @@ pub fn app_install_package(
 }
 
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
+    copy_dir_all_inner(src, dst, std::path::Path::new(""))
+}
+
+fn copy_dir_all_inner(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    rel: &std::path::Path,
+) -> io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let entry_path = entry.path();
+        let rel_path = rel.join(entry.file_name());
+        if crate::app::package::is_generated_dev_artifact_rel(&rel_path) {
+            log::info!(
+                "app::install: skipping generated dev artifact {}",
+                entry_path.display()
+            );
+            continue;
+        }
         let dst_path = dst.join(entry.file_name());
         if entry_path.is_dir() {
-            copy_dir_all(&entry_path, &dst_path)?;
+            copy_dir_all_inner(&entry_path, &dst_path, &rel_path)?;
         } else {
             std::fs::copy(entry_path, dst_path)?;
         }
@@ -1349,7 +1365,30 @@ fn parse_render_size(s: &str) -> Option<(u32, u32)> {
 
 // ── Top-level package manager subcommands (#308 Phase 2) ──────────────────────
 
-/// `plexi install <source-spec>[@ref]` — clone + place one app into the
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AppInstallSpecKind {
+    Package,
+    Source,
+    LocalPath,
+    MarketplaceId,
+}
+
+/// Classify the user-provided `plexi app install <spec>` target before any
+/// path canonicalization. Source specs such as `github:owner/repo` contain `/`
+/// but are not filesystem paths.
+pub(crate) fn classify_app_install_spec(s: &str) -> AppInstallSpecKind {
+    if s.ends_with(".plexipkg") {
+        return AppInstallSpecKind::Package;
+    }
+    if crate::app::packs::parse_source_spec(s).is_ok() {
+        return AppInstallSpecKind::Source;
+    }
+    if s.contains('/') || s.starts_with('.') || std::path::Path::new(s).is_dir() {
+        return AppInstallSpecKind::LocalPath;
+    }
+    AppInstallSpecKind::MarketplaceId
+}
+
 /// Returns true if `s` looks like a bare app ID (no scheme prefix, no path separators).
 pub(super) fn is_bare_id(s: &str) -> bool {
     !s.contains(':') && !s.contains('/') && !s.is_empty()
@@ -1393,91 +1432,13 @@ fn to_struct_name(s: &str) -> String {
         .collect::<String>()
 }
 
-/// `plexi app update [<id>]` — local version check for installed apps.
+/// `plexi app update [<id>]` — canonical app update path.
 ///
-/// v1: compares `<app_dir>/installed_version.txt` against `manifest.toml`
-/// version field. If `pinned_version.txt` exists, reports the pin.
-/// No network calls — registry check is future work.
+/// Pulls git-backed installed apps in the current workspace-aware registry.
+/// `plexi update apps` delegates to the same implementation for compatibility.
 pub fn app_update_cli(id: Option<&str>) -> i32 {
-    let apps_dir = crate::app::registry::apps_dir();
-
-    // Collect app dirs to check.
-    let dirs: Vec<std::path::PathBuf> = match id {
-        Some(app_id) => {
-            let dir = apps_dir.join(app_id);
-            if !dir.exists() {
-                eprintln!("error: app '{app_id}' not installed — run `plexi app list`");
-                return 1;
-            }
-            vec![dir]
-        }
-        None => match std::fs::read_dir(&apps_dir) {
-            Ok(rd) => rd
-                .flatten()
-                .filter(|e| e.path().is_dir())
-                .filter(|e| {
-                    e.path()
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| !n.starts_with('.'))
-                })
-                .map(|e| e.path())
-                .collect(),
-            Err(_) => {
-                println!("no apps installed");
-                return 0;
-            }
-        },
-    };
-
-    if dirs.is_empty() {
-        println!("no apps installed");
-        return 0;
-    }
-
-    for app_dir in &dirs {
-        let dir_name = app_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-
-        // Read manifest version.
-        let manifest_version = {
-            let manifest_path = app_dir.join("manifest.toml");
-            match std::fs::read_to_string(&manifest_path) {
-                Ok(s) => match toml::from_str::<toml::Value>(&s) {
-                    Ok(v) => v
-                        .get("app")
-                        .and_then(|a| a.get("version"))
-                        .and_then(|ver| ver.as_str())
-                        .unwrap_or("?")
-                        .to_string(),
-                    Err(_) => "?".to_string(),
-                },
-                Err(_) => "?".to_string(),
-            }
-        };
-
-        // Read installed version (written at install time).
-        let installed_version = std::fs::read_to_string(app_dir.join("installed_version.txt"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|_| manifest_version.clone());
-
-        // Read optional pin.
-        let pinned_version = std::fs::read_to_string(app_dir.join("pinned_version.txt"))
-            .ok()
-            .map(|s| s.trim().to_string());
-
-        if let Some(ref pin) = pinned_version {
-            println!("{dir_name}: pinned to v{pin} (installed v{installed_version})");
-        } else if installed_version == manifest_version {
-            println!("{dir_name}: up to date (v{installed_version})");
-        } else {
-            println!(
-                "{dir_name}: installed v{installed_version}, manifest v{manifest_version} — consider reinstalling"
-            );
-        }
-    }
-
-    log::info!("app_update: checked {} app(s)", dirs.len());
-    0
+    log::info!("app_update:cli: delegating to workspace-aware git updater id={id:?}");
+    crate::cli::install::update_cli(id)
 }
 
 /// `plexi app action <pane_id> <action> [args...]`
@@ -1546,6 +1507,7 @@ pub fn app_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod app_install_workspace_tests {
+    use super::{classify_app_install_spec, AppInstallSpecKind};
     use tempfile::TempDir;
 
     fn write_valid_manifest(dir: &std::path::Path, id: &str) {
@@ -1620,6 +1582,22 @@ mod app_install_workspace_tests {
             super::app_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
         // Must fail with exit code 1 (manifest missing), not a workspace error.
         assert_eq!(code, 1, "missing manifest must return 1");
+    }
+
+    #[test]
+    fn github_source_spec_is_not_classified_as_local_path() {
+        assert_eq!(
+            classify_app_install_spec("github:owner/repo"),
+            AppInstallSpecKind::Source
+        );
+        assert_eq!(
+            classify_app_install_spec("git+file:///tmp/repo"),
+            AppInstallSpecKind::Source
+        );
+        assert_eq!(
+            classify_app_install_spec("owner/repo"),
+            AppInstallSpecKind::LocalPath
+        );
     }
 }
 
@@ -1952,15 +1930,13 @@ mod version_pin_tests {
     }
 
     #[test]
-    fn app_update_reports_up_to_date() {
+    fn installed_version_matches_manifest_version_when_written() {
         let dir = TempDir::new().unwrap();
         // Write manifest with version 0.1.0.
         write_manifest(dir.path(), "test-app", "0.1.0");
         // Write installed_version.txt matching manifest.
         super::write_installed_version(dir.path(), "0.1.0");
 
-        // app_update_cli operates on apps_dir(), which is a runtime directory.
-        // Test the logic via the helper directly instead.
         let installed = std::fs::read_to_string(dir.path().join("installed_version.txt"))
             .map(|s| s.trim().to_string())
             .unwrap();
