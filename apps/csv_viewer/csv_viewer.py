@@ -19,7 +19,7 @@ from plexi_sdk.events import (
     UiAction,
     UiValueChange,
 )
-from plexi_sdk.ui import AppBar, Button, Column, FooterKeys, Scrollable, SelectList, Text, TextEdit
+from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, Scrollable, SelectList, Text, TextEdit
 
 VISIBLE_ROWS = 24
 VISIBLE_COLS = 5
@@ -229,7 +229,7 @@ def _list_view(data: dict):
         [
             AppBar("CSV Viewer", data["cwd"] or "choose folder"),
             TextEdit("csv-dir", value=data["dir_input"], placeholder="/path/to/folder"),
-            Button("Refresh", "csv-refresh", style="primary"),
+            ActionBar([Button("Refresh", "csv-refresh", style="primary")]),
             body,
             FooterKeys([("j/k", "select"), ("enter", "open"), ("r", "refresh")]),
         ],
@@ -249,7 +249,7 @@ def _detail_view(data: dict):
         [
             AppBar(name, f"{len(data['rows'])} rows x {len(data['headers'])} columns"),
             Scrollable(Text("\n".join(lines), size=12.0)),
-            Button("Back", "csv-back-list", style="ghost"),
+            ActionBar([Button("Back", "csv-back-list", style="ghost")]),
             FooterKeys([("j/k", "rows"), ("h/l", "cols"), ("esc", "list")]),
         ],
         grow=True,

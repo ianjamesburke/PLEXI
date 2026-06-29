@@ -585,6 +585,10 @@ def FooterKeys(pairs: list) -> Row:
         children.append(Space(8.0))
     return Row(children, gap=4.0, align="center")
 
+def ActionBar(actions: list) -> Row:
+    """Standard horizontal row for contextual Button actions."""
+    return Row(actions, gap=8.0, align="center")
+
 def Section(title: str, children: list) -> Column:
     """Titled section group."""
     return Column([
@@ -721,10 +725,10 @@ capabilities = []
 
 from __future__ import annotations
 
-from plexi_sdk import state, log
-from plexi_sdk.effects import SetTitle, SetState
-from plexi_sdk.events import KeyEvent
-from plexi_sdk.ui import Column, AppBar, Text, FooterKeys
+from plexi_sdk import log, state
+from plexi_sdk.effects import SetState, SetTitle
+from plexi_sdk.events import KeyEvent, UiAction
+from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, Spacer, Text
 
 
 def init(size, args):
@@ -733,17 +737,36 @@ def init(size, args):
 
 
 def update(event):
-    if isinstance(event, KeyEvent) and event.key == "return" and event.pressed:
-        return [state.set("count", state.get("count", 0) + 1)]
+    if isinstance(event, UiAction):
+        if event.handler_id == "counter-increment":
+            return [SetState({"count": state.get("count", 0) + 1})]
+        if event.handler_id == "counter-decrement":
+            return [SetState({"count": state.get("count", 0) - 1})]
+        if event.handler_id == "counter-reset":
+            return [SetState({"count": 0})]
+    if isinstance(event, KeyEvent) and event.pressed:
+        if event.key in ("equals", "plus"):
+            return [SetState({"count": state.get("count", 0) + 1})]
+        if event.key == "minus":
+            return [SetState({"count": state.get("count", 0) - 1})]
+        if event.key == "r":
+            return [SetState({"count": 0})]
     return []
 
 
 def view():
     return Column([
         AppBar("{Name}"),
-        Text(str(state.get("count", 0)), bold=True),
-        FooterKeys([("return", "increment")]),
-    ], grow=True)
+        Text(str(state.get("count", 0)), size=28.0, bold=True),
+        Text("Runtime state counter", size=12.0),
+        Spacer(grow=True),
+        ActionBar([
+            Button("Increment", "counter-increment", style="primary"),
+            Button("Decrement", "counter-decrement"),
+            Button("Reset", "counter-reset", style="ghost"),
+        ]),
+        FooterKeys([("+", "increment"), ("-", "decrement"), ("r", "reset")]),
+    ], grow=True, padding=0)
 ```
 
 ---

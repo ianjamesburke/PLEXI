@@ -360,6 +360,10 @@ Clickable host-rendered button.
 ``on_click`` is the handler id delivered back as a ``UiAction`` event.
 Return state/effect changes from ``update(event)`` when that event arrives.
 
+### `ActionBar`
+
+Horizontal row of contextual action buttons.
+
 ### `Spacer`
 
 Fixed or flex gap. `grow=True` expands to consume remaining space.

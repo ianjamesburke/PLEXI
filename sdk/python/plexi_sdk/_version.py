@@ -6,6 +6,7 @@ When running from an uninstalled source checkout (no dist metadata), it is read
 directly from the sibling ``pyproject.toml``. Both paths return the same string;
 they never diverge because there is exactly one place the number is written.
 """
+
 from __future__ import annotations
 
 import tomllib
@@ -28,10 +29,12 @@ def _read_from_pyproject() -> str | None:
 
 
 def _resolve_version() -> str:
+    if source_version := _read_from_pyproject():
+        return source_version
     try:
         return _dist_version(_DISTRIBUTION_NAME)
     except PackageNotFoundError:
-        return _read_from_pyproject() or _FALLBACK_VERSION
+        return _FALLBACK_VERSION
 
 
 __version__ = _resolve_version()

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetTitle
-from plexi_sdk.events import KeyEvent
-from plexi_sdk.ui import AppBar, Column, FooterKeys, Text
+from plexi_sdk.events import KeyEvent, UiAction
+from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, Spacer, Text
 
 COUNT_KEY = "count"
 
@@ -38,6 +38,14 @@ def update(event) -> list:
     Do not mutate Plexi state in-place. Return SetState/PersistState or other
     effect objects, and the adapter applies them after ``update`` returns.
     """
+    if isinstance(event, UiAction):
+        if event.handler_id == "counter-increment":
+            return [SetState({COUNT_KEY: state.get(COUNT_KEY, 0) + 1})]
+        if event.handler_id == "counter-decrement":
+            return [SetState({COUNT_KEY: state.get(COUNT_KEY, 0) - 1})]
+        if event.handler_id == "counter-reset":
+            return [SetState({COUNT_KEY: 0})]
+
     if isinstance(event, KeyEvent) and event.pressed:
         if event.key in ("equals", "plus"):
             return [SetState({COUNT_KEY: state.get(COUNT_KEY, 0) + 1})]
@@ -55,12 +63,27 @@ def view():
     read state and build components; return effects from ``update`` instead.
     """
     count = state.get(COUNT_KEY, 0)
-    return Column([
-        AppBar("__DISPLAY_NAME__"),
-        Text(str(count), bold=True),
-        FooterKeys([
-            ("+", "increment"),
-            ("-", "decrement"),
-            ("r", "reset"),
-        ]),
-    ], grow=True)
+    return Column(
+        [
+            AppBar("__DISPLAY_NAME__"),
+            Text(str(count), size=28.0, bold=True),
+            Text("Runtime state counter", size=12.0),
+            Spacer(grow=True),
+            ActionBar(
+                [
+                    Button("Increment", "counter-increment", style="primary"),
+                    Button("Decrement", "counter-decrement"),
+                    Button("Reset", "counter-reset", style="ghost"),
+                ]
+            ),
+            FooterKeys(
+                [
+                    ("+", "increment"),
+                    ("-", "decrement"),
+                    ("r", "reset"),
+                ]
+            ),
+        ],
+        grow=True,
+        padding=0,
+    )
