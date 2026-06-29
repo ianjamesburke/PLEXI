@@ -20,7 +20,7 @@ The product website is **`plexiapp.com`**. Never write `plexiapp.dev` or `plexi.
 
 ## Stint Time Tracking
 
-When work begins: `stint claim <task-id>`. When done: `stint done <task-id>`. The installed CLI does not have `stint start`; `claim` owns status and `started_at`. Use UTC timestamps. If abandoned, leave `started_at` in place, do not set `completed_at`.
+When work begins: `stint claim <task-id>`. Do not run or document `stint start`; the installed CLI does not have that command, and `claim` owns status plus `started_at`. When done: `stint done <task-id>`. Use UTC timestamps. If abandoned, leave `started_at` in place, do not set `completed_at`.
 
 ## Child DOX Index
 

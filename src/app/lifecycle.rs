@@ -853,7 +853,7 @@ impl PlexiApp {
                     spec.workspace_root,
                     spec.response_file
                 );
-                let new_pane_id = self.host.next_pane_id();
+                let mut response_pane_id = self.host.next_pane_id();
 
                 let active = self.active_window;
                 let cwd_override = spec.cwd.clone();
@@ -935,11 +935,15 @@ impl PlexiApp {
                                         }
                                         if let Some(ref pane_name) = spec.name {
                                             if !pane_name.is_empty() {
-                                                self.apply_inline_pane_name(new_pane_id, pane_name);
+                                                self.apply_inline_pane_name(
+                                                    response_pane_id,
+                                                    pane_name,
+                                                );
                                             }
                                         }
                                         if let Some(rf) = &spec.response_file {
-                                            let json = format!("{{\"pane_id\":{new_pane_id}}}");
+                                            let json =
+                                                format!("{{\"pane_id\":{response_pane_id}}}");
                                             if let Err(e) = std::fs::write(rf, &json) {
                                                 log::error!("pane_ipc: spawn_pane: could not write response file: {e}");
                                             }
@@ -971,12 +975,12 @@ impl PlexiApp {
                             }
                             if let Some(ref pane_name) = spec.name {
                                 if !pane_name.is_empty() {
-                                    self.apply_inline_pane_name(new_pane_id, pane_name);
+                                    self.apply_inline_pane_name(response_pane_id, pane_name);
                                 }
                             }
                             // Skip rest of split path
                             if let Some(rf) = &spec.response_file {
-                                let json = format!("{{\"pane_id\":{new_pane_id}}}");
+                                let json = format!("{{\"pane_id\":{response_pane_id}}}");
                                 if let Err(e) = std::fs::write(rf, &json) {
                                     log::error!(
                                         "pane_ipc: spawn_pane: could not write response file: {e}"
@@ -1023,12 +1027,18 @@ impl PlexiApp {
                     } else {
                         (active, self.windows[active].focused_pane)
                     };
-                    launch_result = self.launch_app_by_path_with_layout_no_review_modal(
-                        &app_path.to_string_lossy(),
-                        spec.layout.clone(),
-                        spec.workspace_root.clone(),
-                        &spec.args,
-                    );
+                    launch_result = self
+                        .launch_app_by_path_with_layout_no_review_modal(
+                            &app_path.to_string_lossy(),
+                            spec.layout.clone(),
+                            spec.workspace_root.clone(),
+                            &spec.args,
+                        )
+                        .map(|pane_id| {
+                            if let Some(pane_id) = pane_id {
+                                response_pane_id = pane_id;
+                            }
+                        });
                     if spec.from_pane_id.is_some() {
                         self.active_window = active;
                         // Undo the temporary focus redirect when launch failed.
@@ -1087,13 +1097,13 @@ impl PlexiApp {
                 {
                     if let Some(ref pane_name) = spec.name {
                         if !pane_name.is_empty() {
-                            self.apply_inline_pane_name(new_pane_id, pane_name);
+                            self.apply_inline_pane_name(response_pane_id, pane_name);
                         }
                     }
                 }
                 if let Some(rf) = &spec.response_file {
                     let json = match &launch_result {
-                        Ok(()) => format!("{{\"pane_id\":{new_pane_id}}}"),
+                        Ok(()) => format!("{{\"pane_id\":{response_pane_id}}}"),
                         Err(msg) => {
                             log::warn!("pane_ipc: spawn_pane: launch failed, returning error to caller: {msg}");
                             format!(

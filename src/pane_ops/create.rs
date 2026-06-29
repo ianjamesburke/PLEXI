@@ -1311,8 +1311,8 @@ impl PlexiApp {
             args,
             true,
         )
+        .map(|_| ())
     }
-
 
     pub(crate) fn launch_app_by_path_with_layout_no_review_modal(
         &mut self,
@@ -1320,7 +1320,7 @@ impl PlexiApp {
         layout: Option<String>,
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<Option<PaneId>, String> {
         self.launch_app_by_path_with_layout_inner(
             app_path,
             layout,
@@ -1337,7 +1337,7 @@ impl PlexiApp {
         workspace_root_override: Option<std::path::PathBuf>,
         args: &[String],
         queue_raw_wasm_review: bool,
-    ) -> Result<(), String> {
+    ) -> Result<Option<PaneId>, String> {
         let app_dir = PathBuf::from(app_path);
         log::info!("launch_app_by_path_with_layout: path={app_path}");
 
@@ -1356,16 +1356,18 @@ impl PlexiApp {
                     .unwrap_or_else(|| PathBuf::from("."))
             });
             if queue_raw_wasm_review {
-                return self.review_or_open_raw_wasm_app_pane(
-                    &app_id,
-                    &app_dir,
-                    workspace_root,
-                    args.to_vec(),
-                );
+                return self
+                    .review_or_open_raw_wasm_app_pane(
+                        &app_id,
+                        &app_dir,
+                        workspace_root,
+                        args.to_vec(),
+                    )
+                    .map(|_| None);
             }
             return self
                 .open_wasm_app_pane(&app_id, &app_dir, workspace_root, args.to_vec())
-                .map(|_| ());
+                .map(Some);
         }
 
         let installed = match self.registry.load_app(&app_dir) {
@@ -1395,13 +1397,13 @@ impl PlexiApp {
             workspace_root.display()
         );
         if installed.manifest.manifest_type == crate::app::registry::ManifestType::Wasm {
-            self.open_installed_wasm_app_pane(
+            let pane_id = self.open_installed_wasm_app_pane(
                 installed,
                 workspace_root,
                 layout_hint.as_deref(),
                 args.to_vec(),
             )?;
-            return Ok(());
+            return Ok(Some(pane_id));
         }
         match crate::process_app::ProcessApp::launch(
             installed.manifest.id.clone(),
@@ -1439,7 +1441,9 @@ impl PlexiApp {
                         self.hot_reload.watch(pane_id, &watch_dir);
                     }
                 }
-                Ok(())
+                new_pane_id
+                    .map(Some)
+                    .ok_or_else(|| format!("launch of '{app_id}' did not create a pane"))
             }
             Err(e) => {
                 log::error!("launch_app_by_path_with_layout: failed to launch '{app_id}' from {app_path}: {e}");
@@ -1780,6 +1784,28 @@ mod tests {
     use crate::process_app::ProcessApp;
     use crate::testing::HostHarness;
 
+    fn write_sleeping_process_app(app_dir: &std::path::Path, id: &str) {
+        std::fs::create_dir_all(app_dir).expect("create app dir");
+        std::fs::write(
+            app_dir.join("manifest.toml"),
+            format!(
+                "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
+            ),
+        )
+        .expect("write manifest");
+        let entry = app_dir.join("run.sh");
+        std::fs::write(&entry, "#!/bin/sh\nsleep 30\n").expect("write entry");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&entry)
+                .expect("entry metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&entry, perms).expect("chmod entry");
+        }
+    }
+
     /// Regression guard for issue #622: launching an app via `open_process_app_pane`
     /// into an empty context (welcome screen) silently did nothing — the process was
     /// inserted into `panes` but `split_with_new_pane` returned None because
@@ -2003,6 +2029,56 @@ mod tests {
             snap.pane_titles.values().any(|t| t == "Terminal"),
             "expected a Terminal pane in snapshot after SpawnPane, got: {:?}",
             snap.pane_titles,
+        );
+    }
+
+    #[test]
+    fn spawn_pane_path_overlay_response_returns_reused_pane_id() {
+        let mut h = HostHarness::new();
+        let focused_pane_id = h.add_test_pane();
+        let root = h.app.windows[0]
+            .tree
+            .root
+            .expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app_dir = dir.path().join("overlay-response-app");
+        write_sleeping_process_app(&app_dir, "overlay-response-app");
+        let response_file = dir.path().join("spawn-response.json");
+
+        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
+            type_id: String::new(),
+            layout: Some("overlay".to_string()),
+            args: vec![],
+            pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
+            response_file: Some(response_file.to_string_lossy().to_string()),
+            ephemeral: false,
+            cwd: None,
+            no_focus: false,
+            path: Some(app_dir.to_string_lossy().to_string()),
+            workspace_root: None,
+            target_context: None,
+            name: None,
+        });
+        h.run_frames(2);
+
+        let response = std::fs::read_to_string(&response_file).expect("spawn response file");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("spawn response JSON");
+        assert_eq!(
+            response["pane_id"],
+            serde_json::json!(focused_pane_id),
+            "overlay path launch must return the reused app pane id"
+        );
+        assert!(
+            matches!(
+                h.app.windows[0].panes.get(&focused_pane_id),
+                Some(Pane::App(app)) if app.manifest_id == "overlay-response-app"
+            ),
+            "returned pane id must address the launched app pane"
         );
     }
 
