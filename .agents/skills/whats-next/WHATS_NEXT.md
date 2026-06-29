@@ -7,7 +7,7 @@
 
 ## Current State (2026-06-29)
 
-**Sprint s50** ("Unified v1 landing"): 5/12 done per `stint status`. `stint status` reports 18 open active-pool tasks (13 ready todo + 5 blocked todo), 46 backlog tasks, and 0 actually in-progress active tasks. `stint check` is green.
+**Sprint s50** ("Unified v1 landing"): 5/12 done per `stint status`. `stint status` reports 17 open active-pool tasks, 46 backlog tasks, and 5 blocked tasks. `0326` is done in stint; `stint check` is green.
 
 Open PRs that affect priority reading:
 
@@ -46,9 +46,15 @@ Alpha verification after #2352:
 
 Clean stopping point: free v1 local/demo/distribution/trust/hosted-registry spine is landed and verified on `alpha`. Remaining free-v1 launch gaps are secrets, onboarding, and public website polish.
 
-New P0 added after live scaffold audit:
+App-builder hardening landed direct on `alpha` after live scaffold audit:
 
-- `0326` owns the agent app-building loop: exact live/headless render parity, app-shell viewport contract, JSON state round-trip, channel/profile coherence, scaffolded app-local `AGENTS.md` / `.gitignore` / SDK drift metadata, CLI-baked self-validation instructions, and a three-agent acceptance run where agents build real apps from the product instructions.
+- `0326` is done. `plexi app init` now scaffolds app-local `AGENTS.md`, `.gitignore`, `plexi.scaffold.toml`, `fixtures/state.json`, semantic ActionBar/FooterKeys boilerplate, explicit alpha/PR validation commands, host probes, and hot-reload guidance.
+- `plexi app check` now validates scaffold drift metadata, SDK shape, semantic chrome, shell layout across small/normal viewports, seeded fixture render values, PNG output, and action probes.
+- Host/runtime fixes landed for semantic `ActionBar`, SDK `UiAction`, app action routing, key-name delivery, and overlay `app open` returning the real addressable pane id.
+- Three sequential native agent trials passed from product instructions only: Trial 1 `focusmeter`, Trial 2 `trial2-focus-ledger`, and Trial 3 `hydration-ledger`. Evidence lives under `/tmp/plexi-0326-trials/`.
+- Trial 3 verified hot reload on the same pane id without reopening (`today` -> `today live`) and captured `hot_reload` / `reload triggered (watcher)` log lines.
+
+Remaining caveats are now documented in product guidance: blank directories need `plexi workspace init` or `--global`, fixture values should appear as exact visible scalar text for seeded checks, direct `.venv` imports are not the validation path, and hot-reload probes should wait for watcher debounce.
 
 ---
 
@@ -65,6 +71,7 @@ Confirmed by running:
 - Git installs fall back to default branch HEAD when a requested ref is missing.
 - Reviewed-native package validation flags obvious subprocess/socket/path traversal bypasses.
 - Free hosted reviewed-native registry smoke path is live in the website registry fixture.
+- Agent app-building loop is trustworthy enough for v1: generated app instructions, drift metadata, headless check/render, JSON seed state, real host state/action/key probes, and same-pane hot reload were verified by three sequential app-build trials.
 - Uninstall works.
 
 Verified broken or not real yet:
@@ -73,9 +80,8 @@ Verified broken or not real yet:
 - License-aware update gating is not implemented. Owned by `0322`.
 - Managed `ai.query` backend `"plexi"` is not implemented. Owned by `0323`.
 - App/agent/skill package envelope is not specified. Owned by `0325`.
-- The agent app-building/testing loop is not trustworthy enough yet: static `app check` can pass while a live pane shows a different layout, and ambient `PLEXI_CHANNEL` can point app tooling at the wrong profile SDK. Owned by `0326`.
 
-Do not describe secrets, paid updates, managed AI, package envelopes, or app-builder validation parity as shipped.
+Do not describe secrets, paid updates, managed AI, or package envelopes as shipped.
 
 ---
 
@@ -85,8 +91,8 @@ Do not describe secrets, paid updates, managed AI, package envelopes, or app-bui
 
 The product a stranger can install, build an app in, and use with a free reviewed app. No money yet.
 
-1. **App-building loop is exact.** `0326` makes `plexi app init` -> generated app `AGENTS.md` -> test/render/check/state/action validation match the real host pane one-to-one.
-2. **Demo path is rebuilt.** `0313` shipped the self-documenting SDK/scaffold flow, `0314` shipped ActionBar/footer scaffold quality, and `0299` rebuilt todo as the canonical demo. `0326` is the new gate that proves those renders are faithful to the live host.
+1. **App-building loop is exact.** `0326` shipped `plexi app init` -> generated app `AGENTS.md` -> test/render/check/state/action/hot-reload validation against the real host pane.
+2. **Demo path is rebuilt.** `0313` shipped the self-documenting SDK/scaffold flow, `0314` shipped ActionBar/footer scaffold quality, and `0299` rebuilt todo as the canonical demo.
 3. **Distribution basics are clean.** `0316` shipped default scaffold packaging, direct GitHub install, update command unification, tag fallback, and workspace-aware update.
 4. **Trust is honest for reviewed-native v1.** `0320` shipped bypass scanning and trust-label behavior for native Python packages. `0285` remains important, but it is not a prerequisite for reviewed-native v1.
 5. **Secrets are real.** `0237` routes apps, PTYs, `plexi run`, and AI broker through one workspace/global resolver.
@@ -113,7 +119,6 @@ Starts after Track A's local distribution and free hosted install are real. Brok
 
 | Task | Title | Why |
 |------|-------|-----|
-| 0326 | app builder loop: exact render parity, state round-trip, and agent self-validation | Highest priority: agents must be able to build apps and trust `app check` / rendered artifacts as a one-to-one representation of the real host pane. Done requires scaffolded app `AGENTS.md`, `.gitignore`, SDK drift metadata, and three independent agent app-build trials from product instructions only. |
 | 0237 | workspace env secrets resolver | External API apps and AI broker key flow need one resolver; promote from backlog before dispatch. |
 | 0324 | first-run AI doctor and app-install guidance | First-user onboarding path after install. |
 | 0280 | palette scroll reset | Visible regression on every palette open; PR `#2314` is already open. |
@@ -151,14 +156,13 @@ Everything else: file explorer backlog (`0007`, `0150`), terminal features (`024
 
 Gaps before sharing publicly:
 
-1. **Agent app-building loop:** `0326` makes scaffold instructions, generated app `AGENTS.md`, render/check artifacts, JSON state, and live host panes agree.
-2. **Secrets path:** `0237` makes external-API apps viable.
-3. **Onboarding:** `0324` turns existing `plexi ai doctor` / `plexi ai setup` into a first-run path.
-4. **Website:** `0272` refreshes `plexiapp.com`.
+1. **Secrets path:** `0237` makes external-API apps viable.
+2. **Onboarding:** `0324` turns existing `plexi ai doctor` / `plexi ai setup` into a first-run path.
+3. **Website:** `0272` refreshes `plexiapp.com`.
 
-**First-user critical path:** 0326 -> 0237 + 0324 + 0272 -> share.
+**First-user critical path:** 0237 + 0324 + 0272 -> share.
 
-**Next recommended task:** `0326` app builder loop. It is ready, P0, and should land before more generated-app or marketplace-demo work.
+**Next recommended task:** `0237` workspace env secrets resolver. It is the next v1 blocker after the app-builder loop.
 
 ---
 

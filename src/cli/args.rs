@@ -588,6 +588,9 @@ pub enum AppCmd {
     Read AGENTS.md first.
     Use TDD and extend tests for behavior changes.
     Run `plexi app test .` regularly.
+    New Python apps set `watch = true`; after `plexi app open .`, source edits
+    should hot-reload into the same pane without reopening. Verify with
+    `plexi pane state <pane-id>` and the host log's `hot_reload` lines.
     Use `plexi app check` as the final gate; do not look for `plexi app build`.
 
   Headless testing:

@@ -20,6 +20,7 @@ Machine-readable drift data lives in `plexi.scaffold.toml`. Run `plexi app check
 - Before done, run the full gate: `PLEXI_CHANNEL=alpha plexi app check . --png-dir render-output/check` or use the matching PR build, for example `PLEXI_CHANNEL=pr-123 plexi app check . --png-dir render-output/check` or `plexi-pr-123 app check . --png-dir render-output/check`.
 - Render JSON and PNG artifacts with an explicit alpha or PR channel. Use seed state when behavior depends on state: `PLEXI_CHANNEL=alpha plexi app render . --state fixtures/state.json` and `PLEXI_CHANNEL=alpha plexi app render . --png --output render-output/shot.png`.
 - Exercise behavior through app actions and keys, not only by reading code: `plexi app action <pane-id> <handler-id>` and `plexi pane key <pane-id> <key>`.
+- Hot reload is part of the dev loop. New apps set `watch = true`; after `plexi app open .`, edit source and verify the same pane id updates without reopening by checking `plexi pane state <pane-id>` and the `hot_reload` lines in the host log.
 - When probing a real host from outside the matching Plexi pane, set the matching socket explicitly: `PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi ...` or `PLEXI_SOCKET=$HOME/.plexi-pr-N/notify.sock PLEXI_CHANNEL=pr-N plexi ...`.
 - Inspect runtime state and logs when validating: `plexi pane state <pane-id>` and `~/.plexi-alpha/plexi.log` or the matching `~/.plexi-pr-N/plexi.log`.
 - Keep source, tests, fixtures, and this metadata as durable truth. Do not record progress in this file.

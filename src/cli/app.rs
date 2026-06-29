@@ -198,6 +198,9 @@ pub fn app_init(
                     "  Render state: {explicit_plexi} app render {} --state fixtures/state.json",
                     app_dir.display()
                 );
+                println!(
+                    "  Hot reload: after open, edit source and verify the same pane id updates with pane state"
+                );
                 println!("  Host probes:");
                 println!("    {explicit_host_plexi} pane state <pane-id>");
                 println!("    {explicit_host_plexi} app action <pane-id> <handler-id>");
@@ -2297,6 +2300,10 @@ mod scaffold_marketplace_tests {
         assert!(
             agents.contains("plexi app action <pane-id>"),
             "AGENTS.md must teach exercising app actions"
+        );
+        assert!(
+            agents.contains("Hot reload is part of the dev loop"),
+            "AGENTS.md must teach same-pane hot reload validation"
         );
         assert!(
             agents.contains("log.debug"),
