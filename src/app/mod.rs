@@ -3894,26 +3894,26 @@ fn parse_key_str_to_event(key: &str) -> (String, crate::app_protocol::Modifiers)
         }
     }
     let key_str = match key_part.to_lowercase().as_str() {
-        "enter" | "return" => "Enter".to_string(),
-        "escape" | "esc" => "Escape".to_string(),
-        "space" => " ".to_string(),
-        "backspace" => "Backspace".to_string(),
-        "tab" => "Tab".to_string(),
-        "up" | "arrowup" => "ArrowUp".to_string(),
-        "down" | "arrowdown" => "ArrowDown".to_string(),
-        "right" | "arrowright" => "ArrowRight".to_string(),
-        "left" | "arrowleft" => "ArrowLeft".to_string(),
+        "enter" | "return" => "return".to_string(),
+        "escape" | "esc" => "escape".to_string(),
+        "space" => "space".to_string(),
+        "backspace" => "backspace".to_string(),
+        "tab" => "tab".to_string(),
+        "up" | "arrowup" => "up".to_string(),
+        "down" | "arrowdown" => "down".to_string(),
+        "right" | "arrowright" => "right".to_string(),
+        "left" | "arrowleft" => "left".to_string(),
+        "plus" => "plus".to_string(),
+        "equals" => "equals".to_string(),
+        "minus" => "minus".to_string(),
+        "f1" | "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11"
+        | "f12" => key_part.to_lowercase(),
         _ => {
-            // Preserve original case for single chars (e.g. "A" stays "A", not "a").
-            // Multi-word named keys get title-case.
+            // SDK KeyEvent.key is lowercase for app panes.
             if key_part.chars().count() == 1 {
-                key_part.to_string()
+                key_part.to_lowercase()
             } else {
-                let mut s = key_part.to_string();
-                if let Some(c) = s.get_mut(0..1) {
-                    c.make_ascii_uppercase();
-                }
-                s
+                key_part.to_lowercase()
             }
         }
     };

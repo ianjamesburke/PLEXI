@@ -152,11 +152,14 @@ pub fn app_init(
                 }
             }
             println!("Created app '{name}' at {}", app_dir.display());
+            let (channel, profile_dir) = current_scaffold_channel();
+            let explicit_plexi = explicit_plexi_command(&channel);
+            let explicit_host_plexi = explicit_host_plexi_command(&channel, &profile_dir);
             if lang == "rust" {
                 println!("\nNext steps:");
                 println!("  cd {}", app_dir.display());
                 println!("  cargo build --release");
-                println!("  plexi app open {}", app_dir.display());
+                println!("  {explicit_host_plexi} app open {}", app_dir.display());
             } else {
                 if open {
                     let path_str = app_dir.to_string_lossy().to_string();
@@ -167,17 +170,21 @@ pub fn app_init(
                         eprintln!(
                             "warning: app created but could not auto-open (exit {exit_code})"
                         );
-                        eprintln!("  Open with: plexi app open {}", app_dir.display());
+                        eprintln!(
+                            "  Open with: {explicit_host_plexi} app open {}",
+                            app_dir.display()
+                        );
                     }
                 } else {
                     log::info!(
                         "app_init: created '{name}' without opening path={}",
                         app_dir.display()
                     );
-                    println!("  Open with: plexi app open {}", app_dir.display());
+                    println!(
+                        "  Open with: {explicit_host_plexi} app open {}",
+                        app_dir.display()
+                    );
                 }
-                let (channel, _) = current_scaffold_channel();
-                let explicit_plexi = explicit_plexi_command(&channel);
                 println!("  Agent loop: read {}/AGENTS.md", app_dir.display());
                 println!(
                     "  Test with: {explicit_plexi} app test {}",
@@ -191,6 +198,10 @@ pub fn app_init(
                     "  Render state: {explicit_plexi} app render {} --state fixtures/state.json",
                     app_dir.display()
                 );
+                println!("  Host probes:");
+                println!("    {explicit_host_plexi} pane state <pane-id>");
+                println!("    {explicit_host_plexi} app action <pane-id> <handler-id>");
+                println!("    {explicit_host_plexi} pane key <pane-id> <key>");
                 println!(
                     "  SDK docs: read sdk/python/SDK_V3.md; with Plexi's SDK on PYTHONPATH, run python -c \"import plexi_sdk; help(plexi_sdk)\""
                 );
@@ -292,6 +303,15 @@ fn explicit_plexi_command(channel: &str) -> String {
         "plexi".to_string()
     } else {
         format!("PLEXI_CHANNEL={channel} plexi")
+    }
+}
+
+fn explicit_host_plexi_command(channel: &str, profile_dir: &str) -> String {
+    let socket = format!("PLEXI_SOCKET=$HOME/{profile_dir}/notify.sock");
+    if channel == "main" {
+        format!("{socket} plexi")
+    } else {
+        format!("{socket} PLEXI_CHANNEL={channel} plexi")
     }
 }
 

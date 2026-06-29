@@ -1,6 +1,33 @@
 use super::super::*;
 
 #[test]
+fn parse_key_str_to_event_uses_sdk_key_names_for_app_panes() {
+    let (key, modifiers) = parse_key_str_to_event("plus");
+    assert_eq!(key, "plus");
+    assert!(!modifiers.ctrl);
+
+    let (key, _) = parse_key_str_to_event("equals");
+    assert_eq!(key, "equals");
+
+    let (key, _) = parse_key_str_to_event("ArrowDown");
+    assert_eq!(key, "down");
+
+    let (key, _) = parse_key_str_to_event("A");
+    assert_eq!(key, "a");
+}
+
+#[test]
+fn parse_key_str_to_event_preserves_modifiers() {
+    let (key, modifiers) = parse_key_str_to_event("ctrl+shift+plus");
+
+    assert_eq!(key, "plus");
+    assert!(modifiers.ctrl);
+    assert!(modifiers.shift);
+    assert!(!modifiers.alt);
+    assert!(!modifiers.cmd);
+}
+
+#[test]
 fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
     let ctx = egui::Context::default();
     let ft = crate::platform::logging::new_frame_tick();

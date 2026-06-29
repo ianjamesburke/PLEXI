@@ -212,6 +212,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                 &manifest,
                 &entry_path,
                 &fixture,
+                require_semantic_chrome,
                 &mut errors,
                 &mut warnings,
             );
@@ -286,6 +287,7 @@ fn run_seeded_state_and_action_probe(
     manifest: &AppManifest,
     entry_path: &Path,
     fixture: &SeedFixture,
+    probe_semantic_actions: bool,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
@@ -337,7 +339,7 @@ fn run_seeded_state_and_action_probe(
         matched
     );
 
-    let Some(handler_id) = recognized_action_handler(&frame) else {
+    let Some(handler_id) = recognized_action_handler(&frame, probe_semantic_actions) else {
         println!("skip action probe — no recognized action handler in seeded render");
         log::info!(
             "app_check[{}]: no recognized action handler in seeded render",
@@ -347,14 +349,14 @@ fn run_seeded_state_and_action_probe(
     };
 
     let action_label = format!("action probe {handler_id}");
-    let expected_after = expected_action_signal(&fixture.state, handler_id);
+    let expected_after = expected_action_signal(&fixture.state, &handler_id);
     match crate::render::app_render::render_app_ui_action_round_trip(
         &manifest.app.id,
         entry_path,
         width,
         height,
         Some(fixture.state.clone()),
-        handler_id,
+        &handler_id,
         &manifest.app.dependencies,
     ) {
         Ok((before, after)) => {
@@ -441,13 +443,49 @@ fn frame_contains_scalar(frame: &serde_json::Value, expected: &str) -> bool {
     }
 }
 
-fn recognized_action_handler(frame: &serde_json::Value) -> Option<&'static str> {
+fn recognized_action_handler(
+    frame: &serde_json::Value,
+    probe_semantic_actions: bool,
+) -> Option<String> {
     for handler in RECOGNIZED_ACTION_HANDLERS {
         if frame_contains_keyed_string(frame, &["node_id", "handler_id"], handler) {
-            return Some(handler);
+            return Some((*handler).to_string());
         }
     }
+    if probe_semantic_actions {
+        return first_semantic_action_handler(frame);
+    }
     None
+}
+
+fn first_semantic_action_handler(frame: &serde_json::Value) -> Option<String> {
+    match frame {
+        serde_json::Value::Object(map) => {
+            if map.get("type").and_then(serde_json::Value::as_str) == Some("action_bar") {
+                if let Some(actions) = map
+                    .get("actions")
+                    .and_then(serde_json::Value::as_array)
+                {
+                    for action in actions {
+                        if let Some(handler) = action
+                            .as_object()
+                            .and_then(|obj| {
+                                obj.get("node_id")
+                                    .or_else(|| obj.get("handler_id"))
+                                    .and_then(serde_json::Value::as_str)
+                            })
+                            .filter(|handler| !handler.is_empty())
+                        {
+                            return Some(handler.to_string());
+                        }
+                    }
+                }
+            }
+            map.values().find_map(first_semantic_action_handler)
+        }
+        serde_json::Value::Array(values) => values.iter().find_map(first_semantic_action_handler),
+        _ => None,
+    }
 }
 
 fn frame_contains_keyed_string(frame: &serde_json::Value, keys: &[&str], expected: &str) -> bool {
@@ -1181,8 +1219,34 @@ profile_dir = ".plexi-beta"
         ]);
 
         assert_eq!(
-            super::recognized_action_handler(&frame),
-            Some("counter-increment")
+            super::recognized_action_handler(&frame, false),
+            Some("counter-increment".to_string())
+        );
+    }
+
+    #[test]
+    fn recognized_action_handler_uses_semantic_action_bar_when_enabled() {
+        let frame = serde_json::json!([
+            {
+                "type": "component_tree",
+                "root": {
+                    "type": "column",
+                    "children": [
+                        {
+                            "type": "action_bar",
+                            "actions": [
+                                {"type": "button", "node_id": "focus-add-5", "label": "+5"}
+                            ]
+                        }
+                    ]
+                }
+            }
+        ]);
+
+        assert_eq!(super::recognized_action_handler(&frame, false), None);
+        assert_eq!(
+            super::recognized_action_handler(&frame, true),
+            Some("focus-add-5".to_string())
         );
     }
 

@@ -498,9 +498,9 @@ pub enum AppCmd {
   State and behavior probes:
     PLEXI_CHANNEL=alpha plexi app render . --state fixtures/state.json
     PLEXI_CHANNEL=alpha plexi app render . --png --output render-output/shot.png
-    plexi app action <pane-id> <handler-id>
-    plexi pane key <pane-id> <key>
-    plexi pane state <pane-id>
+    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi app action <pane-id> <handler-id>
+    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane key <pane-id> <key>
+    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane state <pane-id>
 
   Logs:
     Inspect ~/.plexi-alpha/plexi.log or the matching ~/.plexi-pr-N/plexi.log.
@@ -600,9 +600,10 @@ pub enum AppCmd {
     The state file is a plain JSON object, e.g. {"count": 3}.
 
   Runtime probes:
-    plexi app action <pane-id> <handler-id>   Exercise app actions
-    plexi pane key <pane-id> <key>            Exercise keyboard behavior
-    plexi pane state <pane-id>                Inspect last rendered app state
+    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi app open <path>
+    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi app action <pane-id> <handler-id>
+    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane key <pane-id> <key>
+    PLEXI_SOCKET=$HOME/.plexi-alpha/notify.sock PLEXI_CHANNEL=alpha plexi pane state <pane-id>
     Inspect ~/.plexi-alpha/plexi.log or ~/.plexi-pr-N/plexi.log for app logs.
 "#)]
     Init {
@@ -903,7 +904,8 @@ pub enum PaneCmd {
     /// For app panes, delivers a structured key event.
     ///
     /// Key formats: single character ("h"), named key ("enter", "escape", "space",
-    /// "up", "down", "left", "right", "backspace"), or chord ("ctrl+c").
+    /// "up", "down", "left", "right", "backspace", "plus", "minus", "equals"),
+    /// or chord ("ctrl+c").
     ///
     /// Example: plexi pane key 42 enter
     Key {
