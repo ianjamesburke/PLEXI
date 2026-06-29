@@ -376,7 +376,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `uninstall` | Remove an installed app by id |
 | `list` | Show all installed apps with their versions |
 | `render` | Render an app headlessly (JSON frame tree by default, or PNG with --png) |
-| `check` | Check a local app with manifest, SDK, and render-size checks |
+| `check` | Check a local app with manifest, scaffold metadata, SDK, and render-size checks |
 | `test` | Run an app's AppHarness tests with `uv run pytest tests/` |
 | `info` | Show details about an installed app: id, name, version, and available tools |
 | `init` | Create a new app from a template |
@@ -452,9 +452,9 @@ Render an app headlessly (JSON frame tree by default, or PNG with --png)
 
 ### `plexi app check`
 
-Check a local app with manifest, SDK, and render-size checks.
+Check a local app with manifest, scaffold metadata, SDK, and render-size checks.
 
-This is the compiler-like gate for generated Plexi apps. It checks the manifest, inspects Python SDK usage without importing app code, and renders the app at small and normal pane sizes.
+This is the compiler-like gate for generated Plexi apps. It checks the manifest, warns on missing or stale `plexi.scaffold.toml`, inspects Python SDK usage without importing app code, and renders the app at small and normal pane sizes. Run it with an explicit alpha or PR channel so the SDK/profile under test is not ambient.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -485,7 +485,7 @@ Show details about an installed app: id, name, version, and available tools
 
 Create a new app from a template.
 
-Scaffolds the folder structure and files you need to build a Plexi app.
+Scaffolds the folder structure and files you need to build a Plexi app: manifest.toml, main.py, tests/test_app.py, AGENTS.md, .gitignore, and plexi.scaffold.toml drift metadata.
 
 By default, the app is placed in your workspace's app directory. If no workspace is detected, pass --global to scaffold into the global registry.
 
