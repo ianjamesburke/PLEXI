@@ -50,6 +50,8 @@ Never add `Co-Authored-By: Claude ...` trailers. Never push directly to `main` o
 
 Always use the `/create-stint` skill to create tasks. It owns the full flow: duplicate check, sizing, sprint placement, blocking, and optional GitHub issue creation. Never create stint tasks or GitHub issues manually.
 
+`.stint/` is git-ignored by design. New or updated stint tasks may not appear in `git status`; that is OK. Validate task state with `stint check`, `stint list`, `stint show <id>`, and `stint status`.
+
 ## Planning
 
 Read the relevant PRM first. Use `stint next` for the next claimable task. Stint tasks are the primary implementation tickets; GitHub issues are optional. Pipeline labels (`pipeline:implement`, `pipeline:open-pr`, `pipeline:validate`, `pipeline:merge`) are the live work state.
@@ -119,6 +121,7 @@ Non-obvious discoveries with no single owning directory. When you discover a tra
 - **`create_page_at` takes an explicit `context_id`.** Never temporarily switch `active_window` or `router.active` to steer `create_page_at` into a context — pass `context_id: u64` directly. To get the caller-pane's context: `find_pane_in_any_window(from_pane_id)` → `self.windows[win_idx].context_id`.
 - **Don't switch global state to thread data through a function.** When a helper reads from `router.active()` or `active_window`, the fix is to add an explicit parameter — not to temporarily mutate global focus state before calling it. Global-state mutation as a calling convention is always a hack.
 - **`plexi` CLI is almost always running inside a Plexi pane.** Never assume an outside-terminal scenario unless the bug explicitly involves the spawn-queue or `PLEXI_SOCKET` being unset. User-reported issues are about in-pane behavior.
+- **`PLEXI_CHANNEL` leaks into app tooling.** A pane launched under beta runs `plexi app check` / `plexi app render` against the beta profile SDK even when the app path is under `.plexi-alpha/`. For alpha validation, make the channel explicit with `env PLEXI_CHANNEL=alpha plexi ...` or use `plexi-alpha`. For PR builds, use `plexi-pr-<N>` directly or `env PLEXI_CHANNEL=pr-<N> plexi ...` so the shim selects the `~/.plexi-pr-<N>/` profile. Do not infer the runtime SDK/profile from the app path.
 
 ## Architecture
 
