@@ -343,7 +343,7 @@ tips = true
 # json = "app:text-editor"
 # py   = "os"
 
-# [marketplace]
+[marketplace]
 # Hosted app catalog + CDN. Defaults point at the official plexiapp.com registry,
 # so leave these unset to use it. Override only to point at a private registry.
 # registry_url    = "https://plexiapp.com/registry/v1/index.json"
