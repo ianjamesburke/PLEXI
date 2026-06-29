@@ -183,13 +183,25 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                         None,
                         &manifest.app.dependencies,
                     ) {
-                        Ok(bytes) => match std::fs::write(&png_path, bytes) {
-                            Ok(()) => println!("✓ png {label} — {}", png_path.display()),
-                            Err(e) => errors.push(format!(
-                                "png {label} — could not write {}: {e}",
-                                png_path.display()
-                            )),
-                        },
+                        Ok(bytes) => {
+                            if require_semantic_chrome {
+                                let png_errors = semantic_png_chrome_errors(&bytes, width, height);
+                                if png_errors.is_empty() {
+                                    println!("✓ png chrome {label} — full-bleed, unclipped footer");
+                                } else {
+                                    for issue in png_errors {
+                                        errors.push(format!("png chrome {label} — {issue}"));
+                                    }
+                                }
+                            }
+                            match std::fs::write(&png_path, bytes) {
+                                Ok(()) => println!("✓ png {label} — {}", png_path.display()),
+                                Err(e) => errors.push(format!(
+                                    "png {label} — could not write {}: {e}",
+                                    png_path.display()
+                                )),
+                            }
+                        }
                         Err(e) => errors.push(format!("png {label} — {e}")),
                     }
                 }
@@ -838,6 +850,64 @@ fn action_bar_has_buttons(value: &serde_json::Value) -> bool {
             .all(|action| node_type(action) == Some("button"))
 }
 
+fn semantic_png_chrome_errors(bytes: &[u8], width: u32, height: u32) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Ok(img) = image::load_from_memory(bytes) else {
+        return vec!["could not decode PNG bytes".to_string()];
+    };
+    let rgba = img.to_rgba8();
+    if rgba.width() != width || rgba.height() != height {
+        errors.push(format!(
+            "decoded size {}x{} did not match requested {width}x{height}",
+            rgba.width(),
+            rgba.height()
+        ));
+        return errors;
+    }
+    if width < 8 || height < 8 {
+        errors.push(format!("viewport too small for chrome pixel check: {width}x{height}"));
+        return errors;
+    }
+
+    let top_left = *rgba.get_pixel(0, 0);
+    let top_mid = *rgba.get_pixel(width / 2, 0);
+    let top_right = *rgba.get_pixel(width - 1, 0);
+    if top_left != top_mid || top_right != top_mid {
+        errors.push("app bar is not full-bleed across the top edge".to_string());
+    }
+
+    let footer_bg = *rgba.get_pixel(0, height - 1);
+    let bottom_mid = *rgba.get_pixel(width / 2, height - 1);
+    let bottom_right = *rgba.get_pixel(width - 1, height - 1);
+    if bottom_mid != footer_bg || bottom_right != footer_bg {
+        errors.push("footer is clipped or not full-bleed on the bottom edge".to_string());
+    }
+
+    let clean_rows = 6.min(height);
+    let sample_step = 8.max(width / 40).max(1);
+    for y in height - clean_rows..height {
+        let mut x = 0;
+        while x < width {
+            if *rgba.get_pixel(x, y) != footer_bg {
+                errors.push(format!(
+                    "footer content reaches bottom padding at pixel ({x},{y})"
+                ));
+                return errors;
+            }
+            x = x.saturating_add(sample_step);
+        }
+        if *rgba.get_pixel(width - 1, y) != footer_bg {
+            errors.push(format!(
+                "footer content reaches bottom padding at pixel ({},{y})",
+                width - 1
+            ));
+            return errors;
+        }
+    }
+
+    errors
+}
+
 fn analyze_python_entry(
     app_id: &str,
     entry_path: &Path,
@@ -1014,7 +1084,30 @@ fn collect_bounds_errors(
 #[cfg(test)]
 mod app_check_tests {
     use std::fs;
+    use std::io::Cursor;
     use tempfile::TempDir;
+
+    fn test_png_with_footer_pixel(bad_footer_pixel: Option<(u32, u32)>) -> Vec<u8> {
+        let chrome = image::Rgba([24, 24, 37, 255]);
+        let body = image::Rgba([0, 0, 0, 255]);
+        let text = image::Rgba([166, 173, 200, 255]);
+        let mut img = image::RgbaImage::from_pixel(32, 24, body);
+        for x in 0..32 {
+            img.put_pixel(x, 0, chrome);
+        }
+        for y in 18..24 {
+            for x in 0..32 {
+                img.put_pixel(x, y, chrome);
+            }
+        }
+        if let Some((x, y)) = bad_footer_pixel {
+            img.put_pixel(x, y, text);
+        }
+        let mut bytes = Vec::new();
+        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        bytes
+    }
 
     #[test]
     fn default_sizes_cover_small_and_normal_panes() {
@@ -1323,6 +1416,26 @@ profile_dir = ".plexi-beta"
                 .any(|error| error.contains("padding must be at least")),
             "{:?}",
             super::semantic_scaffold_chrome_errors(&frame)
+        );
+    }
+
+    #[test]
+    fn semantic_png_chrome_accepts_full_bleed_unclipped_footer() {
+        let bytes = test_png_with_footer_pixel(None);
+
+        assert!(super::semantic_png_chrome_errors(&bytes, 32, 24).is_empty());
+    }
+
+    #[test]
+    fn semantic_png_chrome_rejects_footer_content_on_bottom_edge() {
+        let bytes = test_png_with_footer_pixel(Some((16, 23)));
+
+        assert!(
+            super::semantic_png_chrome_errors(&bytes, 32, 24)
+                .iter()
+                .any(|error| error.contains("footer content reaches bottom padding")),
+            "{:?}",
+            super::semantic_png_chrome_errors(&bytes, 32, 24)
         );
     }
 

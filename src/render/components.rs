@@ -439,6 +439,7 @@ fn render_component_tree_inner(
                         direction,
                         children,
                         *gap,
+                        0.0,
                         colors,
                         text_edit_buffers,
                         focus_ctx,
@@ -1044,6 +1045,27 @@ fn render_component_tree_inner(
                 children.len()
             );
             let content_padding = semantic_shell_padding(children, *padding);
+            if is_semantic_app_shell(children) {
+                if vertical_stack_needs_full_height(children) {
+                    let h = ui.available_height();
+                    ui.set_min_height(h);
+                }
+                events.extend(render_stack(
+                    ui,
+                    &StackDirection::Vertical,
+                    children,
+                    *gap,
+                    content_padding,
+                    colors,
+                    text_edit_buffers,
+                    focus_ctx,
+                    raw_caches,
+                    canvas_w,
+                    canvas_h,
+                    hit_regions,
+                ));
+                return events;
+            }
             // Skip top padding when the first child is AppBar (it's full-bleed chrome)
             let effective_top = match children.first() {
                 Some(UiNode::AppBar { .. }) => 0,
@@ -1069,6 +1091,7 @@ fn render_component_tree_inner(
                         &StackDirection::Vertical,
                         children,
                         *gap,
+                        0.0,
                         colors,
                         text_edit_buffers,
                         focus_ctx,
@@ -1155,7 +1178,6 @@ fn render_component_tree_inner(
             entries, divider, ..
         } => {
             let chip_row_h = chip_row_height(ui);
-            let row_h = chip_row_h + 4.0;
             let total_h = footer_keys_height(ui, *divider);
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), total_h),
@@ -1182,8 +1204,9 @@ fn render_component_tree_inner(
                 );
             }
 
-            // Measure total content width so the group can be clipped as a unit
-            // while staying aligned to the app body content inset.
+            // Measure total content width so the group can be horizontally
+            // centered while the row itself stays vertically centered in the
+            // footer chrome.
             let chip_font = egui::FontId::monospace(style::TEXT_HINT);
             let desc_font = egui::FontId::proportional(style::TEXT_HINT);
             let mut content_w: f32 = 0.0;
@@ -1216,40 +1239,9 @@ fn render_component_tree_inner(
                 }
             }
 
-            let left = rect.min.x.max(full_rect.min.x + style::SPACE_MD);
-            let max_w = (full_rect.max.x - style::SPACE_MD - left).max(0.0);
-            let row_top = if *divider {
-                full_rect.min.y + 1.0 + style::SPACE_SM
-            } else {
-                full_rect.min.y + style::SPACE_SM
-            };
-            let content_rect = egui::Rect::from_min_size(
-                egui::pos2(left, row_top + (row_h - chip_row_h) / 2.0),
-                egui::vec2(content_w.min(max_w), chip_row_h),
-            );
-
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    for (ei, entry) in entries.iter().enumerate() {
-                        for (ki, key) in entry.keys.iter().enumerate() {
-                            if ki > 0 {
-                                ui.add_space(2.0);
-                            }
-                            crate::ui::shortcuts::key_chip(ui, key, colors, chip_font.clone());
-                        }
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(entry.description.clone())
-                                .size(style::TEXT_HINT)
-                                .color(colors.text_dim),
-                        );
-                        if ei + 1 < entries.len() {
-                            ui.add_space(style::SPACE_MD);
-                        }
-                    }
-                });
-            });
+            let content_rect =
+                footer_keys_content_rect(full_rect, content_w, chip_row_h, *divider);
+            paint_footer_keys(ui, content_rect, entries, chip_font, desc_font, colors);
         }
 
         UiNode::Footer { text, color, .. } => {
@@ -1605,6 +1597,85 @@ fn chip_row_height(ui: &egui::Ui) -> f32 {
     text_h + style::KEYCHIP_PAD_V * 2.0
 }
 
+fn footer_keys_content_rect(
+    full_rect: egui::Rect,
+    content_w: f32,
+    chip_row_h: f32,
+    divider: bool,
+) -> egui::Rect {
+    let left_bound = full_rect.min.x + style::SPACE_MD;
+    let right_bound = full_rect.max.x - style::SPACE_MD;
+    let available_w = (right_bound - left_bound).max(0.0);
+    let width = content_w.min(available_w);
+    let left = if content_w <= available_w {
+        (full_rect.center().x - width / 2.0).clamp(left_bound, right_bound - width)
+    } else {
+        left_bound
+    };
+    let chrome_top = full_rect.min.y + if divider { 1.0 } else { 0.0 };
+    let chrome_h = (full_rect.max.y - chrome_top).max(0.0);
+    let top = chrome_top + (chrome_h - chip_row_h).max(0.0) / 2.0;
+    egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, chip_row_h))
+}
+
+fn paint_footer_keys(
+    ui: &egui::Ui,
+    content_rect: egui::Rect,
+    entries: &[crate::app_protocol::FooterKeyEntry],
+    chip_font: egui::FontId,
+    desc_font: egui::FontId,
+    colors: &Colors,
+) {
+    let painter = ui.painter().with_clip_rect(content_rect);
+    let key_color = colors.text_primary.gamma_multiply(0.78);
+    let desc_color = colors.text_primary.gamma_multiply(0.70);
+    let mut x = content_rect.min.x;
+
+    for (ei, entry) in entries.iter().enumerate() {
+        for (ki, key) in entry.keys.iter().enumerate() {
+            if ki > 0 {
+                x += style::KEYCHIP_GAP;
+            }
+            let galley = ui.fonts(|f| f.layout_no_wrap(key.clone(), chip_font.clone(), key_color));
+            let text_size = galley.size();
+            let chip_h = text_size.y + style::KEYCHIP_PAD_V * 2.0;
+            let chip_w = (text_size.x + style::KEYCHIP_PAD_H * 2.0)
+                .max(chip_h)
+                .max(style::KEYCHIP_MIN_W);
+            let chip_rect = egui::Rect::from_min_size(
+                egui::pos2(x, content_rect.center().y - chip_h / 2.0),
+                egui::vec2(chip_w, chip_h),
+            );
+            painter.rect_filled(chip_rect, egui::CornerRadius::same(4), colors.bg_active);
+            painter.galley(
+                egui::pos2(
+                    chip_rect.center().x - text_size.x / 2.0,
+                    chip_rect.center().y - text_size.y / 2.0,
+                ),
+                galley,
+                key_color,
+            );
+            x += chip_w;
+        }
+
+        x += 4.0;
+        let desc_galley = ui.fonts(|f| {
+            f.layout_no_wrap(entry.description.clone(), desc_font.clone(), desc_color)
+        });
+        let desc_size = desc_galley.size();
+        painter.galley(
+            egui::pos2(x, content_rect.center().y - desc_size.y / 2.0),
+            desc_galley,
+            desc_color,
+        );
+        x += desc_size.x;
+
+        if ei + 1 < entries.len() {
+            x += style::SPACE_MD;
+        }
+    }
+}
+
 fn footer_keys_height(ui: &egui::Ui, divider: bool) -> f32 {
     let row_h = chip_row_height(ui) + 4.0;
     if divider {
@@ -1850,6 +1921,8 @@ fn render_vertical_children(
     ui: &mut Ui,
     children: &[&UiNode],
     gap: f32,
+    content_inset: f32,
+    available_h_override: Option<f32>,
     colors: &Colors,
     text_edit_buffers: &mut std::collections::HashMap<String, String>,
     focus_ctx: &mut TextEditFocusCtx,
@@ -1863,7 +1936,10 @@ fn render_vertical_children(
         return events;
     }
 
-    let available_h = ui.available_height().max(0.0);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let available_h = available_h_override
+        .unwrap_or_else(|| ui.available_height().min(ui.max_rect().height()))
+        .max(0.0);
     let gap_total = gap * children.len().saturating_sub(1) as f32;
     let mut fixed_total = gap_total;
     let mut grow_count = 0usize;
@@ -1894,9 +1970,15 @@ fn render_vertical_children(
         };
 
         if let Some(h) = allocated_h {
-            ui.allocate_ui(egui::vec2(ui.available_width(), h.max(0.0)), |ui| {
-                ui.set_min_height(h.max(0.0));
-                ui.set_max_height(h.max(0.0));
+            let (slot_rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), h.max(0.0)),
+                egui::Sense::hover(),
+            );
+            let render_rect = shell_child_rect(slot_rect, child, content_inset);
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(render_rect), |ui| {
+                ui.set_clip_rect(render_rect);
+                ui.set_min_height(render_rect.height());
+                ui.set_max_height(render_rect.height());
                 events.extend(render_component_tree_inner(
                     ui,
                     child,
@@ -1909,6 +1991,27 @@ fn render_vertical_children(
                     hit_regions,
                 ));
             });
+        } else if content_inset > 0.0 && node_uses_shell_content_inset(child) {
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: content_inset as i8,
+                    right: content_inset as i8,
+                    top: 0,
+                    bottom: 0,
+                })
+                .show(ui, |ui| {
+                    events.extend(render_component_tree_inner(
+                        ui,
+                        child,
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                        raw_caches,
+                        canvas_w,
+                        canvas_h,
+                        hit_regions,
+                    ));
+                });
         } else {
             events.extend(render_component_tree_inner(
                 ui,
@@ -1927,11 +2030,36 @@ fn render_vertical_children(
     events
 }
 
+fn shell_child_rect(slot_rect: egui::Rect, child: &UiNode, content_inset: f32) -> egui::Rect {
+    if content_inset <= 0.0 || !node_uses_shell_content_inset(child) {
+        return slot_rect;
+    }
+    let inset = content_inset.min(slot_rect.width() / 2.0);
+    egui::Rect::from_min_max(
+        egui::pos2(slot_rect.min.x + inset, slot_rect.min.y),
+        egui::pos2(slot_rect.max.x - inset, slot_rect.max.y),
+    )
+}
+
+fn node_uses_shell_content_inset(node: &UiNode) -> bool {
+    !matches!(
+        node,
+        UiNode::AppBar { .. }
+            | UiNode::FooterKeys { .. }
+            | UiNode::Footer { .. }
+            | UiNode::Pinned {
+                edge: PinnedEdge::Bottom,
+                ..
+            }
+    )
+}
+
 fn render_stack(
     ui: &mut Ui,
     direction: &StackDirection,
     children: &[UiNode],
     gap: f32,
+    content_inset: f32,
     colors: &Colors,
     text_edit_buffers: &mut std::collections::HashMap<String, String>,
     focus_ctx: &mut TextEditFocusCtx,
@@ -2004,30 +2132,44 @@ fn render_stack(
 
             if !pinned_bottom.is_empty() {
                 let total_pinned_h: f32 = pinned_bottom.iter().map(|(h, _)| h).sum();
-                let body_h = (ui.available_height() - total_pinned_h).max(0.0);
+                let stack_size = egui::vec2(ui.available_width(), ui.available_height());
+                let (stack_rect, _) = ui.allocate_exact_size(stack_size, egui::Sense::hover());
+                let body_h = (stack_rect.height() - total_pinned_h).max(0.0);
+                let body_rect = egui::Rect::from_min_size(
+                    stack_rect.min,
+                    egui::vec2(stack_rect.width(), body_h),
+                );
 
-                // Body gets a constrained-height allocation; pinned fills the rest below.
-                // set_min_height forces the cursor to advance by the full body_h even when
-                // content is short, ensuring the footer renders flush to the bottom.
-                // ui.vertical() resets layout direction in case we're inside a horizontal stack.
-                ui.vertical(|ui| {
-                    ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
-                        ui.set_min_height(body_h);
-                        ui.set_max_height(body_h);
-                        events.extend(render_vertical_children(
-                            ui,
-                            &body_children,
-                            gap,
-                            colors,
-                            text_edit_buffers,
-                            focus_ctx,
-                            raw_caches,
-                            canvas_w,
-                            canvas_h,
-                            hit_regions,
-                        ));
-                    });
-                    for (_, inner) in &pinned_bottom {
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body_rect), |ui| {
+                    ui.set_clip_rect(body_rect);
+                    ui.set_min_height(body_h);
+                    ui.set_max_height(body_h);
+                    events.extend(render_vertical_children(
+                        ui,
+                        &body_children,
+                        gap,
+                        content_inset,
+                        Some(body_h),
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                        raw_caches,
+                        canvas_w,
+                        canvas_h,
+                        hit_regions,
+                    ));
+                });
+
+                let mut footer_y = stack_rect.max.y - total_pinned_h;
+                for (footer_h, inner) in &pinned_bottom {
+                    let footer_rect = egui::Rect::from_min_size(
+                        egui::pos2(stack_rect.min.x, footer_y),
+                        egui::vec2(stack_rect.width(), *footer_h),
+                    );
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
+                        ui.set_clip_rect(footer_rect);
+                        ui.set_min_height(*footer_h);
+                        ui.set_max_height(*footer_h);
                         events.extend(render_component_tree_inner(
                             ui,
                             inner,
@@ -2039,8 +2181,9 @@ fn render_stack(
                             canvas_h,
                             hit_regions,
                         ));
-                    }
-                });
+                    });
+                    footer_y += *footer_h;
+                }
                 log::trace!(
                     "render_components: render_stack vertical pinned body_h={body_h:.0} footer_h={total_pinned_h:.0}"
                 );
@@ -2056,6 +2199,8 @@ fn render_stack(
                         ui,
                         &child_refs,
                         gap,
+                        content_inset,
+                        None,
                         colors,
                         text_edit_buffers,
                         focus_ctx,
@@ -2493,6 +2638,18 @@ mod render_component_tree_tests {
             assert_eq!(bottom_pin_height(ui, &label), None);
         });
         let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn footer_keys_content_rect_centers_horizontally_and_vertically() {
+        let full_rect =
+            egui::Rect::from_min_size(egui::pos2(0.0, 100.0), egui::vec2(320.0, 40.0));
+        let content = footer_keys_content_rect(full_rect, 150.0, 18.0, true);
+
+        assert_eq!(content.center().x, full_rect.center().x);
+        let top_pad = content.min.y - (full_rect.min.y + 1.0);
+        let bottom_pad = full_rect.max.y - content.max.y;
+        assert_eq!(top_pad, bottom_pad);
     }
 
     /// A horizontal stack of fixed-height buttons reserves one button row in vertical layout.
