@@ -8,8 +8,8 @@
 use egui::Ui;
 
 use crate::app_protocol::{PinnedEdge, StackDirection, UiNode};
-use crate::ui::style;
 use crate::ui::theme::Colors;
+use crate::ui::{button, style};
 
 /// Persistent per-pane render resources threaded into `UiNode::Raw` nodes.
 ///
@@ -100,7 +100,8 @@ fn validate_shell_layout_inner(
                 Some(UiNode::AppBar { .. }) => 0.0,
                 _ => (*padding_top).max(0.0),
             };
-            let content_width = viewport_width - (*padding).max(0.0) * 2.0;
+            let content_padding = semantic_shell_padding(children, *padding).max(0.0);
+            let content_width = viewport_width - content_padding * 2.0;
             validate_vertical_shell(
                 ui,
                 children,
@@ -786,7 +787,7 @@ fn render_component_tree_inner(
             style: button_style,
             ..
         } => {
-            let btn_w = button_intrinsic_width(ui, label);
+            let btn_w = button::chrome_button_intrinsic_width(ui, label);
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(btn_w, button_height()), egui::Sense::hover());
             if let Some(evt) =
@@ -819,7 +820,7 @@ fn render_component_tree_inner(
                     continue;
                 };
 
-                let w = button_intrinsic_width(ui, label);
+                let w = button::chrome_button_intrinsic_width(ui, label);
                 if x + w > rect.max.x {
                     log::debug!(
                         "render_components: ActionBar clipped remaining actions at width={}",
@@ -1042,6 +1043,7 @@ fn render_component_tree_inner(
                 "render_components: Column {} children gap={gap} padding_top={padding_top} padding={padding}",
                 children.len()
             );
+            let content_padding = semantic_shell_padding(children, *padding);
             // Skip top padding when the first child is AppBar (it's full-bleed chrome)
             let effective_top = match children.first() {
                 Some(UiNode::AppBar { .. }) => 0,
@@ -1049,8 +1051,8 @@ fn render_component_tree_inner(
             };
             egui::Frame::new()
                 .inner_margin(egui::Margin {
-                    left: *padding as i8,
-                    right: *padding as i8,
+                    left: content_padding as i8,
+                    right: content_padding as i8,
                     top: effective_top,
                     bottom: 0,
                 })
@@ -1169,7 +1171,7 @@ fn render_component_tree_inner(
             ui.painter().rect_filled(full_rect, 0.0, colors.bg_sidebar);
 
             if *divider {
-                let line_y = full_rect.min.y + style::SPACE_SM;
+                let line_y = full_rect.min.y;
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(
                         egui::pos2(full_rect.min.x, line_y),
@@ -1180,7 +1182,8 @@ fn render_component_tree_inner(
                 );
             }
 
-            // Measure total content width so we can center the group horizontally.
+            // Measure total content width so the group can be clipped as a unit
+            // while staying aligned to the app body content inset.
             let chip_font = egui::FontId::monospace(style::TEXT_HINT);
             let desc_font = egui::FontId::proportional(style::TEXT_HINT);
             let mut content_w: f32 = 0.0;
@@ -1213,17 +1216,16 @@ fn render_component_tree_inner(
                 }
             }
 
-            // Center the content group inside the usable area (below divider if present).
-            let left =
-                (full_rect.center().x - content_w / 2.0).max(full_rect.min.x + style::SPACE_MD);
+            let left = rect.min.x.max(full_rect.min.x + style::SPACE_MD);
+            let max_w = (full_rect.max.x - style::SPACE_MD - left).max(0.0);
             let row_top = if *divider {
-                full_rect.min.y + style::SPACE_SM + 1.0 + style::SPACE_SM
+                full_rect.min.y + 1.0 + style::SPACE_SM
             } else {
                 full_rect.min.y + style::SPACE_SM
             };
             let content_rect = egui::Rect::from_min_size(
                 egui::pos2(left, row_top + (row_h - chip_row_h) / 2.0),
-                egui::vec2(content_w, chip_row_h),
+                egui::vec2(content_w.min(max_w), chip_row_h),
             );
 
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
@@ -1527,21 +1529,11 @@ fn render_component_tree_inner(
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn button_height() -> f32 {
-    32.0
+    style::BUTTON_H_MD
 }
 
 fn action_bar_height() -> f32 {
     button_height() + style::SPACE_SM
-}
-
-fn button_intrinsic_width(ui: &egui::Ui, label: &str) -> f32 {
-    let font_id = egui::FontId::proportional(style::TEXT_BODY);
-    let text_w = ui.fonts(|f| {
-        f.layout_no_wrap(label.to_owned(), font_id, egui::Color32::WHITE)
-            .size()
-            .x
-    });
-    (text_w + style::SPACE_SM * 2.0).max(48.0)
 }
 
 fn render_button_at(
@@ -1553,17 +1545,6 @@ fn render_button_at(
     button_style: &str,
     colors: &Colors,
 ) -> Option<ComponentEventPayload> {
-    let font_id = egui::FontId::proportional(style::TEXT_BODY);
-    let galley = ui.fonts(|f| {
-        f.layout(
-            label.to_owned(),
-            font_id,
-            egui::Color32::WHITE,
-            rect.width().max(0.0),
-        )
-    });
-    let text_size = galley.size();
-
     // Use raw PointerState because button_down/button_pressed read pointer
     // events directly and are not affected by the pane-wide click-and-drag
     // widget registered later around the whole pane.
@@ -1572,68 +1553,21 @@ fn render_button_at(
     let is_down = is_hovered && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
     let is_just_pressed =
         is_hovered && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
-
-    let is_primary = button_style == "primary";
-    let is_danger = button_style == "danger";
-    let is_ghost = button_style == "ghost";
-    let danger = egui::Color32::from_rgb(210, 78, 78);
-    let fill = if disabled {
-        colors.bg_active.gamma_multiply(0.55)
-    } else if is_down {
-        if is_danger {
-            danger.gamma_multiply(0.85)
-        } else if is_primary {
-            colors.accent.gamma_multiply(0.85)
-        } else {
-            colors.bg_hover
-        }
-    } else if is_primary {
-        colors.accent
-    } else if is_danger {
-        danger
-    } else if is_ghost {
-        egui::Color32::TRANSPARENT
-    } else {
-        colors.bg_active
-    };
-
-    let painter = ui.painter();
-    painter.rect_filled(rect, style::RADIUS_MD, fill);
-    if !disabled {
-        let stroke_color = if is_hovered {
-            if is_danger {
-                danger
-            } else {
-                colors.accent
-            }
-        } else if is_ghost {
-            egui::Color32::TRANSPARENT
-        } else {
-            colors.border
-        };
-        painter.rect_stroke(
-            rect,
-            style::RADIUS_MD,
-            egui::Stroke::new(1.0, stroke_color),
-            egui::StrokeKind::Inside,
-        );
-        if is_hovered {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-    }
-
-    let text_color = if disabled {
-        colors.text_dim
-    } else if is_primary || is_danger {
-        colors.bg_active
-    } else {
-        colors.text_primary
-    };
-    let text_pos = egui::pos2(
-        rect.center().x - text_size.x / 2.0,
-        rect.center().y - text_size.y / 2.0,
+    button::paint_chrome_button_at(
+        ui.painter(),
+        rect,
+        label,
+        app_button_kind(button_style),
+        button::ChromeButtonState {
+            disabled,
+            hovered: is_hovered,
+            down: is_down,
+        },
+        colors,
     );
-    painter.galley(text_pos, galley, text_color);
+    if is_hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
 
     if is_just_pressed {
         log::info!("render_components: Button press node_id={node_id}");
@@ -1644,6 +1578,15 @@ fn render_button_at(
         });
     }
     None
+}
+
+fn app_button_kind(button_style: &str) -> button::ButtonKind {
+    match button_style {
+        "primary" => button::ButtonKind::Accent,
+        "danger" => button::ButtonKind::Danger,
+        "ghost" => button::ButtonKind::Ghost,
+        _ => button::ButtonKind::Secondary,
+    }
 }
 
 /// Measures the actual chip row height for footer key chips by querying font metrics.
@@ -1665,7 +1608,7 @@ fn chip_row_height(ui: &egui::Ui) -> f32 {
 fn footer_keys_height(ui: &egui::Ui, divider: bool) -> f32 {
     let row_h = chip_row_height(ui) + 4.0;
     if divider {
-        style::SPACE_SM + 1.0 + style::SPACE_SM + row_h + style::SPACE_SM
+        1.0 + style::SPACE_SM + row_h + style::SPACE_SM
     } else {
         style::SPACE_SM + row_h + style::SPACE_SM
     }
@@ -1695,6 +1638,30 @@ fn vertical_grow_node(node: &UiNode) -> bool {
         ),
         _ => false,
     }
+}
+
+fn semantic_shell_padding(children: &[UiNode], requested_padding: f32) -> f32 {
+    if is_semantic_app_shell(children) {
+        requested_padding.max(style::SPACE_MD)
+    } else {
+        requested_padding
+    }
+}
+
+fn is_semantic_app_shell(children: &[UiNode]) -> bool {
+    matches!(children.first(), Some(UiNode::AppBar { .. }))
+        && children
+            .iter()
+            .any(|child| matches!(child, UiNode::ActionBar { .. }))
+        && children.iter().any(|child| {
+            matches!(
+                child,
+                UiNode::Pinned {
+                    edge: PinnedEdge::Bottom,
+                    child
+                } if matches!(child.as_ref(), UiNode::FooterKeys { .. })
+            ) || matches!(child, UiNode::FooterKeys { .. })
+        })
 }
 
 fn vertical_stack_needs_full_height(children: &[UiNode]) -> bool {
@@ -2170,7 +2137,7 @@ mod render_component_tree_tests {
             ],
             gap: 8.0,
             padding_top: 0.0,
-            padding: style::SPACE_XL,
+            padding: style::SPACE_MD,
         }
     }
 
@@ -2517,8 +2484,7 @@ mod render_component_tree_tests {
         egui::CentralPanel::default().show(&ctx, |ui| {
             let crh = chip_row_height(ui);
             let row_h = crh + 4.0;
-            let expected_with_div =
-                style::SPACE_SM + 1.0 + style::SPACE_SM + row_h + style::SPACE_SM;
+            let expected_with_div = 1.0 + style::SPACE_SM + row_h + style::SPACE_SM;
             let expected_no_div = style::SPACE_SM + row_h + style::SPACE_SM;
 
             assert_eq!(bottom_pin_height(ui, &fk_with_div), Some(expected_with_div));
@@ -2615,6 +2581,30 @@ mod render_component_tree_tests {
             }),
         }];
         assert!(vertical_stack_needs_full_height(&footer_children));
+    }
+
+    #[test]
+    fn semantic_app_shell_has_minimum_content_padding() {
+        let UiNode::Column { children, .. } = scaffold_shell_tree() else {
+            panic!("scaffold_shell_tree should return column");
+        };
+
+        assert_eq!(semantic_shell_padding(&children, 0.0), style::SPACE_MD);
+        assert_eq!(semantic_shell_padding(&children, 4.0), style::SPACE_MD);
+        assert_eq!(semantic_shell_padding(&children, 24.0), 24.0);
+    }
+
+    #[test]
+    fn plain_column_can_still_be_full_bleed() {
+        let children = vec![UiNode::Text {
+            text: "body".into(),
+            size: 0.0,
+            color: String::new(),
+            bold: false,
+            monospace: false,
+        }];
+
+        assert_eq!(semantic_shell_padding(&children, 0.0), 0.0);
     }
 
     #[test]

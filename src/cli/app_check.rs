@@ -462,10 +462,7 @@ fn first_semantic_action_handler(frame: &serde_json::Value) -> Option<String> {
     match frame {
         serde_json::Value::Object(map) => {
             if map.get("type").and_then(serde_json::Value::as_str) == Some("action_bar") {
-                if let Some(actions) = map
-                    .get("actions")
-                    .and_then(serde_json::Value::as_array)
-                {
+                if let Some(actions) = map.get("actions").and_then(serde_json::Value::as_array) {
                     for action in actions {
                         if let Some(handler) = action
                             .as_object()
@@ -718,6 +715,17 @@ fn semantic_scaffold_chrome_errors(frame: &serde_json::Value) -> Vec<String> {
     };
     if root_obj.get("type").and_then(serde_json::Value::as_str) != Some("column") {
         return vec!["root must be a semantic column".to_string()];
+    }
+    let padding = root_obj
+        .get("padding")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(crate::ui::style::SPACE_XL as f64);
+    if padding < crate::ui::style::SPACE_MD as f64 {
+        return vec![format!(
+            "root semantic column padding must be at least {:.0}px; remove padding=0 or set padding >= {:.0}",
+            crate::ui::style::SPACE_MD,
+            crate::ui::style::SPACE_MD
+        )];
     }
     let Some(children) = root_obj
         .get("children")
@@ -1188,6 +1196,7 @@ profile_dir = ".plexi-beta"
                 "type": "component_tree",
                 "root": {
                     "type": "column",
+                    "padding": 24.0,
                     "children": [
                         {"type": "text", "text": "13"},
                         {"type": "text", "text": "Runtime state counter"}
@@ -1281,12 +1290,50 @@ profile_dir = ".plexi-beta"
     }
 
     #[test]
+    fn semantic_chrome_rejects_zero_padding_shell() {
+        let frame = serde_json::json!([
+            {
+                "type": "component_tree",
+                "root": {
+                    "type": "column",
+                    "padding": 0.0,
+                    "children": [
+                        {"type": "app_bar", "title": "Counter"},
+                        {"type": "text", "text": "3"},
+                        {"type": "spacer", "grow": true},
+                        {
+                            "type": "action_bar",
+                            "actions": [
+                                {"type": "button", "node_id": "counter-increment", "label": "Increment"}
+                            ]
+                        },
+                        {
+                            "type": "pinned",
+                            "edge": "bottom",
+                            "child": {"type": "footer_keys", "entries": []}
+                        }
+                    ]
+                }
+            }
+        ]);
+
+        assert!(
+            super::semantic_scaffold_chrome_errors(&frame)
+                .iter()
+                .any(|error| error.contains("padding must be at least")),
+            "{:?}",
+            super::semantic_scaffold_chrome_errors(&frame)
+        );
+    }
+
+    #[test]
     fn semantic_chrome_rejects_generic_action_stack() {
         let frame = serde_json::json!([
             {
                 "type": "component_tree",
                 "root": {
                     "type": "column",
+                    "padding": 24.0,
                     "children": [
                         {"type": "app_bar", "title": "Counter"},
                         {"type": "text", "text": "3"},
@@ -1324,6 +1371,7 @@ profile_dir = ".plexi-beta"
                 "root": {
                     "type": "column",
                     "gap": 8.0,
+                    "padding": 24.0,
                     "children": [
                         {"type": "app_bar", "title": "Counter"},
                         {"type": "text", "text": "3"},
@@ -1359,6 +1407,7 @@ profile_dir = ".plexi-beta"
                 "root": {
                     "type": "column",
                     "gap": 8.0,
+                    "padding": 24.0,
                     "children": [
                         {"type": "app_bar", "title": "Counter"},
                         {"type": "text", "text": "3"},

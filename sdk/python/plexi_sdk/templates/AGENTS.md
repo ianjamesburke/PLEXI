@@ -17,6 +17,7 @@ Machine-readable drift data lives in `plexi.scaffold.toml`. Run `plexi app check
 
 - Use TDD. Add or update tests for every behavior change before changing app code.
 - Run `plexi app test .` regularly while editing.
+- Keep the root semantic app shell padded: `Column([...], grow=True, padding=SPACE_MD)` or larger. Do not use `padding=0` on the root shell; app bars and footers render full-bleed while body/action/footer content stays inset.
 - Before done, run the full gate: `PLEXI_CHANNEL=alpha plexi app check . --png-dir render-output/check` or use the matching PR build, for example `PLEXI_CHANNEL=pr-123 plexi app check . --png-dir render-output/check` or `plexi-pr-123 app check . --png-dir render-output/check`.
 - Render JSON and PNG artifacts with an explicit alpha or PR channel. Use seed state when behavior depends on state: `PLEXI_CHANNEL=alpha plexi app render . --state fixtures/state.json` and `PLEXI_CHANNEL=alpha plexi app render . --png --output render-output/shot.png`.
 - Exercise behavior through app actions and keys, not only by reading code: `plexi app action <pane-id> <handler-id>` and `plexi pane key <pane-id> <key>`.

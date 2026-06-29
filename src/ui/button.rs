@@ -9,6 +9,14 @@ pub(crate) enum ButtonKind {
     Secondary,
     Accent,
     Danger,
+    Ghost,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ChromeButtonState {
+    pub(crate) disabled: bool,
+    pub(crate) hovered: bool,
+    pub(crate) down: bool,
 }
 
 pub(crate) fn chrome_button(
@@ -29,23 +37,118 @@ pub(crate) fn chrome_button_sized(
     min_width: f32,
     height: f32,
 ) -> egui::Response {
-    let (fill, text_color) = match kind {
-        ButtonKind::Primary => (colors.bg_active, colors.text_primary),
-        ButtonKind::Secondary => (colors.bg_active, colors.text_dim),
-        ButtonKind::Accent => (colors.accent, colors.text_on(colors.accent)),
-        ButtonKind::Danger => (colors.danger, colors.text_on(colors.danger)),
-    };
+    let visuals = chrome_button_visuals(
+        kind,
+        colors,
+        ChromeButtonState {
+            disabled: false,
+            hovered: false,
+            down: false,
+        },
+    );
 
     ui.add(
         egui::Button::new(
             RichText::new(label)
                 .size(style::TEXT_CAPTION)
-                .color(text_color),
+                .color(visuals.text),
         )
-        .fill(fill)
+        .fill(visuals.fill)
         .min_size(egui::vec2(min_width, height)),
     )
     .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+pub(crate) fn chrome_button_intrinsic_width(ui: &egui::Ui, label: &str) -> f32 {
+    let font_id = egui::FontId::proportional(style::TEXT_CAPTION);
+    let text_w = ui.fonts(|f| {
+        f.layout_no_wrap(label.to_owned(), font_id, Color32::WHITE)
+            .size()
+            .x
+    });
+    (text_w + style::SPACE_MD * 2.0).max(48.0)
+}
+
+pub(crate) fn paint_chrome_button_at(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    label: &str,
+    kind: ButtonKind,
+    state: ChromeButtonState,
+    colors: &Colors,
+) {
+    let visuals = chrome_button_visuals(kind, colors, state);
+    painter.rect_filled(rect, style::RADIUS_MD, visuals.fill);
+    if visuals.stroke.color != Color32::TRANSPARENT && visuals.stroke.width > 0.0 {
+        painter.rect_stroke(
+            rect,
+            style::RADIUS_MD,
+            visuals.stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(style::TEXT_CAPTION),
+        visuals.text,
+    );
+}
+
+#[derive(Clone, Copy)]
+struct ChromeButtonVisuals {
+    fill: Color32,
+    text: Color32,
+    stroke: egui::Stroke,
+}
+
+fn chrome_button_visuals(
+    kind: ButtonKind,
+    colors: &Colors,
+    state: ChromeButtonState,
+) -> ChromeButtonVisuals {
+    let base_fill = match kind {
+        ButtonKind::Primary | ButtonKind::Secondary => colors.bg_active,
+        ButtonKind::Accent => colors.accent,
+        ButtonKind::Danger => colors.danger,
+        ButtonKind::Ghost => Color32::TRANSPARENT,
+    };
+    let fill = if state.disabled {
+        colors.bg_active.gamma_multiply(0.55)
+    } else if state.down {
+        match kind {
+            ButtonKind::Accent | ButtonKind::Danger => base_fill.gamma_multiply(0.85),
+            ButtonKind::Ghost => colors.bg_hover,
+            ButtonKind::Primary | ButtonKind::Secondary => colors.bg_hover,
+        }
+    } else {
+        base_fill
+    };
+    let text = if state.disabled {
+        colors.text_dim
+    } else {
+        match kind {
+            ButtonKind::Accent | ButtonKind::Danger => colors.text_on(base_fill),
+            ButtonKind::Secondary => colors.text_dim,
+            ButtonKind::Primary | ButtonKind::Ghost => colors.text_primary,
+        }
+    };
+    let stroke_color = if state.disabled || matches!(kind, ButtonKind::Ghost) {
+        Color32::TRANSPARENT
+    } else if state.hovered {
+        match kind {
+            ButtonKind::Danger => colors.danger,
+            _ => colors.accent,
+        }
+    } else {
+        colors.border
+    };
+    ChromeButtonVisuals {
+        fill,
+        text,
+        stroke: egui::Stroke::new(1.0, stroke_color),
+    }
 }
 
 pub(crate) fn toolbar_button(

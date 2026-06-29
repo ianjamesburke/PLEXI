@@ -729,7 +729,7 @@ from __future__ import annotations
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction
-from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, Spacer, Text
+from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, SPACE_MD, Spacer, Text
 
 
 def init(size, args):
@@ -767,7 +767,7 @@ def view():
             Button("Reset", "counter-reset", style="ghost"),
         ]),
         FooterKeys([("+", "increment"), ("-", "decrement"), ("r", "reset")]),
-    ], grow=True, padding=0)
+    ], grow=True, padding=SPACE_MD)
 ```
 
 ---

@@ -2306,6 +2306,10 @@ mod scaffold_marketplace_tests {
             "AGENTS.md must teach same-pane hot reload validation"
         );
         assert!(
+            agents.contains("padding=SPACE_MD"),
+            "AGENTS.md must teach the semantic shell padding contract"
+        );
+        assert!(
             agents.contains("log.debug"),
             "AGENTS.md must teach SDK log levels"
         );
@@ -2411,6 +2415,14 @@ mod scaffold_marketplace_tests {
         assert!(
             main_src.contains("FooterKeys("),
             "generated main.py should keep shortcut hints in the footer"
+        );
+        assert!(
+            main_src.contains("SPACE_MD"),
+            "generated main.py should keep semantic shell content inset"
+        );
+        assert!(
+            !main_src.contains("padding=0"),
+            "generated main.py must not opt out of semantic shell content padding"
         );
         assert!(main_src.contains("log.debug"));
         assert!(main_src.contains("log.info"));
