@@ -1,8 +1,11 @@
 use crate::app::registry::AppManifest;
+use crate::app_protocol::RenderCommand;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_CHECK_SIZES: &[(u32, u32)] = &[(320, 240), (480, 320), (800, 600), (1200, 800)];
+const SEEDED_PROBE_SIZE: (u32, u32) = (480, 320);
+const RECOGNIZED_ACTION_HANDLERS: &[&str] = &["counter-increment"];
 
 #[derive(Debug, Default)]
 struct SdkAnalysis {
@@ -30,6 +33,13 @@ struct ScaffoldMetadata {
     template_version: u32,
     channel: String,
     profile_dir: String,
+}
+
+#[derive(Debug)]
+struct SeedFixture {
+    path: PathBuf,
+    state: serde_json::Value,
+    signals: Vec<String>,
 }
 
 pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32 {
@@ -157,6 +167,34 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
         }
     }
 
+    match load_seed_fixture(app_dir) {
+        Ok(Some(fixture)) => {
+            println!(
+                "✓ state fixture — loaded {}",
+                fixture
+                    .path
+                    .strip_prefix(app_dir)
+                    .unwrap_or(&fixture.path)
+                    .display()
+            );
+            run_seeded_state_and_action_probe(
+                &manifest,
+                &entry_path,
+                &fixture,
+                &mut errors,
+                &mut warnings,
+            );
+        }
+        Ok(None) => {
+            println!("skip state fixture — no fixtures/state.json; seeded probes skipped");
+            log::info!(
+                "app_check[{}]: no fixtures/state.json; seeded probes skipped",
+                manifest.app.id
+            );
+        }
+        Err(e) => errors.push(format!("state fixture — {e}")),
+    }
+
     for warning in &warnings {
         println!("warning: {warning}");
     }
@@ -186,6 +224,229 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
         );
         1
     }
+}
+
+fn load_seed_fixture(app_dir: &Path) -> Result<Option<SeedFixture>, String> {
+    let path = app_dir.join("fixtures").join("state.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let state: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("invalid JSON in {}: {e}", path.display()))?;
+    if !state.is_object() {
+        return Err(format!(
+            "{} must be a plain JSON object, for example {{\"count\": 3}}",
+            path.display()
+        ));
+    }
+
+    let signals = seed_state_signals(&state);
+    Ok(Some(SeedFixture {
+        path,
+        state,
+        signals,
+    }))
+}
+
+fn run_seeded_state_and_action_probe(
+    manifest: &AppManifest,
+    entry_path: &Path,
+    fixture: &SeedFixture,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let (width, height) = SEEDED_PROBE_SIZE;
+    let label = format!("{width}x{height}");
+    if fixture.signals.is_empty() {
+        warnings.push(format!(
+            "seeded render {label} — fixtures/state.json has no scalar values to verify"
+        ));
+        return;
+    }
+
+    let frame = match crate::render::app_render::render_app_to_json(
+        &manifest.app.id,
+        entry_path,
+        width,
+        height,
+        Some(fixture.state.clone()),
+        &manifest.app.dependencies,
+    ) {
+        Ok(json) => match serde_json::from_str::<serde_json::Value>(&json) {
+            Ok(frame) => frame,
+            Err(e) => {
+                errors.push(format!("seeded render {label} — invalid JSON frame: {e}"));
+                return;
+            }
+        },
+        Err(e) => {
+            errors.push(format!("seeded render {label} — {e}"));
+            return;
+        }
+    };
+
+    let matched = matched_seed_signals(&frame, &fixture.signals);
+    if matched.is_empty() {
+        errors.push(format!(
+            "seeded render {label} — rendered frame did not include any scalar fixture value ({})",
+            fixture.signals.join(", ")
+        ));
+        return;
+    }
+    println!(
+        "✓ seeded render {label} — reflected fixture value(s): {}",
+        matched.join(", ")
+    );
+    log::info!(
+        "app_check[{}]: seeded render {label} reflected {:?}",
+        manifest.app.id,
+        matched
+    );
+
+    let Some(handler_id) = recognized_action_handler(&frame) else {
+        println!("skip action probe — no recognized action handler in seeded render");
+        log::info!(
+            "app_check[{}]: no recognized action handler in seeded render",
+            manifest.app.id
+        );
+        return;
+    };
+
+    let action_label = format!("action probe {handler_id}");
+    let expected_after = expected_action_signal(&fixture.state, handler_id);
+    match crate::render::app_render::render_app_ui_action_round_trip(
+        &manifest.app.id,
+        entry_path,
+        width,
+        height,
+        Some(fixture.state.clone()),
+        handler_id,
+        &manifest.app.dependencies,
+    ) {
+        Ok((before, after)) => {
+            let before_frame = render_commands_value(&before);
+            let after_frame = render_commands_value(&after);
+            if let Some(expected) = expected_after {
+                if frame_contains_scalar(&after_frame, &expected) {
+                    println!("✓ {action_label} — rendered expected state value {expected}");
+                    log::info!(
+                        "app_check[{}]: {action_label} rendered expected value {expected}",
+                        manifest.app.id
+                    );
+                } else {
+                    errors.push(format!(
+                        "{action_label} — expected rendered state value {expected} after action"
+                    ));
+                }
+            } else if after_frame != before_frame {
+                println!("✓ {action_label} — rendered frame changed after action");
+                log::info!(
+                    "app_check[{}]: {action_label} changed rendered frame",
+                    manifest.app.id
+                );
+            } else {
+                warnings.push(format!(
+                    "{action_label} — action ran, but no generic state expectation was available and the frame did not change"
+                ));
+            }
+        }
+        Err(e) => errors.push(format!("{action_label} — {e}")),
+    }
+}
+
+fn render_commands_value(commands: &[RenderCommand]) -> serde_json::Value {
+    serde_json::to_value(commands).unwrap_or_else(|_| serde_json::Value::Null)
+}
+
+fn seed_state_signals(state: &serde_json::Value) -> Vec<String> {
+    let mut signals = Vec::new();
+    collect_scalar_signals(state, &mut signals);
+    signals.sort();
+    signals.dedup();
+    signals
+}
+
+fn collect_scalar_signals(value: &serde_json::Value, signals: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(s) if !s.is_empty() => signals.push(s.clone()),
+        serde_json::Value::Number(n) => signals.push(n.to_string()),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_scalar_signals(value, signals);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for value in map.values() {
+                collect_scalar_signals(value, signals);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn matched_seed_signals(frame: &serde_json::Value, signals: &[String]) -> Vec<String> {
+    signals
+        .iter()
+        .filter(|signal| frame_contains_scalar(frame, signal))
+        .cloned()
+        .collect()
+}
+
+fn frame_contains_scalar(frame: &serde_json::Value, expected: &str) -> bool {
+    match frame {
+        serde_json::Value::String(s) => s == expected,
+        serde_json::Value::Number(n) => n.to_string() == expected,
+        serde_json::Value::Bool(b) => b.to_string() == expected,
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| frame_contains_scalar(value, expected)),
+        serde_json::Value::Object(map) => map
+            .values()
+            .any(|value| frame_contains_scalar(value, expected)),
+        _ => false,
+    }
+}
+
+fn recognized_action_handler(frame: &serde_json::Value) -> Option<&'static str> {
+    for handler in RECOGNIZED_ACTION_HANDLERS {
+        if frame_contains_keyed_string(frame, &["node_id", "handler_id"], handler) {
+            return Some(handler);
+        }
+    }
+    None
+}
+
+fn frame_contains_keyed_string(frame: &serde_json::Value, keys: &[&str], expected: &str) -> bool {
+    match frame {
+        serde_json::Value::Object(map) => {
+            if keys.iter().any(|key| {
+                map.get(*key)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| value == expected)
+            }) {
+                return true;
+            }
+            map.values()
+                .any(|value| frame_contains_keyed_string(value, keys, expected))
+        }
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| frame_contains_keyed_string(value, keys, expected)),
+        _ => false,
+    }
+}
+
+fn expected_action_signal(state: &serde_json::Value, handler_id: &str) -> Option<String> {
+    if handler_id == "counter-increment" {
+        return state
+            .get("count")
+            .and_then(serde_json::Value::as_i64)
+            .map(|count| (count + 1).to_string());
+    }
+    None
 }
 
 fn check_sizes(raw_sizes: &[String]) -> Result<Vec<(u32, u32)>, String> {
@@ -702,5 +963,95 @@ profile_dir = ".plexi-beta"
                 .any(|warning| warning.contains("generated for channel/profile beta/.plexi-beta")),
             "{warnings:?}"
         );
+    }
+
+    #[test]
+    fn seed_state_signals_collect_scalar_fixture_values() {
+        let state = serde_json::json!({
+            "count": 3,
+            "mode": "demo",
+            "nested": {"items": [7]},
+        });
+
+        let signals = super::seed_state_signals(&state);
+
+        assert!(signals.contains(&"3".to_string()), "{signals:?}");
+        assert!(signals.contains(&"demo".to_string()), "{signals:?}");
+        assert!(signals.contains(&"7".to_string()), "{signals:?}");
+    }
+
+    #[test]
+    fn seeded_frame_match_uses_exact_scalar_values_not_substrings() {
+        let frame = serde_json::json!([
+            {
+                "type": "component_tree",
+                "root": {
+                    "type": "column",
+                    "children": [
+                        {"type": "text", "text": "13"},
+                        {"type": "text", "text": "Runtime state counter"}
+                    ]
+                }
+            }
+        ]);
+
+        assert!(!super::frame_contains_scalar(&frame, "3"));
+        assert!(super::frame_contains_scalar(&frame, "13"));
+    }
+
+    #[test]
+    fn recognized_action_handler_finds_counter_increment_button() {
+        let frame = serde_json::json!([
+            {
+                "type": "component_tree",
+                "root": {
+                    "type": "column",
+                    "children": [
+                        {
+                            "type": "button",
+                            "node_id": "counter-increment",
+                            "label": "Increment"
+                        }
+                    ]
+                }
+            }
+        ]);
+
+        assert_eq!(
+            super::recognized_action_handler(&frame),
+            Some("counter-increment")
+        );
+    }
+
+    #[test]
+    fn action_expectation_increments_seeded_counter() {
+        let state = serde_json::json!({"count": 3});
+
+        assert_eq!(
+            super::expected_action_signal(&state, "counter-increment"),
+            Some("4".to_string())
+        );
+        assert_eq!(super::expected_action_signal(&state, "unknown"), None);
+    }
+
+    #[test]
+    fn missing_seed_fixture_skips_cleanly() {
+        let dir = TempDir::new().unwrap();
+
+        let fixture = super::load_seed_fixture(dir.path()).unwrap();
+
+        assert!(fixture.is_none());
+    }
+
+    #[test]
+    fn invalid_seed_fixture_errors() {
+        let dir = TempDir::new().unwrap();
+        let fixtures = dir.path().join("fixtures");
+        fs::create_dir_all(&fixtures).unwrap();
+        fs::write(fixtures.join("state.json"), "[1, 2, 3]\n").unwrap();
+
+        let err = super::load_seed_fixture(dir.path()).unwrap_err();
+
+        assert!(err.contains("must be a plain JSON object"), "{err}");
     }
 }

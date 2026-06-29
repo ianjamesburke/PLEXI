@@ -8,8 +8,8 @@ use crate::app_protocol::{
 use crate::ui::theme::Colors;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Cursor, Read, Write as IoWrite};
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -57,6 +57,30 @@ pub fn render_app_to_png(
     render_commands_to_png(&commands, width, height)
 }
 
+/// Spawn an SDK/process app, render once, send a structured UiAction, and render again.
+pub fn render_app_ui_action_round_trip(
+    app_id: &str,
+    bin_path: &Path,
+    width: u32,
+    height: u32,
+    seed_state: Option<serde_json::Value>,
+    handler_id: &str,
+    python_dependencies: &[String],
+) -> Result<(Vec<RenderCommand>, Vec<RenderCommand>), String> {
+    let mut session = AppRenderSession::launch(
+        app_id,
+        bin_path,
+        width,
+        height,
+        seed_state,
+        python_dependencies,
+    )?;
+    let before = session.collect_frame(width, height, 1)?;
+    session.send_ui_action(handler_id)?;
+    let after = session.collect_frame(width, height, 2)?;
+    Ok((before, after))
+}
+
 /// Spawn the app, exchange Init/Ready, send one Render, collect until FrameDone.
 fn spawn_and_collect_frame(
     app_id: &str,
@@ -66,203 +90,282 @@ fn spawn_and_collect_frame(
     seed_state: Option<serde_json::Value>,
     python_dependencies: &[String],
 ) -> Result<Vec<RenderCommand>, String> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut session = AppRenderSession::launch(
+        app_id,
+        bin_path,
+        width,
+        height,
+        seed_state,
+        python_dependencies,
+    )?;
+    session.collect_frame(width, height, 1)
+}
 
-    // Mirror the env setup from ProcessApp::launch so Python apps can import
-    // plexi_sdk and run through the SDK v3 native adapter.
-    const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
-    let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
-    let mut runtime: Option<crate::app::python_env::PythonRuntime> = None;
-    let mut cmd = if is_python {
-        let resolved = crate::app::python_env::resolve_python_runtime(
-            app_id,
-            bin_path,
-            true,
-            python_dependencies,
-        )?;
-        log::info!(
-            "app_render[{app_id}]: launching .py entry via {} ({}) with SDK v3 native adapter",
-            resolved.label,
-            resolved.version,
-        );
-        let mut c = Command::new(&resolved.executable);
-        c.arg("-m").arg("plexi_sdk._v3_process").arg(bin_path);
-        runtime = Some(resolved);
-        c
-    } else {
-        Command::new(bin_path)
-    };
-    cmd.current_dir(&cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env_clear();
-    for var in ENV_WHITELIST {
-        if let Ok(v) = std::env::var(var) {
-            cmd.env(var, v);
-        }
-    }
-    for (k, v) in std::env::vars() {
-        if k.starts_with("PLEXI_") {
-            cmd.env(k, v);
-        }
-    }
-    if let Some(ref py_bin) = crate::app::python_env::bundled_python_bin_dir() {
-        if py_bin.exists() {
-            let host_path = std::env::var("PATH").unwrap_or_default();
-            cmd.env("PATH", format!("{}:{}", py_bin.display(), host_path));
-        }
-    }
-    let pythonpath = runtime
-        .as_ref()
-        .map(|runtime| runtime.pythonpath.clone())
-        .unwrap_or_else(crate::app::python_env::pythonpath_for_current_exe);
-    cmd.env("PYTHONPATH", &pythonpath);
-    log::info!("app_render[{app_id}]: PYTHONPATH={pythonpath}");
+struct AppRenderSession {
+    app_id: String,
+    bin_path: PathBuf,
+    pythonpath: String,
+    runtime: Option<crate::app::python_env::PythonRuntime>,
+    child: Child,
+    stdin: ChildStdin,
+    reader: BufReader<ChildStdout>,
+    stderr_rx: Option<mpsc::Receiver<String>>,
+}
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to spawn '{app_id}' at {}: {e}", bin_path.display()))?;
+impl AppRenderSession {
+    fn launch(
+        app_id: &str,
+        bin_path: &Path,
+        width: u32,
+        height: u32,
+        seed_state: Option<serde_json::Value>,
+        python_dependencies: &[String],
+    ) -> Result<Self, String> {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    let mut stdin = child.stdin.take().ok_or("no stdin")?;
-    let stdout = child.stdout.take().ok_or("no stdout")?;
-    let stderr = child.stderr.take();
-    let stderr_rx = stderr.map(spawn_stderr_collector);
-    let mut reader = BufReader::new(stdout);
-
-    // Send Init (with optional seed state embedded)
-    let init = PlexiEvent::Init {
-        protocol: PROTOCOL.to_string(),
-        app_id: app_id.to_string(),
-        workspace_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-        capabilities: vec![],
-        feature_flags: vec![],
-        compact_threshold: 280.0,
-        regular_threshold: 480.0,
-        theme: render_colors().to_theme_map(),
-        args: vec![],
-        state: seed_state,
-        width: width as f32,
-        height: height as f32,
-    };
-    let init_json =
-        serde_json::to_string(&init).map_err(|e| format!("failed to serialize Init: {e}"))?;
-    writeln!(stdin, "{init_json}").map_err(|e| format!("failed to write Init: {e}"))?;
-    log::info!("app_render[{app_id}]: sent Init");
-
-    // Wait for Ready
-    let deadline = Instant::now() + BOOT_TIMEOUT;
-    loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "app '{app_id}' did not send Ready within {BOOT_TIMEOUT:?}{}",
-                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
-            ));
-        }
-        let mut line = String::new();
-        reader.read_line(&mut line).map_err(|e| {
-            let _ = child.kill();
-            let _ = child.wait();
-            format!(
-                "read error waiting for Ready: {e}{}",
-                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
-            )
-        })?;
-        if line.is_empty() {
-            let _ = child.wait();
-            return Err(format!(
-                "app '{app_id}' exited before Ready{}",
-                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
-            ));
-        }
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<DrawCommand>(line) {
-            Ok(DrawCommand::Control(ControlCommand::Ready { .. })) => {
-                log::info!("app_render[{app_id}]: got Ready");
-                break;
-            }
-            Ok(_) => { /* ignore other commands before Ready */ }
-            Err(e) => {
-                log::warn!("app_render[{app_id}]: parse error before Ready: {e} (line: {line})");
+        // Mirror the env setup from ProcessApp::launch so Python apps can import
+        // plexi_sdk and run through the SDK v3 native adapter.
+        const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
+        let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
+        let mut runtime: Option<crate::app::python_env::PythonRuntime> = None;
+        let mut cmd = if is_python {
+            let resolved = crate::app::python_env::resolve_python_runtime(
+                app_id,
+                bin_path,
+                true,
+                python_dependencies,
+            )?;
+            log::info!(
+                "app_render[{app_id}]: launching .py entry via {} ({}) with SDK v3 native adapter",
+                resolved.label,
+                resolved.version,
+            );
+            let mut c = Command::new(&resolved.executable);
+            c.arg("-m").arg("plexi_sdk._v3_process").arg(bin_path);
+            runtime = Some(resolved);
+            c
+        } else {
+            Command::new(bin_path)
+        };
+        cmd.current_dir(&cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env_clear();
+        for var in ENV_WHITELIST {
+            if let Ok(v) = std::env::var(var) {
+                cmd.env(var, v);
             }
         }
+        for (k, v) in std::env::vars() {
+            if k.starts_with("PLEXI_") {
+                cmd.env(k, v);
+            }
+        }
+        if let Some(ref py_bin) = crate::app::python_env::bundled_python_bin_dir() {
+            if py_bin.exists() {
+                let host_path = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{}:{}", py_bin.display(), host_path));
+            }
+        }
+        let pythonpath = runtime
+            .as_ref()
+            .map(|runtime| runtime.pythonpath.clone())
+            .unwrap_or_else(crate::app::python_env::pythonpath_for_current_exe);
+        cmd.env("PYTHONPATH", &pythonpath);
+        log::info!("app_render[{app_id}]: PYTHONPATH={pythonpath}");
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to spawn '{app_id}' at {}: {e}", bin_path.display()))?;
+
+        let mut stdin = child.stdin.take().ok_or("no stdin")?;
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let stderr = child.stderr.take();
+        let stderr_rx = stderr.map(spawn_stderr_collector);
+        let mut reader = BufReader::new(stdout);
+
+        // Send Init (with optional seed state embedded)
+        let init = PlexiEvent::Init {
+            protocol: PROTOCOL.to_string(),
+            app_id: app_id.to_string(),
+            workspace_root: std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            capabilities: vec![],
+            feature_flags: vec![],
+            compact_threshold: 280.0,
+            regular_threshold: 480.0,
+            theme: render_colors().to_theme_map(),
+            args: vec![],
+            state: seed_state,
+            width: width as f32,
+            height: height as f32,
+        };
+        let init_json =
+            serde_json::to_string(&init).map_err(|e| format!("failed to serialize Init: {e}"))?;
+        writeln!(stdin, "{init_json}").map_err(|e| format!("failed to write Init: {e}"))?;
+        log::info!("app_render[{app_id}]: sent Init");
+
+        // Wait for Ready
+        let deadline = Instant::now() + BOOT_TIMEOUT;
+        loop {
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "app '{app_id}' did not send Ready within {BOOT_TIMEOUT:?}{}",
+                    render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
+                ));
+            }
+            let mut line = String::new();
+            reader.read_line(&mut line).map_err(|e| {
+                let _ = child.kill();
+                let _ = child.wait();
+                format!(
+                    "read error waiting for Ready: {e}{}",
+                    render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
+                )
+            })?;
+            if line.is_empty() {
+                let _ = child.wait();
+                return Err(format!(
+                    "app '{app_id}' exited before Ready{}",
+                    render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
+                ));
+            }
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<DrawCommand>(line) {
+                Ok(DrawCommand::Control(ControlCommand::Ready { .. })) => {
+                    log::info!("app_render[{app_id}]: got Ready");
+                    break;
+                }
+                Ok(_) => { /* ignore other commands before Ready */ }
+                Err(e) => {
+                    log::warn!(
+                        "app_render[{app_id}]: parse error before Ready: {e} (line: {line})"
+                    );
+                }
+            }
+        }
+
+        Ok(Self {
+            app_id: app_id.to_string(),
+            bin_path: bin_path.to_path_buf(),
+            pythonpath,
+            runtime,
+            child,
+            stdin,
+            reader,
+            stderr_rx,
+        })
     }
 
-    // Send Render
-    let render = PlexiEvent::Render {
-        frame_id: 1,
-        rect: ProtoRect {
-            x: 0.0,
-            y: 0.0,
-            w: width as f32,
-            h: height as f32,
-        },
-        canvas_width: width as f32,
-        canvas_height: height as f32,
-    };
-    let render_json =
-        serde_json::to_string(&render).map_err(|e| format!("failed to serialize Render: {e}"))?;
-    writeln!(stdin, "{render_json}").map_err(|e| format!("failed to write Render: {e}"))?;
-    log::info!("app_render[{app_id}]: sent Render {width}×{height}");
+    fn collect_frame(
+        &mut self,
+        width: u32,
+        height: u32,
+        frame_id: u64,
+    ) -> Result<Vec<RenderCommand>, String> {
+        // Send Render
+        let render = PlexiEvent::Render {
+            frame_id,
+            rect: ProtoRect {
+                x: 0.0,
+                y: 0.0,
+                w: width as f32,
+                h: height as f32,
+            },
+            canvas_width: width as f32,
+            canvas_height: height as f32,
+        };
+        let render_json = serde_json::to_string(&render)
+            .map_err(|e| format!("failed to serialize Render: {e}"))?;
+        writeln!(self.stdin, "{render_json}")
+            .map_err(|e| format!("failed to write Render: {e}"))?;
+        log::info!("app_render[{}]: sent Render {width}×{height}", self.app_id);
 
-    // Collect RenderCommands until FrameDone
-    let mut render_commands: Vec<RenderCommand> = Vec::new();
-    let deadline = Instant::now() + FRAME_TIMEOUT;
-    loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "app '{app_id}' did not emit FrameDone within {FRAME_TIMEOUT:?}{}",
-                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
-            ));
-        }
-        let mut line = String::new();
-        reader.read_line(&mut line).map_err(|e| {
-            let _ = child.kill();
-            let _ = child.wait();
-            format!(
-                "read error collecting frame: {e}{}",
-                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
-            )
-        })?;
-        if line.is_empty() {
-            let _ = child.wait();
-            return Err(format!(
-                "app '{app_id}' exited before FrameDone{}",
-                render_failure_context(&runtime, bin_path, &pythonpath, stderr_rx.as_ref())
-            ));
-        }
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<DrawCommand>(line) {
-            Ok(DrawCommand::Render(rc)) => {
-                render_commands.push(rc);
+        // Collect RenderCommands until FrameDone
+        let mut render_commands: Vec<RenderCommand> = Vec::new();
+        let deadline = Instant::now() + FRAME_TIMEOUT;
+        loop {
+            if Instant::now() > deadline {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                return Err(format!(
+                    "app '{}' did not emit FrameDone within {FRAME_TIMEOUT:?}{}",
+                    self.app_id,
+                    self.failure_context()
+                ));
             }
-            Ok(DrawCommand::Control(ControlCommand::FrameDone { .. })) => {
-                log::info!(
-                    "app_render[{app_id}]: FrameDone — {} commands",
-                    render_commands.len()
-                );
-                break;
+            let mut line = String::new();
+            self.reader.read_line(&mut line).map_err(|e| {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                format!("read error collecting frame: {e}{}", self.failure_context())
+            })?;
+            if line.is_empty() {
+                let _ = self.child.wait();
+                return Err(format!(
+                    "app '{}' exited before FrameDone{}",
+                    self.app_id,
+                    self.failure_context()
+                ));
             }
-            Ok(_) => { /* ignore host/control commands during frame collection */ }
-            Err(e) => {
-                log::warn!("app_render[{app_id}]: parse error in frame: {e}");
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<DrawCommand>(line) {
+                Ok(DrawCommand::Render(rc)) => {
+                    render_commands.push(rc);
+                }
+                Ok(DrawCommand::Control(ControlCommand::FrameDone { .. })) => {
+                    log::info!(
+                        "app_render[{}]: FrameDone — {} commands",
+                        self.app_id,
+                        render_commands.len()
+                    );
+                    break;
+                }
+                Ok(_) => { /* ignore host/control commands during frame collection */ }
+                Err(e) => {
+                    log::warn!("app_render[{}]: parse error in frame: {e}", self.app_id);
+                }
             }
         }
+
+        Ok(render_commands)
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
-    Ok(render_commands)
+    fn send_ui_action(&mut self, handler_id: &str) -> Result<(), String> {
+        let event = serde_json::json!({
+            "type": "ui_action",
+            "handler_id": handler_id,
+        });
+        writeln!(self.stdin, "{event}")
+            .map_err(|e| format!("failed to write UiAction {handler_id:?}: {e}"))?;
+        log::info!("app_render[{}]: sent UiAction {handler_id}", self.app_id);
+        Ok(())
+    }
+
+    fn failure_context(&self) -> String {
+        render_failure_context(
+            &self.runtime,
+            &self.bin_path,
+            &self.pythonpath,
+            self.stderr_rx.as_ref(),
+        )
+    }
+}
+
+impl Drop for AppRenderSession {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 fn spawn_stderr_collector(stderr: impl Read + Send + 'static) -> mpsc::Receiver<String> {
