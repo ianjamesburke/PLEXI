@@ -6,7 +6,7 @@ from __future__ import annotations
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction
-from plexi_sdk.ui import Button, Column, Component, FooterKeys, Text
+from plexi_sdk.ui import ActionBar, Button, Column, FooterKeys, Text
 
 BUTTON_ROWS = [
     ["C", "+/-", "%", "/"],
@@ -22,22 +22,6 @@ DEFAULT_STATE = {
     "op": None,
     "fresh": True,
 }
-
-
-class ButtonRow(Component):
-    def __init__(self, labels: list[str]) -> None:
-        self.labels = labels
-
-    def to_node(self) -> dict:
-        return {
-            "type": "stack",
-            "direction": "horizontal",
-            "children": [
-                Button(label, f"calc:key:{label}", style=_button_style(label)).to_node()
-                for label in self.labels
-            ],
-            "gap": 8.0,
-        }
 
 
 def init(size, args) -> list:
@@ -71,9 +55,23 @@ def view():
             Text("Calculator", bold=True, size=15.0),
             Text(subtitle or "ready", size=11.0),
             Text(data["display"], size=28.0, bold=True, align="end", truncate=True),
-            *[ButtonRow(row) for row in BUTTON_ROWS],
+            *[
+                ActionBar(
+                    [
+                        Button(label, f"calc:key:{label}", style=_button_style(label))
+                        for label in row
+                    ],
+                    gap=8.0,
+                )
+                for row in BUTTON_ROWS
+            ],
             FooterKeys(
-                [("0-9", "digits"), ("ops", "queue"), ("enter", "equals"), ("backspace", "delete")]
+                [
+                    ("0-9", "digits"),
+                    ("ops", "queue"),
+                    ("enter", "equals"),
+                    ("backspace", "delete"),
+                ]
             ),
         ],
         gap=8.0,

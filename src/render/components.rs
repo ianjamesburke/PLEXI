@@ -208,7 +208,11 @@ fn render_component_tree_inner(
         } => {
             let w = width.unwrap_or_else(|| ui.available_width()).max(0.0);
             let h = height.unwrap_or_else(|| ui.available_height()).max(0.0);
-            log::trace!("render Sized: w={w} h={h} avail_w={} avail_h={}", ui.available_width(), ui.available_height());
+            log::trace!(
+                "render Sized: w={w} h={h} avail_w={} avail_h={}",
+                ui.available_width(),
+                ui.available_height()
+            );
             ui.allocate_ui(egui::vec2(w, h), |ui| {
                 ui.set_min_width(w);
                 ui.set_max_width(w);
@@ -814,10 +818,13 @@ fn render_component_tree_inner(
                     bottom: 0,
                 })
                 .show(ui, |ui| {
-                    // Expand the inner ui to fill available height so render_stack's
-                    // sticky-footer partition can see the full remaining pane height.
-                    let h = ui.available_height();
-                    ui.set_min_height(h);
+                    // Only fill the remaining height when the stack contains a child
+                    // that needs partitioning. Static nested Columns should stay
+                    // content-sized; otherwise they push later siblings into footers.
+                    if vertical_stack_needs_full_height(children) {
+                        let h = ui.available_height();
+                        ui.set_min_height(h);
+                    }
                     events.extend(render_stack(
                         ui,
                         &StackDirection::Vertical,
@@ -909,11 +916,8 @@ fn render_component_tree_inner(
             entries, divider, ..
         } => {
             let chip_row_h = chip_row_height(ui);
-            let total_h = if *divider {
-                1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
-            } else {
-                style::SPACE_SM + chip_row_h + style::SPACE_SM
-            };
+            let row_h = chip_row_h + 4.0;
+            let total_h = footer_keys_height(ui, *divider);
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), total_h),
                 egui::Sense::hover(),
@@ -928,9 +932,10 @@ fn render_component_tree_inner(
             ui.painter().rect_filled(full_rect, 0.0, colors.bg_sidebar);
 
             if *divider {
+                let line_y = full_rect.min.y + style::SPACE_SM;
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(
-                        egui::pos2(full_rect.min.x, full_rect.min.y),
+                        egui::pos2(full_rect.min.x, line_y),
                         egui::vec2(full_rect.width(), 1.0),
                     ),
                     0.0,
@@ -974,14 +979,13 @@ fn render_component_tree_inner(
             // Center the content group inside the usable area (below divider if present).
             let left =
                 (full_rect.center().x - content_w / 2.0).max(full_rect.min.x + style::SPACE_MD);
-            let usable_top = if *divider {
-                full_rect.min.y + 1.0
+            let row_top = if *divider {
+                full_rect.min.y + style::SPACE_SM + 1.0 + style::SPACE_SM
             } else {
-                full_rect.min.y
+                full_rect.min.y + style::SPACE_SM
             };
-            let usable_center_y = (usable_top + full_rect.max.y) / 2.0;
             let content_rect = egui::Rect::from_min_size(
-                egui::pos2(left, usable_center_y - chip_row_h / 2.0),
+                egui::pos2(left, row_top + (row_h - chip_row_h) / 2.0),
                 egui::vec2(content_w, chip_row_h),
             );
 
@@ -1301,18 +1305,20 @@ fn chip_row_height(ui: &egui::Ui) -> f32 {
     text_h + style::KEYCHIP_PAD_V * 2.0
 }
 
+fn footer_keys_height(ui: &egui::Ui, divider: bool) -> f32 {
+    let row_h = chip_row_height(ui) + 4.0;
+    if divider {
+        style::SPACE_SM + 1.0 + style::SPACE_SM + row_h + style::SPACE_SM
+    } else {
+        style::SPACE_SM + row_h + style::SPACE_SM
+    }
+}
+
 /// Returns the known fixed height of a node that can be bottom-pinned, or `None`
 /// if the height cannot be determined without rendering.
 fn bottom_pin_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
     match node {
-        UiNode::FooterKeys { divider, .. } => {
-            let crh = chip_row_height(ui);
-            Some(if *divider {
-                1.0 + style::SPACE_SM + crh + style::SPACE_SM
-            } else {
-                style::SPACE_SM + crh + style::SPACE_SM
-            })
-        }
+        UiNode::FooterKeys { divider, .. } => Some(footer_keys_height(ui, *divider)),
         UiNode::Footer { .. } => {
             Some(style::SPACE_MD + 1.0 + style::SPACE_MD + style::TEXT_CAPTION + 5.0)
         }
@@ -1334,8 +1340,35 @@ fn vertical_grow_node(node: &UiNode) -> bool {
     }
 }
 
+fn vertical_stack_needs_full_height(children: &[UiNode]) -> bool {
+    children.iter().any(|child| {
+        vertical_grow_node(child)
+            || matches!(
+                child,
+                UiNode::Pinned {
+                    edge: PinnedEdge::Bottom,
+                    ..
+                } | UiNode::FooterKeys { .. }
+                    | UiNode::Footer { .. }
+            )
+    })
+}
+
 fn vertical_fixed_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
     match node {
+        UiNode::Stack {
+            direction,
+            children,
+            padding,
+            ..
+        } if *direction == StackDirection::Horizontal => {
+            let mut max_h: f32 = 0.0;
+            for child in children {
+                let h = vertical_fixed_height(ui, child)?;
+                max_h = max_h.max(h);
+            }
+            Some(max_h + padding.top + padding.bottom)
+        }
         UiNode::AppBar { subtitle, .. } => {
             let band_h = if subtitle.is_empty() { 34.0 } else { 48.0 };
             Some(band_h + 1.0)
@@ -1687,7 +1720,11 @@ fn render_stack(
                     "render_components: render_stack vertical pinned body_h={body_h:.0} footer_h={total_pinned_h:.0}"
                 );
             } else {
-                log::trace!("render_stack: vertical no-pin {} children avail_h={}", children.len(), ui.available_height());
+                log::trace!(
+                    "render_stack: vertical no-pin {} children avail_h={}",
+                    children.len(),
+                    ui.available_height()
+                );
                 let child_refs: Vec<&UiNode> = children.iter().collect();
                 ui.vertical(|ui| {
                     events.extend(render_vertical_children(
@@ -2055,8 +2092,10 @@ mod render_component_tree_tests {
         ctx.begin_pass(egui::RawInput::default());
         egui::CentralPanel::default().show(&ctx, |ui| {
             let crh = chip_row_height(ui);
-            let expected_with_div = 1.0 + style::SPACE_SM + crh + style::SPACE_SM;
-            let expected_no_div = style::SPACE_SM + crh + style::SPACE_SM;
+            let row_h = crh + 4.0;
+            let expected_with_div =
+                style::SPACE_SM + 1.0 + style::SPACE_SM + row_h + style::SPACE_SM;
+            let expected_no_div = style::SPACE_SM + row_h + style::SPACE_SM;
 
             assert_eq!(bottom_pin_height(ui, &fk_with_div), Some(expected_with_div));
             assert_eq!(bottom_pin_height(ui, &fk_no_div), Some(expected_no_div));
@@ -2064,6 +2103,73 @@ mod render_component_tree_tests {
             assert_eq!(bottom_pin_height(ui, &label), None);
         });
         let _ = ctx.end_pass();
+    }
+
+    /// A horizontal stack of fixed-height buttons reserves one button row in vertical layout.
+    #[test]
+    fn horizontal_button_stack_has_fixed_height() {
+        use super::vertical_fixed_height;
+
+        let stack = UiNode::Stack {
+            direction: StackDirection::Horizontal,
+            children: vec![
+                UiNode::Button {
+                    node_id: "save".into(),
+                    label: "Save".into(),
+                    disabled: false,
+                    style: "primary".into(),
+                },
+                UiNode::Button {
+                    node_id: "cancel".into(),
+                    label: "Cancel".into(),
+                    disabled: false,
+                    style: "ghost".into(),
+                },
+            ],
+            gap: 8.0,
+            padding: crate::app_protocol::UiPadding {
+                top: 3.0,
+                bottom: 5.0,
+                ..Default::default()
+            },
+        };
+
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            assert_eq!(vertical_fixed_height(ui, &stack), Some(40.0));
+        });
+        let _ = ctx.end_pass();
+    }
+
+    /// Static nested Columns stay content-sized; pinned/grow stacks fill the available height.
+    #[test]
+    fn vertical_stack_fill_height_only_when_needed() {
+        use super::vertical_stack_needs_full_height;
+
+        let static_children = vec![UiNode::Text {
+            text: "body".into(),
+            size: 0.0,
+            color: String::new(),
+            bold: false,
+            monospace: false,
+        }];
+        assert!(!vertical_stack_needs_full_height(&static_children));
+
+        let grow_children = vec![UiNode::SelectList {
+            items: vec![],
+            selected_idx: 0,
+        }];
+        assert!(vertical_stack_needs_full_height(&grow_children));
+
+        let footer_children = vec![UiNode::Pinned {
+            edge: PinnedEdge::Bottom,
+            child: Box::new(UiNode::FooterKeys {
+                entries: vec![],
+                divider: true,
+            }),
+        }];
+        assert!(vertical_stack_needs_full_height(&footer_children));
     }
 
     /// `UiNode::TextEdit` PartialEq works.

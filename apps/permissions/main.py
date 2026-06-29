@@ -9,7 +9,7 @@ import plexi_sdk as sdk
 from plexi_sdk import log, state
 from plexi_sdk.effects import RequestCapability, SetState, SetStatus, SetTitle
 from plexi_sdk.events import CapabilityDenied, CapabilityGranted, KeyEvent, UiAction
-from plexi_sdk.ui import Button, Column, FooterKeys, SelectList, Spacer, Text
+from plexi_sdk.ui import ActionBar, Button, Column, FooterKeys, SelectList, Spacer, Text
 
 DEFAULT_STATE = {
     "grants": [],
@@ -168,8 +168,12 @@ def _list_view(data: dict):
             Text(data["path"] or "workspace unknown", size=11.0),
             body,
             Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
-            Button("Open", "permissions:detail", disabled=not rows),
-            Button("Reload", "permissions:reload"),
+            ActionBar(
+                [
+                    Button("Open", "permissions:detail", disabled=not rows),
+                    Button("Reload", "permissions:reload"),
+                ]
+            ),
             FooterKeys([("j/k", "select"), ("enter", "open"), ("r", "reload")]),
         ],
         gap=8.0,
@@ -191,13 +195,17 @@ def _detail_view(data: dict):
             Text(f"Stored: {'yes' if grant['stored'] else 'live only'}", size=12.0),
             Text(f"Sensitive: {'yes' if grant['sensitive'] else 'no'}", size=12.0),
             Text(data["notice"], size=11.0) if data["notice"] else Spacer(size=0.0),
-            Button(
-                "Revoke",
-                "permissions:revoke",
-                style="danger",
-                disabled=not data["can_manage"],
+            ActionBar(
+                [
+                    Button(
+                        "Revoke",
+                        "permissions:revoke",
+                        style="danger",
+                        disabled=not data["can_manage"],
+                    ),
+                    Button("Back", "permissions:back"),
+                ]
             ),
-            Button("Back", "permissions:back"),
             FooterKeys([("x", "revoke"), ("esc", "back")]),
         ],
         gap=8.0,

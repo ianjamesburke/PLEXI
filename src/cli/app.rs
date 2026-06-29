@@ -2082,6 +2082,14 @@ mod scaffold_marketplace_tests {
             main_src.contains("Components describe UI. Effects describe host work."),
             "generated main.py should explain component/effect separation"
         );
+        assert!(
+            main_src.contains("ActionBar("),
+            "generated main.py should demonstrate the standard action-row primitive"
+        );
+        assert!(
+            main_src.contains("FooterKeys("),
+            "generated main.py should keep shortcut hints in the footer"
+        );
     }
 
     #[test]

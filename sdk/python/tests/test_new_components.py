@@ -1,6 +1,8 @@
 """Tests for B2 UiNode component classes: Tabs, Grid, Toggle, Clickable, ProgressBar."""
 
-from plexi_sdk.ui import Tabs, Grid, Toggle, Clickable, ProgressBar, TextEdit, Column
+import pytest
+
+from plexi_sdk.ui import ActionBar, Button, Tabs, Grid, Toggle, Clickable, ProgressBar, TextEdit, Column
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -230,3 +232,42 @@ def test_textedit_nested_in_column_is_native() -> None:
 def test_textedit_measure() -> None:
     te = TextEdit("x", height=80.0)
     assert te.measure(400.0) == 80.0
+
+
+# ── ActionBar ─────────────────────────────────────────────────────────────
+
+
+def test_action_bar_to_node_is_horizontal_stack() -> None:
+    bar = ActionBar(
+        [
+            Button("Save", "save", style="primary"),
+            Button("Cancel", "cancel", style="ghost"),
+        ]
+    )
+
+    node = bar.to_node()
+
+    assert node["type"] == "stack"
+    assert node["direction"] == "horizontal"
+    assert node["gap"] == 8.0
+    assert node["children"] == [
+        {
+            "type": "button",
+            "node_id": "save",
+            "label": "Save",
+            "style": "primary",
+            "disabled": False,
+        },
+        {
+            "type": "button",
+            "node_id": "cancel",
+            "label": "Cancel",
+            "style": "ghost",
+            "disabled": False,
+        },
+    ]
+
+
+def test_action_bar_rejects_non_button_actions() -> None:
+    with pytest.raises(TypeError, match="ActionBar actions\\[0\\] must be a Button"):
+        ActionBar([TextEdit("not-a-button")])

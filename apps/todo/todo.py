@@ -6,7 +6,17 @@ from __future__ import annotations
 from plexi_sdk import log, state
 from plexi_sdk.effects import PersistState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction, UiValueChange
-from plexi_sdk.ui import AppBar, Button, Column, FooterKeys, SelectList, Spacer, Text, TextEdit
+from plexi_sdk.ui import (
+    ActionBar,
+    AppBar,
+    Button,
+    Column,
+    FooterKeys,
+    SelectList,
+    Spacer,
+    Text,
+    TextEdit,
+)
 
 DEFAULT_STATE = {
     "items": [],
@@ -81,9 +91,20 @@ def view():
         return Column(
             [
                 AppBar("Todo", "New item"),
-                TextEdit("todo-draft", value=data["draft"], placeholder="What needs doing?"),
-                Button("Add", "todo-draft", style="primary", disabled=not data["draft"].strip()),
-                Button("Cancel", "todo-cancel", style="ghost"),
+                TextEdit(
+                    "todo-draft", value=data["draft"], placeholder="What needs doing?"
+                ),
+                ActionBar(
+                    [
+                        Button(
+                            "Add",
+                            "todo-draft",
+                            style="primary",
+                            disabled=not data["draft"].strip(),
+                        ),
+                        Button("Cancel", "todo-cancel", style="ghost"),
+                    ]
+                ),
                 FooterKeys([("enter", "add"), ("esc", "cancel")]),
             ],
             grow=True,
@@ -103,10 +124,16 @@ def view():
         [
             AppBar("Todo", _status(data)),
             body,
-            Button("New", "todo-new", style="primary"),
-            Button("Toggle", "todo-toggle", disabled=not rows),
-            Button("Delete", "todo-delete", style="danger", disabled=not rows),
-            FooterKeys([("j/k", "select"), ("enter", "toggle"), ("n", "new"), ("d", "delete")]),
+            ActionBar(
+                [
+                    Button("New", "todo-new", style="primary"),
+                    Button("Toggle", "todo-toggle", disabled=not rows),
+                    Button("Delete", "todo-delete", style="danger", disabled=not rows),
+                ]
+            ),
+            FooterKeys(
+                [("j/k", "select"), ("enter", "toggle"), ("n", "new"), ("d", "delete")]
+            ),
         ],
         grow=True,
         padding=0,

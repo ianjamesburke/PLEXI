@@ -367,7 +367,7 @@ class Button(Component):
     key: str = ""
 
     def measure(self, _avail_w: float) -> float:
-        return 28.0
+        return 32.0
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         fill = theme.accent if self.style == "primary" else theme.surface
@@ -381,6 +381,35 @@ class Button(Component):
             "label": self.label,
             "style": self.style,
             "disabled": self.disabled,
+        }
+
+
+@dataclass
+class ActionBar(Component):
+    """Horizontal row of contextual action buttons."""
+
+    actions: List[Button]
+    gap: float = SPACE_SM
+    key: str = ""
+
+    def __post_init__(self) -> None:
+        self.actions = list(self.actions)
+        for i, action in enumerate(self.actions):
+            if not isinstance(action, Button):
+                raise TypeError(
+                    f"ActionBar actions[{i}] must be a Button, got {type(action).__name__}. "
+                    "Example: ActionBar([Button('Save', 'save', style='primary')])"
+                )
+
+    def measure(self, avail_w: float) -> float:
+        return max((action.measure(avail_w) for action in self.actions), default=0.0)
+
+    def to_node(self) -> dict:
+        return {
+            "type": "stack",
+            "direction": "horizontal",
+            "children": [action.to_node() for action in self.actions],
+            "gap": self.gap,
         }
 
 
@@ -1030,7 +1059,7 @@ class FooterKeys(Component):
     # `max_width` can't fit everything; very narrow panes may render past
     # this measurement. Apps wanting exact bounded footers should put
     # FooterKeys in a fixed-height region or constrain the shortcut count.
-    ROW_H = CHIP_H + 2.0  # reduced from +4.0 — tighter without cramping chips
+    ROW_H = CHIP_H + 4.0
 
     def measure(self, avail_w: float) -> float:
         if not self.divider:
@@ -2359,7 +2388,7 @@ __all__ = [
     # components
     "Component", "Column", "HStack", "Sized", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
-    "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
+    "ActionBar", "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
     "CanvasText", "CanvasButton", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
     "ListItem", "Row", "TextEdit", "ChatBubble", "Markdown",
     "SelectList", "FormField",

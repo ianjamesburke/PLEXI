@@ -9,7 +9,7 @@ import urllib.parse
 from plexi_sdk import log, state
 from plexi_sdk.effects import HttpFetch, RequestCapability, SetState, SetStatus, SetTitle
 from plexi_sdk.events import CapabilityDenied, CapabilityGranted, HttpResponse, KeyEvent, UiAction, UiValueChange
-from plexi_sdk.ui import AppBar, Button, Column, FooterKeys, Scrollable, SelectList, Spacer, Text, TextEdit
+from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, Scrollable, SelectList, Spacer, Text, TextEdit
 
 SEARCH_API = "https://en.wikipedia.org/w/api.php"
 SUMMARY_API = "https://en.wikipedia.org/api/rest_v1/page/summary/"
@@ -200,7 +200,7 @@ def _search_view(data: dict):
         [
             AppBar("Wikipedia", subtitle),
             TextEdit("wiki-query", value=data["query"], placeholder="Search Wikipedia"),
-            Button("Search", "wiki-search", style="primary", disabled=not data["query"].strip()),
+            ActionBar([Button("Search", "wiki-search", style="primary", disabled=not data["query"].strip())]),
             Text(data["error"] or "Type a query and press Enter.", size=12.0),
             FooterKeys([("enter", "search")]),
         ],
@@ -231,7 +231,7 @@ def _results_view(data: dict):
         [
             AppBar("Wikipedia", f"Results for {data['query']}"),
             body,
-            Button("Back", "wiki-back-search", style="ghost"),
+            ActionBar([Button("Back", "wiki-back-search", style="ghost")]),
             FooterKeys([("j/k", "select"), ("enter", "open"), ("esc", "search")]),
         ],
         grow=True,
@@ -244,7 +244,7 @@ def _article_view(data: dict):
         [
             AppBar("Wikipedia", data["article_title"]),
             Scrollable(Text(data["article"] or data["error"], size=12.0)),
-            Button("Back", "wiki-back-results", style="ghost"),
+            ActionBar([Button("Back", "wiki-back-results", style="ghost")]),
             FooterKeys([("esc", "results")]),
         ],
         grow=True,
