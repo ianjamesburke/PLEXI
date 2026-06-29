@@ -1,5 +1,9 @@
 use std::io::{self, Write};
 
+pub(super) const SCAFFOLD_METADATA_FILE: &str = "plexi.scaffold.toml";
+pub(super) const SCAFFOLD_METADATA_SCHEMA_VERSION: u32 = 1;
+pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 1;
+
 /// Detect the channel config dir name from the running binary name.
 pub(super) fn app_init_config_dir() -> String {
     crate::config::config_dir()
@@ -172,9 +176,19 @@ pub fn app_init(
                     );
                     println!("  Open with: plexi app open {}", app_dir.display());
                 }
-                println!("  Test with: plexi app test {}", app_dir.display());
+                let (channel, _) = current_scaffold_channel();
+                let explicit_plexi = explicit_plexi_command(&channel);
+                println!("  Agent loop: read {}/AGENTS.md", app_dir.display());
                 println!(
-                    "  Check visuals: plexi app check {} --png-dir /tmp/{name}-shots",
+                    "  Test with: {explicit_plexi} app test {}",
+                    app_dir.display()
+                );
+                println!(
+                    "  Check gate: {explicit_plexi} app check {} --png-dir /tmp/{name}-shots",
+                    app_dir.display()
+                );
+                println!(
+                    "  Render state: {explicit_plexi} app render {} --state fixtures/state.json",
                     app_dir.display()
                 );
                 println!(
@@ -243,6 +257,90 @@ fn marketplace_placeholder() -> &'static str {
     }
 }
 
+pub(super) fn python_sdk_version() -> String {
+    const PYPROJECT: &str = include_str!("../../sdk/python/pyproject.toml");
+    toml::from_str::<toml::Value>(PYPROJECT)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("project")
+                .and_then(|project| project.get("version"))
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+pub(super) fn current_scaffold_channel() -> (String, String) {
+    let profile_dir = crate::config::workspace_channel_dir();
+    let channel = profile_dir
+        .strip_prefix(".plexi-")
+        .map(str::to_owned)
+        .or_else(|| {
+            if profile_dir == ".plexi" {
+                Some("main".to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| profile_dir.trim_start_matches('.').to_string());
+    (channel, profile_dir)
+}
+
+fn explicit_plexi_command(channel: &str) -> String {
+    if channel == "main" {
+        "plexi".to_string()
+    } else {
+        format!("PLEXI_CHANNEL={channel} plexi")
+    }
+}
+
+fn write_python_scaffold_support_files(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
+    let sdk_version = python_sdk_version();
+    let (channel, profile_dir) = current_scaffold_channel();
+    let cli_version = env!("CARGO_PKG_VERSION");
+    let manifest_schema_version = crate::app::registry::MANIFEST_SCHEMA_VERSION;
+    let python_runtime_version = crate::app::python_env::PYTHON_APP_VENV_VERSION;
+    let template_version = PYTHON_SCAFFOLD_TEMPLATE_VERSION;
+
+    let agents = include_str!("../../sdk/python/plexi_sdk/templates/AGENTS.md")
+        .replace("__APP_NAME__", name)
+        .replace("__CLI_VERSION__", cli_version)
+        .replace("__SDK_VERSION__", &sdk_version)
+        .replace(
+            "__MANIFEST_SCHEMA_VERSION__",
+            &manifest_schema_version.to_string(),
+        )
+        .replace("__PYTHON_RUNTIME_VERSION__", python_runtime_version)
+        .replace("__TEMPLATE_VERSION__", &template_version.to_string())
+        .replace("__CHANNEL__", &channel)
+        .replace("__PROFILE_DIR__", &profile_dir);
+    std::fs::write(app_dir.join("AGENTS.md"), agents)?;
+
+    let gitignore = include_str!("../../sdk/python/plexi_sdk/templates/gitignore");
+    std::fs::write(app_dir.join(".gitignore"), gitignore)?;
+
+    let metadata = format!(
+        "schema_version = {schema}\n\
+         generated_by = \"plexi app init\"\n\
+         plexi_cli_version = \"{cli_version}\"\n\
+         sdk_version = \"{sdk_version}\"\n\
+         manifest_schema_version = {manifest_schema_version}\n\
+         python_runtime_version = \"{python_runtime_version}\"\n\
+         template_version = {template_version}\n\
+         channel = \"{channel}\"\n\
+         profile_dir = \"{profile_dir}\"\n",
+        schema = SCAFFOLD_METADATA_SCHEMA_VERSION,
+    );
+    std::fs::write(app_dir.join(SCAFFOLD_METADATA_FILE), metadata)?;
+    log::info!(
+        "app_init: wrote scaffold support files metadata={} template_version={template_version} sdk_version={sdk_version} channel={channel} profile_dir={profile_dir}",
+        app_dir.join(SCAFFOLD_METADATA_FILE).display()
+    );
+
+    Ok(())
+}
+
 fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -277,6 +375,12 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     let test_template = include_str!("../../sdk/python/plexi_sdk/templates/test_app_init.py");
     let test_py = test_template.replace("__DISPLAY_NAME__", &to_title_case(name));
     std::fs::write(tests_dir.join("test_app.py"), test_py)?;
+
+    let fixtures_dir = app_dir.join("fixtures");
+    std::fs::create_dir_all(&fixtures_dir)?;
+    std::fs::write(fixtures_dir.join("state.json"), "{\n  \"count\": 3\n}\n")?;
+
+    write_python_scaffold_support_files(app_dir, name)?;
 
     Ok(())
 }
@@ -2147,6 +2251,109 @@ mod scaffold_marketplace_tests {
     }
 
     #[test]
+    fn python_scaffold_writes_agent_contract_gitignore_and_metadata() {
+        let dir = TempDir::new().unwrap();
+        let app_dir = dir.path().join("myapp");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        scaffold_python_app(&app_dir, "myapp").unwrap();
+
+        let agents = std::fs::read_to_string(app_dir.join("AGENTS.md")).unwrap();
+        assert!(
+            agents.contains("Use TDD"),
+            "AGENTS.md must tell agents to use TDD"
+        );
+        assert!(
+            agents.contains("plexi app test ."),
+            "AGENTS.md must teach regular app tests"
+        );
+        assert!(
+            agents.contains("PLEXI_CHANNEL=alpha plexi app check . --png-dir"),
+            "AGENTS.md must teach explicit-channel check gate"
+        );
+        assert!(
+            agents.contains("plexi-pr-123 app check . --png-dir"),
+            "AGENTS.md must teach direct PR-channel check syntax"
+        );
+        assert!(
+            agents.contains("plexi app action <pane-id>"),
+            "AGENTS.md must teach exercising app actions"
+        );
+        assert!(
+            agents.contains("log.debug"),
+            "AGENTS.md must teach SDK log levels"
+        );
+
+        let gitignore = std::fs::read_to_string(app_dir.join(".gitignore")).unwrap();
+        assert!(gitignore.contains(".venv/"));
+        assert!(gitignore.contains("__pycache__/"));
+        assert!(gitignore.contains("*.pyc"));
+        assert!(gitignore.contains(".pytest_cache/"));
+        assert!(gitignore.contains("render-output/"));
+        assert!(gitignore.contains("agent-run-logs/"));
+        assert!(
+            !gitignore.contains("manifest.toml"),
+            ".gitignore must not hide the manifest"
+        );
+        assert!(
+            !gitignore.contains("tests/"),
+            ".gitignore must not hide tests"
+        );
+        assert!(
+            !gitignore.contains("fixtures/"),
+            ".gitignore must not hide fixtures"
+        );
+        assert_eq!(
+            std::fs::read_to_string(app_dir.join("fixtures/state.json")).unwrap(),
+            "{\n  \"count\": 3\n}\n"
+        );
+
+        let metadata_raw = std::fs::read_to_string(app_dir.join(SCAFFOLD_METADATA_FILE)).unwrap();
+        let metadata: toml::Value = toml::from_str(&metadata_raw).unwrap();
+        assert_eq!(
+            metadata
+                .get("schema_version")
+                .and_then(toml::Value::as_integer),
+            Some(SCAFFOLD_METADATA_SCHEMA_VERSION as i64)
+        );
+        assert_eq!(
+            metadata
+                .get("plexi_cli_version")
+                .and_then(toml::Value::as_str),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            metadata.get("sdk_version").and_then(toml::Value::as_str),
+            Some(python_sdk_version().as_str())
+        );
+        assert_eq!(
+            metadata
+                .get("manifest_schema_version")
+                .and_then(toml::Value::as_integer),
+            Some(crate::app::registry::MANIFEST_SCHEMA_VERSION as i64)
+        );
+        assert_eq!(
+            metadata
+                .get("python_runtime_version")
+                .and_then(toml::Value::as_str),
+            Some(crate::app::python_env::PYTHON_APP_VENV_VERSION)
+        );
+        assert_eq!(
+            metadata
+                .get("template_version")
+                .and_then(toml::Value::as_integer),
+            Some(PYTHON_SCAFFOLD_TEMPLATE_VERSION as i64)
+        );
+        assert!(metadata
+            .get("channel")
+            .and_then(toml::Value::as_str)
+            .is_some());
+        assert!(metadata
+            .get("profile_dir")
+            .and_then(toml::Value::as_str)
+            .is_some());
+    }
+
+    #[test]
     fn python_scaffold_writes_self_documenting_main() {
         let dir = TempDir::new().unwrap();
         let app_dir = dir.path().join("myapp");
@@ -2178,6 +2385,10 @@ mod scaffold_marketplace_tests {
             main_src.contains("FooterKeys("),
             "generated main.py should keep shortcut hints in the footer"
         );
+        assert!(main_src.contains("log.debug"));
+        assert!(main_src.contains("log.info"));
+        assert!(main_src.contains("log.warn"));
+        assert!(main_src.contains("log.error"));
     }
 
     #[test]

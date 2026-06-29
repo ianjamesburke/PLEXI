@@ -24,11 +24,12 @@ def init(size, args) -> list:
     returns, then Plexi calls ``view()``.
     """
     log.info("__DISPLAY_NAME__ initialized")
+    log.debug(f"initial size={size} args={args}")
     return [
         SetTitle("__DISPLAY_NAME__"),
         # Runtime state is a JSON-shaped dict. Prefer stable, small keys; view()
         # reads the snapshot with state.get(...).
-        SetState({COUNT_KEY: 0}),
+        SetState({COUNT_KEY: state.get(COUNT_KEY, 0)}),
     ]
 
 
@@ -40,19 +41,27 @@ def update(event) -> list:
     """
     if isinstance(event, UiAction):
         if event.handler_id == "counter-increment":
+            log.info("counter increment action")
             return [SetState({COUNT_KEY: state.get(COUNT_KEY, 0) + 1})]
         if event.handler_id == "counter-decrement":
+            log.info("counter decrement action")
             return [SetState({COUNT_KEY: state.get(COUNT_KEY, 0) - 1})]
         if event.handler_id == "counter-reset":
+            log.info("counter reset action")
             return [SetState({COUNT_KEY: 0})]
+        log.warn(f"ignored unknown action: {event.handler_id}")
 
     if isinstance(event, KeyEvent) and event.pressed:
         if event.key in ("equals", "plus"):
+            log.info("counter increment key")
             return [SetState({COUNT_KEY: state.get(COUNT_KEY, 0) + 1})]
         if event.key == "minus":
+            log.info("counter decrement key")
             return [SetState({COUNT_KEY: state.get(COUNT_KEY, 0) - 1})]
         if event.key == "r":
+            log.info("counter reset key")
             return [SetState({COUNT_KEY: 0})]
+        log.debug(f"ignored key: {event.key}")
     return []
 
 
@@ -63,6 +72,10 @@ def view():
     read state and build components; return effects from ``update`` instead.
     """
     count = state.get(COUNT_KEY, 0)
+    if not isinstance(count, int):
+        log.error(f"counter state must be an int, got {type(count).__name__}")
+        count = 0
+    log.debug(f"render count={count}")
     return Column(
         [
             AppBar("__DISPLAY_NAME__"),

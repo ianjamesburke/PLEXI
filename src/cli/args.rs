@@ -478,11 +478,34 @@ pub enum AppCmd {
         #[arg(long)]
         png: bool,
     },
-    /// Check a local app with manifest, SDK, and render-size checks.
+    /// Check a local app with manifest, scaffold metadata, SDK, and render-size checks.
     ///
     /// This is the compiler-like gate for generated Plexi apps. It checks the
-    /// manifest, inspects Python SDK usage without importing app code, and
-    /// renders the app at small and normal pane sizes.
+    /// manifest, warns on missing or stale `plexi.scaffold.toml`, inspects
+    /// Python SDK usage without importing app code, and renders the app at
+    /// small and normal pane sizes. Run it with an explicit alpha or PR
+    /// channel so the SDK/profile under test is not ambient.
+    #[command(after_long_help = r#"APP CHECK LOOP:
+
+  Use `plexi app check` as the verification gate; there is no `plexi app build`.
+
+    Typical gates:
+    PLEXI_CHANNEL=alpha plexi app test .
+    PLEXI_CHANNEL=alpha plexi app check . --png-dir render-output/check
+    PLEXI_CHANNEL=pr-123 plexi app check . --png-dir render-output/check
+    plexi-pr-123 app check . --png-dir render-output/check
+
+  State and behavior probes:
+    PLEXI_CHANNEL=alpha plexi app render . --state fixtures/state.json
+    PLEXI_CHANNEL=alpha plexi app render . --png --output render-output/shot.png
+    plexi app action <pane-id> <handler-id>
+    plexi pane key <pane-id> <key>
+    plexi pane state <pane-id>
+
+  Logs:
+    Inspect ~/.plexi-alpha/plexi.log or the matching ~/.plexi-pr-N/plexi.log.
+    App code should use log.debug/info/warn/error intentionally.
+"#)]
     Check {
         /// Local app directory to check (default: current directory)
         #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
@@ -512,7 +535,9 @@ pub enum AppCmd {
     Info { id: String },
     /// Create a new app from a template.
     ///
-    /// Scaffolds the folder structure and files you need to build a Plexi app.
+    /// Scaffolds the folder structure and files you need to build a Plexi app:
+    /// manifest.toml, main.py, tests/test_app.py, AGENTS.md, .gitignore, and
+    /// plexi.scaffold.toml drift metadata.
     ///
     /// By default, the app is placed in your workspace's app directory. If no
     /// workspace is detected, pass --global to scaffold into the global registry.
@@ -554,13 +579,31 @@ pub enum AppCmd {
     SetTitle, SetStatus, SetTimer, SetSchedulerMode, SetState, PersistState,
     LogInfo/LogWarn/LogError, HttpRequest, AiQuery, FileRead, FileWrite
 
+  Generated files:
+    AGENTS.md              Agent-facing app contract and validation loop
+    .gitignore             Ignores runtime/test/render noise, not source/tests/fixtures
+    plexi.scaffold.toml    Machine-readable CLI/SDK/schema/runtime/template/profile metadata
+
+  Development loop:
+    Read AGENTS.md first.
+    Use TDD and extend tests for behavior changes.
+    Run `plexi app test .` regularly.
+    Use `plexi app check` as the final gate; do not look for `plexi app build`.
+
   Headless testing:
-    plexi app check <path>                             Validate SDK shape + render size matrix
-    plexi app check <path> --png-dir /tmp/my-app     Write visual snapshots
-    plexi app render <path>                          JSON frame tree to stdout
-    plexi app render <path> --png --output shot.png  PNG image to file
+    PLEXI_CHANNEL=alpha plexi app check <path> --png-dir render-output/check
+    PLEXI_CHANNEL=pr-123 plexi app check <path> --png-dir render-output/check
+    plexi-pr-123 app check <path> --png-dir render-output/check
+    PLEXI_CHANNEL=alpha plexi app render <path>                          JSON frame tree
+    PLEXI_CHANNEL=alpha plexi app render <path> --png --output shot.png  PNG image
     Use --state file.json to pre-populate state before init().
     The state file is a plain JSON object, e.g. {"count": 3}.
+
+  Runtime probes:
+    plexi app action <pane-id> <handler-id>   Exercise app actions
+    plexi pane key <pane-id> <key>            Exercise keyboard behavior
+    plexi pane state <pane-id>                Inspect last rendered app state
+    Inspect ~/.plexi-alpha/plexi.log or ~/.plexi-pr-N/plexi.log for app logs.
 "#)]
     Init {
         name: String,
