@@ -94,7 +94,10 @@ fn print_entry_table(entries: &[&RegistryEntry]) {
 pub enum InstallPlan {
     /// Catalog app, free or licensed, artifact downloaded + checksum-verified.
     /// Install this `.plexipkg` directly.
-    Package(PathBuf),
+    Package {
+        path: PathBuf,
+        reviewed_native: bool,
+    },
     /// Catalog app that resolves to a source spec (e.g. `github:owner/repo`).
     /// Install via the existing source-clone path.
     Source(String),
@@ -161,7 +164,12 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
             uuid::Uuid::new_v4()
         ));
         match cli.download_package(&entry, &dest) {
-            Ok(path) => return InstallPlan::Package(path),
+            Ok(path) => {
+                return InstallPlan::Package {
+                    path,
+                    reviewed_native: entry.reviewed_native,
+                }
+            }
             Err(e) => {
                 eprintln!(
                     "error: could not download '{}' from the marketplace: {e}",

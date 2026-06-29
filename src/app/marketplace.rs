@@ -191,6 +191,11 @@ pub struct RegistryEntry {
     /// re-derived locally on install. Never claims more than the local check.
     #[serde(default)]
     pub trust_label: String,
+    /// Registry attestation that native/Python bypass patterns received human
+    /// review. Publisher submissions default false; the hosted review system
+    /// is the only writer that may set this true.
+    #[serde(default)]
+    pub reviewed_native: bool,
     #[serde(default)]
     pub visibility: Visibility,
     #[serde(default)]
@@ -240,6 +245,7 @@ impl RegistryEntry {
                 .collect(),
             tags,
             trust_label: trust_label.to_string(),
+            reviewed_native: false,
             visibility: marketplace.visibility,
             price: marketplace.price.clone(),
             checksum,
@@ -746,6 +752,7 @@ mod tests {
             capabilities: vec![],
             tags: vec![],
             trust_label: "Unreviewed Python process".to_string(),
+            reviewed_native: false,
             visibility: vis,
             price,
             checksum: "abc123".to_string(),
@@ -949,6 +956,36 @@ mod tests {
         assert!(!entry.price.is_free());
         assert_eq!(entry.checksum, "deadbeef");
         assert_eq!(entry.tags, vec!["productivity".to_string()]);
+        assert!(
+            !entry.reviewed_native,
+            "publisher-generated entries are not review attestations"
+        );
+    }
+
+    #[test]
+    fn registry_entry_reviewed_native_is_explicit_attestation() {
+        let reviewed: RegistryEntry = serde_json::from_str(
+            r#"{
+                "id": "reviewed",
+                "name": "Reviewed",
+                "version": "1.0.0",
+                "checksum": "abc123",
+                "reviewed_native": true
+            }"#,
+        )
+        .unwrap();
+        assert!(reviewed.reviewed_native);
+
+        let defaulted: RegistryEntry = serde_json::from_str(
+            r#"{
+                "id": "plain",
+                "name": "Plain",
+                "version": "1.0.0",
+                "checksum": "abc123"
+            }"#,
+        )
+        .unwrap();
+        assert!(!defaulted.reviewed_native);
     }
 
     #[test]

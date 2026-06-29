@@ -124,6 +124,16 @@ pub enum PackageError {
         "unsupported runtime '{0}' in PACKAGE.toml — expected \"python\", \"native\", or \"wasm\""
     )]
     UnsupportedRuntime(String),
+    #[error(
+        "review required for {runtime} package: {category} bypass pattern in {path}:{line}: {snippet} — reviewed native apps are not sandboxed"
+    )]
+    BypassReviewRequired {
+        runtime: &'static str,
+        category: &'static str,
+        path: PathBuf,
+        line: usize,
+        snippet: String,
+    },
     #[error("file '{0}' listed in PACKAGE.toml is missing from the archive")]
     ListedFileMissing(String),
     #[error("file '{0}' present in the archive but not listed in PACKAGE.toml")]
@@ -245,24 +255,22 @@ pub enum TrustLabel {
     NativeUnreviewed,
     /// A Python app from outside the core pack.
     PythonUnreviewed,
-    /// A Python app that has passed marketplace review.
-    PythonReviewed,
+    /// A Python/native app that has passed marketplace review.
+    ReviewedNative,
     /// A WASM component from outside the core pack.
-    WasmComponent,
+    SandboxedWasm,
 }
 
 impl TrustLabel {
     /// Honest display string. Never claims sandboxing — none exists in v1.
     pub fn display_str(self) -> &'static str {
         match self {
-            Self::FirstPartyCore => "First-party core — ships with Plexi",
+            Self::FirstPartyCore => "First-party core — bundled with Plexi",
             Self::PythonUnreviewed => {
                 "Unreviewed Python process — runs with your full user permissions"
             }
-            Self::PythonReviewed => {
-                "Reviewed native process — manifest reviewed; not sandboxed"
-            }
-            Self::WasmComponent => "WASM component — sandboxed; host imports are capability-gated",
+            Self::ReviewedNative => "Reviewed native process — human-reviewed; not sandboxed",
+            Self::SandboxedWasm => "Sandboxed WASM — scoped host imports are capability-gated",
             Self::NativeUnreviewed => {
                 "Unreviewed native process — runs with your full user permissions"
             }
@@ -280,20 +288,30 @@ impl TrustLabel {
 /// attacker-controlled and must not be used here. For local installs pass
 /// `false`; marketplace installs will pass `true` based on server attestation
 /// when that flow ships.
-pub fn trust_label(report: &PackageReport, core_ids: &[&str], marketplace_reviewed: bool) -> TrustLabel {
+pub fn trust_label(
+    report: &PackageReport,
+    core_ids: &[&str],
+    marketplace_reviewed: bool,
+) -> TrustLabel {
     if core_ids.contains(&report.id.as_str()) {
         TrustLabel::FirstPartyCore
     } else {
         match report.runtime {
             PackageRuntime::Python => {
                 if marketplace_reviewed {
-                    TrustLabel::PythonReviewed
+                    TrustLabel::ReviewedNative
                 } else {
                     TrustLabel::PythonUnreviewed
                 }
             }
-            PackageRuntime::Wasm => TrustLabel::WasmComponent,
-            PackageRuntime::Native => TrustLabel::NativeUnreviewed,
+            PackageRuntime::Wasm => TrustLabel::SandboxedWasm,
+            PackageRuntime::Native => {
+                if marketplace_reviewed {
+                    TrustLabel::ReviewedNative
+                } else {
+                    TrustLabel::NativeUnreviewed
+                }
+            }
         }
     }
 }
@@ -305,7 +323,7 @@ pub fn trust_label(report: &PackageReport, core_ids: &[&str], marketplace_review
 /// previous extraction) is ignored by the file walk — it is regenerated at
 /// build time and verified at package-validate time.
 pub fn validate_dir(app_dir: &Path) -> Result<PackageReport, PackageError> {
-    let report = validate_dir_inner(app_dir)?;
+    let report = validate_dir_inner(app_dir, NativeBypassReview::Block)?;
     log::info!(
         "package: validate_dir ok id={} version={} runtime={} files={} bytes={} dir={}",
         report.id,
@@ -318,7 +336,16 @@ pub fn validate_dir(app_dir: &Path) -> Result<PackageReport, PackageError> {
     Ok(report)
 }
 
-fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeBypassReview {
+    Block,
+    Reviewed,
+}
+
+fn validate_dir_inner(
+    app_dir: &Path,
+    native_bypass_review: NativeBypassReview,
+) -> Result<PackageReport, PackageError> {
     if !app_dir.is_dir() {
         return Err(PackageError::NotADirectory(app_dir.to_path_buf()));
     }
@@ -350,6 +377,8 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
     )?;
 
     let files = collect_files(app_dir)?;
+    let runtime = PackageRuntime::from_manifest(manifest.app.manifest_type, &entry);
+    scan_native_bypass_patterns(app_dir, &files, runtime, native_bypass_review)?;
     let total_size = files.iter().map(|(_, size)| size).sum();
 
     let (requires_plexi_min, requires_plexi_max) = manifest
@@ -361,7 +390,7 @@ fn validate_dir_inner(app_dir: &Path) -> Result<PackageReport, PackageError> {
         id: manifest.app.id,
         name: manifest.app.name,
         version: manifest.app.version,
-        runtime: PackageRuntime::from_manifest(manifest.app.manifest_type, &entry),
+        runtime,
         entry,
         capabilities,
         wasm_required_capabilities,
@@ -440,6 +469,142 @@ fn parse_wasm_capabilities(
         }
     }
     Ok(strings.to_vec())
+}
+
+fn scan_native_bypass_patterns(
+    root: &Path,
+    files: &[(PathBuf, u64)],
+    runtime: PackageRuntime,
+    native_bypass_review: NativeBypassReview,
+) -> Result<(), PackageError> {
+    if runtime == PackageRuntime::Wasm {
+        return Ok(());
+    }
+
+    for (rel, _) in files {
+        if !should_scan_bypass_file(rel) {
+            continue;
+        }
+        let path = root.join(rel);
+        let raw = fs::read_to_string(&path).map_err(|e| io_err("read", &path, e))?;
+        for (idx, line) in raw.lines().enumerate() {
+            if let Some((category, snippet)) = detect_native_bypass_line(line) {
+                if native_bypass_review == NativeBypassReview::Reviewed {
+                    log::info!(
+                        "package: reviewed native bypass accepted runtime={} category={} path={} line={}",
+                        runtime.as_str(),
+                        category,
+                        rel.display(),
+                        idx + 1
+                    );
+                    continue;
+                }
+                return Err(PackageError::BypassReviewRequired {
+                    runtime: runtime.as_str(),
+                    category,
+                    path: rel.to_path_buf(),
+                    line: idx + 1,
+                    snippet,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn should_scan_bypass_file(rel: &Path) -> bool {
+    if rel.components().any(|component| {
+        matches!(
+            component,
+            Component::Normal(name) if name == "tests" || name == "test"
+        )
+    }) {
+        return false;
+    }
+    if rel
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("test_"))
+    {
+        return false;
+    }
+
+    matches!(
+        rel.extension().and_then(|ext| ext.to_str()),
+        Some("py" | "pyw" | "sh" | "bash" | "zsh")
+    )
+}
+
+fn detect_native_bypass_line(line: &str) -> Option<(&'static str, String)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+
+    let category = if contains_host_routing_pattern(trimmed) {
+        "host routing"
+    } else if contains_subprocess_pattern(&lower) {
+        "subprocess"
+    } else if contains_direct_socket_pattern(&lower) {
+        "direct socket"
+    } else if contains_path_traversal_pattern(&lower) {
+        "path traversal"
+    } else {
+        return None;
+    };
+
+    Some((category, snippet_for_error(trimmed)))
+}
+
+fn contains_host_routing_pattern(line: &str) -> bool {
+    line.contains("PLEXI_SOCKET") || line.contains("notify.sock")
+}
+
+fn contains_subprocess_pattern(lower: &str) -> bool {
+    lower.starts_with("import subprocess")
+        || lower.starts_with("from subprocess import")
+        || lower.contains(" subprocess.")
+        || lower.contains("subprocess.")
+        || lower.contains("asyncio.create_subprocess")
+        || lower.contains("os.system(")
+        || lower.contains("os.popen(")
+        || lower.contains("os.spawn")
+        || lower.contains("os.exec")
+        || lower.contains("pty.spawn(")
+}
+
+fn contains_direct_socket_pattern(lower: &str) -> bool {
+    lower.starts_with("import socket")
+        || lower.starts_with("from socket import")
+        || lower.contains(" socket.")
+        || lower.contains("socket.")
+        || lower.contains("asyncio.open_connection(")
+        || lower.contains("socketserver")
+        || lower.contains("af_unix")
+}
+
+fn contains_path_traversal_pattern(lower: &str) -> bool {
+    lower.contains("../")
+        || lower.contains("..\\")
+        || lower.contains("os.pardir")
+        || lower.contains(".parent.parent")
+        || lower.contains("path(\"..\")")
+        || lower.contains("path('..')")
+        || lower.contains("joinpath(\"..\")")
+        || lower.contains("joinpath('..')")
+        || lower.contains("join(\"..\")")
+        || lower.contains("join('..')")
+}
+
+fn snippet_for_error(line: &str) -> String {
+    const MAX: usize = 96;
+    let mut snippet: String = line.chars().take(MAX).collect();
+    if line.chars().count() > MAX {
+        snippet.push_str("...");
+    }
+    snippet
 }
 
 /// Returns true for root-level dev artifacts generated by scaffold/check flows
@@ -747,7 +912,18 @@ fn unique_temp_dir() -> Result<TempDirGuard, PackageError> {
 ///    capability strings)
 /// 5. `PACKAGE.toml` id/version/runtime agree with `manifest.toml`
 pub fn validate_package(file: &Path) -> Result<PackageReport, PackageError> {
-    let result = validate_package_inner(file);
+    validate_package_with_review(file, NativeBypassReview::Block)
+}
+
+pub fn validate_package_reviewed_native(file: &Path) -> Result<PackageReport, PackageError> {
+    validate_package_with_review(file, NativeBypassReview::Reviewed)
+}
+
+fn validate_package_with_review(
+    file: &Path,
+    native_bypass_review: NativeBypassReview,
+) -> Result<PackageReport, PackageError> {
+    let result = validate_package_inner(file, native_bypass_review);
     match &result {
         Ok(report) => log::info!(
             "package: validate_package ok id={} version={} files={} file={}",
@@ -764,7 +940,10 @@ pub fn validate_package(file: &Path) -> Result<PackageReport, PackageError> {
     result
 }
 
-fn validate_package_inner(file: &Path) -> Result<PackageReport, PackageError> {
+fn validate_package_inner(
+    file: &Path,
+    native_bypass_review: NativeBypassReview,
+) -> Result<PackageReport, PackageError> {
     if file.extension().and_then(|e| e.to_str()) != Some(PACKAGE_EXTENSION) {
         return Err(PackageError::WrongExtension(file.to_path_buf()));
     }
@@ -830,7 +1009,7 @@ fn validate_package_inner(file: &Path) -> Result<PackageReport, PackageError> {
     }
 
     // The extracted tree must itself be a valid app dir.
-    let report = validate_dir_inner(&root)?;
+    let report = validate_dir_inner(&root, native_bypass_review)?;
 
     // PACKAGE.toml identity must agree with manifest.toml.
     if descriptor.package.id != report.id {
@@ -927,6 +1106,26 @@ mod tests {
         builder.into_inner().unwrap().finish().unwrap();
     }
 
+    fn rewrite_entry_with_descriptor(pkg: &Path, rel: &str, bytes: &[u8], out: &Path) {
+        let mut entries = read_entries(pkg);
+        entries.insert(rel.to_string(), bytes.to_vec());
+
+        let descriptor_raw = String::from_utf8(entries.get(PACKAGE_TOML).unwrap().clone()).unwrap();
+        let mut descriptor: PackageToml = toml::from_str(&descriptor_raw).unwrap();
+        let file = descriptor
+            .files
+            .iter_mut()
+            .find(|file| file.path == rel)
+            .expect("test package must list edited file");
+        file.size = bytes.len() as u64;
+        file.sha256 = hex_string(&Sha256::digest(bytes));
+        entries.insert(
+            PACKAGE_TOML.to_string(),
+            toml::to_string_pretty(&descriptor).unwrap().into_bytes(),
+        );
+        write_entries(out, &entries);
+    }
+
     /// Build a valid package for a fresh app dir; returns (workdir, pkg path).
     fn build_valid_package(id: &str) -> (TempDir, PathBuf) {
         let work = TempDir::new().unwrap();
@@ -1014,7 +1213,10 @@ mod tests {
         std::os::unix::fs::symlink("/usr/bin/python3", venv_bin.join("python3")).unwrap();
 
         let report = validate_dir(&app_dir).expect("generated .venv must be ignored");
-        assert_eq!(report.file_count, 2, "only manifest and entry are package content");
+        assert_eq!(
+            report.file_count, 2,
+            "only manifest and entry are package content"
+        );
 
         let pkg = build_package(&app_dir, Some(&work.path().join("venv.plexipkg")))
             .expect("package build should ignore generated .venv");
@@ -1076,6 +1278,125 @@ mod tests {
         }
         // Build must refuse too.
         assert!(build_package(&app_dir, Some(&work.path().join("x.plexipkg"))).is_err());
+    }
+
+    #[test]
+    fn reviewed_native_subprocess_pattern_requires_review_in_package() {
+        let (work, pkg) = build_valid_package("pkg-subprocess-bypass");
+        let reviewed_native = work.path().join("review-required.plexipkg");
+        rewrite_entry_with_descriptor(
+            &pkg,
+            "main.py",
+            b"import subprocess\nsubprocess.run(['git', 'status'])\n",
+            &reviewed_native,
+        );
+
+        let err = validate_package(&reviewed_native).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PackageError::BypassReviewRequired {
+                    category: "subprocess",
+                    ref path,
+                    line: 1,
+                    ..
+                } if path.ends_with("main.py")
+            ),
+            "expected subprocess review-required error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reviewed_native_attestation_allows_bypass_package_validation() {
+        let (work, pkg) = build_valid_package("pkg-reviewed-bypass");
+        let reviewed_native = work.path().join("reviewed.plexipkg");
+        rewrite_entry_with_descriptor(
+            &pkg,
+            "main.py",
+            b"import subprocess\nsubprocess.run(['gh', 'auth', 'token'])\n",
+            &reviewed_native,
+        );
+
+        let report = validate_package_reviewed_native(&reviewed_native)
+            .expect("marketplace-reviewed package may pass scanner");
+        assert_eq!(report.id, "pkg-reviewed-bypass");
+    }
+
+    #[test]
+    fn reviewed_native_socket_pattern_requires_review_in_dir() {
+        let work = TempDir::new().unwrap();
+        let app_dir = work.path().join("app");
+        fs::create_dir(&app_dir).unwrap();
+        write_app(&app_dir, "pkg-socket-bypass", "\"net.http\"");
+        fs::write(
+            app_dir.join("main.py"),
+            "import socket\nsock = socket.socket()\n",
+        )
+        .unwrap();
+
+        let err = validate_dir(&app_dir).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PackageError::BypassReviewRequired {
+                    category: "direct socket",
+                    ref path,
+                    line: 1,
+                    ..
+                } if path.ends_with("main.py")
+            ),
+            "expected socket review-required error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reviewed_native_host_socket_pattern_requires_review_in_dir() {
+        let work = TempDir::new().unwrap();
+        let app_dir = work.path().join("app");
+        fs::create_dir(&app_dir).unwrap();
+        write_app(&app_dir, "pkg-host-routing-bypass", "\"panes.read\"");
+        fs::write(
+            app_dir.join("main.py"),
+            "import os\nhost_socket = os.environ.get('PLEXI_SOCKET')\n",
+        )
+        .unwrap();
+
+        let err = validate_dir(&app_dir).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PackageError::BypassReviewRequired {
+                    category: "host routing",
+                    ref path,
+                    line: 2,
+                    ..
+                } if path.ends_with("main.py")
+            ),
+            "expected host-routing review-required error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reviewed_native_path_traversal_pattern_requires_review_in_dir() {
+        let work = TempDir::new().unwrap();
+        let app_dir = work.path().join("app");
+        fs::create_dir(&app_dir).unwrap();
+        write_app(&app_dir, "pkg-path-bypass", "\"fs.read\"");
+        fs::write(app_dir.join("main.py"), "open('../secrets.txt').read()\n").unwrap();
+
+        let err = validate_dir(&app_dir).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PackageError::BypassReviewRequired {
+                    category: "path traversal",
+                    ref path,
+                    line: 1,
+                    ..
+                } if path.ends_with("main.py")
+            ),
+            "expected path-traversal review-required error, got: {err}"
+        );
     }
 
     #[test]
@@ -1182,14 +1503,17 @@ mod tests {
         );
         assert_eq!(
             TrustLabel::FirstPartyCore.display_str(),
-            "First-party core — ships with Plexi"
+            "First-party core — bundled with Plexi"
         );
     }
 
     #[test]
     fn trust_label_python_entry_is_python_unreviewed() {
         let r = report("third-party", PackageRuntime::Python);
-        assert_eq!(trust_label(&r, &["welcome"], false), TrustLabel::PythonUnreviewed);
+        assert_eq!(
+            trust_label(&r, &["welcome"], false),
+            TrustLabel::PythonUnreviewed
+        );
         assert_eq!(
             TrustLabel::PythonUnreviewed.display_str(),
             "Unreviewed Python process — runs with your full user permissions"
@@ -1199,10 +1523,13 @@ mod tests {
     #[test]
     fn trust_label_marketplace_reviewed_python_is_python_reviewed() {
         let r = report("marketplace-app", PackageRuntime::Python);
-        assert_eq!(trust_label(&r, &["welcome"], true), TrustLabel::PythonReviewed);
         assert_eq!(
-            TrustLabel::PythonReviewed.display_str(),
-            "Reviewed native process — manifest reviewed; not sandboxed"
+            trust_label(&r, &["welcome"], true),
+            TrustLabel::ReviewedNative
+        );
+        assert_eq!(
+            TrustLabel::ReviewedNative.display_str(),
+            "Reviewed native process — human-reviewed; not sandboxed"
         );
     }
 
@@ -1227,12 +1554,18 @@ mod tests {
     }
 
     #[test]
+    fn trust_label_marketplace_reviewed_native_is_reviewed_native() {
+        let r = report("third-party-bin", PackageRuntime::Native);
+        assert_eq!(trust_label(&r, &[], true), TrustLabel::ReviewedNative);
+    }
+
+    #[test]
     fn trust_label_wasm_entry_is_component() {
         let r = report("third-party-wasm", PackageRuntime::Wasm);
-        assert_eq!(trust_label(&r, &[], false), TrustLabel::WasmComponent);
+        assert_eq!(trust_label(&r, &[], false), TrustLabel::SandboxedWasm);
         assert_eq!(
-            TrustLabel::WasmComponent.display_str(),
-            "WASM component — sandboxed; host imports are capability-gated"
+            TrustLabel::SandboxedWasm.display_str(),
+            "Sandboxed WASM — scoped host imports are capability-gated"
         );
     }
 
@@ -1251,8 +1584,8 @@ mod tests {
         // With marketplace attestation: reviewed.
         assert_eq!(
             trust_label(&report, &[], true),
-            TrustLabel::PythonReviewed,
-            "marketplace_reviewed=true must yield PythonReviewed"
+            TrustLabel::ReviewedNative,
+            "marketplace_reviewed=true must yield ReviewedNative"
         );
     }
 
