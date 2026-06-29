@@ -616,3 +616,29 @@ fn writable_config_path_defaulting_to_workspace(scope: ConfigScope) -> Result<Pa
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_set_marketplace_urls_keeps_default_config_parseable() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let pairs = vec![
+            "marketplace.registry_url=http://127.0.0.1:8765/registry/v1/index.json".to_string(),
+            "marketplace.cdn_url=http://127.0.0.1:8765/registry/v1/packages".to_string(),
+        ];
+
+        assert_eq!(config_set(&pairs, ConfigScope::Global), 0);
+
+        let path = profile.path().join("config.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        toml::from_str::<toml::Value>(&text).expect("config set must leave valid TOML");
+        let diags = crate::config::validate_from_path(&path);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+        assert!(text.contains("[marketplace]"));
+        assert!(text.contains("registry_url = \"http://127.0.0.1:8765/registry/v1/index.json\""));
+        assert!(text.contains("cdn_url = \"http://127.0.0.1:8765/registry/v1/packages\""));
+    }
+}

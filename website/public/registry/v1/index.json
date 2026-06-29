@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "apps": [
+    {
+      "id": "reviewed-notes",
+      "name": "Reviewed Notes",
+      "version": "0.1.0",
+      "description": "A reviewed free app for the hosted registry smoke path.",
+      "publisher": "plexi",
+      "capabilities": [],
+      "tags": ["smoke", "free", "reviewed-native"],
+      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "reviewed_native": true,
+      "visibility": "public",
+      "price": "free",
+      "checksum": "3159ec6f448538b54422cda8c28a9ebe6c8d461aa8cf5b4cd7c63ccf14fb184b"
+    }
+  ]
+}

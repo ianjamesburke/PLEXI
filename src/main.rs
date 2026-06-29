@@ -472,7 +472,7 @@ fn main() -> eframe::Result {
                                                 log::info!(
                                                     "app_install:cli: source spec={s} version={version:?}"
                                                 );
-                                                std::process::exit(cli::install_cli(&s));
+                                                std::process::exit(cli::install_cli(&s, yes));
                                             }
                                             cli::app::AppInstallSpecKind::LocalPath => {
                                                 log::info!("app_install:cli: local path={s} version={version:?}");
@@ -488,7 +488,7 @@ fn main() -> eframe::Result {
                                                     crate::release::ReleaseFeature::Marketplace,
                                                 );
                                                 log::info!("app_install:cli: marketplace id={s} version={version:?}");
-                                                std::process::exit(cli::install_cli(&s));
+                                                std::process::exit(cli::install_cli(&s, yes));
                                             }
                                         }
                                     }
