@@ -56,6 +56,12 @@ pub enum InstallStatus {
     Failed(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitRefPolicy {
+    Strict,
+    FallbackToDefaultBranch,
+}
+
 /// Abstraction over the actual git client. Production: [`GitCloner`] (shells
 /// out to `git`). Tests: in-memory mock that just creates the target dir.
 pub trait Cloner: Send + Sync {
@@ -169,8 +175,18 @@ pub fn install_one(
     git_ref: Option<&str>,
     target_root: &Path,
 ) -> Result<InstallOutcome, String> {
+    install_one_with_ref_policy(cloner, source, git_ref, target_root, GitRefPolicy::Strict)
+}
+
+fn install_one_with_ref_policy(
+    cloner: &dyn Cloner,
+    source: &SourceSpec,
+    git_ref: Option<&str>,
+    target_root: &Path,
+    ref_policy: GitRefPolicy,
+) -> Result<InstallOutcome, String> {
     match source {
-        SourceSpec::Git(url) => install_one_git(cloner, url, git_ref, target_root),
+        SourceSpec::Git(url) => install_one_git(cloner, url, git_ref, target_root, ref_policy),
         SourceSpec::Local(name) => install_one_local(name, target_root),
     }
 }
@@ -180,6 +196,7 @@ fn install_one_git(
     url: &str,
     git_ref: Option<&str>,
     target_root: &Path,
+    ref_policy: GitRefPolicy,
 ) -> Result<InstallOutcome, String> {
     std::fs::create_dir_all(target_root)
         .map_err(|e| format!("create apps dir {}: {e}", target_root.display()))?;
@@ -211,8 +228,17 @@ fn install_one_git(
     }
     if let Some(r) = git_ref {
         if let Err(e) = cloner.checkout(&stage_path, r) {
-            cleanup(&stage_root);
-            return Err(e);
+            match ref_policy {
+                GitRefPolicy::Strict => {
+                    cleanup(&stage_root);
+                    return Err(e);
+                }
+                GitRefPolicy::FallbackToDefaultBranch => {
+                    log::warn!(
+                        "install: ref '{r}' unavailable for {url}; using default branch HEAD: {e}"
+                    );
+                }
+            }
         }
     }
 
@@ -430,7 +456,13 @@ fn apply_pack_entry(
         SourceSpec::Git(_) => Some(entry.version.as_str()),
         SourceSpec::Local(_) => None,
     };
-    match install_one(cloner, &source, git_ref, target_root) {
+    match install_one_with_ref_policy(
+        cloner,
+        &source,
+        git_ref,
+        target_root,
+        GitRefPolicy::FallbackToDefaultBranch,
+    ) {
         Ok(outcome) => outcome,
         Err(e) => InstallOutcome {
             id: entry.id.clone(),
@@ -471,11 +503,9 @@ pub fn uninstall_one(id: &str, target_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `git fetch && git pull` an installed app. Returns an error if the app
-/// dir isn't a git checkout (no `.git/`) — that's the bundled-core case and
-/// the caller should treat it as a skip rather than a hard error.
-pub fn update_one(cloner: &dyn Cloner, id: &str, target_root: &Path) -> Result<(), String> {
-    let dest = target_root.join(id);
+/// `git fetch && git pull` a concrete installed app directory. Used by the
+/// workspace-aware CLI update path after registry resolution.
+pub fn update_app_dir(cloner: &dyn Cloner, id: &str, dest: &Path) -> Result<(), String> {
     if !dest.exists() {
         return Err(format!("'{id}' is not installed at {}", dest.display()));
     }
@@ -483,7 +513,7 @@ pub fn update_one(cloner: &dyn Cloner, id: &str, target_root: &Path) -> Result<(
         return Err("not a git checkout (likely bundled core app)".to_string());
     }
     cloner.pull(&dest)?;
-    log::info!("update: {id}");
+    log::info!("update: {id} at {}", dest.display());
     Ok(())
 }
 
@@ -802,8 +832,14 @@ pub(crate) mod test_support {
         pub manifests: Mutex<HashMap<String, String>>,
         /// Per-URL clone failures, queued and popped in order.
         pub failures: Mutex<Vec<String>>,
+        /// Per-checkout failures, queued and popped in order.
+        pub checkout_failures: Mutex<Vec<String>>,
         /// Track every `clone` call for assertions.
         pub clones: Mutex<Vec<(String, PathBuf)>>,
+        /// Track every checkout ref for assertions.
+        pub checkouts: Mutex<Vec<String>>,
+        /// Track every pull target for assertions.
+        pub pulls: Mutex<Vec<PathBuf>>,
     }
 
     impl MockCloner {
@@ -811,7 +847,10 @@ pub(crate) mod test_support {
             Self {
                 manifests: Mutex::new(HashMap::new()),
                 failures: Mutex::new(Vec::new()),
+                checkout_failures: Mutex::new(Vec::new()),
                 clones: Mutex::new(Vec::new()),
+                checkouts: Mutex::new(Vec::new()),
+                pulls: Mutex::new(Vec::new()),
             }
         }
         pub fn with_manifest(self, url: &str, manifest: &str) -> Self {
@@ -823,6 +862,12 @@ pub(crate) mod test_support {
         }
         pub fn fail_next(&self, msg: &str) {
             self.failures.lock().unwrap().push(msg.to_string());
+        }
+        pub fn fail_next_checkout(&self, msg: &str) {
+            self.checkout_failures
+                .lock()
+                .unwrap()
+                .push(msg.to_string());
         }
     }
 
@@ -863,10 +908,15 @@ pub(crate) mod test_support {
             }
             Ok(())
         }
-        fn checkout(&self, _repo_dir: &Path, _git_ref: &str) -> Result<(), String> {
+        fn checkout(&self, _repo_dir: &Path, git_ref: &str) -> Result<(), String> {
+            self.checkouts.lock().unwrap().push(git_ref.to_string());
+            if let Some(err) = self.checkout_failures.lock().unwrap().pop() {
+                return Err(err);
+            }
             Ok(())
         }
-        fn pull(&self, _repo_dir: &Path) -> Result<(), String> {
+        fn pull(&self, repo_dir: &Path) -> Result<(), String> {
+            self.pulls.lock().unwrap().push(repo_dir.to_path_buf());
             Ok(())
         }
     }
@@ -979,6 +1029,26 @@ mod install_tests {
         // MockCloner's checkout is a no-op but the install still produces the
         // staged manifest. Here we just verify the path was reached.
         assert_eq!(cloner.clones.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn direct_install_ref_failure_remains_strict() {
+        let target = tmp();
+        let cloner = MockCloner::new();
+        cloner.fail_next_checkout("git checkout missing failed");
+        let err = install_one(
+            &cloner,
+            &SourceSpec::Git("https://example.com/strict.git".into()),
+            Some("missing"),
+            target.path(),
+        )
+        .expect_err("direct install with explicit bad ref must fail");
+
+        assert!(err.contains("missing"), "got: {err}");
+        assert!(
+            !target.path().join("strict").exists(),
+            "strict ref failure must not install default branch"
+        );
     }
 
     // D2: per-app Python venv path construction tests.
@@ -1101,6 +1171,24 @@ mod pack_tests {
         }
         let ok = outcomes.iter().find(|o| o.id == "ok").unwrap();
         assert!(matches!(ok.status, InstallStatus::Installed(_)));
+    }
+
+    #[test]
+    fn pack_apply_falls_back_to_default_branch_when_version_ref_missing() {
+        let target = tempfile::tempdir().unwrap();
+        let cloner = MockCloner::new();
+        cloner.fail_next_checkout("git checkout 0.0.1 failed");
+        let pack = pack_with(&[("fallback", "github:owner/fallback", "0.0.1")]);
+
+        let outcomes = apply_pack(&cloner, &pack, target.path());
+
+        assert_eq!(cloner.checkouts.lock().unwrap().as_slice(), ["0.0.1"]);
+        assert!(
+            matches!(outcomes[0].status, InstallStatus::Installed(_)),
+            "missing version ref should fall back to default branch HEAD, got {:?}",
+            outcomes[0].status
+        );
+        assert!(target.path().join("fallback").join("manifest.toml").exists());
     }
 }
 

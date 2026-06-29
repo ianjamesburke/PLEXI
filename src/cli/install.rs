@@ -2,6 +2,7 @@ use super::app::{is_bare_id, is_github_shorthand};
 use super::print_tip;
 use crate::cli::release_resolver;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 pub fn install_cli(spec: &str) -> i32 {
     use crate::cli::marketplace::InstallPlan;
@@ -429,31 +430,82 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     0
 }
 
-/// `plexi update apps [<id>]` — git-pull one installed app, or all of them.
-/// Apps that aren't git checkouts (e.g. bundled core entries) are skipped
-/// with a debug-level log line and reported but not failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpdateTarget {
+    pub id: String,
+    pub app_dir: PathBuf,
+}
+
+fn update_target_from_installed(app: &crate::app::registry::InstalledApp) -> Option<UpdateTarget> {
+    match app.source {
+        crate::app::registry::RegistrySource::Global
+        | crate::app::registry::RegistrySource::LocalApp => Some(UpdateTarget {
+            id: app.manifest.id.clone(),
+            app_dir: app.app_dir.clone(),
+        }),
+        crate::app::registry::RegistrySource::LocalAgent => None,
+    }
+}
+
+pub(crate) fn resolve_update_targets(
+    maybe_id: Option<&str>,
+    cwd: &Path,
+    global_apps_dir: &Path,
+) -> Result<Vec<UpdateTarget>, String> {
+    let registry = crate::app::registry::AppRegistry::load_with_global(cwd, global_apps_dir);
+    if let Some(id) = maybe_id {
+        let app = registry
+            .get(id)
+            .ok_or_else(|| format!("app '{id}' not installed — run `plexi app list`"))?;
+        return update_target_from_installed(app)
+            .map(|target| vec![target])
+            .ok_or_else(|| format!("'{id}' is not an installed app"));
+    }
+    Ok(registry
+        .list()
+        .into_iter()
+        .filter_map(update_target_from_installed)
+        .collect())
+}
+
+/// `plexi app update [<id>]` — git-pull one installed app, or all visible apps.
+/// `plexi update apps [<id>]` is a compatibility alias for the same path.
+/// Apps that aren't git checkouts (e.g. bundled core entries) are skipped.
 pub fn update_cli(maybe_id: Option<&str>) -> i32 {
-    let target_root = crate::app::registry::apps_dir();
-    let cloner = crate::cli::install_host::GitCloner;
-    let ids: Vec<String> = match maybe_id {
-        Some(id) => vec![id.to_string()],
-        None => crate::cli::install_host::installed_versions(&target_root)
-            .into_keys()
-            .collect(),
+    let cwd = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
     };
-    if ids.is_empty() {
+    let global_apps_dir = crate::app::registry::apps_dir();
+    let cloner = crate::cli::install_host::GitCloner;
+    let targets = match resolve_update_targets(maybe_id, &cwd, &global_apps_dir) {
+        Ok(targets) => targets,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    if targets.is_empty() {
         println!("no apps installed");
         return 0;
     }
+    log::info!(
+        "app_update: resolved {} target(s) from cwd={}",
+        targets.len(),
+        cwd.display()
+    );
     let mut any_failed = false;
-    for id in ids {
-        match crate::cli::install_host::update_one(&cloner, &id, &target_root) {
-            Ok(()) => println!("  updated  {id}"),
+    for target in targets {
+        match crate::cli::install_host::update_app_dir(&cloner, &target.id, &target.app_dir) {
+            Ok(()) => println!("  updated  {}", target.id),
             Err(e) if e.contains("not a git checkout") => {
-                println!("  skipped  {id} (not a git checkout)");
+                println!("  skipped  {} (not a git checkout)", target.id);
             }
             Err(e) => {
-                eprintln!("  FAILED   {id}: {e}");
+                eprintln!("  FAILED   {}: {e}", target.id);
                 any_failed = true;
             }
         }
@@ -462,6 +514,63 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
         1
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    fn write_app(apps_root: &Path, id: &str, name: &str) -> PathBuf {
+        let app_dir = apps_root.join(id);
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("manifest.toml"),
+            format!(
+                "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{name}\"\nversion = \"0.1.0\"\nentry = \"run.sh\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+        app_dir
+    }
+
+    #[test]
+    fn update_target_for_id_resolves_workspace_app_before_global() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        let workspace_apps = workspace.path().join(&channel_dir).join("apps");
+        std::fs::create_dir_all(&workspace_apps).unwrap();
+
+        write_app(global.path(), "tool", "Global Tool");
+        let local_dir = write_app(&workspace_apps, "tool", "Workspace Tool");
+
+        let targets = resolve_update_targets(Some("tool"), workspace.path(), global.path())
+            .expect("workspace app should resolve");
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id, "tool");
+        assert_eq!(targets[0].app_dir, local_dir);
+    }
+
+    #[test]
+    fn update_targets_include_global_and_current_workspace_apps() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        let workspace_apps = workspace.path().join(&channel_dir).join("apps");
+        std::fs::create_dir_all(&workspace_apps).unwrap();
+
+        let global_dir = write_app(global.path(), "global-tool", "Global Tool");
+        let local_dir = write_app(&workspace_apps, "local-tool", "Local Tool");
+
+        let targets = resolve_update_targets(None, workspace.path(), global.path())
+            .expect("all update targets should resolve");
+
+        assert_eq!(targets.len(), 2);
+        assert!(targets.iter().any(|target| target.app_dir == global_dir));
+        assert!(targets.iter().any(|target| target.app_dir == local_dir));
     }
 }
 
