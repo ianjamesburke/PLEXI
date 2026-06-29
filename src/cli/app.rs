@@ -563,10 +563,13 @@ pub fn host_version_gate(report: &crate::app::package::PackageReport) -> Option<
 }
 
 /// Resolve the trust label for a report against the bundled core pack ids.
-fn trust_label_for(report: &crate::app::package::PackageReport) -> crate::app::package::TrustLabel {
+fn trust_label_for(
+    report: &crate::app::package::PackageReport,
+    marketplace_reviewed: bool,
+) -> crate::app::package::TrustLabel {
     let core_ids = crate::cli::install_host::core_pack_ids();
     let core_refs: Vec<&str> = core_ids.iter().map(String::as_str).collect();
-    crate::app::package::trust_label(report, &core_refs, false)
+    crate::app::package::trust_label(report, &core_refs, marketplace_reviewed)
 }
 
 /// The install confirmation gate. Returns `Ok(true)` to proceed,
@@ -674,9 +677,10 @@ fn prompt_wasm_optional_grants(
 fn run_install_gate(
     report: &crate::app::package::PackageReport,
     assume_yes: bool,
+    marketplace_reviewed: bool,
 ) -> Result<InstallGateDecision, i32> {
     use std::io::IsTerminal;
-    let label = trust_label_for(report);
+    let label = trust_label_for(report, marketplace_reviewed);
     print_trust_sheet(report, label);
     // Host-version compatibility: a too-old host (or malformed requirement)
     // aborts before the confirm prompt; a too-new host only warns.
@@ -732,7 +736,7 @@ pub fn app_inspect_cli(path: &str) -> i32 {
     };
     match report {
         Ok(report) => {
-            print_trust_sheet(&report, trust_label_for(&report));
+            print_trust_sheet(&report, trust_label_for(&report, false));
             0
         }
         Err(e) => {
@@ -783,7 +787,7 @@ fn app_install_with_pin_inner(
     match crate::app::package::validate_dir(&src) {
         Ok(report) => {
             if confirm == InstallConfirm::Interactive {
-                match run_install_gate(&report, assume_yes) {
+                match run_install_gate(&report, assume_yes, false) {
                     Ok(decision) => {
                         gate_decision = decision;
                     }
@@ -1006,6 +1010,25 @@ pub fn app_install_package(
     confirm: InstallConfirm,
     assume_yes: bool,
 ) -> i32 {
+    app_install_package_inner(file, pin, confirm, assume_yes, false)
+}
+
+pub fn app_install_marketplace_package(
+    file: &str,
+    pin: Option<&str>,
+    confirm: InstallConfirm,
+    assume_yes: bool,
+) -> i32 {
+    app_install_package_inner(file, pin, confirm, assume_yes, true)
+}
+
+fn app_install_package_inner(
+    file: &str,
+    pin: Option<&str>,
+    confirm: InstallConfirm,
+    assume_yes: bool,
+    marketplace_reviewed: bool,
+) -> i32 {
     log::info!("app_install:cli: package file={file} pin={pin:?} confirm={confirm:?}");
     let pkg_path = match std::path::Path::new(file).canonicalize() {
         Ok(p) => p,
@@ -1015,7 +1038,11 @@ pub fn app_install_package(
         }
     };
 
-    let report = match crate::app::package::validate_package(&pkg_path) {
+    let report = match if marketplace_reviewed {
+        crate::app::package::validate_package_reviewed_native(&pkg_path)
+    } else {
+        crate::app::package::validate_package(&pkg_path)
+    } {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: package validation failed — refusing install: {e}");
@@ -1024,7 +1051,7 @@ pub fn app_install_package(
     };
 
     let gate_decision = if confirm == InstallConfirm::Interactive {
-        match run_install_gate(&report, assume_yes) {
+        match run_install_gate(&report, assume_yes, marketplace_reviewed) {
             Ok(decision) => Some(decision),
             Err(code) => return code,
         }
@@ -1717,7 +1744,7 @@ mod install_confirm_tests {
         r.wasm_required_capabilities = vec!["state:read-write".to_string()];
         r.wasm_optional_capabilities = vec!["ai.query".to_string()];
 
-        let lines = trust_sheet_lines(&r, TrustLabel::WasmComponent);
+        let lines = trust_sheet_lines(&r, TrustLabel::SandboxedWasm);
         assert!(lines
             .iter()
             .any(|line| line == "wasm required capabilities:"));
@@ -1726,6 +1753,37 @@ mod install_confirm_tests {
             .iter()
             .any(|line| line == "wasm optional capabilities:"));
         assert!(lines.iter().any(|line| line.contains("ai.query")));
+    }
+
+    #[test]
+    fn trust_sheet_uses_honest_runtime_labels() {
+        let mut r = report();
+        let reviewed_lines = trust_sheet_lines(&r, TrustLabel::ReviewedNative);
+        assert!(reviewed_lines.iter().any(|line| {
+            line == "runtime:      python — Reviewed native process — human-reviewed; not sandboxed"
+        }));
+
+        r.runtime = PackageRuntime::Wasm;
+        r.entry = "app.wasm".to_string();
+        let wasm_lines = trust_sheet_lines(&r, TrustLabel::SandboxedWasm);
+        assert!(wasm_lines.iter().any(|line| {
+            line == "runtime:      wasm — Sandboxed WASM — scoped host imports are capability-gated"
+        }));
+
+        let core_lines = trust_sheet_lines(&report(), TrustLabel::FirstPartyCore);
+        assert!(core_lines
+            .iter()
+            .any(|line| line == "runtime:      python — First-party core — bundled with Plexi"));
+    }
+
+    #[test]
+    fn marketplace_reviewed_helper_uses_reviewed_native_label() {
+        let r = report();
+        assert_eq!(
+            super::trust_label_for(&r, false),
+            TrustLabel::PythonUnreviewed
+        );
+        assert_eq!(super::trust_label_for(&r, true), TrustLabel::ReviewedNative);
     }
 
     #[test]

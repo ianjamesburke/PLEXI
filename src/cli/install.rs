@@ -13,9 +13,20 @@ pub fn install_cli(spec: &str) -> i32 {
         // source); a paid app with no license is blocked; an unknown id or an
         // unreachable registry is a hard error. There is no legacy fallback.
         match crate::cli::marketplace::plan_install(&source_str) {
-            InstallPlan::Package(pkg) => {
+            InstallPlan::Package {
+                path,
+                reviewed_native,
+            } => {
+                if reviewed_native {
+                    return crate::cli::app::app_install_marketplace_package(
+                        &path.to_string_lossy(),
+                        None,
+                        crate::cli::InstallConfirm::Interactive,
+                        false,
+                    );
+                }
                 return crate::cli::app::app_install_package(
-                    &pkg.to_string_lossy(),
+                    &path.to_string_lossy(),
                     None,
                     crate::cli::InstallConfirm::Interactive,
                     false,
