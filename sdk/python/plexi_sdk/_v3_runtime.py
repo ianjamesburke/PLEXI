@@ -100,6 +100,8 @@ class V3AppRuntime:
             self._handle_capability_decision(ev)
         elif t == "ui_action":
             self._handle_ui_action(ev)
+        elif t == "action":
+            self._handle_action(ev)
         elif t == "list_select":
             self._handle_list_select(ev)
         elif t == "list_activate":
@@ -245,6 +247,21 @@ class V3AppRuntime:
         handler_id = ev.get("handler_id", "")
         if handler_id:
             self._dispatch(events.UiAction(handler_id=handler_id))
+
+    def _handle_action(self, ev: dict) -> None:
+        action = ev.get("action", "")
+        if not action:
+            return
+        args = ev.get("args", [])
+        if not isinstance(args, list):
+            args = []
+        sdk.log.info(f"host action delivered as UiAction handler_id={action} args={len(args)}")
+        self._dispatch(
+            events.UiAction(
+                handler_id=action,
+                args=[str(arg) for arg in args],
+            )
+        )
 
     def _handle_list_select(self, ev: dict) -> None:
         list_id = ev.get("id", "")

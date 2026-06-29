@@ -255,7 +255,7 @@ All events are dataclasses in `plexi_sdk/events.py`. Every WIT `input-event` var
 
 ```python
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 @dataclass
@@ -286,6 +286,7 @@ class MouseEvent:
 @dataclass
 class UiAction:
     handler_id: str     # → input-event::ui-action(ui-action-event)
+    args: list[str] = field(default_factory=list)  # set by `plexi app action ... [args...]`
 
 @dataclass
 class UiValueChange:

@@ -45,9 +45,10 @@ class MouseEvent:
 
 @dataclass
 class UiAction:
-    """Click/activation event from a component with matching ``handler_id``."""
+    """Click/activation event from a component or host action."""
 
     handler_id: str
+    args: list[str] = field(default_factory=list)
 
 
 @dataclass

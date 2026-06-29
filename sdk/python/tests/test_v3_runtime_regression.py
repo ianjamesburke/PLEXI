@@ -329,6 +329,52 @@ class TestEventDispatch:
         finally:
             proc.kill()
 
+    def test_host_action_dispatches_ui_action_event(self, tmp_path):
+        app = self._app_that_echoes_event_type(tmp_path)
+        proc = _spawn_v3_app(app)
+        try:
+            _init_app(proc)
+            _send_event(proc, {"type": "action", "action": "counter-increment"})
+            events = _render(proc)
+            trees = _find_events(events, "component_tree")
+            assert any("UiAction" in json.dumps(t) for t in trees), (
+                f"Expected host Action to dispatch UiAction in {[json.dumps(t)[:100] for t in trees]}"
+            )
+        finally:
+            proc.kill()
+
+    def test_host_action_args_are_available_on_ui_action(self, tmp_path):
+        app = tmp_path / "action_args_app.py"
+        app.write_text(textwrap.dedent("""
+            from plexi_sdk.events import UiAction
+            from plexi_sdk.ui import Text
+
+            _seen = ""
+
+            def init(size, args):
+                return []
+
+            def update(event):
+                global _seen
+                if isinstance(event, UiAction):
+                    _seen = f"{event.handler_id}:{','.join(event.args)}"
+                return []
+
+            def view():
+                return Text(_seen)
+        """).lstrip())
+        proc = _spawn_v3_app(app)
+        try:
+            _init_app(proc)
+            _send_event(proc, {"type": "action", "action": "navigate-to", "args": ["/docs", 3]})
+            events = _render(proc)
+            trees = _find_events(events, "component_tree")
+            assert any("navigate-to:/docs,3" in json.dumps(t) for t in trees), (
+                f"Expected action args on UiAction in {[json.dumps(t)[:100] for t in trees]}"
+            )
+        finally:
+            proc.kill()
+
     def test_ui_value_change_event(self, tmp_path):
         app = self._app_that_echoes_event_type(tmp_path)
         proc = _spawn_v3_app(app)
