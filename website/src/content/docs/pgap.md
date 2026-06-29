@@ -951,6 +951,7 @@ Mouse click at logical coordinates within the app surface.
 | Field | Type | Required |
 |-------|------|----------|
 | `button` | `MouseButton` | yes |
+| `region` | `string?` | no |
 | `x` | `number` | yes |
 | `y` | `number` | yes |
 
@@ -1564,6 +1565,7 @@ Fill a rectangle.
 | `glow_radius` | `number` | no |
 | `gradient` | `variant` | no |
 | `h` | `number` | yes |
+| `hit_region` | `string?` | no |
 | `radius` | `number` | no |
 | `stroke` | `string?` | no |
 | `stroke_width` | `number` | no |
@@ -1581,6 +1583,7 @@ Draw text at a position.
 | `bold` | `boolean` | no |
 | `color` | `string` | yes |
 | `elide` | `boolean` | yes |
+| `hit_region` | `string?` | no |
 | `max_lines` | `integer?` | no |
 | `max_width` | `number?` | no |
 | `monospace` | `boolean` | no |
@@ -1857,6 +1860,7 @@ SDK ready handshake. Sent once by the app after receiving Init. Host captures sd
 | Field | Type | Required |
 |-------|------|----------|
 | `features_used` | `string[]` | no |
+| `protocol_version` | `string` | no |
 | `sdk` | `string` | no |
 
 ### `frame_done`
