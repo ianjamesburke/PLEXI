@@ -4,7 +4,7 @@ use crate::cli::release_resolver;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-pub fn install_cli(spec: &str) -> i32 {
+pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
     use crate::cli::marketplace::InstallPlan;
     let (source_str, git_ref) = crate::cli::install_host::split_source_and_ref(spec);
     let resolved = if is_bare_id(&source_str) {
@@ -16,20 +16,22 @@ pub fn install_cli(spec: &str) -> i32 {
             InstallPlan::Package {
                 path,
                 reviewed_native,
+                source_metadata,
             } => {
                 if reviewed_native {
                     return crate::cli::app::app_install_marketplace_package(
                         &path.to_string_lossy(),
                         None,
                         crate::cli::InstallConfirm::Interactive,
-                        false,
+                        assume_yes,
+                        Some(source_metadata),
                     );
                 }
                 return crate::cli::app::app_install_package(
                     &path.to_string_lossy(),
                     None,
                     crate::cli::InstallConfirm::Interactive,
-                    false,
+                    assume_yes,
                 );
             }
             InstallPlan::Source(spec) => spec,

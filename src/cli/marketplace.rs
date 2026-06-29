@@ -11,9 +11,9 @@
 
 use crate::app::account::AccountStore;
 use crate::app::marketplace::{
-    license_gate, payment_provider, LicenseDecision, LicenseStore, MarketplaceManifest,
-    PaymentError, PublishClient, RegistryClient, RegistryEntry, RegistryError, Submission,
-    Visibility,
+    license_gate, payment_provider, InstalledRegistrySource, LicenseDecision, LicenseStore,
+    MarketplaceManifest, PaymentError, PublishClient, RegistryClient, RegistryEntry, RegistryError,
+    Submission, Visibility,
 };
 use crate::app::package;
 use std::path::{Path, PathBuf};
@@ -97,6 +97,7 @@ pub enum InstallPlan {
     Package {
         path: PathBuf,
         reviewed_native: bool,
+        source_metadata: InstalledRegistrySource,
     },
     /// Catalog app that resolves to a source spec (e.g. `github:owner/repo`).
     /// Install via the existing source-clone path.
@@ -168,6 +169,7 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
                 return InstallPlan::Package {
                     path,
                     reviewed_native: entry.reviewed_native,
+                    source_metadata: cli.installed_source_metadata(&entry),
                 }
             }
             Err(e) => {

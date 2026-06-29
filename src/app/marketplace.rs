@@ -48,6 +48,11 @@ pub const DEFAULT_REGISTRY_URL: &str = "https://plexiapp.com/registry/v1/index.j
 /// via `[marketplace].cdn_url`.
 pub const DEFAULT_CDN_URL: &str = "https://plexiapp.com/registry/v1/packages";
 
+/// Sidecar written into an installed app dir for hosted marketplace installs.
+/// Update checks use this later to know which registry entry/version produced
+/// the local copy.
+pub const INSTALLED_REGISTRY_SOURCE_FILE: &str = "marketplace_source.toml";
+
 // ── Visibility ────────────────────────────────────────────────────────────────
 
 /// Who can discover an app. Local-first default is [`Visibility::Private`]: an
@@ -327,6 +332,10 @@ impl RegistryClient {
         }
     }
 
+    pub fn index_url(&self) -> &str {
+        &self.index_url
+    }
+
     fn agent() -> ureq::Agent {
         ureq::AgentBuilder::new()
             .timeout_connect(std::time::Duration::from_secs(10))
@@ -420,6 +429,57 @@ impl RegistryClient {
             dest.display()
         );
         Ok(dest.to_path_buf())
+    }
+
+    pub fn installed_source_metadata(&self, entry: &RegistryEntry) -> InstalledRegistrySource {
+        InstalledRegistrySource::from_entry(entry, self.index_url(), &self.artifact_url(entry))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InstalledRegistrySource {
+    pub schema_version: u32,
+    /// Stable discriminator for future update code.
+    pub source: String,
+    pub registry_url: String,
+    pub app_id: String,
+    pub version: String,
+    #[serde(default)]
+    pub publisher: String,
+    pub checksum: String,
+    pub package_url: String,
+    pub reviewed_native: bool,
+}
+
+impl InstalledRegistrySource {
+    pub fn from_entry(entry: &RegistryEntry, registry_url: &str, package_url: &str) -> Self {
+        InstalledRegistrySource {
+            schema_version: MARKETPLACE_SCHEMA_VERSION,
+            source: "hosted-registry".to_string(),
+            registry_url: registry_url.to_string(),
+            app_id: entry.id.clone(),
+            version: entry.version.clone(),
+            publisher: entry.publisher.clone(),
+            checksum: entry.checksum.clone(),
+            package_url: package_url.to_string(),
+            reviewed_native: entry.reviewed_native,
+        }
+    }
+
+    pub fn write_to(&self, app_dir: &std::path::Path) -> Result<(), String> {
+        std::fs::create_dir_all(app_dir)
+            .map_err(|e| format!("create app dir {}: {e}", app_dir.display()))?;
+        let text = toml::to_string_pretty(self)
+            .map_err(|e| format!("serialize registry source metadata: {e}"))?;
+        let path = app_dir.join(INSTALLED_REGISTRY_SOURCE_FILE);
+        std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
+        log::info!(
+            "marketplace: recorded installed source for '{}' v{} at {}",
+            self.app_id,
+            self.version,
+            path.display()
+        );
+        Ok(())
     }
 }
 
@@ -741,6 +801,9 @@ impl PublishClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     fn entry(id: &str, price: Price, vis: Visibility) -> RegistryEntry {
         RegistryEntry {
@@ -768,6 +831,52 @@ mod tests {
             amount_cents: 499,
             currency: "usd".to_string(),
         }
+    }
+
+    fn serve_once(body: Vec<u8>, content_type: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\ncontent-type: {content_type}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        format!("http://{addr}/fixture")
+    }
+
+    fn build_smoke_package(dir: &std::path::Path) -> (std::path::PathBuf, String) {
+        let app_dir = dir.join("reviewed-notes");
+        std::fs::create_dir(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"reviewed-notes\"\n\
+             type = \"app\"\n\
+             name = \"Reviewed Notes\"\n\
+             version = \"0.1.0\"\n\
+             entry = \"main.py\"\n\
+             description = \"Reviewed free smoke app\"\n\n\
+             [app.capabilities]\n\
+             capabilities = []\n\n\
+             [launch]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            app_dir.join("main.py"),
+            "from plexi_sdk import *\n\n\ndef view():\n    return Text('Reviewed Notes')\n",
+        )
+        .unwrap();
+        let pkg_path = dir.join("reviewed-notes-0.1.0.plexipkg");
+        let pkg = crate::app::package::build_package(&app_dir, Some(&pkg_path)).unwrap();
+        let checksum = crate::app::package::sha256_file(&pkg).unwrap();
+        (pkg, checksum)
     }
 
     #[test]
@@ -864,6 +973,22 @@ mod tests {
         assert_eq!(store.list().len(), 1);
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn free_registry_entry_needs_no_account_or_license() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = LicenseStore::open_at(tmp.path().join("licenses"));
+        let mut free_entry = entry("reviewed-notes", Price::default(), Visibility::Public);
+        free_entry.reviewed_native = true;
+
+        assert_eq!(license_gate(&free_entry, &store), LicenseDecision::Proceed);
+        assert!(
+            crate::app::account::AccountStore::open_at(tmp.path().join("account.toml"))
+                .current()
+                .is_none(),
+            "test starts without a marketplace account, but free apps still proceed"
+        );
     }
 
     #[test]
@@ -1002,5 +1127,72 @@ mod tests {
             client.artifact_url(&e2),
             "https://direct.example/a.plexipkg"
         );
+    }
+
+    #[test]
+    fn registry_client_fetch_search_download_and_validate_smoke_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (pkg, checksum) = build_smoke_package(tmp.path());
+        let package_bytes = std::fs::read(&pkg).unwrap();
+        let package_url = serve_once(package_bytes, "application/octet-stream");
+
+        let mut catalog_entry = entry("reviewed-notes", Price::default(), Visibility::Public);
+        catalog_entry.name = "Reviewed Notes".to_string();
+        catalog_entry.description = "A free reviewed smoke app".to_string();
+        catalog_entry.trust_label =
+            "Reviewed native process — human-reviewed; not sandboxed".to_string();
+        catalog_entry.reviewed_native = true;
+        catalog_entry.checksum = checksum;
+        catalog_entry.package_url = Some(package_url);
+
+        let index = RegistryIndex {
+            schema_version: MARKETPLACE_SCHEMA_VERSION,
+            apps: vec![catalog_entry],
+        };
+        let index_url = serve_once(serde_json::to_vec(&index).unwrap(), "application/json");
+        let client = RegistryClient::new(Some(index_url.clone()), Some("http://unused".into()));
+
+        let fetched = client.fetch_index().expect("hosted index should load");
+        let hits = fetched.search("notes");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "reviewed-notes");
+        assert_eq!(
+            license_gate(hits[0], &LicenseStore::open_at(tmp.path().join("licenses"))),
+            LicenseDecision::Proceed
+        );
+
+        let dest = tmp.path().join("downloaded.plexipkg");
+        client
+            .download_package(hits[0], &dest)
+            .expect("artifact should download and checksum");
+        let report = crate::app::package::validate_package_reviewed_native(&dest)
+            .expect("downloaded reviewed package must reuse local validation");
+        assert_eq!(report.id, "reviewed-notes");
+
+        let metadata = client.installed_source_metadata(hits[0]);
+        assert_eq!(metadata.source, "hosted-registry");
+        assert_eq!(metadata.registry_url, index_url);
+        assert_eq!(metadata.version, "1.0.0");
+        assert!(metadata.reviewed_native);
+    }
+
+    #[test]
+    fn installed_registry_source_metadata_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut e = entry("reviewed-notes", Price::default(), Visibility::Public);
+        e.reviewed_native = true;
+        let metadata = InstalledRegistrySource::from_entry(
+            &e,
+            "https://plexiapp.com/registry/v1/index.json",
+            "https://plexiapp.com/registry/v1/packages/abc123.plexipkg",
+        );
+
+        metadata.write_to(tmp.path()).unwrap();
+        let text =
+            std::fs::read_to_string(tmp.path().join(INSTALLED_REGISTRY_SOURCE_FILE)).unwrap();
+        let parsed: InstalledRegistrySource = toml::from_str(&text).unwrap();
+        assert_eq!(parsed, metadata);
+        assert_eq!(parsed.app_id, "reviewed-notes");
+        assert_eq!(parsed.version, "1.0.0");
     }
 }

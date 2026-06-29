@@ -80,6 +80,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "focus_history_depth",
     "agents",
     "cli",
+    "marketplace",
     "pane_gap",
     "pane_title_font_size",
     "osc_pane_title",
@@ -132,6 +133,14 @@ const KNOWN_AI: &[&str] = &[
 ];
 const KNOWN_AI_OPENROUTER: &[&str] = &["api_key_env", "model_low", "model_medium", "model_high"];
 const KNOWN_AI_OLLAMA: &[&str] = &["host", "model_low", "model_medium", "model_high"];
+const KNOWN_MARKETPLACE: &[&str] = &[
+    "registry_url",
+    "cdn_url",
+    "submit_url",
+    "payment_backend",
+    "account_backend",
+    "account_email",
+];
 const KNOWN_KEYBINDINGS: &[&str] = &[
     "quit",
     "close_pane",
@@ -260,6 +269,9 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             }
             if let Some(toml::Value::Table(t)) = table.get("cli") {
                 check_unknown_keys(t, "cli", KNOWN_CLI, &path_str, &mut diags);
+            }
+            if let Some(toml::Value::Table(t)) = table.get("marketplace") {
+                check_unknown_keys(t, "marketplace", KNOWN_MARKETPLACE, &path_str, &mut diags);
             }
             if table.contains_key("quick_note") {
                 diags.push(ConfigDiagnostic::DeprecatedSection {
@@ -1612,6 +1624,25 @@ mod tests {
         fs::write(
             &path,
             "[keybindings]\nhide_pane = \"cmd+u\"\npark_context = \"cmd+shift+u\"\n",
+        )
+        .unwrap();
+        let diags = validate_from_path(&path);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    #[test]
+    fn validate_marketplace_config_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[marketplace]\n\
+             registry_url = \"https://plexiapp.com/registry/v1/index.json\"\n\
+             cdn_url = \"https://plexiapp.com/registry/v1/packages\"\n\
+             submit_url = \"https://plexiapp.com/registry/v1/submit\"\n\
+             payment_backend = \"none\"\n\
+             account_backend = \"none\"\n\
+             account_email = \"publisher@example.com\"\n",
         )
         .unwrap();
         let diags = validate_from_path(&path);

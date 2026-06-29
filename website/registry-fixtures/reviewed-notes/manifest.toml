@@ -1,0 +1,19 @@
+schema_version = 1
+
+[app]
+id = "reviewed-notes"
+type = "app"
+name = "Reviewed Notes"
+version = "0.1.0"
+entry = "main.py"
+description = "A reviewed free app for the hosted registry smoke path."
+
+[app.capabilities]
+capabilities = []
+
+[marketplace]
+visibility = "public"
+price = "free"
+publisher = "plexi"
+
+[launch]

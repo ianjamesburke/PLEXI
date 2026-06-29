@@ -1010,7 +1010,7 @@ pub fn app_install_package(
     confirm: InstallConfirm,
     assume_yes: bool,
 ) -> i32 {
-    app_install_package_inner(file, pin, confirm, assume_yes, false)
+    app_install_package_inner(file, pin, confirm, assume_yes, false, None)
 }
 
 pub fn app_install_marketplace_package(
@@ -1018,8 +1018,9 @@ pub fn app_install_marketplace_package(
     pin: Option<&str>,
     confirm: InstallConfirm,
     assume_yes: bool,
+    source_metadata: Option<crate::app::marketplace::InstalledRegistrySource>,
 ) -> i32 {
-    app_install_package_inner(file, pin, confirm, assume_yes, true)
+    app_install_package_inner(file, pin, confirm, assume_yes, true, source_metadata)
 }
 
 fn app_install_package_inner(
@@ -1028,6 +1029,7 @@ fn app_install_package_inner(
     confirm: InstallConfirm,
     assume_yes: bool,
     marketplace_reviewed: bool,
+    source_metadata: Option<crate::app::marketplace::InstalledRegistrySource>,
 ) -> i32 {
     log::info!("app_install:cli: package file={file} pin={pin:?} confirm={confirm:?}");
     let pkg_path = match std::path::Path::new(file).canonicalize() {
@@ -1082,6 +1084,17 @@ fn app_install_package_inner(
         assume_yes,
         gate_decision,
     );
+    if code == 0 {
+        if let Some(metadata) = source_metadata {
+            let app_dir = crate::app::registry::apps_dir().join(&report.id);
+            if let Err(e) = metadata.write_to(&app_dir) {
+                log::warn!(
+                    "app_install:cli: could not record marketplace source for '{}': {e}",
+                    report.id
+                );
+            }
+        }
+    }
     if let Err(e) = std::fs::remove_dir_all(&staging) {
         log::warn!(
             "app_install:cli: could not clean up staging dir {}: {e}",
@@ -2014,6 +2027,47 @@ mod version_pin_tests {
         );
         // No pinned_version.txt → no pin.
         assert!(!dir.path().join("pinned_version.txt").exists());
+    }
+
+    #[test]
+    fn marketplace_package_install_records_source_metadata() {
+        let profile = TempDir::new().unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let app_src = TempDir::new().unwrap();
+        write_manifest(app_src.path(), "reviewed-notes", "0.1.0");
+        let pkg = app_src.path().join("reviewed-notes-0.1.0.plexipkg");
+        crate::app::package::build_package(app_src.path(), Some(&pkg)).unwrap();
+
+        let metadata = crate::app::marketplace::InstalledRegistrySource {
+            schema_version: crate::app::marketplace::MARKETPLACE_SCHEMA_VERSION,
+            source: "hosted-registry".to_string(),
+            registry_url: "https://plexiapp.com/registry/v1/index.json".to_string(),
+            app_id: "reviewed-notes".to_string(),
+            version: "0.1.0".to_string(),
+            publisher: "plexi".to_string(),
+            checksum: "abc123".to_string(),
+            package_url: "https://plexiapp.com/registry/v1/packages/abc123.plexipkg".to_string(),
+            reviewed_native: true,
+        };
+
+        let code = super::app_install_marketplace_package(
+            &pkg.to_string_lossy(),
+            None,
+            super::InstallConfirm::PreApproved,
+            true,
+            Some(metadata.clone()),
+        );
+
+        assert_eq!(code, 0);
+        let source_path = profile
+            .path()
+            .join("apps")
+            .join("reviewed-notes")
+            .join(crate::app::marketplace::INSTALLED_REGISTRY_SOURCE_FILE);
+        let text = std::fs::read_to_string(source_path).unwrap();
+        let parsed: crate::app::marketplace::InstalledRegistrySource =
+            toml::from_str(&text).unwrap();
+        assert_eq!(parsed, metadata);
     }
 }
 
