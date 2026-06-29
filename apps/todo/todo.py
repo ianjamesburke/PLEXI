@@ -1,104 +1,87 @@
 #!/usr/bin/env python3
-"""Todo - SDK v3 persisted list."""
+"""Todo - persisted SDK v3 app."""
 
 from __future__ import annotations
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import PersistState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction, UiValueChange
-from plexi_sdk.ui import (
-    ActionBar,
-    AppBar,
-    Button,
-    Column,
-    FooterKeys,
-    SelectList,
-    Spacer,
-    Text,
-    TextEdit,
-)
+from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, SelectList, TextEdit
+
+MODE_LIST = "list"
+MODE_ADD = "add"
+
+DRAFT_ID = "todo-draft"
 
 DEFAULT_STATE = {
     "items": [],
     "selected": 0,
-    "mode": "list",
+    "mode": MODE_LIST,
     "draft": "",
 }
 
 
 def init(size, args) -> list:
-    data = _state()
-    effects: list = [SetTitle("Todo"), SetStatus(_status(data))]
-    if not state.get("items", None):
-        effects.append(PersistState({"items": data["items"]}))
-    log.info("todo: sdk v3 app initialized")
-    return effects
+    data = _read_state()
+    log.info(f"todo: initialized items={len(data['items'])} mode={data['mode']}")
+    return [SetTitle("Todo"), SetStatus(_status(data)), PersistState(data)]
 
 
 def update(event) -> list:
-    data = _state()
+    data = _read_state()
 
-    if isinstance(event, UiValueChange) and event.handler_id == "todo-draft":
+    if isinstance(event, UiValueChange) and event.handler_id == DRAFT_ID:
         data["draft"] = event.value
-        return _save(data)
+        return _persist(data, "draft")
 
     if isinstance(event, UiAction):
         if event.handler_id == "todo-new":
-            data["mode"] = "add"
-            data["draft"] = ""
-            return _save(data)
-        if event.handler_id == "todo-draft":
-            return _add(data)
+            return _start_add(data)
+        if event.handler_id in ("todo-add", DRAFT_ID):
+            return _add_item(data)
         if event.handler_id == "todo-cancel":
-            data["mode"] = "list"
-            data["draft"] = ""
-            return _save(data)
+            return _cancel_add(data)
         if event.handler_id == "todo-toggle":
-            return _toggle(data)
+            return _toggle_selected(data)
         if event.handler_id == "todo-delete":
-            return _delete(data)
+            return _delete_selected(data)
 
     if not isinstance(event, KeyEvent) or not event.pressed:
         return []
 
-    key = event.key
-    if data["mode"] == "add":
+    key = _key(event.key)
+    if data["mode"] == MODE_ADD:
         if key == "escape":
-            data["mode"] = "list"
-            data["draft"] = ""
-            return _save(data)
+            return _cancel_add(data)
+        if key == "enter":
+            return _add_item(data)
         return []
 
     if key in ("j", "down"):
-        data["selected"] = _clamp(data["selected"] + 1, len(data["items"]))
-    elif key in ("k", "up"):
-        data["selected"] = _clamp(data["selected"] - 1, len(data["items"]))
-    elif key in ("n", "a"):
-        data["mode"] = "add"
-        data["draft"] = ""
-    elif key in ("space", "enter", "return"):
-        return _toggle(data)
-    elif key in ("d", "x", "backspace", "delete"):
-        return _delete(data)
-    else:
-        return []
-    return _save(data)
+        return _move_selection(data, 1)
+    if key in ("k", "up"):
+        return _move_selection(data, -1)
+    if key in ("n", "a"):
+        return _start_add(data)
+    if key in ("space", "enter"):
+        return _toggle_selected(data)
+    if key in ("d", "x", "backspace", "delete"):
+        return _delete_selected(data)
+    return []
 
 
 def view():
-    data = _state()
-    if data["mode"] == "add":
+    data = _read_state()
+    if data["mode"] == MODE_ADD:
         return Column(
             [
                 AppBar("Todo", "New item"),
-                TextEdit(
-                    "todo-draft", value=data["draft"], placeholder="What needs doing?"
-                ),
+                TextEdit(DRAFT_ID, value=data["draft"], placeholder="What needs doing?"),
                 ActionBar(
                     [
                         Button(
                             "Add",
-                            "todo-draft",
+                            "todo-add",
                             style="primary",
                             disabled=not data["draft"].strip(),
                         ),
@@ -111,19 +94,11 @@ def view():
             padding=0,
         )
 
-    rows = [
-        {
-            "name": item["text"],
-            "description": "done" if item["done"] else "open",
-            "leading": "[x]" if item["done"] else "[ ]",
-        }
-        for item in data["items"]
-    ]
-    body = SelectList(rows, selected_idx=data["selected"]) if rows else _empty()
+    rows = _rows(data["items"])
     return Column(
         [
             AppBar("Todo", _status(data)),
-            body,
+            SelectList(rows, selected_idx=data["selected"]),
             ActionBar(
                 [
                     Button("New", "todo-new", style="primary"),
@@ -132,7 +107,12 @@ def view():
                 ]
             ),
             FooterKeys(
-                [("j/k", "select"), ("enter", "toggle"), ("n", "new"), ("d", "delete")]
+                [
+                    ("j/k", "select"),
+                    (["space", "enter"], "toggle"),
+                    ("n", "new"),
+                    ("d", "delete"),
+                ]
             ),
         ],
         grow=True,
@@ -140,65 +120,94 @@ def view():
     )
 
 
-def _state() -> dict:
+def _read_state() -> dict:
     data = dict(DEFAULT_STATE)
-    for key, value in DEFAULT_STATE.items():
-        data[key] = state.get(key, value)
-    data["items"] = [_normalize_item(item) for item in list(data.get("items") or [])]
-    data["selected"] = _clamp(int(data.get("selected") or 0), len(data["items"]))
-    data["mode"] = "add" if data.get("mode") == "add" else "list"
+    for key, fallback in DEFAULT_STATE.items():
+        data[key] = state.get(key, fallback)
+
+    items = [_normalize_item(item) for item in data.get("items") or []]
+    data["items"] = [item for item in items if item["text"]]
+    data["selected"] = _clamp_index(data.get("selected"), len(data["items"]))
+    data["mode"] = MODE_ADD if data.get("mode") == MODE_ADD else MODE_LIST
     data["draft"] = str(data.get("draft") or "")
     return data
 
 
 def _normalize_item(item) -> dict:
     if isinstance(item, dict):
-        return {"text": str(item.get("text") or ""), "done": bool(item.get("done"))}
-    return {"text": str(item), "done": False}
+        text = str(item.get("text") or "").strip()
+        done = bool(item.get("done"))
+    else:
+        text = str(item).strip()
+        done = False
+    return {"text": text, "done": done}
 
 
-def _save(data: dict) -> list:
-    data["selected"] = _clamp(data["selected"], len(data["items"]))
-    log.info(f"todo: state mode={data['mode']} items={len(data['items'])}")
-    return [PersistState(data), SetStatus(_status(data))]
+def _rows(items: list[dict]) -> list[dict]:
+    return [
+        {
+            "name": item["text"],
+            "description": "done" if item["done"] else "open",
+            "leading": "[x]" if item["done"] else "[ ]",
+        }
+        for item in items
+    ]
 
 
-def _add(data: dict) -> list:
+def _start_add(data: dict) -> list:
+    data["mode"] = MODE_ADD
+    data["draft"] = ""
+    return _persist(data, "start_add")
+
+
+def _cancel_add(data: dict) -> list:
+    data["mode"] = MODE_LIST
+    data["draft"] = ""
+    return _persist(data, "cancel_add")
+
+
+def _add_item(data: dict) -> list:
     text = data["draft"].strip()
     if text:
         data["items"].append({"text": text, "done": False})
         data["selected"] = len(data["items"]) - 1
-    data["mode"] = "list"
+    data["mode"] = MODE_LIST
     data["draft"] = ""
-    return _save(data)
+    return _persist(data, "add")
 
 
-def _toggle(data: dict) -> list:
+def _move_selection(data: dict, delta: int) -> list:
     if not data["items"]:
         return []
-    item = dict(data["items"][data["selected"]])
+    data["selected"] = _clamp_index(data["selected"] + delta, len(data["items"]))
+    return _persist(data, "select")
+
+
+def _toggle_selected(data: dict) -> list:
+    selected = data["selected"]
+    if not data["items"] or selected >= len(data["items"]):
+        return []
+    item = dict(data["items"][selected])
     item["done"] = not item["done"]
-    data["items"][data["selected"]] = item
-    return _save(data)
+    data["items"][selected] = item
+    return _persist(data, "toggle")
 
 
-def _delete(data: dict) -> list:
-    if not data["items"]:
+def _delete_selected(data: dict) -> list:
+    selected = data["selected"]
+    if not data["items"] or selected >= len(data["items"]):
         return []
-    data["items"].pop(data["selected"])
-    return _save(data)
+    del data["items"][selected]
+    data["selected"] = _clamp_index(selected, len(data["items"]))
+    return _persist(data, "delete")
 
 
-def _empty():
-    return Column(
-        [
-            Spacer(size=24),
-            Text("No todo items", size=16.0, bold=True),
-            Text("Press n or click New.", size=12.0),
-        ],
-        grow=True,
-        padding=16,
+def _persist(data: dict, action: str) -> list:
+    data["selected"] = _clamp_index(data["selected"], len(data["items"]))
+    log.info(
+        f"todo: {action} items={len(data['items'])} selected={data['selected']} mode={data['mode']}"
     )
+    return [PersistState(data), SetStatus(_status(data))]
 
 
 def _status(data: dict) -> str:
@@ -207,7 +216,22 @@ def _status(data: dict) -> str:
     return f"{done}/{total} done"
 
 
-def _clamp(selected: int, total: int) -> int:
+def _clamp_index(value, total: int) -> int:
     if total <= 0:
         return 0
+    try:
+        selected = int(value)
+    except (TypeError, ValueError):
+        selected = 0
     return max(0, min(selected, total - 1))
+
+
+def _key(key: str) -> str:
+    normalized = str(key or "").lower()
+    return {
+        "arrowdown": "down",
+        "arrowup": "up",
+        "return": "enter",
+        "esc": "escape",
+        " ": "space",
+    }.get(normalized, normalized)
