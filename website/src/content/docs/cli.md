@@ -792,7 +792,7 @@ Send a key press to a pane.
 
 For terminal panes, injects the keystroke into the terminal. For app panes, delivers a structured key event.
 
-Key formats: single character ("h"), named key ("enter", "escape", "space", "up", "down", "left", "right", "backspace"), or chord ("ctrl+c").
+Key formats: single character ("h"), named key ("enter", "escape", "space", "up", "down", "left", "right", "backspace", "plus", "minus", "equals"), or chord ("ctrl+c").
 
 Example: plexi pane key 42 enter
 
