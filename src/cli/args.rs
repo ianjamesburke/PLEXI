@@ -556,7 +556,7 @@ pub enum AppCmd {
 
   UI components:
     Read plexi_sdk/ui.py for the full API. Key widgets:
-    AppBar, Column, Row, Label, Spacer, FooterKeys, SelectList, TextInput,
+    AppBar, ActionBar, Column, Row, Label, Spacer, FooterKeys, SelectList, TextInput,
     Card, Section, Tabs, Grid, Toggle, ScrollLog, ChatBubble, InfoTable,
     FormField, ButtonRow, ProgressBar, Clickable, Divider, Scrollable,
     Canvas, CanvasRect, CanvasText, CanvasCircle

@@ -50,6 +50,275 @@ pub(crate) struct ComponentTreeResult {
     pub(crate) hit_regions: Vec<(egui::Rect, String)>,
 }
 
+/// Validate the same vertical shell slots used by the component renderer.
+///
+/// This is intentionally geometry-level, not pixel-diff-level: app checks use it
+/// to prove that current scaffold chrome resolves to non-overlapping body,
+/// action, and footer regions at a given viewport size.
+pub(crate) fn validate_shell_layout(
+    root: &UiNode,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if viewport_width <= 0.0 || viewport_height <= 0.0 {
+        errors.push(format!(
+            "viewport must be positive, got {viewport_width:.0}x{viewport_height:.0}"
+        ));
+        return errors;
+    }
+
+    let ctx = egui::Context::default();
+    ctx.begin_pass(egui::RawInput::default());
+    egui::CentralPanel::default().show(&ctx, |ui| {
+        errors.extend(validate_shell_layout_inner(
+            ui,
+            root,
+            viewport_width,
+            viewport_height,
+        ));
+    });
+    let _ = ctx.end_pass();
+
+    errors
+}
+
+fn validate_shell_layout_inner(
+    ui: &egui::Ui,
+    root: &UiNode,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> Vec<String> {
+    match root {
+        UiNode::Column {
+            children,
+            gap,
+            padding_top,
+            padding,
+        } => {
+            let effective_top = match children.first() {
+                Some(UiNode::AppBar { .. }) => 0.0,
+                _ => (*padding_top).max(0.0),
+            };
+            let content_width = viewport_width - (*padding).max(0.0) * 2.0;
+            validate_vertical_shell(
+                ui,
+                children,
+                *gap,
+                content_width,
+                viewport_height - effective_top,
+            )
+        }
+        UiNode::Stack {
+            direction: StackDirection::Vertical,
+            children,
+            gap,
+            padding,
+        } => {
+            let content_width = viewport_width - padding.left.max(0.0) - padding.right.max(0.0);
+            let content_height = viewport_height - padding.top.max(0.0) - padding.bottom.max(0.0);
+            validate_vertical_shell(ui, children, *gap, content_width, content_height)
+        }
+        UiNode::Stack { .. } => vec!["root stack must be vertical for shell layout".to_string()],
+        _ => vec!["root must be a column or vertical stack for shell layout".to_string()],
+    }
+}
+
+fn validate_vertical_shell(
+    ui: &egui::Ui,
+    children: &[UiNode],
+    gap: f32,
+    content_width: f32,
+    content_height: f32,
+) -> Vec<String> {
+    const EPSILON: f32 = 0.5;
+
+    let mut errors = Vec::new();
+    if content_width < -EPSILON {
+        errors.push(format!(
+            "horizontal padding exceeds viewport width by {:.1}px",
+            -content_width
+        ));
+    }
+    if content_height < -EPSILON {
+        errors.push(format!(
+            "shell padding exceeds viewport height by {:.1}px",
+            -content_height
+        ));
+        return errors;
+    }
+    if gap < 0.0 {
+        errors.push(format!("shell gap must be non-negative, got {gap:.1}"));
+    }
+
+    let mut pinned_bottom: Vec<(usize, f32, &UiNode)> = Vec::new();
+    let mut body_children: Vec<(usize, &UiNode)> = Vec::new();
+
+    for (idx, child) in children.iter().enumerate() {
+        if let UiNode::Pinned {
+            edge: PinnedEdge::Bottom,
+            child: inner,
+        } = child
+        {
+            if let Some(h) = bottom_pin_height(ui, inner) {
+                pinned_bottom.push((idx, h, inner.as_ref()));
+                continue;
+            }
+        }
+        body_children.push((idx, child));
+    }
+
+    while let Some((idx, last)) = body_children.last().copied() {
+        if let Some(h) = bottom_pin_height(ui, last) {
+            pinned_bottom.push((idx, h, last));
+            body_children.pop();
+        } else {
+            break;
+        }
+    }
+    pinned_bottom.reverse();
+
+    let action_idx = children.iter().position(is_action_bar_node);
+    let footer_idx = children.iter().position(is_footer_shell_node);
+
+    let Some(action_idx) = action_idx else {
+        errors.push("missing action_bar in shell body".to_string());
+        return errors;
+    };
+    let Some(footer_idx) = footer_idx else {
+        errors.push("missing bottom footer in shell".to_string());
+        return errors;
+    };
+    if action_idx > footer_idx {
+        errors.push("action_bar appears after footer in shell order".to_string());
+    }
+
+    let total_footer_h: f32 = pinned_bottom.iter().map(|(_, h, _)| *h).sum();
+    if total_footer_h <= 0.0 {
+        errors.push("footer has no resolved height".to_string());
+    }
+    if total_footer_h > content_height + EPSILON {
+        errors.push(format!(
+            "footer would extend below viewport: footer {:.1}px > shell {:.1}px",
+            total_footer_h, content_height
+        ));
+    }
+
+    let body_h = content_height - total_footer_h;
+    if body_h < -EPSILON {
+        errors.push(format!(
+            "body slot is negative: shell {:.1}px - footer {:.1}px = {:.1}px",
+            content_height, total_footer_h, body_h
+        ));
+        return errors;
+    }
+    let body_h = body_h.max(0.0);
+
+    let effective_gap = gap.max(0.0);
+    let gap_total = effective_gap * body_children.len().saturating_sub(1) as f32;
+    let mut fixed_total = gap_total;
+    let mut grow_count = 0usize;
+    let mut unresolved = Vec::new();
+
+    for (idx, child) in &body_children {
+        if vertical_grow_node(child) {
+            grow_count += 1;
+        } else if let Some(h) = vertical_fixed_height(ui, child) {
+            fixed_total += h;
+        } else {
+            unresolved.push(*idx);
+        }
+    }
+
+    if !unresolved.is_empty() {
+        errors.push(format!(
+            "body child height is unresolved at column index(es) {:?}",
+            unresolved
+        ));
+    }
+    if fixed_total > body_h + EPSILON {
+        errors.push(format!(
+            "body fixed content exceeds body slot: fixed {:.1}px > body {:.1}px",
+            fixed_total, body_h
+        ));
+        if grow_count > 0 {
+            errors.push(format!(
+                "grow area is negative: body {:.1}px - fixed {:.1}px = {:.1}px",
+                body_h,
+                fixed_total,
+                body_h - fixed_total
+            ));
+        }
+    }
+
+    let grow_h = if grow_count > 0 {
+        ((body_h - fixed_total).max(0.0)) / grow_count as f32
+    } else {
+        0.0
+    };
+    let mut cursor = 0.0;
+    let mut action_slot = None;
+
+    for (body_pos, (idx, child)) in body_children.iter().enumerate() {
+        if body_pos > 0 {
+            cursor += effective_gap;
+        }
+        let h = if vertical_grow_node(child) {
+            grow_h
+        } else {
+            vertical_fixed_height(ui, child).unwrap_or(0.0)
+        };
+        if *idx == action_idx {
+            action_slot = Some((cursor, cursor + h));
+        }
+        cursor += h;
+    }
+
+    if let Some((action_top, action_bottom)) = action_slot {
+        if action_top < -EPSILON {
+            errors.push(format!(
+                "action_bar starts above body slot at {action_top:.1}px"
+            ));
+        }
+        if action_bottom > body_h + EPSILON {
+            errors.push(format!(
+                "action_bar overlaps footer: action bottom {:.1}px > footer top {:.1}px",
+                action_bottom, body_h
+            ));
+        }
+    } else {
+        errors.push("action_bar is not in resolved body slot".to_string());
+    }
+
+    let footer_bottom = body_h + total_footer_h;
+    if footer_bottom > content_height + EPSILON {
+        errors.push(format!(
+            "footer bottom exceeds viewport: footer bottom {:.1}px > shell {:.1}px",
+            footer_bottom, content_height
+        ));
+    }
+
+    errors
+}
+
+fn is_action_bar_node(node: &UiNode) -> bool {
+    matches!(node, UiNode::ActionBar { .. })
+}
+
+fn is_footer_shell_node(node: &UiNode) -> bool {
+    match node {
+        UiNode::Pinned {
+            edge: PinnedEdge::Bottom,
+            child,
+        } => matches!(
+            child.as_ref(),
+            UiNode::FooterKeys { .. } | UiNode::Footer { .. }
+        ),
+        UiNode::FooterKeys { .. } | UiNode::Footer { .. } => true,
+        _ => false,
+    }
+}
+
 /// Focus and styling context for `UiNode::TextEdit` nodes within a component
 /// tree render pass. Tracks auto-focus state so only the first newly-visible
 /// TextEdit gets focused, and reports back whether any TextEdit has egui focus
@@ -1854,7 +2123,56 @@ fn resolve_tone(tone: &str, colors: &Colors) -> egui::Color32 {
 #[cfg(test)]
 mod render_component_tree_tests {
     use super::*;
-    use crate::app_protocol::{StackDirection, UiNode, UiPadding};
+    use crate::app_protocol::{FooterKeyEntry, StackDirection, UiNode, UiPadding};
+
+    fn scaffold_shell_tree() -> UiNode {
+        UiNode::Column {
+            children: vec![
+                UiNode::AppBar {
+                    title: "Counter".into(),
+                    subtitle: String::new(),
+                },
+                UiNode::Text {
+                    text: "3".into(),
+                    size: 0.0,
+                    color: String::new(),
+                    bold: false,
+                    monospace: false,
+                },
+                UiNode::Spacer {
+                    size: 0.0,
+                    grow: true,
+                },
+                UiNode::ActionBar {
+                    actions: vec![UiNode::Button {
+                        node_id: "counter-increment".into(),
+                        label: "Increment".into(),
+                        disabled: false,
+                        style: "primary".into(),
+                    }],
+                },
+                UiNode::Pinned {
+                    edge: PinnedEdge::Bottom,
+                    child: Box::new(UiNode::FooterKeys {
+                        entries: vec![
+                            FooterKeyEntry {
+                                keys: vec!["i".into()],
+                                description: "increment".into(),
+                            },
+                            FooterKeyEntry {
+                                keys: vec!["r".into()],
+                                description: "reset".into(),
+                            },
+                        ],
+                        divider: true,
+                    }),
+                },
+            ],
+            gap: 8.0,
+            padding_top: 0.0,
+            padding: style::SPACE_XL,
+        }
+    }
 
     /// A `UiNode::Text` with `size == 0.0` must not pass 0.0 to `RichText::size()`,
     /// and an empty color string must return `None` from `parse_color` without panicking.
@@ -2297,6 +2615,78 @@ mod render_component_tree_tests {
             }),
         }];
         assert!(vertical_stack_needs_full_height(&footer_children));
+    }
+
+    #[test]
+    fn shell_layout_accepts_fresh_scaffold_small_and_normal_viewports() {
+        let tree = scaffold_shell_tree();
+
+        assert!(
+            validate_shell_layout(&tree, 320.0, 240.0).is_empty(),
+            "{:?}",
+            validate_shell_layout(&tree, 320.0, 240.0)
+        );
+        assert!(
+            validate_shell_layout(&tree, 800.0, 600.0).is_empty(),
+            "{:?}",
+            validate_shell_layout(&tree, 800.0, 600.0)
+        );
+    }
+
+    #[test]
+    fn shell_layout_rejects_footer_below_viewport() {
+        let tree = scaffold_shell_tree();
+        let errors = validate_shell_layout(&tree, 320.0, 20.0);
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("footer would extend below viewport")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn shell_layout_rejects_action_footer_overlap() {
+        let tree = scaffold_shell_tree();
+        let errors = validate_shell_layout(&tree, 320.0, 110.0);
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("action_bar overlaps footer")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn shell_layout_rejects_negative_grow_area() {
+        let tree = scaffold_shell_tree();
+        let errors = validate_shell_layout(&tree, 320.0, 110.0);
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("grow area is negative")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn shell_layout_rejects_action_bar_after_footer() {
+        let mut tree = scaffold_shell_tree();
+        if let UiNode::Column { children, .. } = &mut tree {
+            children.swap(3, 4);
+        }
+
+        let errors = validate_shell_layout(&tree, 320.0, 240.0);
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("action_bar appears after footer")),
+            "{errors:?}"
+        );
     }
 
     /// `UiNode::TextEdit` PartialEq works.

@@ -1,5 +1,5 @@
 use crate::app::registry::AppManifest;
-use crate::app_protocol::RenderCommand;
+use crate::app_protocol::{RenderCommand, UiNode};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -150,6 +150,20 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                         }
                     }
                     checked_semantic_chrome = true;
+                }
+                if require_semantic_chrome {
+                    let shell_errors = scaffold_shell_layout_errors(&frame, width, height);
+                    if shell_errors.is_empty() {
+                        println!("✓ shell layout {label} — body/action/footer slots resolved");
+                        log::info!(
+                            "app_check[{}]: shell layout resolved at {label}",
+                            manifest.app.id
+                        );
+                    } else {
+                        for issue in shell_errors {
+                            errors.push(format!("shell layout {label} — {issue}"));
+                        }
+                    }
                 }
                 let bounds = obvious_bounds_errors(&frame, width, height);
                 if bounds.is_empty() {
@@ -721,6 +735,21 @@ fn semantic_scaffold_chrome_errors(frame: &serde_json::Value) -> Vec<String> {
     errors
 }
 
+fn scaffold_shell_layout_errors(frame: &serde_json::Value, width: u32, height: u32) -> Vec<String> {
+    let Some(root) = first_component_tree_root(frame) else {
+        return vec!["missing component_tree root".to_string()];
+    };
+    let root: UiNode = match serde_json::from_value(root.clone()) {
+        Ok(root) => root,
+        Err(e) => {
+            return vec![format!(
+                "component_tree root does not match UiNode schema: {e}"
+            )]
+        }
+    };
+    crate::render::components::validate_shell_layout(&root, width as f32, height as f32)
+}
+
 fn first_component_tree_root(frame: &serde_json::Value) -> Option<&serde_json::Value> {
     frame.as_array()?.iter().find_map(|command| {
         let obj = command.as_object()?;
@@ -1220,6 +1249,79 @@ profile_dir = ".plexi-beta"
                 .any(|error| error.contains("missing semantic action_bar")),
             "{:?}",
             super::semantic_scaffold_chrome_errors(&frame)
+        );
+    }
+
+    #[test]
+    fn shell_layout_accepts_scaffold_frame() {
+        let frame = serde_json::json!([
+            {
+                "type": "component_tree",
+                "root": {
+                    "type": "column",
+                    "gap": 8.0,
+                    "children": [
+                        {"type": "app_bar", "title": "Counter"},
+                        {"type": "text", "text": "3"},
+                        {"type": "spacer", "grow": true},
+                        {
+                            "type": "action_bar",
+                            "actions": [
+                                {"type": "button", "node_id": "counter-increment", "label": "Increment"}
+                            ]
+                        },
+                        {
+                            "type": "pinned",
+                            "edge": "bottom",
+                            "child": {"type": "footer_keys", "entries": []}
+                        }
+                    ]
+                }
+            }
+        ]);
+
+        assert!(
+            super::scaffold_shell_layout_errors(&frame, 320, 240).is_empty(),
+            "{:?}",
+            super::scaffold_shell_layout_errors(&frame, 320, 240)
+        );
+    }
+
+    #[test]
+    fn shell_layout_rejects_short_scaffold_frame() {
+        let frame = serde_json::json!([
+            {
+                "type": "component_tree",
+                "root": {
+                    "type": "column",
+                    "gap": 8.0,
+                    "children": [
+                        {"type": "app_bar", "title": "Counter"},
+                        {"type": "text", "text": "3"},
+                        {"type": "spacer", "grow": true},
+                        {
+                            "type": "action_bar",
+                            "actions": [
+                                {"type": "button", "node_id": "counter-increment", "label": "Increment"}
+                            ]
+                        },
+                        {
+                            "type": "pinned",
+                            "edge": "bottom",
+                            "child": {"type": "footer_keys", "entries": []}
+                        }
+                    ]
+                }
+            }
+        ]);
+
+        let errors = super::scaffold_shell_layout_errors(&frame, 320, 110);
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("action_bar overlaps footer")),
+            "{errors:?}"
         );
     }
 
