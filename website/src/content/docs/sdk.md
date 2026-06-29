@@ -8,133 +8,279 @@ order: 6
 
 ## Overview
 
-Plexi Python SDK.
+Plexi Python SDK v3 for native ProcessApp apps.
 
-Apps expose module-level ``init(size, args)``, ``update(event)``, and ``view()``
-functions. The V3AppRuntime drives the event loop: host sends JSON events on
-stdin, app responds with effects and component trees on stdout.
+App modules expose exactly three lifecycle functions:
 
-SDK v3 Python apps run through native ProcessApp. Capabilities gate PGAP host
-APIs; they are not a process sandbox.
+``init(size, args) -> list``
+    Called once at launch. Return startup effects such as ``SetTitle`` or
+    ``SetState``.
 
-A future CPython-in-WASM compatibility runtime may provide a sandboxed Python
-app route. That work is deferred and is not the current SDK v3 execution path.
+``update(event) -> list``
+    Called for keyboard, mouse, timer, render, and host-result events. Return
+    effects; do not mutate Plexi state directly.
+
+``view() -> Component``
+    Called after state changes to produce the current component tree. Keep it
+    pure: read ``state`` here, but return state-changing effects from
+    ``update``.
+
+Useful entry points:
+``plexi_sdk.effects`` for effect dataclasses,
+``plexi_sdk.events`` for event dataclasses, and
+``plexi_sdk.ui`` for declarative components.
+
+SDK v3 Python apps run as reviewed native processes through ``ProcessApp``.
+Capabilities gate host APIs; they are not a process sandbox. CPython-in-WASM is
+deferred and is not this runtime.
 
 ## Effects
 
+Effect dataclasses returned from a Plexi app's ``init()`` or ``update()``.
+
+Effects describe work for the host to perform after the lifecycle function
+returns. They are data objects, not imperative calls: return
+``[SetTitle("Demo"), SetState({"count": 1})]`` instead of mutating host state
+directly. The adapter matches each class name to the PGAP host effect with the
+same meaning.
+
 ### `SetState`
+
+Update process-local runtime state before the next ``view()`` call.
+
+``data`` should be a JSON-shaped dict. Values are merged into the runtime
+snapshot and are not written to durable app storage.
 
 ### `PersistState`
 
+Update runtime state and request a durable app-state save.
+
 ### `SetSchedulerMode`
+
+Control host-paced render scheduling.
+
+``mode`` is ``"idle"``, ``"scheduled"``, or ``"continuous"``. Continuous
+mode sends ``RenderFrame`` events at ``fps`` for games and animations.
 
 ### `SetMouseTracking`
 
+Enable or disable mouse-motion events for the pane.
+
 ### `FileRead`
+
+Read a workspace-scoped file and receive a ``FileReadResult`` event.
 
 ### `FileList`
 
+List a workspace-scoped directory and receive a ``FileListResult`` event.
+
 ### `FileWrite`
+
+Write bytes to a workspace-scoped file through the host.
 
 ### `HttpFetch`
 
+Request an HTTP(S) fetch through the host capability gate.
+
 ### `OpenUrl`
+
+Ask the host to open an HTTP(S) URL in the default browser.
 
 ### `AiMessage`
 
+One chat message in an ``AiQuery`` request.
+
 ### `AiQuery`
+
+Send a managed AI request and receive chunks/results by ``request_id``.
 
 ### `SetTimer`
 
+Schedule a timer; the host replies with ``TimerFired(id)``.
+
 ### `CancelTimer`
+
+Cancel a timer previously scheduled with ``SetTimer``.
 
 ### `GetSystemStats`
 
+Request host system metrics and receive ``SystemStatsResult``.
+
 ### `SetTitle`
+
+Set the pane title shown by Plexi chrome.
 
 ### `SetStatus`
 
+Set the pane status text shown by Plexi chrome.
+
 ### `CloseSelf`
+
+Ask the host to close this app pane.
 
 ### `RequestCapability`
 
+Prompt for a named capability grant at runtime.
+
 ### `EventStreamDecl`
+
+Declare one structured event stream emitted by the app.
 
 ### `DeclareEventStreams`
 
+Register app event streams before emitting events into them.
+
 ### `EmitEvent`
+
+Emit one structured app event for host/audit consumers.
 
 ## Events
 
+Input and host-result events delivered to an app's ``update(event)``.
+
+The ProcessApp adapter converts PGAP input into these dataclasses before it
+calls ``update``. Apps usually branch with ``isinstance(event, KeyEvent)`` or
+``isinstance(event, UiAction)`` and return a list of effects in response.
+
 ### `Modifiers`
+
+Keyboard modifier state attached to ``KeyEvent``.
 
 ### `KeyEvent`
 
+Keyboard input. ``key`` uses Plexi's normalized lowercase key names.
+
 ### `MouseEvent`
+
+Pointer input in pane coordinates, including buttons, scroll, and region.
 
 ### `UiAction`
 
+Click/activation event from a component with matching ``handler_id``.
+
 ### `UiValueChange`
+
+Value-change event from an editable component with matching ``handler_id``.
 
 ### `ListSelect`
 
+Selection changed in a host-rendered list component.
+
 ### `ListActivate`
+
+Item activated in a host-rendered list component.
 
 ### `Resize`
 
+Pane size changed. Dimensions are logical pixels.
+
 ### `FocusGained`
+
+This pane received focus.
 
 ### `FocusLost`
 
+This pane lost focus.
+
 ### `FocusChanged`
+
+Workspace focus telemetry delivered to apps that consume it.
 
 ### `TimerFired`
 
+A ``SetTimer`` timer fired; ``id`` echoes the scheduled timer id.
+
 ### `RenderFrame`
+
+Host-paced render tick for continuous or scheduled apps.
 
 ### `SystemStats`
 
+Snapshot of host system metrics returned by ``GetSystemStats``.
+
 ### `SystemStatsResult`
+
+Result event for ``GetSystemStats``.
 
 ### `FileReadResult`
 
+Result event for ``FileRead``. ``error`` is ``None`` on success.
+
 ### `FileListEntry`
+
+One directory entry returned by ``FileListResult``.
 
 ### `FileListResult`
 
+Result event for ``FileList``. ``entries`` is ``None`` on error.
+
 ### `FileWriteResult`
+
+Result event for ``FileWrite``. ``error`` is ``None`` on success.
 
 ### `HttpResponse`
 
+Result event for ``HttpFetch``.
+
 ### `AiStreamChunk`
+
+Streaming partial response for an ``AiQuery`` request.
 
 ### `AiResponse`
 
+Final response for an ``AiQuery`` request.
+
 ### `DeclareEventStreamsResult`
+
+Result event for ``DeclareEventStreams``.
 
 ### `EmitEventResult`
 
+Result event for ``EmitEvent``.
+
 ### `SurfaceReady`
+
+GPU surface became available for advanced surface apps.
 
 ### `SurfaceResized`
 
+GPU surface size changed for advanced surface apps.
+
 ### `PipePayload`
+
+Payload carried by a typed pipe message.
 
 ### `PipeMessage`
 
+Typed pipe message delivered from another pane/app.
+
 ### `PipePeerConnected`
+
+A peer connected to an opened typed pipe.
 
 ### `PipeClosed`
 
+A typed pipe closed.
+
 ### `PipeError`
+
+A typed pipe operation failed.
 
 ### `CapabilityGranted`
 
+A requested capability was granted.
+
 ### `CapabilityDenied`
+
+A requested capability was denied.
 
 ### `PaymentComplete`
 
+Payment flow completed for the app.
+
 ### `PaymentFailed`
+
+Payment flow failed with a human-readable reason.
 
 ## State and Logging
 
@@ -164,10 +310,17 @@ app route. That work is deferred and is not the current SDK v3 execution path.
 
 ## UI Components
 
-Declarative UI primitives.
+Declarative UI primitives returned from an app's ``view()``.
 
-Apps return a component tree from ``view()``. The host owns layout,
-theme, input, and rendering.
+Build a tree of ``Component`` objects such as ``Column([AppBar(...), Text(...)])``
+and return it from ``view()``. Components describe what to render; effects from
+``init()`` and ``update(event)`` describe what the host should do. Keep those
+two concepts separate: ``view()`` should read state and return components, not
+change state or request host work.
+
+Normal apps should use these host-rendered components. Games, simulations, and
+custom visualizations can return ``Canvas([...])`` and update state from
+``RenderFrame`` events.
 
 ### `HasToNode`
 
@@ -194,9 +347,18 @@ the first line's top at the component's `y`.
 
 ### `Text`
 
-SDK v3 inline text node.
+Host-rendered text node for labels, counters, and short body copy.
+
+``size`` overrides the default body size. ``bold`` and ``color`` are
+inherited from ``Label``. Use ``Label`` when you want tone-based body,
+caption, or hint text; use ``Text`` when matching the SDK v3 wire node.
 
 ### `Button`
+
+Clickable host-rendered button.
+
+``on_click`` is the handler id delivered back as a ``UiAction`` event.
+Return state/effect changes from ``update(event)`` when that event arrives.
 
 ### `Spacer`
 
@@ -204,17 +366,37 @@ Fixed or flex gap. `grow=True` expands to consume remaining space.
 
 ### `Badge`
 
+Small host-rendered pill label for status, shortcuts, and metadata.
+
 ### `Divider`
 
 A horizontal 1px rule.
 
 ### `CanvasRect`
 
+Rectangle drawing command for ``Canvas``.
+
 ### `CanvasCircle`
+
+Circle drawing command for ``Canvas``.
 
 ### `CanvasLine`
 
+Line drawing command for ``Canvas``.
+
 ### `CanvasText`
+
+Text drawing command for ``Canvas``.
+
+Coordinates are in the canvas coordinate space. Use component ``Text`` for
+normal app UI; use ``CanvasText`` only inside a ``Canvas`` command list.
+
+### `CanvasButton`
+
+Convenience primitive: a clickable button on a Canvas.
+
+Decomposes into a CanvasRect + CanvasText with a shared hit_region.
+Use ``to_commands()`` (plural) to get the list of underlying primitives.
 
 ### `Canvas`
 
@@ -431,7 +613,7 @@ assistant messages (surface bg). Error messages use ``role="error"``.
 
 ### `Markdown`
 
-Host-rendered markdown block for SDK v3 component trees.
+Host-rendered markdown block for rich read-only text in component trees.
 
 ### `SelectList`
 
@@ -460,6 +642,21 @@ Padding defaults to `SPACE_XL` (24px) on the sides and bottom, and
 `SPACE_SM` (8px) on the top. Pass `padding=0` for full-width content
 (e.g. apps whose children manage their own horizontal margins).
 Override top-only with `padding_top=`.
+
+### `HStack`
+
+Horizontal flex container. Lays children left-to-right, partitioning
+remaining width to any grow children (``Canvas(grow=True)``, ``Spacer(grow=True)``)
+after fixed-width siblings (e.g. a ``Sized`` sidebar) are subtracted.
+
+Emits a horizontal ``Stack`` node so the host width-partitions exactly like
+a vertical Column height-partitions.
+
+### `Sized`
+
+Explicit-size wrapper. Constrains ``child`` to an exact ``width`` and/or
+``height``. ``None`` on an axis means "inherit available". Primary use: a
+fixed-width sidebar beside a growing ``Canvas`` inside an ``HStack``.
 
 ### `render_tree(ctx, root, fill=None)`
 

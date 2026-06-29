@@ -20,6 +20,8 @@ APP = Path(__file__).resolve().parent.parent / "main.py"
 def test_renders_without_overlap(size):
     """The view renders one frame with no overlapping rects, small and normal."""
     width, height = size
+    # This exercises the same init -> update(RenderFrame) -> view lifecycle that
+    # Plexi uses for a real app pane, then checks host-side layout geometry.
     with AppHarness(str(APP), width=width, height=height) as h:
         h.run(1)
         h.assert_no_overlap()

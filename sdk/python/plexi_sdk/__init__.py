@@ -1,14 +1,28 @@
-"""Plexi Python SDK.
+"""Plexi Python SDK v3 for native ProcessApp apps.
 
-Apps expose module-level ``init(size, args)``, ``update(event)``, and ``view()``
-functions. The V3AppRuntime drives the event loop: host sends JSON events on
-stdin, app responds with effects and component trees on stdout.
+App modules expose exactly three lifecycle functions:
 
-SDK v3 Python apps run through native ProcessApp. Capabilities gate PGAP host
-APIs; they are not a process sandbox.
+``init(size, args) -> list``
+    Called once at launch. Return startup effects such as ``SetTitle`` or
+    ``SetState``.
 
-A future CPython-in-WASM compatibility runtime may provide a sandboxed Python
-app route. That work is deferred and is not the current SDK v3 execution path.
+``update(event) -> list``
+    Called for keyboard, mouse, timer, render, and host-result events. Return
+    effects; do not mutate Plexi state directly.
+
+``view() -> Component``
+    Called after state changes to produce the current component tree. Keep it
+    pure: read ``state`` here, but return state-changing effects from
+    ``update``.
+
+Useful entry points:
+``plexi_sdk.effects`` for effect dataclasses,
+``plexi_sdk.events`` for event dataclasses, and
+``plexi_sdk.ui`` for declarative components.
+
+SDK v3 Python apps run as reviewed native processes through ``ProcessApp``.
+Capabilities gate host APIs; they are not a process sandbox. CPython-in-WASM is
+deferred and is not this runtime.
 """
 
 from ._version import __version__ as __version__

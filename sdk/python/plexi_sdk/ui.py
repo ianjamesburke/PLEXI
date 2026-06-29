@@ -1,7 +1,14 @@
-"""Declarative UI primitives.
+"""Declarative UI primitives returned from an app's ``view()``.
 
-Apps return a component tree from ``view()``. The host owns layout,
-theme, input, and rendering.
+Build a tree of ``Component`` objects such as ``Column([AppBar(...), Text(...)])``
+and return it from ``view()``. Components describe what to render; effects from
+``init()`` and ``update(event)`` describe what the host should do. Keep those
+two concepts separate: ``view()`` should read state and return components, not
+change state or request host work.
+
+Normal apps should use these host-rendered components. Games, simulations, and
+custom visualizations can return ``Canvas([...])`` and update state from
+``RenderFrame`` events.
 """
 
 from dataclasses import dataclass, field
@@ -319,7 +326,12 @@ class Label(Component):
 
 @dataclass
 class Text(Label):
-    """SDK v3 inline text node."""
+    """Host-rendered text node for labels, counters, and short body copy.
+
+    ``size`` overrides the default body size. ``bold`` and ``color`` are
+    inherited from ``Label``. Use ``Label`` when you want tone-based body,
+    caption, or hint text; use ``Text`` when matching the SDK v3 wire node.
+    """
 
     size: Optional[float] = None
     truncate: bool = False
@@ -342,6 +354,12 @@ class Text(Label):
 
 @dataclass
 class Button(Component):
+    """Clickable host-rendered button.
+
+    ``on_click`` is the handler id delivered back as a ``UiAction`` event.
+    Return state/effect changes from ``update(event)`` when that event arrives.
+    """
+
     label: str
     on_click: str
     style: str = "secondary"
@@ -387,6 +405,8 @@ class Spacer(Component):
 
 @dataclass
 class Badge(Component):
+    """Small host-rendered pill label for status, shortcuts, and metadata."""
+
     text: str
     color: str = "neutral"
     tone: "str | None" = None
@@ -429,6 +449,8 @@ class Divider(Component):
 
 @dataclass
 class CanvasRect:
+    """Rectangle drawing command for ``Canvas``."""
+
     x: float
     y: float
     width: float
@@ -453,6 +475,8 @@ class CanvasRect:
 
 @dataclass
 class CanvasCircle:
+    """Circle drawing command for ``Canvas``."""
+
     x: float
     y: float
     radius: float
@@ -465,6 +489,8 @@ class CanvasCircle:
 
 @dataclass
 class CanvasLine:
+    """Line drawing command for ``Canvas``."""
+
     x1: float
     y1: float
     x2: float
@@ -480,6 +506,12 @@ class CanvasLine:
 
 @dataclass
 class CanvasText:
+    """Text drawing command for ``Canvas``.
+
+    Coordinates are in the canvas coordinate space. Use component ``Text`` for
+    normal app UI; use ``CanvasText`` only inside a ``Canvas`` command list.
+    """
+
     x: float
     y: float
     text: str
@@ -1454,7 +1486,7 @@ class ChatBubble(Component):
 
 @dataclass
 class Markdown(Component):
-    """Host-rendered markdown block for SDK v3 component trees."""
+    """Host-rendered markdown block for rich read-only text in component trees."""
 
     text: str
     padding: float = SPACE_MD
