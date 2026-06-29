@@ -237,7 +237,7 @@ def test_textedit_measure() -> None:
 # ── ActionBar ─────────────────────────────────────────────────────────────
 
 
-def test_action_bar_to_node_is_horizontal_stack() -> None:
+def test_action_bar_to_node_is_semantic_action_bar() -> None:
     bar = ActionBar(
         [
             Button("Save", "save", style="primary"),
@@ -247,10 +247,8 @@ def test_action_bar_to_node_is_horizontal_stack() -> None:
 
     node = bar.to_node()
 
-    assert node["type"] == "stack"
-    assert node["direction"] == "horizontal"
-    assert node["gap"] == 8.0
-    assert node["children"] == [
+    assert node["type"] == "action_bar"
+    assert node["actions"] == [
         {
             "type": "button",
             "node_id": "save",

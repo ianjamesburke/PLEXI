@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 pub(super) const SCAFFOLD_METADATA_FILE: &str = "plexi.scaffold.toml";
 pub(super) const SCAFFOLD_METADATA_SCHEMA_VERSION: u32 = 1;
-pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 1;
+pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 2;
 
 /// Detect the channel config dir name from the running binary name.
 pub(super) fn app_init_config_dir() -> String {

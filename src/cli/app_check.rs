@@ -85,6 +85,8 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
 
     println!("✓ manifest — {} ({})", manifest.app.id, manifest.app.name);
     warnings.extend(scaffold_metadata_warnings(app_dir));
+    let require_semantic_chrome = scaffold_requires_semantic_chrome(app_dir);
+    let mut checked_semantic_chrome = false;
 
     if entry_path.extension().and_then(|ext| ext.to_str()) == Some("py") {
         match analyze_python_entry(&manifest.app.id, &entry_path, &manifest.app.dependencies) {
@@ -133,6 +135,21 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                 if command_count == 0 {
                     errors.push(format!("render {label} — app emitted an empty frame"));
                     continue;
+                }
+                if require_semantic_chrome && !checked_semantic_chrome {
+                    let chrome_errors = semantic_scaffold_chrome_errors(&frame);
+                    if chrome_errors.is_empty() {
+                        println!("✓ semantic chrome — app bar, action bar, pinned footer keys");
+                        log::info!(
+                            "app_check[{}]: semantic scaffold chrome present",
+                            manifest.app.id
+                        );
+                    } else {
+                        for issue in chrome_errors {
+                            errors.push(format!("semantic chrome — {issue}"));
+                        }
+                    }
+                    checked_semantic_chrome = true;
                 }
                 let bounds = obvious_bounds_errors(&frame, width, height);
                 if bounds.is_empty() {
@@ -629,6 +646,123 @@ fn scaffold_metadata_warnings(app_dir: &Path) -> Vec<String> {
     warnings
 }
 
+fn scaffold_requires_semantic_chrome(app_dir: &Path) -> bool {
+    let metadata_path = app_dir.join(crate::cli::app::SCAFFOLD_METADATA_FILE);
+    let Ok(raw) = std::fs::read_to_string(&metadata_path) else {
+        return false;
+    };
+    let Ok(metadata) = toml::from_str::<ScaffoldMetadata>(&raw) else {
+        return false;
+    };
+    metadata.template_version >= crate::cli::app::PYTHON_SCAFFOLD_TEMPLATE_VERSION
+}
+
+fn semantic_scaffold_chrome_errors(frame: &serde_json::Value) -> Vec<String> {
+    let Some(root) = first_component_tree_root(frame) else {
+        return vec!["missing component_tree root".to_string()];
+    };
+    let Some(root_obj) = root.as_object() else {
+        return vec!["component_tree root is not an object".to_string()];
+    };
+    if root_obj.get("type").and_then(serde_json::Value::as_str) != Some("column") {
+        return vec!["root must be a semantic column".to_string()];
+    }
+    let Some(children) = root_obj
+        .get("children")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return vec!["column root must contain children".to_string()];
+    };
+    if children.is_empty() {
+        return vec!["column root has no children".to_string()];
+    }
+
+    let mut errors = Vec::new();
+    if node_type(&children[0]) != Some("app_bar") {
+        errors.push("first column child must be app_bar".to_string());
+    }
+
+    let action_idx = children
+        .iter()
+        .position(|child| node_type(child) == Some("action_bar"));
+    let footer_idx = children.iter().position(is_pinned_footer_keys);
+
+    let Some(action_idx) = action_idx else {
+        errors.push("missing semantic action_bar child".to_string());
+        return errors;
+    };
+    let Some(footer_idx) = footer_idx else {
+        errors.push("missing bottom-pinned footer_keys child".to_string());
+        return errors;
+    };
+
+    if action_idx == 0 {
+        errors.push("action_bar must follow app body content".to_string());
+    }
+    if action_idx > footer_idx {
+        errors.push("action_bar must appear before pinned footer_keys".to_string());
+    }
+    if footer_idx + 1 != children.len() {
+        errors.push("pinned footer_keys must be the final column child".to_string());
+    }
+    if action_idx < footer_idx
+        && children[action_idx + 1..footer_idx].iter().any(|child| {
+            node_type(child) == Some("spacer") && node_bool(child, "grow") == Some(true)
+        })
+    {
+        errors
+            .push("grow spacer must not sit between action_bar and pinned footer_keys".to_string());
+    }
+
+    if !action_bar_has_buttons(&children[action_idx]) {
+        errors.push("action_bar must contain button actions".to_string());
+    }
+
+    errors
+}
+
+fn first_component_tree_root(frame: &serde_json::Value) -> Option<&serde_json::Value> {
+    frame.as_array()?.iter().find_map(|command| {
+        let obj = command.as_object()?;
+        if obj.get("type").and_then(serde_json::Value::as_str) == Some("component_tree") {
+            obj.get("root")
+        } else {
+            None
+        }
+    })
+}
+
+fn node_type(value: &serde_json::Value) -> Option<&str> {
+    value.as_object()?.get("type")?.as_str()
+}
+
+fn node_bool(value: &serde_json::Value, key: &str) -> Option<bool> {
+    value.as_object()?.get(key)?.as_bool()
+}
+
+fn is_pinned_footer_keys(value: &serde_json::Value) -> bool {
+    let Some(obj) = value.as_object() else {
+        return false;
+    };
+    obj.get("type").and_then(serde_json::Value::as_str) == Some("pinned")
+        && obj.get("edge").and_then(serde_json::Value::as_str) == Some("bottom")
+        && obj.get("child").and_then(node_type) == Some("footer_keys")
+}
+
+fn action_bar_has_buttons(value: &serde_json::Value) -> bool {
+    let Some(actions) = value
+        .as_object()
+        .and_then(|obj| obj.get("actions"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    !actions.is_empty()
+        && actions
+            .iter()
+            .all(|action| node_type(action) == Some("button"))
+}
+
 fn analyze_python_entry(
     app_id: &str,
     entry_path: &Path,
@@ -1020,6 +1154,72 @@ profile_dir = ".plexi-beta"
         assert_eq!(
             super::recognized_action_handler(&frame),
             Some("counter-increment")
+        );
+    }
+
+    #[test]
+    fn semantic_chrome_accepts_scaffold_tree() {
+        let frame = serde_json::json!([
+            {
+                "type": "component_tree",
+                "root": {
+                    "type": "column",
+                    "children": [
+                        {"type": "app_bar", "title": "Counter"},
+                        {"type": "text", "text": "3"},
+                        {"type": "spacer", "grow": true},
+                        {
+                            "type": "action_bar",
+                            "actions": [
+                                {"type": "button", "node_id": "counter-increment", "label": "Increment"}
+                            ]
+                        },
+                        {
+                            "type": "pinned",
+                            "edge": "bottom",
+                            "child": {"type": "footer_keys", "entries": []}
+                        }
+                    ]
+                }
+            }
+        ]);
+
+        assert!(super::semantic_scaffold_chrome_errors(&frame).is_empty());
+    }
+
+    #[test]
+    fn semantic_chrome_rejects_generic_action_stack() {
+        let frame = serde_json::json!([
+            {
+                "type": "component_tree",
+                "root": {
+                    "type": "column",
+                    "children": [
+                        {"type": "app_bar", "title": "Counter"},
+                        {"type": "text", "text": "3"},
+                        {
+                            "type": "stack",
+                            "direction": "horizontal",
+                            "children": [
+                                {"type": "button", "node_id": "counter-increment", "label": "Increment"}
+                            ]
+                        },
+                        {
+                            "type": "pinned",
+                            "edge": "bottom",
+                            "child": {"type": "footer_keys", "entries": []}
+                        }
+                    ]
+                }
+            }
+        ]);
+
+        assert!(
+            super::semantic_scaffold_chrome_errors(&frame)
+                .iter()
+                .any(|error| error.contains("missing semantic action_bar")),
+            "{:?}",
+            super::semantic_scaffold_chrome_errors(&frame)
         );
     }
 

@@ -1062,18 +1062,32 @@ pub fn sdk_path_override() -> Option<PathBuf> {
 /// This is the single source for how PYTHONPATH is constructed. Both
 /// `ProcessApp::launch` and the static render path must call this so the
 /// priority is defined in exactly one place:
-///   `PLEXI_SDK_PATH` override → config-dir SDK → bundle SDK (when present)
+///   `PLEXI_SDK_PATH` override → debug checkout SDK → config-dir SDK → bundle SDK (when present)
 pub fn build_pythonpath(bundle_sdk: Option<&std::path::Path>) -> String {
-    let sdk_dir = config_dir().join("sdk");
-    let mut pythonpath = sdk_dir.to_string_lossy().into_owned();
-    if let Some(bsdk) = bundle_sdk.filter(|p| p.exists()) {
-        pythonpath.push(':');
-        pythonpath.push_str(&bsdk.to_string_lossy());
-    }
+    let mut entries = Vec::new();
     if let Some(dev_sdk) = sdk_path_override() {
-        pythonpath = format!("{}:{}", dev_sdk.to_string_lossy(), pythonpath);
+        entries.push(dev_sdk.to_string_lossy().into_owned());
     }
-    pythonpath
+    if let Some(source_sdk) = source_sdk_path() {
+        entries.push(source_sdk.to_string_lossy().into_owned());
+    }
+    let sdk_dir = config_dir().join("sdk");
+    entries.push(sdk_dir.to_string_lossy().into_owned());
+    if let Some(bsdk) = bundle_sdk.filter(|p| p.exists()) {
+        entries.push(bsdk.to_string_lossy().into_owned());
+    }
+    entries.join(":")
+}
+
+fn source_sdk_path() -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
+        if path.join("plexi_sdk").join("__init__.py").is_file() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 pub const CONFIG_TEMPLATE: &str = include_str!("../../scripts/default-config.toml");

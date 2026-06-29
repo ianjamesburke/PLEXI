@@ -4017,6 +4017,19 @@ mod ai_stream_chunk_tests {
     }
 
     #[test]
+    fn l1_action_bar_round_trips_serde() {
+        let json = r#"{"type":"action_bar","actions":[{"type":"button","node_id":"save","label":"Save","style":"primary"}]}"#;
+        let node: UiNode = serde_json::from_str(json).expect("deserialize");
+        match node {
+            UiNode::ActionBar { actions } => {
+                assert_eq!(actions.len(), 1);
+                assert!(matches!(actions[0], UiNode::Button { .. }));
+            }
+            other => panic!("expected ActionBar, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn l1_select_list_round_trips_serde() {
         let json = r#"{"type":"select_list","items":[{"name":"Item 1"},{"name":"Item 2","description":"details"}],"selected_idx":1}"#;
         let node: UiNode = serde_json::from_str(json).expect("deserialize");
@@ -4036,14 +4049,14 @@ mod ai_stream_chunk_tests {
 
     #[test]
     fn l1_full_tree_from_sdk_deserializes() {
-        let json = r#"{"type":"component_tree","root":{"type":"stack","direction":"vertical","children":[{"type":"app_bar","title":"Todo","subtitle":""},{"type":"section","title":"Items"},{"type":"select_list","items":[{"name":"Buy milk"}],"selected_idx":0},{"type":"spacer","size":12.0,"grow":false},{"type":"footer_keys","entries":[{"keys":["space"],"description":"toggle"}],"divider":true}],"gap":12.0,"padding":{"top":8.0,"right":24.0,"bottom":24.0,"left":24.0}}}"#;
+        let json = r#"{"type":"component_tree","root":{"type":"column","children":[{"type":"app_bar","title":"Todo","subtitle":""},{"type":"section","title":"Items"},{"type":"select_list","items":[{"name":"Buy milk"}],"selected_idx":0},{"type":"action_bar","actions":[{"type":"button","node_id":"save","label":"Save"}]},{"type":"pinned","edge":"bottom","child":{"type":"footer_keys","entries":[{"keys":["space"],"description":"toggle"}],"divider":true}}],"gap":12.0,"padding_top":0.0,"padding":0.0}}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialize");
         match cmd {
             DrawCommand::Render(RenderCommand::ComponentTree { root }) => {
-                if let UiNode::Stack { children, .. } = &root {
+                if let UiNode::Column { children, .. } = &root {
                     assert_eq!(children.len(), 5);
                 } else {
-                    panic!("expected Stack root, got {root:?}");
+                    panic!("expected Column root, got {root:?}");
                 }
             }
             other => panic!("expected ComponentTree, got {other:?}"),

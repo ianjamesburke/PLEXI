@@ -195,6 +195,12 @@ pub enum UiNode {
         #[serde(default)]
         style: String,
     },
+    /// Host-owned contextual action strip. Children should be `Button` nodes;
+    /// non-button children are ignored by the renderer.
+    ActionBar {
+        #[serde(alias = "children")]
+        actions: Vec<UiNode>,
+    },
     /// Host-rendered text editor with multiline and max_length support.
     ///
     /// The host maintains a persistent buffer keyed on `node_id`. On each
@@ -424,6 +430,7 @@ impl PartialEq for UiNode {
                     style: s2,
                 },
             ) => n1 == n2 && l1 == l2 && d1 == d2 && s1 == s2,
+            (UiNode::ActionBar { actions: a1 }, UiNode::ActionBar { actions: a2 }) => a1 == a2,
             (
                 UiNode::TextEdit {
                     node_id: n1,

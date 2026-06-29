@@ -517,93 +517,61 @@ fn render_component_tree_inner(
             style: button_style,
             ..
         } => {
-            const BTN_PAD_V: f32 = 5.0;
-            let font_id = egui::FontId::proportional(crate::ui::style::TEXT_BODY);
-            // Layout with placeholder color; painter.galley() overrides per-state below.
-            let galley =
-                ui.fonts(|f| f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE));
-            let text_w = galley.size().x;
-            let text_h = galley.size().y;
-            let btn_w = (text_w + crate::ui::style::SPACE_SM * 2.0).max(48.0);
-            let btn_h = text_h + BTN_PAD_V * 2.0;
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(btn_w, btn_h), egui::Sense::hover());
-            // Use raw PointerState — button_down/button_pressed read pointer_events directly
-            // and are not affected by the pane-wide Sense::click_and_drag() widget registered
-            // later at process_app/mod.rs:1676.
-            let pointer_pos =
-                ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
-            let is_hovered = !*disabled && pointer_pos.map_or(false, |p| rect.contains(p));
-            let is_down =
-                is_hovered && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
-            let is_just_pressed =
-                is_hovered && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
-            let painter = ui.painter();
-            let style_name = button_style.as_str();
-            let is_primary = style_name == "primary";
-            let is_danger = style_name == "danger";
-            let is_ghost = style_name == "ghost";
-            let danger = egui::Color32::from_rgb(210, 78, 78);
-            let fill = if *disabled {
-                colors.bg_active.gamma_multiply(0.55)
-            } else if is_down {
-                if is_danger {
-                    danger.gamma_multiply(0.85)
-                } else if is_primary {
-                    colors.accent.gamma_multiply(0.85)
-                } else {
-                    colors.bg_hover
-                }
-            } else if is_primary {
-                colors.accent
-            } else if is_danger {
-                danger
-            } else if is_ghost {
-                egui::Color32::TRANSPARENT
-            } else {
-                colors.bg_active
-            };
-            painter.rect_filled(rect, crate::ui::style::RADIUS_MD, fill);
-            if !*disabled {
-                let stroke_color = if is_hovered {
-                    if is_danger {
-                        danger
-                    } else {
-                        colors.accent
-                    }
-                } else if is_ghost {
-                    egui::Color32::TRANSPARENT
-                } else {
-                    colors.border
-                };
-                painter.rect_stroke(
-                    rect,
-                    crate::ui::style::RADIUS_MD,
-                    egui::Stroke::new(1.0, stroke_color),
-                    egui::StrokeKind::Inside,
-                );
-                if is_hovered {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
+            let btn_w = button_intrinsic_width(ui, label);
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(btn_w, button_height()), egui::Sense::hover());
+            if let Some(evt) =
+                render_button_at(ui, rect, node_id, label, *disabled, button_style, colors)
+            {
+                events.push(evt);
             }
-            let text_color = if *disabled {
-                colors.text_dim
-            } else if is_primary || is_danger {
-                colors.bg_active
-            } else {
-                colors.text_primary
-            };
-            let text_pos = egui::pos2(
-                rect.center().x - text_w / 2.0,
-                rect.center().y - text_h / 2.0,
+        }
+
+        UiNode::ActionBar { actions } => {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), action_bar_height()),
+                egui::Sense::hover(),
             );
-            painter.galley(text_pos, galley, text_color);
-            if is_just_pressed {
-                log::info!("render_components: Button press node_id={node_id}");
-                events.push(ComponentEventPayload {
-                    node_id: node_id.clone(),
-                    event_type: "click".into(),
-                    payload: None,
-                });
+            let mut x = rect.min.x;
+            let y = rect.min.y + (action_bar_height() - button_height()) / 2.0;
+
+            for action in actions {
+                let UiNode::Button {
+                    node_id,
+                    label,
+                    disabled,
+                    style: button_style,
+                    ..
+                } = action
+                else {
+                    log::warn!(
+                        "render_components: ActionBar child is not a Button; skipping child"
+                    );
+                    continue;
+                };
+
+                let w = button_intrinsic_width(ui, label);
+                if x + w > rect.max.x {
+                    log::debug!(
+                        "render_components: ActionBar clipped remaining actions at width={}",
+                        rect.width()
+                    );
+                    break;
+                }
+                let button_rect =
+                    egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, button_height()));
+                if let Some(evt) = render_button_at(
+                    ui,
+                    button_rect,
+                    node_id,
+                    label,
+                    *disabled,
+                    button_style,
+                    colors,
+                ) {
+                    events.push(evt);
+                }
+                x += w + style::SPACE_SM;
             }
         }
 
@@ -1289,6 +1257,126 @@ fn render_component_tree_inner(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+fn button_height() -> f32 {
+    32.0
+}
+
+fn action_bar_height() -> f32 {
+    button_height() + style::SPACE_SM
+}
+
+fn button_intrinsic_width(ui: &egui::Ui, label: &str) -> f32 {
+    let font_id = egui::FontId::proportional(style::TEXT_BODY);
+    let text_w = ui.fonts(|f| {
+        f.layout_no_wrap(label.to_owned(), font_id, egui::Color32::WHITE)
+            .size()
+            .x
+    });
+    (text_w + style::SPACE_SM * 2.0).max(48.0)
+}
+
+fn render_button_at(
+    ui: &mut Ui,
+    rect: egui::Rect,
+    node_id: &str,
+    label: &str,
+    disabled: bool,
+    button_style: &str,
+    colors: &Colors,
+) -> Option<ComponentEventPayload> {
+    let font_id = egui::FontId::proportional(style::TEXT_BODY);
+    let galley = ui.fonts(|f| {
+        f.layout(
+            label.to_owned(),
+            font_id,
+            egui::Color32::WHITE,
+            rect.width().max(0.0),
+        )
+    });
+    let text_size = galley.size();
+
+    // Use raw PointerState because button_down/button_pressed read pointer
+    // events directly and are not affected by the pane-wide click-and-drag
+    // widget registered later around the whole pane.
+    let pointer_pos = ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
+    let is_hovered = !disabled && pointer_pos.map_or(false, |p| rect.contains(p));
+    let is_down = is_hovered && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+    let is_just_pressed =
+        is_hovered && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+
+    let is_primary = button_style == "primary";
+    let is_danger = button_style == "danger";
+    let is_ghost = button_style == "ghost";
+    let danger = egui::Color32::from_rgb(210, 78, 78);
+    let fill = if disabled {
+        colors.bg_active.gamma_multiply(0.55)
+    } else if is_down {
+        if is_danger {
+            danger.gamma_multiply(0.85)
+        } else if is_primary {
+            colors.accent.gamma_multiply(0.85)
+        } else {
+            colors.bg_hover
+        }
+    } else if is_primary {
+        colors.accent
+    } else if is_danger {
+        danger
+    } else if is_ghost {
+        egui::Color32::TRANSPARENT
+    } else {
+        colors.bg_active
+    };
+
+    let painter = ui.painter();
+    painter.rect_filled(rect, style::RADIUS_MD, fill);
+    if !disabled {
+        let stroke_color = if is_hovered {
+            if is_danger {
+                danger
+            } else {
+                colors.accent
+            }
+        } else if is_ghost {
+            egui::Color32::TRANSPARENT
+        } else {
+            colors.border
+        };
+        painter.rect_stroke(
+            rect,
+            style::RADIUS_MD,
+            egui::Stroke::new(1.0, stroke_color),
+            egui::StrokeKind::Inside,
+        );
+        if is_hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+
+    let text_color = if disabled {
+        colors.text_dim
+    } else if is_primary || is_danger {
+        colors.bg_active
+    } else {
+        colors.text_primary
+    };
+    let text_pos = egui::pos2(
+        rect.center().x - text_size.x / 2.0,
+        rect.center().y - text_size.y / 2.0,
+    );
+    painter.galley(text_pos, galley, text_color);
+
+    if is_just_pressed {
+        log::info!("render_components: Button press node_id={node_id}");
+        return Some(ComponentEventPayload {
+            node_id: node_id.to_owned(),
+            event_type: "click".into(),
+            payload: None,
+        });
+    }
+    None
+}
+
 /// Measures the actual chip row height for footer key chips by querying font metrics.
 /// This is the single source of truth for chip height — both `bottom_pin_height`
 /// and the `FooterKeys` renderer must use this instead of estimating from TEXT_HINT.
@@ -1373,7 +1461,8 @@ fn vertical_fixed_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
             let band_h = if subtitle.is_empty() { 34.0 } else { 48.0 };
             Some(band_h + 1.0)
         }
-        UiNode::Button { .. } => Some(32.0),
+        UiNode::Button { .. } => Some(button_height()),
+        UiNode::ActionBar { .. } => Some(action_bar_height()),
         UiNode::TextEdit { multiline, .. } => Some(if *multiline { 96.0 } else { 32.0 }),
         UiNode::Spacer { size, grow } => {
             if *grow {
@@ -2023,6 +2112,23 @@ mod render_component_tree_tests {
         }
     }
 
+    #[test]
+    fn action_bar_node_constructable() {
+        let node = UiNode::ActionBar {
+            actions: vec![UiNode::Button {
+                node_id: "save".into(),
+                label: "Save".into(),
+                disabled: false,
+                style: "primary".into(),
+            }],
+        };
+        if let UiNode::ActionBar { actions } = &node {
+            assert_eq!(actions.len(), 1);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
     /// Serde round-trip for `UiNode::Pinned`.
     #[test]
     fn pinned_serde_roundtrip() {
@@ -2138,6 +2244,27 @@ mod render_component_tree_tests {
         ctx.begin_pass(egui::RawInput::default());
         egui::CentralPanel::default().show(&ctx, |ui| {
             assert_eq!(vertical_fixed_height(ui, &stack), Some(40.0));
+        });
+        let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn action_bar_has_fixed_height() {
+        use super::{action_bar_height, vertical_fixed_height};
+
+        let node = UiNode::ActionBar {
+            actions: vec![UiNode::Button {
+                node_id: "save".into(),
+                label: "Save".into(),
+                disabled: false,
+                style: "primary".into(),
+            }],
+        };
+
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            assert_eq!(vertical_fixed_height(ui, &node), Some(action_bar_height()));
         });
         let _ = ctx.end_pass();
     }

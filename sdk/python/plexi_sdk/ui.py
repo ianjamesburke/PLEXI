@@ -406,10 +406,8 @@ class ActionBar(Component):
 
     def to_node(self) -> dict:
         return {
-            "type": "stack",
-            "direction": "horizontal",
-            "children": [action.to_node() for action in self.actions],
-            "gap": self.gap,
+            "type": "action_bar",
+            "actions": [action.to_node() for action in self.actions],
         }
 
 

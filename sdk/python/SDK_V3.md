@@ -566,9 +566,8 @@ class Padding:
     left: float = 0.0
     # → ui-node-data::padding(padding-node)
 
-# ── Convenience composites (Python-only, no WIT equivalent) ──────────────────
-# These build from primitive nodes. Adapter never sees these as distinct types —
-# they return a UINode tree built from the primitives above.
+# ── Host-rendered app chrome ─────────────────────────────────────────────────
+# These return semantic UiNode variants so the host owns their layout.
 
 def AppBar(title: str, subtitle: str = "") -> Column:
     """Standard app top bar. Renders title + optional subtitle in a Column."""
@@ -586,9 +585,10 @@ def FooterKeys(pairs: list) -> Row:
         children.append(Space(8.0))
     return Row(children, gap=4.0, align="center")
 
-def ActionBar(actions: list) -> Row:
-    """Standard horizontal row for contextual Button actions."""
-    return Row(actions, gap=8.0, align="center")
+@dataclass
+class ActionBar:
+    actions: list[Button]
+    # → ui-node-data::action-bar(action-bar-node)
 
 def Section(title: str, children: list) -> Column:
     """Titled section group."""
