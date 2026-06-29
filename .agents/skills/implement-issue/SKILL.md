@@ -30,7 +30,7 @@ This skill is not complete when the branch is merely pushed. Completion includes
 
 > **Labels are live state — never the Ship Log.** Pane: `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"` — no digit in status word (PM census uses `grep -oE '[0-9]+'`). States: `impl`, `pushed`, `noop`, `blocked`. Source `.agents/skills/_lib/pipeline-slots.sh`; call `pipeline_slots_set implement <n> "" <status> "" ""` at each boundary.
 
-> **Stint timing.** `stint start <task-id>` in this skill; `stint done` runs in `/merge-pr` after merge.
+> **Stint timing.** `stint claim <task-id>` in this skill; `stint done` runs in `/merge-pr` after merge. The installed CLI does not have `stint start`.
 
 ---
 
@@ -119,10 +119,10 @@ wtp add -b feature/<issue-number>-short-description HEAD  # origin/alpha when in
    ```
 2. For each linked task that will be materially worked, run:
    ```bash
-   stint start <task-id>
+   stint claim <task-id>
    ```
 3. Do not use `--restart` unless deliberately replacing bad timing data; normal resumed work keeps the original `started_at`.
-4. For historical backfill only, use `stint start <task-id> --started-at <UTC-RFC3339>`.
+4. For historical backfill only, use `stint claim <task-id> --started-at <UTC-RFC3339>`.
 5. If no linked task exists, continue but note the missing stint linkage in the issue Ship Log; do not invent timing only in GitHub.
 
 If "branch already exists": check `git worktree list`. If no worktree, `wtp add` without `-b`. Check for prior commits.
