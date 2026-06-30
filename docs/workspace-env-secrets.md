@@ -1,8 +1,8 @@
 # Workspace Environment Secrets PRM
 
-Status: product and architecture spec.
+Status: active.
 Parent: [`assistant-host-app.md`](assistant-host-app.md).
-Stint: [`0161`](../../.stint/tasks/0161-v2-workspace-env-secret-injection.md).
+Stint: `0237`.
 Last updated: 2026-06-11.
 
 This PRM replaces ad hoc shell-secret setup with a Plexi-owned, workspace-aware secret system that can inject selected credentials into terminal panes, `plexi run` commands, PGAP apps, and host integrations.
@@ -148,6 +148,11 @@ It returns:
 - missing names
 - source metadata: workspace, global, alias, or env fallback
 - diagnostic text suitable for UI and CLI
+
+Host integrations that historically read process environment variables, such
+as the OpenRouter AI broker, must consult this resolver first when a workspace
+root is available. Process-env and legacy lowercase key names are compatibility
+fallbacks, not separate primary resolution systems.
 
 ## Migration
 

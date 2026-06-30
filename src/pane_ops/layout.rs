@@ -10,7 +10,7 @@ use crate::host::pane::{Pane, TerminalPane};
 use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::{Container, SimplificationOptions, Tile, TileId};
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 pub(crate) enum SwapResult {
     Swapped {
@@ -407,7 +407,12 @@ impl PlexiApp {
         ctx.navigate_to(new_tile);
     }
 
-    pub(crate) fn new_tab(&mut self, initial_cmd: Option<&str>, close_on_exit: bool) {
+    pub(crate) fn new_tab(
+        &mut self,
+        initial_cmd: Option<&str>,
+        close_on_exit: bool,
+        cwd_override: Option<PathBuf>,
+    ) {
         // Empty context (welcome screen): create the first pane as tree root.
         if self.windows[self.active_window].panes.is_empty() {
             let new_id = self.host.alloc_pane_id();
@@ -420,7 +425,7 @@ impl PlexiApp {
             let ctx_desc = self.context_description_for(ctx_id);
             let ctx_root = self.context_root_for(ctx_id);
             let ctx_depth = self.context_depth_for(ctx_id);
-            let cwd = self.cwd_for_welcome_tab();
+            let cwd = cwd_override.unwrap_or_else(|| self.cwd_for_welcome_tab());
             log::info!(
                 "new_tab (empty context): cwd={cwd:?} context_root={:?}",
                 self.router.active().root
@@ -469,7 +474,7 @@ impl PlexiApp {
 
         let new_id = self.host.alloc_pane_id();
 
-        let cwd = self.resolve_new_pane_cwd(None, Some(focused));
+        let cwd = cwd_override.or_else(|| self.resolve_new_pane_cwd(None, Some(focused)));
         log::info!(
             "new_tab: cwd={cwd:?} context_root={:?}",
             self.router.active().root

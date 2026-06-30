@@ -223,7 +223,7 @@ fn dispatch_openrouter(
         .api_key_env
         .as_deref()
         .unwrap_or("OPENROUTER_API_KEY");
-    let api_key = match resolve_openrouter_api_key(api_key_env) {
+    let api_key = match resolve_openrouter_api_key(api_key_env, request.workspace_root.as_deref()) {
         Ok(k) => k,
         Err(msg) => {
             log::warn!("ai_broker[{}]: {msg} — denying ai.query", request.app_id);
@@ -246,17 +246,24 @@ fn dispatch_openrouter(
     )
 }
 
-fn resolve_openrouter_api_key(api_key_env: &str) -> Result<String, String> {
-    if let Ok(k) = std::env::var(api_key_env) {
-        if !k.is_empty() {
-            return Ok(k);
+fn resolve_openrouter_api_key(
+    api_key_env: &str,
+    workspace_root: Option<&std::path::Path>,
+) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let store = crate::workspace::secrets::MacKeychain::new();
+        match resolve_openrouter_api_key_from_store(api_key_env, workspace_root, &store) {
+            Ok(Some(key)) => return Ok(key),
+            Ok(None) => {}
+            Err(msg) => return Err(msg),
         }
     }
 
-    if api_key_env == "OPENROUTER_API_KEY" {
-        if let Some(key) = read_global_openrouter_secret() {
-            log::info!("ai_broker: using global Plexi secret OPENROUTER_API_KEY");
-            return Ok(key);
+    if let Ok(k) = std::env::var(api_key_env) {
+        if !k.is_empty() {
+            log::info!("ai_broker: using process env {api_key_env}");
+            return Ok(k);
         }
     }
 
@@ -266,24 +273,89 @@ fn resolve_openrouter_api_key(api_key_env: &str) -> Result<String, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn read_global_openrouter_secret() -> Option<String> {
-    use crate::workspace::secrets::{keychain_user_name, MacKeychain, SecretStore};
-    let store = MacKeychain::new();
-    for name in ["OPENROUTER_API_KEY", "openrouter-api-key"] {
-        let account = keychain_user_name(name);
-        if let Some(key) = store.get(&account) {
-            if !key.is_empty() {
-                log::info!("ai_broker: resolved OpenRouter key from {name}");
-                return Some(key.to_string());
+fn resolve_openrouter_api_key_from_store(
+    api_key_env: &str,
+    workspace_root: Option<&std::path::Path>,
+    store: &dyn crate::workspace::secrets::SecretStore,
+) -> Result<Option<String>, String> {
+    use crate::workspace::secrets::{
+        keychain_user_name, resolve_with_source, ResolveWithSourceOutcome, WorkspaceConfig,
+        WorkspaceSecrets,
+    };
+
+    if let Some(root) = workspace_root {
+        match (WorkspaceConfig::load(root), WorkspaceSecrets::load(root)) {
+            (Ok(Some(cfg)), Ok(Some(router))) => {
+                match resolve_with_source(&cfg.id, "host", api_key_env, &router, store) {
+                    ResolveWithSourceOutcome::Found(found) => {
+                        log::info!(
+                            "ai_broker: resolved {api_key_env} from workspace secrets source={:?}",
+                            found.source
+                        );
+                        return Ok(Some(found.value.to_string()));
+                    }
+                    ResolveWithSourceOutcome::PromptUser => {
+                        if router.route_for("host", api_key_env).is_some() || !router.fallback {
+                            return Err(format!(
+                                "api_key_missing: {api_key_env} missing from workspace secret policy"
+                            ));
+                        }
+                        log::info!(
+                            "ai_broker: workspace secret {api_key_env} missing; checking fallback sources"
+                        );
+                    }
+                    ResolveWithSourceOutcome::HardMissing { reason } => {
+                        log::warn!(
+                            "ai_broker: workspace secret {api_key_env} unavailable: {reason}"
+                        );
+                        return Err(format!(
+                            "api_key_missing: {api_key_env} blocked by workspace secret policy: {reason}"
+                        ));
+                    }
+                }
+            }
+            (Err(e), _) => {
+                log::warn!(
+                    "ai_broker: failed to load workspace.toml for secret resolution at {}: {e}",
+                    root.display()
+                );
+                return Err(format!(
+                    "api_key_missing: {api_key_env} blocked because workspace secret policy could not load: {e}"
+                ));
+            }
+            (_, Err(e)) => {
+                log::warn!(
+                    "ai_broker: failed to load secrets.toml for secret resolution at {}: {e}",
+                    root.display()
+                );
+                return Err(format!(
+                    "api_key_missing: {api_key_env} blocked because workspace secret policy could not load: {e}"
+                ));
+            }
+            _ => {
+                log::info!(
+                    "ai_broker: workspace secret context missing at {}; checking fallback sources",
+                    root.display()
+                );
             }
         }
     }
-    None
-}
 
-#[cfg(not(target_os = "macos"))]
-fn read_global_openrouter_secret() -> Option<String> {
-    None
+    if api_key_env == "OPENROUTER_API_KEY" {
+        for name in ["OPENROUTER_API_KEY", "openrouter-api-key"] {
+            let account = keychain_user_name(name);
+            if let Some(key) = store.get(&account) {
+                if !key.is_empty() {
+                    log::info!(
+                        "ai_broker: resolved OpenRouter key from global Plexi secret {name}"
+                    );
+                    return Ok(Some(key.to_string()));
+                }
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 /// Dispatch through the Ollama backend.
@@ -989,6 +1061,162 @@ mod tests {
                 .contains("api_key_missing"),
             "missing-key error must surface the api_key_missing tag"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn openrouter_key_resolves_from_workspace_before_global_or_env() {
+        use crate::workspace::secrets::{InMemoryKeychain, SecretStore};
+
+        let env_name = "OPENROUTER_API_KEY";
+        let orig = std::env::var(env_name).ok();
+        unsafe { std::env::set_var(env_name, "sk-env") };
+
+        let ws_a = tempfile::tempdir().unwrap();
+        let ws_b = tempfile::tempdir().unwrap();
+        write_secret_workspace(ws_a.path(), "ws-a");
+        write_secret_workspace(ws_b.path(), "ws-b");
+
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-a:OPENROUTER_API_KEY", "sk-workspace-a")
+            .unwrap();
+        store
+            .set("plexi:ws-b:OPENROUTER_API_KEY", "sk-workspace-b")
+            .unwrap();
+        store
+            .set("plexi:user:OPENROUTER_API_KEY", "sk-global")
+            .unwrap();
+
+        let a = resolve_openrouter_api_key_from_store(env_name, Some(ws_a.path()), &store)
+            .expect("workspace A lookup")
+            .expect("workspace A key");
+        let b = resolve_openrouter_api_key_from_store(env_name, Some(ws_b.path()), &store)
+            .expect("workspace B lookup")
+            .expect("workspace B key");
+
+        if let Some(v) = orig {
+            unsafe { std::env::set_var(env_name, v) };
+        } else {
+            unsafe { std::env::remove_var(env_name) };
+        }
+
+        assert_eq!(a, "sk-workspace-a");
+        assert_eq!(b, "sk-workspace-b");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn openrouter_key_falls_back_to_legacy_global_secret() {
+        use crate::workspace::secrets::{InMemoryKeychain, SecretStore};
+
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:user:openrouter-api-key", "sk-legacy")
+            .unwrap();
+
+        let resolved = resolve_openrouter_api_key_from_store("OPENROUTER_API_KEY", None, &store)
+            .expect("global lookup")
+            .expect("legacy global key");
+
+        assert_eq!(resolved, "sk-legacy");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn openrouter_key_honors_workspace_fallback_false() {
+        use crate::workspace::secrets::{InMemoryKeychain, SecretStore};
+
+        let env_name = "OPENROUTER_API_KEY";
+
+        let ws = tempfile::tempdir().unwrap();
+        let dir = ws.path().join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("workspace.toml"), "id = \"ws-no-fallback\"\n").unwrap();
+        std::fs::write(dir.join("secrets.toml"), "fallback = false\n").unwrap();
+
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:user:OPENROUTER_API_KEY", "sk-global")
+            .unwrap();
+
+        let store_err = resolve_openrouter_api_key_from_store(env_name, Some(ws.path()), &store)
+            .expect_err("fallback=false must block global keychain fallback");
+
+        assert!(store_err.contains("blocked by workspace secret policy"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn openrouter_key_does_not_bypass_missing_explicit_route() {
+        use crate::workspace::secrets::{InMemoryKeychain, SecretStore};
+
+        let ws = tempfile::tempdir().unwrap();
+        let dir = ws.path().join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("workspace.toml"), "id = \"ws-route\"\n").unwrap();
+        std::fs::write(
+            dir.join("secrets.toml"),
+            "fallback = true\n\n[default]\nOPENROUTER_API_KEY = \"openrouter_team\"\n",
+        )
+        .unwrap();
+
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:user:OPENROUTER_API_KEY", "sk-global")
+            .unwrap();
+
+        let err = resolve_openrouter_api_key_from_store(
+            "OPENROUTER_API_KEY",
+            Some(ws.path()),
+            &store,
+        )
+        .expect_err("missing explicit route must block global fallback");
+
+        assert!(err.contains("missing from workspace secret policy"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn openrouter_key_fails_closed_when_workspace_policy_is_invalid() {
+        use crate::workspace::secrets::{InMemoryKeychain, SecretStore};
+
+        let ws = tempfile::tempdir().unwrap();
+        let dir = ws.path().join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("workspace.toml"), "id = \"ws-invalid\"\n").unwrap();
+        std::fs::write(dir.join("secrets.toml"), "[default]\nOPENROUTER_API_KEY = \"x\"\n")
+            .unwrap();
+
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:user:OPENROUTER_API_KEY", "sk-global")
+            .unwrap();
+
+        let err = resolve_openrouter_api_key_from_store(
+            "OPENROUTER_API_KEY",
+            Some(ws.path()),
+            &store,
+        )
+        .expect_err("invalid workspace policy must block global fallback");
+
+        assert!(err.contains("workspace secret policy could not load"));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn write_secret_workspace(root: &std::path::Path, workspace_id: &str) {
+        let dir = root.join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("workspace.toml"),
+            format!("id = \"{workspace_id}\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("secrets.toml"),
+            "fallback = true\n\n[terminal.env]\ninject = [\"OPENROUTER_API_KEY\"]\n",
+        )
+        .unwrap();
     }
 
     #[test]

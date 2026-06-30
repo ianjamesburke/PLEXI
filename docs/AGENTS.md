@@ -21,4 +21,4 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 | `marketplace-hosted.md` | Hosted marketplace (Sprint S4) | see file |
 | `wasm-runtime.md` | WASM runtime architecture | see file |
 | `wasm-runtime-impl-plan.md` | WASM runtime build sequence (G1-G7, G11-G13) | see file |
-| `workspace-env-secrets.md` | Workspace env secret injection | 0161 |
+| `workspace-env-secrets.md` | Workspace env secret injection | 0237 |

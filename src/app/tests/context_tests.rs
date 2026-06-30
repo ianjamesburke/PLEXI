@@ -1723,7 +1723,7 @@ fn create_context_with_windows_adds_extra_pages() {
         .map(|x| x + 1)
         .unwrap_or(1);
     for cmd in &cmds {
-        app.create_page_at(new_x, active_y, ctx_id, Some(cmd.as_str()), false);
+        app.create_page_at(new_x, active_y, ctx_id, Some(cmd.as_str()), false, None);
         new_x += 1;
     }
 

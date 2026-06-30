@@ -3260,7 +3260,7 @@ impl eframe::App for PlexiApp {
                     self.step_focus_history_forward();
                 }
                 Action::NewTab => {
-                    self.new_tab(None, false);
+                    self.new_tab(None, false, None);
                     self.save_workspace();
                 }
                 Action::ToggleZoom => {

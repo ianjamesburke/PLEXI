@@ -890,6 +890,21 @@ mod tests {
         WorkspaceSecrets::parse(toml_src).expect("router parses")
     }
 
+    fn write_terminal_env_workspace(root: &Path, workspace_id: &str) {
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(root.join(&channel_dir)).unwrap();
+        std::fs::write(
+            root.join(&channel_dir).join("workspace.toml"),
+            format!("id = \"{workspace_id}\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(&channel_dir).join("secrets.toml"),
+            "fallback = true\n\n[terminal.env]\ninject = [\"OPENROUTER_API_KEY\"]\n",
+        )
+        .unwrap();
+    }
+
     #[test]
     fn keychain_naming_uses_workspace_and_user_namespaces() {
         assert_eq!(
@@ -1059,6 +1074,34 @@ mod tests {
         assert_eq!(
             env.get("OPENAI_API_KEY").map(|v| v.as_str()),
             Some("sk-global")
+        );
+    }
+
+    #[test]
+    fn terminal_env_resolves_same_openrouter_name_per_workspace() {
+        let ws_a = tempfile::tempdir().unwrap();
+        let ws_b = tempfile::tempdir().unwrap();
+        write_terminal_env_workspace(ws_a.path(), "ws-a");
+        write_terminal_env_workspace(ws_b.path(), "ws-b");
+
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-a:OPENROUTER_API_KEY", "sk-openrouter-a")
+            .unwrap();
+        store
+            .set("plexi:ws-b:OPENROUTER_API_KEY", "sk-openrouter-b")
+            .unwrap();
+
+        let env_a = resolve_terminal_env(ws_a.path(), &store).expect("workspace A env");
+        let env_b = resolve_terminal_env(ws_b.path(), &store).expect("workspace B env");
+
+        assert_eq!(
+            env_a.get("OPENROUTER_API_KEY").map(|v| v.as_str()),
+            Some("sk-openrouter-a")
+        );
+        assert_eq!(
+            env_b.get("OPENROUTER_API_KEY").map(|v| v.as_str()),
+            Some("sk-openrouter-b")
         );
     }
 
