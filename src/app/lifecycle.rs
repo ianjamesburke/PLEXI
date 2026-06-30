@@ -886,6 +886,7 @@ impl PlexiApp {
                             ws_id,
                             initial_cmd.as_deref(),
                             spec.ephemeral,
+                            cwd_override,
                         );
                         if spec.no_focus {
                             self.active_window = active;
@@ -896,7 +897,7 @@ impl PlexiApp {
                             spec.ephemeral
                         );
                         let original_focused = self.windows[active].focused_pane;
-                        self.new_tab(initial_cmd.as_deref(), spec.ephemeral);
+                        self.new_tab(initial_cmd.as_deref(), spec.ephemeral, cwd_override);
                         if spec.no_focus {
                             self.active_window = active;
                             self.restore_window_focused_pane(active, original_focused);
@@ -1636,7 +1637,14 @@ impl PlexiApp {
                         log::info!(
                             "pane_ipc: create_context window ctx_id={new_ctx_id} grid_x={new_x} cmd={cmd:?}"
                         );
-                        self.create_page_at(new_x, active_y, new_ctx_id, Some(cmd.as_str()), false);
+                        self.create_page_at(
+                            new_x,
+                            active_y,
+                            new_ctx_id,
+                            Some(cmd.as_str()),
+                            false,
+                            None,
+                        );
                         new_x += 1;
                     }
                 }

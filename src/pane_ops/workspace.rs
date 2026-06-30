@@ -681,7 +681,7 @@ impl PlexiApp {
             Some(x) => x + 1,
             None => 1,
         };
-        self.create_page_at(new_x, active_y, ws_id, None, false);
+        self.create_page_at(new_x, active_y, ws_id, None, false, None);
     }
 
     /// Shared creation helper: create a single-pane window at `(grid_x, grid_y)` in
@@ -693,12 +693,15 @@ impl PlexiApp {
         context_id: u64,
         initial_cmd: Option<&str>,
         close_on_exit: bool,
+        cwd_override: Option<PathBuf>,
     ) {
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let cwd = self
-            .resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+        let cwd = cwd_override
+            .or_else(|| {
+                self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+            })
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
         log::info!("create_page_at({grid_x},{grid_y}): cwd={} context_id={context_id} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}", cwd.display());

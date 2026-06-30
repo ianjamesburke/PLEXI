@@ -2288,6 +2288,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn spawn_pane_new_window_uses_explicit_cwd() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile");
+        h.app.windows[0].focused_pane = Some(root);
+        let cwd = tempfile::tempdir().expect("cwd");
+        let cwd_path = cwd.path().to_path_buf();
+
+        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("new_window".to_string()),
+            args: vec![],
+            pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+            cwd: Some(cwd_path.to_string_lossy().into_owned()),
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+            name: None,
+        });
+        h.run_frames(2);
+
+        let created = h.app.windows.last().expect("new window");
+        assert_eq!(
+            created.path, cwd_path,
+            "explicit SpawnPane cwd must become the new terminal window cwd"
+        );
+    }
+
     /// A second `new_window` spawn places the next window at grid_x=2, not grid_x=1.
     #[test]
     fn spawn_pane_new_window_stacks_right() {

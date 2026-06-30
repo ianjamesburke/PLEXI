@@ -5,6 +5,9 @@ use std::process::Command;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+const TERMINAL_ENV_NAMES_VAR: &str = "PLEXI_TERMINAL_ENV_NAMES";
+const TERMINAL_ENV_VALUE_PREFIX: &str = "PLEXI_TERMINAL_ENV_VALUE_";
+
 pub fn detect_shell() -> String {
     if let Ok(shell) = std::env::var("SHELL") {
         if Path::new(&shell).exists() {
@@ -237,8 +240,20 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
                         resolved.len(),
                         root.display()
                     );
+                    let mut names = Vec::new();
                     for (key, value) in resolved {
+                        if !is_shell_env_name(&key) {
+                            log::warn!(
+                                "shell::build_env: skipped invalid terminal env secret name {key}"
+                            );
+                            continue;
+                        }
+                        names.push(key.clone());
+                        env.insert(preserved_terminal_env_name(&key), value.to_string());
                         env.insert(key, value.to_string());
+                    }
+                    if !names.is_empty() {
+                        env.insert(TERMINAL_ENV_NAMES_VAR.into(), names.join(":"));
                     }
                 }
                 Err(e) => {
@@ -269,6 +284,21 @@ pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
     }
 
     env
+}
+
+fn preserved_terminal_env_name(name: &str) -> String {
+    format!("{TERMINAL_ENV_VALUE_PREFIX}{name}")
+}
+
+fn is_shell_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
 static CWD_CACHE: LazyLock<Mutex<HashMap<u32, (PathBuf, Instant)>>> =
@@ -373,6 +403,19 @@ __plexi_orig="${PLEXI_ORIG_ZDOTDIR:-$HOME}"
 [[ -f "$__plexi_orig/.zshrc" ]] && source "$__plexi_orig/.zshrc"
 unset __plexi_orig
 
+# Re-apply workspace terminal env after user startup files so workspace-scoped
+# secrets win over global exports in .zshrc/.zprofile.
+if [[ -n "${PLEXI_TERMINAL_ENV_NAMES:-}" ]]; then
+    for __plexi_env_name in ${(s.:.)PLEXI_TERMINAL_ENV_NAMES}; do
+        __plexi_value_var="PLEXI_TERMINAL_ENV_VALUE_${__plexi_env_name}"
+        if [[ -n "${(P)__plexi_value_var+x}" ]]; then
+            export "${__plexi_env_name}=${(P)__plexi_value_var}"
+            unset "$__plexi_value_var"
+        fi
+    done
+    unset PLEXI_TERMINAL_ENV_NAMES __plexi_env_name __plexi_value_var
+fi
+
 # Emit OSC 7 after each prompt so Plexi can track cwd for split inheritance
 __plexi_precmd() {
     printf '\e]7;file://%s%s\a' "$HOST" "$PWD"
@@ -471,5 +514,21 @@ mod tests {
     fn shell_join_special_chars_quoted() {
         let args = vec!["echo".to_string(), "$HOME".to_string()];
         assert_eq!(shell_join(&args), "echo '$HOME'");
+    }
+
+    #[test]
+    fn shell_env_name_validation_accepts_posix_names() {
+        assert!(is_shell_env_name("OPENROUTER_API_KEY"));
+        assert!(is_shell_env_name("_PLEXI_TEST"));
+        assert!(is_shell_env_name("A1"));
+    }
+
+    #[test]
+    fn shell_env_name_validation_rejects_unsafe_names() {
+        assert!(!is_shell_env_name(""));
+        assert!(!is_shell_env_name("1PASSWORD"));
+        assert!(!is_shell_env_name("BAD-NAME"));
+        assert!(!is_shell_env_name("BAD:NAME"));
+        assert!(!is_shell_env_name("BAD NAME"));
     }
 }
