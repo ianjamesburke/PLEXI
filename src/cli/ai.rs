@@ -394,6 +394,61 @@ fn print_report(hw: &HardwareReport, integrations: &IntegrationReport, rec: &Mod
     println!("  {dim}{}{reset}", rec.note);
 }
 
+fn format_onboarding_guide(integrations: &IntegrationReport, rec: &ModelRecommendation) -> String {
+    let mut out = String::new();
+    out.push_str("plexi ai onboard -- first-run setup\n\n");
+    out.push_str("1. Pick an AI path\n");
+
+    if integrations.ollama_running && !integrations.ollama_models.is_empty() {
+        out.push_str("   Local AI is ready. Ollama is running with models installed.\n");
+        out.push_str("   Next: run `plexi ai doctor` to verify the full report.\n");
+    } else if integrations.openrouter_configured {
+        out.push_str("   Cloud AI is ready. OpenRouter is configured.\n");
+        out.push_str("   Next: run `plexi ai doctor` to verify the full report.\n");
+    } else if integrations.ollama_running {
+        let model = ollama_setup_model(rec);
+        out.push_str("   Ollama is running, but no models are installed yet.\n");
+        out.push_str(&format!(
+            "   Next: run `ollama pull {model}`, then `plexi ai setup`.\n"
+        ));
+    } else if integrations.ollama_installed {
+        out.push_str("   Ollama is installed but not running.\n");
+        out.push_str("   Next: run `ollama serve` in a Plexi pane, then `plexi ai setup`.\n");
+    } else if rec.tier == "cloud-recommended" {
+        out.push_str("   This machine is best suited for cloud AI.\n");
+        out.push_str("   Next: run `plexi secret set OPENROUTER_API_KEY --global`.\n");
+    } else {
+        let model = ollama_setup_model(rec);
+        out.push_str("   This machine can run local AI.\n");
+        out.push_str(&format!(
+            "   Next: install Ollama, then run `plexi ai setup` to pull {model}.\n"
+        ));
+        out.push_str("   Cloud option: run `plexi secret set OPENROUTER_API_KEY --global`.\n");
+    }
+
+    out.push_str("\n2. Skip AI for now\n");
+    out.push_str("   You can use non-AI apps immediately. Come back with `plexi ai onboard`.\n");
+
+    out.push_str("\n3. Install an app\n");
+    out.push_str("   Try the built-in starter pack: `plexi app install --pack core`.\n");
+    out.push_str("   Install a reviewed app: `plexi app install <id>`.\n");
+    out.push_str("   Install from GitHub: `plexi app install github:owner/repo`.\n");
+
+    out.push_str("\nUseful checks\n");
+    out.push_str("   `plexi ai doctor` shows hardware, Ollama, and OpenRouter status.\n");
+    out.push_str("   `plexi app list` shows installed apps.\n");
+
+    out
+}
+
+fn ollama_setup_model(rec: &ModelRecommendation) -> &'static str {
+    rec.models
+        .iter()
+        .copied()
+        .find(|model| !model.starts_with("openrouter/") && !model.contains('/'))
+        .unwrap_or("llama3.2:3b")
+}
+
 // ── Setup wizard ─────────────────────────────────────────────────────────────
 
 /// Write or update the `[ai]` + `[ai.ollama]` section in config.toml.
@@ -662,6 +717,29 @@ pub fn ai_setup_cli() -> i32 {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+pub fn ai_onboard_cli() -> i32 {
+    log::info!("cli:ai:onboard: starting first-run guide");
+
+    let hw = detect_hardware();
+    let integrations = check_integrations();
+    let recommendation = recommend_models(&hw);
+
+    log::info!(
+        "cli:ai:onboard: tier={} ollama_installed={} ollama_running={} models={} openrouter={}",
+        recommendation.tier,
+        integrations.ollama_installed,
+        integrations.ollama_running,
+        integrations.ollama_models.len(),
+        integrations.openrouter_configured
+    );
+
+    print!(
+        "{}",
+        format_onboarding_guide(&integrations, &recommendation)
+    );
+    0
+}
+
 pub fn ai_doctor_cli(json: bool) -> i32 {
     log::info!("cli:ai:doctor: starting hardware scan (json={json})");
 
@@ -709,4 +787,90 @@ pub fn ai_doctor_cli(json: bool) -> i32 {
     }
 
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_onboarding_guide, IntegrationReport, ModelRecommendation};
+
+    fn rec(tier: &'static str) -> ModelRecommendation {
+        ModelRecommendation {
+            tier,
+            models: vec!["llama3.2:3b"],
+            note: "test note",
+        }
+    }
+
+    fn cloud_rec() -> ModelRecommendation {
+        ModelRecommendation {
+            tier: "cloud-recommended",
+            models: vec!["openrouter/anthropic/claude-3-haiku"],
+            note: "test note",
+        }
+    }
+
+    #[test]
+    fn onboarding_guides_fresh_profile_without_hidden_prerequisites() {
+        let integrations = IntegrationReport {
+            ollama_installed: false,
+            ollama_running: false,
+            ollama_models: Vec::new(),
+            openrouter_configured: false,
+        };
+
+        let guide = format_onboarding_guide(&integrations, &rec("local-ok"));
+
+        assert!(guide.contains("plexi ai onboard -- first-run setup"));
+        assert!(guide.contains("install Ollama"));
+        assert!(guide.contains("plexi ai setup"));
+        assert!(guide.contains("plexi secret set OPENROUTER_API_KEY --global"));
+        assert!(guide.contains("plexi app install --pack core"));
+        assert!(guide.contains("plexi app install <id>"));
+    }
+
+    #[test]
+    fn onboarding_prefers_ready_cloud_ai_when_openrouter_configured() {
+        let integrations = IntegrationReport {
+            ollama_installed: false,
+            ollama_running: false,
+            ollama_models: Vec::new(),
+            openrouter_configured: true,
+        };
+
+        let guide = format_onboarding_guide(&integrations, &rec("cloud-recommended"));
+
+        assert!(guide.contains("Cloud AI is ready"));
+        assert!(guide.contains("plexi ai doctor"));
+        assert!(guide.contains("plexi app install --pack core"));
+    }
+
+    #[test]
+    fn onboarding_prefers_openrouter_over_incomplete_ollama_setup() {
+        let integrations = IntegrationReport {
+            ollama_installed: true,
+            ollama_running: true,
+            ollama_models: Vec::new(),
+            openrouter_configured: true,
+        };
+
+        let guide = format_onboarding_guide(&integrations, &rec("local-ok"));
+
+        assert!(guide.contains("Cloud AI is ready"));
+        assert!(!guide.contains("ollama pull"));
+    }
+
+    #[test]
+    fn onboarding_never_uses_openrouter_model_id_for_ollama_pull() {
+        let integrations = IntegrationReport {
+            ollama_installed: true,
+            ollama_running: true,
+            ollama_models: Vec::new(),
+            openrouter_configured: false,
+        };
+
+        let guide = format_onboarding_guide(&integrations, &cloud_rec());
+
+        assert!(guide.contains("ollama pull llama3.2:3b"));
+        assert!(!guide.contains("ollama pull openrouter/"));
+    }
 }

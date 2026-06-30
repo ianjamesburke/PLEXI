@@ -314,7 +314,7 @@ pub use agent::{
     agent_add, agent_hook_install_cli, agent_hook_uninstall_cli, agent_init, agent_list,
     agent_report_cli, agent_status_cli, agent_update,
 };
-pub use ai::{ai_doctor_cli, ai_setup_cli};
+pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
 pub use app::{
     app_action_cli, app_info, app_init, app_inspect_cli, app_install_package, app_install_with_pin,
     app_list, app_package_cli, app_render, app_test_cli, app_uninstall, app_update_cli,
