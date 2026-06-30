@@ -156,7 +156,7 @@ Pointer input in pane coordinates, including buttons, scroll, and region.
 
 ### `UiAction`
 
-Click/activation event from a component with matching ``handler_id``.
+Click/activation event from a component or host action.
 
 ### `UiValueChange`
 

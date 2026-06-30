@@ -1070,6 +1070,7 @@ fn main() -> eframe::Result {
                         std::process::exit(cli::notes::note_capture_cli(&text))
                     }
                     Commands::Ai { cmd } => match cmd {
+                        AiCmd::Onboard => std::process::exit(cli::ai_onboard_cli()),
                         AiCmd::Doctor { json } => std::process::exit(cli::ai_doctor_cli(json)),
                         AiCmd::Setup => std::process::exit(cli::ai_setup_cli()),
                     },

@@ -942,8 +942,17 @@ AI configuration and diagnostics — scan hardware, check integrations, recommen
 
 | Subcommand | Description |
 |---|---|
+| `onboard` | Guide first-run AI setup and the next app install step |
 | `doctor` | Scan hardware and report recommended AI models |
 | `setup` | Interactive wizard to configure a local AI model via Ollama |
+
+### `plexi ai onboard`
+
+Guide first-run AI setup and the next app install step.
+
+Runs the same checks as `plexi ai doctor`, then prints the shortest path to usable AI: local Ollama, a user-owned OpenRouter key, or skipping AI for now. Ends with the app install command to try next.
+
+Example: plexi ai onboard
 
 ### `plexi ai doctor`
 

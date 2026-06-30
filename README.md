@@ -39,6 +39,14 @@ curl -fsSL https://plexiapp.com/install | sh
 
 Downloads the latest release, installs to `/Applications`, sets up the `plexi` CLI, and wires ZSH integration. Restart your terminal when done.
 
+First run:
+
+```bash
+plexi ai onboard
+```
+
+This guides AI setup with local Ollama, a user-owned OpenRouter key, or a skip-for-now path, then points you at the next app install command.
+
 To install a pre-release channel, pass `--channel`:
 
 ```bash

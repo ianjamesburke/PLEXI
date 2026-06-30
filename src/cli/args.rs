@@ -20,7 +20,7 @@ fn plexi_styles() -> Styles {
     name = "plexi",
     about = "Plexi — the last app you'll ever need",
     version = env!("CARGO_PKG_VERSION"),
-    after_help = "Get started: plexi demo | Docs: https://plexiapp.com/docs",
+    after_help = "Get started: plexi ai onboard | Docs: https://plexiapp.com/docs",
     styles = plexi_styles(),
 )]
 pub struct Cli {
@@ -1340,6 +1340,15 @@ pub enum HookAction {
 
 #[derive(Subcommand)]
 pub enum AiCmd {
+    /// Guide first-run AI setup and the next app install step.
+    ///
+    /// Runs the same checks as `plexi ai doctor`, then prints the shortest path
+    /// to usable AI: local Ollama, a user-owned OpenRouter key, or skipping AI
+    /// for now. Ends with the app install command to try next.
+    ///
+    /// Example: plexi ai onboard
+    Onboard,
+
     /// Scan hardware and report recommended AI models.
     ///
     /// Detects your CPU, RAM/VRAM, and GPU, then recommends which local or cloud
