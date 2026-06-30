@@ -5,14 +5,18 @@
 
 ---
 
-## Current State (2026-06-29)
+## Current State (2026-06-30)
 
-**Sprint s50** ("Unified v1 landing"): 5/12 done per `stint status`. `stint status` reports 17 open active-pool tasks, 46 backlog tasks, and 5 blocked tasks. `0326` is done in stint; `stint check` is green.
+**Sprint s50** ("Unified v1 landing"): 5/12 done per `stint status`. `stint status` reports 17 open active-pool tasks, 46 backlog tasks, and 5 blocked tasks. `alpha` is clean and ahead of `origin/alpha` by 2 local commits:
+
+- `79d9c644` Harden semantic app shell rendering
+- `4c98056e` Expose host chrome to SDK app components
 
 Open PRs that affect priority reading:
 
 - `#2353` open: toolbar button focus steal fix from external branch.
 - `#2323` draft: WASM SDK v3 platform POCs (`0285`/`0287` lane).
+- `#2316` open: todo app space-to-toggle regression (`0281`).
 - `#2314` open: palette scroll reset (`0280`).
 - `#2282` open: collapsible subcontexts (`0241`).
 - Other open PRs exist, but they are not the v1 marketplace/app-framework spine.
@@ -55,6 +59,15 @@ App-builder hardening landed direct on `alpha` after live scaffold audit:
 - Trial 3 verified hot reload on the same pane id without reopening (`today` -> `today live`) and captured `hot_reload` / `reload triggered (watcher)` log lines.
 
 Remaining caveats are now documented in product guidance: blank directories need `plexi workspace init` or `--global`, fixture values should appear as exact visible scalar text for seeded checks, direct `.venv` imports are not the validation path, and hot-reload probes should wait for watcher debounce.
+
+SDK semantic chrome landed locally on `alpha` but is not pushed or installed yet:
+
+- `src/render/app_chrome.rs` is the shared host chrome boundary for SDK semantic components.
+- SDK semantic app bars, text/labels, buttons/action bars, badges, dividers, sections, cards, text edit, footer keys/footer, dots, and select lists route through host-themed chrome.
+- Headless PNG rendering installs the same Plexi fonts as the real host, fixing the `ui-medium` panic.
+- `plexi app init` now scaffolds a proof app that exercises AppBar, Card, Badge, Divider, TextEdit, Scrollable, Section, SelectList, ActionBar, and FooterKeys.
+- `plexi app check` gates current scaffolds on those semantic proof components.
+- Validation passed: `cargo test --bin plexi` (1436 passed, 1 ignored), `cargo build`, `git diff --check`, generated `app check`, and PNG review at `/tmp/app-chrome-poc-shots`.
 
 ---
 
@@ -162,7 +175,7 @@ Gaps before sharing publicly:
 
 **First-user critical path:** 0237 + 0324 + 0272 -> share.
 
-**Next recommended task:** `0237` workspace env secrets resolver. It is the next v1 blocker after the app-builder loop.
+**Next recommended task:** install and push the two local `alpha` commits, then claim `0237` workspace env secrets resolver. It is the next v1 blocker after the app-builder loop.
 
 ---
 
