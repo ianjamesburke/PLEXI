@@ -3506,9 +3506,7 @@ impl eframe::App for PlexiApp {
                 }
                 Action::PrevContext => {
                     let active = self.router.active_idx();
-                    let num = self.router.len();
-                    for offset in 1..num {
-                        let idx = (active + num - offset) % num;
+                    for idx in (0..active).rev() {
                         if !self.router.get(idx).parked {
                             log::info!("context: prev — idx={}", idx);
                             self.switch_workspace(idx);
