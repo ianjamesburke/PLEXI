@@ -1,6 +1,39 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.16] — 2026-07-01
+
+### Changes
+- fix: Cmd-Shift-K stops at top context instead of wrapping to bottom
+- feat: refresh website visual design (#2356)
+- feat: add AI onboarding guide (#2355)
+- feat: route ai broker through workspace secrets (#2354)
+- Expose host chrome to SDK app components
+- Harden semantic app shell rendering
+- Harden app shell rendering defaults
+- Document app builder hot reload loop
+- Return actual pane id from app open
+- Harden app builder host probes
+- Regenerate CLI docs for app scaffold checks
+- Validate scaffold shell layout in app check
+- Add semantic ActionBar app chrome checks
+- Route host app actions to SDK UiAction
+- Probe seeded app state in app check
+- Scaffold agent app validation contract
+- Fix stint claim instructions
+- Update alpha app-builder coordination
+- marketplace: free hosted registry smoke path (#2352)
+- marketplace: scan reviewed-native bypasses (#2351)
+- app distribution fixes (#2350)
+- rebuild: todo app from scratch (#2349)
+- redesign app UI boilerplate: action bar and footer layout (#2348)
+- sdk: self-documenting flow (#2347)
+- Add whats-next skill
+- Correct Plexi v1 roadmap
+- Refresh README app install and SDK examples (#2345)
+- Revert "feat: scratchpad image URL drag-to-insert with inline preview (#2346)"
+- feat: scratchpad image URL drag-to-insert with inline preview (#2346)
+- fix(snake): replace deterministic food placement with true uniform random (#2343)
 ## [0.1.15] — 2026-06-28
 
 ### Changes
