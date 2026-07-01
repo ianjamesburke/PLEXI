@@ -154,10 +154,10 @@ body::after {
 
 .wrap { max-width: 1200px; margin: 0 auto; padding: 0 32px; position: relative; }
 
-.atmosphere { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+.atmosphere { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
 .atmosphere .glow-hero {
   position: absolute; inset: 0 0 auto 0;
-  height: 760px;
+  min-height: 100vh;
   background:
     linear-gradient(90deg, rgba(52, 211, 153, 0.08), transparent 34%),
     linear-gradient(135deg, rgba(139, 92, 246, 0.14), transparent 42%),
@@ -407,8 +407,8 @@ footer .links a:hover { color: var(--fg); }
 .post-article .post-header h1 { font-size: 40px; letter-spacing: 0; font-weight: 600; line-height: 1.15; margin-bottom: 16px; }
 .post-article .post-header .description { color: var(--fg-2); font-size: 15px; line-height: 1.6; }
 .post-article .prose { color: var(--fg); font-size: 14px; line-height: 1.8; }
-.post-article .prose h2 { font-size: 22px; letter-spacing: 0; font-weight: 600; margin: 40px 0 16px; }
-.post-article .prose h3 { font-size: 17px; font-weight: 600; margin: 32px 0 12px; }
+.post-article .prose h2 { font-size: 22px; letter-spacing: 0; font-weight: 600; margin: 40px 0 16px; color: var(--fg); }
+.post-article .prose h3 { font-size: 17px; font-weight: 600; margin: 32px 0 12px; color: var(--fg); }
 .post-article .prose p { margin-bottom: 18px; color: var(--fg-2); }
 .post-article .prose a { color: var(--accent-light); border-bottom: 1px solid rgba(147, 51, 234, 0.35); transition: color 150ms, border-color 150ms; }
 .post-article .prose a:hover { color: var(--fg); border-bottom-color: var(--fg); }
