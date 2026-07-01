@@ -2,31 +2,37 @@
 ---
 <section id="product" class="story">
   <div class="wrap">
-
-    <div class="story-block">
-      <div class="story-label">01</div>
-      <h2>The terminal hasn't changed.</h2>
-      <p>AI rewrote how we build software. But the place where you actually work? Same tabs, same alt-tabbing, same chaos. Your coding agent is in one window. Your terminal is in another. Your app is in a third. Context dies every time you switch.</p>
+    <div class="story-intro">
+      <h2>Build the workspace around the way you actually work.</h2>
+      <p>Plexi gives your terminal, apps, and agents the same place to live. Start with the Mac app, connect AI when you want it, then install or build the tools you need.</p>
     </div>
 
-    <div class="story-block">
-      <div class="story-label">02</div>
-      <h2>App dev should be this simple.</h2>
-      <p>You built something with Claude. Now what — roll your own auth, send someone a localhost link, and pray? Plexi makes it as simple as sharing a Python file. Simple dashboards all the way up to full AI-powered workflows. No deploy pipeline. No infrastructure. Just the app.</p>
-    </div>
+    <div class="story-grid">
+      <div class="story-block">
+        <div class="story-label">01</div>
+        <h3>The terminal hasn't changed.</h3>
+        <p>AI changed how software gets made. The workspace stayed stuck in tabs, windows, and scattered context.</p>
+      </div>
 
-    <div class="story-block">
-      <div class="story-label">03</div>
-      <h2>Workflows are grown, not built.</h2>
-      <p>The best AI agents aren't shipped in a sprint. They're shaped by use, trained by your data, refined by your taste. Plexi is the garden — a workspace where your tools take root and get better the more you use them. Think Shopify, but for AI apps.</p>
-    </div>
+      <div class="story-block">
+        <div class="story-label">02</div>
+        <h3>App dev should be this simple.</h3>
+        <p>Build a local app with an agent, check it against the host, and install it without turning a small tool into a web service.</p>
+      </div>
 
-    <div class="story-block">
-      <div class="story-label">04</div>
-      <h2>One home that stretches.</h2>
-      <p>Three projects. Twelve panes. Your agents, your apps, your terminal — side by side. No context switching. No window management. Everything you build lives in one place, and everything you make is yours.</p>
-      <a class="btn lg" href="/download">Download the App <span class="arrow">→</span></a>
-      <div class="meta-under">macOS · open source</div>
+      <div class="story-block">
+        <div class="story-label">03</div>
+        <h3>Workflows are grown, not built.</h3>
+        <p>Your tools improve as you use them. Apps keep their state on disk, agents work in context, and permissions stay visible.</p>
+      </div>
+
+      <div class="story-block action-block">
+        <div class="story-label">04</div>
+        <h3>One home that stretches.</h3>
+        <p>Open a project, connect AI, install an app, and keep everything side by side in one workspace.</p>
+        <a class="btn lg" href="/download">Download the App <span class="arrow">→</span></a>
+        <div class="meta-under">Start with <code>plexi ai onboard</code></div>
+      </div>
     </div>
 
   </div>
@@ -34,13 +40,58 @@
 
 <style>
   .story {
-    padding: 0;
+    padding: 110px 0 120px;
+  }
+
+  .story-intro {
+    display: grid;
+    grid-template-columns: minmax(0, 0.95fr) minmax(280px, 0.7fr);
+    gap: 72px;
+    align-items: end;
+    margin-bottom: 46px;
+  }
+
+  .story-intro h2 {
+    font-size: 42px;
+    line-height: 1.12;
+    letter-spacing: 0;
+    font-weight: 600;
+    color: var(--fg);
+    max-width: 760px;
+  }
+
+  .story-intro p {
+    color: var(--fg-2);
+    font-size: 15px;
+    line-height: 1.75;
+    max-width: 440px;
+  }
+
+  .story-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    border: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(18, 20, 22, 0.92), rgba(10, 11, 13, 0.96));
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
   }
 
   .story-block {
-    padding: 96px 0;
-    border-top: 1px solid var(--border);
-    max-width: 640px;
+    min-height: 330px;
+    padding: 30px;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+
+  .story-block:last-child {
+    border-right: 0;
+  }
+
+  .story-block.action-block {
+    background:
+      linear-gradient(180deg, rgba(99, 102, 241, 0.08), transparent 56%),
+      linear-gradient(135deg, rgba(32, 211, 153, 0.10), transparent 48%);
   }
 
   .story-label {
@@ -53,41 +104,63 @@
     font-family: var(--mono);
   }
 
-  .story-block h2 {
-    font-size: 36px;
+  .story-block h3 {
+    font-size: 24px;
     font-weight: 600;
-    letter-spacing: -0.025em;
-    line-height: 1.15;
-    margin-bottom: 20px;
+    letter-spacing: 0;
+    line-height: 1.22;
+    margin-bottom: 18px;
     color: var(--fg);
   }
 
   .story-block p {
     color: var(--fg-2);
-    font-size: 15px;
+    font-size: 14px;
     line-height: 1.7;
-    max-width: 560px;
   }
 
   .story-block .btn {
-    margin-top: 32px;
+    margin-top: auto;
+    width: fit-content;
   }
 
   .story-block .meta-under {
     margin-top: 14px;
     color: var(--fg-3);
-    font-size: 13px;
+    font-size: 12px;
+  }
+
+  .story-block code {
+    color: var(--good);
+    background: rgba(52, 211, 153, 0.08);
+    border: 1px solid rgba(52, 211, 153, 0.18);
+    border-radius: 4px;
+    padding: 2px 5px;
   }
 
   @media (max-width: 980px) {
-    .story-block { padding: 64px 0; }
-    .story-block h2 { font-size: 28px; }
-    .story-block p { font-size: 14px; }
+    .story { padding: 80px 0; }
+    .story-intro { grid-template-columns: 1fr; gap: 20px; }
+    .story-intro h2 { font-size: 30px; }
+    .story-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .story-block { border-bottom: 1px solid var(--border); }
+    .story-block:nth-child(2n) { border-right: 0; }
+    .story-block:nth-last-child(-n + 2) { border-bottom: 0; }
   }
 
   @media (max-width: 480px) {
-    .story-block { padding: 48px 0; }
-    .story-block h2 { font-size: 24px; }
+    .story { padding: 58px 0; }
+    .story-intro h2 { font-size: 25px; }
+    .story-grid { grid-template-columns: 1fr; }
+    .story-block {
+      min-height: 0;
+      padding: 24px;
+      border-right: 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .story-block:nth-last-child(-n + 2) { border-bottom: 1px solid var(--border); }
+    .story-block:last-child { border-bottom: 0; }
+    .story-block h3 { font-size: 22px; }
     .story-block .btn.lg { width: 100%; text-align: center; justify-content: center; }
   }
 </style>

@@ -8,42 +8,48 @@ const headline = blog
   ? 'want to know when i write something?'
   : compact
   ? 'want a heads-up when a new version ships?'
-  : 'want to stay in the loop?';
+  : 'follow the build';
 const sub = blog
   ? "one email per post. that's it."
-  : "new versions, the occasional rant. that's it.";
+  : "New releases, sharp notes from the build, and no drip campaign.";
 const showSub = !compact;
 const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compact' : 'newsletter-form';
 ---
 <section class={`newsletter ${compact ? 'compact' : ''} ${blog ? 'blog' : ''}`}>
   <div class="wrap">
     <div class="nl-inner">
-      <h2 class="nl-headline">{headline}</h2>
-      {showSub && (
-        <p class="nl-sub">{sub}</p>
-      )}
-      <form id={formId} class="nl-form" novalidate>
-        <input
-          type="email"
-          name="email"
-          placeholder="you@example.com"
-          required
-          autocomplete="email"
-          class="nl-input"
-        />
-        <button type="submit" class="btn nl-btn">Subscribe <span class="arrow">→</span></button>
-      </form>
-      <div class="nl-message" data-form-id={formId} aria-live="polite"></div>
+      <div class="nl-copy">
+        <h2 class="nl-headline">{headline}</h2>
+        {showSub && (
+          <p class="nl-sub">{sub}</p>
+        )}
+      </div>
+      <div class="nl-signup">
+        <form id={formId} class="nl-form" novalidate>
+          <input
+            type="email"
+            name="email"
+            placeholder="you@example.com"
+            required
+            autocomplete="email"
+            class="nl-input"
+          />
+          <button type="submit" class="btn nl-btn">Subscribe <span class="arrow">→</span></button>
+        </form>
+        <div class="nl-message" data-form-id={formId} aria-live="polite"></div>
+      </div>
     </div>
   </div>
 </section>
 
 <style>
   .newsletter {
-    padding: 80px 0;
+    padding: 76px 0;
     border-top: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, transparent, rgba(107, 33, 168, 0.10), transparent);
+    background:
+      linear-gradient(90deg, rgba(52, 211, 153, 0.08), transparent 34%),
+      linear-gradient(180deg, rgba(255,255,255,0.035), rgba(139, 92, 246, 0.08), rgba(0,0,0,0.08));
   }
   .newsletter.compact {
     padding: 48px 0;
@@ -52,18 +58,22 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
     padding: 64px 0 80px;
   }
   .nl-inner {
-    max-width: 560px;
+    max-width: 760px;
     margin: 0 auto;
-    text-align: center;
+    text-align: left;
+    display: grid;
+    grid-template-columns: minmax(0, 0.8fr) minmax(320px, 0.85fr);
+    gap: 34px;
+    align-items: center;
   }
   .nl-headline {
     font-family: var(--mono);
     font-size: 28px;
     line-height: 1.25;
-    letter-spacing: -0.015em;
+    letter-spacing: 0;
     font-weight: 600;
     color: var(--fg);
-    margin-bottom: 14px;
+    margin-bottom: 10px;
   }
   .newsletter.compact .nl-headline {
     font-size: 20px;
@@ -72,8 +82,11 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
   .nl-sub {
     color: var(--fg-3);
     font-size: 14px;
-    margin-bottom: 26px;
     line-height: 1.6;
+  }
+  .nl-signup {
+    display: grid;
+    gap: 10px;
   }
   .nl-form {
     display: flex;
@@ -84,13 +97,13 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
   }
   .nl-input {
     flex: 1;
-    min-width: 240px;
-    max-width: 340px;
+    min-width: 0;
+    max-width: none;
     padding: 12px 14px;
     font-family: var(--mono);
     font-size: 13px;
     color: var(--fg);
-    background: var(--bg-2);
+    background: rgba(9, 10, 12, 0.72);
     border: 1px solid var(--border-2);
     border-radius: 6px;
     outline: none;
@@ -99,11 +112,10 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
   .nl-input::placeholder { color: var(--fg-4); }
   .nl-input:focus {
     border-color: var(--accent);
-    box-shadow: 0 0 0 1px rgba(147, 51, 234, 0.35);
+    box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.35);
   }
   .nl-btn { white-space: nowrap; }
   .nl-message {
-    margin-top: 14px;
     font-size: 13px;
     min-height: 16px;
     color: var(--fg-3);
@@ -112,8 +124,9 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
   .nl-message.error { color: var(--warn); }
   .nl-form.hidden { display: none; }
 
-  @media (max-width: 480px) {
+  @media (max-width: 760px) {
     .nl-headline { font-size: 22px; }
+    .nl-inner { grid-template-columns: 1fr; gap: 22px; }
     .nl-form { flex-direction: column; }
     .nl-input { max-width: none; min-width: 0; width: 100%; }
   }
