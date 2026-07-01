@@ -64,11 +64,11 @@ import Logo from './Logo.astro';
     transition: color 150ms;
   }
   .mobile-menu a:last-child { border-bottom: none; margin-top: 8px; }
-  .mobile-menu a:hover { color: var(--fg-1); }
+  .mobile-menu a:hover { color: var(--fg); }
 
   @media (max-width: 980px) {
     .mobile-menu-btn { display: flex; }
-    .cta { display: none; }
+    nav.top .cta { display: none; }
     nav.top.open .mobile-menu { display: flex; }
     nav.top.open .mobile-menu-btn .bar:first-child { transform: rotate(45deg) translate(2px, 2px); }
     nav.top.open .mobile-menu-btn .bar:last-child { transform: rotate(-45deg) translate(2px, -2px); }
