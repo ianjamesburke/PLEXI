@@ -409,26 +409,30 @@ impl PlexiApp {
 
     pub(crate) fn new_tab(
         &mut self,
+        target_win_idx: usize,
         initial_cmd: Option<&str>,
         close_on_exit: bool,
         cwd_override: Option<PathBuf>,
     ) {
         // Empty context (welcome screen): create the first pane as tree root.
-        if self.windows[self.active_window].panes.is_empty() {
+        if self.windows[target_win_idx].panes.is_empty() {
             let new_id = self.host.alloc_pane_id();
             let ctx_id = self
                 .windows
-                .get(self.active_window)
+                .get(target_win_idx)
                 .map(|w| w.context_id)
                 .unwrap_or(0);
             let ctx_name = self.context_name_for(ctx_id);
             let ctx_desc = self.context_description_for(ctx_id);
             let ctx_root = self.context_root_for(ctx_id);
             let ctx_depth = self.context_depth_for(ctx_id);
-            let cwd = cwd_override.unwrap_or_else(|| self.cwd_for_welcome_tab());
+            // Resolve against the target window's own context, not the ambient
+            // active context — target_win_idx may differ from self.active_window.
+            let cwd = cwd_override.or_else(|| ctx_root.clone()).unwrap_or_else(|| {
+                dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"))
+            });
             log::info!(
-                "new_tab (empty context): cwd={cwd:?} context_root={:?}",
-                self.router.active().root
+                "new_tab (empty context): target_win_idx={target_win_idx} cwd={cwd:?} context_root={ctx_root:?}"
             );
             let mut settings = Self::make_backend_settings(
                 new_id,
@@ -457,7 +461,7 @@ impl PlexiApp {
                 return;
             };
             pane.ephemeral = close_on_exit;
-            let ctx = &mut self.windows[self.active_window];
+            let ctx = &mut self.windows[target_win_idx];
             ctx.panes.insert(new_id, Pane::Terminal(Box::new(pane)));
             let pane_tile = ctx.tree.tiles.insert_pane(new_id);
             let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![pane_tile]);
@@ -466,28 +470,32 @@ impl PlexiApp {
             return;
         }
 
-        let old_window_id = self.windows[self.active_window].window_id;
-        let old_focus = self.windows[self.active_window].focused_pane;
-        let Some(focused) = self.windows[self.active_window].focused_pane else {
+        let old_window_id = self.windows[target_win_idx].window_id;
+        let old_focus = self.windows[target_win_idx].focused_pane;
+        let Some(focused) = self.windows[target_win_idx].focused_pane else {
             return;
         };
 
         let new_id = self.host.alloc_pane_id();
 
-        let cwd = cwd_override.or_else(|| self.resolve_new_pane_cwd(None, Some(focused)));
-        log::info!(
-            "new_tab: cwd={cwd:?} context_root={:?}",
-            self.router.active().root
-        );
         let ctx_id = self
             .windows
-            .get(self.active_window)
+            .get(target_win_idx)
             .map(|w| w.context_id)
             .unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
         let ctx_desc = self.context_description_for(ctx_id);
         let ctx_root = self.context_root_for(ctx_id);
         let ctx_depth = self.context_depth_for(ctx_id);
+
+        // Resolve against the target window's own context/pane, not the ambient
+        // active window — target_win_idx may differ from self.active_window when
+        // anchored to a caller pane in another window.
+        let cwd = cwd_override
+            .or_else(|| ctx_root.clone())
+            .or_else(|| self.windows[target_win_idx].get_focused_pane_cwd(focused))
+            .or_else(dirs::home_dir);
+        log::info!("new_tab: target_win_idx={target_win_idx} cwd={cwd:?} context_root={ctx_root:?}");
         let mut settings = Self::make_backend_settings(
             new_id,
             cwd,
@@ -513,12 +521,12 @@ impl PlexiApp {
             return;
         };
         pane.ephemeral = close_on_exit;
-        self.windows[self.active_window]
+        self.windows[target_win_idx]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));
         self.push_focus_history(old_window_id, old_focus);
 
-        let ctx = &mut self.windows[self.active_window];
+        let ctx = &mut self.windows[target_win_idx];
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
 
         if let Some((tabs_id, _)) = ctx.find_ancestor_tabs(focused) {

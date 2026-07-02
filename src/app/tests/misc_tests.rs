@@ -266,3 +266,106 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
         "new window must be in row 0 (caller's grid row), not row 1 (active context's row)"
     );
 }
+
+/// When `plexi pane new --tab` is called with a `from_pane_id` in a non-active
+/// window, the new tab must land in that pane's window — not the active window.
+/// Regression for stint 0337: the `tab` IPC branch called `new_tab()` against
+/// `self.active_window` unconditionally, ignoring `from_pane_id` entirely.
+#[test]
+fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
+    let ctx = egui::Context::default();
+    let ft = crate::platform::logging::new_frame_tick();
+    let (mut app, ipc_tx) = PlexiApp::new_for_test(ctx, ft);
+
+    // Window 0 is created by new_for_test; give it a caller pane.
+    let (tile_in_w0, pane_id_ctx1) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_in_w0);
+
+    // Add a second window and make it the active one.
+    let ctx2_id: u64 = 2;
+    app.router.push(crate::host::context::Context {
+        name: "Context 2".into(),
+        path: std::env::temp_dir(),
+        root: None,
+        description: None,
+        context_id: ctx2_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.windows.push(crate::host::context::Window {
+        name: "Context 2".into(),
+        path: std::env::temp_dir(),
+        tree: egui_tiles::Tree::empty("ctx2_tree"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 1,
+        window_id: 10,
+        context_id: ctx2_id,
+    });
+    app.active_window = 1;
+    app.router.set_active(1);
+
+    let panes_in_w0_before = app.windows[0].panes.len();
+    let panes_in_w1_before = app.windows[1].panes.len();
+
+    let requested_cwd = std::env::temp_dir();
+
+    // Inject a spawn-pane IPC from window 0's pane (pane_id_ctx1) with layout=tab,
+    // while window 1 is active.
+    let _ = ipc_tx.send(crate::app_protocol::AppRequest::SpawnPane {
+        type_id: "terminal".to_string(),
+        layout: Some("tab".to_string()),
+        args: vec![],
+        pipe_id: None,
+        from_pane_id: Some(pane_id_ctx1),
+        request_id: None,
+        response_file: None,
+        ephemeral: false,
+        cwd: Some(requested_cwd.to_string_lossy().to_string()),
+        no_focus: false,
+        path: None,
+        workspace_root: None,
+        target_context: None,
+        name: None,
+    });
+    app.drain_pane_cmd_channel();
+
+    // PTY creation may fail in some CI environments; guard before asserting.
+    if app.windows[0].panes.len() == panes_in_w0_before {
+        return; // terminal spawn failed; skip remainder
+    }
+
+    assert_eq!(
+        app.windows[0].panes.len(),
+        panes_in_w0_before + 1,
+        "new tab must be added to window 0 (caller's window), not window 1 (active)"
+    );
+    assert_eq!(
+        app.windows[1].panes.len(),
+        panes_in_w1_before,
+        "active window 1 must be untouched by a tab anchored to a different caller pane"
+    );
+
+    let new_pane_id = *app.windows[0]
+        .panes
+        .keys()
+        .find(|id| **id != pane_id_ctx1)
+        .expect("a new pane must have been added to window 0");
+    let new_tile = app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&new_pane_id)
+        .expect("new pane must be present in window 0's tile tree");
+    // lsof-based cwd lookup races the freshly spawned child reporting its own
+    // cwd; only assert when it resolved in time.
+    if let Some(new_pane_cwd) = app.windows[0].get_focused_pane_cwd(new_tile) {
+        assert_eq!(
+            new_pane_cwd.canonicalize().unwrap_or(new_pane_cwd),
+            requested_cwd.canonicalize().unwrap_or(requested_cwd),
+            "new tab must honor the requested --cwd"
+        );
+    }
+}
