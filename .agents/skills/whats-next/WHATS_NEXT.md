@@ -8,7 +8,7 @@
 
 ## Current State (2026-07-02)
 
-`alpha` is at `16311edb`. Since the last audit: bundle #2359 landed four tasks in one squash — `0343` drive-host skill (agent live-E2E loop codified), `0311` Cmd+P empty-context launch fix, `0296` canonical core app set (`packs/core.toml` + `app install --pack core --refresh` update path for stable channels), `0298` assistant stub-command deletion. `0334` (core-app cull) is now unblocked. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry live, secrets, onboarding, website) is landed — see `docs/DEVLOG.md`. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at `c10eb070`. Since the last audit: no implementation PRs landed after bundle #2359; the audit commit recorded that `0343`, `0311`, `0296`, and `0298` are done and `0334` is unblocked. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry live, secrets, onboarding, website) is landed — see `docs/DEVLOG.md`. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
@@ -97,10 +97,10 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 
 P0: `0330` (chain head), `0327`.
 P1: `0335`, `0331`*, `0328`, `0241` (PR needs fixing), `0338`, `0285`, `0332`*, `0339`*, `0340`*, `0341`*.
-P2 and below: run `stint list` (`0334` newly unblocked).
+P2 and below: `0334` is the newly unblocked core-app cull; run `stint list` for the rest.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0327` — event-bus unification, P0 standalone and the transport-contract toll for Epoch 4; `0330` heads the app-dev E2E chain; `0338` (account service) opens Epoch 3.
+**Next recommended task:** `0327` — event-bus unification, P0 standalone and the transport-contract toll for Epoch 4.
 
 ---
 
