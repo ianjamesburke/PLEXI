@@ -384,3 +384,15 @@ scene FILE out="/tmp/plexi-scenes" shots="1":
     PLEXI_SCENE={{FILE}} PLEXI_SCENE_OUT={{out}} \
     {{ if shots == "0" { "PLEXI_SCENE_NO_SHOTS=1" } else { "" } }} \
     cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
+
+# Run one agent-drives-agent app-authoring E2E session from a prompt fixture.
+# Provisions an isolated session and leaves a capture dir under benchmarks/app-authoring/sessions.
+#   just e2e-session tools/e2e_authoring/fixtures/counter.toml            — live (needs channel + display)
+#   just e2e-session tools/e2e_authoring/fixtures/counter.toml e2e --dry-run   — plumbing check, no host
+e2e-session fixture channel="e2e" *flags="":
+    uv run --python 3.12 --project tools/e2e_authoring plexi-e2e run {{fixture}} \
+        --channel {{channel}} --sessions-root benchmarks/app-authoring/sessions {{flags}}
+
+# Runner unit tests (command construction + dry-run plumbing, fully host-free).
+e2e-test:
+    uv run --python 3.12 --project tools/e2e_authoring --extra dev python -m pytest tools/e2e_authoring

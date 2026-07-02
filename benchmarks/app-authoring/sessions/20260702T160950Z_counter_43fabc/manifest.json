@@ -1,0 +1,18 @@
+{
+  "archived_profile": null,
+  "binary": "plexi-e2e",
+  "channel": "e2e",
+  "created_at": "2026-07-02T16:09:50.539429+00:00",
+  "dry_run": true,
+  "fixture": {
+    "description": "User wants a number on screen that goes up when they press a key, with a reset.",
+    "difficulty": "easy",
+    "id": "counter"
+  },
+  "fresh_profile": false,
+  "parent_turns": 1,
+  "profile_dir": "/Users/ianburke/.plexi-e2e",
+  "schema_version": 1,
+  "session_id": "20260702T160950Z_counter_43fabc",
+  "wall_clock_secs": 0.002
+}
