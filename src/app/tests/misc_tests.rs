@@ -333,8 +333,12 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
     });
     app.drain_pane_cmd_channel();
 
-    // PTY creation may fail in some CI environments; guard before asserting.
-    if app.windows[0].panes.len() == panes_in_w0_before {
+    // PTY creation may fail in some CI environments; guard on total pane count
+    // (not just window 0's) so a regression that lands the tab in window 1
+    // instead of window 0 doesn't get mistaken for a skipped spawn failure.
+    let total_before = panes_in_w0_before + panes_in_w1_before;
+    let total_after = app.windows[0].panes.len() + app.windows[1].panes.len();
+    if total_after == total_before {
         return; // terminal spawn failed; skip remainder
     }
 
