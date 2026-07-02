@@ -1,0 +1,22 @@
+name: website-smoke
+
+# Post-deploy smoke check (stint 0345). Railway auto-deploys the website from
+# alpha; this waits out the build window, then verifies production: pages,
+# install redirect, registry index, and every artifact checksum.
+on:
+  push:
+    branches: [alpha]
+    paths:
+      - "website/**"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Wait for Railway deploy window
+        run: sleep 240
+      - name: Smoke-check production
+        run: bash website/scripts/prod-smoke.sh

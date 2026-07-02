@@ -18,6 +18,14 @@ dev:
 web:
     npm --prefix website run dev
 
+# Deploy the website to Railway production from the current tree.
+website-deploy:
+    railway up --detach -m "website deploy from $(git branch --show-current)@$(git rev-parse --short HEAD)"
+
+# Smoke-check production: pages, install redirect, registry index + artifact checksums.
+website-smoke:
+    bash website/scripts/prod-smoke.sh
+
 # Run the full test suite — HostHarness regression tests + unit tests.
 test:
     cargo test

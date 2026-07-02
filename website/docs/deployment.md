@@ -1,5 +1,19 @@
 # Deployment
 
+## Deploy pipeline (stint 0345)
+
+Production deploys from the **`alpha` branch** via the Railway GitHub
+integration — every merged website change ships automatically. The website is
+not the app binary (downloads redirect to GitHub releases), so it does not
+wait on `main` release promotions. Changed 2026-07-02; before that the
+service tracked `main` and prod drifted weeks behind alpha.
+
+- Manual deploy of the current tree: `just website-deploy` (repo root).
+- Post-deploy verification: `just website-smoke` — checks the home/download
+  pages, the install redirect, the registry index, and downloads every
+  registry artifact to verify its checksum. Run it after every deploy;
+  nonzero exit means production is broken.
+
 ## Deploying to Railway
 
 The site builds via `Dockerfile` and runs as a Node standalone server on Railway.
