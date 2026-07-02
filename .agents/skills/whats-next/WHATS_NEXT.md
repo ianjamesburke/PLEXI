@@ -33,6 +33,8 @@ Every epoch feeds the next; the whole line points at `NORTH_STAR.md` ("the last 
 A stranger installs, an agent builds an app first try, a free reviewed app installs from the hosted registry.
 
 - **Prove "agents build apps first try"** (the DX chain — dispatch in order)
+  - `0342` `plexi host start` — one-command host launch with declarative boot layout (the live-E2E primitive) — **ready, P0, in progress**
+    - `0343` drive-host skill — codified agentic live PR-testing loop
   - `0330` app-dev CLI path E2E audit + open-placement fix (default: sibling split) — **ready, next up**
     - `0331` agent-drives-agent E2E pipeline (isolated instance, parent as user-proxy, session capture)
       - `0332` authoring guidance consolidation + drift gates (dead links, effect-name drift, one canonical doc, CI-gated)
@@ -65,6 +67,7 @@ The registry brokers money; never a dependency for running installed apps. Spec:
     - `0322` host: account-gated paid downloads (also after `0340`)
       - `0341` marketplace app + paywall handoff (also after `0327`)
   - `0340` host `plexi account` CLI + license-machinery deletion
+  - `0342` publisher submission pipeline + review queue (`plexi app publish` → admin approval; also after `0339`)
   - `0323` Plexi-managed `ai.query` backend (also after `0339`)
 - `0325` app/agent/skill package envelope spec — unblocked
 
@@ -92,7 +95,7 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 
 ## Priority Stack (flat view)
 
-P0: `0330` (chain head), `0327`, `0280`.
+P0: `0342` (in progress), `0343`*, `0330` (chain head), `0327`, `0280`.
 P1: `0335`, `0331`*, `0328`, `0241` (PR needs fixing), `0338`, `0285`, `0332`*, `0339`*, `0340`*, `0341`*.
 P2 and below: run `stint list`.
 (* = blocked; see the Arc for what unblocks them.)

@@ -1,7 +1,7 @@
 # Marketplace Monetization: Accounts, Payments, and the No-License Model
 
 Status: active.
-Stint: 0338–0341 (execution), 0322 (re-scoped), 0323/0325 (downstream).
+Stint: 0338–0342 (execution), 0322 (re-scoped), 0323/0325 (downstream).
 Parent: [`app-framework-marketplace.md`](app-framework-marketplace.md). Supersedes §4 of [`marketplace-hosted.md`](marketplace-hosted.md) (the 0021 paid-apps section) and fills the named billing placeholders in its §5.4. Everything else in `marketplace-hosted.md` stands.
 
 This is the commercial-launch design doc: how paid apps are sold, how accounts work, how money moves, and why there is no client-side licensing. It resolves every open decision in stint 0315.
@@ -96,6 +96,10 @@ Fills the named placeholders in `marketplace-hosted.md` §5.4 (mechanics live th
 - `PAID_TIER_PRICE` = **$10/month** (Polar subscription product).
 - `PAID_TIER_REQUEST_ALLOWANCE` = generous fair-use ceiling, enforced server-side; the exact number is a proxy-config value, not a client constant.
 - `OVERAGE_POLICY` = hard stop with `subscription_quota_exceeded`; upgrade or wait for the next cycle. Never silent rerouting, never a surprise bill. (Future: "or pay from credits.")
+
+## Publishing and Review
+
+Review policy lives in `marketplace-hosted.md` §3 and is unchanged (one validator, two call sites; mandatory human review; submitted → in review → approved / changes requested / rejected). What this spec adds is the enforcement shape: **no path exists from a publisher to the registry except through approval.** `plexi app publish` (account required) uploads to a private submissions area; the server re-runs the validator; the operator approves in an allowlisted admin surface on plexiapp.com; approval is the only registry write, for free and paid apps alike. The registry index is served from the database at the existing URL; the git-committed registry remains as the bootstrap/smoke fixture. Stint: 0342.
 
 ## Future: Credits (Penciled In, Not Built)
 
