@@ -8,7 +8,7 @@
 
 ## Current State (2026-07-02)
 
-`alpha` is at `baa3010c`. Since the last audit: palette scroll fix merged (`0280`, #2314), `plexi host start` merged (`0342`, #2358), registry went live in production (`0345` — installs verified E2E), and the monetization spec landed (`0315`). The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry live, secrets, onboarding, website) is landed — see `docs/DEVLOG.md`. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at `16311edb`. Since the last audit: bundle #2359 landed four tasks in one squash — `0343` drive-host skill (agent live-E2E loop codified), `0311` Cmd+P empty-context launch fix, `0296` canonical core app set (`packs/core.toml` + `app install --pack core --refresh` update path for stable channels), `0298` assistant stub-command deletion. `0334` (core-app cull) is now unblocked. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry live, secrets, onboarding, website) is landed — see `docs/DEVLOG.md`. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
@@ -33,15 +33,15 @@ A stranger installs, an agent builds an app first try, a free reviewed app insta
 
 - **Prove "agents build apps first try"** (the DX chain — dispatch in order)
   - `0342` `plexi host start` — one-command host launch with declarative boot layout (the live-E2E primitive) — **done, #2358 landed**
-    - `0343` drive-host skill — codified agentic live PR-testing loop — **ready, P0**
+    - `0343` drive-host skill — codified agentic live PR-testing loop — **done, #2359 landed**
   - `0330` app-dev CLI path E2E audit + open-placement fix (default: sibling split) — **ready, next up**
     - `0331` agent-drives-agent E2E pipeline (isolated instance, parent as user-proxy, session capture)
       - `0332` authoring guidance consolidation + drift gates (dead links, effect-name drift, one canonical doc, CI-gated)
       - `0215` app-authoring benchmark + case-study directory (prompt library, scorecards, baseline sweep; also blocked by 0330)
 - **Make shipped apps the exemplar tier** (apps are the de facto docs)
   - `0335` logs app rebuild — flagship SDK exemplar (v2 colors/labels/sorting restored, app-id filter, channel-aware) — **ready**
-  - `0296` canonicalize the core app install set (blocked by done `0277`)
-    - `0334` core-app cull + exemplar conformance sweep (delete POCs, survivors pass all gates; stats gauge fixes)
+  - `0296` canonicalize the core app install set — **done, #2359 landed**
+    - `0334` core-app cull + exemplar conformance sweep (delete POCs, survivors pass all gates; stats gauge fixes) — **ready**
   - `0328` SDK component coverage audit (Polaris-class vocabulary, intrinsic size contract, `SetShortcuts` native chrome) — **ready**
 - **First-user surface** (onboarding `0324`, website `0272`, registry go-live `0345`, palette scroll `0280` all landed — prod registry is live, installs E2E; website auto-deploys from alpha, `just website-smoke` verifies)
   - `0346` publish the Core app set to the hosted registry (after `0334`; the catalog a first user sees)
@@ -95,12 +95,12 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 
 ## Priority Stack (flat view)
 
-P0: `0343`, `0330` (chain head), `0327`.
+P0: `0330` (chain head), `0327`.
 P1: `0335`, `0331`*, `0328`, `0241` (PR needs fixing), `0338`, `0285`, `0332`*, `0339`*, `0340`*, `0341`*.
-P2 and below: run `stint list`.
+P2 and below: run `stint list` (`0334` newly unblocked).
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0343` — drive-host skill, now unblocked by `0342`; `0330` heads the app-dev E2E chain; `0335` (logs) and `0327` (event bus) are the parallel-friendly picks.
+**Next recommended task:** `0327` — event-bus unification, P0 standalone and the transport-contract toll for Epoch 4; `0330` heads the app-dev E2E chain; `0338` (account service) opens Epoch 3.
 
 ---
 
