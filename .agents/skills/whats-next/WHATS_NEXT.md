@@ -48,7 +48,17 @@ A stranger installs, an agent builds an app first try, a free reviewed app insta
   - `0272` website refresh (`plexiapp.com`) — share publicly after this
 - **First-user critical path:** `0324` -> `0272` -> share.
 
-### Epoch 2 — Commercial launch (Track B)
+### Epoch 2 — Intelligence (NORTH_STAR Phase 3; runs parallel to Epoch 3)
+
+The host Assistant becomes the workspace operator: typed host tools behind the permission broker, named agent personas, skills, app connectors.
+
+- `0225` agent registry + model routing
+- `0226` settings scopes (user/workspace/local/session)
+- `0228` conversation persistence + history
+- `0229` skills + host tools (pane/app/terminal operations)
+- (`0227` app connectors — done)
+
+### Epoch 3 — Commercial launch (Track B)
 
 The registry brokers money; never a dependency for running installed apps.
 
@@ -57,7 +67,7 @@ The registry brokers money; never a dependency for running installed apps.
   - `0323` Plexi-managed `ai.query` backend with entitlements
   - `0325` app/agent/skill package envelope spec
 
-### Epoch 3 — The Platform (WASM, mobile, hosted)
+### Epoch 4 — The Platform (WASM, mobile, hosted)
 
 Same app contract, sandboxed runtime. This is what makes the marketplace mobile-friendly (in-process WASM is the only way apps run on iOS) and hosted (same typed contract over WebSocket).
 
@@ -71,15 +81,11 @@ Same app contract, sandboxed runtime. This is what makes the marketplace mobile-
 - **Trust-rail riders** (design lands on whatever Epoch 2 + trust gates establish)
   - `0333` biometric user-verification effect (Touch ID/Face ID via LocalAuthentication; keychain-bound secrets)
 
-### Epoch 4 — The Portable Instance
+### Epoch 5 — The Portable Instance
 
 Your whole environment runs as a server (local or cloud, same architecture); thin clients attach from anywhere. SpacetimeDB persistence/sync. No stint tasks yet — deliberately: everything above must land first. This epoch is where "hosted, mobile-friendly marketplace" matures into "your working life on any device" — the north star's inheritance layer stands on it.
 
-### Ongoing lanes (not epoch-gated)
-
-- Assistant intelligence: `0225`-`0229` (registry, scopes, persistence, skills/host tools).
-- Input/architecture debt: `0240` (-> `0250`, `0258`, `0259`), `0257`, `0260`/`0261`/`0264`.
-- Hygiene + polish: `0238` test coverage, `0295`/`0297`, `0311`, `0317`, `0298`, `0310`, file explorer (`0007`, `0150`), terminal features, UI polish, infra (`0265`-`0270`). Run `stint list` for the full set.
+Maintenance (input debt, hygiene, polish) deliberately does not appear here — it advances no epoch. It lives in `stint list` with correct priorities and blockers.
 
 ---
 
@@ -87,7 +93,7 @@ Your whole environment runs as a server (local or cloud, same architecture); thi
 
 P0: `0330` (chain head), `0327`, `0324`, `0280`.
 P1: `0335`, `0331`*, `0328`, `0241` (PR needs fixing), `0315`, `0285`, `0272`, `0332`*.
-P2: `0334`*, `0215`*, `0336`*, `0333`, `0311`, `0317`, `0296`, `0295`, `0297`, `0238`, `0240`, `0257`, `0225`-`0229`.
+P2 and below: run `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
 **Next recommended task:** `0330` — heads the P0 DX chain; `0335` (logs) and `0324` (onboarding) are the parallel-friendly picks.
