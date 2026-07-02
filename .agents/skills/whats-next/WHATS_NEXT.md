@@ -2,18 +2,17 @@
 
 > Read this at the start of any Plexi session. It is the single anchor for orientation.
 > Skill: `/whats-next` -- re-runs the audit and updates this file. Auto-updated by `/merge-pr` after every merge.
+> Landed-work history lives in `docs/DEVLOG.md`; this file stays forward-looking.
 
 ---
 
-## Current State (2026-06-30)
+## Current State (2026-07-01)
 
-**Sprint s50** ("Unified v1 landing"): 5/12 done per `stint status`. `stint status` reports 17 active tasks, 45 backlog tasks, and 5 blocked tasks. `alpha` is merged at:
+**Sprint s50** ("Unified v1 landing"): 5/12 done per `stint status`. `alpha` is merged at:
 
 - `7ddb7c3e` feat: route ai broker through workspace secrets (#2354)
 
-Just merged:
-
-- `#2354` / `0237`: workspace env secrets resolver. PR build artifacts and the feature worktree were cleaned up by `just merge-pr 2354`.
+New this session: an inter-pane comms deep-dive filed the **app-dev DX chain** (`0330 -> 0331 -> 0332 -> 0215`) and the comms unification task (`0327`). These are now the top of the priority stack (see below). Full findings are in the task bodies.
 
 Open PRs that affect priority reading:
 
@@ -25,45 +24,7 @@ Open PRs that affect priority reading:
 - `#2282` open: collapsible subcontexts (`0241`), currently has a failed build check.
 - `#1604` open: Windows port from external branch.
 
-**Source-of-truth correction:** `0319` resolved the sequencing conflict. Free v1 marketplace work proceeds through reviewed-native Python apps with blunt trust labels, human review, and bypass-pattern checks. WASM remains the stronger sandbox/performance path and v2 trust upgrade.
-
----
-
-## Recently Landed
-
-Free v1 local/demo/distribution/trust/hosted-registry spine is landed on `alpha`:
-
-| Task | PR | Result |
-|------|----|--------|
-| 0313 | #2347 | SDK/scaffold self-documenting flow shipped. |
-| 0314 | #2348 | ActionBar scaffold pattern and FooterKeys clipping fix shipped. |
-| 0299 | #2349 | Todo rebuilt as the canonical SDK v3 demo app. |
-| 0316 | #2350 | Scaffold packaging, direct GitHub/source install, update unification, ref fallback, and workspace-aware update shipped. |
-| 0320 | #2351 | Reviewed-native bypass scanner and honest trust labels shipped. |
-| 0321 | #2352 | Free hosted reviewed-native registry smoke path shipped. |
-| 0237 | #2354 | Workspace/global secrets now flow through command runs, PTYs, and the OpenRouter broker. |
-
-App-builder hardening also landed on `alpha`:
-
-- `0326` shipped scaffold-local `AGENTS.md`, `.gitignore`, drift metadata, fixtures, semantic ActionBar/FooterKeys boilerplate, host probes, headless check/render coverage, and hot-reload guidance.
-- SDK semantic chrome shipped in `src/render/app_chrome.rs`; app init/check now exercise host-native semantic components.
-- `plexi app check` gates current scaffolds on semantic proof components and seeded render/action probes.
-
----
-
-## Verified State
-
-Confirmed by recent validation runs:
-
-- Fresh scaffold validate -> package -> package install works; generated `.venv` artifacts are excluded.
-- Direct GitHub/source installs route through the git resolver.
-- Pack-file install with git cloning works.
-- Core pack install works.
-- `plexi app update` / `plexi update apps` use the real git update path and handle workspace installs.
-- Reviewed-native package validation flags obvious subprocess/socket/path traversal bypasses.
-- Free hosted reviewed-native registry smoke path is live in the website registry fixture.
-- Agent app-building loop is trustworthy enough for v1: generated app instructions, drift metadata, headless check/render, JSON seed state, real host state/action/key probes, and same-pane hot reload were verified by three sequential app-build trials.
-- Workspace secrets resolver now works for command-run, OpenRouter broker lookup, and GUI terminal panes after zsh startup overwrites.
+Recently landed work and verified-state notes: see `docs/DEVLOG.md` (2026-06-30 entry).
 
 Not real yet:
 
@@ -81,7 +42,7 @@ Not real yet:
 
 The product a stranger can install, build an app in, and use with a free reviewed app. No money yet.
 
-1. **App-building loop is exact.** `0326` shipped `plexi app init` -> generated app `AGENTS.md` -> test/render/check/state/action/hot-reload validation against the real host pane.
+1. **App-building loop is exact.** `0326` shipped `plexi app init` -> generated app `AGENTS.md` -> test/render/check/state/action/hot-reload validation against the real host pane. The DX chain (`0330 -> 0331 -> 0332`) now audits, pipelines, and de-drifts that loop end-to-end.
 2. **Demo path is rebuilt.** `0313`, `0314`, and `0299` shipped the scaffold and canonical todo demo path.
 3. **Distribution basics are clean.** `0316` shipped default scaffold packaging, direct GitHub install, update command unification, tag fallback, and workspace-aware update.
 4. **Trust is honest for reviewed-native v1.** `0320` shipped bypass scanning and trust-label behavior for native Python packages.
@@ -107,8 +68,20 @@ Starts after Track A's local distribution and free hosted install are real. Brok
 
 ### P0 -- Ship These First
 
+**App-dev DX chain (dispatch in order; each unblocks the next):**
+
+| Order | Task | Title | Status |
+|-------|------|-------|--------|
+| 1 | 0330 | audit: app-dev CLI path end-to-end functional audit + open-behavior fix | ready |
+| 2 | 0331 | infra: agent-drives-agent E2E pipeline for app-building sessions | blocked by 0330 |
+| 3 | 0332 | docs: app-authoring guidance consolidation + drift gates | blocked by 0331 |
+| 4 | 0215 | Build a Plexi app-authoring benchmark + case-study directory | blocked by 0330, 0331 |
+
+**Standalone P0:**
+
 | Task | Title | Why |
 |------|-------|-----|
+| 0327 | refactor: unify inter-pane comms on the event bus | Three-lane comms model (events / binary pipes / PTY); WASM-transition prerequisite. |
 | 0324 | onboarding: first-run AI doctor and app-install guidance | Last first-user product gap after install/demo/distribution/secrets. |
 | 0280 | fix: palette scroll position persists between opens | Visible regression; PR `#2314` is open but needs fresh validation/merge decision. |
 
@@ -116,6 +89,7 @@ Starts after Track A's local distribution and free hosted install are real. Brok
 
 | Task | Title | Blocked By | Why |
 |------|-------|------------|-----|
+| 0328 | sdk: UI component coverage audit + placeholder primitives | -- | Polaris-class component vocabulary + `SetShortcuts` host chrome; kills per-app hand-rolling. |
 | 0241 | feat: collapsible subcontexts with top-level sidebar numbering | -- | v1 navigation primitive; PR `#2282` exists but currently has a failed build. |
 | 0315 | spec: marketplace monetization + anti-fork model | -- | Unblocks commercial-launch tasks `0322`, `0323`, and `0325`. |
 | 0285 | wasm: WASM-native Python SDK + CPython-in-WASM runtime | -- | Strategic sandbox/performance lane; draft PR `#2323` exists. |
@@ -137,7 +111,7 @@ Starts after Track A's local distribution and free hosted install are real. Brok
 
 ### P3 -- Polish / Backlog
 
-`0298`, `0310`, file explorer backlog (`0007`, `0150`), terminal features (`0247`, `0258`, `0259`, `0246`), UI polish (`0243`, `0245`, `0252`, `0263`), input refactors (`0260`, `0261`, `0264`), infra hygiene (`0265-0270`), WASM effects (`0230-0234`), and benchmarks (`0215`). Run `stint list` for the full set.
+`0298`, `0310`, file explorer backlog (`0007`, `0150`), terminal features (`0247`, `0258`, `0259`, `0246`), UI polish (`0243`, `0245`, `0252`, `0263`), input refactors (`0260`, `0261`, `0264`), infra hygiene (`0265-0270`), and WASM effects (`0230-0234`). Run `stint list` for the full set.
 
 ---
 
@@ -151,13 +125,18 @@ Gaps before sharing publicly:
 
 **First-user critical path:** 0324 -> 0272 -> share.
 
-**Next recommended task:** claim `0324` first-run onboarding. It is ready, user-facing, and now the highest-leverage first-user gap after `0237` landed.
+**Next recommended task:** claim `0330` (app-dev CLI path audit). It heads the P0 DX chain — everything downstream (agent-drive pipeline, guidance consolidation, benchmark corpus) is sequenced behind it.
 
 ---
 
 ## Blocked Chains
 
 ```
+0330 (app-dev CLI path E2E audit)
+  └─ 0331 (agent-drives-agent E2E pipeline)
+       ├─ 0332 (authoring guidance consolidation + drift gates)
+       └─ 0215 (benchmark + case-study directory; also blocked by 0330)
+
 0315 (commercial monetization spec)
   ├─ 0322 (license-aware paid update checks)
   ├─ 0323 (Plexi-managed ai.query backend)
@@ -178,6 +157,7 @@ Gaps before sharing publicly:
 | Doc | What it covers |
 |-----|----------------|
 | `NORTH_STAR.md` | Vision, phases, local-first constraint, v1 reviewed-native / v2 WASM boundary |
+| `docs/DEVLOG.md` | Landed-work history (moved out of this file) |
 | `docs/app-framework-marketplace.md` | App framework + marketplace PRM; resolves roadmap conflicts |
 | `docs/marketplace-hosted.md` | Hosted registry, paid apps, AI subscription spec |
 | `docs/workspace-env-secrets.md` | Shared resolver contract for secrets |
@@ -190,4 +170,4 @@ Gaps before sharing publicly:
 
 ## How To Update This File
 
-Run `/whats-next` at the start of any session -- it re-runs `stint list` + open-PR check and rewrites the Priority Stack. `/merge-pr` runs the same routine after every merge. Do not hand-edit the Priority Stack unless you are correcting verified roadmap drift from live code/tasks/docs, and always update stint tasks first when new work is discovered.
+Run `/whats-next` at the start of any session -- it re-runs `stint list` + open-PR check and rewrites the Priority Stack. `/merge-pr` runs the same routine after every merge. Landed-work history goes to `docs/DEVLOG.md` (append a dated entry), never accumulates here. Do not hand-edit the Priority Stack unless you are correcting verified roadmap drift from live code/tasks/docs, and always update stint tasks first when new work is discovered.
