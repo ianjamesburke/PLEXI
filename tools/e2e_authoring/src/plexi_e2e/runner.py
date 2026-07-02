@@ -32,8 +32,13 @@ from .capture import SessionCapture
 from .config import SessionConfig
 from .plexi_cli import PlexiCli
 from .protocol import SessionProtocol
+from .scorecard import write_scorecard
+from .versions import resolve_versions
 
 PLAN = "plan.json"
+
+# Source extensions counted toward an app's lines-of-code metric.
+_CODE_EXTS = (".py", ".rs", ".toml", ".js", ".ts", ".html", ".css")
 
 
 @dataclass
@@ -72,8 +77,8 @@ class E2ESession:
         capture, started = self._provision()
         try:
             if self.cfg.dry_run:
-                return self._run_dry(capture, started)
-            return self._run_live(capture, started)
+                return self._run_dry(capture)
+            return self._run_live(capture)
         finally:
             self._finalize_manifest(capture, started)
 
@@ -109,7 +114,7 @@ class E2ESession:
 
     # -- dry run ---------------------------------------------------------
 
-    def _run_dry(self, capture: SessionCapture, started: float) -> SessionResult:
+    def _run_dry(self, capture: SessionCapture) -> SessionResult:
         """Record the full plan without touching a host or child."""
         fx = self.cfg.fixture
         seed = self._seed_specs()
@@ -172,7 +177,7 @@ class E2ESession:
 
     # -- live run --------------------------------------------------------
 
-    def _run_live(self, capture: SessionCapture, started: float) -> SessionResult:
+    def _run_live(self, capture: SessionCapture) -> SessionResult:
         if shutil.which(self.cfg.binary) is None:
             raise RuntimeError(
                 f"binary {self.cfg.binary!r} not found on PATH — install the "
@@ -216,6 +221,7 @@ class E2ESession:
             result.outcome = "failed"
             raise
         finally:
+            self._capture_code_metrics(capture)
             self._capture_log_slice(capture)
             self._teardown()
         return result
@@ -295,6 +301,31 @@ class E2ESession:
                         errors.append(str(line))
         return errors
 
+    def _capture_code_metrics(self, capture: SessionCapture) -> None:
+        """Count the lines of code the child produced in its workspace.
+
+        Ground-truth size signal for the scorecard. Best-effort: if the workspace
+        dir does not exist (child never scaffolded anything) it records nothing.
+        """
+        root = Path(os.path.expanduser(self.cfg.fixture.child_cwd))
+        if not root.is_dir():
+            return
+        loc = 0
+        files = 0
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix not in _CODE_EXTS:
+                continue
+            if any(part in {".venv", "__pycache__", ".git", "node_modules"} for part in path.parts):
+                continue
+            try:
+                loc += sum(1 for _ in path.open("r", encoding="utf-8", errors="ignore"))
+                files += 1
+            except OSError as exc:
+                self.log.info("could not read %s for LOC: %s", path, exc)
+        capture.append_observation(
+            "code_metrics", "cli", {"loc": loc, "files": files, "root": str(root)}
+        )
+
     def _capture_log_slice(self, capture: SessionCapture) -> None:
         log_file = envmod.log_path(self.cfg.channel, self.cfg.home)
         if log_file.is_file():
@@ -334,6 +365,9 @@ class E2ESession:
                 "difficulty": fx.difficulty,
                 "description": fx.description,
             },
+            "versions": resolve_versions(
+                self.cfg.binary, self.cfg.channel, probe_cli=not self.cfg.dry_run
+            ),
             "profile_dir": str(envmod.profile_dir(self.cfg.channel, self.cfg.home)),
             "archived_profile": str(self._archived_profile) if self._archived_profile else None,
             "wall_clock_secs": round(time.monotonic() - started, 3),
@@ -341,3 +375,6 @@ class E2ESession:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         capture.write_manifest(manifest)
+        # Scorecard is a projection over the just-written manifest + observations;
+        # every session ends with one so the index and comparisons never re-run a host.
+        write_scorecard(capture.dir)

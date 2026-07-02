@@ -1,0 +1,211 @@
+[
+  {
+    "stage": "preflight",
+    "description": "verify binary installed and no host already running",
+    "argv": [
+      "plexi-e2e",
+      "host",
+      "status",
+      "--json"
+    ]
+  },
+  {
+    "stage": "boot",
+    "description": "start isolated host with seeded workspace pane(s)",
+    "argv": [
+      "plexi-e2e",
+      "host",
+      "start",
+      "--timeout-secs",
+      "30",
+      "--pane",
+      "cwd=/Users/ianburke/plexi-e2e-apps/assistant"
+    ]
+  },
+  {
+    "stage": "boot",
+    "description": "poll readiness",
+    "argv": [
+      "plexi-e2e",
+      "host",
+      "status",
+      "--json"
+    ]
+  },
+  {
+    "stage": "drive",
+    "description": "list panes to find the workspace pane",
+    "argv": [
+      "plexi-e2e",
+      "pane",
+      "list"
+    ]
+  },
+  {
+    "stage": "drive",
+    "description": "launch child agent (c) in workspace pane",
+    "argv": [
+      "plexi-e2e",
+      "pane",
+      "send",
+      "<workspace_pane_id>",
+      "c\\n"
+    ]
+  },
+  {
+    "stage": "drive",
+    "description": "deliver the initial user prompt to the child",
+    "argv": [
+      "plexi-e2e",
+      "pane",
+      "send",
+      "<child_pane_id>",
+      "<prompt>\\n"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 1: capture child transcript",
+    "argv": [
+      "plexi-e2e",
+      "pane",
+      "capture",
+      "<child_pane_id>",
+      "--lines",
+      "80"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 1: tail host log for ground truth",
+    "argv": [
+      "tail",
+      "-100",
+      "/Users/ianburke/.plexi-e2e/plexi.log"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 2: capture child transcript",
+    "argv": [
+      "plexi-e2e",
+      "pane",
+      "capture",
+      "<child_pane_id>",
+      "--lines",
+      "80"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 2: tail host log for ground truth",
+    "argv": [
+      "tail",
+      "-100",
+      "/Users/ianburke/.plexi-e2e/plexi.log"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 3: capture child transcript",
+    "argv": [
+      "plexi-e2e",
+      "pane",
+      "capture",
+      "<child_pane_id>",
+      "--lines",
+      "80"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 3: tail host log for ground truth",
+    "argv": [
+      "tail",
+      "-100",
+      "/Users/ianburke/.plexi-e2e/plexi.log"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 4: capture child transcript",
+    "argv": [
+      "plexi-e2e",
+      "pane",
+      "capture",
+      "<child_pane_id>",
+      "--lines",
+      "80"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 4: tail host log for ground truth",
+    "argv": [
+      "tail",
+      "-100",
+      "/Users/ianburke/.plexi-e2e/plexi.log"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 5: capture child transcript",
+    "argv": [
+      "plexi-e2e",
+      "pane",
+      "capture",
+      "<child_pane_id>",
+      "--lines",
+      "80"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 5: tail host log for ground truth",
+    "argv": [
+      "tail",
+      "-100",
+      "/Users/ianburke/.plexi-e2e/plexi.log"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 6: capture child transcript",
+    "argv": [
+      "plexi-e2e",
+      "pane",
+      "capture",
+      "<child_pane_id>",
+      "--lines",
+      "80"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "round 6: tail host log for ground truth",
+    "argv": [
+      "tail",
+      "-100",
+      "/Users/ianburke/.plexi-e2e/plexi.log"
+    ]
+  },
+  {
+    "stage": "observe",
+    "description": "if an app pane opened, snapshot its L1 render tree",
+    "argv": [
+      "plexi-e2e",
+      "pane",
+      "state",
+      "<app_pane_id>"
+    ]
+  },
+  {
+    "stage": "teardown",
+    "description": "stop host and confirm process gone",
+    "argv": [
+      "plexi-e2e",
+      "host",
+      "stop"
+    ]
+  }
+]

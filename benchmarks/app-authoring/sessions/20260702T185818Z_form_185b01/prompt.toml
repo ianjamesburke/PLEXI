@@ -1,0 +1,33 @@
+# Prompt fixture: a user who wants a small form that saves what they type.
+# The prompt says what a user would say — no command names, no file paths, no
+# SDK symbols. The parent may only answer with the user-level knowledge below.
+
+[fixture]
+id = "form"
+difficulty = "medium"
+description = "User wants a note-taking form: type a title and a body, hit save, keep the notes."
+prompt = """
+I'd like a little form for jotting quick notes. There should be a spot for a
+short title and a bigger box for the note itself, and a save button. After I
+save, I want to still see the notes I've already written. Can you put that
+together?
+"""
+
+# Keyed by intent (underscore-separated words the matcher looks for in the
+# child's question). Answers stay at user-level — never prescribe an approach.
+[fixture.answers]
+persistence_save_remember_keep = "Yes, they should stick around after I close it and come back. That's the whole point."
+where_stored_location = "I don't know where it should keep them — wherever's normal. You decide."
+edit_delete_remove = "Being able to delete a note would be nice, but it's not a dealbreaker if it's hard."
+required_empty_validation = "If I leave the title blank just don't save it, or warn me. Whatever feels right."
+styling_look_design = "Keep it clean and calm. I trust your taste."
+name_call = "Call it whatever makes sense to you."
+
+# The child coding agent's launch command and workspace.
+[child]
+launch = "c"
+cwd = "~/plexi-e2e-apps/form"
+
+# Panes seeded into the host on boot — the child's empty workspace terminal.
+[[seed_pane]]
+cwd = "~/plexi-e2e-apps/form"

@@ -41,6 +41,22 @@ def test_dry_run_writes_complete_session_dir(tmp_path):
     assert any(o["kind"] == "intervention" for o in obs)
 
 
+def test_dry_run_stamps_versions_and_writes_scorecard(tmp_path):
+    result = E2ESession(_config(tmp_path)).run()
+    d = result.session_dir
+
+    manifest = json.loads((d / "manifest.json").read_text())
+    versions = manifest["versions"]
+    assert set(versions) == {"cli", "sdk", "channel"}
+    assert versions["channel"] == "e2e"
+
+    scorecard = json.loads((d / "scorecard.json").read_text())
+    assert scorecard["mode"] == "dry-run"
+    assert scorecard["outcome"] == "plan-only"
+    assert scorecard["fixture_id"] == "counter"
+    assert scorecard["versions"] == versions
+
+
 def test_repeatability_two_independent_dirs(tmp_path):
     r1 = E2ESession(_config(tmp_path)).run()
     r2 = E2ESession(_config(tmp_path)).run()

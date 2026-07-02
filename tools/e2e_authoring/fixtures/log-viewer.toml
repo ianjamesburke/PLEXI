@@ -1,0 +1,32 @@
+# Prompt fixture: a user who wants to watch a log file update live.
+# The prompt says what a user would say — no command names, no file paths, no
+# SDK symbols. The parent may only answer with the user-level knowledge below.
+
+[fixture]
+id = "log-viewer"
+difficulty = "medium"
+description = "User wants a live view of a log file that keeps scrolling as new lines arrive."
+prompt = """
+Something at work writes to a log file constantly and I want to watch it happen.
+Can you make me a viewer that shows the latest lines and keeps updating on its
+own as new stuff gets written, so I always see the newest at the bottom? Being
+able to spot the error lines quickly would be great.
+"""
+
+# Keyed by intent (underscore-separated words the matcher looks for in the
+# child's question). Answers stay at user-level — never prescribe an approach.
+[fixture.answers]
+which_file_path_log = "I'll point it at the right file later — start with any file that's being written to."
+refresh_poll_interval_live = "As close to live as is reasonable. A second or two of delay is fine."
+highlight_error_color = "Yes please — make the error lines stand out somehow so I catch them."
+scrollback_history_lines = "I mostly care about the newest lines. A screen or two of history is plenty."
+name_call = "Call it whatever makes sense to you."
+
+# The child coding agent's launch command and workspace.
+[child]
+launch = "c"
+cwd = "~/plexi-e2e-apps/log-viewer"
+
+# Panes seeded into the host on boot — the child's empty workspace terminal.
+[[seed_pane]]
+cwd = "~/plexi-e2e-apps/log-viewer"

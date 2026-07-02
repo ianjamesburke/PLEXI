@@ -406,6 +406,20 @@ e2e-session fixture channel="e2e" *flags="":
     uv run --python 3.12 --project tools/e2e_authoring plexi-e2e run {{fixture}} \
         --channel {{channel}} --sessions-root benchmarks/app-authoring/sessions {{flags}}
 
+# Run the whole app-authoring benchmark suite over every prompt fixture, then
+# regenerate the session index. This is the baseline sweep (stint 0215).
+#   just e2e-baseline e2e --dry-run       — structural baseline, no host (runs anywhere)
+#   just e2e-baseline e2e --fresh-profile — live sweep (needs channel installed + a display + child creds)
+e2e-baseline channel="e2e" *flags="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for fx in tools/e2e_authoring/fixtures/*.toml; do
+        uv run --python 3.12 --project tools/e2e_authoring plexi-e2e run "$fx" \
+            --channel {{channel}} --sessions-root benchmarks/app-authoring/sessions {{flags}}
+    done
+    uv run --python 3.12 --project tools/e2e_authoring plexi-e2e index \
+        --sessions-root benchmarks/app-authoring/sessions
+
 # Runner unit tests (command construction + dry-run plumbing, fully host-free).
 e2e-test:
     uv run --python 3.12 --project tools/e2e_authoring --extra dev python -m pytest tools/e2e_authoring

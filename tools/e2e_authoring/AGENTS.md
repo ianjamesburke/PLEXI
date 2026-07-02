@@ -42,9 +42,20 @@ from this directory (or `just e2e-test` from the repo root).
 
 - `src/plexi_e2e/` — `config` (fixtures), `env` (drive-env discipline),
   `plexi_cli` (CLI wrappers), `capture` (session dir writer), `protocol`
-  (user-proxy rules), `runner` (orchestration), `__main__` (`plexi-e2e` CLI).
-- `fixtures/` — committed prompt fixtures (user-realistic, no implementation hints).
-- `tests/` — pytest; command construction and dry-run are fully host-free.
+  (user-proxy rules), `runner` (orchestration), `versions` (CLI/SDK/channel
+  stamp), `scorecard` (derived per-session score), `index` (INDEX.md generator),
+  `__main__` (`plexi-e2e` CLI: `run` / `score` / `index`).
+- `fixtures/` — committed prompt library (user-realistic, graded easy→hard, no
+  implementation hints). The `test_fixtures` suite guards that contract corpus-wide.
+- `tests/` — pytest; command construction, dry-run, scorecard, and index are all
+  fully host-free.
+
+`scorecard` and `index` are **projections** — they read only what the runner
+already captured and never store a second source of truth. Every session ends
+with a `scorecard.json`; the baseline sweep (`just e2e-baseline`) runs the whole
+fixture library and regenerates the index.
 
 Sessions are written to `benchmarks/app-authoring/sessions/` — that directory and
-its format are the interchange the benchmark suite (stint 0215) accumulates.
+its format are the interchange the benchmark suite (stint 0215) accumulates. The
+committed sessions there are the dry-run structural baseline; the live sweep is
+deferred to a machine with a display + child-agent credentials.

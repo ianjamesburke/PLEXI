@@ -1,0 +1,33 @@
+# Prompt fixture: a user who wants a small app that answers questions using AI.
+# The prompt says what a user would say — no command names, no file paths, no
+# SDK symbols. The parent may only answer with the user-level knowledge below.
+
+[fixture]
+id = "assistant"
+difficulty = "hard"
+description = "User wants a little ask-a-question box that replies using AI, keeping the back-and-forth on screen."
+prompt = """
+I want a little box where I can type a question and get an answer back from an
+AI, right there on the screen. I'd like to see the conversation build up as we
+go — my question, then its reply, then my next one. Can you make me something
+like that?
+"""
+
+# Keyed by intent (underscore-separated words the matcher looks for in the
+# child's question). Answers stay at user-level — never prescribe an approach.
+[fixture.answers]
+which_model_provider_ai = "I don't know anything about the AI models — pick a sensible default for me."
+api_key_credentials_account = "I don't have any keys set up. If it needs one, tell me plainly what to do."
+history_persist_remember = "It's fine if it forgets old conversations when I close it. Keeping this session on screen is enough."
+streaming_wait_reply = "Whether the answer appears all at once or word by word doesn't matter to me."
+styling_look_design = "Make it feel calm and easy to read. Your call on the look."
+name_call = "Call it whatever makes sense to you."
+
+# The child coding agent's launch command and workspace.
+[child]
+launch = "c"
+cwd = "~/plexi-e2e-apps/assistant"
+
+# Panes seeded into the host on boot — the child's empty workspace terminal.
+[[seed_pane]]
+cwd = "~/plexi-e2e-apps/assistant"

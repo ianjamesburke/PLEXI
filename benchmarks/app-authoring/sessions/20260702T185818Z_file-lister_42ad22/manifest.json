@@ -1,0 +1,23 @@
+{
+  "archived_profile": null,
+  "binary": "plexi-e2e",
+  "channel": "e2e",
+  "created_at": "2026-07-02T18:58:18.406700+00:00",
+  "dry_run": true,
+  "fixture": {
+    "description": "User wants an on-screen list of the files in a folder they pick.",
+    "difficulty": "easy",
+    "id": "file-lister"
+  },
+  "fresh_profile": false,
+  "parent_turns": 1,
+  "profile_dir": "/Users/ianburke/.plexi-e2e",
+  "schema_version": 1,
+  "session_id": "20260702T185818Z_file-lister_42ad22",
+  "versions": {
+    "channel": "e2e",
+    "cli": null,
+    "sdk": "0.1.16"
+  },
+  "wall_clock_secs": 0.002
+}

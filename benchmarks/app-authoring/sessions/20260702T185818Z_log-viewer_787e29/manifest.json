@@ -1,0 +1,23 @@
+{
+  "archived_profile": null,
+  "binary": "plexi-e2e",
+  "channel": "e2e",
+  "created_at": "2026-07-02T18:58:18.549952+00:00",
+  "dry_run": true,
+  "fixture": {
+    "description": "User wants a live view of a log file that keeps scrolling as new lines arrive.",
+    "difficulty": "medium",
+    "id": "log-viewer"
+  },
+  "fresh_profile": false,
+  "parent_turns": 1,
+  "profile_dir": "/Users/ianburke/.plexi-e2e",
+  "schema_version": 1,
+  "session_id": "20260702T185818Z_log-viewer_787e29",
+  "versions": {
+    "channel": "e2e",
+    "cli": null,
+    "sdk": "0.1.16"
+  },
+  "wall_clock_secs": 0.002
+}

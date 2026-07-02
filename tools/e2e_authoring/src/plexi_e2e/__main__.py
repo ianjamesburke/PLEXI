@@ -1,10 +1,14 @@
-"""``plexi-e2e`` — run one agent-drives-agent app-authoring session from a fixture.
+"""``plexi-e2e`` — the app-authoring benchmark CLI.
 
     plexi-e2e run <fixture.toml> [--channel e2e] [--dry-run] [--fresh-profile]
+    plexi-e2e score <session-dir>
+    plexi-e2e index [--sessions-root DIR]
 
-Provisions an isolated session, executes the fixture, and leaves a complete
-session directory under the sessions root. ``--dry-run`` records the exact plan
-without booting a host — use it to validate plumbing anywhere.
+``run`` provisions an isolated session, executes the fixture, and leaves a
+complete session directory (with a scorecard) under the sessions root;
+``--dry-run`` records the exact plan without booting a host. ``score`` rebuilds
+one session's ``scorecard.json`` from its raw capture. ``index`` regenerates the
+browsable INDEX.md over every captured session.
 """
 
 from __future__ import annotations
@@ -15,7 +19,9 @@ import sys
 from pathlib import Path
 
 from .config import Fixture, SessionConfig, default_binary_for
+from .index import write_index
 from .runner import E2ESession
+from .scorecard import write_scorecard
 
 DEFAULT_SESSIONS_ROOT = Path("benchmarks/app-authoring/sessions")
 
@@ -41,6 +47,17 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--observe-rounds", type=int, default=6)
     run.add_argument("--observe-interval-secs", type=float, default=5.0)
     run.add_argument("-v", "--verbose", action="store_true")
+
+    score = sub.add_parser("score", help="rebuild one session's scorecard.json from its capture")
+    score.add_argument("session_dir", type=Path, help="path to a captured session directory")
+    score.add_argument("-v", "--verbose", action="store_true")
+
+    index = sub.add_parser("index", help="regenerate INDEX.md over all captured sessions")
+    index.add_argument(
+        "--sessions-root", type=Path, default=DEFAULT_SESSIONS_ROOT,
+        help=f"sessions directory to index (default: {DEFAULT_SESSIONS_ROOT})",
+    )
+    index.add_argument("-v", "--verbose", action="store_true")
     return p
 
 
@@ -50,6 +67,16 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+
+    if args.cmd == "score":
+        dest = write_scorecard(args.session_dir)
+        print(f"scorecard -> {dest}")
+        return 0
+
+    if args.cmd == "index":
+        dest = write_index(args.sessions_root)
+        print(f"index -> {dest}")
+        return 0
 
     fixture = Fixture.load(args.fixture)
     config = SessionConfig(
