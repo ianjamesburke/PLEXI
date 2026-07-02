@@ -104,7 +104,7 @@ P2 and below: run `stint list`.
 
 | Doc | What it covers |
 |-----|----------------|
-| `NORTH_STAR.md` | Vision, phases, local-first constraint, v1 reviewed-native / v2 WASM boundary |
+| `NORTH_STAR.md` | The ten commandments (portable formats, ergonomics, CLI-complete, local-first, no ambient authority…), phases, v1 reviewed-native / v2 WASM boundary |
 | `docs/DEVLOG.md` | Landed-work history (moved out of this file) |
 | `docs/app-framework-marketplace.md` | App framework + marketplace PRM; resolves roadmap conflicts |
 | `docs/marketplace-hosted.md` | Hosted registry, paid apps, AI subscription spec |
