@@ -945,14 +945,18 @@ impl PlexiApp {
                 let mut shown_commands_header = false;
                 let mut shown_run_header = false;
 
-                egui::ScrollArea::vertical()
+                let scroll_reset = std::mem::take(&mut self.palette_scroll_reset);
+                let mut scroll_area = egui::ScrollArea::vertical()
                     // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
                     .animated(false)
                     .id_salt("palette_list")
                     .max_height(palette_max_list_h)
                     .min_scrolled_height(palette_max_list_h)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                    .auto_shrink([false, false]);
+                if scroll_reset {
+                    scroll_area = scroll_area.vertical_scroll_offset(0.0);
+                }
+                scroll_area.show(ui, |ui| {
                         // available_width — the scroll area reserves a
                         // scrollbar gutter; forcing the modal width would
                         // push rows back under the bar.

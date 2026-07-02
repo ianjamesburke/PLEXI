@@ -199,6 +199,9 @@ pub struct PlexiApp {
     /// time, cleared on close. Re-read on every open so edits hot-reload without
     /// a restart — same pattern as `palette_notes`.
     pub(crate) palette_commands: Vec<crate::cli::ResolvedUserCommand>,
+    /// Set to true on palette open; consumed on the first draw frame to reset
+    /// the scroll area back to the top before egui can apply the stale offset.
+    pub(crate) palette_scroll_reset: bool,
     /// TTL cache for the cwd-derived fallback workspace root passed to
     /// `PlexiBehavior` each frame (#2023). The fallback
     /// (`config::active_workspace_root()`) stat-walks the filesystem from the
@@ -1142,6 +1145,7 @@ impl PlexiApp {
                     palette_workspace_root: None,
                     palette_notes: Vec::new(),
                     palette_commands: Vec::new(),
+                    palette_scroll_reset: false,
                     workspace_root_fallback_cache: None,
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
@@ -1387,6 +1391,7 @@ impl PlexiApp {
             palette_workspace_root: None,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
+            palette_scroll_reset: false,
             workspace_root_fallback_cache: None,
             context_visit_history: Vec::new(),
             renaming_pane: None,
@@ -1608,6 +1613,7 @@ impl PlexiApp {
                 palette_workspace_root: None,
                 palette_notes: Vec::new(),
                 palette_commands: Vec::new(),
+                palette_scroll_reset: false,
                 workspace_root_fallback_cache: None,
                 context_visit_history: Vec::new(),
                 renaming_pane: None,
@@ -3354,6 +3360,7 @@ impl eframe::App for PlexiApp {
                         });
                         self.palette_query.clear();
                         self.palette_selected = 0;
+                        self.palette_scroll_reset = true;
                         // Resolve focused pane workspace once at open-time — not per draw-frame —
                         // to avoid filesystem traversal in the egui hot path.
                         let win = &self.windows[self.active_window];
