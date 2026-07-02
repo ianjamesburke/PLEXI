@@ -243,6 +243,17 @@ pub enum Commands {
         #[arg(long = "yes", short = 'y')]
         yes: bool,
     },
+    /// Launch, stop, or check a headless-friendly Plexi host from the CLI.
+    ///
+    /// `host start` launches this channel's app bundle detached from the
+    /// calling shell, optionally seeding panes from a `--layout` TOML file
+    /// or repeated `--pane` flags, then blocks until the host confirms it's
+    /// ready. Works identically on alpha, beta, main, and PR builds — the
+    /// channel is resolved from the running CLI binary's own name.
+    Host {
+        #[command(subcommand)]
+        cmd: HostCmd,
+    },
 
     // ── Hidden ────────────────────────────────────────────────────────────────
     /// Descriptor probe
@@ -727,6 +738,41 @@ pub enum UpdateCmd {
     Apps {
         /// App id to update (omit to update all installed apps)
         id: Option<String>,
+    },
+}
+
+/// `plexi host <cmd>` — CLI-driven host launch with declarative boot state.
+#[derive(Subcommand)]
+pub enum HostCmd {
+    /// Launch this channel's app bundle detached and wait for readiness.
+    ///
+    /// Errors if a host for this channel is already running. Seeds any
+    /// declared panes via the spawn-queue before the app boots, so they
+    /// appear on its first frame.
+    ///
+    /// Example: plexi-pr-2357 host start --pane 'cwd=/tmp,cmd=htop'
+    Start {
+        /// TOML file with `[[pane]]` tables to seed on boot
+        #[arg(long)]
+        layout: Option<String>,
+        /// A pane to seed: 'cwd=<dir>[,cmd=<command>][,tab|window]'. Repeatable.
+        #[arg(long = "pane")]
+        panes: Vec<String>,
+        /// Seconds to wait for the host to confirm readiness (default 15)
+        #[arg(long)]
+        timeout_secs: Option<u64>,
+    },
+    /// Stop the running host for this channel.
+    ///
+    /// Sends a clean shutdown request first, falling back to SIGTERM if the
+    /// host doesn't confirm exit in time.
+    Stop,
+    /// Report whether this channel's host is running, its pid, socket path,
+    /// and pane count.
+    Status {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 

@@ -1473,6 +1473,14 @@ pub enum AppRequest {
     /// when no `PLEXI_SOCKET` is set. Fire-and-forget; the handler does
     /// nothing — the wake effect is the socket listener's repaint request.
     Wake,
+
+    /// Request a clean host shutdown. Sent by `plexi host stop` over a direct
+    /// `notify.sock` connection (never over `PLEXI_SOCKET` — `host stop` runs
+    /// outside a pane by definition). Fire-and-forget; the handler sets a
+    /// close-pending flag consumed at the top of the next frame, which sends
+    /// `egui::ViewportCommand::Close`. `host stop` falls back to `SIGTERM` if
+    /// this request goes unanswered within its short timeout.
+    Shutdown,
 }
 
 /// Who caused an app state change (`AppRequest::EmitEvent`).

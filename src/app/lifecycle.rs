@@ -1775,6 +1775,15 @@ impl PlexiApp {
                 // in flight and queued work (spawn-queue, channels) drains.
                 log::debug!("pane_ipc: kind=wake (no-op)");
             }
+            crate::app_protocol::AppRequest::Shutdown => {
+                // Sent by `plexi host stop` over a direct notify.sock
+                // connection. This handler has no `egui::Context`, so it
+                // cannot send ViewportCommand::Close directly — it sets a
+                // flag consumed at the top of the next frame
+                // (`update_preamble`, mirrors `update_quit_pending`).
+                log::info!("pane_ipc: kind=shutdown — closing on next frame");
+                self.shutdown_requested = true;
+            }
             _ => {
                 log::warn!("pane_ipc: unsupported command kind, dropping");
             }

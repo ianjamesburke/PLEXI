@@ -71,6 +71,13 @@ impl PlexiApp {
             }
         }
         self.drain_pane_cmd_channel();
+        if self.shutdown_requested {
+            // `plexi host stop`'s clean-shutdown path (AppRequest::Shutdown).
+            // Save state before closing so the next `host start` restores it.
+            log::info!("host: shutdown requested — saving workspace and closing");
+            self.save_workspace();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         if let Some(rx) = &self.update_rx {
             if let Ok(version) = rx.try_recv() {
                 log::info!("update check: badge set to v{version}");

@@ -5,7 +5,12 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 /// Poll a response file until it appears (or timeout). Shared by all spawn paths.
-fn wait_for_response(response_file: &str) -> i32 {
+///
+/// `pub(super)` so `host.rs` can reference the same convention. `host.rs`'s
+/// own readiness/status polling uses a bespoke variant (`poll_response_file`)
+/// instead — it needs the raw JSON content and a configurable timeout rather
+/// than this function's fixed 5s timeout and print-to-stdout side effect.
+pub(super) fn wait_for_response(response_file: &str) -> i32 {
     let response_path = std::path::PathBuf::from(response_file);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {

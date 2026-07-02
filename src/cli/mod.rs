@@ -216,6 +216,7 @@ pub mod demo;
 pub mod descriptor;
 pub mod doctor;
 pub mod events;
+pub mod host;
 pub mod install;
 pub mod install_host;
 pub mod list;
@@ -330,6 +331,7 @@ pub use context_cli::{
 pub use demo::demo_cli;
 pub use events::{events_list_cli, events_mcp_config_cli, events_subscribe_cli};
 pub use doctor::doctor_cli;
+pub use host::{host_start_cli, host_status_cli, host_stop_cli};
 pub use install::{
     install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,
     self_update_cli, update_cli,
