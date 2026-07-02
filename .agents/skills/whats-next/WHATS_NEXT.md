@@ -8,7 +8,7 @@
 
 ## Current State (2026-07-02)
 
-`alpha` is at `c10eb070`. Since the last audit: no implementation PRs landed after bundle #2359; the audit commit recorded that `0343`, `0311`, `0296`, and `0298` are done and `0334` is unblocked. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry live, secrets, onboarding, website) is landed — see `docs/DEVLOG.md`. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at `02eaabe8`. Since the last audit: bundle #2360 landed and closed `0330`, `0331`, `0332`, `0335`, `0328`, `0334`, `0346`, and `0215`; details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
@@ -19,7 +19,7 @@ Open PRs that affect priority reading:
 - `#2282` open: collapsible subcontexts (`0241`), currently has a failed build check.
 - `#1604` open: Windows port from external branch.
 
-Not real yet: license-aware update gating (`0322`), managed `ai.query` backend (`0323`), package envelope (`0325`).
+Not real yet: production hosted-registry install smoke after alpha deploy, license-aware update gating (`0322`), managed `ai.query` backend (`0323`), package envelope (`0325`).
 
 ---
 
@@ -31,21 +31,8 @@ Every epoch feeds the next; the whole line points at `NORTH_STAR.md` ("the last 
 
 A stranger installs, an agent builds an app first try, a free reviewed app installs from the hosted registry.
 
-- **Prove "agents build apps first try"** (the DX chain — dispatch in order)
-  - `0342` `plexi host start` — one-command host launch with declarative boot layout (the live-E2E primitive) — **done, #2358 landed**
-    - `0343` drive-host skill — codified agentic live PR-testing loop — **done, #2359 landed**
-  - `0330` app-dev CLI path E2E audit + open-placement fix (default: sibling split) — **ready, next up**
-    - `0331` agent-drives-agent E2E pipeline (isolated instance, parent as user-proxy, session capture)
-      - `0332` authoring guidance consolidation + drift gates (dead links, effect-name drift, one canonical doc, CI-gated)
-      - `0215` app-authoring benchmark + case-study directory (prompt library, scorecards, baseline sweep; also blocked by 0330)
-- **Make shipped apps the exemplar tier** (apps are the de facto docs)
-  - `0335` logs app rebuild — flagship SDK exemplar (v2 colors/labels/sorting restored, app-id filter, channel-aware) — **ready**
-  - `0296` canonicalize the core app install set — **done, #2359 landed**
-    - `0334` core-app cull + exemplar conformance sweep (delete POCs, survivors pass all gates; stats gauge fixes) — **ready**
-  - `0328` SDK component coverage audit (Polaris-class vocabulary, intrinsic size contract, `SetShortcuts` native chrome) — **ready**
-- **First-user surface** (onboarding `0324`, website `0272`, registry go-live `0345`, palette scroll `0280` all landed — prod registry is live, installs E2E; website auto-deploys from alpha, `just website-smoke` verifies)
-  - `0346` publish the Core app set to the hosted registry (after `0334`; the catalog a first user sees)
-- **First-user critical path:** clear — shareable now; `0346` (catalog) is the next depth add.
+- **First-user surface** is effectively landed: onboarding `0324`, website `0272`, registry go-live `0345`, palette scroll `0280`, app-builder DX `0330`/`0331`/`0332`/`0215`, exemplar apps `0335`/`0334`, SDK component coverage `0328`, and hosted Core catalog `0346` are done.
+- **Missing tracked gap:** production hosted-registry smoke after #2360 deploys from alpha (`just website-smoke`, then fresh-profile `plexi app install <id>` against production). Create a stint if this cannot be folded into release verification.
 
 ### Epoch 2 — Intelligence (NORTH_STAR Phase 3; runs parallel to Epoch 3)
 
@@ -95,9 +82,9 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 
 ## Priority Stack (flat view)
 
-P0: `0330` (chain head), `0327`.
-P1: `0335`, `0331`*, `0328`, `0241` (PR needs fixing), `0338`, `0285`, `0332`*, `0339`*, `0340`*, `0341`*.
-P2 and below: `0334` is the newly unblocked core-app cull; run `stint list` for the rest.
+P0: `0327`.
+P1: `0241` (open PR needs fixing), `0285` (draft PR), `0338`, `0347`, `0339`*, `0340`*, `0341`*, `0344`*.
+P2 and below: `0325`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
 **Next recommended task:** `0327` — event-bus unification, P0 standalone and the transport-contract toll for Epoch 4.

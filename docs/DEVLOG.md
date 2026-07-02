@@ -6,6 +6,15 @@ or `/merge-pr` trims the orientation file; do not rewrite old entries.
 
 ---
 
+## 2026-07-02 — Epoch 1 close bundle
+
+`0330`, `0331`, `0332`, `0335`, `0328`, `0334`, `0346`, and `0215` landed in #2360:
+
+- App-authoring DX now has sibling-split app opens, canonical SDK authoring docs with drift gates, agent-driven E2E capture, and benchmark prompt/scorecard scaffolding.
+- The shipped app set was culled into maintained exemplars, with Logs rebuilt, CSV/Wikipedia/core survivors checked, Snake/Tetris restored as examples, and stale dev apps kept out of PR/alpha installs.
+- SDK v3 gained the native placeholder/component coverage slice and host renderer fixes for tables, text entry focus, button affordance, CSV scrolling, and over-eager app hung status.
+- Core registry packages are generated under the website registry with bytecode/cache artifacts excluded; the remaining post-merge gap is a production install smoke after alpha deploy.
+
 ## 2026-07-02 — pane new --tab anchoring fix
 
 - `0337` (#2357): `plexi pane new --tab --from <pane-id>` now anchors to the caller pane's window instead of the currently active window, matching the existing `--window` and split behavior. Also fixed two related cwd-fallback bugs where the tab path fell back to the ambient active window/router context instead of the target window's own context when no explicit `--cwd` was given.
