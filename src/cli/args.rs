@@ -566,6 +566,9 @@ pub enum AppCmd {
     /// Use --open to launch it in a split-right pane after scaffolding.
     #[command(after_long_help = r#"APP DEVELOPMENT GUIDE:
 
+  Canonical authoring guide: sdk/python/AUTHORING.md (full API: website docs sdk.md).
+  This block is a quick reference; the guide is the source of truth.
+
   Two rendering modes (pick one per app):
     view()                  Declarative UI trees: forms, lists, dashboards
     view() + Canvas(...)    Canvas drawing: games, animations, visualizations
@@ -577,7 +580,7 @@ pub enum AppCmd {
 
   UI components:
     Read plexi_sdk/ui.py for the full API. Key widgets:
-    AppBar, ActionBar, Column, Row, Label, Spacer, FooterKeys, SelectList, TextInput,
+    AppBar, ActionBar, Column, Row, Label, Spacer, FooterKeys, SelectList, TextEdit,
     Card, Section, Tabs, Grid, Toggle, ScrollLog, ChatBubble, InfoTable,
     FormField, ButtonRow, ProgressBar, Clickable, Divider, Scrollable,
     Canvas, CanvasRect, CanvasText, CanvasCircle
@@ -598,7 +601,8 @@ pub enum AppCmd {
 
   Effects:
     SetTitle, SetStatus, SetTimer, SetSchedulerMode, SetState, PersistState,
-    LogInfo/LogWarn/LogError, HttpRequest, AiQuery, FileRead, FileWrite
+    HttpFetch, OpenUrl, AiQuery, FileRead, FileWrite, CloseSelf
+    Logging is not an effect: call log.debug/info/warn/error from plexi_sdk.
 
   Generated files:
     AGENTS.md              Agent-facing app contract and validation loop

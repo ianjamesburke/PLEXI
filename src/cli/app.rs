@@ -375,13 +375,19 @@ fn write_python_scaffold_support_files(app_dir: &std::path::Path, name: &str) ->
 fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
-    // manifest.toml
-    std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"timer\"]\n\n[launch]\n{mp}",
-        name = name,
-        display = to_title_case(name),
-        mp = marketplace_placeholder(),
-    ))?;
+    // manifest.toml — shape lives in the template file beside the other scaffold
+    // artifacts so it can't silently diverge from the documented manifest. The
+    // feature-gated marketplace placeholder is appended in Rust.
+    let manifest_template =
+        include_str!("../../sdk/python/plexi_sdk/templates/manifest.toml");
+    let manifest = format!(
+        "{}{}",
+        manifest_template
+            .replace("__APP_ID__", name)
+            .replace("__DISPLAY_NAME__", &to_title_case(name)),
+        marketplace_placeholder(),
+    );
+    std::fs::write(app_dir.join("manifest.toml"), manifest)?;
 
     // main.py — plexi_sdk is injected via PYTHONPATH by the host at launch;
     // do NOT copy plexi_sdk.py alongside (the package uses relative imports

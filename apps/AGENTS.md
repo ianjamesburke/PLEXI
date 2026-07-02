@@ -4,7 +4,7 @@
 
 ## Scope
 
-Each app is a directory with a `manifest.toml` (schema_version + `[app]` id/type/name/entry + `[app.capabilities]`) and a Python entry file. Apps run on the Python SDK in `sdk/python`. Authoring path: `sdk/python/SDK_QUICKSTART.md`, then `sdk/python/SDK_V3.md`, then `docs/app-framework-marketplace.md`.
+Each app is a directory with a `manifest.toml` (schema_version + `[app]` id/type/name/entry + `[app.capabilities]`) and a Python entry file. Apps run on the Python SDK in `sdk/python`. **Canonical authoring guide: [`../sdk/python/AUTHORING.md`](../sdk/python/AUTHORING.md)** — it points on to the generated API reference and the `SDK_V3.md` design spec. Marketplace context: [`../docs/app-framework-marketplace.md`](../docs/app-framework-marketplace.md).
 
 ## Rules
 
@@ -17,10 +17,7 @@ Each app is a directory with a `manifest.toml` (schema_version + `[app]` id/type
 
 ## Design philosophy (apps + SDK)
 
-- Obvious over clever — fight for the solution an agent would naturally assume.
-- Simulate affordances, never lie about contracts — isolation, durability, persistence, and security boundaries stay explicit.
-- Build primitives, not features — omit anything a developer's agent can trivially build atop the platform.
-- Design for agents, not humans browsing docs — if it needs a README to be usable, the API is wrong.
+See [`../sdk/python/AUTHORING.md`](../sdk/python/AUTHORING.md) § Design Philosophy — the single copy of the apps + SDK design principles.
 
 ## Style
 

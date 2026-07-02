@@ -1,5 +1,13 @@
 # Plexi Python SDK v3 — Design Specification
 
+> **Not the authoring guide.** To *build* an app, read
+> [`AUTHORING.md`](AUTHORING.md). For the live effect/event/component surface
+> with signatures, read the generated
+> [`../../website/src/content/docs/sdk.md`](../../website/src/content/docs/sdk.md)
+> — code and that generated reference win on any discrepancy. This file is the
+> design record: the WIT mapping and adapter/bridge protocol. Its inline type
+> tables capture original design intent and may lag the shipped surface.
+
 **Status:** authoritative design doc for task 0285. Implement exactly this. No design decisions during implementation.
 
 Source of truth for all types: `wit/plexi.wit`. Every Python type here maps to a named WIT type. Where a mapping decision was made, it is stated explicitly.

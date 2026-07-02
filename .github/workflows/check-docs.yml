@@ -8,7 +8,13 @@ on:
       - 'tools/check_docs_coverage.sh'
       - 'tools/gen_sdk_docs.py'
       - 'tools/gen_capability_docs.py'
+      - 'tools/check_authoring_docs.py'
       - 'sdk/python/plexi_sdk/**'
+      - 'sdk/python/AUTHORING.md'
+      - 'sdk/python/README.md'
+      - 'sdk/python/AGENTS.md'
+      - 'apps/AGENTS.md'
+      - 'src/cli/args.rs'
       - 'sdk/protocol/pgap.schema.json'
       - 'website/src/content/docs/**'
   pull_request:
@@ -17,7 +23,13 @@ on:
       - 'tools/check_docs_coverage.sh'
       - 'tools/gen_sdk_docs.py'
       - 'tools/gen_capability_docs.py'
+      - 'tools/check_authoring_docs.py'
       - 'sdk/python/plexi_sdk/**'
+      - 'sdk/python/AUTHORING.md'
+      - 'sdk/python/README.md'
+      - 'sdk/python/AGENTS.md'
+      - 'apps/AGENTS.md'
+      - 'src/cli/args.rs'
       - 'sdk/protocol/pgap.schema.json'
       - 'website/src/content/docs/**'
 
@@ -69,3 +81,16 @@ jobs:
             exit 1
           fi
           echo "PGAP capability docs are up to date."
+
+  check-authoring-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check app-authoring guidance drift
+        run: python3 tools/check_authoring_docs.py

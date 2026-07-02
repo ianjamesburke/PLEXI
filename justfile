@@ -166,8 +166,14 @@ check-capability-docs:
 check-docs-coverage:
     bash tools/check_docs_coverage.sh
 
-# Run all docs checks (CLI freshness + config freshness + SDK freshness + capability docs + command coverage).
-check-docs: check-cli-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage
+# Verify the app-authoring guidance has not drifted from the SDK: every effect/
+# component named in AUTHORING.md and the `plexi app init --help` block exists in
+# the SDK, and every relative link in the authoring docs resolves.
+check-authoring-docs:
+    python3 tools/check_authoring_docs.py
+
+# Run all docs checks (CLI freshness + config freshness + SDK freshness + capability docs + command coverage + authoring drift).
+check-docs: check-cli-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs
 
 run:
     cargo run --release

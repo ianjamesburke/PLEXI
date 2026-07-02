@@ -4,7 +4,9 @@
 
 ## Reference
 
-- [SDK_V3.md](SDK_V3.md) — complete design spec: all types, adapter protocol, native ProcessApp bridge, scaffold template, deletion list.
+- **[AUTHORING.md](AUTHORING.md) — canonical guide for building an app.** Start here.
+- [SDK_V3.md](SDK_V3.md) — design/protocol spec: adapter contract, native ProcessApp bridge, WIT mapping.
+- [`../../website/src/content/docs/sdk.md`](../../website/src/content/docs/sdk.md) — full API reference, generated from the SDK source (gated fresh in CI).
 
 ## Traps
 
