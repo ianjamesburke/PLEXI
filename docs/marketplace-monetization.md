@@ -56,7 +56,7 @@ The one thing a signed license enables — verifying a paid bundle fully offline
 
 Polar owns the checkout page, the card data, global sales tax/VAT, chargebacks, and publisher payouts. **Card entry always happens in the browser — no flow ever puts a payment form inside a pane.** Plexi's database stores accounts and entitlements only; payment instruments never touch our infrastructure.
 
-Money path: buyer pays Polar → Polar webhook → plexiapp.com writes the purchase row → publisher receives 85% of net monthly via Polar payouts. Publishers see aggregate installs and revenue, never buyer identities.
+Money path: buyer pays Polar → Polar webhook → plexiapp.com writes the purchase row. All apps are products on Plexi's single Polar org (Polar is merchant of record for Plexi, not per-publisher); per-publisher revenue accrues in our database from webhook data, and publishers receive 85% of net as operator-run monthly transfers recorded in a payouts ledger — manual-first at launch volume. Publisher onboarding collects payout details and tax info before the first paid listing. Publishers see aggregate installs and revenue, never buyer identities. Sales do not switch on publicly until the legal surface (ToS, privacy, refund policy — stint 0347) is live.
 
 ## Purchase Flow
 

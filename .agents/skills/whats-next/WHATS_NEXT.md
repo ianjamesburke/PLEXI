@@ -46,7 +46,9 @@ A stranger installs, an agent builds an app first try, a free reviewed app insta
   - `0328` SDK component coverage audit (Polaris-class vocabulary, intrinsic size contract, `SetShortcuts` native chrome) — **ready**
 - **First-user surface** (onboarding `0324` and website `0272` landed 2026-07-01)
   - `0280` palette scroll regression (PR `#2314` needs validation/merge decision) — **P0**
-- **First-user critical path:** validate + merge `#2314` -> share.
+  - `0345` website deploy pipeline + registry go-live + prod smoke (prod 404s on the registry today) — **ready**
+    - `0346` publish the Core app set to the hosted registry (also after `0334`; the catalog a first user sees)
+- **First-user critical path:** validate + merge `#2314`, land `0345` -> share.
 
 ### Epoch 2 — Intelligence (NORTH_STAR Phase 3; runs parallel to Epoch 3)
 
@@ -69,6 +71,7 @@ The registry brokers money; never a dependency for running installed apps. Spec:
   - `0340` host `plexi account` CLI + license-machinery deletion
   - `0344` publisher submission pipeline + review queue (`plexi app publish` → admin approval; also after `0339`)
   - `0323` Plexi-managed `ai.query` backend (also after `0339`)
+- `0347` legal surface (ToS, privacy, refund policy, DMCA) — **ready**; gates enabling sales, not development
 - `0325` app/agent/skill package envelope spec — unblocked
 
 ### Epoch 4 — The Platform (WASM, mobile, hosted)
@@ -80,7 +83,7 @@ Same app contract, sandboxed runtime. This is what makes the marketplace mobile-
     - `0336` manifest `[launch] on_launch` policy (focus_existing / per-context / always_new; duplicates ride bus subscriptions)
 - **The WASM lane**
   - `0285` WASM-native Python SDK + CPython-in-WASM runtime (draft PR `#2323`)
-    - `0286` registry/client/payment epic for WASM apps
+    - `0286` WASM bundle distribution through the Epoch 3 registry (re-scoped 2026-07-02; also after `0322`, `0344`)
       - `0287` cloud streaming runtime (server-side apps, thin clients)
 - **Trust-rail riders** (design lands on whatever Epoch 2 + trust gates establish)
   - `0333` biometric user-verification effect (Touch ID/Face ID via LocalAuthentication; keychain-bound secrets)
