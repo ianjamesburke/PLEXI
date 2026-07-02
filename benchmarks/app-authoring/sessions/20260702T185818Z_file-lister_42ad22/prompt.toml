@@ -1,0 +1,31 @@
+# Prompt fixture: a user who wants to see the files in a folder.
+# The prompt says what a user would say — no command names, no file paths, no
+# SDK symbols. The parent may only answer with the user-level knowledge below.
+
+[fixture]
+id = "file-lister"
+difficulty = "easy"
+description = "User wants an on-screen list of the files in a folder they pick."
+prompt = """
+Can you build me something that shows the files in a folder? I just want to
+open it and see a list of what's in there — names, and ideally which ones are
+folders versus actual files. Nothing fancy.
+"""
+
+# Keyed by intent (underscore-separated words the matcher looks for in the
+# child's question). Answers stay at user-level — never prescribe an approach.
+[fixture.answers]
+which_folder_directory_path = "Just use whatever folder it opens in by default. I'll point it somewhere later."
+refresh_update_live = "It's fine if I have to reopen it to see changes. Don't overthink it."
+hidden_dotfiles_show = "Don't bother showing the hidden ones — just the normal files."
+styling_look_design = "Clean and readable is all I care about. Your call on the look."
+name_call = "Call it whatever makes sense to you."
+
+# The child coding agent's launch command and workspace.
+[child]
+launch = "c"
+cwd = "~/plexi-e2e-apps/file-lister"
+
+# Panes seeded into the host on boot — the child's empty workspace terminal.
+[[seed_pane]]
+cwd = "~/plexi-e2e-apps/file-lister"

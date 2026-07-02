@@ -50,7 +50,7 @@ pub(super) fn wait_for_response(response_file: &str) -> i32 {
 pub fn pane_new_cli(
     cmd: Option<&str>,
     name: Option<&str>,
-    layout: &str,
+    layout: Option<&str>,
     from_pane_id: Option<u64>,
     cwd: Option<&str>,
     ephemeral: bool,
@@ -96,9 +96,14 @@ pub fn pane_new_cli(
             "type": "spawn_pane",
             "type_id": type_id,
             "args": args,
-            "layout": layout,
             "response_file": response_file,
         });
+        // Omit `layout` when unset so the host applies its placement default
+        // (manifest `[launch] placement`, else a sibling split) rather than the
+        // CLI forcing a value (stint 0330).
+        if let Some(l) = layout {
+            payload["layout"] = serde_json::Value::String(l.to_string());
+        }
         if ephemeral {
             payload["ephemeral"] = serde_json::Value::Bool(true);
         }
@@ -141,8 +146,10 @@ pub fn pane_new_cli(
     let mut queue_payload = serde_json::json!({
         "type_id": type_id,
         "args": args,
-        "layout": layout,
     });
+    if let Some(l) = layout {
+        queue_payload["layout"] = serde_json::Value::String(l.to_string());
+    }
     if ephemeral {
         queue_payload["ephemeral"] = serde_json::Value::Bool(true);
     }
@@ -255,12 +262,11 @@ fn open_descriptor_in_renderer(
         return 1;
     }
     let path = tmp.to_string_lossy().to_string();
-    let layout_str = layout.unwrap_or("overlay");
     log::info!("open:cli: launching cli-renderer for `{name}` with descriptor at {path}");
     pane_new_cli(
         None,
         Some(name),
-        layout_str,
+        layout,
         from_pane_id,
         cwd,
         false,
@@ -312,11 +318,10 @@ pub fn open_mcp_by_name(
                 entry.command
             );
             let title = mcp_pane_title(&entry.command);
-            let layout_str = layout.unwrap_or("overlay");
             pane_new_cli(
                 None,
                 Some(&title),
-                layout_str,
+                layout,
                 from_pane_id,
                 cwd,
                 false,
@@ -503,11 +508,10 @@ pub fn open_cli(
         return open_app_by_path(&abs_path, args, layout, from_pane_id);
     }
 
-    let layout_str = layout.unwrap_or("overlay");
     pane_new_cli(
         None,
         None,
-        layout_str,
+        layout,
         from_pane_id,
         cwd,
         false,
@@ -525,11 +529,13 @@ fn open_app_by_path(
     layout: Option<&str>,
     from_pane_id: Option<u64>,
 ) -> i32 {
-    let layout_str = layout.unwrap_or("overlay");
+    // Leave layout unset when no flag is given so the host applies its placement
+    // default (manifest `[launch] placement`, else a sibling split) instead of
+    // the CLI forcing an overlay takeover of the caller's pane (stint 0330).
     let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
     let spec = match PaneLaunchSpec::path(abs_path, args.to_vec()) {
         Ok(spec) => spec
-            .with_layout(Some(layout_str.to_string()))
+            .with_layout(layout.map(str::to_string))
             .with_from_pane_id(from_pane_id),
         Err(e) => {
             eprintln!("error: {e}");
@@ -551,11 +557,11 @@ fn open_app_by_path(
                 "type_id": "",
                 "path": abs_path,
                 "args": args,
-                "layout": layout_str,
+                "layout": layout,
                 "response_file": response_file,
             })
         });
-        log::info!("open_app_by_path: sending via socket path={abs_path} args={args:?} layout={layout_str} from_pane_id={from_pane_id:?}");
+        log::info!("open_app_by_path: sending via socket path={abs_path} args={args:?} layout={layout:?} from_pane_id={from_pane_id:?}");
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -578,7 +584,7 @@ fn open_app_by_path(
             "type_id": "",
             "path": abs_path,
             "args": args,
-            "layout": layout_str,
+            "layout": layout,
         })
     });
     let file = queue_dir.join(format!("{ts}.json"));
@@ -632,14 +638,21 @@ mod open_cli_tests {
     }
 
     #[test]
-    fn app_open_defaults_to_overlay_layout() {
+    fn app_open_omits_layout_so_host_applies_split_default() {
+        // With no directional flag the CLI must leave `layout` unset so the host
+        // applies its placement default (manifest `[launch] placement`, else a
+        // sibling split) rather than forcing an overlay takeover (stint 0330).
         let _guard = ENV_LOCK.lock().unwrap();
         let (code, payload) = capture_spawn_payload(|| open_cli("balls", &[], None, None, None));
 
         assert_eq!(code, 0);
         assert_eq!(payload["type"], "spawn_pane");
         assert_eq!(payload["type_id"], "balls");
-        assert_eq!(payload["layout"], "overlay");
+        assert!(
+            payload.get("layout").is_none(),
+            "layout must be omitted when no flag is given, got {:?}",
+            payload.get("layout")
+        );
     }
 
     #[test]

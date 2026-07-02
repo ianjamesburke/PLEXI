@@ -13,7 +13,10 @@ capabilities = ["timer"]
 
 [launch]
 
-# Uncomment to publish this app to the marketplace:
+# Not published to the marketplace: reads PLEXI_SOCKET directly to locate the
+# host events file, a native host-routing pattern the packager blocks. Keep
+# [marketplace] absent until that read is host-mediated or the app moves to the
+# sandboxed wasm container.
 # [marketplace]
 # visibility = "public"   # public | unlisted | private
 # price = "free"          # "free", or a price like "4.99"

@@ -51,6 +51,9 @@ __pycache__/
 *.pyo
 sdk/python/**/__pycache__/
 sdk/python/*.egg-info/
+.venv/
+.pytest_cache/
+tools/e2e_authoring/*.egg-info/
 
 # Local config
 .plexi/

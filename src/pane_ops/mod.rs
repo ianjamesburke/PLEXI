@@ -15,6 +15,7 @@ mod create;
 mod layout;
 mod workspace;
 
+pub(crate) use create::cli_open_placement;
 pub(crate) use create::restore_assistant_pane;
 pub(crate) use create::restore_builtin_app_pane;
 pub(crate) use layout::insert_split_tile;

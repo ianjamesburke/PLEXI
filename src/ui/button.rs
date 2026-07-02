@@ -134,8 +134,10 @@ fn chrome_button_visuals(
             ButtonKind::Primary | ButtonKind::Ghost => colors.text_primary,
         }
     };
-    let stroke_color = if state.disabled || matches!(kind, ButtonKind::Ghost) {
+    let stroke_color = if state.disabled {
         Color32::TRANSPARENT
+    } else if matches!(kind, ButtonKind::Ghost) {
+        colors.border
     } else if state.hovered {
         match kind {
             ButtonKind::Danger => colors.danger,
@@ -253,4 +255,26 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
             .request_repaint_after(std::time::Duration::from_millis(100));
     }
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ghost_buttons_keep_visible_outline() {
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let visuals = chrome_button_visuals(
+            ButtonKind::Ghost,
+            &colors,
+            ChromeButtonState {
+                disabled: false,
+                hovered: false,
+                down: false,
+            },
+        );
+
+        assert_ne!(visuals.stroke.color, Color32::TRANSPARENT);
+        assert!(visuals.stroke.width > 0.0);
+    }
 }

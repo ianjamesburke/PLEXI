@@ -112,7 +112,7 @@ pub fn routine_run(name: &str) -> i32 {
     pane_new_cli(
         Some(&routine.command),
         Some(name),
-        "split_h",
+        Some("split_h"),
         None,
         None,
         routine.ephemeral,

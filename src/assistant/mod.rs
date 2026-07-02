@@ -513,7 +513,7 @@ impl AssistantApp {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
-                "app": {"type": "string", "description": "App id, e.g. 'chess'"},
+                "app": {"type": "string", "description": "App id, e.g. 'calc'"},
                 "event": {
                     "type": "string",
                     "description": "Declared event stream name, or '*' for all"

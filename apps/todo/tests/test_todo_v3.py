@@ -162,15 +162,15 @@ def test_list_view_uses_action_bar_and_footer_keys() -> None:
     )
 
     node = todo.view().to_node()
+    assert node is not None
 
     assert node["type"] == "column"
     app_bar, select_list, action_bar, footer = node["children"]
     assert app_bar == {"type": "app_bar", "title": "Todo", "subtitle": "0/1 done"}
     assert select_list["type"] == "select_list"
     assert select_list["selected_idx"] == 0
-    assert action_bar["type"] == "stack"
-    assert action_bar["direction"] == "horizontal"
-    assert [button["label"] for button in action_bar["children"]] == [
+    assert action_bar["type"] == "action_bar"
+    assert [button["label"] for button in action_bar["actions"]] == [
         "New",
         "Toggle",
         "Delete",
@@ -184,6 +184,7 @@ def test_add_view_uses_text_edit_action_bar_and_footer_keys() -> None:
     _set_state({**todo.DEFAULT_STATE, "mode": "add", "draft": "Write docs"})
 
     node = todo.view().to_node()
+    assert node is not None
 
     app_bar, text_edit, action_bar, footer = node["children"]
     assert app_bar == {"type": "app_bar", "title": "Todo", "subtitle": "New item"}
@@ -195,7 +196,7 @@ def test_add_view_uses_text_edit_action_bar_and_footer_keys() -> None:
         "multiline": False,
         "max_length": 0,
     }
-    assert action_bar["type"] == "stack"
-    assert [button["label"] for button in action_bar["children"]] == ["Add", "Cancel"]
+    assert action_bar["type"] == "action_bar"
+    assert [button["label"] for button in action_bar["actions"]] == ["Add", "Cancel"]
     assert footer["type"] == "pinned"
     assert footer["child"]["type"] == "footer_keys"

@@ -68,7 +68,7 @@ For a new or changed overlay/widget/pane type: **add a committed scene file** un
 size = [1280.0, 800.0]
 
 [[steps]]
-open_app = "apps/balls"          # real Python process; args = [...] surface as ctx.args
+open_app = "apps/dev/balls"          # real Python process; args = [...] surface as ctx.args
 [[steps]]
 wait_app_frame = { timeout_s = 15.0 }
 [[steps]]

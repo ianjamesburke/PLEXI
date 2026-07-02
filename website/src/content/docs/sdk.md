@@ -801,6 +801,99 @@ Example::
     bar = ProgressBar(0.75, color="accent")
     ctx.render_tree(bar.to_node())
 
+### `Checkbox`
+
+Boolean checkbox. Fires a ``change`` event with the toggled ``checked``.
+
+### `Radio`
+
+Single-select radio group. Fires ``change`` with the picked index in ``value``.
+
+### `Switch`
+
+On/off switch. Fires ``change`` with the toggled ``on`` value.
+
+### `Slider`
+
+Horizontal value slider. Clicking the track fires ``change`` with ``value``.
+
+### `Select`
+
+Dropdown/combobox trigger. Clicking fires ``click``; the app owns the popover.
+
+### `DateTimePicker`
+
+Date/time picker trigger. Clicking fires ``click``; the app owns the popover.
+
+``mode`` is ``"date"``, ``"time"``, or ``"datetime"``.
+
+### `Progress`
+
+Progress bar. ``value`` is 0.0–1.0; set ``indeterminate`` for unknown work.
+
+### `Spinner`
+
+Loading spinner with an optional caption.
+
+### `Tooltip`
+
+Hover tooltip wrapping a single child component.
+
+### `Avatar`
+
+Circular avatar rendering the initials of ``label``.
+
+### `Icon`
+
+Named glyph icon. ``name`` is a semantic key resolved by the host.
+
+### `CodeBlock`
+
+Monospace code block with an optional ``language`` label.
+
+### `Table`
+
+Static data table with column headers and string cells.
+
+### `Banner`
+
+Inline banner/callout. ``tone`` is info/success/warning/danger.
+
+### `KeyValue`
+
+Key/value description list. ``rows`` is a list of ``(key, value)`` pairs.
+
+### `Breadcrumb`
+
+Breadcrumb trail; the last item is the current location.
+
+### `Pagination`
+
+Pagination control. Prev/next fire ``change`` with the new zero-based page in ``value``.
+
+### `Accordion`
+
+Disclosure/accordion. The header fires ``click``; ``child`` shows when ``open``.
+
+### `TabBar`
+
+Native tab strip (headers only). Selecting a tab fires ``change`` with the index in ``value``.
+
+The app renders the active tab's body itself. Distinct from :class:`Tabs`,
+which decomposes to L0 nodes; ``TabBar`` maps to the native ``tabs`` node.
+
+### `EmptyState`
+
+Empty-state placeholder with a title, optional description and icon token.
+
+### `Skeleton`
+
+Skeleton loading placeholder — ``rows`` shimmer bars of the given ``height``.
+
+### `Modal`
+
+Modal dialog wrapping a child body. The close affordance fires ``click``.
+
 ## Testing
 
 Headless snapshot testing for Plexi widgets.

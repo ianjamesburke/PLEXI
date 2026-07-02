@@ -4,23 +4,21 @@
 
 ## Scope
 
-Each app is a directory with a `manifest.toml` (schema_version + `[app]` id/type/name/entry + `[app.capabilities]`) and a Python entry file. Apps run on the Python SDK in `sdk/python`. Authoring path: `sdk/python/SDK_QUICKSTART.md`, then `sdk/python/SDK_V3.md`, then `docs/app-framework-marketplace.md`.
+Each app is a directory with a `manifest.toml` (schema_version + `[app]` id/type/name/entry + `[app.capabilities]`) and a Python entry file. Apps run on the Python SDK in `sdk/python`. **Canonical authoring guide: [`../sdk/python/AUTHORING.md`](../sdk/python/AUTHORING.md)** — it points on to the generated API reference and the `SDK_V3.md` design spec. Marketplace context: [`../docs/app-framework-marketplace.md`](../docs/app-framework-marketplace.md).
 
 ## Rules
 
 - **Scaffold, never hand-write.** Create a new app with `plexi app init <name>` (or `plexi-pr-<N> app init <name>` on a PR build). Never author a `manifest.toml` by hand — the scaffold sets the correct `schema_version` and a valid manifest.
 - **Prune scaffold imports.** The template imports ~6 SDK symbols; delete the unused ones before finishing. Pyright flags them immediately.
-- **Maintained set = [`packs/core.toml`](../packs/core.toml).** That pack is the single source of truth for which apps are maintained and ship as the canonical core set — the host re-seeds it on every launch. Only fix or improve apps listed there. Everything under `dev/` and `examples/` is a throwaway proof-of-concept — do not maintain it. Touch a `dev/` app only when the change is itself a POC demonstrating a new SDK or host capability.
-- **New capability ⇒ POC in `dev/`, not `examples/`.** Every user-visible host/SDK capability ships a small POC app under `apps/dev/`. The `alpha`/`pr-*` install flattens `dev/` to the top level (see `scripts/AGENTS.md`), so an `examples/` POC will not be picked up.
+- **Every top-level app is a maintained exemplar.** The directories directly under `apps/` (not `dev/`, not `examples/`) are the curated exemplar set: `calc`, `csv_viewer`, `github-issues`, `logs`, `permissions`, `stats`, `todo`, `wikipedia`. [`packs/core.toml`](../packs/core.toml) is the subset the host auto-seeds into every profile on launch (`logs`, `stats`, `todo`, `calc`, `permissions`); the capability-gated apps (`csv_viewer`, `github-issues`, `wikipedia`) stay top-level and seed on demand. Everything under `dev/` and `examples/` is a throwaway proof-of-concept — do not maintain it. Touch a `dev/` app only when the change is itself a POC demonstrating a new SDK or host capability.
+- **Exemplar bar — the gate for adding or keeping any top-level app.** Shipped apps are the de facto documentation; agents copy whatever patterns they find here. A top-level app must therefore pass the same gates a freshly scaffolded app does: `plexi app check` and `plexi app test` green on a current build, current SDK idioms only (semantic `ActionBar`/`FooterKeys`, the `log.*` module, `SelectList`/`TextEdit` over hand-rolled key handling), and no pre-v3 patterns. An app that cannot meet the bar belongs in `dev/` or is deleted — never left half-broken at the top level.
+- **New capability ⇒ POC in `dev/`, not `examples/`.** Every user-visible host/SDK capability ships a small POC app under `apps/dev/`. Dev POCs are not installed into the user-visible registry; promote a POC to a top-level maintained app, with tests and a current manifest, when it should be exercised from `plexi app list`.
 - **PGAP is L1-only.** Build declarative L1 UI trees. L0 is deprecated and its `_l0` fallbacks are gone; the `Raw` escape hatch stays.
 - **Log through the frame.** Use `log.debug/info/warn/error(...)` from `plexi_sdk`. App logs forward into the host log tagged `app::<app_id>`.
 
 ## Design philosophy (apps + SDK)
 
-- Obvious over clever — fight for the solution an agent would naturally assume.
-- Simulate affordances, never lie about contracts — isolation, durability, persistence, and security boundaries stay explicit.
-- Build primitives, not features — omit anything a developer's agent can trivially build atop the platform.
-- Design for agents, not humans browsing docs — if it needs a README to be usable, the API is wrong.
+See [`../sdk/python/AUTHORING.md`](../sdk/python/AUTHORING.md) § Design Philosophy — the single copy of the apps + SDK design principles.
 
 ## Style
 

@@ -321,7 +321,7 @@ falls back to the stable app-bundle binary.
 
 To drive a CLI-backed pane like any other app for testing, use the
 render → inspect → act loop from
-[`SDK_QUICKSTART.md`](../../sdk/python/SDK_QUICKSTART.md) §5: `plexi pane key <id> down`,
+[`AUTHORING.md`](../../sdk/python/AUTHORING.md) § Dev / Test Loop: `plexi pane key <id> down`,
 `plexi pane key <id> enter`, then `plexi pane state <id>` to confirm.
 
 ---

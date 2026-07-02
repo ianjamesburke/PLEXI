@@ -8,7 +8,7 @@ use crate::ui::{button, style};
 const APP_BAR_TITLE_SIZE: f32 = style::TEXT_TITLE;
 const APP_BAR_SINGLE_BAND_H: f32 = 34.0;
 const APP_BAR_DOUBLE_BAND_H: f32 = 48.0;
-const TEXT_EDIT_SINGLELINE_H: f32 = style::BUTTON_H_MD + style::SPACE_SM * 2.0;
+const TEXT_EDIT_SINGLELINE_H: f32 = style::BUTTON_H_MD;
 const TEXT_EDIT_MULTILINE_H: f32 = 96.0;
 pub(crate) const CARD_CHILD_GAP: f32 = style::SPACE_XS;
 
@@ -438,7 +438,7 @@ impl<'a> AppChrome<'a> {
         ui.painter()
             .rect_stroke(rect, style::RADIUS_SM, stroke, egui::StrokeKind::Inside);
 
-        let inner = rect.shrink2(egui::vec2(style::SPACE_SM, 6.0));
+        let inner = rect.shrink2(egui::vec2(style::SPACE_SM, 0.0));
         let response = ui
             .allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
                 ui.set_clip_rect(inner);
@@ -748,10 +748,7 @@ mod tests {
         assert_eq!(action_bar_height(), style::BUTTON_H_MD + style::SPACE_SM);
         assert_eq!(card_padding(0.0), style::SPACE_MD);
         assert_eq!(card_padding(style::SPACE_XL), style::SPACE_XL);
-        assert_eq!(
-            text_edit_height(false),
-            style::BUTTON_H_MD + style::SPACE_SM * 2.0
-        );
+        assert_eq!(text_edit_height(false), style::BUTTON_H_MD);
         assert!(matches!(button_kind("primary"), button::ButtonKind::Accent));
         assert!(matches!(button_kind("danger"), button::ButtonKind::Danger));
         assert!(matches!(button_kind("ghost"), button::ButtonKind::Ghost));

@@ -413,11 +413,10 @@ fn main() -> eframe::Result {
                                     );
                                     let title = cli::mcp_pane_title(&mcp);
                                     log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
-                                    let layout_str = layout.as_deref().unwrap_or("split_h");
                                     std::process::exit(cli::pane_new_cli(
                                         None,
                                         Some(title.as_str()),
-                                        layout_str,
+                                        layout.as_deref(),
                                         from_pane_id,
                                         None,
                                         false,
@@ -884,7 +883,7 @@ fn main() -> eframe::Result {
                                 std::process::exit(cli::pane_new_cli(
                                     cmd.as_deref(),
                                     name.as_deref(),
-                                    layout,
+                                    Some(layout),
                                     from,
                                     cwd.as_deref(),
                                     ephemeral,

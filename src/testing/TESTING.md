@@ -25,7 +25,7 @@ suite = false               # optional, default true. false = excluded from
                             # processes); run them via `just scene`.
 
 [[steps]]
-open_app = "apps/balls"                     # real Python process, production launch path
+open_app = "apps/dev/balls"                     # real Python process, production launch path
 args = ["--state", '{"balls": 3}']          # optional; surfaces as ctx.args in the SDK
 
 [[steps]]

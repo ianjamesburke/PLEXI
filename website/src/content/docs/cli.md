@@ -395,7 +395,9 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 
 Open an app or tool in a new pane.
 
-Pass an app id (e.g. `plexi app open snake`) or a path to an app directory containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
+Pass an app id (e.g. `plexi app open calc`) or a path to an app directory containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
+
+Default placement is a sibling split to the right — the calling pane is never taken over. Pass a direction flag (--down/--left/--up/--right), --tab, or --window to override; the app's manifest `[launch] placement` applies when no flag is given.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -421,6 +423,7 @@ Local path: `plexi app install ./my-app` — copies the app dir into Plexi's sto
 |---|---|---|---|
 | `<spec_or_path>` | string | no | Source to install: a local path, GitHub spec (github:owner/repo), or bare app id. Omit to install from the workspace pack (.plexi/apps.toml) |
 | `--pack` | string | no | Install from a pack file or 'core' |
+| `--refresh` | flag | no | With --pack: re-extract already-installed `local:` apps from this binary's embedded tree, replacing the installed copy. The update path for bundled core apps on stable channels |
 | `--yes` / `-y` | flag | no | Skip the trust-sheet confirmation prompt. Required for non-interactive (scripted) installs — without a terminal the install fails closed instead of proceeding silently |
 
 ### `plexi app uninstall`
@@ -444,7 +447,7 @@ Render an app headlessly (JSON frame tree by default, or PNG with --png)
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<app>` | string | yes | App id or local path to render (e.g. "snake" or "./my-app") |
+| `<app>` | string | yes | App id or local path to render (e.g. "calc" or "./my-app") |
 | `--size` | string | no | Image dimensions as WxH (e.g. 500x500) Default: `800x600`. |
 | `--state` | string | no | Pre-seed the app's state from a JSON file before rendering |
 | `--output` | string | no | Where to save the output (default: stdout) |
@@ -494,7 +497,7 @@ Use --open to launch it in a split-right pane after scaffolding.
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes |  |
-| `--lang` | string | no | Default: `python`. |
+| `--lang` | string | no | App language/template: `python` (declarative UI), `python_agent` (agent-loop app), or `rust` (compiled native app) Default: `python`. |
 | `--global` | flag | no | Scaffold into the global app registry instead of the workspace |
 | `--open` | flag | no | Open the app in a split-right pane after scaffolding |
 | `--no-open` | flag | no | Deprecated compatibility flag. App init no longer opens by default |
@@ -1153,4 +1156,44 @@ Example: plexi uninstall
 |---|---|---|---|
 | `--keep-data` | flag | no | Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk |
 | `--yes` / `-y` | flag | no | Skip the confirmation prompt and proceed immediately (removes data unless --keep-data is set) |
+
+## `plexi host`
+
+Launch, stop, or check a headless-friendly Plexi host from the CLI.
+
+`host start` launches this channel's app bundle detached from the calling shell, optionally seeding panes from a `--layout` TOML file or repeated `--pane` flags, then blocks until the host confirms it's ready. Works identically on alpha, beta, main, and PR builds — the channel is resolved from the running CLI binary's own name.
+
+| Subcommand | Description |
+|---|---|
+| `start` | Launch this channel's app bundle detached and wait for readiness |
+| `stop` | Stop the running host for this channel |
+| `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
+
+### `plexi host start`
+
+Launch this channel's app bundle detached and wait for readiness.
+
+Errors if a host for this channel is already running. Seeds any declared panes via the spawn-queue before the app boots, so they appear on its first frame.
+
+Example: plexi-pr-2357 host start --pane 'cwd=/tmp,cmd=htop'
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--layout` | string | no | TOML file with `[[pane]]` tables to seed on boot |
+| `--pane` | string (repeatable) | no | A pane to seed: 'cwd=<dir>[,cmd=<command>][,tab|window]'. Repeatable |
+| `--timeout-secs` | string | no | Seconds to wait for the host to confirm readiness (default 15) |
+
+### `plexi host stop`
+
+Stop the running host for this channel.
+
+Sends a clean shutdown request first, falling back to SIGTERM if the host doesn't confirm exit in time.
+
+### `plexi host status`
+
+Report whether this channel's host is running, its pid, socket path, and pane count
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Output as JSON |
 

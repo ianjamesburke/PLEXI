@@ -28,6 +28,25 @@ fn default_markdown_padding() -> f32 {
     12.0
 }
 
+fn default_slider_max() -> f32 {
+    1.0
+}
+
+fn default_datetime_mode() -> String {
+    "datetime".to_string()
+}
+
+fn default_skeleton_rows() -> usize {
+    3
+}
+
+/// One row in a `UiNode::KeyValue` description list.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct KeyValueRow {
+    pub key: String,
+    pub value: String,
+}
+
 /// Single shortcut entry for `UiNode::FooterKeys`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct FooterKeyEntry {
@@ -299,278 +318,195 @@ pub enum UiNode {
         #[serde(default)]
         selected_idx: usize,
     },
+
+    // ── L1 form controls (placeholder primitives — styling to be expanded) ─
+    /// Boolean checkbox. Clicking fires `ComponentEvent { event_type: "change",
+    /// payload: { value } }` with the toggled bool; the app owns the state.
+    Checkbox {
+        node_id: String,
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        checked: bool,
+        #[serde(default)]
+        disabled: bool,
+    },
+    /// Single-select radio group. Clicking an option fires `ComponentEvent
+    /// { event_type: "change", payload: { value: index } }`.
+    Radio {
+        node_id: String,
+        options: Vec<String>,
+        #[serde(default)]
+        selected: usize,
+        #[serde(default)]
+        disabled: bool,
+    },
+    /// On/off switch. Fires `ComponentEvent { event_type: "change",
+    /// payload: { value } }` with the toggled bool.
+    Switch {
+        node_id: String,
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        on: bool,
+        #[serde(default)]
+        disabled: bool,
+    },
+    /// Horizontal value slider. Clicking along the track fires `ComponentEvent
+    /// { event_type: "change", payload: { value } }`.
+    Slider {
+        node_id: String,
+        #[serde(default)]
+        value: f32,
+        #[serde(default)]
+        min: f32,
+        #[serde(default = "default_slider_max")]
+        max: f32,
+        #[serde(default)]
+        disabled: bool,
+    },
+    /// Dropdown/combobox trigger. Clicking fires a `click` `ComponentEvent`;
+    /// the app owns the option popover.
+    Select {
+        node_id: String,
+        options: Vec<String>,
+        #[serde(default)]
+        selected: usize,
+        #[serde(default)]
+        placeholder: String,
+    },
+    /// Date/time picker trigger. Clicking fires a `click` `ComponentEvent`;
+    /// the app owns the picker popover.
+    DateTimePicker {
+        node_id: String,
+        #[serde(default)]
+        value: String,
+        #[serde(default = "default_datetime_mode")]
+        mode: String,
+    },
+
+    // ── L1 display / data primitives (styling to be expanded) ─────────────
+    /// Progress bar. `value` is 0.0–1.0; set `indeterminate` for unknown work.
+    Progress {
+        #[serde(default)]
+        value: f32,
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        indeterminate: bool,
+    },
+    /// Loading spinner with an optional caption.
+    Spinner {
+        #[serde(default)]
+        label: String,
+    },
+    /// Hover tooltip wrapping a single child.
+    Tooltip {
+        text: String,
+        child: Box<UiNode>,
+    },
+    /// Circular avatar rendering initials (image variant deferred).
+    Avatar {
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        size: f32,
+    },
+    /// Named glyph icon. `name` is a semantic key; the placeholder renders the
+    /// literal token until a real icon set is wired.
+    Icon {
+        name: String,
+        #[serde(default)]
+        size: f32,
+        #[serde(default)]
+        color: String,
+    },
+    /// Monospace code block with an optional language label.
+    CodeBlock {
+        code: String,
+        #[serde(default)]
+        language: String,
+    },
+    /// Static data table with column headers and string cells.
+    Table {
+        columns: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
+    /// Inline banner / callout with a semantic tone (info/success/warning/danger).
+    Banner {
+        text: String,
+        #[serde(default)]
+        tone: String,
+        #[serde(default)]
+        title: String,
+    },
+    /// Key/value description list.
+    KeyValue {
+        rows: Vec<KeyValueRow>,
+    },
+    /// Breadcrumb trail; the last item is the current location.
+    Breadcrumb {
+        items: Vec<String>,
+    },
+    /// Pagination control. Prev/next clicks fire `ComponentEvent
+    /// { event_type: "change", payload: { value: page } }`.
+    Pagination {
+        node_id: String,
+        #[serde(default)]
+        page: usize,
+        #[serde(default)]
+        total: usize,
+    },
+    /// Disclosure/accordion. The header click fires a `click` `ComponentEvent`;
+    /// the child renders when `open` (the app flips it).
+    Accordion {
+        node_id: String,
+        title: String,
+        #[serde(default)]
+        open: bool,
+        child: Box<UiNode>,
+    },
+    /// Tab strip (headers only). Selecting a tab fires `ComponentEvent
+    /// { event_type: "change", payload: { value: index } }`; the app renders the body.
+    Tabs {
+        node_id: String,
+        tabs: Vec<String>,
+        #[serde(default)]
+        active: usize,
+    },
+    /// Empty-state placeholder with a title, optional description and icon token.
+    EmptyState {
+        title: String,
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        icon: String,
+    },
+    /// Skeleton loading placeholder — `rows` shimmer bars of the given height.
+    Skeleton {
+        #[serde(default = "default_skeleton_rows")]
+        rows: usize,
+        #[serde(default)]
+        height: f32,
+    },
+    /// Modal dialog wrapping a child body. The close affordance fires a `click`
+    /// `ComponentEvent`.
+    Modal {
+        node_id: String,
+        title: String,
+        child: Box<UiNode>,
+    },
 }
 
-// Manual PartialEq impl — UiNode::Raw wraps RenderCommand which would require
-// PartialEq on hundreds of transitive types. Raw nodes are structural escape
-// hatches; we compare them via their serde round-trip JSON representation so
-// equality is still meaningful without cascading the derive requirement.
+// Compared via serde round-trip. `UiNode::Raw` wraps `RenderCommand` (hundreds
+// of transitive types without `PartialEq`), so we cannot derive; hand-writing a
+// per-variant arm for every node was a maintenance landmine as the component
+// vocabulary grows. JSON equality is exact for these value trees and keeps
+// adding a new variant a single-location change. Used only by tests.
 impl PartialEq for UiNode {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                UiNode::Stack {
-                    direction: d1,
-                    children: c1,
-                    gap: g1,
-                    padding: p1,
-                },
-                UiNode::Stack {
-                    direction: d2,
-                    children: c2,
-                    gap: g2,
-                    padding: p2,
-                },
-            ) => d1 == d2 && c1 == c2 && g1 == g2 && p1 == p2,
-            (
-                UiNode::Scroll {
-                    child: c1,
-                    horizontal: h1,
-                },
-                UiNode::Scroll {
-                    child: c2,
-                    horizontal: h2,
-                },
-            ) => c1 == c2 && h1 == h2,
-            (
-                UiNode::Sized {
-                    width: w1,
-                    height: h1,
-                    child: c1,
-                },
-                UiNode::Sized {
-                    width: w2,
-                    height: h2,
-                    child: c2,
-                },
-            ) => w1 == w2 && h1 == h2 && c1 == c2,
-            (UiNode::Layer { children: c1 }, UiNode::Layer { children: c2 }) => c1 == c2,
-            (
-                UiNode::Text {
-                    text: t1,
-                    size: s1,
-                    color: co1,
-                    bold: b1,
-                    monospace: m1,
-                },
-                UiNode::Text {
-                    text: t2,
-                    size: s2,
-                    color: co2,
-                    bold: b2,
-                    monospace: m2,
-                },
-            ) => t1 == t2 && s1 == s2 && co1 == co2 && b1 == b2 && m1 == m2,
-            (
-                UiNode::Markdown {
-                    text: t1,
-                    base_size: s1,
-                    color: c1,
-                    padding: p1,
-                },
-                UiNode::Markdown {
-                    text: t2,
-                    base_size: s2,
-                    color: c2,
-                    padding: p2,
-                },
-            ) => t1 == t2 && s1 == s2 && c1 == c2 && p1 == p2,
-            (
-                UiNode::Interactive {
-                    node_id: n1,
-                    child: c1,
-                    on_click: oc1,
-                    on_hover: oh1,
-                },
-                UiNode::Interactive {
-                    node_id: n2,
-                    child: c2,
-                    on_click: oc2,
-                    on_hover: oh2,
-                },
-            ) => n1 == n2 && c1 == c2 && oc1 == oc2 && oh1 == oh2,
-            // Raw: compare via serde JSON round-trip to avoid cascading PartialEq.
-            (UiNode::Raw { command: cmd1 }, UiNode::Raw { command: cmd2 }) => {
-                match (
-                    serde_json::to_string(cmd1.as_ref()),
-                    serde_json::to_string(cmd2.as_ref()),
-                ) {
-                    (Ok(s1), Ok(s2)) => s1 == s2,
-                    _ => false,
-                }
-            }
-            (
-                UiNode::Canvas {
-                    commands: c1,
-                    width: w1,
-                    height: h1,
-                    grow: g1,
-                },
-                UiNode::Canvas {
-                    commands: c2,
-                    width: w2,
-                    height: h2,
-                    grow: g2,
-                },
-            ) => match (serde_json::to_string(c1), serde_json::to_string(c2)) {
-                (Ok(s1), Ok(s2)) => s1 == s2 && w1 == w2 && h1 == h2 && g1 == g2,
-                _ => false,
-            },
-            (UiNode::Surface { id: i1 }, UiNode::Surface { id: i2 }) => i1 == i2,
-            (
-                UiNode::Button {
-                    node_id: n1,
-                    label: l1,
-                    disabled: d1,
-                    style: s1,
-                },
-                UiNode::Button {
-                    node_id: n2,
-                    label: l2,
-                    disabled: d2,
-                    style: s2,
-                },
-            ) => n1 == n2 && l1 == l2 && d1 == d2 && s1 == s2,
-            (UiNode::ActionBar { actions: a1 }, UiNode::ActionBar { actions: a2 }) => a1 == a2,
-            (
-                UiNode::TextEdit {
-                    node_id: n1,
-                    placeholder: ph1,
-                    value: v1,
-                    multiline: m1,
-                    max_length: ml1,
-                },
-                UiNode::TextEdit {
-                    node_id: n2,
-                    placeholder: ph2,
-                    value: v2,
-                    multiline: m2,
-                    max_length: ml2,
-                },
-            ) => n1 == n2 && ph1 == ph2 && v1 == v2 && m1 == m2 && ml1 == ml2,
-            (
-                UiNode::Badge {
-                    label: l1,
-                    fill: f1,
-                    fg: fg1,
-                },
-                UiNode::Badge {
-                    label: l2,
-                    fill: f2,
-                    fg: fg2,
-                },
-            ) => l1 == l2 && f1 == f2 && fg1 == fg2,
-            (
-                UiNode::Dot {
-                    color: c1,
-                    size: s1,
-                },
-                UiNode::Dot {
-                    color: c2,
-                    size: s2,
-                },
-            ) => c1 == c2 && s1 == s2,
-            (
-                UiNode::AppBar {
-                    title: t1,
-                    subtitle: s1,
-                },
-                UiNode::AppBar {
-                    title: t2,
-                    subtitle: s2,
-                },
-            ) => t1 == t2 && s1 == s2,
-            (
-                UiNode::FooterKeys {
-                    entries: e1,
-                    divider: d1,
-                },
-                UiNode::FooterKeys {
-                    entries: e2,
-                    divider: d2,
-                },
-            ) => e1 == e2 && d1 == d2,
-            (
-                UiNode::Footer {
-                    text: t1,
-                    color: c1,
-                },
-                UiNode::Footer {
-                    text: t2,
-                    color: c2,
-                },
-            ) => t1 == t2 && c1 == c2,
-            (UiNode::Section { title: t1 }, UiNode::Section { title: t2 }) => t1 == t2,
-            (
-                UiNode::Label {
-                    text: t1,
-                    size: s1,
-                    color: c1,
-                    tone: to1,
-                    bold: b1,
-                    monospace: m1,
-                    max_lines: ml1,
-                },
-                UiNode::Label {
-                    text: t2,
-                    size: s2,
-                    color: c2,
-                    tone: to2,
-                    bold: b2,
-                    monospace: m2,
-                    max_lines: ml2,
-                },
-            ) => {
-                t1 == t2 && s1 == s2 && c1 == c2 && to1 == to2 && b1 == b2 && m1 == m2 && ml1 == ml2
-            }
-            (UiNode::Spacer { size: s1, grow: g1 }, UiNode::Spacer { size: s2, grow: g2 }) => {
-                s1 == s2 && g1 == g2
-            }
-            (UiNode::Divider { color: c1 }, UiNode::Divider { color: c2 }) => c1 == c2,
-            (
-                UiNode::Card {
-                    children: c1,
-                    padding: p1,
-                },
-                UiNode::Card {
-                    children: c2,
-                    padding: p2,
-                },
-            ) => c1 == c2 && p1 == p2,
-            (
-                UiNode::SelectList {
-                    items: i1,
-                    selected_idx: s1,
-                },
-                UiNode::SelectList {
-                    items: i2,
-                    selected_idx: s2,
-                },
-            ) => i1 == i2 && s1 == s2,
-            (
-                UiNode::Pinned {
-                    edge: e1,
-                    child: c1,
-                },
-                UiNode::Pinned {
-                    edge: e2,
-                    child: c2,
-                },
-            ) => e1 == e2 && c1 == c2,
-            (
-                UiNode::Column {
-                    children: c1,
-                    gap: g1,
-                    padding_top: p1,
-                    padding: pa1,
-                },
-                UiNode::Column {
-                    children: c2,
-                    gap: g2,
-                    padding_top: p2,
-                    padding: pa2,
-                },
-            ) => c1 == c2 && g1 == g2 && p1 == p2 && pa1 == pa2,
+        match (serde_json::to_string(self), serde_json::to_string(other)) {
+            (Ok(a), Ok(b)) => a == b,
             _ => false,
         }
     }
@@ -594,5 +530,103 @@ mod tests {
                 fg: String::new(),
             }
         );
+    }
+
+    /// Every placeholder primitive's Python `to_node()` JSON must parse into the
+    /// matching `UiNode` variant. Guards the SDK↔host wire contract (stint 0328).
+    #[test]
+    fn sdk_placeholder_primitives_parse_from_python_wire_json() {
+        let cases: &[(&str, fn(&UiNode) -> bool)] = &[
+            (
+                r#"{"type":"checkbox","node_id":"c","label":"Agree","checked":true,"disabled":false}"#,
+                |n| matches!(n, UiNode::Checkbox { checked: true, .. }),
+            ),
+            (
+                r#"{"type":"radio","node_id":"r","options":["a","b"],"selected":1,"disabled":false}"#,
+                |n| matches!(n, UiNode::Radio { selected: 1, .. }),
+            ),
+            (
+                r#"{"type":"switch","node_id":"s","label":"","on":true,"disabled":false}"#,
+                |n| matches!(n, UiNode::Switch { on: true, .. }),
+            ),
+            (
+                r#"{"type":"slider","node_id":"sl","value":0.5,"min":0.0,"max":1.0,"disabled":false}"#,
+                |n| matches!(n, UiNode::Slider { .. }),
+            ),
+            (
+                r#"{"type":"select","node_id":"se","options":["x"],"selected":0,"placeholder":"Pick"}"#,
+                |n| matches!(n, UiNode::Select { .. }),
+            ),
+            (
+                r#"{"type":"date_time_picker","node_id":"d","value":"","mode":"date"}"#,
+                |n| matches!(n, UiNode::DateTimePicker { .. }),
+            ),
+            (
+                r#"{"type":"progress","value":0.3,"label":"Load","indeterminate":false}"#,
+                |n| matches!(n, UiNode::Progress { .. }),
+            ),
+            (r#"{"type":"spinner","label":"Wait"}"#, |n| {
+                matches!(n, UiNode::Spinner { .. })
+            }),
+            (
+                r#"{"type":"tooltip","text":"Hi","child":{"type":"text","text":"x"}}"#,
+                |n| matches!(n, UiNode::Tooltip { .. }),
+            ),
+            (r#"{"type":"avatar","label":"Ian Burke","size":0.0}"#, |n| {
+                matches!(n, UiNode::Avatar { .. })
+            }),
+            (r#"{"type":"icon","name":"gear","size":0.0,"color":""}"#, |n| {
+                matches!(n, UiNode::Icon { .. })
+            }),
+            (
+                r#"{"type":"code_block","code":"x=1","language":"python"}"#,
+                |n| matches!(n, UiNode::CodeBlock { .. }),
+            ),
+            (
+                r#"{"type":"table","columns":["a"],"rows":[["1"]]}"#,
+                |n| matches!(n, UiNode::Table { .. }),
+            ),
+            (
+                r#"{"type":"banner","text":"Saved","tone":"success","title":""}"#,
+                |n| matches!(n, UiNode::Banner { .. }),
+            ),
+            (
+                r#"{"type":"key_value","rows":[{"key":"Env","value":"prod"}]}"#,
+                |n| matches!(n, UiNode::KeyValue { .. }),
+            ),
+            (r#"{"type":"breadcrumb","items":["Home","Docs"]}"#, |n| {
+                matches!(n, UiNode::Breadcrumb { .. })
+            }),
+            (
+                r#"{"type":"pagination","node_id":"p","page":1,"total":5}"#,
+                |n| matches!(n, UiNode::Pagination { .. }),
+            ),
+            (
+                r#"{"type":"accordion","node_id":"a","title":"More","open":true,"child":{"type":"text","text":"x"}}"#,
+                |n| matches!(n, UiNode::Accordion { open: true, .. }),
+            ),
+            (
+                r#"{"type":"tabs","node_id":"t","tabs":["A","B"],"active":0}"#,
+                |n| matches!(n, UiNode::Tabs { .. }),
+            ),
+            (
+                r#"{"type":"empty_state","title":"Nothing","description":"","icon":""}"#,
+                |n| matches!(n, UiNode::EmptyState { .. }),
+            ),
+            (r#"{"type":"skeleton","rows":3,"height":0.0}"#, |n| {
+                matches!(n, UiNode::Skeleton { .. })
+            }),
+            (
+                r#"{"type":"modal","node_id":"m","title":"Confirm","child":{"type":"text","text":"x"}}"#,
+                |n| matches!(n, UiNode::Modal { .. }),
+            ),
+        ];
+
+        for (json, check) in cases {
+            let node: UiNode =
+                serde_json::from_str(json).unwrap_or_else(|e| panic!("parse {json}: {e}"));
+            assert!(check(&node), "wrong variant for {json}");
+        }
+        assert_eq!(cases.len(), 22, "all 22 placeholder primitives covered");
     }
 }

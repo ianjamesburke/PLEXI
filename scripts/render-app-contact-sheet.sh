@@ -273,19 +273,12 @@ make_contact_sheet() {
 }
 
 apps=(
-  balls
-  breakout
   calc
-  chess
   csv_viewer
   github-issues
-  kraken
   logs
   permissions
-  snake
   stats
-  sudoku
-  tetris
   todo
   wikipedia
 )

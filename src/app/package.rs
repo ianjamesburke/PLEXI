@@ -632,10 +632,28 @@ pub(crate) fn is_generated_dev_artifact_rel(rel_path: &Path) -> bool {
     )
 }
 
+/// Compiled bytecode and Python cache dirs that are never package content at
+/// any nesting depth — unlike [`is_generated_dev_artifact_rel`], which only
+/// strips root-level env/build dirs. Excluded so packages stay reproducible:
+/// `.pyc`/`.pyo` are interpreter- and machine-specific, so leaving them in
+/// would perturb the checksum the registry is addressed by. Nested caches like
+/// `tests/__pycache__/` are the common offender.
+fn is_never_package_rel(rel_path: &Path) -> bool {
+    let is_cache_dir = rel_path
+        .components()
+        .any(|c| matches!(c, Component::Normal(name) if name == "__pycache__"));
+    let is_bytecode = matches!(
+        rel_path.extension().and_then(|e| e.to_str()),
+        Some("pyc" | "pyo")
+    );
+    is_cache_dir || is_bytecode
+}
+
 /// Recursively collect every regular file under `root` as
 /// `(relative path, size)`, sorted by path for deterministic archives.
 /// Rejects any symlink in included content. Skips root-level generated dev
-/// artifacts and a root-level PACKAGE.toml.
+/// artifacts, compiled bytecode / caches at any depth, and a root-level
+/// PACKAGE.toml.
 fn collect_files(root: &Path) -> Result<Vec<(PathBuf, u64)>, PackageError> {
     let mut files = Vec::new();
     collect_files_rec(root, Path::new(""), &mut files)?;
@@ -657,6 +675,13 @@ fn collect_files_rec(
         if is_generated_dev_artifact_rel(&rel_path) {
             log::info!(
                 "package: skipping generated dev artifact {}",
+                path.display()
+            );
+            continue;
+        }
+        if is_never_package_rel(&rel_path) {
+            log::info!(
+                "package: skipping compiled/cache artifact {}",
                 path.display()
             );
             continue;
@@ -1149,6 +1174,31 @@ mod tests {
         assert_eq!(report.capabilities, vec![Capability::AiQuery]);
         assert_eq!(report.file_count, 2, "manifest.toml + main.py");
         assert!(report.total_size > 0);
+    }
+
+    #[test]
+    fn nested_bytecode_and_cache_excluded_from_package() {
+        let work = TempDir::new().unwrap();
+        let app_dir = work.path().join("app");
+        fs::create_dir(&app_dir).unwrap();
+        write_app(&app_dir, "pkg-pycache", "\"timer\"");
+        let cache = app_dir.join("tests").join("__pycache__");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(app_dir.join("tests").join("test_it.py"), "# test\n").unwrap();
+        fs::write(cache.join("test_it.cpython-311.pyc"), b"\x00\x01bytecode").unwrap();
+
+        let out = work.path().join("out.plexipkg");
+        build_package(&app_dir, Some(&out)).unwrap();
+        let entries = read_entries(&out);
+        let paths: Vec<&String> = entries.keys().collect();
+        assert!(
+            entries.contains_key("tests/test_it.py"),
+            "test source must ship; got {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.contains("__pycache__") || p.ends_with(".pyc")),
+            "compiled bytecode / __pycache__ must never be packaged; got {paths:?}"
+        );
     }
 
     #[test]

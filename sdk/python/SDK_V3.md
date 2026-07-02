@@ -1,5 +1,13 @@
 # Plexi Python SDK v3 — Design Specification
 
+> **Not the authoring guide.** To *build* an app, read
+> [`AUTHORING.md`](AUTHORING.md). For the live effect/event/component surface
+> with signatures, read the generated
+> [`../../website/src/content/docs/sdk.md`](../../website/src/content/docs/sdk.md)
+> — code and that generated reference win on any discrepancy. This file is the
+> design record: the WIT mapping and adapter/bridge protocol. Its inline type
+> tables capture original design intent and may lag the shipped surface.
+
 **Status:** authoritative design doc for task 0285. Implement exactly this. No design decisions during implementation.
 
 Source of truth for all types: `wit/plexi.wit`. Every Python type here maps to a named WIT type. Where a mapping decision was made, it is stated explicitly.
@@ -440,6 +448,23 @@ class PaymentFailed:
 ## 6. UINode
 
 All UINode types are dataclasses in `plexi_sdk/ui/__init__.py`. They map to WIT `ui-node-data` variants. The adapter flattens the nested tree into a WIT `ui-tree` arena after `view()` returns.
+
+> **Authoritative component list:** the complete, always-current set of SDK
+> components lives in the generated reference
+> [`website/src/content/docs/sdk.md`](../../website/src/content/docs/sdk.md)
+> (regenerated from `ui.py` by `just gen-sdk-docs`, gated in CI). The catalog
+> below documents the WIT variant *mapping* — the WASM target shape — not the
+> live Python surface; do not treat it as the component index.
+>
+> The host-rendered node vocabulary was settled in stint 0328 to a Polaris-class
+> spectrum. Native `UiNode` variants (see `src/protocol/ui_nodes.rs`) now cover:
+> form controls (`checkbox`, `radio`, `switch`, `slider`, `select`,
+> `date_time_picker`, `text_edit`), data/display (`table`, `key_value`,
+> `code_block`, `banner`, `progress`, `spinner`, `skeleton`, `empty_state`,
+> `avatar`, `icon`, `tooltip`, `badge`, `divider`, `markdown`), and navigation
+> (`tabs`, `breadcrumb`, `pagination`, `accordion`, `modal`). Interactive nodes
+> fire `ComponentEvent { event_type: "click" | "change" | "submit" }`; unstyled
+> placeholders carry a `// styling to be expanded` marker in the render arm.
 
 ```python
 from __future__ import annotations

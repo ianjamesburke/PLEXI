@@ -2,21 +2,6 @@ schema_version = 1
 reseed = "once"
 
 [[app]]
-id      = "balls"
-source  = "local:balls"
-version = "bundled"
-
-[[app]]
-id      = "snake"
-source  = "local:snake"
-version = "bundled"
-
-[[app]]
-id      = "tetris"
-source  = "local:tetris"
-version = "bundled"
-
-[[app]]
 id      = "typing-tutor"
 source  = "local:typing-tutor"
 version = "bundled"
@@ -29,6 +14,16 @@ version = "bundled"
 [[app]]
 id      = "csv_viewer"
 source  = "local:csv_viewer"
+version = "bundled"
+
+[[app]]
+id      = "snake"
+source  = "local:snake"
+version = "bundled"
+
+[[app]]
+id      = "tetris"
+source  = "local:tetris"
 version = "bundled"
 
 [[app]]

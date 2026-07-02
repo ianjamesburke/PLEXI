@@ -19,7 +19,7 @@ from plexi_sdk.events import (
     UiAction,
     UiValueChange,
 )
-from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, Scrollable, SelectList, Text, TextEdit
+from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, Scrollable, SelectList, Table, Text, TextEdit
 
 VISIBLE_ROWS = 24
 VISIBLE_COLS = 5
@@ -240,15 +240,15 @@ def _list_view(data: dict):
 
 def _detail_view(data: dict):
     name = Path(data["path"]).name or "CSV"
-    header = " | ".join(data["headers"][data["col_offset"] : data["col_offset"] + VISIBLE_COLS])
-    lines = [header or "(no headers)", "-" * min(120, max(3, len(header)))]
-    for idx in range(data["row_offset"], min(len(data["rows"]), data["row_offset"] + VISIBLE_ROWS)):
-        row = data["rows"][idx]
-        lines.append(" | ".join(row[data["col_offset"] : data["col_offset"] + VISIBLE_COLS]))
+    visible_headers = data["headers"][data["col_offset"] : data["col_offset"] + VISIBLE_COLS]
+    visible_rows = [
+        row[data["col_offset"] : data["col_offset"] + VISIBLE_COLS]
+        for row in data["rows"][data["row_offset"] : data["row_offset"] + VISIBLE_ROWS]
+    ]
     return Column(
         [
             AppBar(name, f"{len(data['rows'])} rows x {len(data['headers'])} columns"),
-            Scrollable(Text("\n".join(lines), size=12.0)),
+            Scrollable(Table(visible_headers or ["(no headers)"], visible_rows)),
             ActionBar([Button("Back", "csv-back-list", style="ghost")]),
             FooterKeys([("j/k", "rows"), ("h/l", "cols"), ("esc", "list")]),
         ],

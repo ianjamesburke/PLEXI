@@ -891,6 +891,12 @@ No-op wake. Nudges the (zero-frame-idle) UI thread to run a frame so queued work
 
 *No additional fields.*
 
+### `shutdown`
+
+Request a clean host shutdown. Sent by `plexi host stop` over a direct `notify.sock` connection (never over `PLEXI_SO...
+
+*No additional fields.*
+
 ## Host → App Events
 
 Messages the host sends to the app.

@@ -1,0 +1,25 @@
+{
+  "child_turns": 0,
+  "commands_used": [],
+  "difficulty": "easy",
+  "errors": [],
+  "fixture_id": "counter",
+  "lines_of_code": null,
+  "mode": "dry-run",
+  "outcome": "plan-only",
+  "parent_turns": 1,
+  "schema_version": 1,
+  "session_id": "20260702T185818Z_counter_8f430e",
+  "stalled_at": null,
+  "timings": {
+    "first_child_output_secs": null,
+    "first_interactive_secs": null,
+    "host_ready_secs": null
+  },
+  "versions": {
+    "channel": "e2e",
+    "cli": null,
+    "sdk": "0.1.16"
+  },
+  "wall_clock_secs": 0.002
+}

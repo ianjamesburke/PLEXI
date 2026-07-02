@@ -67,9 +67,27 @@ fn check_sdk_gate(min: &str, reported_sdk: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn hung_relevant_input(input: &egui::InputState) -> bool {
+    hung_relevant_events(&input.events)
+}
+
+fn hung_relevant_events(events: &[egui::Event]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            egui::Event::Text(_)
+                | egui::Event::Paste(_)
+                | egui::Event::Key {
+                    pressed: true,
+                    ..
+                }
+        )
+    })
+}
+
 #[cfg(test)]
 mod sdk_gate_tests {
-    use super::check_sdk_gate;
+    use super::{check_sdk_gate, hung_relevant_events};
 
     #[test]
     fn passes_when_sdk_at_or_above_min() {
@@ -93,6 +111,30 @@ mod sdk_gate_tests {
     #[test]
     fn rejects_unparseable_handshake_version() {
         assert!(check_sdk_gate("0.1.0", "garbage").is_err());
+    }
+
+    #[test]
+    fn hung_relevant_events_ignore_pointer_only_chrome_input() {
+        let pointer_events = [
+            egui::Event::PointerMoved(egui::pos2(10.0, 10.0)),
+            egui::Event::PointerButton {
+                pos: egui::pos2(10.0, 10.0),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+        ];
+        assert!(!hung_relevant_events(&pointer_events));
+
+        assert!(hung_relevant_events(&[egui::Event::Text("x".into())]));
+        assert!(hung_relevant_events(&[egui::Event::Paste("x".into())]));
+        assert!(hung_relevant_events(&[egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        }]));
     }
 }
 
@@ -1772,16 +1814,10 @@ impl App for ProcessApp {
         self.poll_mcp_calls();
         self.flush_outbound_events();
 
-        // Lifecycle: track user-input recency on this pane. Only required
-        // for the Hung detector — we just need a "did the user touch this
-        // window in the last N seconds" signal, not a per-event log. egui's
-        // per-frame input snapshot exposes that directly.
-        let had_input = ui.input(|i| {
-            !i.events.is_empty()
-                || i.pointer.any_pressed()
-                || i.pointer.any_down()
-                || i.pointer.is_moving()
-        });
+        // Lifecycle: track only input that should make the app answer. Pointer
+        // movement/clicks can be host chrome focus work for component widgets;
+        // counting them makes healthy idle SDK apps flash "hung".
+        let had_input = ui.input(hung_relevant_input);
         if had_input {
             self.lifecycle.on_user_input();
         }

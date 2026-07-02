@@ -1,0 +1,30 @@
+# Prompt fixture: a user who wants a tap-to-count tally app.
+# The prompt says what a user would say — no command names, no file paths, no
+# SDK symbols. The parent may only answer with the user-level knowledge below.
+
+[fixture]
+id = "counter"
+difficulty = "easy"
+description = "User wants a number on screen that goes up when they press a key, with a reset."
+prompt = """
+I want a little app that just shows a number on the screen. Every time I press
+the spacebar it should go up by one. It'd be nice if there was a way to reset it
+back to zero too. Can you make that?
+"""
+
+# Keyed by intent (underscore-separated words the matcher looks for in the
+# child's question). Answers stay at user-level — never prescribe an approach.
+[fixture.answers]
+persistence_save_remember = "I don't mind if it forgets the number when I close it. Simplest is fine."
+styling_look_design = "Just make it look clean and easy to read. I trust your taste."
+name_call = "Call it whatever makes sense to you."
+reset_key = "Any key for reset is fine — maybe 'r'? Whatever's natural."
+
+# The child coding agent's launch command and workspace.
+[child]
+launch = "c"
+cwd = "~/plexi-e2e-apps/counter"
+
+# Panes seeded into the host on boot — the child's empty workspace terminal.
+[[seed_pane]]
+cwd = "~/plexi-e2e-apps/counter"

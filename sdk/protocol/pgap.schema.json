@@ -2634,6 +2634,19 @@
             "type"
           ],
           "type": "object"
+        },
+        {
+          "description": "Request a clean host shutdown. Sent by `plexi host stop` over a direct\n`notify.sock` connection (never over `PLEXI_SOCKET` — `host stop` runs\noutside a pane by definition). Fire-and-forget; the handler sets a\nclose-pending flag consumed at the top of the next frame, which sends\n`egui::ViewportCommand::Close`. `host stop` falls back to `SIGTERM` if\nthis request goes unanswered within its short timeout.",
+          "properties": {
+            "type": {
+              "const": "shutdown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
         }
       ],
       "title": "AppRequest"
@@ -4962,6 +4975,22 @@
           ],
           "type": "string"
         },
+        "KeyValueRow": {
+          "description": "One row in a `UiNode::KeyValue` description list.",
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "value"
+          ],
+          "type": "object"
+        },
         "LayoutChild": {},
         "LayoutDirection": {
           "description": "Direction of a flex layout node.",
@@ -5706,6 +5735,26 @@
               "type": "object"
             },
             {
+              "description": "Host-owned contextual action strip. Children should be `Button` nodes;\nnon-button children are ignored by the renderer.",
+              "properties": {
+                "actions": {
+                  "items": {
+                    "$ref": "#/$defs/UiNode"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "action_bar",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "actions"
+              ],
+              "type": "object"
+            },
+            {
               "description": "Host-rendered text editor with multiline and max_length support.\n\nThe host maintains a persistent buffer keyed on `node_id`. On each\nframe the app sends its last-known `value`; the host seeds the buffer\nfrom it only when a new `node_id` appears. Typing fires\n`ComponentEvent { event_type: \"change\", payload: { value } }` and\nEnter (single-line) or Cmd+Enter (multiline) fires\n`ComponentEvent { event_type: \"submit\", payload: { value } }`.",
               "properties": {
                 "max_length": {
@@ -6003,6 +6052,583 @@
               "required": [
                 "type",
                 "items"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Boolean checkbox. Clicking fires `ComponentEvent { event_type: \"change\",\npayload: { value } }` with the toggled bool; the app owns the state.",
+              "properties": {
+                "checked": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "disabled": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "label": {
+                  "default": "",
+                  "type": "string"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "checkbox",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Single-select radio group. Clicking an option fires `ComponentEvent\n{ event_type: \"change\", payload: { value: index } }`.",
+              "properties": {
+                "disabled": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "options": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "selected": {
+                  "default": 0,
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "radio",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id",
+                "options"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "On/off switch. Fires `ComponentEvent { event_type: \"change\",\npayload: { value } }` with the toggled bool.",
+              "properties": {
+                "disabled": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "label": {
+                  "default": "",
+                  "type": "string"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "on": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "switch",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Horizontal value slider. Clicking along the track fires `ComponentEvent\n{ event_type: \"change\", payload: { value } }`.",
+              "properties": {
+                "disabled": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "max": {
+                  "default": 1.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "min": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "slider",
+                  "type": "string"
+                },
+                "value": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                }
+              },
+              "required": [
+                "type",
+                "node_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Dropdown/combobox trigger. Clicking fires a `click` `ComponentEvent`;\nthe app owns the option popover.",
+              "properties": {
+                "node_id": {
+                  "type": "string"
+                },
+                "options": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "placeholder": {
+                  "default": "",
+                  "type": "string"
+                },
+                "selected": {
+                  "default": 0,
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "select",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id",
+                "options"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Date/time picker trigger. Clicking fires a `click` `ComponentEvent`;\nthe app owns the picker popover.",
+              "properties": {
+                "mode": {
+                  "default": "datetime",
+                  "type": "string"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "date_time_picker",
+                  "type": "string"
+                },
+                "value": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Progress bar. `value` is 0.0–1.0; set `indeterminate` for unknown work.",
+              "properties": {
+                "indeterminate": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "label": {
+                  "default": "",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "progress",
+                  "type": "string"
+                },
+                "value": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Loading spinner with an optional caption.",
+              "properties": {
+                "label": {
+                  "default": "",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "spinner",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Hover tooltip wrapping a single child.",
+              "properties": {
+                "child": {
+                  "$ref": "#/$defs/UiNode"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "tooltip",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "text",
+                "child"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Circular avatar rendering initials (image variant deferred).",
+              "properties": {
+                "label": {
+                  "default": "",
+                  "type": "string"
+                },
+                "size": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "type": {
+                  "const": "avatar",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Named glyph icon. `name` is a semantic key; the placeholder renders the\nliteral token until a real icon set is wired.",
+              "properties": {
+                "color": {
+                  "default": "",
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "size": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "type": {
+                  "const": "icon",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "name"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Monospace code block with an optional language label.",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "language": {
+                  "default": "",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "code_block",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "code"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Static data table with column headers and string cells.",
+              "properties": {
+                "columns": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "rows": {
+                  "items": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "table",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "columns",
+                "rows"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Inline banner / callout with a semantic tone (info/success/warning/danger).",
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "title": {
+                  "default": "",
+                  "type": "string"
+                },
+                "tone": {
+                  "default": "",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "banner",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Key/value description list.",
+              "properties": {
+                "rows": {
+                  "items": {
+                    "$ref": "#/$defs/KeyValueRow"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "key_value",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "rows"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Breadcrumb trail; the last item is the current location.",
+              "properties": {
+                "items": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "breadcrumb",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "items"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Pagination control. Prev/next clicks fire `ComponentEvent\n{ event_type: \"change\", payload: { value: page } }`.",
+              "properties": {
+                "node_id": {
+                  "type": "string"
+                },
+                "page": {
+                  "default": 0,
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total": {
+                  "default": 0,
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "pagination",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Disclosure/accordion. The header click fires a `click` `ComponentEvent`;\nthe child renders when `open` (the app flips it).",
+              "properties": {
+                "child": {
+                  "$ref": "#/$defs/UiNode"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "open": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "accordion",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id",
+                "title",
+                "child"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Tab strip (headers only). Selecting a tab fires `ComponentEvent\n{ event_type: \"change\", payload: { value: index } }`; the app renders the body.",
+              "properties": {
+                "active": {
+                  "default": 0,
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "tabs": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "tabs",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id",
+                "tabs"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Empty-state placeholder with a title, optional description and icon token.",
+              "properties": {
+                "description": {
+                  "default": "",
+                  "type": "string"
+                },
+                "icon": {
+                  "default": "",
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "empty_state",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "title"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Skeleton loading placeholder — `rows` shimmer bars of the given height.",
+              "properties": {
+                "height": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "rows": {
+                  "default": 3,
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "skeleton",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Modal dialog wrapping a child body. The close affordance fires a `click`\n`ComponentEvent`.",
+              "properties": {
+                "child": {
+                  "$ref": "#/$defs/UiNode"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "modal",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id",
+                "title",
+                "child"
               ],
               "type": "object"
             }

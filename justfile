@@ -22,6 +22,13 @@ web:
 website-deploy:
     railway up --detach -m "website deploy from $(git branch --show-current)@$(git rev-parse --short HEAD)"
 
+# Package every public app and regenerate the hosted registry index + artifacts
+# under website/public/registry/v1/. Republishing after an app fix is one
+# command. Builds the binary first so packaging uses the current tree.
+website-registry:
+    cargo build --bin plexi
+    python3 website/scripts/build-registry.py
+
 # Smoke-check production: pages, install redirect, registry index + artifact checksums.
 website-smoke:
     bash website/scripts/prod-smoke.sh
@@ -166,8 +173,14 @@ check-capability-docs:
 check-docs-coverage:
     bash tools/check_docs_coverage.sh
 
-# Run all docs checks (CLI freshness + config freshness + SDK freshness + capability docs + command coverage).
-check-docs: check-cli-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage
+# Verify the app-authoring guidance has not drifted from the SDK: every effect/
+# component named in AUTHORING.md and the `plexi app init --help` block exists in
+# the SDK, and every relative link in the authoring docs resolves.
+check-authoring-docs:
+    python3 tools/check_authoring_docs.py
+
+# Run all docs checks (CLI freshness + config freshness + SDK freshness + capability docs + command coverage + authoring drift).
+check-docs: check-cli-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs
 
 run:
     cargo run --release
@@ -384,3 +397,29 @@ scene FILE out="/tmp/plexi-scenes" shots="1":
     PLEXI_SCENE={{FILE}} PLEXI_SCENE_OUT={{out}} \
     {{ if shots == "0" { "PLEXI_SCENE_NO_SHOTS=1" } else { "" } }} \
     cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
+
+# Run one agent-drives-agent app-authoring E2E session from a prompt fixture.
+# Provisions an isolated session and leaves a capture dir under benchmarks/app-authoring/sessions.
+#   just e2e-session tools/e2e_authoring/fixtures/counter.toml            — live (needs channel + display)
+#   just e2e-session tools/e2e_authoring/fixtures/counter.toml e2e --dry-run   — plumbing check, no host
+e2e-session fixture channel="e2e" *flags="":
+    uv run --python 3.12 --project tools/e2e_authoring plexi-e2e run {{fixture}} \
+        --channel {{channel}} --sessions-root benchmarks/app-authoring/sessions {{flags}}
+
+# Run the whole app-authoring benchmark suite over every prompt fixture, then
+# regenerate the session index. This is the baseline sweep (stint 0215).
+#   just e2e-baseline e2e --dry-run       — structural baseline, no host (runs anywhere)
+#   just e2e-baseline e2e --fresh-profile — live sweep (needs channel installed + a display + child creds)
+e2e-baseline channel="e2e" *flags="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for fx in tools/e2e_authoring/fixtures/*.toml; do
+        uv run --python 3.12 --project tools/e2e_authoring plexi-e2e run "$fx" \
+            --channel {{channel}} --sessions-root benchmarks/app-authoring/sessions {{flags}}
+    done
+    uv run --python 3.12 --project tools/e2e_authoring plexi-e2e index \
+        --sessions-root benchmarks/app-authoring/sessions
+
+# Runner unit tests (command construction + dry-run plumbing, fully host-free).
+e2e-test:
+    uv run --python 3.12 --project tools/e2e_authoring --extra dev python -m pytest tools/e2e_authoring

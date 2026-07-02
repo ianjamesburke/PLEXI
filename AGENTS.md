@@ -32,7 +32,7 @@ When work begins: `stint claim <task-id>`. Do not run or document `stint start`;
 | `src/testing/` | Test infrastructure, TESTING.md reference, scene format |
 | `src/process_app/` | PGAP lifecycle, capability gating, security model, shell execution inventory |
 | `src/render/` | CLI renderer app contract |
-| `sdk/python/` | SDK traps, SDK_V3.md reference |
+| `sdk/python/` | SDK traps; AUTHORING.md canonical app guide; SDK_V3.md design spec |
 | `apps/` | App rules, maintained-set policy (`packs/core.toml`), design philosophy |
 | `scripts/` | Build channels, branch workflow, releases, install, RELEASE_CHANNELS.md |
 | `registry/` | CLI descriptor guide, embedded descriptor registry |

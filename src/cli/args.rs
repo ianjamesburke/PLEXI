@@ -394,9 +394,14 @@ pub enum SecretCmd {
 pub enum AppCmd {
     /// Open an app or tool in a new pane.
     ///
-    /// Pass an app id (e.g. `plexi app open snake`) or a path to an app directory
+    /// Pass an app id (e.g. `plexi app open calc`) or a path to an app directory
     /// containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli`
     /// to open any CLI tool with a Plexi UI.
+    ///
+    /// Default placement is a sibling split to the right — the calling pane is
+    /// never taken over. Pass a direction flag (--down/--left/--up/--right),
+    /// --tab, or --window to override; the app's manifest `[launch] placement`
+    /// applies when no flag is given.
     Open {
         /// App id or path to open (mutually exclusive with --mcp and --cli)
         #[arg(conflicts_with_all = ["mcp", "cli"])]
@@ -479,7 +484,7 @@ pub enum AppCmd {
     List,
     /// Render an app headlessly (JSON frame tree by default, or PNG with --png).
     Render {
-        /// App id or local path to render (e.g. "snake" or "./my-app")
+        /// App id or local path to render (e.g. "calc" or "./my-app")
         app: String,
         /// Image dimensions as WxH (e.g. 500x500)
         #[arg(long, default_value = "800x600")]
@@ -561,6 +566,9 @@ pub enum AppCmd {
     /// Use --open to launch it in a split-right pane after scaffolding.
     #[command(after_long_help = r#"APP DEVELOPMENT GUIDE:
 
+  Canonical authoring guide: sdk/python/AUTHORING.md (full API: website docs sdk.md).
+  This block is a quick reference; the guide is the source of truth.
+
   Two rendering modes (pick one per app):
     view()                  Declarative UI trees: forms, lists, dashboards
     view() + Canvas(...)    Canvas drawing: games, animations, visualizations
@@ -572,7 +580,7 @@ pub enum AppCmd {
 
   UI components:
     Read plexi_sdk/ui.py for the full API. Key widgets:
-    AppBar, ActionBar, Column, Row, Label, Spacer, FooterKeys, SelectList, TextInput,
+    AppBar, ActionBar, Column, Row, Label, Spacer, FooterKeys, SelectList, TextEdit,
     Card, Section, Tabs, Grid, Toggle, ScrollLog, ChatBubble, InfoTable,
     FormField, ButtonRow, ProgressBar, Clickable, Divider, Scrollable,
     Canvas, CanvasRect, CanvasText, CanvasCircle
@@ -593,7 +601,8 @@ pub enum AppCmd {
 
   Effects:
     SetTitle, SetStatus, SetTimer, SetSchedulerMode, SetState, PersistState,
-    LogInfo/LogWarn/LogError, HttpRequest, AiQuery, FileRead, FileWrite
+    HttpFetch, OpenUrl, AiQuery, FileRead, FileWrite, CloseSelf
+    Logging is not an effect: call log.debug/info/warn/error from plexi_sdk.
 
   Generated files:
     AGENTS.md              Agent-facing app contract and validation loop
@@ -627,7 +636,9 @@ pub enum AppCmd {
 "#)]
     Init {
         name: String,
-        #[arg(long, default_value = "python")]
+        /// App language/template: `python` (declarative UI), `python_agent`
+        /// (agent-loop app), or `rust` (compiled native app).
+        #[arg(long, default_value = "python", value_parser = ["python", "python_agent", "rust"])]
         lang: String,
         /// Scaffold into the global app registry instead of the workspace
         #[arg(long)]

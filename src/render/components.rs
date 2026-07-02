@@ -914,6 +914,7 @@ fn render_component_tree_inner(
             // request focus so the cursor appears and typing works.
             if response.clicked() || chrome_response.frame_clicked {
                 response.request_focus();
+                ui.ctx().request_repaint();
                 log::debug!("render_components: TextEdit click-focus node_id={node_id}");
             }
 
@@ -938,12 +939,12 @@ fn render_component_tree_inner(
             }
 
             // Submit: Enter for single-line, Cmd+Enter for multiline.
-            let should_submit = if *multiline {
-                response.has_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command)
-            } else {
-                response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
-            };
+            let should_submit = text_edit_should_submit(
+                *multiline,
+                response.has_focus(),
+                ui.input(|i| i.key_pressed(egui::Key::Enter)),
+                ui.input(|i| i.modifiers.command),
+            );
 
             if should_submit {
                 log::info!(
@@ -1148,9 +1149,865 @@ fn render_component_tree_inner(
         } => {
             AppChrome::new(colors).select_list(ui, items, *selected_idx);
         }
+
+        // ── L1 form controls (placeholder primitives) ───────────────────────
+        // styling to be expanded — no bespoke Plexi chrome exists for these yet;
+        // they render through host metrics and fire the same ComponentEvents an
+        // app would otherwise hand-roll, settling the vocabulary for the WASM era.
+        UiNode::Checkbox {
+            node_id,
+            label,
+            checked,
+            disabled,
+        } => {
+            let chrome = AppChrome::new(colors);
+            let resp = ui
+                .horizontal(|ui| {
+                    let (b, _) =
+                        ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                    let stroke = egui::Stroke::new(
+                        1.5,
+                        if *disabled { colors.text_dim } else { colors.border },
+                    );
+                    let fill = if *checked {
+                        colors.accent
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    };
+                    ui.painter()
+                        .rect(b, style::RADIUS_SM, fill, stroke, egui::StrokeKind::Inside);
+                    if *checked {
+                        ui.painter().text(
+                            b.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "✓",
+                            egui::FontId::proportional(12.0),
+                            colors.text_on(colors.accent),
+                        );
+                    }
+                    if !label.is_empty() {
+                        ui.add_space(style::SPACE_SM);
+                        chrome.text_label(
+                            ui,
+                            label,
+                            style::TEXT_BODY,
+                            colors.text_primary,
+                            false,
+                            false,
+                            false,
+                        );
+                    }
+                })
+                .response;
+            if !*disabled && clicked_in(ui, resp.rect) {
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "change".into(),
+                    payload: Some(serde_json::json!({ "value": !*checked })),
+                });
+            }
+        }
+
+        UiNode::Radio {
+            node_id,
+            options,
+            selected,
+            disabled,
+        } => {
+            let chrome = AppChrome::new(colors);
+            for (idx, opt) in options.iter().enumerate() {
+                let is_sel = idx == *selected;
+                let resp = ui
+                    .horizontal(|ui| {
+                        let (c, _) =
+                            ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                        let stroke = egui::Stroke::new(
+                            1.5,
+                            if *disabled { colors.text_dim } else { colors.border },
+                        );
+                        ui.painter().circle_stroke(c.center(), 7.0, stroke);
+                        if is_sel {
+                            ui.painter().circle_filled(c.center(), 4.0, colors.accent);
+                        }
+                        ui.add_space(style::SPACE_SM);
+                        chrome.text_label(
+                            ui,
+                            opt,
+                            style::TEXT_BODY,
+                            colors.text_primary,
+                            false,
+                            false,
+                            false,
+                        );
+                    })
+                    .response;
+                if !*disabled && !is_sel && clicked_in(ui, resp.rect) {
+                    events.push(ComponentEventPayload {
+                        node_id: node_id.clone(),
+                        event_type: "change".into(),
+                        payload: Some(serde_json::json!({ "value": idx })),
+                    });
+                }
+            }
+        }
+
+        UiNode::Switch {
+            node_id,
+            label,
+            on,
+            disabled,
+        } => {
+            let chrome = AppChrome::new(colors);
+            let resp = ui
+                .horizontal(|ui| {
+                    let (track, _) =
+                        ui.allocate_exact_size(egui::vec2(34.0, 18.0), egui::Sense::hover());
+                    let track_fill = if *on { colors.accent } else { colors.bg_active };
+                    ui.painter()
+                        .rect_filled(track, egui::CornerRadius::same(9), track_fill);
+                    let knob_x = if *on { track.right() - 9.0 } else { track.left() + 9.0 };
+                    let knob = egui::pos2(knob_x, track.center().y);
+                    ui.painter().circle_filled(
+                        knob,
+                        6.5,
+                        if *disabled { colors.text_dim } else { colors.text_primary },
+                    );
+                    if !label.is_empty() {
+                        ui.add_space(style::SPACE_SM);
+                        chrome.text_label(
+                            ui,
+                            label,
+                            style::TEXT_BODY,
+                            colors.text_primary,
+                            false,
+                            false,
+                            false,
+                        );
+                    }
+                })
+                .response;
+            if !*disabled && clicked_in(ui, resp.rect) {
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "change".into(),
+                    payload: Some(serde_json::json!({ "value": !*on })),
+                });
+            }
+        }
+
+        UiNode::Slider {
+            node_id,
+            value,
+            min,
+            max,
+            disabled,
+        } => {
+            let span = (*max - *min).max(f32::EPSILON);
+            let frac = ((*value - *min) / span).clamp(0.0, 1.0);
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width().min(240.0), 20.0),
+                egui::Sense::hover(),
+            );
+            let track = egui::Rect::from_min_max(
+                egui::pos2(rect.left(), rect.center().y - 2.0),
+                egui::pos2(rect.right(), rect.center().y + 2.0),
+            );
+            ui.painter()
+                .rect_filled(track, egui::CornerRadius::same(2), colors.bg_active);
+            let filled = egui::Rect::from_min_max(
+                track.min,
+                egui::pos2(track.left() + track.width() * frac, track.max.y),
+            );
+            ui.painter()
+                .rect_filled(filled, egui::CornerRadius::same(2), colors.accent);
+            let knob = egui::pos2(track.left() + track.width() * frac, rect.center().y);
+            ui.painter().circle_filled(
+                knob,
+                6.0,
+                if *disabled { colors.text_dim } else { colors.text_primary },
+            );
+            if !*disabled && clicked_in(ui, rect) {
+                if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+                    let new_frac = ((p.x - track.left()) / track.width()).clamp(0.0, 1.0);
+                    let new_val = *min + new_frac * span;
+                    events.push(ComponentEventPayload {
+                        node_id: node_id.clone(),
+                        event_type: "change".into(),
+                        payload: Some(serde_json::json!({ "value": new_val })),
+                    });
+                }
+            }
+        }
+
+        UiNode::Select {
+            node_id,
+            options,
+            selected,
+            placeholder,
+        } => {
+            let label = options
+                .get(*selected)
+                .cloned()
+                .filter(|_| !options.is_empty())
+                .unwrap_or_else(|| placeholder.clone());
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width().min(240.0), app_chrome::button_height()),
+                egui::Sense::hover(),
+            );
+            ui.painter().rect(
+                rect,
+                style::RADIUS_SM,
+                colors.bg_active,
+                egui::Stroke::new(1.0, colors.border),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().text(
+                egui::pos2(rect.left() + style::SPACE_SM, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                &label,
+                egui::FontId::proportional(style::TEXT_BODY),
+                colors.text_primary,
+            );
+            ui.painter().text(
+                egui::pos2(rect.right() - style::SPACE_SM, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                "▾",
+                egui::FontId::proportional(style::TEXT_CAPTION),
+                colors.text_dim,
+            );
+            if clicked_in(ui, rect) {
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "click".into(),
+                    payload: None,
+                });
+            }
+        }
+
+        UiNode::DateTimePicker {
+            node_id,
+            value,
+            mode,
+        } => {
+            let display = if value.is_empty() {
+                format!("Pick {mode}…")
+            } else {
+                value.clone()
+            };
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width().min(240.0), app_chrome::button_height()),
+                egui::Sense::hover(),
+            );
+            ui.painter().rect(
+                rect,
+                style::RADIUS_SM,
+                colors.bg_active,
+                egui::Stroke::new(1.0, colors.border),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().text(
+                egui::pos2(rect.left() + style::SPACE_SM, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                &display,
+                egui::FontId::proportional(style::TEXT_BODY),
+                colors.text_primary,
+            );
+            ui.painter().text(
+                egui::pos2(rect.right() - style::SPACE_SM, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                "🗓",
+                egui::FontId::proportional(style::TEXT_CAPTION),
+                colors.text_dim,
+            );
+            if clicked_in(ui, rect) {
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "click".into(),
+                    payload: None,
+                });
+            }
+        }
+
+        // ── L1 display / data primitives ────────────────────────────────────
+        UiNode::Progress {
+            value,
+            label,
+            indeterminate,
+        } => {
+            let chrome = AppChrome::new(colors);
+            if !label.is_empty() {
+                chrome.text_label(
+                    ui,
+                    label,
+                    style::TEXT_CAPTION,
+                    colors.text_dim,
+                    false,
+                    false,
+                    false,
+                );
+            }
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), 8.0),
+                egui::Sense::hover(),
+            );
+            ui.painter()
+                .rect_filled(rect, egui::CornerRadius::same(4), colors.bg_active);
+            let frac = if *indeterminate {
+                let t = ui.input(|i| i.time) as f32;
+                ui.ctx().request_repaint();
+                0.3 + 0.2 * (t * 2.0).sin().abs()
+            } else {
+                value.clamp(0.0, 1.0)
+            };
+            let filled = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * frac, 8.0));
+            ui.painter()
+                .rect_filled(filled, egui::CornerRadius::same(4), colors.accent);
+        }
+
+        UiNode::Spinner { label } => {
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                let t = ui.input(|i| i.time) as f32;
+                ui.ctx().request_repaint();
+                let angle = t * 4.0;
+                let center = rect.center();
+                for k in 0..8 {
+                    let a = angle + k as f32 * std::f32::consts::TAU / 8.0;
+                    let alpha = (k as f32 / 8.0 * 200.0) as u8 + 40;
+                    let p = center + egui::vec2(a.cos(), a.sin()) * 6.0;
+                    ui.painter().circle_filled(
+                        p,
+                        1.6,
+                        colors.accent.linear_multiply(alpha as f32 / 255.0),
+                    );
+                }
+                if !label.is_empty() {
+                    ui.add_space(style::SPACE_SM);
+                    AppChrome::new(colors).text_label(
+                        ui,
+                        label,
+                        style::TEXT_CAPTION,
+                        colors.text_dim,
+                        false,
+                        false,
+                        false,
+                    );
+                }
+            });
+        }
+
+        UiNode::Tooltip { text, child } => {
+            // styling to be expanded — placeholder shows the tooltip inline via
+            // egui's native hover popup around the wrapped child.
+            let inner = ui
+                .scope(|ui| {
+                    events.extend(render_component_tree_inner(
+                        ui,
+                        child,
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                        raw_caches,
+                        canvas_w,
+                        canvas_h,
+                        hit_regions,
+                    ));
+                })
+                .response;
+            inner.on_hover_text(text.as_str());
+        }
+
+        UiNode::Avatar { label, size } => {
+            let d = if *size > 0.0 { *size } else { 32.0 };
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::hover());
+            ui.painter().circle_filled(rect.center(), d / 2.0, colors.bg_active);
+            let initials: String = label
+                .split_whitespace()
+                .filter_map(|w| w.chars().next())
+                .take(2)
+                .collect::<String>()
+                .to_uppercase();
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                &initials,
+                egui::FontId::proportional(d * 0.4),
+                colors.text_primary,
+            );
+        }
+
+        UiNode::Icon { name, size, color } => {
+            // styling to be expanded — renders the semantic token until a real
+            // icon set is wired; keeps the vocabulary + layout slot settled.
+            let chrome = AppChrome::new(colors);
+            let fs = if *size > 0.0 { *size } else { style::TEXT_BODY };
+            chrome.text_label(
+                ui,
+                &format!("⬚ {name}"),
+                fs,
+                chrome.text_color(color, ""),
+                false,
+                false,
+                false,
+            );
+        }
+
+        UiNode::CodeBlock { code, language } => {
+            AppChrome::new(colors).card(ui, 0.0, |ui| {
+                if !language.is_empty() {
+                    AppChrome::new(colors).text_label(
+                        ui,
+                        language,
+                        style::TEXT_META,
+                        colors.text_dim,
+                        false,
+                        true,
+                        false,
+                    );
+                    ui.add_space(style::SPACE_XS);
+                }
+                AppChrome::new(colors).text_label(
+                    ui,
+                    code,
+                    style::TEXT_CAPTION,
+                    colors.text_primary,
+                    false,
+                    true,
+                    true,
+                );
+            });
+        }
+
+        UiNode::Table { columns, rows } => {
+            let chrome = AppChrome::new(colors);
+            egui::Grid::new(ui.next_auto_id())
+                .striped(true)
+                .spacing(egui::vec2(style::SPACE_MD, style::SPACE_SM))
+                .show(ui, |ui| {
+                    for col in columns {
+                        chrome.text_label(
+                            ui,
+                            col,
+                            style::TEXT_CAPTION,
+                            colors.text_section,
+                            true,
+                            false,
+                            false,
+                        );
+                    }
+                    ui.end_row();
+                    for row in rows {
+                        for cell in row {
+                            chrome.text_label(
+                                ui,
+                                cell,
+                                style::TEXT_CAPTION,
+                                colors.text_primary,
+                                false,
+                                false,
+                                false,
+                            );
+                        }
+                        ui.end_row();
+                    }
+                });
+        }
+
+        UiNode::Banner { text, tone, title } => {
+            let accent = tone_color(colors, tone);
+            let chrome = AppChrome::new(colors);
+            egui::Frame::new()
+                .fill(accent.linear_multiply(0.15))
+                .stroke(egui::Stroke::new(1.0, accent))
+                .corner_radius(style::RADIUS_SM)
+                .inner_margin(egui::Margin::same(style::SPACE_SM as i8))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        if !title.is_empty() {
+                            chrome.text_label(
+                                ui,
+                                title,
+                                style::TEXT_BODY,
+                                accent,
+                                true,
+                                false,
+                                false,
+                            );
+                        }
+                        chrome.text_label(
+                            ui,
+                            text,
+                            style::TEXT_CAPTION,
+                            colors.text_primary,
+                            false,
+                            false,
+                            true,
+                        );
+                    });
+                });
+        }
+
+        UiNode::KeyValue { rows } => {
+            let chrome = AppChrome::new(colors);
+            ui.vertical(|ui| {
+                for row in rows {
+                    ui.horizontal(|ui| {
+                        chrome.text_label(
+                            ui,
+                            &row.key,
+                            style::TEXT_CAPTION,
+                            colors.text_dim,
+                            false,
+                            false,
+                            false,
+                        );
+                        ui.add_space(style::SPACE_MD);
+                        chrome.text_label(
+                            ui,
+                            &row.value,
+                            style::TEXT_CAPTION,
+                            colors.text_primary,
+                            false,
+                            false,
+                            true,
+                        );
+                    });
+                }
+            });
+        }
+
+        UiNode::Breadcrumb { items } => {
+            let chrome = AppChrome::new(colors);
+            ui.horizontal(|ui| {
+                let last = items.len().saturating_sub(1);
+                for (idx, item) in items.iter().enumerate() {
+                    let (color, bold) = if idx == last {
+                        (colors.text_primary, true)
+                    } else {
+                        (colors.text_dim, false)
+                    };
+                    chrome.text_label(ui, item, style::TEXT_CAPTION, color, bold, false, false);
+                    if idx != last {
+                        ui.add_space(style::SPACE_XS);
+                        chrome.text_label(
+                            ui,
+                            "/",
+                            style::TEXT_CAPTION,
+                            colors.text_dim,
+                            false,
+                            false,
+                            false,
+                        );
+                        ui.add_space(style::SPACE_XS);
+                    }
+                }
+            });
+        }
+
+        UiNode::Pagination { node_id, page, total } => {
+            let chrome = AppChrome::new(colors);
+            ui.horizontal(|ui| {
+                let prev = pagination_chip(ui, colors, "‹");
+                if prev && *page > 0 {
+                    events.push(ComponentEventPayload {
+                        node_id: node_id.clone(),
+                        event_type: "change".into(),
+                        payload: Some(serde_json::json!({ "value": page - 1 })),
+                    });
+                }
+                ui.add_space(style::SPACE_SM);
+                chrome.text_label(
+                    ui,
+                    &format!("{} / {}", page + 1, (*total).max(1)),
+                    style::TEXT_CAPTION,
+                    colors.text_primary,
+                    false,
+                    false,
+                    false,
+                );
+                ui.add_space(style::SPACE_SM);
+                let next = pagination_chip(ui, colors, "›");
+                if next && *page + 1 < *total {
+                    events.push(ComponentEventPayload {
+                        node_id: node_id.clone(),
+                        event_type: "change".into(),
+                        payload: Some(serde_json::json!({ "value": page + 1 })),
+                    });
+                }
+            });
+        }
+
+        UiNode::Accordion {
+            node_id,
+            title,
+            open,
+            child,
+        } => {
+            let chrome = AppChrome::new(colors);
+            let header = ui
+                .horizontal(|ui| {
+                    chrome.text_label(
+                        ui,
+                        if *open { "▾" } else { "▸" },
+                        style::TEXT_CAPTION,
+                        colors.text_dim,
+                        false,
+                        false,
+                        false,
+                    );
+                    ui.add_space(style::SPACE_XS);
+                    chrome.text_label(
+                        ui,
+                        title,
+                        style::TEXT_BODY,
+                        colors.text_primary,
+                        true,
+                        false,
+                        false,
+                    );
+                })
+                .response;
+            if clicked_in(ui, header.rect) {
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "click".into(),
+                    payload: None,
+                });
+            }
+            if *open {
+                ui.add_space(style::SPACE_XS);
+                ui.scope(|ui| {
+                    events.extend(render_component_tree_inner(
+                        ui,
+                        child,
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                        raw_caches,
+                        canvas_w,
+                        canvas_h,
+                        hit_regions,
+                    ));
+                });
+            }
+        }
+
+        UiNode::Tabs {
+            node_id,
+            tabs,
+            active,
+        } => {
+            let chrome = AppChrome::new(colors);
+            ui.horizontal(|ui| {
+                for (idx, tab) in tabs.iter().enumerate() {
+                    let is_active = idx == *active;
+                    let resp = ui
+                        .scope(|ui| {
+                            let color = if is_active {
+                                colors.text_primary
+                            } else {
+                                colors.text_dim
+                            };
+                            chrome.text_label(
+                                ui,
+                                tab,
+                                style::TEXT_BODY,
+                                color,
+                                is_active,
+                                false,
+                                false,
+                            );
+                            if is_active {
+                                let r = ui.min_rect();
+                                let underline = egui::Rect::from_min_max(
+                                    egui::pos2(r.left(), r.bottom()),
+                                    egui::pos2(r.right(), r.bottom() + 2.0),
+                                );
+                                ui.painter().rect_filled(underline, 0.0, colors.accent);
+                            }
+                        })
+                        .response;
+                    if !is_active && clicked_in(ui, resp.rect) {
+                        events.push(ComponentEventPayload {
+                            node_id: node_id.clone(),
+                            event_type: "change".into(),
+                            payload: Some(serde_json::json!({ "value": idx })),
+                        });
+                    }
+                    ui.add_space(style::SPACE_MD);
+                }
+            });
+        }
+
+        UiNode::EmptyState {
+            title,
+            description,
+            icon,
+        } => {
+            let chrome = AppChrome::new(colors);
+            ui.vertical_centered(|ui| {
+                let glyph = if icon.is_empty() { "∅" } else { icon.as_str() };
+                chrome.text_label(
+                    ui,
+                    glyph,
+                    style::TEXT_TITLE_XL,
+                    colors.text_dim,
+                    false,
+                    false,
+                    false,
+                );
+                ui.add_space(style::SPACE_SM);
+                chrome.text_label(
+                    ui,
+                    title,
+                    style::TEXT_TITLE,
+                    colors.text_primary,
+                    true,
+                    false,
+                    false,
+                );
+                if !description.is_empty() {
+                    ui.add_space(style::SPACE_XS);
+                    chrome.text_label(
+                        ui,
+                        description,
+                        style::TEXT_CAPTION,
+                        colors.text_dim,
+                        false,
+                        false,
+                        true,
+                    );
+                }
+            });
+        }
+
+        UiNode::Skeleton { rows, height } => {
+            let h = if *height > 0.0 { *height } else { 12.0 };
+            let t = ui.input(|i| i.time) as f32;
+            ui.ctx().request_repaint();
+            let shimmer = 0.5 + 0.3 * (t * 2.0).sin();
+            for i in 0..(*rows).max(1) {
+                if i > 0 {
+                    ui.add_space(style::SPACE_SM);
+                }
+                let w = ui.available_width() * if i % 2 == 0 { 1.0 } else { 0.7 };
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+                ui.painter().rect_filled(
+                    rect,
+                    style::RADIUS_SM,
+                    colors.bg_active.linear_multiply(shimmer),
+                );
+            }
+        }
+
+        UiNode::Modal {
+            node_id,
+            title,
+            child,
+        } => {
+            // styling to be expanded — renders the dialog inline (host does not
+            // yet own an SDK-driven overlay layer; the shape is settled for when
+            // it does). Close affordance fires a "close" ComponentEvent.
+            let chrome = AppChrome::new(colors);
+            egui::Frame::new()
+                .fill(colors.bg_sidebar)
+                .stroke(egui::Stroke::new(1.0, colors.border))
+                .corner_radius(style::RADIUS_LG)
+                .inner_margin(egui::Margin::same(style::SPACE_MD as i8))
+                .show(ui, |ui| {
+                    let header = ui
+                        .horizontal(|ui| {
+                            chrome.text_label(
+                                ui,
+                                title,
+                                style::TEXT_TITLE,
+                                colors.text_primary,
+                                true,
+                                false,
+                                false,
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    chrome.text_label(
+                                        ui,
+                                        "✕",
+                                        style::TEXT_BODY,
+                                        colors.text_dim,
+                                        false,
+                                        false,
+                                        false,
+                                    )
+                                    .rect
+                                },
+                            )
+                            .inner
+                        })
+                        .inner;
+                    ui.add_space(style::SPACE_SM);
+                    events.extend(render_component_tree_inner(
+                        ui,
+                        child,
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                        raw_caches,
+                        canvas_w,
+                        canvas_h,
+                        hit_regions,
+                    ));
+                    if clicked_in(ui, header) {
+                        events.push(ComponentEventPayload {
+                            node_id: node_id.clone(),
+                            event_type: "click".into(),
+                            payload: None,
+                        });
+                    }
+                });
+        }
     }
 
     events
+}
+
+/// Placeholder hit-test: true when the primary pointer button was pressed this
+/// frame while hovering `rect`. Mirrors [`render_button_at`]'s raw-pointer read
+/// so clicks are not swallowed by the pane-wide click-and-drag widget.
+fn clicked_in(ui: &egui::Ui, rect: egui::Rect) -> bool {
+    let pos = ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
+    let hovered = pos.map_or(false, |p| rect.contains(p));
+    hovered && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
+}
+
+/// Resolve a semantic banner/callout tone to a theme colour.
+fn tone_color(colors: &Colors, tone: &str) -> egui::Color32 {
+    match tone {
+        "success" => colors.success,
+        "warning" | "warn" => colors.warning,
+        "danger" | "error" => colors.danger,
+        _ => colors.accent,
+    }
+}
+
+/// Paint one pagination chevron chip; returns true when clicked this frame.
+fn pagination_chip(ui: &mut egui::Ui, colors: &Colors, glyph: &str) -> bool {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+    ui.painter().rect(
+        rect,
+        style::RADIUS_SM,
+        colors.bg_active,
+        egui::Stroke::new(1.0, colors.border),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        egui::FontId::proportional(style::TEXT_BODY),
+        colors.text_primary,
+    );
+    clicked_in(ui, rect)
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -1209,6 +2066,15 @@ fn render_button_at(
 
 fn app_button_kind(button_style: &str) -> button::ButtonKind {
     app_chrome::button_kind(button_style)
+}
+
+fn text_edit_should_submit(
+    multiline: bool,
+    has_focus: bool,
+    enter_pressed: bool,
+    command_pressed: bool,
+) -> bool {
+    has_focus && enter_pressed && (!multiline || command_pressed)
 }
 
 /// Returns the known fixed height of a node that can be bottom-pinned, or `None`
@@ -1327,6 +2193,15 @@ fn vertical_fixed_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
             }
         }
         UiNode::Sized { height, .. } => height.map(|h| h.max(0.0)),
+        // Intrinsic-size contract: fixed-height placeholders report their layout
+        // minimum so containers can compute minima instead of blind-shrinking.
+        UiNode::Checkbox { .. } | UiNode::Switch { .. } | UiNode::Slider { .. } => Some(20.0),
+        UiNode::Select { .. } | UiNode::DateTimePicker { .. } => Some(button_height()),
+        UiNode::Spinner { .. } => Some(16.0),
+        UiNode::Progress { label, .. } => {
+            Some(8.0 + if label.is_empty() { 0.0 } else { style::TEXT_CAPTION + 4.0 })
+        }
+        UiNode::Avatar { size, .. } => Some(if *size > 0.0 { *size } else { 32.0 }),
         _ => None,
     }
 }
@@ -2226,6 +3101,15 @@ mod render_component_tree_tests {
             assert_eq!(vertical_fixed_height(ui, &node), Some(action_bar_height()));
         });
         let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn text_edit_submit_uses_focused_enter() {
+        assert!(super::text_edit_should_submit(false, true, true, false));
+        assert!(!super::text_edit_should_submit(false, false, true, false));
+        assert!(!super::text_edit_should_submit(false, true, false, false));
+        assert!(!super::text_edit_should_submit(true, true, true, false));
+        assert!(super::text_edit_should_submit(true, true, true, true));
     }
 
     #[test]
