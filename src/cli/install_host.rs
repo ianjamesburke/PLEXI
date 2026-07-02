@@ -1370,6 +1370,61 @@ mod core_pack_tests {
         }
     }
 
+    /// Drift guard (stint 0296): `packs/core.toml` is the single source of
+    /// truth for the maintained/core app set. Every entry must resolve to a
+    /// bundled app directory whose manifest id matches, and the installer must
+    /// not carry a competing hardcoded list of those same apps.
+    #[test]
+    fn core_pack_is_canonical_and_consistent() {
+        let pack = Pack::from_toml_str(CORE_PACK_TOML).expect("core pack must parse");
+        assert!(!pack.apps.is_empty(), "core pack must list at least one app");
+
+        for entry in &pack.apps {
+            // Maintained apps ship from the embedded tree via `local:<id>`.
+            let spec = parse_source_spec(&entry.source)
+                .unwrap_or_else(|e| panic!("core entry '{}' has invalid source: {e}", entry.id));
+            let name = match spec {
+                SourceSpec::Local(n) => n,
+                SourceSpec::Git(_) => panic!(
+                    "core entry '{}' must use a local: source (maintained apps ship bundled), got '{}'",
+                    entry.id, entry.source
+                ),
+            };
+            assert_eq!(
+                name, entry.id,
+                "core entry id '{}' must match its local: source name '{name}'",
+                entry.id
+            );
+            let dir = EMBEDDED_APPS
+                .get_dir(&name)
+                .unwrap_or_else(|| panic!("core app '{name}' has no directory under apps/"));
+            let manifest_text = dir
+                .get_file(format!("{name}/manifest.toml"))
+                .and_then(|f| f.contents_utf8())
+                .unwrap_or_else(|| panic!("core app '{name}' has no manifest.toml"));
+            let manifest: AppManifest = toml::from_str(manifest_text)
+                .unwrap_or_else(|e| panic!("core app '{name}' manifest invalid: {e}"));
+            assert_eq!(
+                manifest.app.id, entry.id,
+                "core app '{name}' manifest id '{}' must match pack id '{}'",
+                manifest.app.id, entry.id
+            );
+        }
+
+        // The maintained set lives ONLY in packs/core.toml. install.sh must
+        // never re-enumerate it: it may only rsync `apps/` or `apps/dev/`
+        // wholesale, never a specific `apps/<core-id>/` path.
+        let install_sh = include_str!("../../scripts/install.sh");
+        for entry in &pack.apps {
+            let needle = format!("apps/{}/", entry.id);
+            assert!(
+                !install_sh.contains(&needle),
+                "install.sh hardcodes '{needle}' — the maintained app list must come \
+                 only from packs/core.toml, not be enumerated in the installer"
+            );
+        }
+    }
+
     #[test]
     fn split_source_and_ref_handles_at_suffix() {
         let (s, r) = split_source_and_ref("github:owner/repo@v1.0.0");

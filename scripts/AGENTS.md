@@ -21,6 +21,7 @@ Build, install, release, and channel management scripts. Called from `justfile` 
 - Scripts are the only place `just` recipes call into. Do not duplicate logic in the justfile.
 - `default-config.toml` is the config template seeded on install. Keep in sync with `src/config/CONFIG.md`.
 - **Bump at release boundaries, not after every PR.** Run `just bump` once at end of a batch or before promoting.
+- **App seeding is channel-gated.** `packs/core.toml` is the single source of truth for the maintained/core app set (owned by `apps/AGENTS.md`). `install.sh` syncs the full `apps/` tree (all apps plus the flattened `dev/` POCs) only on `alpha`/`pr-*`. On `beta`/`main` it seeds exactly the canonical set through the host's own pack applier (`plexi app install --pack core` always; `--pack packs/examples.toml` on a fresh profile) so no app list is duplicated here. Never enumerate app names in this script.
 
 ## Traps
 

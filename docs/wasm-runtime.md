@@ -9,7 +9,7 @@ This spec is the authoritative description of Plexi's WASM runtime destination a
 
 ## Why Rebuild
 
-The v1 runtime (Python subprocess + PGAP over stdio) is the right bootstrap. It ships fast, it works on macOS desktop, and it gets the Core 9 apps in front of users. But every capability Plexi wants to add pulls against it:
+The v1 runtime (Python subprocess + PGAP over stdio) is the right bootstrap. It ships fast, it works on macOS desktop, and it gets the core apps in front of users. But every capability Plexi wants to add pulls against it:
 
 - **Cloud execution**: you cannot run an OS process remotely and pipe stdio over a WebSocket without a pile of per-platform scaffolding.
 - **Mobile**: iOS forbids spawning arbitrary subprocesses. Android makes it painful.
