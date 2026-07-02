@@ -2,18 +2,124 @@
   "schema_version": 1,
   "apps": [
     {
-      "id": "reviewed-notes",
-      "name": "Reviewed Notes",
+      "id": "calc",
+      "name": "Calculator",
       "version": "0.1.0",
-      "description": "A reviewed free app for the hosted registry smoke path.",
+      "description": "Four-function calculator. Demonstrates ctx.button() with hover and click.",
       "publisher": "plexi",
       "capabilities": [],
-      "tags": ["smoke", "free", "reviewed-native"],
+      "tags": [
+        "core",
+        "free",
+        "reviewed-native"
+      ],
       "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
-      "checksum": "3159ec6f448538b54422cda8c28a9ebe6c8d461aa8cf5b4cd7c63ccf14fb184b"
+      "checksum": "c8e7bb495c67e43348c27269d56399f4ee1876f94a2f77111a35f509aac9200c"
+    },
+    {
+      "id": "csv_viewer",
+      "name": "CSV Viewer",
+      "version": "0.1.0",
+      "description": "Browse and inspect CSV files through host-scoped file listing.",
+      "publisher": "plexi",
+      "capabilities": [
+        "fs.read"
+      ],
+      "tags": [
+        "core",
+        "free",
+        "reviewed-native"
+      ],
+      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "reviewed_native": true,
+      "visibility": "public",
+      "price": "free",
+      "checksum": "c5e8012c7750d9ca973e660fd6d92e8e3f8821af8fc0a7740cd91f66c08e72e5"
+    },
+    {
+      "id": "logs",
+      "name": "Logs",
+      "version": "0.3.0",
+      "description": "Live tail of the Plexi host log, color-coded by level, with level/app/search filters.",
+      "publisher": "plexi",
+      "capabilities": [
+        "fs.read",
+        "timer"
+      ],
+      "tags": [
+        "core",
+        "free",
+        "reviewed-native"
+      ],
+      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "reviewed_native": true,
+      "visibility": "public",
+      "price": "free",
+      "checksum": "ef29fdf788940a4b3577c60eadd977055523be89f6e9272a6b93ea62d84e17d0"
+    },
+    {
+      "id": "permissions",
+      "name": "Permissions",
+      "version": "0.1.0",
+      "description": "View and manage capability permissions for every app",
+      "publisher": "plexi",
+      "capabilities": [
+        "permissions.manage"
+      ],
+      "tags": [
+        "core",
+        "free",
+        "reviewed-native"
+      ],
+      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "reviewed_native": true,
+      "visibility": "public",
+      "price": "free",
+      "checksum": "cb0e52406c5f44b6e17b941780bd6573a65927b3b9e4ffa7e3cfee51f72d07c0"
+    },
+    {
+      "id": "todo",
+      "name": "Todo",
+      "version": "0.1.0",
+      "description": "Simple todo list persisted to <workspace_root>/.plexi/todos.json.",
+      "publisher": "plexi",
+      "capabilities": [
+        "fs.read",
+        "fs.write"
+      ],
+      "tags": [
+        "core",
+        "free",
+        "reviewed-native"
+      ],
+      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "reviewed_native": true,
+      "visibility": "public",
+      "price": "free",
+      "checksum": "1f0e47be2b0005fdf01d30d04ac048dc592338bab520e01af3aaa603eb3eb086"
+    },
+    {
+      "id": "wikipedia",
+      "name": "Wikipedia",
+      "version": "0.1.0",
+      "description": "Search Wikipedia and browse article summaries.",
+      "publisher": "plexi",
+      "capabilities": [
+        "net.http"
+      ],
+      "tags": [
+        "core",
+        "free",
+        "reviewed-native"
+      ],
+      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "reviewed_native": true,
+      "visibility": "public",
+      "price": "free",
+      "checksum": "4d4a8160248cda6cb31fca43fbf41728ca286f4e4a802b9d39758e44745525b6"
     }
   ]
 }

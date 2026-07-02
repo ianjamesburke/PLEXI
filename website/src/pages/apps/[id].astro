@@ -1,10 +1,10 @@
 ---
 import Layout from '../../layouts/Layout.astro';
-import registry from '../../lib/registry-index.json';
+import registry from '../../../public/registry/v1/index.json';
 
-// Detail pages are generated from the central registry index (new schema).
-// Only `public` apps get a page; the build is self-contained (reads the local
-// index stub) so it never depends on a live registry being reachable.
+// Detail pages are generated from the hosted registry index
+// (website/public/registry/v1/index.json). Only `public` apps get a page; the
+// build reads the committed index so it never depends on a live registry.
 export async function getStaticPaths() {
   const apps = (registry.apps as any[]).filter(
     (a) => (a.visibility ?? 'private') === 'public'

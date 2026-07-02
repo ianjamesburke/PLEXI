@@ -22,6 +22,13 @@ web:
 website-deploy:
     railway up --detach -m "website deploy from $(git branch --show-current)@$(git rev-parse --short HEAD)"
 
+# Package every public app and regenerate the hosted registry index + artifacts
+# under website/public/registry/v1/. Republishing after an app fix is one
+# command. Builds the binary first so packaging uses the current tree.
+website-registry:
+    cargo build --bin plexi
+    python3 website/scripts/build-registry.py
+
 # Smoke-check production: pages, install redirect, registry index + artifact checksums.
 website-smoke:
     bash website/scripts/prod-smoke.sh
