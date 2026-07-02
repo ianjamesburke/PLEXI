@@ -8,7 +8,7 @@
 
 ## Current State (2026-07-02)
 
-`alpha` is at `c7e926f5`. Since the last audit: the pane `new --tab` anchoring fix (`0337`, #2357) landed, plus a monetization spec doc (`0315`, done). The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry smoke path, secrets, onboarding, website) is landed — see `docs/DEVLOG.md`. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at `baa3010c`. Since the last audit: palette scroll fix merged (`0280`, #2314), `plexi host start` merged (`0342`, #2358), registry went live in production (`0345` — installs verified E2E), and the monetization spec landed (`0315`). The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry live, secrets, onboarding, website) is landed — see `docs/DEVLOG.md`. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
@@ -16,7 +16,6 @@ Open PRs that affect priority reading:
 - `#2323` draft: WASM SDK v3 platform POCs (`0285` / `0287` lane).
 - `#2318` open: stats idle-heartbeat filtering (`0282`).
 - `#2316` open: todo app space-to-toggle regression (`0281`).
-- `#2314` open: palette scroll reset (`0280`).
 - `#2282` open: collapsible subcontexts (`0241`), currently has a failed build check.
 - `#1604` open: Windows port from external branch.
 
@@ -33,8 +32,8 @@ Every epoch feeds the next; the whole line points at `NORTH_STAR.md` ("the last 
 A stranger installs, an agent builds an app first try, a free reviewed app installs from the hosted registry.
 
 - **Prove "agents build apps first try"** (the DX chain — dispatch in order)
-  - `0342` `plexi host start` — one-command host launch with declarative boot layout (the live-E2E primitive) — **ready, P0, in progress**
-    - `0343` drive-host skill — codified agentic live PR-testing loop
+  - `0342` `plexi host start` — one-command host launch with declarative boot layout (the live-E2E primitive) — **done, #2358 landed**
+    - `0343` drive-host skill — codified agentic live PR-testing loop — **ready, P0**
   - `0330` app-dev CLI path E2E audit + open-placement fix (default: sibling split) — **ready, next up**
     - `0331` agent-drives-agent E2E pipeline (isolated instance, parent as user-proxy, session capture)
       - `0332` authoring guidance consolidation + drift gates (dead links, effect-name drift, one canonical doc, CI-gated)
@@ -44,10 +43,9 @@ A stranger installs, an agent builds an app first try, a free reviewed app insta
   - `0296` canonicalize the core app install set (blocked by done `0277`)
     - `0334` core-app cull + exemplar conformance sweep (delete POCs, survivors pass all gates; stats gauge fixes)
   - `0328` SDK component coverage audit (Polaris-class vocabulary, intrinsic size contract, `SetShortcuts` native chrome) — **ready**
-- **First-user surface** (onboarding `0324`, website `0272`, registry go-live `0345` landed — prod registry is live, installs E2E; website auto-deploys from alpha, `just website-smoke` verifies)
-  - `0280` palette scroll regression (PR `#2314` needs validation/merge decision) — **P0**
+- **First-user surface** (onboarding `0324`, website `0272`, registry go-live `0345`, palette scroll `0280` all landed — prod registry is live, installs E2E; website auto-deploys from alpha, `just website-smoke` verifies)
   - `0346` publish the Core app set to the hosted registry (after `0334`; the catalog a first user sees)
-- **First-user critical path:** validate + merge `#2314` -> share.
+- **First-user critical path:** clear — shareable now; `0346` (catalog) is the next depth add.
 
 ### Epoch 2 — Intelligence (NORTH_STAR Phase 3; runs parallel to Epoch 3)
 
@@ -97,12 +95,12 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 
 ## Priority Stack (flat view)
 
-P0: `0342` (in progress), `0343`*, `0330` (chain head), `0327`, `0280`.
+P0: `0343`, `0330` (chain head), `0327`.
 P1: `0335`, `0331`*, `0328`, `0241` (PR needs fixing), `0338`, `0285`, `0332`*, `0339`*, `0340`*, `0341`*.
 P2 and below: run `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0330` — heads the P0 DX chain; `0335` (logs) and `0327` (event bus) are the parallel-friendly picks.
+**Next recommended task:** `0343` — drive-host skill, now unblocked by `0342`; `0330` heads the app-dev E2E chain; `0335` (logs) and `0327` (event bus) are the parallel-friendly picks.
 
 ---
 
