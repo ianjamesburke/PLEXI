@@ -914,6 +914,7 @@ fn render_component_tree_inner(
             // request focus so the cursor appears and typing works.
             if response.clicked() || chrome_response.frame_clicked {
                 response.request_focus();
+                ui.ctx().request_repaint();
                 log::debug!("render_components: TextEdit click-focus node_id={node_id}");
             }
 
@@ -938,12 +939,12 @@ fn render_component_tree_inner(
             }
 
             // Submit: Enter for single-line, Cmd+Enter for multiline.
-            let should_submit = if *multiline {
-                response.has_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command)
-            } else {
-                response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
-            };
+            let should_submit = text_edit_should_submit(
+                *multiline,
+                response.has_focus(),
+                ui.input(|i| i.key_pressed(egui::Key::Enter)),
+                ui.input(|i| i.modifiers.command),
+            );
 
             if should_submit {
                 log::info!(
@@ -2067,6 +2068,15 @@ fn app_button_kind(button_style: &str) -> button::ButtonKind {
     app_chrome::button_kind(button_style)
 }
 
+fn text_edit_should_submit(
+    multiline: bool,
+    has_focus: bool,
+    enter_pressed: bool,
+    command_pressed: bool,
+) -> bool {
+    has_focus && enter_pressed && (!multiline || command_pressed)
+}
+
 /// Returns the known fixed height of a node that can be bottom-pinned, or `None`
 /// if the height cannot be determined without rendering.
 fn bottom_pin_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
@@ -3091,6 +3101,15 @@ mod render_component_tree_tests {
             assert_eq!(vertical_fixed_height(ui, &node), Some(action_bar_height()));
         });
         let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn text_edit_submit_uses_focused_enter() {
+        assert!(super::text_edit_should_submit(false, true, true, false));
+        assert!(!super::text_edit_should_submit(false, false, true, false));
+        assert!(!super::text_edit_should_submit(false, true, false, false));
+        assert!(!super::text_edit_should_submit(true, true, true, false));
+        assert!(super::text_edit_should_submit(true, true, true, true));
     }
 
     #[test]

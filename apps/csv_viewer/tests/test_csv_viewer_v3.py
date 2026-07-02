@@ -99,3 +99,24 @@ def test_enter_on_selected_file_requests_file_read(tmp_path):
     _set_state(requested)
     effects = app.update(CapabilityGranted("fs.read"))
     assert any(isinstance(effect, FileRead) and effect.path == str(path) for effect in effects)
+
+
+def test_detail_view_uses_native_table_inside_scroll():
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    data.update(
+        {
+            "mode": "detail",
+            "path": "/tmp/sample.csv",
+            "headers": ["name", "count"],
+            "rows": [["alpha", "1"], ["beta", "2"]],
+        }
+    )
+    _set_state(data)
+
+    node = app.view().to_node()
+    scroll = next(child for child in node["children"] if child["type"] == "scroll")
+
+    assert scroll["child"]["type"] == "table"
+    assert scroll["child"]["columns"] == ["name", "count"]
+    assert scroll["child"]["rows"] == [["alpha", "1"], ["beta", "2"]]

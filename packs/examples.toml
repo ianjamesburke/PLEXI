@@ -17,6 +17,16 @@ source  = "local:csv_viewer"
 version = "bundled"
 
 [[app]]
+id      = "snake"
+source  = "local:snake"
+version = "bundled"
+
+[[app]]
+id      = "tetris"
+source  = "local:tetris"
+version = "bundled"
+
+[[app]]
 id      = "mind-map"
 source  = "local:mind-map"
 version = "bundled"

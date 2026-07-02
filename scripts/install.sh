@@ -223,9 +223,8 @@ rm -rf "$profile_dir/sdk/plexi_sdk.old" "$profile_dir/sdk/plexi_sdk.py"
 find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 # App-seeding policy is channel-gated (see scripts/AGENTS.md). packs/core.toml
 # is the single source of truth for the maintained/core app set.
-#   alpha / pr-*  → sync the full working tree so developers can exercise every
-#                   app immediately: all top-level app dirs, then the dev/ POCs
-#                   flattened to the top level.
+#   alpha / pr-*  → sync maintained top-level app dirs immediately so branch
+#                   app changes are visible in PR installs.
 #   beta / main   → seed exactly the canonical set through the host's own pack
 #                   applier so no app list is duplicated in this script.
 #                   --refresh re-extracts already-installed core apps from the
@@ -234,10 +233,15 @@ find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 
 #                   missing apps). Example/demo apps seed only for a fresh
 #                   profile (apps_was_empty), matching the host's first-launch
 #                   behavior. POC apps under dev/ and non-pack demos never
-#                   reach stable channels.
+#                   reach channel app registries.
 if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
-  rsync -a --exclude=dev/ apps/ "$profile_dir/apps/"
-  rsync -a apps/dev/ "$profile_dir/apps/"
+  mkdir -p "$profile_dir/apps"
+  find apps -mindepth 2 -maxdepth 2 -name manifest.toml -not -path 'apps/dev/*' -not -path 'apps/examples/*' | while read -r manifest; do
+    app_dir="$(dirname "$manifest")"
+    app_name="$(basename "$app_dir")"
+    rm -rf "$profile_dir/apps/$app_name"
+    rsync -a "$app_dir/" "$profile_dir/apps/$app_name/"
+  done
 else
   bundled_bin="$app_dest/Contents/MacOS/plexi${suffix}"
   # Unset any inherited PLEXI_CHANNEL (in-pane installs leak it) so the
@@ -346,7 +350,7 @@ echo "Installed $app_dest"
 echo "CLI: $bin_dest"
 echo "Config dir: $profile_dir/"
 if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
-  echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from apps/ (dev channel: full tree)"
+  echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from top-level app manifests"
 else
   echo "Apps: $(ls "$profile_dir/apps" 2>/dev/null | wc -l | tr -d ' ') seeded from canonical packs (stable channel)"
 fi
