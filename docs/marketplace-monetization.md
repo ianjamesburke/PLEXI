@@ -104,6 +104,7 @@ Closed-loop credits — bought via Polar, spendable only inside Plexi, non-withd
 ## Infrastructure Summary
 
 - **plexiapp.com (Astro/Node on Railway):** Postgres replaces the single-file SQLite; tables for accounts, auth tokens (hashed), purchases, subscriptions, publishers. API: device-flow auth, Polar webhooks, purchase-state reads, gated artifact downloads, the `ai.query` proxy endpoint.
+- **Artifact storage split:** free artifacts live as checksum-addressed files in `website/public/registry/v1/packages/` — plain files in the public git repo, served statically; git is the audit trail. Paid artifacts live in Railway object storage, uploaded at publish time, served only through the gated download endpoint — never committed to the repo (the repo is public; a committed paid artifact is a published one).
 - **Host:** `plexi account login/logout/status`, a real `AccountProvider`, bearer token on paid artifact downloads, 402 envelope handling, license machinery deleted.
 - **Marketplace app:** a Core app on SDK v3 (`RegistryClient` catalog, trust sheet, purchase flow, event emission). The store itself is just an app.
 
