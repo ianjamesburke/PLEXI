@@ -394,7 +394,7 @@ pub enum SecretCmd {
 pub enum AppCmd {
     /// Open an app or tool in a new pane.
     ///
-    /// Pass an app id (e.g. `plexi app open snake`) or a path to an app directory
+    /// Pass an app id (e.g. `plexi app open calc`) or a path to an app directory
     /// containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli`
     /// to open any CLI tool with a Plexi UI.
     ///
@@ -484,7 +484,7 @@ pub enum AppCmd {
     List,
     /// Render an app headlessly (JSON frame tree by default, or PNG with --png).
     Render {
-        /// App id or local path to render (e.g. "snake" or "./my-app")
+        /// App id or local path to render (e.g. "calc" or "./my-app")
         app: String,
         /// Image dimensions as WxH (e.g. 500x500)
         #[arg(long, default_value = "800x600")]

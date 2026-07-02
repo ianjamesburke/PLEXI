@@ -606,7 +606,7 @@ class TestFrameTiming:
     def test_balls_physics_progresses(self, tmp_path):
         """The balls app physics must actually advance between frames."""
         from plexi_sdk.testing import AppHarness
-        balls_path = REPO_ROOT / "apps" / "balls" / "balls.py"
+        balls_path = REPO_ROOT / "apps" / "dev" / "balls" / "balls.py"
         with AppHarness(balls_path, timeout=3.0) as h:
             cmds1 = h.run(1)
             time.sleep(0.05)
@@ -683,16 +683,12 @@ class TestTimers:
 
 
 @pytest.mark.parametrize("relative_path", [
-    "apps/balls/balls.py",
-    "apps/snake/snake.py",
-    "apps/tetris/tetris.py",
-    "apps/chess/chess.py",
+    "apps/dev/balls/balls.py",
     "apps/calc/calc.py",
     "apps/csv_viewer/csv_viewer.py",
     "apps/todo/todo.py",
     "apps/stats/stats.py",
     "apps/logs/logs.py",
-    "apps/kraken/main.py",
     "apps/github-issues/main.py",
     "apps/permissions/main.py",
     "apps/wikipedia/wikipedia.py",
@@ -711,10 +707,7 @@ def test_core_app_boots_and_renders(relative_path: str) -> None:
 
 
 @pytest.mark.parametrize("relative_path,expected_effect", [
-    ("apps/balls/balls.py", "set_scheduler_mode"),
-    ("apps/snake/snake.py", "set_timer"),
-    ("apps/tetris/tetris.py", "set_timer"),
-    ("apps/kraken/main.py", "set_timer"),
+    ("apps/dev/balls/balls.py", "set_scheduler_mode"),
     ("apps/logs/logs.py", "set_timer"),
     ("apps/stats/stats.py", "set_timer"),
 ])
@@ -733,7 +726,6 @@ def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str
 
 @pytest.mark.parametrize("relative_path,key", [
     ("apps/calc/calc.py", "1"),
-    ("apps/tetris/tetris.py", "left"),
 ])
 def test_core_app_responds_to_key(relative_path: str, key: str) -> None:
     """Interactive apps must change their rendered output on key press."""

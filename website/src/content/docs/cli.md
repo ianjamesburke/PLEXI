@@ -395,7 +395,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 
 Open an app or tool in a new pane.
 
-Pass an app id (e.g. `plexi app open snake`) or a path to an app directory containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
+Pass an app id (e.g. `plexi app open calc`) or a path to an app directory containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
 
 Default placement is a sibling split to the right — the calling pane is never taken over. Pass a direction flag (--down/--left/--up/--right), --tab, or --window to override; the app's manifest `[launch] placement` applies when no flag is given.
 
@@ -447,7 +447,7 @@ Render an app headlessly (JSON frame tree by default, or PNG with --png)
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<app>` | string | yes | App id or local path to render (e.g. "snake" or "./my-app") |
+| `<app>` | string | yes | App id or local path to render (e.g. "calc" or "./my-app") |
 | `--size` | string | no | Image dimensions as WxH (e.g. 500x500) Default: `800x600`. |
 | `--state` | string | no | Pre-seed the app's state from a JSON file before rendering |
 | `--output` | string | no | Where to save the output (default: stdout) |

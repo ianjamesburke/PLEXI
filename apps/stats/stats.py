@@ -403,13 +403,20 @@ def _build_dial(m: "Metrics", x: float, y: float, w: float, h: float) -> "list":
             lbl, TEXT_HINT, TEXT_SOFT, False, "center_center",
         ))
 
-    # Hub text
-    num_size = max(22.0, min(r0 * 0.52, 40.0))
+    # Hub text. Fit the focus total to the inner circle: bounded by radius and
+    # by label width so it never spills past the ring when the pane shrinks.
+    # No lower floor — the number degrades gracefully instead of breaking.
+    # Stopgap until the intrinsic size contract lands (stint 0328, scope 5),
+    # which will let the app reserve a minimum dial size up front.
+    hub_label = _fmt_secs(m.active_secs)
+    fit_w = 2.8 * r0 / max(1, len(hub_label))
+    num_size = min(40.0, r0 * 0.52, fit_w)
     cmds.append(CanvasText(cx, cy - num_size * 0.26,
-                           _fmt_secs(m.active_secs), num_size, theme.fg, True, "center_center"))
-    cmds.append(CanvasText(cx, cy + num_size * 0.62,
-                           "focused today" if m.is_today else "focused",
-                           TEXT_HINT, TEXT_SOFT, False, "center_center"))
+                           hub_label, num_size, theme.fg, True, "center_center"))
+    if r0 > 34.0:
+        cmds.append(CanvasText(cx, cy + num_size * 0.62,
+                               "focused today" if m.is_today else "focused",
+                               TEXT_HINT, TEXT_SOFT, False, "center_center"))
 
     # Caption
     ry = y + ch + 12.0
@@ -434,13 +441,11 @@ def _build_tiles(m: "Metrics", x: float, y: float, w: float, h: float) -> "list"
     gap = SPACE_SM
     tw = (w - gap * 3) / 4
     tiles = [
-        (_fmt_secs(m.active_secs) if m.streak_days == 0 else f"{m.streak_days}d", "Streak", theme.warning),
+        (f"{m.streak_days}d", "Streak", theme.warning),
         (str(m.contexts_today), "Contexts", theme.success),
         (str(m.switches_today), "Switches", theme.accent),
         (m.peak_hour_label, "Peak Hour", theme.red),
     ]
-    # Rebuild streak tile correctly
-    tiles[0] = (f"{m.streak_days}d", "Streak", theme.warning)
     cmds: list = []
     for i, (val, lbl, color) in enumerate(tiles):
         cmds.extend(_build_tile(x + i * (tw + gap), y, tw, h, val, lbl, color))
