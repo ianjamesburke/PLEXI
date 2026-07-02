@@ -240,10 +240,14 @@ if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
   rsync -a apps/dev/ "$profile_dir/apps/"
 else
   bundled_bin="$app_dest/Contents/MacOS/plexi${suffix}"
-  "$bundled_bin" app install --pack core --refresh >/dev/null 2>&1 \
+  # Unset any inherited PLEXI_CHANNEL (in-pane installs leak it) so the
+  # binary resolves its profile from its own basename — PLEXI_CHANNEL wins
+  # over the basename and would seed the wrong profile ("main" has no valid
+  # PLEXI_CHANNEL value, so setting it explicitly is not an option).
+  env -u PLEXI_CHANNEL "$bundled_bin" app install --pack core --refresh >/dev/null 2>&1 \
     || echo "warning: core pack refresh failed — launch only installs missing apps; run 'plexi${suffix} app install --pack core --refresh' to update core apps"
   if $apps_was_empty; then
-    "$bundled_bin" app install --pack packs/examples.toml >/dev/null 2>&1 \
+    env -u PLEXI_CHANNEL "$bundled_bin" app install --pack packs/examples.toml >/dev/null 2>&1 \
       || echo "note: examples pack seed deferred to first launch"
   fi
 fi
