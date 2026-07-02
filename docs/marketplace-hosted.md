@@ -54,19 +54,9 @@ Human review is required for every reviewed-native Python app. Python apps are n
 
 Submission states: submitted → in review → approved and listed, changes requested, or rejected. Listed apps can be delisted (see takedowns in `0021`).
 
-## 4. Paid Apps, Licenses, and Revenue (`0021` — spec only)
+## 4. Paid Apps and Revenue — superseded
 
-This task writes the business spec before paid submissions open. It does not build payment enforcement. Free hosted install (`0020`) ships without any of it, and paid-app enforcement does not block v1 unless "marketplace v1" explicitly means commercial launch.
-
-The spec must cover:
-
-- Purchase flow and what a license is: the metadata that proves ownership, where it lives, and how the host checks it.
-- Refund window and process.
-- Takedowns: who can delist an app, what happens to existing installs (they keep working — installed code stays on disk).
-- Revenue share between publisher and Plexi.
-- Publisher analytics boundaries: publishers see aggregate install and revenue numbers, never user data.
-
-Hard constraint carried from the parent PRM: licensing is hosted, but installed code and user state remain on disk. A license check failure can block a new install or an update, not delete or disable what the user already has.
+This section is superseded by [`marketplace-monetization.md`](marketplace-monetization.md), which resolves the paid-app model in full: **no client-side licensing** (rejected with rationale there), server-side purchase rows, Polar as merchant of record, 85/15 revenue share, 14-day refunds, and the extensible 402 envelope. The hard constraint carries over unchanged: a denied download can block a new install or update, never delete or disable what the user already has.
 
 ## 5. Plexi AI Subscription (`0022` — spec only)
 
@@ -110,7 +100,7 @@ The managed backend is `BillingModel::Subscription`, so per-call USD is not pre-
 - **Local safety caps (already enforced):** `effective_per_app_daily_usd` and `effective_global_daily_usd` via `ledger::check_budget`. These are the user's own runaway-spend guardrails and apply to every backend including the subscription. They are not the subscription's commercial allowance.
 - **Subscription allowance (server-side, billing spec):** a free-tier request count before payment is required, and paid-tier pricing above it. These numbers live in the billing spec and on the proxy server, **never** in app-framework code, `AiConfig`, or this doc. The host's job is only to present the bearer `token` and surface the proxy's allowance/quota errors back to the app as an `AiBrokerResponse` error, in the same shape as `budget_exceeded`. When the server reports the allowance exhausted, the host returns a tagged error (e.g. `subscription_quota_exceeded: …`) — it does not silently reroute to OpenRouter or Ollama.
 
-Named placeholders for the billing spec to fill (do not invent values here): `FREE_TIER_REQUEST_COUNT`, `PAID_TIER_PRICE`, `PAID_TIER_REQUEST_ALLOWANCE` (or unmetered), `OVERAGE_POLICY`.
+Named placeholders `FREE_TIER_REQUEST_COUNT`, `PAID_TIER_PRICE`, `PAID_TIER_REQUEST_ALLOWANCE`, `OVERAGE_POLICY` are filled in [`marketplace-monetization.md`](marketplace-monetization.md); do not restate values here.
 
 ### 5.5 Separation from app purchase
 

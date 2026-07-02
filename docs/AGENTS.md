@@ -19,6 +19,7 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 | `app-framework-marketplace.md` | v1 app platform + marketplace | see file |
 | `assistant-host-app.md` | Host assistant app spec | see file |
 | `marketplace-hosted.md` | Hosted marketplace (Sprint S4) | see file |
+| `marketplace-monetization.md` | Accounts, payments, no-license commercial model | 0338–0341, 0322 |
 | `wasm-runtime.md` | WASM runtime architecture | see file |
 | `wasm-runtime-impl-plan.md` | WASM runtime build sequence (G1-G7, G11-G13) | see file |
 | `workspace-env-secrets.md` | Workspace env secret injection | 0237 |

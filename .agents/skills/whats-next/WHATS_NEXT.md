@@ -58,12 +58,15 @@ The host Assistant becomes the workspace operator: typed host tools behind the p
 
 ### Epoch 3 — Commercial launch (Track B)
 
-The registry brokers money; never a dependency for running installed apps.
+The registry brokers money; never a dependency for running installed apps. Spec: `docs/marketplace-monetization.md` (0315, done 2026-07-02) — no client-side licensing, Polar as merchant of record, the paid download is the product.
 
-- `0315` monetization + anti-fork spec — **unblocks the whole epoch**
-  - `0322` license-aware update gating (also after `0316`, `0321` — done)
-  - `0323` Plexi-managed `ai.query` backend with entitlements
-  - `0325` app/agent/skill package envelope spec
+- `0338` website account service (magic-link + device-code flow) — **ready, epoch head**
+  - `0339` Polar checkout/webhooks/gated downloads (the 402 envelope)
+    - `0322` host: account-gated paid downloads (also after `0340`)
+      - `0341` marketplace app + paywall handoff (also after `0327`)
+  - `0340` host `plexi account` CLI + license-machinery deletion
+  - `0323` Plexi-managed `ai.query` backend (also after `0339`)
+- `0325` app/agent/skill package envelope spec — unblocked
 
 ### Epoch 4 — The Platform (WASM, mobile, hosted)
 
@@ -90,7 +93,7 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 ## Priority Stack (flat view)
 
 P0: `0330` (chain head), `0327`, `0280`.
-P1: `0335`, `0331`*, `0328`, `0241` (PR needs fixing), `0315`, `0285`, `0332`*.
+P1: `0335`, `0331`*, `0328`, `0241` (PR needs fixing), `0338`, `0285`, `0332`*, `0339`*, `0340`*, `0341`*.
 P2 and below: run `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
