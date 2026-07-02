@@ -88,6 +88,11 @@ do_close() {
 
 task_file_for_stint() {
     local STINT="$1"
+    if [ ! -d .stint/tasks ]; then
+        echo "ERROR: .stint/tasks not found in $ROOT" >&2
+        echo "Run merge-pr from the canonical alpha checkout that owns local stint state, not a feature worktree without .stint/." >&2
+        return 1
+    fi
     find .stint/tasks -maxdepth 1 -name "${STINT}-*.md" -print -quit
 }
 
@@ -100,7 +105,9 @@ resolve_stints() {
         printf '%s\n' "$PR_BODY" | grep -Ei 'stint' | grep -Eo '[0-9]{4}' || true
     } | sort -u | while IFS= read -r STINT; do
         [ -n "$STINT" ] || continue
-        if [ -z "$(task_file_for_stint "$STINT")" ]; then
+        local TASK_FILE
+        TASK_FILE=$(task_file_for_stint "$STINT") || return 1
+        if [ -z "$TASK_FILE" ]; then
             echo "ERROR: PR references stint task $STINT, but no .stint/tasks/${STINT}-*.md exists" >&2
             return 1
         fi
@@ -206,14 +213,14 @@ test_resolve_issue() {
 
 test_resolve_stints() {
     local actual
-    actual=$(resolve_stints "feature/stint-0015-0016-0017-packages-trust" "")
-    [ "$actual" = "$(printf '0015\n0016\n0017')" ] || {
+    actual=$(resolve_stints "feature/stint-0241-0285-0327-packages-trust" "")
+    [ "$actual" = "$(printf '0241\n0285\n0327')" ] || {
         echo "expected stint ids from branch, got '$actual'" >&2
         return 1
     }
 
-    actual=$(resolve_stints "feature/packages-trust" "Stint tasks 0015, 0016, 0017")
-    [ "$actual" = "$(printf '0015\n0016\n0017')" ] || {
+    actual=$(resolve_stints "feature/packages-trust" "Stint tasks 0241, 0285, 0327")
+    [ "$actual" = "$(printf '0241\n0285\n0327')" ] || {
         echo "expected stint ids from PR body, got '$actual'" >&2
         return 1
     }
