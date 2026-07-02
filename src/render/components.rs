@@ -1580,8 +1580,10 @@ fn render_component_tree_inner(
 
         UiNode::Table { columns, rows } => {
             let chrome = AppChrome::new(colors);
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
+            egui::Grid::new(ui.next_auto_id())
+                .striped(true)
+                .spacing(egui::vec2(style::SPACE_MD, style::SPACE_SM))
+                .show(ui, |ui| {
                     for col in columns {
                         chrome.text_label(
                             ui,
@@ -1592,12 +1594,9 @@ fn render_component_tree_inner(
                             false,
                             false,
                         );
-                        ui.add_space(style::SPACE_MD);
                     }
-                });
-                chrome.paint_divider(ui, "");
-                for row in rows {
-                    ui.horizontal(|ui| {
+                    ui.end_row();
+                    for row in rows {
                         for cell in row {
                             chrome.text_label(
                                 ui,
@@ -1608,11 +1607,10 @@ fn render_component_tree_inner(
                                 false,
                                 false,
                             );
-                            ui.add_space(style::SPACE_MD);
                         }
-                    });
-                }
-            });
+                        ui.end_row();
+                    }
+                });
         }
 
         UiNode::Banner { text, tone, title } => {

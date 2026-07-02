@@ -2572,9 +2572,10 @@ class KeyValue(Component):
         for row in self.rows:
             if isinstance(row, dict):
                 out.append({"key": str(row.get("key", "")), "value": str(row.get("value", ""))})
-            else:
-                key, value = row
-                out.append({"key": str(key), "value": str(value)})
+            elif isinstance(row, (list, tuple)) and len(row) >= 2:
+                out.append({"key": str(row[0]), "value": str(row[1])})
+            elif row is not None:
+                out.append({"key": str(row), "value": ""})
         return {"type": "key_value", "rows": out}
 
 

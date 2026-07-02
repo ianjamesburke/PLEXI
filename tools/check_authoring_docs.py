@@ -52,9 +52,10 @@ def _public_top_level(path: Path) -> set[str]:
         elif isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "__all__":
-                    for elt in node.value.elts:  # type: ignore[attr-defined]
-                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                            names.add(elt.value)
+                    if isinstance(node.value, (ast.List, ast.Tuple)):
+                        for elt in node.value.elts:
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                                names.add(elt.value)
     return names
 
 
