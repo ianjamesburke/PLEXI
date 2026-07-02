@@ -43,6 +43,10 @@ pub struct InstallOutcome {
 pub enum InstallStatus {
     /// Newly installed at the given path.
     Installed(PathBuf),
+    /// Re-extracted a bundled `local:` app over an existing install (pack
+    /// apply with `refresh_local`) — how core-app updates reach existing
+    /// profiles on stable channels.
+    Refreshed(PathBuf),
     /// Already present at the requested version — no-op (pack apply
     /// idempotency).
     AlreadyAtVersion,
@@ -413,13 +417,59 @@ fn provision_venv(app_id: &str, app_dir: &Path, manifest: &AppManifest) {
 /// aggregated per app so one bad entry doesn't abort the whole apply.
 /// Idempotent: an entry whose id is already installed at the same version is
 /// reported as `AlreadyAtVersion`.
-pub fn apply_pack(cloner: &dyn Cloner, pack: &Pack, target_root: &Path) -> Vec<InstallOutcome> {
+///
+/// `refresh_local`: re-extract already-installed `local:` entries from this
+/// binary's embedded tree, replacing the installed directory wholesale. This
+/// is the update path for bundled core apps — `local:` versions are
+/// `"bundled"` on both sides, so content, not version, is the ground truth.
+/// Only the explicit installer path (`plexi app install --pack core
+/// --refresh`) sets this; launch-time reseeding never clobbers an existing
+/// install.
+pub fn apply_pack(
+    cloner: &dyn Cloner,
+    pack: &Pack,
+    target_root: &Path,
+    refresh_local: bool,
+) -> Vec<InstallOutcome> {
     let mut outcomes = Vec::with_capacity(pack.apps.len());
     let installed = installed_versions(target_root);
     for entry in &pack.apps {
-        outcomes.push(apply_pack_entry(cloner, entry, target_root, &installed));
+        outcomes.push(apply_pack_entry(
+            cloner,
+            entry,
+            target_root,
+            &installed,
+            refresh_local,
+        ));
     }
     outcomes
+}
+
+/// Replace an installed `local:` app with the copy embedded in this binary.
+fn refresh_one_local(name: &str, id: &str, target_root: &Path) -> InstallOutcome {
+    let dest = target_root.join(id);
+    if let Err(e) = std::fs::remove_dir_all(&dest) {
+        return InstallOutcome {
+            id: id.to_string(),
+            status: InstallStatus::Failed(format!("refresh: remove {}: {e}", dest.display())),
+        };
+    }
+    match install_one_local(name, target_root) {
+        Ok(o) => {
+            log::info!("install: refreshed {} ← local:{name}", o.id);
+            InstallOutcome {
+                id: o.id,
+                status: match o.status {
+                    InstallStatus::Installed(p) => InstallStatus::Refreshed(p),
+                    other => other,
+                },
+            }
+        }
+        Err(e) => InstallOutcome {
+            id: id.to_string(),
+            status: InstallStatus::Failed(format!("refresh: {e}")),
+        },
+    }
 }
 
 fn apply_pack_entry(
@@ -427,8 +477,14 @@ fn apply_pack_entry(
     entry: &PackApp,
     target_root: &Path,
     installed: &HashMap<String, String>,
+    refresh_local: bool,
 ) -> InstallOutcome {
     if let Some(installed_version) = installed.get(&entry.id) {
+        if refresh_local {
+            if let Ok(SourceSpec::Local(name)) = parse_source_spec(&entry.source) {
+                return refresh_one_local(&name, &entry.id, target_root);
+            }
+        }
         if installed_version == &entry.version {
             return InstallOutcome {
                 id: entry.id.clone(),
@@ -719,7 +775,7 @@ pub fn apply_core_pack_always(cloner: &dyn Cloner, target_root: &Path) -> Vec<In
         "install: core pack reseed={:?}",
         pack.reseed.as_deref().unwrap_or("once")
     );
-    apply_pack(cloner, &pack, target_root)
+    apply_pack(cloner, &pack, target_root, false)
 }
 
 /// Apply the bundled examples pack into `target_root` only if `target_root` is
@@ -756,7 +812,7 @@ pub fn apply_examples_pack_if_empty(
         "install: examples pack reseed={:?}",
         pack.reseed.as_deref().unwrap_or("once")
     );
-    Some(apply_pack(cloner, &pack, target_root))
+    Some(apply_pack(cloner, &pack, target_root, false))
 }
 
 /// Returns the set of app IDs defined in the bundled core pack.
@@ -800,7 +856,7 @@ pub fn apply_workspace_pack(
         workspace_apps.display(),
         pack.apps.len()
     );
-    Ok(apply_pack(cloner, &pack, &workspace_apps))
+    Ok(apply_pack(cloner, &pack, &workspace_apps, false))
 }
 
 /// Return the set of app IDs declared in `<workspace_root>/<channel_dir>/apps.toml`.
@@ -1119,12 +1175,57 @@ mod pack_tests {
         let cloner = MockCloner::new();
         let pack = pack_with(&[("foo", "github:owner/foo", "0.0.1")]);
 
-        let first = apply_pack(&cloner, &pack, target.path());
+        let first = apply_pack(&cloner, &pack, target.path(), false);
         assert!(matches!(first[0].status, InstallStatus::Installed(_)));
 
         // Second apply: same id at same version → AlreadyAtVersion.
-        let second = apply_pack(&cloner, &pack, target.path());
+        let second = apply_pack(&cloner, &pack, target.path(), false);
         assert!(matches!(second[0].status, InstallStatus::AlreadyAtVersion));
+    }
+
+    /// Regression guard (stint 0296 / PR #2359 validation): `refresh_local`
+    /// must re-extract an installed `local:` app from the embedded tree —
+    /// this is the only path by which core-app updates reach existing
+    /// profiles on stable channels (launch reseed installs missing apps
+    /// only).
+    #[test]
+    fn pack_apply_refresh_local_replaces_stale_install() {
+        let target = tempfile::tempdir().unwrap();
+        let cloner = MockCloner::new();
+        let pack = pack_with(&[("logs", "local:logs", "bundled")]);
+
+        let first = apply_pack(&cloner, &pack, target.path(), false);
+        assert!(matches!(first[0].status, InstallStatus::Installed(_)));
+
+        // Simulate a stale profile: drift the installed copy from the
+        // embedded ground truth.
+        let manifest_path = target.path().join("logs/manifest.toml");
+        let embedded = std::fs::read_to_string(&manifest_path).unwrap();
+        std::fs::write(&manifest_path, format!("{embedded}\n# stale drift\n")).unwrap();
+        let stray = target.path().join("logs/stray_file.txt");
+        std::fs::write(&stray, "left behind by an old version").unwrap();
+
+        // Without refresh: untouched (skipped or up-to-date — the installed
+        // manifest's real version never equals the pack's "bundled", which is
+        // precisely why version comparison can't drive core-app updates).
+        let plain = apply_pack(&cloner, &pack, target.path(), false);
+        assert!(matches!(
+            plain[0].status,
+            InstallStatus::AlreadyAtVersion | InstallStatus::SkippedOtherVersion { .. }
+        ));
+        assert!(std::fs::read_to_string(&manifest_path)
+            .unwrap()
+            .contains("stale drift"));
+
+        // With refresh: replaced wholesale from the embedded tree.
+        let refreshed = apply_pack(&cloner, &pack, target.path(), true);
+        assert!(
+            matches!(refreshed[0].status, InstallStatus::Refreshed(_)),
+            "expected Refreshed, got {:?}",
+            refreshed[0].status
+        );
+        assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), embedded);
+        assert!(!stray.exists(), "refresh must remove files not in the embedded tree");
     }
 
     #[test]
@@ -1139,7 +1240,7 @@ mod pack_tests {
             ("beta", "github:owner/beta", "v1"),
         ]);
 
-        let outcomes = apply_pack(&cloner, &pack, target.path());
+        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
         assert_eq!(outcomes.len(), 2);
         // Exactly one failure, one install — order depends on apply_pack
         // iteration, just count by status.
@@ -1163,7 +1264,7 @@ mod pack_tests {
         let target = tempfile::tempdir().unwrap();
         let cloner = MockCloner::new();
         let pack = pack_with(&[("ok", "github:owner/ok", "v1"), ("bad", "ftp://nope", "v1")]);
-        let outcomes = apply_pack(&cloner, &pack, target.path());
+        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
         let bad = outcomes.iter().find(|o| o.id == "bad").unwrap();
         match &bad.status {
             InstallStatus::Failed(msg) => assert!(msg.contains("unknown source scheme")),
@@ -1180,7 +1281,7 @@ mod pack_tests {
         cloner.fail_next_checkout("git checkout 0.0.1 failed");
         let pack = pack_with(&[("fallback", "github:owner/fallback", "0.0.1")]);
 
-        let outcomes = apply_pack(&cloner, &pack, target.path());
+        let outcomes = apply_pack(&cloner, &pack, target.path(), false);
 
         assert_eq!(cloner.checkouts.lock().unwrap().as_slice(), ["0.0.1"]);
         assert!(

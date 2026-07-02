@@ -227,18 +227,21 @@ find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 
 #                   app immediately: all top-level app dirs, then the dev/ POCs
 #                   flattened to the top level.
 #   beta / main   → seed exactly the canonical set through the host's own pack
-#                   applier so no app list is duplicated in this script. Core
-#                   apps seed on every host run; example/demo apps seed only for
-#                   a fresh profile (apps_was_empty), matching the host's
-#                   first-launch behavior. POC apps under dev/ and non-pack
-#                   demos never reach stable channels.
+#                   applier so no app list is duplicated in this script.
+#                   --refresh re-extracts already-installed core apps from the
+#                   new binary's embedded tree — this is how core-app updates
+#                   reach existing stable profiles (launch reseed only installs
+#                   missing apps). Example/demo apps seed only for a fresh
+#                   profile (apps_was_empty), matching the host's first-launch
+#                   behavior. POC apps under dev/ and non-pack demos never
+#                   reach stable channels.
 if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
   rsync -a --exclude=dev/ apps/ "$profile_dir/apps/"
   rsync -a apps/dev/ "$profile_dir/apps/"
 else
   bundled_bin="$app_dest/Contents/MacOS/plexi${suffix}"
-  "$bundled_bin" app install --pack core >/dev/null 2>&1 \
-    || echo "note: core pack seed deferred to first launch"
+  "$bundled_bin" app install --pack core --refresh >/dev/null 2>&1 \
+    || echo "warning: core pack refresh failed — launch only installs missing apps; run 'plexi${suffix} app install --pack core --refresh' to update core apps"
   if $apps_was_empty; then
     "$bundled_bin" app install --pack packs/examples.toml >/dev/null 2>&1 \
       || echo "note: examples pack seed deferred to first launch"
