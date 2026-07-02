@@ -92,6 +92,11 @@ pub struct TextEditorApp {
     /// keep the scroll region at least half a viewport taller than content,
     /// so the cursor can always be centered when at the bottom of a long doc.
     content_pixel_height: f32,
+    /// Set when a manually-handled key edit (Tab/Enter/smart-backspace) moves
+    /// the cursor. TextEdit's own scroll-to-cursor logic only fires for keys
+    /// it processes itself, so those edits need an explicit scroll on the
+    /// next frame to keep the cursor in view.
+    scroll_to_cursor_pending: bool,
 }
 
 impl TextEditorApp {
@@ -118,6 +123,7 @@ impl TextEditorApp {
             cursor_was_at_end: false,
             find_bar: None,
             content_pixel_height: 0.0,
+            scroll_to_cursor_pending: false,
         }
     }
 
@@ -921,6 +927,7 @@ impl App for TextEditorApp {
                             state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
                             egui::TextEdit::store_state(ui.ctx(), te_id, state);
                             self.last_edit = Some(Instant::now());
+                            self.scroll_to_cursor_pending = true;
                             log::info!("TextEditorApp: Tab — inserted {} spaces at char {}", indent.len() * tab_presses, char_idx);
                         }
                     }
@@ -946,6 +953,7 @@ impl App for TextEditorApp {
                             state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
                             egui::TextEdit::store_state(ui.ctx(), te_id, state);
                             self.last_edit = Some(Instant::now());
+                            self.scroll_to_cursor_pending = true;
                             log::info!("TextEditorApp: Enter — leading={:?} at char {}", leading, char_idx);
                         }
                     }
@@ -971,6 +979,7 @@ impl App for TextEditorApp {
                                 state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
                                 egui::TextEdit::store_state(ui.ctx(), te_id, state);
                                 self.last_edit = Some(Instant::now());
+                                self.scroll_to_cursor_pending = true;
                                 log::info!("TextEditorApp: smart backspace — removed {} spaces at char {}", spaces, char_idx);
                             }
                         }
@@ -1002,6 +1011,21 @@ impl App for TextEditorApp {
                     row_height,
                     egui::Stroke::new(1.0, colors.accent),
                 );
+
+                // Tab/Enter/smart-backspace are consumed above before TextEdit
+                // sees them, so egui's own "scroll to keep cursor visible"
+                // logic (which only fires for keys TextEdit itself handles)
+                // never runs for those edits. Do it ourselves.
+                if self.scroll_to_cursor_pending {
+                    self.scroll_to_cursor_pending = false;
+                    if let Some(cursor_range) = output.cursor_range {
+                        let cursor_rect = output
+                            .galley
+                            .pos_from_cursor(&cursor_range.primary)
+                            .translate(output.galley_pos.to_vec2());
+                        ui.scroll_to_rect(cursor_rect, None);
+                    }
+                }
 
                 self.content_pixel_height = output.galley.size().y;
 
