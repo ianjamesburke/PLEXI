@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Logs — SDK v3 runtime-state live tail of the Plexi host log."""
+"""Logs — live tail of the Plexi host log.
+
+Flagship SDK v3 exemplar. Every level is color-coded with a semantic Badge,
+rows filter by level / app id / free text, sort newest- or oldest-first, and
+the active channel + log path are surfaced in the pane status chrome. The app
+reads the channel-scoped ``plexi.log`` (see :func:`_detect`) and polls it on a
+repeating timer.
+
+Plexi calls three module-level functions: ``init(size, args)``,
+``update(event)``, and ``view()``. State lives in ``plexi_sdk.state`` and is
+only mutated by returning effects from ``update`` — ``view`` stays pure.
+"""
 
 from __future__ import annotations
 
@@ -8,39 +19,80 @@ import re
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
-from plexi_sdk.events import KeyEvent, TimerFired, UiValueChange
-from plexi_sdk.ui import AppBar, Column, FooterKeys, Scrollable, Spacer, Text, TextEdit
+from plexi_sdk.events import KeyEvent, TimerFired, UiAction, UiValueChange
+from plexi_sdk.ui import (
+    SPACE_SM,
+    TEXT_HINT,
+    ActionBar,
+    AppBar,
+    Badge,
+    Button,
+    Column,
+    FooterKeys,
+    HStack,
+    Scrollable,
+    Sized,
+    Text,
+    TextEdit,
+)
 
 POLL_MS = 2_000
 TIMER_ID = 1
 MAX_LINES = 500
 TAIL_BYTES = 256 * 1024
-VISIBLE_LINES = 28
-FILTERS = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
-FILTER_KEY = {"a": "ALL", "e": "ERROR", "w": "WARN", "i": "INFO", "d": "DEBUG"}
+MSG_ELIDE = 200
+SEARCH_ID = "logs-search"
 
+# Level filters. ALL is the unfiltered default; the rest match the log's level
+# column exactly.
+LEVELS = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
+LEVEL_KEY = {"a": "ALL", "e": "ERROR", "w": "WARN", "i": "INFO", "d": "DEBUG"}
+
+# Semantic token per level — resolved to the host theme's role color at render
+# time. Never hardcode hex here: danger/warning/accent track light+dark themes
+# and stay WCAG-legible because the host picks the contrasting badge text.
+LEVEL_COLOR = {
+    "ERROR": "danger",
+    "WARN": "warning",
+    "INFO": "accent",
+    "DEBUG": "neutral",
+    "TRACE": "section",
+}
+
+# Row height (px) and column widths so the badge, timestamp, and target align
+# across rows. The row is height-bounded because an HStack inside a Scrollable
+# would otherwise inherit the full viewport height and misalign its children.
+ROW_H = 26.0
+TIME_W = 58.0
+TARGET_W = 150.0
+
+# [2026-07-02 01:46:18] [INFO] [plexi::config] message text
 LOG_RE = re.compile(
     r"^\[(\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}))\] \[(\w+)\] \[([^\]]+)\] (.*)$"
 )
 
 DEFAULT_STATE = {
     "path": "",
+    "channel": "",
     "lines": [],
-    "filter": "ALL",
+    "signature": None,
+    "level": "ALL",
+    "target": "ALL",
     "query": "",
     "searching": False,
-    "offset": 0,
-    "follow": True,
-    "signature": None,
+    "order": "newest",  # newest | oldest
 }
 
 
 def init(size, args) -> list:
-    path = args[0] if args else _detect_log_path()
-    data = _state()
-    data["path"] = data["path"] or path
-    data.update(_refresh(data))
-    log.info(f"logs: SDK v3 initialized path={data['path']!r}")
+    path, channel = _detect()
+    if args:
+        path = args[0]
+    data = dict(DEFAULT_STATE)
+    data["path"] = path
+    data["channel"] = channel
+    data.update(_read(path))
+    log.info(f"logs: init channel={channel!r} path={path!r} lines={len(data['lines'])}")
     return [
         SetTitle("Logs"),
         SetTimer(TIMER_ID, POLL_MS, repeat=True),
@@ -51,17 +103,22 @@ def init(size, args) -> list:
 
 def update(event) -> list:
     data = _state()
+
     if isinstance(event, TimerFired) and event.id == TIMER_ID:
-        refreshed = _refresh(data)
+        refreshed = _read(data["path"], data["signature"])
         if refreshed["signature"] == data["signature"]:
             return []
         data.update(refreshed)
+        log.debug(f"logs: refreshed lines={len(data['lines'])}")
         return [SetState(data), SetStatus(_status(data))]
 
-    if isinstance(event, UiValueChange) and event.handler_id == "logs-search":
+    if isinstance(event, UiValueChange) and event.handler_id == SEARCH_ID:
         data["query"] = event.value
-        data["offset"] = 0
-        data["follow"] = False
+        return [SetState(data), SetStatus(_status(data))]
+
+    if isinstance(event, UiAction) and event.handler_id.startswith("lvl:"):
+        data["level"] = event.handler_id.split(":", 1)[1]
+        log.info(f"logs: level filter -> {data['level']}")
         return [SetState(data), SetStatus(_status(data))]
 
     if not isinstance(event, KeyEvent) or not event.pressed:
@@ -72,39 +129,29 @@ def update(event) -> list:
         if key == "escape":
             data["searching"] = False
             data["query"] = ""
-            data["offset"] = 0
-            data["follow"] = True
+            log.info("logs: search cancelled")
             return [SetState(data), SetStatus(_status(data))]
         return []
 
-    if key in FILTER_KEY:
-        data["filter"] = FILTER_KEY[key]
-        data["offset"] = 0
+    if key in LEVEL_KEY:
+        data["level"] = LEVEL_KEY[key]
+        log.info(f"logs: level filter -> {data['level']}")
+    elif key == "t":
+        data["target"] = _cycle_target(data)
+        log.info(f"logs: app filter -> {data['target']}")
+    elif key == "s":
+        data["order"] = "oldest" if data["order"] == "newest" else "newest"
+        log.info(f"logs: sort -> {data['order']}")
     elif key == "/":
         data["searching"] = True
-        data["follow"] = False
+        log.info("logs: search opened")
     elif key == "escape" and data["query"]:
         data["query"] = ""
-        data["offset"] = 0
-        data["follow"] = True
-    elif key in ("down", "j"):
-        data["offset"] = min(_max_offset(data), data["offset"] + 1)
-        data["follow"] = False
-    elif key in ("up", "k"):
-        data["offset"] = max(0, data["offset"] - 1)
-        data["follow"] = False
-    elif key == "g" and event.modifiers.shift:
-        data["offset"] = _max_offset(data)
-        data["follow"] = False
-    elif key == "g":
-        data["offset"] = 0
-        data["follow"] = True
-    elif key == "f":
-        data["follow"] = not data["follow"]
-        if data["follow"]:
-            data["offset"] = 0
+    elif key == "escape" and data["target"] != "ALL":
+        data["target"] = "ALL"
     elif key == "r":
-        data.update(_refresh(data, force=True))
+        data.update(_read(data["path"]))
+        log.info("logs: manual refresh")
     else:
         return []
     return [SetState(data), SetStatus(_status(data))]
@@ -112,64 +159,175 @@ def update(event) -> list:
 
 def view():
     data = _state()
-    title = "Search" if data["searching"] else _subtitle(data)
-    children = [AppBar("Logs", title)]
+    rows = _filtered(data)
+
+    children: list = [
+        AppBar("Logs", _subtitle(data)),
+        ActionBar([
+            Button(
+                level,
+                f"lvl:{level}",
+                style="primary" if level == data["level"] else "secondary",
+            )
+            for level in LEVELS
+        ]),
+    ]
     if data["searching"]:
         children.append(
-            TextEdit(
-                "logs-search",
-                value=data["query"],
-                placeholder="filter by target or message",
-            )
+            TextEdit(SEARCH_ID, value=data["query"], placeholder="filter by target or message")
         )
-    children.extend(
-        [
-            Scrollable(Text(_visible_text(data), size=11.0)),
-            FooterKeys(
-                [
-                    ("a/e/w/i/d", "level"),
-                    ("/", "search"),
-                    ("j/k", "scroll"),
-                    ("f", "follow"),
-                ]
-            ),
-        ]
+
+    if rows:
+        children.append(Scrollable(Column([_row(line) for line in rows], padding=0, gap=SPACE_SM)))
+    else:
+        children.append(Text(f"no matching entries in {data['path']}", tone="hint"))
+
+    children.append(
+        FooterKeys([
+            ("a/e/w/i/d", "level"),
+            ("t", "app"),
+            ("s", "sort"),
+            ("/", "search"),
+            ("r", "refresh"),
+        ])
     )
-    return Column(children, grow=True, padding=0)
+    return Column(children, grow=True, padding=SPACE_SM)
+
+
+def _row(line: dict):
+    level = line["level"]
+    message = line["message"]
+    if len(message) > MSG_ELIDE:
+        message = message[:MSG_ELIDE] + "…"
+    return Sized(
+        HStack(
+            [
+                Badge(level, color=LEVEL_COLOR.get(level, "neutral")),
+                Sized(Text(line["time"], size=TEXT_HINT, color="muted"), width=TIME_W),
+                Sized(Text(line["target"], size=TEXT_HINT, color="section"), width=TARGET_W),
+                Text(message, size=TEXT_HINT),
+            ],
+            gap=SPACE_SM,
+        ),
+        height=ROW_H,
+    )
+
+
+# ── State helpers ───────────────────────────────────────────────────────────
 
 
 def _state() -> dict:
     data = dict(DEFAULT_STATE)
-    for key, value in DEFAULT_STATE.items():
-        data[key] = state.get(key, value)
+    for key, default in DEFAULT_STATE.items():
+        data[key] = state.get(key, default)
     data["lines"] = [dict(line) for line in data.get("lines") or []]
-    data["filter"] = str(data.get("filter") or "ALL")
-    if data["filter"] not in FILTERS:
-        data["filter"] = "ALL"
+    data["level"] = data["level"] if data["level"] in LEVELS else "ALL"
     data["query"] = str(data.get("query") or "")
-    data["offset"] = max(0, int(data.get("offset") or 0))
-    data["follow"] = bool(data.get("follow"))
+    data["target"] = str(data.get("target") or "ALL")
+    data["order"] = "oldest" if data.get("order") == "oldest" else "newest"
     data["searching"] = bool(data.get("searching"))
     return data
 
 
-def _detect_log_path() -> str:
+def _filtered(data: dict) -> list[dict]:
+    lines = data["lines"]  # newest-first as read
+    if data["level"] != "ALL":
+        lines = [ln for ln in lines if ln["level"] == data["level"]]
+    if data["target"] != "ALL":
+        lines = [ln for ln in lines if ln["target"] == data["target"]]
+    query = data["query"].lower().strip()
+    if query:
+        lines = [
+            ln for ln in lines
+            if query in ln["target"].lower() or query in ln["message"].lower()
+        ]
+    if data["order"] == "oldest":
+        lines = list(reversed(lines))
+    return lines
+
+
+def _cycle_target(data: dict) -> str:
+    """Advance the app/target filter to the next unique target, ALL-inclusive."""
+    seen: list[str] = ["ALL"]
+    for line in data["lines"]:
+        if line["target"] not in seen:
+            seen.append(line["target"])
+    current = data["target"] if data["target"] in seen else "ALL"
+    return seen[(seen.index(current) + 1) % len(seen)]
+
+
+# ── Log file ────────────────────────────────────────────────────────────────
+
+
+def _detect() -> tuple[str, str]:
+    """Resolve the (log path, channel label) for the active Plexi profile.
+
+    ``PLEXI_CONFIG_DIR`` wins (the host exports it per pane); the channel is the
+    profile dir suffix. Otherwise ``PLEXI_CHANNEL`` selects the profile. As a
+    last resort, pick the most recently written known profile log.
+    """
     config_dir = os.environ.get("PLEXI_CONFIG_DIR")
     if config_dir:
-        return os.path.join(config_dir, "plexi.log")
+        return os.path.join(config_dir, "plexi.log"), _channel_of(config_dir)
+
     channel = os.environ.get("PLEXI_CHANNEL", "").strip()
     if channel:
-        profile = ".plexi" if channel in ("main", "default") else f".plexi-{channel}"
-        return os.path.expanduser(os.path.join("~", profile, "plexi.log"))
+        return _channel_path(channel), _normalize_channel(channel)
+
     candidates = [
-        os.path.expanduser("~/.plexi-alpha/plexi.log"),
-        os.path.expanduser("~/.plexi-beta/plexi.log"),
-        os.path.expanduser("~/.plexi/plexi.log"),
+        (os.path.expanduser("~/.plexi-alpha/plexi.log"), "alpha"),
+        (os.path.expanduser("~/.plexi-beta/plexi.log"), "beta"),
+        (os.path.expanduser("~/.plexi/plexi.log"), "default"),
     ]
-    existing = [
-        (os.path.getmtime(path), path) for path in candidates if os.path.exists(path)
-    ]
-    return max(existing)[1] if existing else candidates[0]
+    existing = [(os.path.getmtime(p), p, c) for p, c in candidates if os.path.exists(p)]
+    if existing:
+        _, path, chan = max(existing)
+        return path, chan
+    return candidates[0][0], candidates[0][1]
+
+
+def _normalize_channel(channel: str) -> str:
+    return "default" if channel in ("main", "default") else channel
+
+
+def _channel_path(channel: str) -> str:
+    profile = ".plexi" if channel in ("main", "default") else f".plexi-{channel}"
+    return os.path.expanduser(os.path.join("~", profile, "plexi.log"))
+
+
+def _channel_of(config_dir: str) -> str:
+    """Channel label from a config dir like ``~/.plexi-alpha`` -> ``alpha``."""
+    name = os.path.basename(config_dir.rstrip("/"))
+    if name == ".plexi":
+        return "default"
+    if name.startswith(".plexi-"):
+        return name[len(".plexi-"):]
+    return name or "default"
+
+
+def _read(path: str, prev_signature=None) -> dict:
+    """Return updated ``{signature, lines}``; lines are newest-first."""
+    signature = _signature(path)
+    if signature is not None and signature == prev_signature:
+        return {"signature": signature}
+    if signature is None:
+        return {"signature": None, "lines": []}
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as handle:
+            if size > TAIL_BYTES:
+                handle.seek(-TAIL_BYTES, os.SEEK_END)
+                handle.readline()
+            raw = handle.readlines()[-MAX_LINES:]
+    except OSError as exc:
+        log.warn(f"logs: cannot read {path!r}: {exc}")
+        return {"signature": signature, "lines": []}
+    lines = []
+    for entry in reversed(raw):
+        parsed = _parse(entry.decode("utf-8", errors="replace"))
+        if parsed:
+            lines.append(parsed)
+    return {"signature": signature, "lines": lines}
 
 
 def _signature(path: str):
@@ -180,35 +338,7 @@ def _signature(path: str):
     return [stat.st_size, stat.st_mtime_ns]
 
 
-def _refresh(data: dict, force: bool = False) -> dict:
-    signature = _signature(data["path"])
-    if not force and signature == data.get("signature"):
-        return {"signature": signature, "lines": data["lines"]}
-    lines = _read_log(data["path"])
-    if data.get("follow", True):
-        data["offset"] = 0
-    return {"signature": signature, "lines": lines}
-
-
-def _read_log(path: str) -> list[dict]:
-    try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as handle:
-            if size > TAIL_BYTES:
-                handle.seek(-TAIL_BYTES, os.SEEK_END)
-                handle.readline()
-            raw_lines = handle.readlines()[-MAX_LINES:]
-    except OSError:
-        return []
-    parsed = []
-    for raw in reversed(raw_lines):
-        item = _parse(raw.decode("utf-8", errors="replace"))
-        if item:
-            parsed.append(item)
-    return parsed
-
-
-def _parse(raw: str) -> dict | None:
+def _parse(raw: str) -> "dict | None":
     match = LOG_RE.match(raw.rstrip())
     if not match:
         return None
@@ -216,44 +346,18 @@ def _parse(raw: str) -> dict | None:
     return {"time": time, "level": level, "target": target, "message": message}
 
 
-def _filtered(data: dict) -> list[dict]:
-    lines = data["lines"]
-    if data["filter"] != "ALL":
-        lines = [line for line in lines if line["level"] == data["filter"]]
-    query = data["query"].lower().strip()
-    if query:
-        lines = [
-            line
-            for line in lines
-            if query in line["target"].lower() or query in line["message"].lower()
-        ]
-    return lines
-
-
-def _visible_text(data: dict) -> str:
-    lines = _filtered(data)
-    if not lines:
-        return f"No log entries at {data['path']}"
-    offset = min(data["offset"], _max_offset(data))
-    visible = lines[offset : offset + VISIBLE_LINES]
-    return "\n".join(
-        f"{line['time']} {line['level']:<5} {line['target']:<24} {line['message']}"
-        for line in visible
-    )
-
-
-def _max_offset(data: dict) -> int:
-    return max(0, len(_filtered(data)) - VISIBLE_LINES)
+# ── Chrome text ─────────────────────────────────────────────────────────────
 
 
 def _subtitle(data: dict) -> str:
-    parts = [data["filter"]]
+    parts = [data["level"]]
+    if data["target"] != "ALL":
+        parts.append(f"@{data['target']}")
     if data["query"]:
         parts.append(f"/{data['query']}")
-    if data["follow"]:
-        parts.append("follow")
+    parts.append(data["order"])
     return " · ".join(parts)
 
 
 def _status(data: dict) -> str:
-    return f"{len(_filtered(data))} lines"
+    return f"{data['channel']} · {len(_filtered(data))} lines · {data['path']}"
