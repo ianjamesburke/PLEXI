@@ -13,87 +13,34 @@ pub struct ParsedCommand {
     pub args: String,
 }
 
-/// The built-in command table from the spec: `(name, purpose)`.
-/// `/clear`, `/new`, and `/help` are implemented in Phase 1; the rest are
-/// recognized and answered with a "not yet implemented" assistant row.
+/// The built-in command table: `(name, purpose)`. Every entry maps to a real
+/// handler in `AssistantModel::execute_command`; unimplemented ideas live in
+/// stint tasks and `docs/assistant-host-app.md`, never in this surface.
 pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
-    (
-        "help",
-        "Show built-in commands, installed skills, and tool packs.",
-    ),
+    ("help", "List the built-in commands."),
     ("clear", "Start a new conversation in the same workspace."),
-    ("resume", "Open a previous Assistant session."),
-    (
-        "compact",
-        "Summarize older turns and keep the active task context.",
-    ),
-    (
-        "context",
-        "Show token use, loaded instructions, active pane/app context, and enabled tools.",
-    ),
-    ("memory", "Show agent prompt files and future memory state."),
-    (
-        "model",
-        "Switch model tier or backend for this session/agent.",
-    ),
-    ("effort", "Switch reasoning effort for this session/agent."),
-    ("agent", "Switch, inspect, create, or edit agents."),
-    ("settings", "Open Assistant settings."),
-    ("config", "Alias for /settings."),
-    (
-        "permissions",
-        "Open grant rules, pending grants, denied tools, and audit history.",
-    ),
-    (
-        "tools",
-        "Show enabled host tools, app connectors, MCP tools, and tool collections.",
-    ),
-    ("apps", "Show app connectors available in the workspace."),
-    (
-        "skills",
-        "Show installed skills and marketplace skill packs.",
-    ),
-    (
-        "install",
-        "Install a local or marketplace skill/tool/agent package.",
-    ),
-    ("hooks", "Show lifecycle hooks and their source."),
-    (
-        "audit",
-        "Show recent Assistant tool calls, grants, app writes, and denied attempts.",
-    ),
-    ("revoke", "Revoke a persisted grant by target id."),
-    ("export", "Export the current transcript and tool-call log."),
-    (
-        "rewind",
-        "Restore the conversation to an earlier checkpoint.",
-    ),
     (
         "new",
         "Create a new named conversation without deleting the current one.",
     ),
     (
-        "history",
-        "Open conversation history and checkpoint browser.",
+        "tools",
+        "Show app connector tools and event streams with their broker decisions.",
+    ),
+    ("apps", "Show app connectors available in the workspace."),
+    (
+        "permissions",
+        "Show persisted grants for the assistant actor.",
+    ),
+    ("revoke", "Revoke a persisted grant by target id."),
+    (
+        "audit",
+        "Show recent Assistant tool calls, grants, app writes, and denied attempts.",
     ),
     (
         "thoughts",
         "Show or hide the model's reasoning for every turn.",
     ),
-];
-
-/// Commands with a real implementation (Phase 1: help/clear/new; Phase 2:
-/// tools/permissions/revoke/audit). Everything else in `BUILT_IN_COMMANDS`
-/// is recognized but stubbed.
-pub const IMPLEMENTED_COMMANDS: &[&str] = &[
-    "help",
-    "clear",
-    "new",
-    "tools",
-    "permissions",
-    "revoke",
-    "audit",
-    "thoughts",
 ];
 
 /// Parse `input` as a slash command. Returns `None` when the input is not a
@@ -136,22 +83,12 @@ pub fn filter_commands(query: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-/// True if `name` appears in the built-in command table.
-pub fn is_builtin(name: &str) -> bool {
-    BUILT_IN_COMMANDS.iter().any(|(n, _)| *n == name)
-}
-
 /// Render the `/help` listing as markdown (the transcript renders assistant
 /// rows through CommonMark).
 pub fn help_text() -> String {
     let mut out = String::from("**Built-in commands:**\n\n");
     for (name, purpose) in BUILT_IN_COMMANDS {
-        let status = if IMPLEMENTED_COMMANDS.contains(name) {
-            ""
-        } else {
-            " (not yet implemented)"
-        };
-        out.push_str(&format!("- `/{name}` — {purpose}{status}\n"));
+        out.push_str(&format!("- `/{name}` — {purpose}\n"));
     }
     out
 }
@@ -202,7 +139,7 @@ mod tests {
     fn unrecognized_name_still_parses() {
         let cmd = parse_slash_command("/frobnicate now").unwrap();
         assert_eq!(cmd.name, "frobnicate");
-        assert!(!is_builtin(&cmd.name));
+        assert!(!BUILT_IN_COMMANDS.iter().any(|(n, _)| *n == cmd.name));
     }
 
     #[test]
@@ -232,11 +169,14 @@ mod tests {
     }
 
     #[test]
-    fn builtin_table_covers_phase1_commands() {
-        for name in IMPLEMENTED_COMMANDS {
-            assert!(is_builtin(name), "{name} missing from BUILT_IN_COMMANDS");
+    fn help_lists_every_builtin_and_marks_none_unimplemented() {
+        let help = help_text();
+        for (name, _) in BUILT_IN_COMMANDS {
+            assert!(help.contains(&format!("/{name}")), "{name} missing from /help");
         }
-        assert!(help_text().contains("/clear"));
-        assert!(help_text().contains("not yet implemented"));
+        assert!(
+            !help.contains("not yet implemented"),
+            "no built-in should advertise itself as unimplemented"
+        );
     }
 }
