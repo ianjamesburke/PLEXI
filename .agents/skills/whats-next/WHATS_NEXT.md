@@ -44,11 +44,10 @@ A stranger installs, an agent builds an app first try, a free reviewed app insta
   - `0296` canonicalize the core app install set (blocked by done `0277`)
     - `0334` core-app cull + exemplar conformance sweep (delete POCs, survivors pass all gates; stats gauge fixes)
   - `0328` SDK component coverage audit (Polaris-class vocabulary, intrinsic size contract, `SetShortcuts` native chrome) — **ready**
-- **First-user surface** (onboarding `0324` and website `0272` landed 2026-07-01)
+- **First-user surface** (onboarding `0324`, website `0272`, registry go-live `0345` landed — prod registry is live, installs E2E; website auto-deploys from alpha, `just website-smoke` verifies)
   - `0280` palette scroll regression (PR `#2314` needs validation/merge decision) — **P0**
-  - `0345` website deploy pipeline + registry go-live + prod smoke (prod 404s on the registry today) — **ready**
-    - `0346` publish the Core app set to the hosted registry (also after `0334`; the catalog a first user sees)
-- **First-user critical path:** validate + merge `#2314`, land `0345` -> share.
+  - `0346` publish the Core app set to the hosted registry (after `0334`; the catalog a first user sees)
+- **First-user critical path:** validate + merge `#2314` -> share.
 
 ### Epoch 2 — Intelligence (NORTH_STAR Phase 3; runs parallel to Epoch 3)
 
