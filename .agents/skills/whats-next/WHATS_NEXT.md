@@ -67,7 +67,7 @@ The registry brokers money; never a dependency for running installed apps. Spec:
     - `0322` host: account-gated paid downloads (also after `0340`)
       - `0341` marketplace app + paywall handoff (also after `0327`)
   - `0340` host `plexi account` CLI + license-machinery deletion
-  - `0342` publisher submission pipeline + review queue (`plexi app publish` → admin approval; also after `0339`)
+  - `0344` publisher submission pipeline + review queue (`plexi app publish` → admin approval; also after `0339`)
   - `0323` Plexi-managed `ai.query` backend (also after `0339`)
 - `0325` app/agent/skill package envelope spec — unblocked
 

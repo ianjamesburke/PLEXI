@@ -1,7 +1,7 @@
 # Marketplace Monetization: Accounts, Payments, and the No-License Model
 
 Status: active.
-Stint: 0338–0342 (execution), 0322 (re-scoped), 0323/0325 (downstream).
+Stint: 0338–0341 + 0344 (execution), 0322 (re-scoped), 0323/0325 (downstream).
 Parent: [`app-framework-marketplace.md`](app-framework-marketplace.md). Supersedes §4 of [`marketplace-hosted.md`](marketplace-hosted.md) (the 0021 paid-apps section) and fills the named billing placeholders in its §5.4. Everything else in `marketplace-hosted.md` stands.
 
 This is the commercial-launch design doc: how paid apps are sold, how accounts work, how money moves, and why there is no client-side licensing. It resolves every open decision in stint 0315.
@@ -99,7 +99,7 @@ Fills the named placeholders in `marketplace-hosted.md` §5.4 (mechanics live th
 
 ## Publishing and Review
 
-Review policy lives in `marketplace-hosted.md` §3 and is unchanged (one validator, two call sites; mandatory human review; submitted → in review → approved / changes requested / rejected). What this spec adds is the enforcement shape: **no path exists from a publisher to the registry except through approval.** `plexi app publish` (account required) uploads to a private submissions area; the server re-runs the validator; the operator approves in an allowlisted admin surface on plexiapp.com; approval is the only registry write, for free and paid apps alike. The registry index is served from the database at the existing URL; the git-committed registry remains as the bootstrap/smoke fixture. Stint: 0342.
+Review policy lives in `marketplace-hosted.md` §3 and is unchanged (one validator, two call sites; mandatory human review; submitted → in review → approved / changes requested / rejected). What this spec adds is the enforcement shape: **no path exists from a publisher to the registry except through approval.** `plexi app publish` (account required) uploads to a private submissions area; the server re-runs the validator; the operator approves in an allowlisted admin surface on plexiapp.com; approval is the only registry write, for free and paid apps alike. The registry index is served from the database at the existing URL; the git-committed registry remains as the bootstrap/smoke fixture. Stint: 0344.
 
 ## Future: Credits (Penciled In, Not Built)
 
