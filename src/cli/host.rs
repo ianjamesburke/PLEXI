@@ -324,7 +324,7 @@ fn wait_for_ready(socket_path: &Path, timeout: Duration, channel: Option<&str>) 
 /// Write one spawn-queue JSON file for `spec`, matching the schema
 /// `open.rs`'s fallback (no-`PLEXI_SOCKET`) spawn path writes and
 /// `drain_spawn_queue` reads: `type_id`, `args`, `layout`, `cwd`.
-fn seed_pane(queue_dir: &Path, index: usize, spec: &PaneSpec) -> Result<(), String> {
+fn seed_pane(queue_dir: &Path, index: usize, spec: &PaneSpec) -> Result<PathBuf, String> {
     let layout = placement_to_layout(spec)?;
     let args: Vec<String> = spec.cmd.clone().into_iter().collect();
     let payload = serde_json::json!({
@@ -345,7 +345,7 @@ fn seed_pane(queue_dir: &Path, index: usize, spec: &PaneSpec) -> Result<(), Stri
         spec.cwd,
         spec.cmd.is_some()
     );
-    Ok(())
+    Ok(file)
 }
 
 /// Collect the ordered pane list from `--layout <file>` (its `[[pane]]`
@@ -382,6 +382,19 @@ pub fn host_start_cli(layout_file: Option<&str>, panes: &[String], timeout_secs:
             return 1;
         }
     };
+    // Validate every spec's placement before writing anything to the
+    // spawn-queue. Codex review (attempt 1 fix) flagged that writing specs
+    // one at a time let an earlier valid pane's JSON file survive a later
+    // spec's validation failure — the next unrelated `host start` (or any
+    // `plexi` launch) would then drain and open that stale, half-seeded
+    // layout. Fail the whole batch atomically instead.
+    for spec in &specs {
+        if let Err(e) = placement_to_layout(spec) {
+            log::error!("host_start: {e}");
+            eprintln!("error: {e}");
+            return 1;
+        }
+    }
 
     let (channel, bundle_path, binary_path) = resolve_channel_paths();
     let socket_path = host_config_dir(channel.as_deref()).join("notify.sock");
@@ -426,11 +439,18 @@ pub fn host_start_cli(layout_file: Option<&str>, panes: &[String], timeout_secs:
         eprintln!("error: could not create spawn queue: {e}");
         return 1;
     }
+    let mut seeded_files = Vec::with_capacity(specs.len());
     for (i, spec) in specs.iter().enumerate() {
-        if let Err(e) = seed_pane(&queue_dir, i, spec) {
-            log::error!("host_start: {e}");
-            eprintln!("error: {e}");
-            return 1;
+        match seed_pane(&queue_dir, i, spec) {
+            Ok(file) => seeded_files.push(file),
+            Err(e) => {
+                log::error!("host_start: {e} — removing {} already-seeded file(s)", seeded_files.len());
+                for f in &seeded_files {
+                    let _ = std::fs::remove_file(f);
+                }
+                eprintln!("error: {e}");
+                return 1;
+            }
         }
     }
 
