@@ -12,6 +12,8 @@ Task creation flow only. Do not implement anything. The goal is a single, well-s
 
 Stint is the operating graph. Sprint order, size, blocking, and area tags. A task without correct metadata derails `stint next` and bottleneck analysis.
 
+The stint task body owns all implementation detail and acceptance criteria. `WHATS_NEXT.md` only ever carries the task ID plus a one-line outcome framing — see the Inclusion Rule in the `whats-next` skill for what qualifies an ID to appear there.
+
 ---
 
 ## Step 1 -- Duplicate Check

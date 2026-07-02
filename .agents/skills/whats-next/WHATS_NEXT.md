@@ -8,7 +8,7 @@
 
 ## Current State (2026-07-01)
 
-`alpha` is merged at `7ddb7c3e` (workspace secrets, #2354). The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry smoke path, secrets) is landed — see `docs/DEVLOG.md`. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at `caac0a29`. Since the last audit: first-run AI onboarding (`0324`, #2355) and the website visual refresh (`0272`, #2356) landed. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry smoke path, secrets, onboarding, website) is landed — see `docs/DEVLOG.md`. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
@@ -20,7 +20,7 @@ Open PRs that affect priority reading:
 - `#2282` open: collapsible subcontexts (`0241`), currently has a failed build check.
 - `#1604` open: Windows port from external branch.
 
-Not real yet: license-aware update gating (`0322`), managed `ai.query` backend (`0323`), package envelope (`0325`), first-run onboarding (`0324`), public website refresh (`0272`).
+Not real yet: license-aware update gating (`0322`), managed `ai.query` backend (`0323`), package envelope (`0325`).
 
 ---
 
@@ -42,11 +42,9 @@ A stranger installs, an agent builds an app first try, a free reviewed app insta
   - `0296` canonicalize the core app install set (blocked by done `0277`)
     - `0334` core-app cull + exemplar conformance sweep (delete POCs, survivors pass all gates; stats gauge fixes)
   - `0328` SDK component coverage audit (Polaris-class vocabulary, intrinsic size contract, `SetShortcuts` native chrome) — **ready**
-- **First-user surface**
-  - `0324` first-run onboarding (AI doctor/setup as first-run path) — **ready, user-facing P0**
+- **First-user surface** (onboarding `0324` and website `0272` landed 2026-07-01)
   - `0280` palette scroll regression (PR `#2314` needs validation/merge decision) — **P0**
-  - `0272` website refresh (`plexiapp.com`) — share publicly after this
-- **First-user critical path:** `0324` -> `0272` -> share.
+- **First-user critical path:** validate + merge `#2314` -> share.
 
 ### Epoch 2 — Intelligence (NORTH_STAR Phase 3; runs parallel to Epoch 3)
 
@@ -91,12 +89,12 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 
 ## Priority Stack (flat view)
 
-P0: `0330` (chain head), `0327`, `0324`, `0280`.
-P1: `0335`, `0331`*, `0328`, `0241` (PR needs fixing), `0315`, `0285`, `0272`, `0332`*.
+P0: `0330` (chain head), `0327`, `0280`.
+P1: `0335`, `0331`*, `0328`, `0241` (PR needs fixing), `0315`, `0285`, `0332`*.
 P2 and below: run `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0330` — heads the P0 DX chain; `0335` (logs) and `0324` (onboarding) are the parallel-friendly picks.
+**Next recommended task:** `0330` — heads the P0 DX chain; `0335` (logs) and `0327` (event bus) are the parallel-friendly picks.
 
 ---
 
