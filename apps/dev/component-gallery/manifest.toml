@@ -1,0 +1,21 @@
+schema_version = 1
+
+[app]
+id = "component-gallery"
+type = "app"
+name = "Component Gallery"
+entry = "main.py"
+version = "0.1.0"
+description = "Reference gallery rendering every host-rendered SDK primitive (stint 0328)"
+watch = true
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+
+# Uncomment and fill in to publish with `plexi app publish`:
+# [marketplace]
+# visibility = "public"   # public | unlisted | private
+# price = "free"          # "free", or a price like "4.99"
+# publisher = "your-org"  # required: your publisher / org slug

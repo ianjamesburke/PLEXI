@@ -2375,6 +2375,299 @@ class ProgressBar:
         }
 
 
+# ── Native placeholder primitives (PGAP v3.5) ─────────────────────────────
+# Host-rendered vocabulary settled for the WASM era. Each class maps 1:1 to a
+# native ``UiNode`` variant in ``src/protocol/ui_nodes.rs`` and renders through
+# host metrics/chrome. Visual styling is deliberately minimal ("placeholder"):
+# the shape, PGAP encoding, and events are final; the chrome will be expanded.
+
+
+@dataclass
+class Checkbox(Component):
+    """Boolean checkbox. Fires a ``change`` event with the toggled ``checked``."""
+
+    node_id: str
+    label: str = ""
+    checked: bool = False
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "checkbox", "node_id": self.node_id, "label": self.label,
+                "checked": self.checked, "disabled": self.disabled}
+
+
+@dataclass
+class Radio(Component):
+    """Single-select radio group. Fires ``change`` with the picked index in ``value``."""
+
+    node_id: str
+    options: List[str] = field(default_factory=list)
+    selected: int = 0
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "radio", "node_id": self.node_id, "options": list(self.options),
+                "selected": self.selected, "disabled": self.disabled}
+
+
+@dataclass
+class Switch(Component):
+    """On/off switch. Fires ``change`` with the toggled ``on`` value."""
+
+    node_id: str
+    label: str = ""
+    on: bool = False
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "switch", "node_id": self.node_id, "label": self.label,
+                "on": self.on, "disabled": self.disabled}
+
+
+@dataclass
+class Slider(Component):
+    """Horizontal value slider. Clicking the track fires ``change`` with ``value``."""
+
+    node_id: str
+    value: float = 0.0
+    min: float = 0.0
+    max: float = 1.0
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "slider", "node_id": self.node_id, "value": self.value,
+                "min": self.min, "max": self.max, "disabled": self.disabled}
+
+
+@dataclass
+class Select(Component):
+    """Dropdown/combobox trigger. Clicking fires ``click``; the app owns the popover."""
+
+    node_id: str
+    options: List[str] = field(default_factory=list)
+    selected: int = 0
+    placeholder: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "select", "node_id": self.node_id, "options": list(self.options),
+                "selected": self.selected, "placeholder": self.placeholder}
+
+
+@dataclass
+class DateTimePicker(Component):
+    """Date/time picker trigger. Clicking fires ``click``; the app owns the popover.
+
+    ``mode`` is ``"date"``, ``"time"``, or ``"datetime"``.
+    """
+
+    node_id: str
+    value: str = ""
+    mode: str = "datetime"
+
+    def to_node(self) -> dict:
+        return {"type": "date_time_picker", "node_id": self.node_id,
+                "value": self.value, "mode": self.mode}
+
+
+@dataclass
+class Progress(Component):
+    """Progress bar. ``value`` is 0.0–1.0; set ``indeterminate`` for unknown work."""
+
+    value: float = 0.0
+    label: str = ""
+    indeterminate: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "progress", "value": self.value, "label": self.label,
+                "indeterminate": self.indeterminate}
+
+
+@dataclass
+class Spinner(Component):
+    """Loading spinner with an optional caption."""
+
+    label: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "spinner", "label": self.label}
+
+
+@dataclass
+class Tooltip(Component):
+    """Hover tooltip wrapping a single child component."""
+
+    text: str
+    child: Component
+
+    def to_node(self) -> dict:
+        return {"type": "tooltip", "text": self.text, "child": self.child.to_node()}
+
+
+@dataclass
+class Avatar(Component):
+    """Circular avatar rendering the initials of ``label``."""
+
+    label: str = ""
+    size: float = 0.0
+
+    def to_node(self) -> dict:
+        return {"type": "avatar", "label": self.label, "size": self.size}
+
+
+@dataclass
+class Icon(Component):
+    """Named glyph icon. ``name`` is a semantic key resolved by the host."""
+
+    name: str
+    size: float = 0.0
+    color: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "icon", "name": self.name, "size": self.size, "color": self.color}
+
+
+@dataclass
+class CodeBlock(Component):
+    """Monospace code block with an optional ``language`` label."""
+
+    code: str
+    language: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "code_block", "code": self.code, "language": self.language}
+
+
+@dataclass
+class Table(Component):
+    """Static data table with column headers and string cells."""
+
+    columns: List[str] = field(default_factory=list)
+    rows: List[List[str]] = field(default_factory=list)
+
+    def to_node(self) -> dict:
+        return {"type": "table", "columns": list(self.columns),
+                "rows": [[str(c) for c in row] for row in self.rows]}
+
+
+@dataclass
+class Banner(Component):
+    """Inline banner/callout. ``tone`` is info/success/warning/danger."""
+
+    text: str
+    tone: str = "info"
+    title: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "banner", "text": self.text, "tone": self.tone, "title": self.title}
+
+
+@dataclass
+class KeyValue(Component):
+    """Key/value description list. ``rows`` is a list of ``(key, value)`` pairs."""
+
+    rows: List = field(default_factory=list)
+
+    def to_node(self) -> dict:
+        out = []
+        for row in self.rows:
+            if isinstance(row, dict):
+                out.append({"key": str(row.get("key", "")), "value": str(row.get("value", ""))})
+            else:
+                key, value = row
+                out.append({"key": str(key), "value": str(value)})
+        return {"type": "key_value", "rows": out}
+
+
+@dataclass
+class Breadcrumb(Component):
+    """Breadcrumb trail; the last item is the current location."""
+
+    items: List[str] = field(default_factory=list)
+
+    def to_node(self) -> dict:
+        return {"type": "breadcrumb", "items": [str(i) for i in self.items]}
+
+
+@dataclass
+class Pagination(Component):
+    """Pagination control. Prev/next fire ``change`` with the new zero-based page in ``value``."""
+
+    node_id: str
+    page: int = 0
+    total: int = 0
+
+    def to_node(self) -> dict:
+        return {"type": "pagination", "node_id": self.node_id,
+                "page": self.page, "total": self.total}
+
+
+@dataclass
+class Accordion(Component):
+    """Disclosure/accordion. The header fires ``click``; ``child`` shows when ``open``."""
+
+    node_id: str
+    title: str
+    child: Component
+    open: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "accordion", "node_id": self.node_id, "title": self.title,
+                "open": self.open, "child": self.child.to_node()}
+
+
+@dataclass
+class TabBar(Component):
+    """Native tab strip (headers only). Selecting a tab fires ``change`` with the index in ``value``.
+
+    The app renders the active tab's body itself. Distinct from :class:`Tabs`,
+    which decomposes to L0 nodes; ``TabBar`` maps to the native ``tabs`` node.
+    """
+
+    node_id: str
+    tabs: List[str] = field(default_factory=list)
+    active: int = 0
+
+    def to_node(self) -> dict:
+        return {"type": "tabs", "node_id": self.node_id,
+                "tabs": [str(t) for t in self.tabs], "active": self.active}
+
+
+@dataclass
+class EmptyState(Component):
+    """Empty-state placeholder with a title, optional description and icon token."""
+
+    title: str
+    description: str = ""
+    icon: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "empty_state", "title": self.title,
+                "description": self.description, "icon": self.icon}
+
+
+@dataclass
+class Skeleton(Component):
+    """Skeleton loading placeholder — ``rows`` shimmer bars of the given ``height``."""
+
+    rows: int = 3
+    height: float = 0.0
+
+    def to_node(self) -> dict:
+        return {"type": "skeleton", "rows": self.rows, "height": self.height}
+
+
+@dataclass
+class Modal(Component):
+    """Modal dialog wrapping a child body. The close affordance fires ``click``."""
+
+    node_id: str
+    title: str
+    child: Component
+
+    def to_node(self) -> dict:
+        return {"type": "modal", "node_id": self.node_id, "title": self.title, "child": self.child.to_node()}
+
+
 __all__ = [
     # tokens
     "SPACE_XS", "SPACE_SM", "SPACE_MD", "SPACE_LG", "SPACE_XL",
@@ -2401,4 +2694,9 @@ __all__ = [
     "ListRow", "RowChip", "LeadingBadge", "LeadingAvatar", "LeadingIcon",
     # UiNode component tree (PGAP v3.5)
     "Tabs", "Grid", "Toggle", "Clickable", "ProgressBar",
+    # native placeholder primitives (PGAP v3.5)
+    "Checkbox", "Radio", "Switch", "Slider", "Select", "DateTimePicker",
+    "Progress", "Spinner", "Tooltip", "Avatar", "Icon", "CodeBlock", "Table",
+    "Banner", "KeyValue", "Breadcrumb", "Pagination", "Accordion", "TabBar",
+    "EmptyState", "Skeleton", "Modal",
 ]
