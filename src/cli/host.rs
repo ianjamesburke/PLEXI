@@ -9,9 +9,15 @@
 //! in-pane CLI command.
 //!
 //! `host start` seeds panes via the same spawn-queue directory `plexi open`
-//! and `plexi pane new` use outside a pane (`config_dir().join("spawn-queue")`),
+//! and `plexi pane new` use outside a pane (`host_config_dir(channel).join("spawn-queue")`),
 //! so no new host-side boot protocol is introduced — `drain_spawn_queue()`
 //! picks the seeded panes up on the launched app's first frame.
+//!
+//! All channel-scoped paths here go through `host_config_dir(channel)`, not
+//! `crate::config::config_dir()` — the latter prefers an inherited
+//! `PLEXI_CHANNEL` env var over the running binary's own name, which would
+//! let `host start/stop/status` silently target the wrong channel's profile
+//! when invoked from inside a pane.
 
 use serde::Deserialize;
 use std::io::Write;
@@ -151,6 +157,26 @@ pub(crate) fn filter_child_env(
     env
 }
 
+/// The channel-scoped profile dir (`~/.plexi<-suffix>`) for `channel`, e.g.
+/// `None` → `~/.plexi`, `Some("alpha")` → `~/.plexi-alpha`.
+///
+/// Deliberately does **not** call `crate::config::config_dir()`, which
+/// prefers `PLEXI_CHANNEL` from the environment over the running binary's
+/// own name. `host start/stop/status` can be invoked from inside a pane
+/// (e.g. an agent driving a nested PR-channel test), where the calling
+/// pane's `PLEXI_CHANNEL` would silently redirect every socket/spawn-queue
+/// path to the wrong channel's profile — the exact leak trap this command
+/// exists to eliminate (see root CLAUDE.md Traps: "`PLEXI_CHANNEL` leaks
+/// into app tooling"). This function always derives the profile dir from
+/// `channel`, which callers resolve once via `resolve_channel_paths()`
+/// (binary-basename-only, ignoring env).
+fn host_config_dir(channel: Option<&str>) -> PathBuf {
+    let suffix = channel.map(|c| format!("-{c}")).unwrap_or_default();
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(format!(".plexi{suffix}"))
+}
+
 /// Resolve the app bundle + binary-inside-bundle paths for the *running CLI
 /// binary's own channel* (never `PLEXI_CHANNEL` — that env var is exactly
 /// what must be stripped from the launched child).
@@ -249,10 +275,12 @@ fn poll_response_file(response_file: &str, timeout: Duration) -> Result<String, 
 /// One-shot readiness/pane-count query: connect to `notify.sock`, send
 /// `AppRequest::ListPanes`, and wait up to 5s for the JSON array response.
 /// `None` means either the socket is not reachable (host not running) or the
-/// round trip did not complete in time.
-fn query_ready_status(socket_path: &Path) -> Option<usize> {
+/// round trip did not complete in time. `channel` picks the response-file
+/// directory via `host_config_dir` — never the (possibly env-shadowed)
+/// `config::config_dir()`.
+fn query_ready_status(socket_path: &Path, channel: Option<&str>) -> Option<usize> {
     let mut stream = UnixStream::connect(socket_path).ok()?;
-    let response_file = crate::config::config_dir()
+    let response_file = host_config_dir(channel)
         .join(format!("host-status-{}.json", uuid::Uuid::new_v4()))
         .to_string_lossy()
         .into_owned();
@@ -271,12 +299,12 @@ fn query_ready_status(socket_path: &Path) -> Option<usize> {
 /// Retry `query_ready_status` until it answers or `timeout` elapses. Used
 /// after spawning the bundle process — the socket listener thread may not be
 /// bound yet on the first attempt.
-fn wait_for_ready(socket_path: &Path, timeout: Duration) -> Result<usize, String> {
+fn wait_for_ready(socket_path: &Path, timeout: Duration, channel: Option<&str>) -> Result<usize, String> {
     let start = Instant::now();
     let deadline = start + timeout;
     log::info!("host_start: readiness poll start socket={socket_path:?} timeout={timeout:?}");
     loop {
-        if let Some(count) = query_ready_status(socket_path) {
+        if let Some(count) = query_ready_status(socket_path, channel) {
             log::info!(
                 "host_start: readiness poll end — ready in {:?}, pane_count={count}",
                 start.elapsed()
@@ -355,7 +383,8 @@ pub fn host_start_cli(layout_file: Option<&str>, panes: &[String], timeout_secs:
         }
     };
 
-    let socket_path = crate::config::config_dir().join("notify.sock");
+    let (channel, bundle_path, binary_path) = resolve_channel_paths();
+    let socket_path = host_config_dir(channel.as_deref()).join("notify.sock");
     log::info!("host_start: socket={socket_path:?} pane_count={}", specs.len());
 
     if matches!(probe_notify_socket(&socket_path), RunningState::Running) {
@@ -374,7 +403,6 @@ pub fn host_start_cli(layout_file: Option<&str>, panes: &[String], timeout_secs:
         return 1;
     }
 
-    let (channel, bundle_path, binary_path) = resolve_channel_paths();
     if !bundle_path.exists() {
         log::error!("host_start: bundle not found at {bundle_path:?}");
         eprintln!(
@@ -392,7 +420,7 @@ pub fn host_start_cli(layout_file: Option<&str>, panes: &[String], timeout_secs:
         return 1;
     }
 
-    let queue_dir = crate::config::config_dir().join("spawn-queue");
+    let queue_dir = host_config_dir(channel.as_deref()).join("spawn-queue");
     if let Err(e) = std::fs::create_dir_all(&queue_dir) {
         log::error!("host_start: could not create spawn-queue dir {queue_dir:?}: {e}");
         eprintln!("error: could not create spawn queue: {e}");
@@ -441,7 +469,7 @@ pub fn host_start_cli(layout_file: Option<&str>, panes: &[String], timeout_secs:
     log::info!("host_start: process spawned pid={} detached=true", child.id());
 
     let timeout = Duration::from_secs(timeout_secs.unwrap_or(15));
-    match wait_for_ready(&socket_path, timeout) {
+    match wait_for_ready(&socket_path, timeout, channel.as_deref()) {
         Ok(count) => {
             println!(
                 "Plexi host started (pid {}), {count} pane(s) ready.",
@@ -461,9 +489,10 @@ pub fn host_start_cli(layout_file: Option<&str>, panes: &[String], timeout_secs:
 /// (`AppRequest::Shutdown`), falling back to `kill -TERM <pid>` (pid via
 /// `lsof -t`) if the socket doesn't confirm exit within a short timeout.
 pub fn host_stop_cli() -> i32 {
-    let socket_path = crate::config::config_dir().join("notify.sock");
+    let channel = crate::config::build_channel();
+    let socket_path = host_config_dir(channel.as_deref()).join("notify.sock");
     let pid = detect_pid(&socket_path);
-    log::info!("host_stop: socket={socket_path:?} pid={pid:?}");
+    log::info!("host_stop: channel={channel:?} socket={socket_path:?} pid={pid:?}");
 
     match UnixStream::connect(&socket_path) {
         Ok(mut stream) => {
@@ -554,11 +583,14 @@ pub fn host_stop_cli() -> i32 {
 
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
 pub fn host_status_cli(json: bool) -> i32 {
-    let socket_path = crate::config::config_dir().join("notify.sock");
+    let channel = crate::config::build_channel();
+    let socket_path = host_config_dir(channel.as_deref()).join("notify.sock");
     let pid = detect_pid(&socket_path);
-    let pane_count = query_ready_status(&socket_path);
+    let pane_count = query_ready_status(&socket_path, channel.as_deref());
     let ready = pane_count.is_some();
-    log::info!("host_status: pid={pid:?} socket={socket_path:?} ready={ready} pane_count={pane_count:?}");
+    log::info!(
+        "host_status: channel={channel:?} pid={pid:?} socket={socket_path:?} ready={ready} pane_count={pane_count:?}"
+    );
 
     if json {
         let payload = serde_json::json!({
@@ -745,6 +777,32 @@ mod tests {
             env.iter().all(|(k, _)| k != "PLEXI_CHANNEL"),
             "main channel must never inherit a stale PLEXI_CHANNEL: {env:?}"
         );
+    }
+
+    // ── host_config_dir ─────────────────────────────────────────────────
+
+    #[test]
+    fn host_config_dir_depends_only_on_channel_argument() {
+        // Regression for a P1 found in Codex review of stint 0342: host
+        // start/stop/status must resolve their profile dir from the
+        // resolved binary channel only, never from an inherited
+        // PLEXI_CHANNEL env var (e.g. when run from inside a
+        // differently-channeled pane). Unlike `config::config_dir()`,
+        // `host_config_dir` reads no environment or global state at all —
+        // calling it twice with the same argument from concurrent test
+        // threads (this suite runs threaded) must always agree, which
+        // would not hold if it consulted process env underneath.
+        assert_eq!(host_config_dir(Some("alpha")), host_config_dir(Some("alpha")));
+        assert!(
+            host_config_dir(Some("alpha")).ends_with(".plexi-alpha"),
+            "expected .plexi-alpha profile dir"
+        );
+    }
+
+    #[test]
+    fn host_config_dir_main_channel_has_no_suffix() {
+        let dir = host_config_dir(None);
+        assert!(dir.ends_with(".plexi"), "expected .plexi profile dir, got {dir:?}");
     }
 
     // ── collect_pane_specs ordering ───────────────────────────────────────
