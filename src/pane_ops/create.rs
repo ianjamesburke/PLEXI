@@ -1389,7 +1389,12 @@ impl PlexiApp {
         let keyboard_capture = installed.launch.keyboard_capture;
         let app_id = installed.manifest.id.clone();
 
-        let layout_hint = layout.or_else(|| Some("overlay".to_string()));
+        let manifest_placement = installed
+            .launch
+            .placement
+            .clone()
+            .filter(|p| crate::app::registry::VALID_PLACEMENTS.contains(&p.as_str()));
+        let layout_hint = Some(cli_open_placement(layout, manifest_placement));
 
         let cwd = self
             .resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
@@ -1772,6 +1777,23 @@ impl PlexiApp {
     }
 }
 
+/// Resolve the pane placement for a CLI- or spawn-request-initiated app open.
+///
+/// The caller's pane is typically the agent's own terminal, so a CLI open must
+/// never take over it (`overlay`). Precedence: an explicit layout from the
+/// command flag, then the app's manifest `[launch] placement`, then a sibling
+/// split (`split_h`). Manifest placement still overrides the default; only the
+/// fallback changed from `overlay` to `split_h` (stint 0330). `manifest_placement`
+/// must already be validated against [`crate::app::registry::VALID_PLACEMENTS`].
+pub(crate) fn cli_open_placement(
+    explicit: Option<String>,
+    manifest_placement: Option<String>,
+) -> String {
+    explicit
+        .or(manifest_placement)
+        .unwrap_or_else(|| "split_h".to_string())
+}
+
 /// Returns `true` if a binary named `name` exists in any directory on `PATH`.
 /// Used to detect when an installed Plexi app shadows a same-named CLI binary.
 fn cli_binary_in_path(name: &str) -> bool {
@@ -1787,6 +1809,30 @@ mod tests {
     use crate::host::pane::{AppRuntime, Pane};
     use crate::process_app::ProcessApp;
     use crate::testing::HostHarness;
+
+    #[test]
+    fn cli_open_placement_defaults_to_sibling_split() {
+        // No explicit flag, no manifest placement → sibling split, never overlay.
+        assert_eq!(cli_open_placement(None, None), "split_h");
+    }
+
+    #[test]
+    fn cli_open_placement_manifest_overrides_default() {
+        // Manifest `[launch] placement` overrides the split default...
+        assert_eq!(
+            cli_open_placement(None, Some("overlay".to_string())),
+            "overlay"
+        );
+    }
+
+    #[test]
+    fn cli_open_placement_explicit_flag_wins_over_manifest() {
+        // ...and an explicit command flag wins over the manifest.
+        assert_eq!(
+            cli_open_placement(Some("tab".to_string()), Some("overlay".to_string())),
+            "tab"
+        );
+    }
 
     fn write_sleeping_process_app(app_dir: &std::path::Path, id: &str) {
         std::fs::create_dir_all(app_dir).expect("create app dir");

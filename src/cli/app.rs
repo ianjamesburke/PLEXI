@@ -104,10 +104,18 @@ pub fn app_init(
         return 1;
     }
 
+    // `lang` is constrained by the CLI `value_parser` (see AppCmd::Init); an
+    // unlisted value never reaches here. The explicit arms keep the mapping
+    // total so a newly added language can't silently fall back to Python.
     let result = match lang {
         "rust" => scaffold_rust_app(&app_dir, name),
         "python_agent" => scaffold_agent_python_app(&app_dir, name),
-        _ => scaffold_python_app(&app_dir, name),
+        "python" => scaffold_python_app(&app_dir, name),
+        other => {
+            log::error!("app_init: no scaffold implemented for --lang '{other}'");
+            eprintln!("error: no scaffold implemented for --lang '{other}'");
+            return 1;
+        }
     };
 
     match result {

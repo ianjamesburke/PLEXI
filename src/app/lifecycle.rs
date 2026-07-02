@@ -1089,9 +1089,16 @@ impl PlexiApp {
                     } else {
                         (active, self.windows[active].focused_pane)
                     };
+                    // CLI/spawn-request app opens default to a sibling split, never
+                    // an overlay takeover of the caller's pane. Manifest `[launch]
+                    // placement` still overrides the default (stint 0330).
+                    let placement = crate::pane_ops::cli_open_placement(
+                        spec.layout.clone(),
+                        self.registry.placement_for(type_id),
+                    );
                     launch_result = self.launch_app_by_id_with_layout(
                         type_id,
-                        spec.layout.clone(),
+                        Some(placement),
                         &spec.args,
                         cwd_override,
                     );

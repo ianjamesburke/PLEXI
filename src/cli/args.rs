@@ -397,6 +397,11 @@ pub enum AppCmd {
     /// Pass an app id (e.g. `plexi app open snake`) or a path to an app directory
     /// containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli`
     /// to open any CLI tool with a Plexi UI.
+    ///
+    /// Default placement is a sibling split to the right — the calling pane is
+    /// never taken over. Pass a direction flag (--down/--left/--up/--right),
+    /// --tab, or --window to override; the app's manifest `[launch] placement`
+    /// applies when no flag is given.
     Open {
         /// App id or path to open (mutually exclusive with --mcp and --cli)
         #[arg(conflicts_with_all = ["mcp", "cli"])]
@@ -627,7 +632,9 @@ pub enum AppCmd {
 "#)]
     Init {
         name: String,
-        #[arg(long, default_value = "python")]
+        /// App language/template: `python` (declarative UI), `python_agent`
+        /// (agent-loop app), or `rust` (compiled native app).
+        #[arg(long, default_value = "python", value_parser = ["python", "python_agent", "rust"])]
         lang: String,
         /// Scaffold into the global app registry instead of the workspace
         #[arg(long)]
