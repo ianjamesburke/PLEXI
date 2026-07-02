@@ -450,6 +450,11 @@ pub enum AppCmd {
         /// Install from a pack file or 'core'
         #[arg(long)]
         pack: Option<String>,
+        /// With --pack: re-extract already-installed `local:` apps from this
+        /// binary's embedded tree, replacing the installed copy. The update
+        /// path for bundled core apps on stable channels.
+        #[arg(long, requires = "pack")]
+        refresh: bool,
         /// Pin a local path or package install to a specific version (e.g. --version 1.2.3).
         #[arg(long, value_name = "SEMVER")]
         version: Option<String>,

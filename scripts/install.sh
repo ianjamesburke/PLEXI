@@ -221,10 +221,35 @@ mv "$profile_dir/sdk/plexi_sdk" "$profile_dir/sdk/plexi_sdk.old" 2>/dev/null || 
 mv "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk"
 rm -rf "$profile_dir/sdk/plexi_sdk.old" "$profile_dir/sdk/plexi_sdk.py"
 find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-# Re-seed all production apps on every install; always sync dev apps on alpha/PR.
-rsync -a --exclude=dev/ apps/ "$profile_dir/apps/"
+# App-seeding policy is channel-gated (see scripts/AGENTS.md). packs/core.toml
+# is the single source of truth for the maintained/core app set.
+#   alpha / pr-*  → sync the full working tree so developers can exercise every
+#                   app immediately: all top-level app dirs, then the dev/ POCs
+#                   flattened to the top level.
+#   beta / main   → seed exactly the canonical set through the host's own pack
+#                   applier so no app list is duplicated in this script.
+#                   --refresh re-extracts already-installed core apps from the
+#                   new binary's embedded tree — this is how core-app updates
+#                   reach existing stable profiles (launch reseed only installs
+#                   missing apps). Example/demo apps seed only for a fresh
+#                   profile (apps_was_empty), matching the host's first-launch
+#                   behavior. POC apps under dev/ and non-pack demos never
+#                   reach stable channels.
 if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
+  rsync -a --exclude=dev/ apps/ "$profile_dir/apps/"
   rsync -a apps/dev/ "$profile_dir/apps/"
+else
+  bundled_bin="$app_dest/Contents/MacOS/plexi${suffix}"
+  # Unset any inherited PLEXI_CHANNEL (in-pane installs leak it) so the
+  # binary resolves its profile from its own basename — PLEXI_CHANNEL wins
+  # over the basename and would seed the wrong profile ("main" has no valid
+  # PLEXI_CHANNEL value, so setting it explicitly is not an option).
+  env -u PLEXI_CHANNEL "$bundled_bin" app install --pack core --refresh >/dev/null 2>&1 \
+    || echo "warning: core pack refresh failed — launch only installs missing apps; run 'plexi${suffix} app install --pack core --refresh' to update core apps"
+  if $apps_was_empty; then
+    env -u PLEXI_CHANNEL "$bundled_bin" app install --pack packs/examples.toml >/dev/null 2>&1 \
+      || echo "note: examples pack seed deferred to first launch"
+  fi
 fi
 find "$profile_dir/apps" -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
 find "$profile_dir/apps" -name '*.py' -exec chmod +x {} \;
@@ -320,7 +345,11 @@ fi
 echo "Installed $app_dest"
 echo "CLI: $bin_dest"
 echo "Config dir: $profile_dir/"
-echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from apps/"
+if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
+  echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from apps/ (dev channel: full tree)"
+else
+  echo "Apps: $(ls "$profile_dir/apps" 2>/dev/null | wc -l | tr -d ' ') seeded from canonical packs (stable channel)"
+fi
 if ! command -v micro &>/dev/null; then
   echo "tip: brew install micro — preferred editor for plexi notes open"
 fi

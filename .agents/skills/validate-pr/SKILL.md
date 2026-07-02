@@ -376,7 +376,7 @@ Read the PR build log first:
 ```bash
 tail -100 ~/.plexi-pr-$PR_NUMBER/plexi.log
 ```
-Report what the log shows.
+Report what the log shows. If the log alone can't reproduce the failure and you need to drive the live binary to confirm the fix, use the `drive-host` skill (boot → drive → observe → teardown) — do not hand-roll a launch.
 
 First run **Step 0b — Resume Guard After User Reply**. Do not inspect or edit production files until `cd "$WORKTREE"` has succeeded.
 
@@ -521,4 +521,5 @@ pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the d
 - Never run `test_pr<N>.py` yourself — it blocks on `plexi notify`; use direct Bash for automated checks
 - All subprocess calls in test script must use full absolute path to PR binary
 - Never include `tail` or log-reading in user-facing testing block — read the log yourself, report findings directly
+- When diagnosis needs the live binary driven (not just the log), use the `drive-host` skill — never hand-roll a host launch
 - Cosmetic issues spotted during testing go in separate issues — not blockers or modifies

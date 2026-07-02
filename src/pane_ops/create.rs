@@ -269,44 +269,48 @@ impl PlexiApp {
         };
 
         if matches!(hint, Some("overlay")) {
-            let Some(focused_tile) = self.windows[active].focused_pane else {
-                log::warn!("app::{app_id}: overlay launch skipped — no focused pane");
-                return None;
-            };
-            let Some(Tile::Pane(focused_pane_id)) =
-                self.windows[active].tree.tiles.get(focused_tile)
-            else {
-                log::warn!("app::{app_id}: overlay launch skipped — focused tile is not a pane");
-                return None;
-            };
-            let pane_id = *focused_pane_id;
-            let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
-                log::warn!(
-                    "app::{app_id}: overlay launch skipped — pane {pane_id} missing from pane map"
-                );
-                return None;
-            };
-            process.set_pane_id(pane_id);
-            self.windows[active].panes.insert(
-                pane_id,
-                new_app_pane(
+            if let Some(focused_tile) = self.windows[active].focused_pane {
+                let Some(Tile::Pane(focused_pane_id)) =
+                    self.windows[active].tree.tiles.get(focused_tile)
+                else {
+                    log::warn!(
+                        "app::{app_id}: overlay launch skipped — focused tile is not a pane"
+                    );
+                    return None;
+                };
+                let pane_id = *focused_pane_id;
+                let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
+                    log::warn!(
+                        "app::{app_id}: overlay launch skipped — pane {pane_id} missing from pane map"
+                    );
+                    return None;
+                };
+                process.set_pane_id(pane_id);
+                self.windows[active].panes.insert(
                     pane_id,
-                    process,
-                    workspace_root,
-                    group,
-                    None,
-                    Some(Box::new(replaced_pane)),
-                ),
+                    new_app_pane(
+                        pane_id,
+                        process,
+                        workspace_root,
+                        group,
+                        None,
+                        Some(Box::new(replaced_pane)),
+                    ),
+                );
+                self.set_window_focused_pane(active, focused_tile);
+                log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
+                crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+                    app_id: app_id.to_string(),
+                    type_id: app_id.to_string(),
+                    pane_id,
+                    timestamp: crate::host::event_log::now_timestamp(),
+                });
+                return Some(pane_id);
+            }
+            log::info!(
+                "app::{app_id}: overlay requested but empty context — launching as root pane"
             );
-            self.set_window_focused_pane(active, focused_tile);
-            log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
-            crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
-                app_id: app_id.to_string(),
-                type_id: app_id.to_string(),
-                pane_id,
-                timestamp: crate::host::event_log::now_timestamp(),
-            });
-            return Some(pane_id);
+            // fall through to root-pane path below
         }
 
         if self.windows[active].zoomed_pane.take().is_some() {
@@ -2476,10 +2480,12 @@ mod tests {
         assert!(result.is_some(), "overlay launch must return Some(pane_id)");
     }
 
-    /// Regression guard for issue #1706: overlay launch with no focused pane returns
-    /// None (nothing was created) so callers do not try to start a watcher.
+    /// Regression guard for stint 0311: launching an app via overlay hint (the
+    /// default layout for Cmd+P) when no pane is open must not be a silent no-op.
+    /// With an empty context the overlay path falls through to the root-pane path,
+    /// installs the app as the tree root, and returns its pane id.
     #[test]
-    fn open_process_app_pane_overlay_no_focused_pane_returns_none() {
+    fn open_process_app_pane_overlay_no_focused_pane_launches_root() {
         let mut h = HostHarness::new();
         assert!(
             h.app.windows[0].focused_pane.is_none(),
@@ -2494,9 +2500,17 @@ mod tests {
             None,
             Some("overlay"),
         );
-        assert!(
-            result.is_none(),
-            "overlay with no focused pane must return None"
+        let pane_id = result.expect("overlay with empty context must launch as root pane");
+        let root = h.app.windows[0].tree.root.expect("root tile installed");
+        assert_eq!(
+            h.app.windows[0].focused_pane,
+            Some(root),
+            "new root pane must be focused"
+        );
+        assert_eq!(
+            h.app.windows[0].tree.tiles.get(root),
+            Some(&Tile::Pane(pane_id)),
+            "root tile must hold the launched app pane"
         );
     }
 

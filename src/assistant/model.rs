@@ -123,8 +123,6 @@ pub enum AssistantEffect {
     /// thread waiting on a permission reply. The late outcome is dropped by
     /// the stale-conversation guard in `finish_turn`.
     CancelTurn,
-    /// Phase 3: host pane control (open/focus/read).
-    PaneAction { action: String },
 }
 
 fn new_conversation_id() -> String {
@@ -336,8 +334,8 @@ impl AssistantModel {
         }
     }
 
-    /// Execute a parsed slash command. `/clear`, `/new`, and `/help` are
-    /// real; other built-ins answer with a stub row; unknown names error.
+    /// Execute a parsed slash command. Every built-in has a real handler
+    /// below; unknown names answer with an error row.
     fn execute_command(&mut self, cmd: &ParsedCommand) -> Vec<AssistantEffect> {
         log::info!(
             "assistant[{}]: command /{} args='{}'",
@@ -432,23 +430,6 @@ impl AssistantModel {
                         target_id: cmd.args.clone(),
                     }]
                 }
-            }
-            name if commands::is_builtin(name) => {
-                self.turns.push(Turn::now(
-                    TurnRole::Assistant,
-                    format!("/{name} is not yet implemented."),
-                ));
-                let mut effects = vec![AssistantEffect::SessionWrite {
-                    conversation_id: self.conversation_id.clone(),
-                }];
-                // Phase 3: pane-read commands go through PaneAction so the
-                // executor seam is exercised before the full impl lands.
-                if name == "context" {
-                    effects.push(AssistantEffect::PaneAction {
-                        action: "read_context".to_string(),
-                    });
-                }
-                effects
             }
             name => {
                 self.turns.push(Turn::now(
@@ -842,11 +823,11 @@ mod tests {
     }
 
     #[test]
-    fn stubbed_builtin_answers_not_yet_implemented() {
+    fn removed_builtin_is_now_an_unknown_command() {
         let mut m = AssistantModel::fresh();
         submitted(&mut m, "/skills");
-        assert_eq!(m.turns[0].role, TurnRole::Assistant);
-        assert!(m.turns[0].text.contains("not yet implemented"));
+        assert_eq!(m.turns[0].role, TurnRole::Error);
+        assert!(m.turns[0].text.contains("Unknown command /skills"));
     }
 
     #[test]

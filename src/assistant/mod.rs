@@ -413,10 +413,6 @@ impl AssistantApp {
                     );
                     log::info!("assistant: in-flight turn cancelled by conversation switch");
                 }
-                // Phase 3 stub: correctly shaped, logged, never panics.
-                AssistantEffect::PaneAction { action } => {
-                    log::info!("assistant: PaneAction '{action}' not yet implemented (Phase 3)");
-                }
             }
         }
     }
@@ -1577,16 +1573,6 @@ mod tests {
             last.text
         );
         tool_dispatch::unregister(9201);
-    }
-
-    #[test]
-    fn pane_action_stub_executes_without_panicking() {
-        let ws = tempfile::tempdir().unwrap();
-        let mut app = test_app(ws.path());
-        app.execute_effects(vec![AssistantEffect::PaneAction {
-            action: "focus:1".to_string(),
-        }]);
-        assert!(!app.model.streaming.in_flight);
     }
 
     #[test]

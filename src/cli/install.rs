@@ -77,6 +77,10 @@ pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
                 ));
                 0
             }
+            crate::cli::install_host::InstallStatus::Refreshed(path) => {
+                println!("refreshed '{}' at {}", outcome.id, path.display());
+                0
+            }
             crate::cli::install_host::InstallStatus::AlreadyAtVersion => {
                 println!("already at requested version");
                 0
@@ -105,7 +109,9 @@ pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
 }
 
 /// `plexi install --pack <path|core>` — apply a whole pack file.
-pub fn install_pack_cli(spec: &str) -> i32 {
+/// `refresh_local`: re-extract already-installed `local:` apps from the
+/// embedded tree (see `install_host::apply_pack`).
+pub fn install_pack_cli(spec: &str, refresh_local: bool) -> i32 {
     let pack = if spec == "core" {
         match crate::app::packs::Pack::from_toml_str(crate::cli::install_host::CORE_PACK_TOML) {
             Ok(p) => p,
@@ -129,12 +135,16 @@ pub fn install_pack_cli(spec: &str) -> i32 {
         return 1;
     }
     let cloner = crate::cli::install_host::GitCloner;
-    let outcomes = crate::cli::install_host::apply_pack(&cloner, &pack, &target_root);
+    let outcomes =
+        crate::cli::install_host::apply_pack(&cloner, &pack, &target_root, refresh_local);
     let mut any_failed = false;
     for o in &outcomes {
         match &o.status {
             crate::cli::install_host::InstallStatus::Installed(p) => {
                 println!("  installed  {:30} → {}", o.id, p.display());
+            }
+            crate::cli::install_host::InstallStatus::Refreshed(p) => {
+                println!("  refreshed  {:30} → {}", o.id, p.display());
             }
             crate::cli::install_host::InstallStatus::AlreadyAtVersion => {
                 println!("  up-to-date {:30}", o.id);
@@ -250,6 +260,9 @@ pub fn install_workspace_pack_cli() -> i32 {
         match &o.status {
             crate::cli::install_host::InstallStatus::Installed(p) => {
                 println!("  installed  {:30} → {}", o.id, p.display());
+            }
+            crate::cli::install_host::InstallStatus::Refreshed(p) => {
+                println!("  refreshed  {:30} → {}", o.id, p.display());
             }
             crate::cli::install_host::InstallStatus::AlreadyAtVersion => {
                 println!("  up-to-date {:30}", o.id);

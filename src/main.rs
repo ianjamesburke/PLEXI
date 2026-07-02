@@ -443,12 +443,13 @@ fn main() -> eframe::Result {
                             AppCmd::Install {
                                 spec_or_path,
                                 pack,
+                                refresh,
                                 version,
                                 yes,
                             } => {
                                 if let Some(p) = pack {
-                                    log::info!("app_install:cli: pack={p}");
-                                    std::process::exit(cli::install_pack_cli(&p));
+                                    log::info!("app_install:cli: pack={p} refresh={refresh}");
+                                    std::process::exit(cli::install_pack_cli(&p, refresh));
                                 }
                                 match spec_or_path {
                                     None => {
