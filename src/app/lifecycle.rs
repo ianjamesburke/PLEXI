@@ -879,7 +879,10 @@ impl PlexiApp {
                             .map(|w| w.grid_x)
                             .max();
                         let new_x = max_x.map(|x| x + 1).unwrap_or(1);
-                        log::info!("pane_ipc: spawn_pane terminal layout=new_window context={ws_id} grid=({new_x},{active_y}) initial_cmd={initial_cmd:?} ephemeral={}", spec.ephemeral);
+                        log::info!(
+                            "pane_ipc: spawn_pane terminal layout=new_window from_pane_id={:?} target_win_idx={target_win_idx} context={ws_id} grid=({new_x},{active_y}) response_pane_id={response_pane_id} cwd={cwd_override:?} initial_cmd={initial_cmd:?} ephemeral={}",
+                            spec.from_pane_id, spec.ephemeral
+                        );
                         self.create_page_at(
                             new_x,
                             active_y,
@@ -892,16 +895,29 @@ impl PlexiApp {
                             self.active_window = active;
                         }
                     } else if layout_str == "tab" {
+                        // Derive target window from the calling pane's window; fall back to active.
+                        let target_win_idx = spec
+                            .from_pane_id
+                            .and_then(|fid| self.find_pane_in_any_window(fid).map(|(idx, _)| idx))
+                            .unwrap_or(active);
+                        let original_focused = self.windows[target_win_idx].focused_pane;
                         log::info!(
-                            "pane_ipc: spawn_pane terminal layout=tab initial_cmd={initial_cmd:?} ephemeral={}",
-                            spec.ephemeral
+                            "pane_ipc: spawn_pane terminal layout=tab from_pane_id={:?} target_win_idx={target_win_idx} window_id={} response_pane_id={response_pane_id} cwd={cwd_override:?} initial_cmd={initial_cmd:?} ephemeral={}",
+                            spec.from_pane_id, self.windows[target_win_idx].window_id, spec.ephemeral
                         );
-                        let original_focused = self.windows[active].focused_pane;
-                        self.new_tab(initial_cmd.as_deref(), spec.ephemeral, cwd_override);
+                        self.new_tab(
+                            target_win_idx,
+                            initial_cmd.as_deref(),
+                            spec.ephemeral,
+                            cwd_override,
+                        );
                         if spec.no_focus {
-                            self.active_window = active;
-                            self.restore_window_focused_pane(active, original_focused);
+                            self.restore_window_focused_pane(target_win_idx, original_focused);
                         }
+                        // self.active_window is intentionally left untouched here, matching
+                        // the split path below: a from_pane_id spawn must never steal the
+                        // user's currently active Plexi window, only set the new tab as the
+                        // target window's own focused pane (done inside new_tab above).
                     } else {
                         let vertical =
                             matches!(layout_str, "split_h" | "split_right" | "split_left");
