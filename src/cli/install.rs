@@ -276,6 +276,43 @@ pub fn install_workspace_pack_cli() -> i32 {
     }
 }
 
+/// Maps a release channel (as returned by `config::build_channel()`, e.g.
+/// `None` for the main channel, `Some("alpha")`, `Some("pr-2357")`, or an
+/// arbitrary named channel) to the capitalized bundle-name suffix used for
+/// `/Applications/Plexi<cap>.app`.
+///
+/// `None` → `""`, `Some("alpha")` → `" Alpha"`, `Some("beta")` → `" Beta"`,
+/// `Some("pr-2357")` → `" PR2357"`, `Some("foo")` → `" Foo"` (title-cased).
+///
+/// Single source of truth for this mapping — previously duplicated inline in
+/// `plexi_uninstall_cli` (this file) and `scripts/channel-clean.sh`. Both the
+/// uninstaller and `plexi host start/stop/status` (`src/cli/host.rs`) call
+/// this so the bundle path resolution never drifts between the two.
+pub(crate) fn channel_bundle_cap(channel: Option<&str>) -> String {
+    match channel {
+        None => String::new(),
+        Some(c) => {
+            if let Some(n) = c.strip_prefix("pr-") {
+                format!(" PR{n}")
+            } else {
+                match c {
+                    "alpha" => " Alpha".to_string(),
+                    "beta" => " Beta".to_string(),
+                    other => {
+                        let mut chars = other.chars();
+                        match chars.next() {
+                            Some(first) => {
+                                format!(" {}{}", first.to_uppercase(), chars.as_str())
+                            }
+                            None => String::new(),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// `plexi uninstall [--keep-data] [--yes]` — remove Plexi itself from the Mac.
 pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     // Detect channel suffix from binary name (e.g. "plexi-alpha" → "-alpha", "plexi" → "")
@@ -290,15 +327,8 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     } else {
         binary_name.strip_prefix("plexi").unwrap_or("").to_string()
     };
-    let cap_owned = if let Some(n) = suffix.strip_prefix("-pr-") {
-        format!(" PR{n}")
-    } else {
-        match suffix.as_str() {
-            "-alpha" => " Alpha".to_string(),
-            "-beta" => " Beta".to_string(),
-            _ => String::new(),
-        }
-    };
+    let channel = suffix.strip_prefix('-').filter(|s| !s.is_empty());
+    let cap_owned = channel_bundle_cap(channel);
     let cap = cap_owned.as_str();
 
     let profile_dir = dirs::home_dir().unwrap().join(format!(".plexi{suffix}"));
@@ -719,5 +749,36 @@ pub fn self_update_cli() -> i32 {
             eprintln!("{msg}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod channel_bundle_cap_tests {
+    use super::channel_bundle_cap;
+
+    #[test]
+    fn main_channel_has_no_cap() {
+        assert_eq!(channel_bundle_cap(None), "");
+    }
+
+    #[test]
+    fn alpha_channel() {
+        assert_eq!(channel_bundle_cap(Some("alpha")), " Alpha");
+    }
+
+    #[test]
+    fn beta_channel() {
+        assert_eq!(channel_bundle_cap(Some("beta")), " Beta");
+    }
+
+    #[test]
+    fn pr_channel() {
+        assert_eq!(channel_bundle_cap(Some("pr-2357")), " PR2357");
+    }
+
+    #[test]
+    fn arbitrary_named_channel_is_title_cased() {
+        assert_eq!(channel_bundle_cap(Some("gpui")), " Gpui");
+        assert_eq!(channel_bundle_cap(Some("foo")), " Foo");
     }
 }

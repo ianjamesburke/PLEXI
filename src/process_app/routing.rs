@@ -31,6 +31,17 @@ impl ProcessApp {
             AppRequest::Wake => {
                 log::debug!("ProcessApp[{}]: wake request (no-op)", self.type_id);
             }
+            // ── Shutdown (CLI-only, never app-reachable) ────────────────────
+            // `AppRequest::Shutdown` is `plexi host stop`'s clean-shutdown
+            // signal, sent over a direct notify.sock connection outside any
+            // pane. No capability grants a sandboxed process app the ability
+            // to terminate the whole host — unconditionally deny and drop.
+            AppRequest::Shutdown => {
+                log::warn!(
+                    "ProcessApp[{}]: app sent Shutdown request — denied, apps cannot terminate the host",
+                    self.type_id
+                );
+            }
             // ── Capability request ─────────────────────────────────────────
             AppRequest::CapabilityRequest {
                 request_id,

@@ -218,8 +218,8 @@ fn main() -> eframe::Result {
         .collect();
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd,
-        EventsCmd, HookAction, LicenseCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd,
-        SecretCmd,
+        EventsCmd, HookAction, HostCmd, LicenseCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd,
+        RoutineCmd, SecretCmd,
         UpdateCmd, WorkspaceCmd,
     };
     use clap::Parser;
@@ -612,6 +612,19 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::update_cli(id.as_deref()))
                         }
                         None => std::process::exit(cli::self_update_cli()),
+                    },
+                    Commands::Host { cmd } => match cmd {
+                        HostCmd::Start {
+                            layout,
+                            panes,
+                            timeout_secs,
+                        } => std::process::exit(cli::host_start_cli(
+                            layout.as_deref(),
+                            &panes,
+                            timeout_secs,
+                        )),
+                        HostCmd::Stop => std::process::exit(cli::host_stop_cli()),
+                        HostCmd::Status { json } => std::process::exit(cli::host_status_cli(json)),
                     },
                     Commands::Notify {
                         title,
