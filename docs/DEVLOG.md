@@ -6,6 +6,11 @@ or `/merge-pr` trims the orientation file; do not rewrite old entries.
 
 ---
 
+## 2026-07-02 — pane new --tab anchoring fix
+
+- `0337` (#2357): `plexi pane new --tab --from <pane-id>` now anchors to the caller pane's window instead of the currently active window, matching the existing `--window` and split behavior. Also fixed two related cwd-fallback bugs where the tab path fell back to the ambient active window/router context instead of the target window's own context when no explicit `--cwd` was given.
+- `0304` (#2332, landed earlier): confirmed still correct on inspection — the `--window` path already anchored to `from_pane_id` correctly, so this task only needed the `--tab` path fix.
+
 ## 2026-06-30 — Free v1 spine + app-builder hardening
 
 Free v1 local/demo/distribution/trust/hosted-registry spine landed on `alpha`:

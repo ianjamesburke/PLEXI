@@ -6,9 +6,9 @@
 
 ---
 
-## Current State (2026-07-01)
+## Current State (2026-07-02)
 
-`alpha` is at `caac0a29`. Since the last audit: first-run AI onboarding (`0324`, #2355) and the website visual refresh (`0272`, #2356) landed. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry smoke path, secrets, onboarding, website) is landed — see `docs/DEVLOG.md`. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at `c7e926f5`. Since the last audit: the pane `new --tab` anchoring fix (`0337`, #2357) landed, plus a monetization spec doc (`0315`, done). The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry smoke path, secrets, onboarding, website) is landed — see `docs/DEVLOG.md`. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
