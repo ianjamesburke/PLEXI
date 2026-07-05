@@ -33,7 +33,6 @@ pub enum AppCommand {
         type_id: String,
         layout: String,
         args: Vec<String>,
-        pipe_id: Option<String>,
         from_pane_id: Option<u64>,
         request_id: Option<String>,
         target_context: Option<u64>,
@@ -48,8 +47,10 @@ pub enum AppCommand {
     },
     /// Request the host to cd sibling terminals (same split container) to `cwd`.
     CdRequest { cwd: String, sender_pane_id: u64 },
-    /// Deliver a JSON pipe message to all peer panes that have the given
-    /// pipe_id open with direction In or Duplex. The sender pane is excluded.
+    /// Deliver a JSON pipe message on a directed pipe (#286): the host routes
+    /// it to the non-sender member of the recorded `(sender, target)` pair.
+    /// A send on a pipe that was never opened directed is dropped — the legacy
+    /// non-directed peer-broadcast fan-out was removed in 0327.
     DeliverPipeMessage {
         sender_pane_id: u64,
         pipe_id: String,

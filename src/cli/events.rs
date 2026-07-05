@@ -8,8 +8,12 @@
 //!   followed by one line per delivered event, until interrupted.
 //! - `list` prints the apps' declared streams once and exits.
 //!
+//! `declare` and `emit` are the publish side: they send one control line and
+//! read a single `ok`/`error` reply. A first-time publish under an app-id
+//! namespace the caller does not own prompts for host consent (broker `Ask`).
+//!
 //! Identity is host-stamped from `PLEXI_PANE_ID`; there is deliberately no flag
-//! to set the subscriber identity, so a CLI agent cannot spoof another.
+//! to set the subscriber/emitter identity, so a CLI agent cannot spoof another.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -43,20 +47,29 @@ fn from_pane_id() -> Option<u64> {
     std::env::var("PLEXI_PANE_ID").ok()?.parse().ok()
 }
 
-/// Send one control line and stream every NDJSON line the host returns to
-/// stdout until the connection closes. Returns the process exit code.
-fn stream_control_line(payload: serde_json::Value) -> i32 {
-    let mut stream = match connect_socket() {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
+/// Connect to the host socket and write one control line + flush, logging the
+/// sent type. Returns the live stream so the caller can read its reply (a
+/// single line for publish, an open NDJSON stream for subscribe). Shared
+/// prologue for [`stream_control_line`] and [`send_and_read_reply`].
+fn connect_and_send(payload: &serde_json::Value) -> Result<UnixStream, i32> {
+    let mut stream = connect_socket()?;
     let line = format!("{payload}\n");
     if let Err(e) = stream.write_all(line.as_bytes()) {
         eprintln!("error: could not write to socket: {e}");
-        return 1;
+        return Err(1);
     }
     let _ = stream.flush();
     log::info!("events: sent control line type={}", payload["type"]);
+    Ok(stream)
+}
+
+/// Send one control line and stream every NDJSON line the host returns to
+/// stdout until the connection closes. Returns the process exit code.
+fn stream_control_line(payload: serde_json::Value) -> i32 {
+    let stream = match connect_and_send(&payload) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
     let reader = BufReader::new(stream);
     let stdout = std::io::stdout();
     for line in reader.lines() {
@@ -109,6 +122,118 @@ pub fn events_subscribe_cli(
         "from_pane_id": from_pane_id(),
     });
     stream_control_line(req)
+}
+
+/// Send one control line, read exactly one JSON reply line, print a
+/// human-readable result, and return the process exit code. Used by the
+/// one-shot publish commands (`declare`, `emit`): the host answers with a
+/// single `ok`/`error` object rather than an open NDJSON stream.
+fn send_and_read_reply(payload: serde_json::Value) -> i32 {
+    let stream = match connect_and_send(&payload) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let mut reader = BufReader::new(stream);
+    let mut reply = String::new();
+    if let Err(e) = reader.read_line(&mut reply) {
+        eprintln!("error: reading reply: {e}");
+        return 1;
+    }
+    let reply = reply.trim();
+    if reply.is_empty() {
+        eprintln!("error: host closed the connection without replying");
+        return 1;
+    }
+    match serde_json::from_str::<serde_json::Value>(reply) {
+        Ok(val) => match val["type"].as_str() {
+            Some("error") => {
+                eprintln!("error: {}", val["message"].as_str().unwrap_or("unknown error"));
+                1
+            }
+            _ => {
+                println!("{}", val["detail"].as_str().unwrap_or(reply));
+                0
+            }
+        },
+        Err(_) => {
+            eprintln!("error: host reply was not valid JSON: {reply}");
+            1
+        }
+    }
+}
+
+/// `plexi events declare <app_id> <stream>` — register a stream schema.
+pub fn events_declare_cli(
+    app_id: &str,
+    stream: &str,
+    schema: &str,
+    description: Option<&str>,
+) -> i32 {
+    let schema_json: serde_json::Value = match serde_json::from_str(schema) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: --schema is not valid JSON: {e}");
+            return 2;
+        }
+    };
+    let mut decl = serde_json::json!({ "name": stream, "schema": schema_json });
+    if let Some(d) = description {
+        decl["description"] = serde_json::Value::String(d.to_string());
+    }
+    let req = serde_json::json!({
+        "type": "events_declare",
+        "app_id": app_id,
+        "streams": [decl],
+        "from_pane_id": from_pane_id(),
+    });
+    send_and_read_reply(req)
+}
+
+/// Arguments for `plexi events emit`, mirroring the `EventsCmd::Emit` fields.
+pub struct EmitArgs<'a> {
+    pub app_id: &'a str,
+    pub event: &'a str,
+    pub summary: &'a str,
+    pub resource: &'a str,
+    pub revision_after: &'a str,
+    pub actor: &'a str,
+    pub resource_scope: Option<&'a str>,
+    pub payload: Option<&'a str>,
+    pub state_ref: Option<&'a str>,
+    pub revision_before: Option<&'a str>,
+    pub rollback_token: Option<&'a str>,
+    pub changed_resources: &'a [String],
+}
+
+/// `plexi events emit <app_id> <event>` — record + fan out one event.
+pub fn events_emit_cli(args: EmitArgs) -> i32 {
+    let payload_json = match args.payload {
+        Some(p) => match serde_json::from_str::<serde_json::Value>(p) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                eprintln!("error: --payload is not valid JSON: {e}");
+                return 2;
+            }
+        },
+        None => None,
+    };
+    let req = serde_json::json!({
+        "type": "events_emit",
+        "app_id": args.app_id,
+        "event": args.event,
+        "actor": args.actor,
+        "summary": args.summary,
+        "resource_id": args.resource,
+        "resource_scope": args.resource_scope,
+        "revision_after": args.revision_after,
+        "payload": payload_json,
+        "state_ref": args.state_ref,
+        "revision_before": args.revision_before,
+        "rollback_token": args.rollback_token,
+        "changed_resources": args.changed_resources,
+        "from_pane_id": from_pane_id(),
+    });
+    send_and_read_reply(req)
 }
 
 /// `plexi events list` — print declared streams once and exit.

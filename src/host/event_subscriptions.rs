@@ -1,9 +1,17 @@
-//! Host-owned event subscription core — `docs/prm/undo-and-app-events.md`.
+//! Host-owned event subscription + publish core.
 //!
 //! One permission model, one delivery lifecycle, one schema. Both
 //! agent-facing transports — the CLI NDJSON stream (`plexi events
-//! subscribe`) and the host-level MCP server — wrap this module. They are
-//! transports only, never second event buses.
+//! subscribe`/`emit`/`declare`) and the host-level MCP server — wrap this
+//! module. They are transports only, never second event buses.
+//!
+//! CLI/agent *publish* (declare + emit) is gated symmetrically to subscribe:
+//! a foreign identity is broker-checked on `TargetType::AppEventStream` the
+//! first time and, on `AllowAlways`, its grant persists — see
+//! [`HostSubscriptionService::classify_publish_request`]. Read and write use
+//! distinct grant targets (publish targets carry a `publish:` prefix), so an
+//! Allow-Always granted on a read prompt never authorizes an emit, nor the
+//! reverse.
 //!
 //! - [`evaluate_and_record_subscription`] is the single broker-gated path
 //!   that turns a subscribe request into a [`SubscriptionRecord`]. Both the
@@ -19,12 +27,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
-use crate::app_protocol::{PayloadMode, TriggerMode};
+use crate::app_protocol::{EventStreamDecl, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionPosture, PermissionRequest, ResourceScope, TargetType,
 };
-use crate::host::app_timeline::{AppTimeline, SubscriptionRecord};
+use crate::host::app_timeline::{AppTimeline, EmittedEvent, SubscriptionRecord};
 use crate::host::event_log;
 
 /// Evaluate broker grants for a subscription and, on a unanimous `Allow`,
@@ -79,8 +87,15 @@ pub fn evaluate_and_record_subscription(
     ))
 }
 
-/// The broker target ids a subscription touches: one `"<app>::<event>"` per
-/// requested event, or a single `"<app>::*"` when subscribing to every stream.
+/// The broker target ids a subscription (read) touches: one `"<app>::<event>"`
+/// per requested event, or a single `"<app>::*"` when subscribing to every
+/// stream.
+///
+/// Read and write grants must never satisfy each other: an Allow-Always the user
+/// granted on a read prompt must not silently authorize an emit, and vice versa.
+/// Subscribe targets are the bare `"<app>::<event>"` form; publish targets carry
+/// a `publish:` prefix ([`publish_targets`]) so a grant matches only the
+/// operation it was granted for.
 fn subscription_targets(publisher_app_id: &str, event_names: &[String]) -> Vec<String> {
     if event_names.is_empty() {
         vec![format!("{publisher_app_id}::*")]
@@ -90,6 +105,16 @@ fn subscription_targets(publisher_app_id: &str, event_names: &[String]) -> Vec<S
             .map(|n| format!("{publisher_app_id}::{n}"))
             .collect()
     }
+}
+
+/// The broker target ids a publish (declare/emit) touches — the subscribe
+/// targets with a `publish:` prefix so publish grants and subscribe grants are
+/// distinct and can never match each other (see [`subscription_targets`]).
+fn publish_targets(app_id: &str, event_names: &[String]) -> Vec<String> {
+    subscription_targets(app_id, event_names)
+        .into_iter()
+        .map(|t| format!("publish:{t}"))
+        .collect()
 }
 
 /// Run the broker over every target a subscription touches and return the
@@ -104,11 +129,54 @@ pub fn evaluate_subscription(
     subscriber_id: &str,
     event_names: &[String],
 ) -> Decision {
+    evaluate_targets(
+        grant_store,
+        posture,
+        workspace_root,
+        subscriber_type,
+        subscriber_id,
+        &subscription_targets(publisher_app_id, event_names),
+    )
+}
+
+/// Publish twin of [`evaluate_subscription`]: evaluate the broker over the
+/// `publish:`-prefixed targets so a subscribe grant never authorizes a publish.
+fn evaluate_publish(
+    grant_store: &GrantStore,
+    posture: Option<&PermissionPosture>,
+    workspace_root: &Path,
+    app_id: &str,
+    actor_type: ActorType,
+    actor_id: &str,
+    event_names: &[String],
+) -> Decision {
+    evaluate_targets(
+        grant_store,
+        posture,
+        workspace_root,
+        actor_type,
+        actor_id,
+        &publish_targets(app_id, event_names),
+    )
+}
+
+/// Run the broker over an explicit target-id list and return the strictest
+/// decision (`Deny` > `Ask` > `Allow`). The shared core of
+/// [`evaluate_subscription`] and [`evaluate_publish`] — they differ only in how
+/// they build the target ids.
+fn evaluate_targets(
+    grant_store: &GrantStore,
+    posture: Option<&PermissionPosture>,
+    workspace_root: &Path,
+    actor_type: ActorType,
+    actor_id: &str,
+    targets: &[String],
+) -> Decision {
     let mut strictest = Decision::Allow;
-    for target in &subscription_targets(publisher_app_id, event_names) {
+    for target in targets {
         let req = PermissionRequest::new(
-            subscriber_type,
-            subscriber_id,
+            actor_type,
+            actor_id,
             TargetType::AppEventStream,
             target,
             Some(workspace_root),
@@ -185,23 +253,43 @@ pub struct HostSubscribeRequest {
     pub reply: SyncSender<HostSubscribeReply>,
 }
 
-/// A subscribe request the broker answered with `Ask`: it needs an explicit
-/// user decision before the subscription is recorded. The UI thread parks one
-/// of these (holding the transport's live `reply` channel) and surfaces a host
-/// consent modal; [`HostSubscriptionService::resolve_consent`] answers it.
+/// A subscribe or publish request the broker answered with `Ask`: it needs an
+/// explicit user decision before the effect is applied. The UI thread parks one
+/// of these (holding the transport's live `reply` channel inside `action`) and
+/// surfaces a host consent modal; [`HostSubscriptionService::resolve_consent`]
+/// answers it.
 ///
 /// Identity is already host-stamped here — the modal shows it, it is never
 /// taken from the user's click.
 pub struct PendingEventConsent {
     pub subscriber_type: ActorType,
     pub subscriber_id: String,
-    pub publisher_app_id: String,
-    /// Empty = all of the app's declared streams.
+    /// App-id namespace the streams live under.
+    pub app_id: String,
+    /// Stream names touched (empty = all of the app's declared streams). Drives
+    /// both the consent label and the `AllowAlways` grant targets.
     pub event_names: Vec<String>,
-    pub payload_mode: PayloadMode,
-    pub trigger_mode: TriggerMode,
-    pub resource_id: Option<String>,
-    reply: SyncSender<HostSubscribeReply>,
+    /// The effect to apply once allowed — owns the transport's reply channel.
+    action: ConsentAction,
+}
+
+/// The terminal effect a parked [`PendingEventConsent`] performs once the user
+/// allows. Each variant owns the transport's live `reply` channel, fired from
+/// [`HostSubscriptionService::resolve_consent`].
+enum ConsentAction {
+    Subscribe {
+        payload_mode: PayloadMode,
+        trigger_mode: TriggerMode,
+        resource_id: Option<String>,
+        reply: SyncSender<HostSubscribeReply>,
+    },
+    Publish {
+        publish: PublishAction,
+        /// Pane the emitting agent lives in (host-stamped); recorded on emitted
+        /// events. `0` when the connection had no pane context.
+        pane_id: u64,
+        reply: SyncSender<HostPublishReply>,
+    },
 }
 
 impl PendingEventConsent {
@@ -212,8 +300,54 @@ impl PendingEventConsent {
         } else {
             self.event_names.join(", ")
         };
-        format!("{} :: {streams}", self.publisher_app_id)
+        format!("{} :: {streams}", self.app_id)
     }
+
+    /// Verb for the consent modal copy: readers subscribe, publishers emit.
+    pub fn action_verb(&self) -> &'static str {
+        match self.action {
+            ConsentAction::Subscribe { .. } => "read",
+            ConsentAction::Publish { .. } => "publish to",
+        }
+    }
+}
+
+/// A CLI/agent request to *publish* to the event bus: declare stream schemas
+/// under an app-id namespace, or emit an event on a declared stream. Handed
+/// from a transport connection thread to the UI thread, which owns the grant
+/// store and broker gate. Identity is host-stamped from the pane, never taken
+/// from a CLI argument (anti-spoof, symmetrical to [`HostSubscribeRequest`]).
+pub struct HostPublishRequest {
+    /// App-id namespace to declare/emit under.
+    pub app_id: String,
+    pub action: PublishAction,
+    /// Pane id stamped by the host PTY env (`PLEXI_PANE_ID`).
+    pub from_pane_id: Option<u64>,
+    /// Trusted host-transport override for the actor id (e.g. the host MCP
+    /// server). Never sourced from an untrusted client argument.
+    pub subscriber_override: Option<String>,
+    pub reply: SyncSender<HostPublishReply>,
+}
+
+/// What a [`HostPublishRequest`] does to the timeline once allowed.
+pub enum PublishAction {
+    /// Register stream schemas — routes to [`AppTimeline::declare_streams`].
+    Declare(Vec<EventStreamDecl>),
+    /// Record + fan out one event — routes to [`AppTimeline::record_event`].
+    Emit(Box<EmittedEvent>),
+}
+
+/// The UI thread's answer to a [`HostPublishRequest`].
+pub enum HostPublishReply {
+    Ok {
+        /// Human-readable result, e.g. `"declared stream(s): probe.tick"`.
+        detail: String,
+        /// The recorded event id (emit only; `None` for declare).
+        event_id: Option<u64>,
+    },
+    Err {
+        message: String,
+    },
 }
 
 /// The user's answer to a [`PendingEventConsent`].
@@ -389,12 +523,14 @@ impl HostSubscriptionService {
                 Some(PendingEventConsent {
                     subscriber_type,
                     subscriber_id,
-                    publisher_app_id: req.publisher_app_id,
+                    app_id: req.publisher_app_id,
                     event_names: req.event_names,
-                    payload_mode: req.payload_mode,
-                    trigger_mode: req.trigger_mode,
-                    resource_id: req.resource_id,
-                    reply: req.reply,
+                    action: ConsentAction::Subscribe {
+                        payload_mode: req.payload_mode,
+                        trigger_mode: req.trigger_mode,
+                        resource_id: req.resource_id,
+                        reply: req.reply,
+                    },
                 })
             }
         }
@@ -412,106 +548,288 @@ impl HostSubscriptionService {
         choice: ConsentChoice,
         config_dir: &Path,
     ) {
-        if choice == ConsentChoice::Deny {
-            log::info!(
-                "event_subscriptions: user denied subscription for {:?} '{}' -> '{}'",
-                consent.subscriber_type,
-                consent.subscriber_id,
-                consent.publisher_app_id
-            );
-            let _ = consent.reply.send(HostSubscribeReply::Err {
-                message: "subscription denied by user".to_string(),
-            });
-            return;
-        }
+        let PendingEventConsent {
+            subscriber_type,
+            subscriber_id,
+            app_id,
+            event_names,
+            action,
+        } = consent;
 
         if choice == ConsentChoice::AllowAlways {
-            let created_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            for target in subscription_targets(&consent.publisher_app_id, &consent.event_names) {
-                self.grant_store.record(GrantRecord {
-                    actor_type: consent.subscriber_type,
-                    actor_id: consent.subscriber_id.clone(),
-                    actor_scope: ActorScope::User,
-                    workspace_root: None,
-                    target_type: TargetType::AppEventStream,
-                    target_id: target,
-                    resource_scope: ResourceScope::Global,
-                    resource_id: None,
-                    decision: Decision::Allow,
-                    duration: GrantDuration::Always,
-                    source: GrantSource::User,
-                    created_at,
-                    expires_at: None,
-                });
-            }
-            self.grant_store.save();
-            // Keep the in-memory store consistent with disk for later evals.
-            self.reload(config_dir);
-            log::info!(
-                "event_subscriptions: user granted ALWAYS to {:?} '{}' -> '{}'",
-                consent.subscriber_type,
-                consent.subscriber_id,
-                consent.publisher_app_id
-            );
+            // Persist against the same operation-qualified targets the matching
+            // evaluation uses: subscribe grants the bare `<app>::<stream>`
+            // targets, publish grants the `publish:`-prefixed ones. A read grant
+            // must never authorize a write, so the persisted target must match
+            // the operation being consented to, not just the app + streams.
+            let targets = match action {
+                ConsentAction::Subscribe { .. } => subscription_targets(&app_id, &event_names),
+                ConsentAction::Publish { .. } => publish_targets(&app_id, &event_names),
+            };
+            self.persist_always_grants(subscriber_type, &subscriber_id, &app_id, &targets, config_dir);
         }
-
-        let subscription_id = record_subscription(
-            &self.timeline,
-            &consent.publisher_app_id,
-            consent.subscriber_type,
-            &consent.subscriber_id,
-            consent.event_names.clone(),
-            consent.payload_mode,
-            consent.trigger_mode,
-            consent.resource_id.clone(),
-            GrantDuration::Session,
-        );
-        if consent
-            .reply
-            .send(HostSubscribeReply::Ok {
-                subscription_id,
-                subscriber_type: consent.subscriber_type,
-                subscriber_id: consent.subscriber_id.clone(),
-            })
-            .is_err()
-        {
-            let (subs, drops) = self
-                .timeline
-                .lock()
-                .unwrap()
-                .clear_subscriber(consent.subscriber_type, &consent.subscriber_id);
-            log::warn!(
-                "event_subscriptions: consented subscriber '{}' already disconnected; \
-                 rolled back {subs} subscription(s), {drops} queued delivery(ies)",
-                consent.subscriber_id
-            );
+        let scope = if choice == ConsentChoice::AllowAlways {
+            "always"
         } else {
-            log::info!(
-                "event_subscriptions: user allowed ({}) subscription for {:?} '{}' -> '{}'",
-                if choice == ConsentChoice::AllowAlways {
-                    "always"
+            "once"
+        };
+
+        match action {
+            ConsentAction::Subscribe {
+                payload_mode,
+                trigger_mode,
+                resource_id,
+                reply,
+            } => {
+                if choice == ConsentChoice::Deny {
+                    log::info!(
+                        "event_subscriptions: user denied subscription for {subscriber_type:?} \
+                         '{subscriber_id}' -> '{app_id}'"
+                    );
+                    let _ = reply.send(HostSubscribeReply::Err {
+                        message: "subscription denied by user".to_string(),
+                    });
+                    return;
+                }
+                let subscription_id = record_subscription(
+                    &self.timeline,
+                    &app_id,
+                    subscriber_type,
+                    &subscriber_id,
+                    event_names,
+                    payload_mode,
+                    trigger_mode,
+                    resource_id,
+                    GrantDuration::Session,
+                );
+                if reply
+                    .send(HostSubscribeReply::Ok {
+                        subscription_id,
+                        subscriber_type,
+                        subscriber_id: subscriber_id.clone(),
+                    })
+                    .is_err()
+                {
+                    let (subs, drops) = self
+                        .timeline
+                        .lock()
+                        .unwrap()
+                        .clear_subscriber(subscriber_type, &subscriber_id);
+                    log::warn!(
+                        "event_subscriptions: consented subscriber '{subscriber_id}' already \
+                         disconnected; rolled back {subs} subscription(s), {drops} queued \
+                         delivery(ies)"
+                    );
                 } else {
-                    "once"
+                    log::info!(
+                        "event_subscriptions: user allowed ({scope}) subscription for \
+                         {subscriber_type:?} '{subscriber_id}' -> '{app_id}'"
+                    );
+                }
+            }
+            ConsentAction::Publish {
+                publish,
+                pane_id,
+                reply,
+            } => {
+                if choice == ConsentChoice::Deny {
+                    log::info!(
+                        "event_subscriptions: user denied publish for {subscriber_type:?} \
+                         '{subscriber_id}' -> '{app_id}'"
+                    );
+                    let _ = reply.send(HostPublishReply::Err {
+                        message: "publish denied by user".to_string(),
+                    });
+                    return;
+                }
+                let outcome = Self::perform_publish(&self.timeline, &app_id, pane_id, publish);
+                let summary = match &outcome {
+                    HostPublishReply::Ok { detail, .. } => detail.clone(),
+                    HostPublishReply::Err { message } => format!("failed: {message}"),
+                };
+                // A dropped receiver means the transport already gave up (e.g.
+                // the CLI's 120s consent wait expired). An emit is irreversible
+                // once recorded, so unlike the subscribe path there is nothing
+                // to roll back — surface it so a publish applied after the client
+                // disconnected is not silent.
+                if reply.send(outcome).is_err() {
+                    log::warn!(
+                        "event_subscriptions: consented publisher '{subscriber_id}' already \
+                         disconnected; the {scope} publish to '{app_id}' was still applied \
+                         ({summary})"
+                    );
+                } else {
+                    log::info!(
+                        "event_subscriptions: user allowed ({scope}) publish for \
+                         {subscriber_type:?} '{subscriber_id}' -> '{app_id}' ({summary})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Persist an `Always` `Allow` grant for every operation-qualified target
+    /// the consent touched (built by the caller via [`subscription_targets`] or
+    /// [`publish_targets`]), then reload so later evaluations see it. Shared by
+    /// the subscribe and publish consent paths.
+    fn persist_always_grants(
+        &mut self,
+        actor_type: ActorType,
+        actor_id: &str,
+        app_id: &str,
+        targets: &[String],
+        config_dir: &Path,
+    ) {
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        for target in targets {
+            self.grant_store.record(GrantRecord {
+                actor_type,
+                actor_id: actor_id.to_string(),
+                actor_scope: ActorScope::User,
+                workspace_root: None,
+                target_type: TargetType::AppEventStream,
+                target_id: target.clone(),
+                resource_scope: ResourceScope::Global,
+                resource_id: None,
+                decision: Decision::Allow,
+                duration: GrantDuration::Always,
+                source: GrantSource::User,
+                created_at,
+                expires_at: None,
+            });
+        }
+        self.grant_store.save();
+        // Keep the in-memory store consistent with disk for later evals.
+        self.reload(config_dir);
+        log::info!(
+            "event_subscriptions: user granted ALWAYS to {actor_type:?} '{actor_id}' -> '{app_id}'"
+        );
+    }
+
+    /// Resolve host-stamped identity, (for emit) reject an undeclared stream,
+    /// broker-gate on `TargetType::AppEventStream`, and — on `Allow` — apply the
+    /// publish to the timeline now. The publish twin of
+    /// [`Self::classify_subscribe_request`].
+    ///
+    /// - `Allow` → declare/emit now and send the reply on `req.reply`.
+    /// - `Deny` / undeclared stream → send `Err` on `req.reply` now.
+    /// - `Ask` → apply nothing; return `Some(consent)` for the caller to park.
+    ///
+    /// Returns `None` whenever the request was answered immediately.
+    pub fn classify_publish_request(
+        &self,
+        mut req: HostPublishRequest,
+    ) -> Option<PendingEventConsent> {
+        let (actor_type, actor_id) = match &req.subscriber_override {
+            Some(id) => (ActorType::Agent, id.clone()),
+            None => Self::resolve_cli_subscriber(req.from_pane_id),
+        };
+        // Host-stamp the emitter identity so an event's provenance is the
+        // agent/pane, never the app-id namespace it publishes under.
+        if let PublishAction::Emit(ev) = &mut req.action {
+            ev.actor_id = Some(actor_id.clone());
+        }
+        // Stream names this request touches — the broker targets and the label.
+        let event_names: Vec<String> = match &req.action {
+            PublishAction::Declare(decls) => decls.iter().map(|d| d.name.clone()).collect(),
+            PublishAction::Emit(ev) => vec![ev.event.clone()],
+        };
+        // Reject an emit on an undeclared stream before the broker so the client
+        // gets a precise error and the user is never prompted for a doomed emit
+        // (mirrors the subscribe undeclared-stream check).
+        if let PublishAction::Emit(ev) = &req.action {
+            if !self.stream_is_declared(&req.app_id, &ev.event) {
+                let _ = req.reply.send(HostPublishReply::Err {
+                    message: format!(
+                        "app '{}' has not declared stream '{}' — declare it first",
+                        req.app_id, ev.event
+                    ),
+                });
+                return None;
+            }
+        }
+        let decision = evaluate_publish(
+            &self.grant_store,
+            self.posture.as_ref(),
+            &self.workspace_root,
+            &req.app_id,
+            actor_type,
+            &actor_id,
+            &event_names,
+        );
+        let pane_id = req.from_pane_id.unwrap_or(0);
+        match decision {
+            Decision::Allow => {
+                let outcome =
+                    Self::perform_publish(&self.timeline, &req.app_id, pane_id, req.action);
+                let _ = req.reply.send(outcome);
+                None
+            }
+            Decision::Deny => {
+                let _ = req.reply.send(HostPublishReply::Err {
+                    message: "blocked by broker: deny".to_string(),
+                });
+                None
+            }
+            Decision::Ask => {
+                log::info!(
+                    "event_subscriptions: publish to '{}' for {actor_type:?} '{actor_id}' \
+                     awaiting user consent",
+                    req.app_id
+                );
+                Some(PendingEventConsent {
+                    subscriber_type: actor_type,
+                    subscriber_id: actor_id,
+                    app_id: req.app_id,
+                    event_names,
+                    action: ConsentAction::Publish {
+                        publish: req.action,
+                        pane_id,
+                        reply: req.reply,
+                    },
+                })
+            }
+        }
+    }
+
+    /// Apply a [`PublishAction`] to the timeline, translating the timeline's
+    /// `Result` into a [`HostPublishReply`]. Performs no broker check — the
+    /// caller has already established consent.
+    fn perform_publish(
+        timeline: &Arc<Mutex<AppTimeline>>,
+        app_id: &str,
+        pane_id: u64,
+        action: PublishAction,
+    ) -> HostPublishReply {
+        let mut timeline = timeline.lock().unwrap();
+        match action {
+            PublishAction::Declare(decls) => match timeline.declare_streams(app_id, decls) {
+                Ok(names) => HostPublishReply::Ok {
+                    detail: format!("declared stream(s): {}", names.join(", ")),
+                    event_id: None,
                 },
-                consent.subscriber_type,
-                consent.subscriber_id,
-                consent.publisher_app_id
-            );
+                Err(message) => HostPublishReply::Err { message },
+            },
+            PublishAction::Emit(ev) => match timeline.record_event(app_id, pane_id, *ev) {
+                Ok(outcome) => HostPublishReply::Ok {
+                    detail: format!(
+                        "recorded event {} ({} delivery(ies) queued)",
+                        outcome.event_id, outcome.deliveries_queued
+                    ),
+                    event_id: Some(outcome.event_id),
+                },
+                Err(message) => HostPublishReply::Err { message },
+            },
         }
     }
 
     /// Whether `app_id` has declared `stream_name`. Used to reject subscribe
     /// requests for undeclared streams before they reach the broker.
     pub fn stream_is_declared(&self, app_id: &str, stream_name: &str) -> bool {
-        self.timeline
-            .lock()
-            .unwrap()
-            .declared_streams(app_id)
-            .iter()
-            .any(|d| d.name == stream_name)
+        self.timeline.lock().unwrap().has_stream(app_id, stream_name)
     }
 }
 
@@ -605,9 +923,13 @@ mod tests {
 
     fn granted_service(timeline: Arc<Mutex<AppTimeline>>) -> HostSubscriptionService {
         let mut store = GrantStore::default();
-        // Grant both the pane-derived (CLI) and override (MCP) identities.
+        // Grant both the pane-derived (CLI) and override (MCP) identities, for
+        // both read (subscribe) and write (publish) targets — the two are
+        // distinct grant targets and never satisfy each other.
         store.record(allow_grant("pane:7", "event-probe::probe.tick"));
         store.record(allow_grant("mcp:host", "event-probe::probe.tick"));
+        store.record(allow_grant("pane:7", "publish:event-probe::probe.tick"));
+        store.record(allow_grant("mcp:host", "publish:event-probe::probe.tick"));
         HostSubscriptionService::new_for_test(store, timeline)
     }
 
@@ -832,5 +1154,227 @@ mod tests {
         assert_eq!(deliveries.len(), 1);
         assert_eq!(deliveries[0].summary.as_deref(), Some("Probe tick 1"));
         assert_eq!(deliveries[0].payload, None);
+    }
+
+    // ── Publish (declare + emit) ────────────────────────────────────────────
+
+    fn publish_request(
+        app_id: &str,
+        action: PublishAction,
+        override_id: Option<&str>,
+    ) -> (
+        HostPublishRequest,
+        std::sync::mpsc::Receiver<HostPublishReply>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let req = HostPublishRequest {
+            app_id: app_id.to_string(),
+            action,
+            from_pane_id: Some(7),
+            subscriber_override: override_id.map(String::from),
+            reply: tx,
+        };
+        (req, rx)
+    }
+
+    /// A granted emit records the event and host-stamps the emitter identity
+    /// (`pane:7`) — never letting `actor_id` default to the app-id namespace.
+    #[test]
+    fn publish_emit_records_and_host_stamps_actor() {
+        let timeline = timeline_with_stream();
+        let svc = granted_service(Arc::clone(&timeline));
+        let (req, rx) =
+            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(3))), None);
+        assert!(svc.classify_publish_request(req).is_none());
+        match rx.recv().unwrap() {
+            HostPublishReply::Ok { event_id, .. } => assert_eq!(event_id, Some(1)),
+            HostPublishReply::Err { message } => panic!("emit should record: {message}"),
+        }
+        let t = timeline.lock().unwrap();
+        assert_eq!(t.events().len(), 1);
+        assert_eq!(t.events()[0].actor_id, "pane:7");
+    }
+
+    /// The host-stamped override identity (MCP) is honoured for publish too.
+    #[test]
+    fn publish_honours_override_identity() {
+        let timeline = timeline_with_stream();
+        let svc = granted_service(Arc::clone(&timeline));
+        let (req, rx) = publish_request(
+            "event-probe",
+            PublishAction::Emit(Box::new(probe_event(5))),
+            Some("mcp:host"),
+        );
+        assert!(svc.classify_publish_request(req).is_none());
+        assert!(matches!(rx.recv().unwrap(), HostPublishReply::Ok { .. }));
+        assert_eq!(timeline.lock().unwrap().events()[0].actor_id, "mcp:host");
+    }
+
+    /// Emitting on a stream the app never declared is refused before the broker,
+    /// with a precise error and nothing recorded.
+    #[test]
+    fn publish_emit_rejects_undeclared_stream() {
+        let timeline = timeline_with_stream();
+        let svc = granted_service(Arc::clone(&timeline));
+        let mut ev = probe_event(1);
+        ev.event = "nope.stream".to_string();
+        let (req, rx) = publish_request("event-probe", PublishAction::Emit(Box::new(ev)), None);
+        assert!(svc.classify_publish_request(req).is_none());
+        match rx.recv().unwrap() {
+            HostPublishReply::Err { message } => assert!(message.contains("not declared")),
+            HostPublishReply::Ok { .. } => panic!("undeclared emit must be refused"),
+        }
+        assert!(timeline.lock().unwrap().events().is_empty());
+    }
+
+    /// Default `Ask` parks a publish consent (verb "publish to") instead of
+    /// declaring; `AllowOnce` then declares the stream.
+    #[test]
+    fn publish_declare_ask_then_allow_once_declares() {
+        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        let mut svc =
+            HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
+        let decls = vec![EventStreamDecl {
+            name: "foo.stream".to_string(),
+            schema: serde_json::json!({"type": "object"}),
+            description: None,
+        }];
+        let (req, rx) = publish_request("declare-probe", PublishAction::Declare(decls), None);
+        let consent = svc
+            .classify_publish_request(req)
+            .expect("Ask must park a consent");
+        assert_eq!(consent.subscriber_id, "pane:7");
+        assert_eq!(consent.action_verb(), "publish to");
+        assert!(timeline
+            .lock()
+            .unwrap()
+            .declared_streams("declare-probe")
+            .is_empty());
+
+        svc.resolve_consent(consent, ConsentChoice::AllowOnce, Path::new("/tmp/ws"));
+        match rx.recv().unwrap() {
+            HostPublishReply::Ok { detail, .. } => assert!(detail.contains("foo.stream")),
+            HostPublishReply::Err { message } => panic!("allow-once should declare: {message}"),
+        }
+        assert_eq!(
+            timeline.lock().unwrap().declared_streams("declare-probe").len(),
+            1
+        );
+    }
+
+    /// `Deny` answers the transport with a permission error and records nothing.
+    #[test]
+    fn publish_deny_refuses_and_records_nothing() {
+        let timeline = timeline_with_stream();
+        let mut svc =
+            HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
+        let (req, rx) =
+            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(1))), None);
+        let consent = svc
+            .classify_publish_request(req)
+            .expect("Ask must park a consent");
+        svc.resolve_consent(consent, ConsentChoice::Deny, Path::new("/tmp/ws"));
+        match rx.recv().unwrap() {
+            HostPublishReply::Err { message } => assert!(message.contains("denied by user")),
+            HostPublishReply::Ok { .. } => panic!("deny must refuse"),
+        }
+        assert!(timeline.lock().unwrap().events().is_empty());
+    }
+
+    /// `AllowAlways` persists an `Allow` grant: a fresh service over the same
+    /// profile dir emits without prompting (classify answers inline).
+    #[test]
+    fn publish_allow_always_persists_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let timeline = timeline_with_stream();
+        let mut svc =
+            HostSubscriptionService::new(dir.path(), PathBuf::from("/tmp/ws"), Arc::clone(&timeline));
+        let (req, rx) =
+            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(1))), None);
+        let consent = svc
+            .classify_publish_request(req)
+            .expect("Ask must park a consent");
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
+        assert!(matches!(rx.recv().unwrap(), HostPublishReply::Ok { .. }));
+
+        let svc2 = HostSubscriptionService::new(
+            dir.path(),
+            PathBuf::from("/tmp/ws"),
+            Arc::clone(&timeline),
+        );
+        let (req2, rx2) =
+            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(2))), None);
+        assert!(
+            svc2.classify_publish_request(req2).is_none(),
+            "persisted ALWAYS grant must publish inline, not re-prompt"
+        );
+        assert!(matches!(rx2.recv().unwrap(), HostPublishReply::Ok { .. }));
+        assert_eq!(timeline.lock().unwrap().events().len(), 2);
+    }
+
+    /// A persisted subscribe (read) `AllowAlways` grant must NOT authorize a
+    /// publish: the emit path still parks a consent (broker `Ask`), because read
+    /// and write use distinct grant targets.
+    #[test]
+    fn subscribe_grant_does_not_authorize_publish() {
+        let dir = tempfile::tempdir().unwrap();
+        let timeline = timeline_with_stream();
+        let mut svc =
+            HostSubscriptionService::new(dir.path(), PathBuf::from("/tmp/ws"), Arc::clone(&timeline));
+
+        // Grant a persistent subscribe (read) Allow-Always.
+        let (sub_req, sub_rx) =
+            subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
+        let consent = svc
+            .classify_subscribe_request(sub_req)
+            .expect("Ask must park a subscribe consent");
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
+        assert!(matches!(sub_rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+
+        // A publish from the same identity must still be gated (Ask → parked),
+        // not silently authorized by the read grant.
+        let svc2 = HostSubscriptionService::new(
+            dir.path(),
+            PathBuf::from("/tmp/ws"),
+            Arc::clone(&timeline),
+        );
+        let (pub_req, _pub_rx) =
+            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(1))), None);
+        assert!(
+            svc2.classify_publish_request(pub_req).is_some(),
+            "a read grant must not authorize a publish"
+        );
+    }
+
+    /// A persisted publish (write) `AllowAlways` grant must NOT authorize a
+    /// subscribe: the subscribe path still parks a consent (broker `Ask`).
+    #[test]
+    fn publish_grant_does_not_authorize_subscribe() {
+        let dir = tempfile::tempdir().unwrap();
+        let timeline = timeline_with_stream();
+        let mut svc =
+            HostSubscriptionService::new(dir.path(), PathBuf::from("/tmp/ws"), Arc::clone(&timeline));
+
+        // Grant a persistent publish (write) Allow-Always.
+        let (pub_req, pub_rx) =
+            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(1))), None);
+        let consent = svc
+            .classify_publish_request(pub_req)
+            .expect("Ask must park a publish consent");
+        svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
+        assert!(matches!(pub_rx.recv().unwrap(), HostPublishReply::Ok { .. }));
+
+        // A subscribe from the same identity must still be gated (Ask → parked).
+        let svc2 = HostSubscriptionService::new(
+            dir.path(),
+            PathBuf::from("/tmp/ws"),
+            Arc::clone(&timeline),
+        );
+        let (sub_req, _sub_rx) =
+            subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
+        assert!(
+            svc2.classify_subscribe_request(sub_req).is_some(),
+            "a write grant must not authorize a subscribe"
+        );
     }
 }

@@ -299,10 +299,13 @@ pub struct PlexiApp {
     /// pane was closed. Used to route notifications to the correct context.
     pub(crate) background_apps: HashMap<String, (u64, Box<crate::process_app::ProcessApp>)>,
     /// Directed inter-agent / inter-app pipes (#286). Keyed by `pipe_id`,
-    /// value is the `(sender_pane_id, target_pane_id)` pair the host must
-    /// scope `PipeMessage` deliveries to. `DeliverPipeMessage` consults this
-    /// map first: hits route ONLY to the non-sender member of the pair;
-    /// misses fall back to the legacy peer-broadcast (`has_reader`) path.
+    /// value is the `(sender_pane_id, target_pane_id)` pair the host scopes
+    /// `PipeMessage` deliveries to. This is the sole JSON-pipe delivery path:
+    /// `DeliverPipeMessage` routes ONLY to the non-sender member of the pair;
+    /// a send on a pipe absent from this map is dropped. The legacy non-directed
+    /// peer-broadcast fan-out was removed in 0327 in favour of event streams.
+    /// `PipeOpenDirected` is a thin alias over this map — an exclusive duplex
+    /// channel primitive; resource-scoped fan-out belongs on the event bus.
     pub(crate) directed_pipes: HashMap<String, (u64, u64)>,
     /// Hot-reload watcher set (#83). Owns one notify watcher per pane that
     /// opted-in via manifest `[app] watch = true` (workspace-local only).
@@ -377,7 +380,12 @@ pub struct PlexiApp {
     /// in `drain_event_subscribe_channel`.
     event_subscribe_rx:
         std::sync::mpsc::Receiver<crate::host::event_subscriptions::HostSubscribeRequest>,
-    /// Subscribe requests the broker answered with `Ask`, parked for an explicit
+    /// Receiver for CLI/MCP publish requests (`events declare`/`emit`) routed
+    /// from socket connection threads to the UI thread. Drained each frame in
+    /// `drain_event_subscribe_channel` alongside subscribe requests.
+    event_publish_rx:
+        std::sync::mpsc::Receiver<crate::host::event_subscriptions::HostPublishRequest>,
+    /// Subscribe or publish requests the broker answered with `Ask`, parked for an explicit
     /// user decision. The front entry is surfaced as the host event-consent
     /// modal; [`FocusLayer::EventConsent`] is promoted while this is non-empty.
     pub(crate) pending_event_consents:
@@ -445,6 +453,7 @@ fn spawn_socket_listener(
     subscribe_tx: std::sync::mpsc::Sender<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >,
+    publish_tx: std::sync::mpsc::Sender<crate::host::event_subscriptions::HostPublishRequest>,
     egui_ctx: egui::Context,
 ) {
     use std::os::unix::net::UnixListener;
@@ -470,25 +479,27 @@ fn spawn_socket_listener(
             };
             let tx = tx.clone();
             let subscribe_tx = subscribe_tx.clone();
+            let publish_tx = publish_tx.clone();
             let egui_ctx = egui_ctx.clone();
             std::thread::spawn(move || {
-                handle_socket_connection(stream, tx, subscribe_tx, egui_ctx);
+                handle_socket_connection(stream, tx, subscribe_tx, publish_tx, egui_ctx);
             });
         }
     });
 }
 
 /// Per-connection handler. Most connections are one-shot `AppRequest` lines.
-/// Event-stream control messages (`events_subscribe`, `events_list`) are
-/// intercepted before `AppRequest` parsing because they keep the socket open
-/// and stream NDJSON back — a transport the normal request/response-file path
-/// does not support.
+/// Event-bus control messages (`events_subscribe`, `events_list`,
+/// `events_declare`, `events_emit`) are intercepted before `AppRequest` parsing
+/// because they keep the socket open and stream NDJSON back — a transport the
+/// normal request/response-file path does not support.
 fn handle_socket_connection(
     stream: std::os::unix::net::UnixStream,
     tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
     subscribe_tx: std::sync::mpsc::Sender<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >,
+    publish_tx: std::sync::mpsc::Sender<crate::host::event_subscriptions::HostPublishRequest>,
     egui_ctx: egui::Context,
 ) {
     use std::io::{BufRead, BufReader};
@@ -521,6 +532,10 @@ fn handle_socket_connection(
             }
             Some("events_list") => {
                 handle_events_list(write_half, &val);
+                return;
+            }
+            Some("events_declare") | Some("events_emit") => {
+                handle_events_publish(write_half, val, &publish_tx, &egui_ctx);
                 return;
             }
             _ => {}
@@ -722,6 +737,115 @@ fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serd
     let _ = write_half.flush();
 }
 
+/// Handle a CLI/agent publish control message (`events_declare` / `events_emit`).
+/// Routes the broker-gated declare/emit round-trip through the UI thread (which
+/// owns the grant store), then writes exactly one JSON reply line and closes.
+/// Like subscribe, a first-time publish under the broker's default `Ask` posture
+/// blocks here until the user answers the host consent modal.
+fn handle_events_publish(
+    mut write_half: std::os::unix::net::UnixStream,
+    val: serde_json::Value,
+    publish_tx: &std::sync::mpsc::Sender<crate::host::event_subscriptions::HostPublishRequest>,
+    egui_ctx: &egui::Context,
+) {
+    use crate::host::event_subscriptions::{HostPublishReply, HostPublishRequest, PublishAction};
+    use std::io::Write;
+    use std::time::Duration;
+
+    let reply_err = |mut w: std::os::unix::net::UnixStream, message: String| {
+        let _ = writeln!(w, "{}", serde_json::json!({"type": "error", "message": message}));
+        let _ = w.flush();
+    };
+
+    let app_id = val["app_id"].as_str().unwrap_or_default().to_string();
+    if app_id.trim().is_empty() {
+        reply_err(write_half, "missing required field: app_id".to_string());
+        return;
+    }
+    let from_pane_id = val["from_pane_id"].as_u64();
+
+    // Build the publish action from the wire shape. Identity fields are never
+    // parsed here — the UI thread host-stamps them.
+    let action = match val["type"].as_str() {
+        Some("events_declare") => {
+            match serde_json::from_value::<Vec<crate::app_protocol::EventStreamDecl>>(
+                val["streams"].clone(),
+            ) {
+                Ok(decls) => PublishAction::Declare(decls),
+                Err(e) => {
+                    reply_err(write_half, format!("invalid streams: {e}"));
+                    return;
+                }
+            }
+        }
+        Some("events_emit") => {
+            let emitted = crate::host::app_timeline::EmittedEvent {
+                event: val["event"].as_str().unwrap_or_default().to_string(),
+                actor: serde_json::from_value(val["actor"].clone())
+                    .unwrap_or(crate::app_protocol::AppEventActor::Agent),
+                // Host-stamped by the UI thread from the pane identity.
+                actor_id: None,
+                caused_by: None,
+                summary: val["summary"].as_str().unwrap_or_default().to_string(),
+                resource_id: val["resource_id"].as_str().unwrap_or_default().to_string(),
+                resource_scope: val["resource_scope"].as_str().map(String::from),
+                revision_after: val["revision_after"].as_str().unwrap_or_default().to_string(),
+                payload: val.get("payload").filter(|v| !v.is_null()).cloned(),
+                state_ref: val["state_ref"].as_str().map(String::from),
+                revision_before: val["revision_before"].as_str().map(String::from),
+                rollback_token: val["rollback_token"].as_str().map(String::from),
+                changed_resources: val["changed_resources"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default(),
+                suggested_trigger: serde_json::from_value(val["suggested_trigger"].clone()).ok(),
+            };
+            PublishAction::Emit(Box::new(emitted))
+        }
+        other => {
+            reply_err(write_half, format!("unknown publish type: {other:?}"));
+            return;
+        }
+    };
+
+    let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<HostPublishReply>(1);
+    let req = HostPublishRequest {
+        app_id: app_id.clone(),
+        action,
+        from_pane_id,
+        subscriber_override: None,
+        reply: reply_tx,
+    };
+    if publish_tx.send(req).is_err() {
+        reply_err(write_half, "host not accepting publish requests".to_string());
+        return;
+    }
+    egui_ctx.request_repaint();
+
+    // Generous wait: a first-time publish under the default `Ask` posture blocks
+    // until the user answers the host consent modal; a pre-granted publish
+    // replies near-instantly.
+    let reply = match reply_rx.recv_timeout(Duration::from_secs(120)) {
+        Ok(reply) => reply,
+        Err(_) => {
+            reply_err(write_half, "publish consent timed out".to_string());
+            return;
+        }
+    };
+    let line = match reply {
+        HostPublishReply::Ok { detail, event_id } => {
+            log::info!("events: publish to '{app_id}' ok — {detail}");
+            serde_json::json!({"type": "ok", "detail": detail, "event_id": event_id})
+        }
+        HostPublishReply::Err { message } => {
+            log::info!("events: publish to '{app_id}' rejected — {message}");
+            serde_json::json!({"type": "error", "message": message})
+        }
+    };
+    let _ = writeln!(write_half, "{line}");
+    let _ = write_half.flush();
+}
+
 impl PlexiApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -868,9 +992,13 @@ impl PlexiApp {
         let (event_subscribe_tx, event_subscribe_rx) = std::sync::mpsc::channel::<
             crate::host::event_subscriptions::HostSubscribeRequest,
         >();
+        let (event_publish_tx, event_publish_rx) = std::sync::mpsc::channel::<
+            crate::host::event_subscriptions::HostPublishRequest,
+        >();
         spawn_socket_listener(
             pane_ipc_tx,
             event_subscribe_tx.clone(),
+            event_publish_tx,
             cc.egui_ctx.clone(),
         );
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
@@ -1215,6 +1343,7 @@ impl PlexiApp {
                     pane_ipc_rx,
                     host_subscriptions,
                     event_subscribe_rx,
+                    event_publish_rx,
                     pending_event_consents: std::collections::VecDeque::new(),
                     pending_raw_wasm_launches: std::collections::VecDeque::new(),
                     last_logged_focus: None,
@@ -1462,6 +1591,7 @@ impl PlexiApp {
             pane_ipc_rx,
             host_subscriptions,
             event_subscribe_rx,
+            event_publish_rx,
             pending_event_consents: std::collections::VecDeque::new(),
             pending_raw_wasm_launches: std::collections::VecDeque::new(),
             last_logged_focus: None,
@@ -1537,6 +1667,9 @@ impl PlexiApp {
             std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
         let (_event_subscribe_tx, event_subscribe_rx) = std::sync::mpsc::channel::<
             crate::host::event_subscriptions::HostSubscribeRequest,
+        >();
+        let (_event_publish_tx, event_publish_rx) = std::sync::mpsc::channel::<
+            crate::host::event_subscriptions::HostPublishRequest,
         >();
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
@@ -1684,6 +1817,7 @@ impl PlexiApp {
                 pane_ipc_rx,
                 host_subscriptions,
                 event_subscribe_rx,
+                event_publish_rx,
                 pending_event_consents: std::collections::VecDeque::new(),
                 pending_raw_wasm_launches: std::collections::VecDeque::new(),
                 last_logged_focus: None,
@@ -2227,7 +2361,6 @@ impl eframe::App for PlexiApp {
                     type_id,
                     layout,
                     args,
-                    pipe_id,
                     from_pane_id,
                     request_id,
                     target_context,
@@ -2263,12 +2396,11 @@ impl eframe::App for PlexiApp {
                         continue;
                     }
 
-                    // If pipe_id is set, append --pipe=<id> to args so the spawned app knows
-                    // which pipe_id to send its result on.
-                    let mut effective_args = args;
-                    if let Some(ref pid) = pipe_id {
-                        effective_args.push(format!("--pipe={pid}"));
-                    }
+                    // A spawned child reports completion over the event bus
+                    // (`EmitEvent` with `<app>::completed`), not a JSON-pipe
+                    // reply — the `--pipe=<id>` reply coupling was removed in
+                    // 0327 along with the legacy peer-broadcast transport.
+                    let effective_args = args;
 
                     // target_context validation (#1518): if set, verify the
                     // target exists and is a descendant of the requester's
@@ -2707,62 +2839,39 @@ impl eframe::App for PlexiApp {
                     payload,
                 } => {
                     let active = self.active_window;
-                    // Directed pipe (#286) — only the non-sender member of
-                    // the pair receives. Falls through to the legacy peer
-                    // broadcast when the pipe was not opened directed.
-                    if let Some(&(a, b)) = self.directed_pipes.get(&pipe_id) {
-                        let target_pid = if sender_pane_id == a {
-                            Some(b)
-                        } else if sender_pane_id == b {
-                            Some(a)
-                        } else {
-                            // Neither side — wire mismatch. Log + drop.
-                            log::warn!(
-                                "DeliverPipeMessage: directed pipe '{pipe_id}' \
-                                 sender {sender_pane_id} not in pair ({a}, {b}); dropping"
-                            );
-                            None
-                        };
-                        if let Some(tid) = target_pid {
-                            if let Some(pane) = self.windows[active].panes.get_mut(&tid) {
-                                let event = crate::app_protocol::PlexiEvent::PipeMessage {
-                                    pipe_id: pipe_id.clone(),
-                                    payload: payload.clone(),
-                                };
-                                if let Some(app) = pane.as_app_mut() {
-                                    app.runtime.queue_outbound_event(event);
-                                }
-                            }
-                        }
+                    // JSON pipe messages route only through directed pipes
+                    // (#286): the host scopes delivery to the non-sender member
+                    // of the recorded `(sender, target)` pair. The legacy
+                    // non-directed peer-broadcast fan-out was removed in 0327 —
+                    // event streams (subscription-scoped, cross-window) replace
+                    // it. A send on a pipe that was never opened directed is
+                    // dropped with a warning.
+                    let Some(&(a, b)) = self.directed_pipes.get(&pipe_id) else {
+                        log::warn!(
+                            "DeliverPipeMessage: '{pipe_id}' from pane {sender_pane_id} is not a directed pipe; dropping (non-directed JSON pipes were removed in 0327)"
+                        );
                         continue;
-                    }
-                    let pane_ids: Vec<_> = self.windows[active].panes.keys().copied().collect();
-                    for pid in pane_ids {
-                        if pid == sender_pane_id {
-                            continue; // don't echo back to sender
-                        }
-                        let is_reader = self.windows[active]
-                            .panes
-                            .get(&pid)
-                            .and_then(|p| p.as_app())
-                            .map(|a| match &a.runtime {
-                                crate::host::pane::AppRuntime::Process(pa) => {
-                                    pa.pipe_registry.lock().unwrap().has_reader(&pipe_id)
-                                }
-                                crate::host::pane::AppRuntime::Builtin(_) => false,
-                                crate::host::pane::AppRuntime::Wasm(_) => false,
-                            })
-                            .unwrap_or(false);
-                        if is_reader {
-                            if let Some(pane) = self.windows[active].panes.get_mut(&pid) {
-                                if let Some(app) = pane.as_app_mut() {
-                                    app.runtime.queue_outbound_event(
-                                        crate::app_protocol::PlexiEvent::PipeMessage {
-                                            pipe_id: pipe_id.clone(),
-                                            payload: payload.clone(),
-                                        },
-                                    );
-                                }
+                    };
+                    let target_pid = if sender_pane_id == a {
+                        Some(b)
+                    } else if sender_pane_id == b {
+                        Some(a)
+                    } else {
+                        // Neither side — wire mismatch. Log + drop.
+                        log::warn!(
+                            "DeliverPipeMessage: directed pipe '{pipe_id}' \
+                             sender {sender_pane_id} not in pair ({a}, {b}); dropping"
+                        );
+                        None
+                    };
+                    if let Some(tid) = target_pid {
+                        if let Some(pane) = self.windows[active].panes.get_mut(&tid) {
+                            let event = crate::app_protocol::PlexiEvent::PipeMessage {
+                                pipe_id: pipe_id.clone(),
+                                payload: payload.clone(),
+                            };
+                            if let Some(app) = pane.as_app_mut() {
+                                app.runtime.queue_outbound_event(event);
                             }
                         }
                     }

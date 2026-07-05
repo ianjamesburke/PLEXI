@@ -797,7 +797,6 @@ mod ownership_tests {
                 type_id: "__test_nonexistent__".to_string(),
                 layout: "split".to_string(),
                 args: vec![],
-                pipe_id: None,
                 from_pane_id: Some(pane_id),
                 request_id: Some("defer-test".to_string()),
                 target_context: None,

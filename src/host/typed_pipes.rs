@@ -31,18 +31,14 @@ pub enum PipeDirection {
 #[derive(Debug)]
 pub enum PipeError {
     AlreadyOpen(String),
-    NotFound(String),
     BindFailed(String),
-    WriteFailed(String),
 }
 
 impl std::fmt::Display for PipeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PipeError::AlreadyOpen(id) => write!(f, "pipe already open: {id}"),
-            PipeError::NotFound(id) => write!(f, "pipe not found: {id}"),
             PipeError::BindFailed(msg) => write!(f, "bind failed: {msg}"),
-            PipeError::WriteFailed(msg) => write!(f, "write failed: {msg}"),
         }
     }
 }
@@ -248,21 +244,6 @@ impl TypedPipeRegistry {
                 let _ = handle.join();
             }
             let _ = std::fs::remove_file(&b.socket_path);
-        }
-    }
-
-    /// Route a JSON payload on a JSON pipe (host side helper).
-    pub fn send_json(
-        &mut self,
-        pipe_id: &str,
-        _payload: serde_json::Value,
-    ) -> Result<(), PipeError> {
-        match self.pipes.get(pipe_id) {
-            Some(PipeEntry::Json(_)) => Ok(()),
-            Some(PipeEntry::Binary(_)) => {
-                Err(PipeError::WriteFailed("pipe is binary mode".to_owned()))
-            }
-            None => Err(PipeError::NotFound(pipe_id.to_owned())),
         }
     }
 

@@ -299,7 +299,7 @@ pub struct ProcessApp {
     /// evaluation. `None` = no posture configured (broker falls back to Ask).
     pub(crate) posture: Option<crate::broker::PermissionPosture>,
     /// Host-owned app event timeline + undo checkpoints + subscriptions
-    /// (docs/prm/undo-and-app-events.md). Production panes share the global
+    /// (src/host/app_timeline.rs). Production panes share the global
     /// instance; tests inject an isolated one.
     pub(crate) app_timeline: Arc<Mutex<crate::host::app_timeline::AppTimeline>>,
     /// Typed pipe registry.
@@ -1021,7 +1021,7 @@ impl ProcessApp {
         }
     }
 
-    // ── App events + undo (docs/prm/undo-and-app-events.md, Phase B) ────────
+    // ── App events + undo (src/host/app_timeline.rs, Phase B) ────────
 
     /// Subscribe an actor to `publisher_app_id`'s event streams. Gated
     /// through the unified broker: one `TargetType::AppEventStream`

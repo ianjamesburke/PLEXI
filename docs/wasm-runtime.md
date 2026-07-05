@@ -248,6 +248,10 @@ State is:
 
 Apps launched with `plexi run` without `--persist` get a temp-scoped namespace that is deleted when the pane closes. The app code is identical — it still writes to `state`. The host decides the lifetime of the namespace based on the execution mode.
 
+### Binary pipes (bulk data plane)
+
+The native (PGAP) runtime backs binary pipes with a Unix-domain socket and a lock-free ring buffer (`src/host/typed_pipes.rs`) — the bulk-data plane for audio, video, and MIDI frames. In the WASM runtime that transport does not survive: a sandboxed module cannot hold a host socket fd, and remote/cloud execution has no shared filesystem. Instead the *pairing and permission* — "app A may stream bytes to pane B on channel X" — becomes a typed host effect gated by a capability, while the *bytes themselves flow out-of-band* over whatever the deployment provides (a host-managed shared-memory ring locally, a binary WebSocket frame remotely). The guest never sees a raw fd; it holds an opaque channel handle and pushes frames through a typed `send-binary` import. JSON pipe messaging is not a WASM transport at all — inter-pane JSON coordination is the event bus (`declare-event-streams` / `emit-event` / `subscribe-app-events`); the only sanctioned exclusive JSON channel is a directed pipe, re-expressed as a resource-scoped stream.
+
 ---
 
 ## Capability System  🟡 PARTIAL

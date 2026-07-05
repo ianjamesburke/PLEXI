@@ -235,7 +235,7 @@
           ]
         },
         "PayloadMode": {
-          "description": "How much of an event a subscription delivers\n(docs/prm/undo-and-app-events.md).",
+          "description": "How much of an event a subscription delivers\n(src/host/app_timeline.rs).",
           "oneOf": [
             {
               "const": "off",
@@ -286,7 +286,7 @@
           ]
         },
         "TriggerMode": {
-          "description": "How an event subscription triggers its subscriber\n(docs/prm/undo-and-app-events.md). Also the vocabulary for an emitting\napp's `suggested_trigger` hint.",
+          "description": "How an event subscription triggers its subscriber\n(src/host/app_timeline.rs). Also the vocabulary for an emitting\napp's `suggested_trigger` hint.",
           "oneOf": [
             {
               "const": "never",
@@ -821,7 +821,7 @@
           "type": "object"
         },
         {
-          "description": "Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.\nRequires `panes.spawn` capability.\n`layout`: one of \"split_h\", \"split_right\", \"split_v\", \"split_below\", \"split_above\", \"split_left\", \"overlay\",\n  \"new_window\" (terminal only — creates a new spatial grid window to the right\n  of the current context row instead of splitting the active pane),\n  \"tab\" (terminal only — adds a new tab alongside the focused pane, wrapping\n  both in a Tabs container if needed; use after `pane focus` to target a window).\n  \"overlay_pane\" and \"background\" are reserved but not yet implemented.\n`pipe_id`: when set, the host appends `--pipe=<pipe_id>` to args before launch\n  so the spawned app can reply via PipeSend on completion.\nHost responds: `PlexiEvent::PaneSpawned { pane_id }` on success,\n              `PlexiEvent::PaneSpawnError { reason }` on failure.",
+          "description": "Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.\nRequires `panes.spawn` capability.\n`layout`: one of \"split_h\", \"split_right\", \"split_v\", \"split_below\", \"split_above\", \"split_left\", \"overlay\",\n  \"new_window\" (terminal only — creates a new spatial grid window to the right\n  of the current context row instead of splitting the active pane),\n  \"tab\" (terminal only — adds a new tab alongside the focused pane, wrapping\n  both in a Tabs container if needed; use after `pane focus` to target a window).\n  \"overlay_pane\" and \"background\" are reserved but not yet implemented.\nA spawned child that needs to report completion back to its spawner does\nso over the event bus: it calls `EmitEvent` with `<app>::completed` and\nthe spawner reads it via `SubscribeAppEvents`. There is no JSON-pipe\nreply channel (the legacy `--pipe=<id>` coupling was removed in 0327).\nHost responds: `PlexiEvent::PaneSpawned { pane_id }` on success,\n              `PlexiEvent::PaneSpawnError { reason }` on failure.",
           "properties": {
             "args": {
               "default": [],
@@ -865,12 +865,6 @@
             },
             "path": {
               "description": "When set, the host launches the app directly from this filesystem path\nrather than looking it up in the registry by type_id.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "pipe_id": {
               "type": [
                 "string",
                 "null"
@@ -3164,7 +3158,7 @@
           ]
         },
         "TriggerMode": {
-          "description": "How an event subscription triggers its subscriber\n(docs/prm/undo-and-app-events.md). Also the vocabulary for an emitting\napp's `suggested_trigger` hint.",
+          "description": "How an event subscription triggers its subscriber\n(src/host/app_timeline.rs). Also the vocabulary for an emitting\napp's `suggested_trigger` hint.",
           "oneOf": [
             {
               "const": "never",

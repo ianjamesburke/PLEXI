@@ -750,8 +750,10 @@ pub enum AppRequest {
     ///   "tab" (terminal only — adds a new tab alongside the focused pane, wrapping
     ///   both in a Tabs container if needed; use after `pane focus` to target a window).
     ///   "overlay_pane" and "background" are reserved but not yet implemented.
-    /// `pipe_id`: when set, the host appends `--pipe=<pipe_id>` to args before launch
-    ///   so the spawned app can reply via PipeSend on completion.
+    /// A spawned child that needs to report completion back to its spawner does
+    /// so over the event bus: it calls `EmitEvent` with `<app>::completed` and
+    /// the spawner reads it via `SubscribeAppEvents`. There is no JSON-pipe
+    /// reply channel (the legacy `--pipe=<id>` coupling was removed in 0327).
     /// Host responds: `PlexiEvent::PaneSpawned { pane_id }` on success,
     ///               `PlexiEvent::PaneSpawnError { reason }` on failure.
     SpawnPane {
@@ -760,8 +762,6 @@ pub enum AppRequest {
         layout: Option<String>,
         #[serde(default)]
         args: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pipe_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1351,7 +1351,7 @@ pub enum AppRequest {
         multiple: bool,
     },
 
-    // ── App events + undo (docs/prm/undo-and-app-events.md, Phase B) ─────────
+    // ── App events + undo (src/host/app_timeline.rs, Phase B) ─────────
     /// Declare the named event streams this app may emit on. Event names are
     /// app-defined but MUST be declared (with a JSON-Schema object) before
     /// any `EmitEvent` referencing them is accepted. Re-declaring a stream
@@ -1505,7 +1505,7 @@ impl AppEventActor {
 }
 
 /// How an event subscription triggers its subscriber
-/// (docs/prm/undo-and-app-events.md). Also the vocabulary for an emitting
+/// (src/host/app_timeline.rs). Also the vocabulary for an emitting
 /// app's `suggested_trigger` hint.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1521,7 +1521,7 @@ pub enum TriggerMode {
 }
 
 /// How much of an event a subscription delivers
-/// (docs/prm/undo-and-app-events.md).
+/// (src/host/app_timeline.rs).
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PayloadMode {
@@ -2927,14 +2927,13 @@ mod tests {
 
     #[test]
     fn spawn_pane_drawcommand_round_trips_serde() {
-        let json = r#"{"type":"spawn_pane","type_id":"snake","layout":"split_v","args":["--foo"],"pipe_id":"p1"}"#;
+        let json = r#"{"type":"spawn_pane","type_id":"snake","layout":"split_v","args":["--foo"]}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
             DrawCommand::Host(AppRequest::SpawnPane {
                 type_id,
                 layout,
                 args,
-                pipe_id,
                 from_pane_id,
                 request_id,
                 ..
@@ -2942,7 +2941,6 @@ mod tests {
                 assert_eq!(type_id, "snake");
                 assert_eq!(layout.as_deref(), Some("split_v"));
                 assert_eq!(args, &["--foo"]);
-                assert_eq!(pipe_id.as_deref(), Some("p1"));
                 assert!(from_pane_id.is_none());
                 assert!(request_id.is_none());
             }
@@ -2954,21 +2952,19 @@ mod tests {
             "wire tag missing: {serialised}"
         );
 
-        // defaults: layout is None (absent from wire), args to [], pipe_id absent
+        // defaults: layout is None (absent from wire), args to []
         let minimal = r#"{"type":"spawn_pane","type_id":"snake"}"#;
         let cmd2: DrawCommand = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
             DrawCommand::Host(AppRequest::SpawnPane {
                 layout,
                 args,
-                pipe_id,
                 from_pane_id,
                 request_id,
                 ..
             }) => {
                 assert!(layout.is_none(), "absent layout must deserialise to None");
                 assert!(args.is_empty());
-                assert!(pipe_id.is_none());
                 assert!(from_pane_id.is_none());
                 assert!(request_id.is_none());
             }

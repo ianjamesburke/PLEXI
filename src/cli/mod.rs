@@ -329,7 +329,10 @@ pub use context_cli::{
     context_push_cli, context_set_root_cli, context_zoom_cli, context_zoom_out_cli,
 };
 pub use demo::demo_cli;
-pub use events::{events_list_cli, events_mcp_config_cli, events_subscribe_cli};
+pub use events::{
+    events_declare_cli, events_emit_cli, events_list_cli, events_mcp_config_cli,
+    events_subscribe_cli, EmitArgs,
+};
 pub use doctor::doctor_cli;
 pub use host::{host_start_cli, host_status_cli, host_stop_cli};
 pub use install::{
