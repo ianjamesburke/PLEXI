@@ -6,9 +6,9 @@
 
 ---
 
-## Current State (2026-07-05)
+## Current State (2026-07-05, post-#2361)
 
-`alpha` is at `e7fc9b75` (docs-only commits since `02eaabe8`). Since the last audit: bundle #2360 landed and closed `0330`, `0331`, `0332`, `0335`, `0328`, `0334`, `0346`, and `0215`; details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at `ce731bda`. Since the last audit: PR #2361 landed stint 0327 (event-bus unification: `plexi events declare/emit`, publish-vs-subscribe grant separation, legacy JSON-pipe fan-out deleted, PTY fenced) — live-validated end-to-end; 0336 and 0341's 0327-blocker unblocked; 0348 filed (host start windowless boot drops seeded panes). Before that: bundle #2360 landed and closed `0330`, `0331`, `0332`, `0335`, `0328`, `0334`, `0346`, and `0215`; details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
@@ -62,9 +62,9 @@ The registry brokers money; never a dependency for running installed apps. Spec:
 
 Same app contract, sandboxed runtime. This is what makes the marketplace mobile-friendly (in-process WASM is the only way apps run on iOS) and hosted (same typed contract over WebSocket).
 
-- **Pre-pay the toll: one transport-agnostic contract**
-  - `0327` unify inter-pane comms on the event bus (events / binary pipes / PTY, delete the middle tier) — **ready, P0-priority standalone**
-    - `0336` manifest `[launch] on_launch` policy (focus_existing / per-context / always_new; duplicates ride bus subscriptions)
+- **Pre-pay the toll: one transport-agnostic contract** — `0327` landed 2026-07-05 (#2361)
+  - `0336` manifest `[launch] on_launch` policy (focus_existing / per-context / always_new; duplicates ride bus subscriptions) — **unblocked, next up**
+  - `0348` fix host start windowless boot dropping seeded panes (unblocks hands-off agent validation)
 - **The WASM lane**
   - `0285` WASM-native Python SDK + CPython-in-WASM runtime (draft PR `#2323`)
     - `0286` WASM bundle distribution through the Epoch 3 registry (re-scoped 2026-07-02; also after `0322`, `0344`)
@@ -82,12 +82,12 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 
 ## Priority Stack (flat view)
 
-P0: `0327`.
+P0: none.
 P1: `0241` (open PR needs fixing), `0285` (draft PR), `0338`, `0347`, `0339`*, `0340`*, `0341`*, `0344`*.
-P2 and below: `0325`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
+P2 and below: `0336`, `0348`, `0325`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0327` — event-bus unification, P0 standalone and the transport-contract toll for Epoch 4.
+**Next recommended task:** `0336` — `[launch] on_launch` policy, rides the freshly landed bus subscriptions.
 
 ---
 
