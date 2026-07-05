@@ -6,9 +6,9 @@
 
 ---
 
-## Current State (2026-07-02)
+## Current State (2026-07-05)
 
-`alpha` is at `02eaabe8`. Since the last audit: bundle #2360 landed and closed `0330`, `0331`, `0332`, `0335`, `0328`, `0334`, `0346`, and `0215`; details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at `e7fc9b75` (docs-only commits since `02eaabe8`). Since the last audit: bundle #2360 landed and closed `0330`, `0331`, `0332`, `0335`, `0328`, `0334`, `0346`, and `0215`; details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
