@@ -2246,7 +2246,7 @@ fn capability_request_denied_by_posture() {
     );
 }
 
-// -- App events + undo (docs/prm/undo-and-app-events.md, Phase B) -----------
+// -- App events + undo (src/host/app_timeline.rs, Phase B) -----------
 
 /// Build a minimal valid EmitEvent host command for the declared
 /// `move.played` stream, optionally carrying rollback metadata.

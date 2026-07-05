@@ -467,7 +467,7 @@ pub enum PlexiEvent {
         payload: Option<serde_json::Value>,
     },
 
-    // ── Undo rollback (docs/prm/undo-and-app-events.md, Phase B) ─────────────
+    // ── Undo rollback (src/host/app_timeline.rs, Phase B) ─────────────
     /// Host asks the app whether `resource_id` is still at
     /// `expected_revision` before rolling back a checkpoint. The app must
     /// answer with `AppRequest::RollbackVerifyResult` carrying its current

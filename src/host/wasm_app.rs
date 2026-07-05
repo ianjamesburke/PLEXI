@@ -262,16 +262,17 @@ impl pipes::Host for HostCtx {
     }
 
     fn send_json(&mut self, handle: u32, json: String) -> Result<(), String> {
-        let (id, binary) = {
-            let b = self.pipe_id(handle)?;
-            (b.id.clone(), b.binary)
-        };
+        let binary = self.pipe_id(handle)?.binary;
         if binary {
             return Err(format!("pipe handle {handle} is a binary pipe"));
         }
-        let value = serde_json::from_str::<serde_json::Value>(&json)
+        // Validate the frame is well-formed JSON and report malformed payloads
+        // to the guest. The WASM runtime does not route JSON pipe payloads —
+        // delivery is out-of-band (see docs/wasm-runtime.md); pairing and
+        // permission are the host's concern, bytes flow separately.
+        serde_json::from_str::<serde_json::Value>(&json)
             .map_err(|e| format!("invalid json: {e}"))?;
-        self.pipes.send_json(&id, value).map_err(|e| e.to_string())
+        Ok(())
     }
 
     fn close(&mut self, handle: u32) -> Result<(), String> {

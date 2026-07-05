@@ -890,6 +890,8 @@ Apps declare named event streams (e.g. `probe.tick`) and emit events on them. `p
 | Subcommand | Description |
 |---|---|
 | `subscribe` | Subscribe to an app's event stream and print delivered events as NDJSON |
+| `declare` | Declare an event stream so it can be emitted on and subscribed to |
+| `emit` | Emit an event onto a declared stream |
 | `list` | List event streams currently declared by running apps |
 | `mcp-config` | Print the host event MCP server config for an MCP-aware agent |
 
@@ -909,6 +911,44 @@ Example: plexi events subscribe event-probe probe.tick --payload full
 | `--payload` | string | no | How much of each event to deliver: off, summary, full, or state-ref Default: `full`. |
 | `--trigger` | string | no | Trigger mode recorded on the subscription: never, conversation, ambient, or ask Default: `conversation`. |
 | `--resource` | string | no | Only deliver events for this resource id (document/game/pane). Omit for any |
+
+### `plexi events declare`
+
+Declare an event stream so it can be emitted on and subscribed to.
+
+Registers a named stream under an app-id namespace with a JSON-Schema object describing its payload. Declaring is a prerequisite for `emit`. Re-declaring a stream replaces its previous schema. The first declare under a namespace you do not own prompts for host consent.
+
+Example: plexi events declare my-agent task.done --schema '{"type":"object"}'
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<app_id>` | string | yes | App-id namespace to declare the stream under (e.g. `my-agent`) |
+| `<stream>` | string | yes | Stream name to declare (e.g. `task.done`) |
+| `--schema` | string | no | JSON-Schema object describing the event payload Default: `{"type":"object"}`. |
+| `--description` | string | no | Human-readable description of when this event fires |
+
+### `plexi events emit`
+
+Emit an event onto a declared stream.
+
+Records a semantic event in the host timeline and fans it out to every broker-approved subscriber. The stream must already be declared. The emitter identity (actor_id) is host-stamped from your pane and cannot be set from the CLI; `--actor` sets only the advisory semantic category.
+
+Example: plexi events emit my-agent task.done --summary "Build finished" --resource build-42 --revision-after done
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<app_id>` | string | yes | App-id namespace the stream lives under (e.g. `my-agent`) |
+| `<event>` | string | yes | Declared stream name to emit on (e.g. `task.done`) |
+| `--summary` | string | yes | One-line human-readable description of what happened |
+| `--resource` | string | yes | Id of the document/game/pane/resource the event is about |
+| `--revision-after` | string | yes | Revision identifier after the change |
+| `--actor` | string | no | Semantic actor category that caused the change Default: `agent`. |
+| `--resource-scope` | string | no | Scope class of the resource id (document, game, pane…). Defaults to pane |
+| `--payload` | string | no | Structured JSON payload; the declared stream schema is advisory and not enforced on the emit path |
+| `--state-ref` | string | no | Stable reference subscribers can fetch full state from |
+| `--revision-before` | string | no | Revision identifier before the change |
+| `--rollback-token` | string | no | Opaque token that makes this event reversible (creates an undo checkpoint) |
+| `--changed-resource` | string (repeatable) | no | Other resource id touched by this change (repeatable) |
 
 ### `plexi events list`
 

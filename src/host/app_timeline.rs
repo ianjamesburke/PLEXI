@@ -1,4 +1,4 @@
-//! App event timeline + undo checkpoints — `docs/prm/undo-and-app-events.md`.
+//! App event timeline + undo checkpoints.
 //!
 //! Apps own state. The host owns the timeline. Agents never own app state.
 //!
@@ -316,6 +316,15 @@ impl AppTimeline {
             .get(app_id)
             .map(|m| m.values().collect())
             .unwrap_or_default()
+    }
+
+    /// Whether `app_id` has declared a stream named `name` — an O(1) lookup
+    /// (mirrors `record_event`'s declared-stream check), for callers that only
+    /// need existence and not the full `EventStreamDecl` list.
+    pub fn has_stream(&self, app_id: &str, name: &str) -> bool {
+        self.streams
+            .get(app_id)
+            .is_some_and(|m| m.contains_key(name))
     }
 
     // ── Event recording ─────────────────────────────────────────────────────

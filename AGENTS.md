@@ -127,6 +127,16 @@ Non-obvious discoveries with no single owning directory. When you discover a tra
 
 **HostModel** is a pure state machine with zero egui dependency. Commands in, effects out. All business logic (pane lifecycle, permissions, events) lives here. The renderer (egui in prod, headless in CI) reads state and paints — it never owns logic.
 
+## Inter-Pane Communication
+
+There is one comms model with three disjoint planes, each with a single sanctioned transport:
+
+- **Structured app-to-app data → the event bus.** `DeclareEventStreams` / `EmitEvent` / `SubscribeAppEvents` (subscription-scoped, cross-window, `resource_id`-filterable). A directed pipe (`PipeOpenDirected`) is a thin alias over this bus for the one case that needs an exclusive `(sender, target)` duplex JSON channel. The legacy non-directed peer-broadcast JSON fan-out was removed in 0327 — do not reintroduce it.
+- **Bulk binary data → typed pipes** (`src/host/typed_pipes.rs`): Unix-socket + ring buffer for audio/video/MIDI frames.
+- **Human-trust PTY injection → `plexi pane send` / `RunInLinkedTerminal`.** This is a *human* affordance for driving a terminal a person is watching. **App-to-app data must never route through PTY injection** — it bypasses capability scoping, has no schema, and is unobservable to the event log. Use the event bus.
+
+Later consolidation candidates (left untouched by 0327, not yet unified): notifications (`NotifyAction`), pane slots, `PathChanged` pane-group sync, poll-based "Phase C" delivery, and undo/rollback checkpoints on the event record.
+
 ## General Rules
 
 - When the user reports a bug, fix what they asked for first.

@@ -473,6 +473,11 @@ impl ProcessApp {
                     _ => PipeDirection::Duplex,
                 };
 
+                // `PipeOpen` is the binary bulk-data plane only. The legacy
+                // non-directed JSON peer-broadcast was removed in 0327 — its
+                // fan-out delivery no longer exists. Apps that need JSON
+                // inter-pane messaging use `PipeOpenDirected` (exclusive duplex
+                // channel) or the event bus (`DeclareEventStreams`/`EmitEvent`).
                 if mode == "binary" {
                     match self
                         .pipe_registry
@@ -497,23 +502,10 @@ impl ProcessApp {
                         }
                     }
                 } else {
-                    match self
-                        .pipe_registry
-                        .lock()
-                        .unwrap()
-                        .open_json(pipe_id.clone(), dir)
-                    {
-                        Ok(()) => {
-                            log::info!(
-                                "ProcessApp[{}]: opened JSON pipe '{pipe_id}'",
-                                self.type_id
-                            );
-                            event_log::emit_pipe_opened(&self.type_id, &pipe_id, "json");
-                        }
-                        Err(e) => {
-                            log::warn!("ProcessApp[{}]: PipeOpen json failed: {e}", self.type_id)
-                        }
-                    }
+                    log::warn!(
+                        "ProcessApp[{}]: PipeOpen mode='{mode}' rejected — non-binary JSON pipes were removed (0327); use pipe_open_directed or the event bus",
+                        self.type_id
+                    );
                 }
             }
 
@@ -563,6 +555,10 @@ impl ProcessApp {
             }
 
             // ── Pipe send ──────────────────────────────────────────────────
+            // JSON pipe messaging now serves directed pipes only (#286): the
+            // host scopes delivery to the `(sender, target)` pair recorded in
+            // `directed_pipes`. Non-directed sends are dropped by the host with
+            // a warning — the legacy peer-broadcast fan-out was removed in 0327.
             AppRequest::PipeSend { pipe_id, payload } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::PipeOpen)
@@ -570,21 +566,15 @@ impl ProcessApp {
                     log::warn!("ProcessApp[{}]: PipeSend denied — {reason}", self.type_id);
                     return;
                 }
-                match self
-                    .pipe_registry
-                    .lock()
-                    .unwrap()
-                    .send_json(&pipe_id, payload.clone())
-                {
-                    Ok(()) => {
-                        self.pending_commands.push(AppCommand::DeliverPipeMessage {
-                            sender_pane_id: self.pane_id,
-                            pipe_id,
-                            payload,
-                        });
-                    }
-                    Err(e) => log::warn!("ProcessApp[{}]: PipeSend failed: {e}", self.type_id),
-                }
+                log::info!(
+                    "ProcessApp[{}]: PipeSend on '{pipe_id}' → host directed routing",
+                    self.type_id
+                );
+                self.pending_commands.push(AppCommand::DeliverPipeMessage {
+                    sender_pane_id: self.pane_id,
+                    pipe_id,
+                    payload,
+                });
             }
 
             // ── Status summary ─────────────────────────────────────────────
@@ -843,7 +833,6 @@ impl ProcessApp {
                 type_id,
                 layout,
                 args,
-                pipe_id,
                 from_pane_id,
                 request_id,
                 response_file: _,
@@ -865,14 +854,13 @@ impl ProcessApp {
                 }
                 let layout_str = layout.unwrap_or_else(|| "overlay".to_string());
                 log::info!(
-                    "ProcessApp[{}]: SpawnPane type_id='{type_id}' layout='{layout_str}' args={args:?} pipe_id={pipe_id:?} from_pane_id={from_pane_id:?} request_id={request_id:?} target_context={target_context:?}",
+                    "ProcessApp[{}]: SpawnPane type_id='{type_id}' layout='{layout_str}' args={args:?} from_pane_id={from_pane_id:?} request_id={request_id:?} target_context={target_context:?}",
                     self.type_id
                 );
                 self.pending_commands.push(AppCommand::SpawnPane {
                     type_id,
                     layout: layout_str,
                     args,
-                    pipe_id,
                     from_pane_id,
                     request_id,
                     target_context,
@@ -1909,7 +1897,7 @@ impl ProcessApp {
                     self.type_id
                 );
             }
-            // ── App events + undo (docs/prm/undo-and-app-events.md, B) ────
+            // ── App events + undo (src/host/app_timeline.rs, B) ────
             AppRequest::DeclareEventStreams { streams } => {
                 log::info!(
                     "ProcessApp[{}]: DeclareEventStreams ({} stream(s))",

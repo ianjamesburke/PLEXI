@@ -302,6 +302,71 @@ pub enum EventsCmd {
         #[arg(long)]
         resource: Option<String>,
     },
+    /// Declare an event stream so it can be emitted on and subscribed to.
+    ///
+    /// Registers a named stream under an app-id namespace with a JSON-Schema
+    /// object describing its payload. Declaring is a prerequisite for `emit`.
+    /// Re-declaring a stream replaces its previous schema. The first declare
+    /// under a namespace you do not own prompts for host consent.
+    ///
+    /// Example: plexi events declare my-agent task.done --schema '{"type":"object"}'
+    Declare {
+        /// App-id namespace to declare the stream under (e.g. `my-agent`).
+        app_id: String,
+        /// Stream name to declare (e.g. `task.done`).
+        stream: String,
+        /// JSON-Schema object describing the event payload.
+        #[arg(long, default_value = "{\"type\":\"object\"}")]
+        schema: String,
+        /// Human-readable description of when this event fires.
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Emit an event onto a declared stream.
+    ///
+    /// Records a semantic event in the host timeline and fans it out to every
+    /// broker-approved subscriber. The stream must already be declared. The
+    /// emitter identity (actor_id) is host-stamped from your pane and cannot be
+    /// set from the CLI; `--actor` sets only the advisory semantic category.
+    ///
+    /// Example: plexi events emit my-agent task.done --summary "Build finished" --resource build-42 --revision-after done
+    Emit {
+        /// App-id namespace the stream lives under (e.g. `my-agent`).
+        app_id: String,
+        /// Declared stream name to emit on (e.g. `task.done`).
+        event: String,
+        /// One-line human-readable description of what happened.
+        #[arg(long)]
+        summary: String,
+        /// Id of the document/game/pane/resource the event is about.
+        #[arg(long)]
+        resource: String,
+        /// Revision identifier after the change.
+        #[arg(long = "revision-after")]
+        revision_after: String,
+        /// Semantic actor category that caused the change.
+        #[arg(long, default_value = "agent", value_parser = ["user", "agent", "app", "system"])]
+        actor: String,
+        /// Scope class of the resource id (document, game, pane…). Defaults to pane.
+        #[arg(long = "resource-scope")]
+        resource_scope: Option<String>,
+        /// Structured JSON payload; the declared stream schema is advisory and
+        /// not enforced on the emit path.
+        #[arg(long)]
+        payload: Option<String>,
+        /// Stable reference subscribers can fetch full state from.
+        #[arg(long = "state-ref")]
+        state_ref: Option<String>,
+        /// Revision identifier before the change.
+        #[arg(long = "revision-before")]
+        revision_before: Option<String>,
+        /// Opaque token that makes this event reversible (creates an undo checkpoint).
+        #[arg(long = "rollback-token")]
+        rollback_token: Option<String>,
+        /// Other resource id touched by this change (repeatable).
+        #[arg(long = "changed-resource")]
+        changed_resources: Vec<String>,
+    },
     /// List event streams currently declared by running apps.
     List {
         /// Output as JSON instead of a human-readable table.

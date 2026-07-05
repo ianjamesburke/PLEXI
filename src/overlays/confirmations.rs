@@ -355,16 +355,16 @@ impl PlexiApp {
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
-    /// Host event-subscription consent modal. Surfaces the front parked
+    /// Host event-bus consent modal. Surfaces the front parked
     /// [`PendingEventConsent`](crate::host::event_subscriptions::PendingEventConsent):
-    /// a CLI/MCP agent's subscribe request the broker answered with `Ask`. The
-    /// subscriber identity shown is host-stamped — it is never taken from the
-    /// user's choice. Enter allows once, `A` allows always (persists a grant),
+    /// a CLI/MCP agent's subscribe *or* publish request the broker answered with
+    /// `Ask`. The subscriber identity shown is host-stamped — it is never taken
+    /// from the user's choice. Enter allows once, `A` allows always (persists a grant),
     /// Esc/Deny refuses. Resolving the consent fires the transport's reply.
     pub(crate) fn draw_event_consent_modal(&mut self, ctx: &egui::Context) {
         use crate::host::event_subscriptions::ConsentChoice;
-        let (subscriber, target) = match self.pending_event_consents.front() {
-            Some(c) => (c.subscriber_id.clone(), c.target_label()),
+        let (subscriber, verb, target) = match self.pending_event_consents.front() {
+            Some(c) => (c.subscriber_id.clone(), c.action_verb(), c.target_label()),
             None => return,
         };
         let colors = self.colors;
@@ -410,7 +410,7 @@ impl PlexiApp {
         )
         .width(super::MODAL_WIDTH)
         .show(ctx, &colors, |ui| {
-            crate::ui::typography::caption(ui, format!("{subscriber} wants to read:"), &colors);
+            crate::ui::typography::caption(ui, format!("{subscriber} wants to {verb}:"), &colors);
             crate::ui::typography::caption(ui, target, &colors);
         });
 
