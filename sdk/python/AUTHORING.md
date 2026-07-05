@@ -182,6 +182,20 @@ The scaffold writes a valid `manifest.toml`; the shape lives in the template at
 Declare capabilities under `[app.capabilities]`; see `sdk.md` and the PGAP
 capability reference for what each grant allows.
 
+`[launch] on_launch` declares what the host does when your app is launched
+while an instance already exists: `focus_existing` (one instance globally —
+relaunch focuses it, jumping context if needed), `focus_existing_in_context`
+(one instance per context), or `always_new` (default — every launch spawns a
+fresh instance). An unknown value fails install loudly. Under `always_new`,
+duplicate instances are fully independent: each receives events through its
+own event-bus subscriptions, and instance identity is the host-stamped pane
+id — never an id your app assigns itself. Don't try to self-dedup or key
+shared state on a self-chosen id; declare `on_launch` and let the host resolve
+launches. Note that when a relaunch is deduped to an existing instance, any
+`args` (or cwd) that relaunch carried are **not** delivered to the running
+instance — the host focuses it as-is (delivering relaunch args to a live
+instance via a bus event is future work).
+
 ## Dev / Test Loop
 
 Test-first. Define done by the test, not the code.

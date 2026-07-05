@@ -694,3 +694,313 @@ fn get_previous_pane_info_steps_exceeds_history_returns_error() {
     );
     let _ = std::fs::remove_file(&resp_file);
 }
+
+// ── `[launch] on_launch` dedup policy (#0336) ───────────────────────────────
+
+/// An empty window in `context_id`, ready for `add_app_pane_in_window`.
+fn empty_window(context_id: u64, window_id: u64) -> Window {
+    Window {
+        name: "Ctx".into(),
+        path: std::env::temp_dir(),
+        tree: egui_tiles::Tree::empty("on_launch_test"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 1,
+        window_id,
+        context_id,
+    }
+}
+
+fn context_b(context_id: u64) -> crate::host::context::Context {
+    crate::host::context::Context {
+        name: "Context B".into(),
+        path: std::env::temp_dir(),
+        root: None,
+        description: None,
+        context_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    }
+}
+
+/// Build an `AppRegistry` holding a single app `id` with the given `on_launch`
+/// policy, staged from a real manifest so it exercises the same load path as
+/// production. The returned `TempDir` must be kept alive by the caller.
+fn registry_with_on_launch(
+    id: &str,
+    on_launch: &str,
+) -> (tempfile::TempDir, crate::app::registry::AppRegistry) {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let global = tmp.path().join("global-apps");
+    let app_dir = global.join(id);
+    std::fs::create_dir_all(&app_dir).expect("app dir");
+    std::fs::write(
+        app_dir.join("manifest.toml"),
+        format!(
+            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\n\
+             version = \"0.0.1\"\nentry = \"main.py\"\n\n[launch]\non_launch = \"{on_launch}\"\n"
+        ),
+    )
+    .expect("manifest");
+    std::fs::write(app_dir.join("main.py"), "#!/usr/bin/env python3\n").expect("entry");
+    let registry = crate::app::registry::AppRegistry::load_with_global(tmp.path(), &global);
+    assert!(
+        registry.get(id).is_some(),
+        "staged app '{id}' must load into the registry"
+    );
+    (tmp, registry)
+}
+
+/// `focus_existing`: relaunching an app that is already open in a *different*
+/// context focuses the existing pane and jumps to its context instead of
+/// spawning a second instance.
+#[test]
+fn on_launch_focus_existing_focuses_cross_context_instead_of_spawning() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane(); // window 0, context 1
+
+    h.app.windows.push(empty_window(2, 2)); // window index 1, context 2
+    let (_tile, instance_pane) = h.app.add_app_pane_in_window(1, "singleton");
+    h.app.router.push(context_b(2));
+
+    let (_tmp, registry) = registry_with_on_launch("singleton", "focus_existing");
+    h.app.registry = registry;
+
+    assert_eq!(h.app.active_window, 0);
+    let caller_ctx = h.app.windows[0].context_id;
+    let focused = h
+        .app
+        .resolve_on_launch_policy("singleton", caller_ctx, &[], None);
+
+    assert_eq!(
+        focused,
+        Some(instance_pane),
+        "focus_existing must satisfy the launch by focusing the existing instance and \
+         return that instance's real pane id (never a predicted spawn id)"
+    );
+    assert_eq!(
+        h.app.active_window, 1,
+        "must jump to the window that holds the existing instance"
+    );
+    assert!(
+        h.app.windows[1].focused_pane.is_some(),
+        "the existing instance's pane must be focused"
+    );
+    assert!(
+        h.app.find_app_pane_by_type("singleton", None).map(|(p, _)| p) == Some(instance_pane),
+        "no second instance should have been spawned"
+    );
+}
+
+/// `focus_existing_in_context`: relaunching in a context that has no instance
+/// spawns there (resolver returns false = caller spawns); relaunching in a
+/// context that already has one focuses it (resolver returns true).
+#[test]
+fn on_launch_focus_existing_in_context_is_per_context() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane(); // window 0, context 1
+
+    // An instance living in context 2 must NOT satisfy a launch from context 1.
+    h.app.windows.push(empty_window(2, 2)); // window index 1, context 2
+    let _other = h.app.add_app_pane_in_window(1, "percontext");
+    h.app.router.push(context_b(2));
+
+    let (_tmp, registry) = registry_with_on_launch("percontext", "focus_existing_in_context");
+    h.app.registry = registry;
+
+    let ctx1 = h.app.windows[0].context_id;
+    assert!(
+        h.app
+            .resolve_on_launch_policy("percontext", ctx1, &[], None)
+            .is_none(),
+        "an instance in another context must not satisfy focus_existing_in_context — caller spawns"
+    );
+    assert_eq!(h.app.active_window, 0, "no cross-context jump should occur");
+
+    // Now plant an instance in context 1 (window 0); the relaunch must focus it.
+    let (_tile, same_ctx_pane) = h.app.add_app_pane_in_window(0, "percontext");
+    assert_eq!(
+        h.app
+            .resolve_on_launch_policy("percontext", ctx1, &[], None),
+        Some(same_ctx_pane),
+        "an instance in the caller's context must be focused and its real id returned"
+    );
+    assert_eq!(h.app.active_window, 0);
+    assert_eq!(
+        h.app.find_app_pane_by_type("percontext", Some(ctx1)).map(|(p, _)| p),
+        Some(same_ctx_pane),
+        "the in-context instance is the focus target"
+    );
+}
+
+/// Regression: dedup identity is the pane's `manifest_id`, not its runtime
+/// `type_id`. WASM panes all report `type_id() == "wasm"`, so a resolver that
+/// matched on runtime type id would fail to focus an existing WASM instance
+/// (and would spawn duplicates). Simulate the mismatch and confirm the lookup
+/// still finds the instance by manifest id.
+#[test]
+fn on_launch_matches_by_manifest_id_not_runtime_type_id() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane(); // window 0, context 1
+
+    // Instance whose runtime type_id is the generic "wasm" but whose manifest
+    // identity is the real app id — as a WASM app pane is stored.
+    let (_tile, wasm_pane) =
+        h.app
+            .add_app_pane_in_window_with_runtime_id(0, "wasm_singleton", "wasm");
+
+    let (_tmp, registry) = registry_with_on_launch("wasm_singleton", "focus_existing");
+    h.app.registry = registry;
+
+    assert_eq!(
+        h.app.find_app_pane_by_type("wasm_singleton", None).map(|(p, _)| p),
+        Some(wasm_pane),
+        "lookup must match the WASM instance by manifest id"
+    );
+    let ctx1 = h.app.windows[0].context_id;
+    assert_eq!(
+        h.app
+            .resolve_on_launch_policy("wasm_singleton", ctx1, &[], None),
+        Some(wasm_pane),
+        "focus_existing must focus the existing WASM instance (by real id) instead of spawning"
+    );
+}
+
+/// Regression: an instance sitting behind an overlay is still deduped.
+/// Overlay launches move the covered pane into the overlay app's
+/// `overlay_replaced` (it leaves `win.panes`), so a naive top-level scan would
+/// miss it and spawn a duplicate. `focus_existing` must find the buried
+/// instance, pop the overlay to reveal it, and focus it.
+#[test]
+fn on_launch_focus_existing_reveals_instance_behind_overlay() {
+    let mut h = HostHarness::new();
+
+    // Slot pane holds the singleton "buried"; then an overlay app takes over
+    // the same slot, boxing the singleton into its `overlay_replaced`.
+    let (tile, slot) = h.app.add_app_pane_in_window(0, "buried");
+    h.app.windows[0].focused_pane = Some(tile);
+
+    let overlay_pane = {
+        use crate::app::permissions::AppPermissions;
+        use crate::host::pane::{AppPane, AppRuntime, Pane};
+        use crate::process_app::ProcessApp;
+        let covered = h.app.windows[0]
+            .panes
+            .remove(&slot)
+            .expect("singleton pane present before overlay");
+        let (mut proc, _tx) = ProcessApp::new_for_test(slot, AppPermissions::builtin());
+        proc.type_id = "overlay_app".to_string();
+        Pane::App(Box::new(AppPane {
+            pip_status: None,
+            id: slot,
+            runtime: AppRuntime::Process(Box::new(proc)),
+            workspace_root: std::env::temp_dir(),
+            permissions: AppPermissions::builtin(),
+            manifest_id: "overlay_app".to_string(),
+            name: "Overlay".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: Some(Box::new(covered)),
+            hidden: false,
+            agent: None,
+            slots: std::collections::HashMap::new(),
+        }))
+    };
+    h.app.windows[0].panes.insert(slot, overlay_pane);
+
+    let (_tmp, registry) = registry_with_on_launch("buried", "focus_existing");
+    h.app.registry = registry;
+
+    // The buried instance must be located (depth 1) despite not being a
+    // top-level pane, and the resolver must reveal + focus it, not spawn.
+    assert_eq!(
+        h.app.locate_app_instance("buried", None),
+        Some((0, slot, 1)),
+        "buried instance must be found one overlay deep"
+    );
+    let ctx1 = h.app.windows[0].context_id;
+    assert_eq!(
+        h.app.resolve_on_launch_policy("buried", ctx1, &[], None),
+        Some(slot),
+        "focus_existing must reveal the overlay-covered instance (its real id) instead of spawning"
+    );
+    // After popping the overlay, the slot holds the singleton again.
+    assert_eq!(
+        h.app.windows[0]
+            .panes
+            .get(&slot)
+            .and_then(|p| p.as_app())
+            .map(|a| a.manifest_id.as_str()),
+        Some("buried"),
+        "the overlay must have been popped to reveal the singleton"
+    );
+}
+
+/// `always_new` (and an unset policy) never dedups: the resolver returns false
+/// even when an instance is already open, so the caller spawns a fresh one.
+#[test]
+fn on_launch_always_new_never_dedups() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane(); // window 0, context 1
+    let _existing = h.app.add_app_pane_in_window(0, "stacker");
+
+    let (_tmp, registry) = registry_with_on_launch("stacker", "always_new");
+    h.app.registry = registry;
+
+    let ctx1 = h.app.windows[0].context_id;
+    assert!(
+        h.app
+            .resolve_on_launch_policy("stacker", ctx1, &[], None)
+            .is_none(),
+        "always_new must always let the caller spawn a fresh instance"
+    );
+
+    // An app with no [launch] on_launch at all defaults to always_new.
+    let _unset = h.app.add_app_pane_in_window(0, "test");
+    assert!(
+        h.app
+            .resolve_on_launch_policy("test", ctx1, &[], None)
+            .is_none(),
+        "an unset on_launch defaults to always_new (no dedup)"
+    );
+}
+
+/// The split-mirror path duplicates the focused pane on purpose, so it must
+/// bypass the on_launch dedup policy: mirror-splitting a `focus_existing`
+/// (singleton) app spawns a SECOND instance instead of focusing the first and
+/// silently no-oping. Without the bypass the policy would win and pane_count
+/// would stay at 1.
+#[test]
+fn split_mirror_bypasses_on_launch_dedup() {
+    let mut h = HostHarness::new();
+
+    // Launch a builtin app into the empty context → one focused App pane.
+    // (text-editor is a builtin, so it launches without an external process.)
+    h.app
+        .launch_app_by_id_with_layout("text-editor", None, &[], None)
+        .expect("text-editor launch must succeed");
+    assert_eq!(h.pane_count(), 1, "one instance after the first launch");
+
+    // Make the app a singleton. The registry entry names the same id as the
+    // builtin, so the dedup policy is now live for "text-editor".
+    let (_tmp, registry) = registry_with_on_launch("text-editor", "focus_existing");
+    h.app.registry = registry;
+    assert_eq!(
+        h.app.registry.on_launch_for("text-editor"),
+        crate::app::registry::OnLaunchPolicy::FocusExisting,
+        "policy must be active for the mirror to have something to bypass"
+    );
+
+    // Mirror-split must still produce a second instance despite the singleton
+    // policy — the mirror uses the forced (dedup-bypassing) launch path.
+    h.app
+        .split_focused_mirror(crate::host::command::Placement::Right);
+    assert_eq!(
+        h.pane_count(),
+        2,
+        "mirror-split of a focus_existing app must spawn a second instance, not dedup"
+    );
+}

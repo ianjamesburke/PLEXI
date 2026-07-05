@@ -1106,12 +1106,20 @@ impl PlexiApp {
                         spec.layout.clone(),
                         self.registry.placement_for(type_id),
                     );
-                    launch_result = self.launch_app_by_id_with_layout(
-                        type_id,
-                        Some(placement),
-                        &spec.args,
-                        cwd_override,
-                    );
+                    launch_result = self
+                        .launch_app_by_id_with_layout(
+                            type_id,
+                            Some(placement),
+                            &spec.args,
+                            cwd_override,
+                        )
+                        .map(|existing_id| {
+                            // A dedup focused a live instance; the response must
+                            // report that pane, not the predicted id (#0336).
+                            if let Some(existing_id) = existing_id {
+                                response_pane_id = existing_id;
+                            }
+                        });
                     if spec.from_pane_id.is_some() {
                         self.active_window = active;
                         // Undo the temporary focus redirect when launch failed.

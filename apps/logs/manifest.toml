@@ -13,6 +13,9 @@ mouse_tracking = true
 capabilities = ["fs.read", "timer"]
 
 [launch]
+# One live tail of the host log per context — relaunching focuses the open
+# Logs pane instead of stacking duplicates (reference example for #0336).
+on_launch = "focus_existing_in_context"
 
 [marketplace]
 visibility = "public"
