@@ -1317,7 +1317,10 @@ impl PlexiApp {
 
     /// Jump to a window by index, switching context if necessary.
     /// If `pane_id` is provided, also focuses that specific pane in the window.
-    fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64, pane_id: Option<u64>) {
+    /// Sanctioned cross-context focus path (also used by the `[launch] on_launch`
+    /// resolver, #0336) — it switches the sidebar context via `switch_workspace`
+    /// rather than mutating `active_window` mid-spawn.
+    pub(crate) fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64, pane_id: Option<u64>) {
         let target_ctx_id = self.windows[ctx_idx].context_id;
         log::info!("palette: jump to context {target_ctx_id} (window {win_id}, pane {pane_id:?})");
         if let Some(ctx_idx_sidebar) = self.router.position(|c| c.context_id == target_ctx_id) {

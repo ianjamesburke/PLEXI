@@ -245,8 +245,13 @@ impl PlexiApp {
                 // The layout hint maps directly to the split direction:
                 //   Placement::Right → "split_h" (side-by-side, new pane right)
                 //   Placement::Below → "split_v" (stacked,      new pane below)
+                //
+                // Force a fresh spawn (#0336): a mirror-split of a singleton
+                // (`focus_existing`) app must still duplicate the pane, so it
+                // bypasses the on_launch dedup policy that would otherwise focus
+                // the original and silently no-op the split.
                 let layout = if vertical { "split_h" } else { "split_v" };
-                let _ = self.launch_app_by_id_with_layout(
+                let _ = self.launch_app_by_id_with_layout_forced(
                     &manifest_id,
                     Some(layout.to_string()),
                     &[],

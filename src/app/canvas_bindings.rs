@@ -461,7 +461,7 @@ impl PlexiApp {
     /// available, so the resolver can fall through to the OS opener.
     fn launch_app_with_path(&mut self, id: &str, path: &str) -> bool {
         match self.launch_app_by_id_with_layout(id, None, &[path.to_string()], None) {
-            Ok(()) => true,
+            Ok(_) => true,
             Err(e) => {
                 log::warn!("open: launch of app '{id}' for '{path}' failed — {e}");
                 false

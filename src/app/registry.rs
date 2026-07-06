@@ -297,7 +297,55 @@ pub struct LaunchSection {
     /// a warning so a typo cannot wedge a launch.
     #[serde(default)]
     pub placement: Option<String>,
+    /// What the host does when this app is launched while an instance already
+    /// exists (#0336). One of [`VALID_ON_LAUNCH`]: `focus_existing` (one
+    /// instance globally — relaunch focuses it, jumping context if needed),
+    /// `focus_existing_in_context` (one instance per context — relaunch focuses
+    /// the instance in the caller's context, else spawns one there), or
+    /// `always_new` (default; every launch spawns fresh). Unlike `placement`,
+    /// an unknown value fails install loudly (validated in [`AppRegistry::load_app`])
+    /// per the config-fails-loud philosophy; a dedup typo must never silently
+    /// degrade to `always_new`. Resolved at launch via [`OnLaunchPolicy`].
+    #[serde(default)]
+    pub on_launch: Option<String>,
 }
+
+/// How the host resolves a launch request when an instance of the app is
+/// already open (`[launch] on_launch`, #0336). Duplicate instances (under
+/// `always_new`) each subscribe to the event bus independently, so event
+/// delivery stays sound; instance identity is the host-stamped pane id, never
+/// a self-assigned id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OnLaunchPolicy {
+    /// One instance globally. A relaunch focuses the existing pane, jumping to
+    /// its context if it lives in a different one.
+    FocusExisting,
+    /// One instance per context. A relaunch focuses the instance in the
+    /// caller's context if present, otherwise spawns one there.
+    FocusExistingInContext,
+    /// Every launch spawns a fresh instance. Default — matches historical
+    /// behavior, so the field is purely additive.
+    #[default]
+    AlwaysNew,
+}
+
+impl OnLaunchPolicy {
+    /// Parse a manifest `on_launch` string. `Err` = unknown value; callers turn
+    /// that into a loud install-time failure (never a silent fallback).
+    pub fn parse(value: &str) -> Result<Self, ()> {
+        match value {
+            "focus_existing" => Ok(Self::FocusExisting),
+            "focus_existing_in_context" => Ok(Self::FocusExistingInContext),
+            "always_new" => Ok(Self::AlwaysNew),
+            _ => Err(()),
+        }
+    }
+}
+
+/// The valid `[launch] on_launch` policy strings. Kept in one place so the
+/// manifest validator, the launch path, and the author docs agree.
+pub const VALID_ON_LAUNCH: &[&str] =
+    &["focus_existing", "focus_existing_in_context", "always_new"];
 
 /// The host layout-hint vocabulary an app's `[launch] placement` may declare.
 /// Kept in one place so the manifest validator and the launch path agree.
@@ -540,6 +588,19 @@ impl AppRegistry {
             ));
         }
 
+        // #0336: an unknown `[launch] on_launch` policy fails install loudly.
+        // Unlike `placement` (query-time warn-and-ignore), a silent fallback to
+        // `always_new` would hide a dedup typo and spawn duplicate singletons.
+        if let Some(mode) = &manifest.launch.on_launch {
+            if OnLaunchPolicy::parse(mode).is_err() {
+                return Err(format!(
+                    "manifest [launch] on_launch = '{mode}' is not a valid policy; \
+                     valid values: {}",
+                    VALID_ON_LAUNCH.join(", ")
+                ));
+            }
+        }
+
         let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
 
         for (name, decl) in &manifest.secrets {
@@ -601,6 +662,19 @@ impl AppRegistry {
             );
             None
         }
+    }
+
+    /// The app's manifest-declared launch dedup policy (`[launch] on_launch`,
+    /// #0336). Defaults to [`OnLaunchPolicy::AlwaysNew`] when unset or the app
+    /// is not installed. The value is validated loudly at install time, so a
+    /// parse miss here can only mean the app predates validation — treat it as
+    /// the default rather than panicking.
+    pub fn on_launch_for(&self, app_id: &str) -> OnLaunchPolicy {
+        self.apps
+            .get(app_id)
+            .and_then(|a| a.launch.on_launch.as_deref())
+            .and_then(|mode| OnLaunchPolicy::parse(mode).ok())
+            .unwrap_or_default()
     }
 
     /// The registry id of the app that declares `[capabilities].file_types`
@@ -1128,6 +1202,87 @@ entry = "run.sh"
         assert!(
             parsed.is_err(),
             "manifest with unknown type variant must be rejected, got: {parsed:?}"
+        );
+    }
+
+    // ── #0336 `[launch] on_launch` dedup policy ──────────────────────────
+
+    #[test]
+    fn manifest_with_valid_on_launch_loads_and_resolves_policy() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("singleton-app");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "\
+schema_version = 1
+
+[app]
+id = \"singleton-app\"
+type = \"app\"
+name = \"Singleton\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+
+[launch]
+on_launch = \"focus_existing\"
+";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(
+            registry.get("singleton-app").is_some(),
+            "a valid on_launch policy must load"
+        );
+        assert_eq!(
+            registry.on_launch_for("singleton-app"),
+            OnLaunchPolicy::FocusExisting
+        );
+        // An app that declares no policy defaults to always_new.
+        assert_eq!(
+            registry.on_launch_for("does-not-exist"),
+            OnLaunchPolicy::AlwaysNew
+        );
+    }
+
+    #[test]
+    fn manifest_with_invalid_on_launch_fails_install_loudly() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("bad-policy-app");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "\
+schema_version = 1
+
+[app]
+id = \"bad-policy-app\"
+type = \"app\"
+name = \"Bad Policy\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+
+[launch]
+on_launch = \"focus_maybe\"
+";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+
+        // Directly assert the loud failure — scan_dir would otherwise just warn
+        // and skip, so we call the loader to inspect the error message.
+        let registry = AppRegistry::load_with_global(bare.path(), bare.path());
+        let err = registry
+            .load_app(&app_dir)
+            .expect_err("an unknown on_launch value must fail to load");
+        assert!(
+            err.contains("on_launch") && err.contains("focus_maybe"),
+            "error must name the offending field and value, got: {err}"
+        );
+
+        // And the app must never reach the registry via the normal scan path.
+        let scanned = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(
+            scanned.get("bad-policy-app").is_none(),
+            "an app with an invalid on_launch policy must not install"
         );
     }
 

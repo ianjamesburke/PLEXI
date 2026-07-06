@@ -84,6 +84,18 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
     };
 
     println!("✓ manifest — {} ({})", manifest.app.id, manifest.app.name);
+    // #0336: reject an invalid `[launch] on_launch` here, the same way
+    // `AppRegistry::load_app` does at install time. Without this, an author gets
+    // a green `app check` and then a silent runtime skip (the launch resolver
+    // treats an unparseable policy as the `always_new` default).
+    match on_launch_error(&manifest) {
+        Some(err) => errors.push(err),
+        None => {
+            if let Some(mode) = &manifest.launch.on_launch {
+                println!("✓ launch — on_launch = {mode}");
+            }
+        }
+    }
     warnings.extend(scaffold_metadata_warnings(app_dir));
     let require_semantic_chrome = scaffold_requires_semantic_chrome(app_dir);
     let mut checked_semantic_chrome = false;
@@ -554,6 +566,24 @@ fn parse_size(raw: &str) -> Option<(u32, u32)> {
         return None;
     }
     Some((w, h))
+}
+
+/// Validate a manifest's `[launch] on_launch` policy against the single source
+/// of valid strings in the registry (#0336). Returns the error message when the
+/// value is unknown, `None` when it is valid or unset. Reuses
+/// [`OnLaunchPolicy::parse`](crate::app::registry::OnLaunchPolicy::parse) and
+/// [`VALID_ON_LAUNCH`](crate::app::registry::VALID_ON_LAUNCH) so `app check` and
+/// install-time validation never diverge.
+fn on_launch_error(manifest: &AppManifest) -> Option<String> {
+    let mode = manifest.launch.on_launch.as_deref()?;
+    if crate::app::registry::OnLaunchPolicy::parse(mode).is_err() {
+        Some(format!(
+            "manifest [launch] on_launch = '{mode}' is not a valid policy; valid values: {}",
+            crate::app::registry::VALID_ON_LAUNCH.join(", ")
+        ))
+    } else {
+        None
+    }
 }
 
 fn load_local_app(app_dir: &Path) -> Result<(AppManifest, PathBuf), String> {
@@ -1145,6 +1175,40 @@ mod app_check_tests {
         img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
             .unwrap();
         bytes
+    }
+
+    fn manifest_with_on_launch(on_launch: &str) -> crate::app::registry::AppManifest {
+        toml::from_str(&format!(
+            "schema_version = 1\n\n[app]\nid = \"x\"\ntype = \"app\"\nname = \"X\"\n\
+             version = \"0.0.1\"\nentry = \"main.py\"\n\n[launch]\non_launch = \"{on_launch}\"\n"
+        ))
+        .expect("manifest must parse")
+    }
+
+    /// #0336: `app check` must reject an unknown on_launch policy with a message
+    /// naming the field and the valid values — matching install-time validation,
+    /// so authors never get a green check followed by a silent runtime skip.
+    #[test]
+    fn on_launch_invalid_policy_is_rejected() {
+        let manifest = manifest_with_on_launch("focus_maybe");
+        let err = super::on_launch_error(&manifest)
+            .expect("invalid on_launch must be reported as an error");
+        assert!(err.contains("on_launch"), "message must name the field: {err}");
+        assert!(
+            err.contains("focus_existing") && err.contains("always_new"),
+            "message must list the valid values: {err}"
+        );
+    }
+
+    #[test]
+    fn on_launch_valid_policy_is_accepted() {
+        for policy in ["focus_existing", "focus_existing_in_context", "always_new"] {
+            let manifest = manifest_with_on_launch(policy);
+            assert!(
+                super::on_launch_error(&manifest).is_none(),
+                "'{policy}' must be accepted"
+            );
+        }
     }
 
     #[test]

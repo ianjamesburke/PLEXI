@@ -1835,6 +1835,33 @@ impl PlexiApp {
     /// Returns `(tile_id, pane_id)` — `tile_id` is suitable for `focused_pane` assignments.
     #[cfg(test)]
     pub(crate) fn add_test_pane(&mut self) -> (egui_tiles::TileId, u64) {
+        self.add_app_pane_in_window(0, "test")
+    }
+
+    /// Inject an app pane running `type_id` into window `win_idx` (test-only).
+    /// Backs the `[launch] on_launch` dedup tests (#0336), which need instances
+    /// with a chosen `type_id` planted in specific windows/contexts.
+    #[cfg(test)]
+    pub(crate) fn add_app_pane_in_window(
+        &mut self,
+        win_idx: usize,
+        type_id: &str,
+    ) -> (egui_tiles::TileId, u64) {
+        self.add_app_pane_in_window_with_runtime_id(win_idx, type_id, type_id)
+    }
+
+    /// Like [`Self::add_app_pane_in_window`] but with the pane's runtime
+    /// `type_id` set independently of its `manifest_id`. Simulates a WASM pane,
+    /// whose runtime reports `type_id() == "wasm"` while its manifest identity
+    /// is the app id — the case the `on_launch` resolver must match by
+    /// `manifest_id`, not `type_id` (#0336).
+    #[cfg(test)]
+    pub(crate) fn add_app_pane_in_window_with_runtime_id(
+        &mut self,
+        win_idx: usize,
+        manifest_id: &str,
+        runtime_type_id: &str,
+    ) -> (egui_tiles::TileId, u64) {
         use crate::app::permissions::AppPermissions;
         use crate::host::pane::{AppPane, AppRuntime};
         use crate::process_app::ProcessApp;
@@ -1844,14 +1871,16 @@ impl PlexiApp {
             std::sync::atomic::AtomicU64::new(10000);
         let pane_id = NEXT_PANE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        let (process_app, _draw_tx) = ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
+        let (mut process_app, _draw_tx) =
+            ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
+        process_app.type_id = runtime_type_id.to_string();
         let app_pane = AppPane {
             pip_status: None,
             id: pane_id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),
             permissions: AppPermissions::builtin(),
-            manifest_id: "test".to_string(),
+            manifest_id: manifest_id.to_string(),
             name: "Test App".to_string(),
             pane_group: None,
             linked_pane_id: None,
@@ -1861,7 +1890,7 @@ impl PlexiApp {
             slots: std::collections::HashMap::new(),
         };
 
-        let win = &mut self.windows[0];
+        let win = &mut self.windows[win_idx];
         win.panes
             .insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
         let tile_id = win.tree.tiles.insert_pane(pane_id);
@@ -2331,17 +2360,24 @@ impl eframe::App for PlexiApp {
                             }
                         });
 
-                    let new_pane_id = self.host.next_pane_id();
-                    if let Err(e) =
-                        self.launch_app_by_id_with_layout(&type_id, layout, &args, None)
+                    // Predict the pane id, but let a dedup override it with the
+                    // real existing instance's id (#0336): `Ok(Some(id))` means
+                    // the launch focused a live instance instead of spawning.
+                    let predicted_pane_id = self.host.next_pane_id();
+                    let new_pane_id = match self
+                        .launch_app_by_id_with_layout(&type_id, layout, &args, None)
                     {
-                        // Fail loud: never swallow a launch failure or confirm
-                        // a spawn that did not happen (#2283).
-                        log::warn!(
-                            "SpawnApp: launch of '{type_id}' failed — {e}; not confirming AppSpawned"
-                        );
-                        continue;
-                    }
+                        Ok(Some(existing_id)) => existing_id,
+                        Ok(None) => predicted_pane_id,
+                        Err(e) => {
+                            // Fail loud: never swallow a launch failure or confirm
+                            // a spawn that did not happen (#2283).
+                            log::warn!(
+                                "SpawnApp: launch of '{type_id}' failed — {e}; not confirming AppSpawned"
+                            );
+                            continue;
+                        }
+                    };
 
                     // Confirm back to the requesting app.
                     if let Some(req_pane_id) = requesting_pane_id {
@@ -2484,7 +2520,8 @@ impl eframe::App for PlexiApp {
                         });
 
                     // Predict the pane id that will be allocated (next_pane_id peeks without allocating).
-                    let new_pane_id = self.host.next_pane_id();
+                    // A dedup can override this with the real existing pane id (#0336).
+                    let mut new_pane_id = self.host.next_pane_id();
                     if type_id == "terminal" {
                         // "terminal" is a builtin pane type, not in the app registry.
                         // Resolve target window+tile from from_pane_id (cross-window search)
@@ -2570,12 +2607,15 @@ impl eframe::App for PlexiApp {
                                 }
                             }
                         }
-                        let _ = self.launch_app_by_id_with_layout(
+                        if let Ok(Some(existing_id)) = self.launch_app_by_id_with_layout(
                             &type_id,
                             Some(layout),
                             &effective_args,
                             None,
-                        );
+                        ) {
+                            // Dedup focused a live instance; report its real id.
+                            new_pane_id = existing_id;
+                        }
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
                     }
 
