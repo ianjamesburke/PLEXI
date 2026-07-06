@@ -63,7 +63,6 @@ The registry brokers money; never a dependency for running installed apps. Spec:
 Same app contract, sandboxed runtime. This is what makes the marketplace mobile-friendly (in-process WASM is the only way apps run on iOS) and hosted (same typed contract over WebSocket).
 
 - **Pre-pay the toll: one transport-agnostic contract** — `0327` (#2361) and `0336` on_launch policy (#2362) landed 2026-07-05
-  - `0336` manifest `[launch] on_launch` policy (focus_existing / per-context / always_new; duplicates ride bus subscriptions) — **unblocked, next up**
   - `0348` fix host start windowless boot dropping seeded panes (unblocks hands-off agent validation)
 - **The WASM lane**
   - `0285` WASM-native Python SDK + CPython-in-WASM runtime (draft PR `#2323`)
