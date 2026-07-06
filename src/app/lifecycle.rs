@@ -948,29 +948,43 @@ impl PlexiApp {
                                     {
                                         (active, tile)
                                     } else {
-                                        // Window is empty — let split_focused handle it
-                                        log::info!("pane_ipc: spawn_pane terminal layout={layout_str} (empty context fallback)");
-                                        self.split_focused(
-                                            vertical,
+                                        // Active window is empty (windowless boot):
+                                        // split_focused would no-op, so seed a root
+                                        // pane in place instead of dropping the spawn.
+                                        log::info!("pane_ipc: spawn_pane terminal layout={layout_str} (empty active window — seeding root)");
+                                        match self.seed_root_pane(
                                             initial_cmd.as_deref(),
                                             spec.ephemeral,
-                                            new_pane_first,
                                             cwd_override,
-                                        );
+                                        ) {
+                                            Some(seeded_id) => response_pane_id = seeded_id,
+                                            None => {
+                                                launch_result =
+                                                    Err("failed to seed root pane".into())
+                                            }
+                                        }
                                         if spec.no_focus {
                                             self.active_window = active;
                                         }
-                                        if let Some(ref pane_name) = spec.name {
-                                            if !pane_name.is_empty() {
-                                                self.apply_inline_pane_name(
-                                                    response_pane_id,
-                                                    pane_name,
-                                                );
+                                        if launch_result.is_ok() {
+                                            if let Some(ref pane_name) = spec.name {
+                                                if !pane_name.is_empty() {
+                                                    self.apply_inline_pane_name(
+                                                        response_pane_id,
+                                                        pane_name,
+                                                    );
+                                                }
                                             }
                                         }
                                         if let Some(rf) = &spec.response_file {
-                                            let json =
-                                                format!("{{\"pane_id\":{response_pane_id}}}");
+                                            let json = match &launch_result {
+                                                Ok(()) => {
+                                                    format!("{{\"pane_id\":{response_pane_id}}}")
+                                                }
+                                                Err(msg) => {
+                                                    format!("{{\"error\":{}}}", serde_json::json!(msg))
+                                                }
+                                            };
                                             if let Err(e) = std::fs::write(rf, &json) {
                                                 log::error!("pane_ipc: spawn_pane: could not write response file: {e}");
                                             }
@@ -985,29 +999,40 @@ impl PlexiApp {
                         {
                             (active, tile)
                         } else {
-                            // Truly empty window — fall back to split_focused
+                            // Truly empty window (windowless boot): no root pane to
+                            // split, so `split_focused` would no-op and drop the
+                            // spawn. Seed a root pane into the existing active window
+                            // instead. The seeded pane's id is the id we report.
                             log::info!(
-                                "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={}",
+                                "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={} (empty active window — seeding root)",
                                 spec.ephemeral
                             );
-                            self.split_focused(
-                                vertical,
+                            match self.seed_root_pane(
                                 initial_cmd.as_deref(),
                                 spec.ephemeral,
-                                new_pane_first,
                                 cwd_override,
-                            );
+                            ) {
+                                Some(seeded_id) => response_pane_id = seeded_id,
+                                None => launch_result = Err("failed to seed root pane".into()),
+                            }
                             if spec.no_focus {
                                 self.active_window = active;
                             }
-                            if let Some(ref pane_name) = spec.name {
-                                if !pane_name.is_empty() {
-                                    self.apply_inline_pane_name(response_pane_id, pane_name);
+                            if launch_result.is_ok() {
+                                if let Some(ref pane_name) = spec.name {
+                                    if !pane_name.is_empty() {
+                                        self.apply_inline_pane_name(response_pane_id, pane_name);
+                                    }
                                 }
                             }
                             // Skip rest of split path
                             if let Some(rf) = &spec.response_file {
-                                let json = format!("{{\"pane_id\":{response_pane_id}}}");
+                                let json = match &launch_result {
+                                    Ok(()) => format!("{{\"pane_id\":{response_pane_id}}}"),
+                                    Err(msg) => {
+                                        format!("{{\"error\":{}}}", serde_json::json!(msg))
+                                    }
+                                };
                                 if let Err(e) = std::fs::write(rf, &json) {
                                     log::error!(
                                         "pane_ipc: spawn_pane: could not write response file: {e}"

@@ -371,3 +371,114 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
         );
     }
 }
+
+/// When `plexi host start` boots windowless (active window has no root pane and
+/// no focused pane), a `plexi pane new` split request must still materialize a
+/// pane. Regression for stint 0348: the empty-window fallback routed through
+/// `split_focused`, which returns early with no focused pane to split, so the
+/// spawn was silently dropped — `pane list` returned `[]` and the requested
+/// name never applied. The fallback must seed a root pane instead, apply the
+/// requested name, and write the actually-created pane id to the response file.
+#[test]
+fn spawn_pane_seeds_root_in_empty_window() {
+    let ctx = egui::Context::default();
+    let ft = crate::platform::logging::new_frame_tick();
+    let (mut app, ipc_tx) = PlexiApp::new_for_test(ctx, ft);
+
+    // new_for_test's sole window boots empty — no root, no focused pane —
+    // exactly the windowless-boot state.
+    assert!(
+        app.windows[0].tree.root.is_none(),
+        "precondition: window boots with no root pane"
+    );
+    assert!(
+        app.windows[0].focused_pane.is_none(),
+        "precondition: window boots with no focused pane"
+    );
+
+    let response_file = std::env::temp_dir().join(format!(
+        "plexi_test_seed_root_{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&response_file);
+
+    // Split spawn (not --window), no from_pane_id: falls into the empty-window
+    // fallback branch.
+    let _ = ipc_tx.send(crate::app_protocol::AppRequest::SpawnPane {
+        type_id: "terminal".to_string(),
+        layout: Some("split_h".to_string()),
+        args: vec![],
+        from_pane_id: None,
+        request_id: None,
+        response_file: Some(response_file.to_string_lossy().to_string()),
+        ephemeral: false,
+        cwd: None,
+        no_focus: false,
+        path: None,
+        workspace_root: None,
+        target_context: None,
+        name: Some("seeded".to_string()),
+    });
+    app.drain_pane_cmd_channel();
+
+    // Determine PTY availability independently of the code under test:
+    // `create_page_at` spawns a terminal via the same `TerminalPane::new` path.
+    // If it can't create one here (a headless CI without a PTY), the fallback
+    // likewise can't, so skip. When it CAN, the empty-window fallback must
+    // produce a pane — so we assert unconditionally below. This split is
+    // deliberate: guarding the real assertions on "panes.is_empty()" would let
+    // the very bug under test (a silently dropped spawn) masquerade as a
+    // skipped PTY failure.
+    let pty_available = {
+        let ctx = egui::Context::default();
+        let ft = crate::platform::logging::new_frame_tick();
+        let (mut probe, _tx) = PlexiApp::new_for_test(ctx, ft);
+        let before = probe.windows.len();
+        probe.create_page_at(9, 9, 1, None, false, None);
+        probe.windows.len() > before
+    };
+    if !pty_available {
+        let _ = std::fs::remove_file(&response_file);
+        return; // no PTY in this environment; cannot exercise terminal spawn
+    }
+
+    assert_eq!(
+        app.windows[0].panes.len(),
+        1,
+        "empty-window spawn must seed exactly one root pane"
+    );
+    assert!(
+        app.windows[0].tree.root.is_some(),
+        "seeded window must have a tree root"
+    );
+
+    let pane_id = *app.windows[0]
+        .panes
+        .keys()
+        .next()
+        .expect("seeded pane must exist");
+
+    // Requested name must have applied to the seeded pane.
+    let name = app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(|p| p.as_terminal())
+        .and_then(|t| t.name.clone());
+    assert_eq!(
+        name.as_deref(),
+        Some("seeded"),
+        "requested pane name must apply to the seeded root pane"
+    );
+
+    // Response file must report the id of the pane actually created.
+    let raw = std::fs::read_to_string(&response_file)
+        .expect("spawn_pane must write a response file");
+    let _ = std::fs::remove_file(&response_file);
+    let json: serde_json::Value =
+        serde_json::from_str(&raw).expect("response file must be valid JSON");
+    assert_eq!(
+        json["pane_id"].as_u64(),
+        Some(pane_id),
+        "response file pane_id must match the seeded pane's id"
+    );
+}
