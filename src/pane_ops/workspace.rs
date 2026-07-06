@@ -733,6 +733,50 @@ impl PlexiApp {
         self.minimap.visible = true;
     }
 
+    /// Seed a root terminal pane into the active window when it has no tree root
+    /// and no focused pane yet (the windowless-boot state). Returns the id of the
+    /// pane actually created, or `None` if terminal creation failed.
+    ///
+    /// The spawn_pane IPC fallback needs this because `split_focused` returns
+    /// early when there is no focused pane to split, silently dropping the spawn.
+    /// Unlike `create_page_at`, this populates the *existing* active window in
+    /// place rather than pushing a new one, so a seeded/queued `pane new` lands
+    /// in the window the host booted with.
+    pub(crate) fn seed_root_pane(
+        &mut self,
+        initial_cmd: Option<&str>,
+        close_on_exit: bool,
+        cwd_override: Option<PathBuf>,
+    ) -> Option<crate::spatial::tiling::PaneId> {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let cwd = cwd_override
+            .or_else(|| {
+                self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+            })
+            .filter(|p| p != &PathBuf::from("/"))
+            .unwrap_or(home);
+        let Some((tree, panes, root_tile)) =
+            self.create_single_pane_tree(Some(cwd), initial_cmd, close_on_exit)
+        else {
+            log::error!("seed_root_pane: failed to create terminal for empty active window");
+            return None;
+        };
+        let pane_id = *panes
+            .keys()
+            .next()
+            .expect("create_single_pane_tree always yields exactly one pane");
+        let win = &mut self.windows[self.active_window];
+        win.tree = tree;
+        win.panes = panes;
+        win.focused_pane = Some(root_tile);
+        win.zoomed_pane = None;
+        log::info!(
+            "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={} (windowless-boot spawn fallback) initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}",
+            win.window_id
+        );
+        Some(pane_id)
+    }
+
     pub(crate) fn reset_active_context(&mut self) {
         let cwd = self.cwd_for_welcome_tab();
         log::info!(
