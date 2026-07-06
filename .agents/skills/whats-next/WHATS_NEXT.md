@@ -6,9 +6,9 @@
 
 ---
 
-## Current State (2026-07-05, post-#2362)
+## Current State (2026-07-06, post-#2363)
 
-`alpha` is at the #2362 merge. Since the last audit: PR #2361 landed stint 0327 (event-bus unification: `plexi events declare/emit`, publish-vs-subscribe grant separation, legacy JSON-pipe fan-out deleted, PTY fenced) — live-validated end-to-end; 0336 and 0341's 0327-blocker unblocked; 0348 filed (host start windowless boot drops seeded panes). Before that: bundle #2360 landed and closed `0330`, `0331`, `0332`, `0335`, `0328`, `0334`, `0346`, and `0215`; details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at the #2363 merge (`23c72451`). Since the last audit: PR #2363 landed stint 0348 (host start windowless-boot fix — `seed_root_pane` fallback; seeded `--pane` flags and socket `pane new` now materialize on an empty window; live-validated headless). Earlier this cycle: #2361 (stint 0327, event-bus unification) and #2362 (stint 0336, manifest on_launch policy) landed, both live-validated; bundle #2360 closed the Epoch 1 DX chain. Details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
@@ -62,8 +62,7 @@ The registry brokers money; never a dependency for running installed apps. Spec:
 
 Same app contract, sandboxed runtime. This is what makes the marketplace mobile-friendly (in-process WASM is the only way apps run on iOS) and hosted (same typed contract over WebSocket).
 
-- **Pre-pay the toll: one transport-agnostic contract** — `0327` (#2361) and `0336` on_launch policy (#2362) landed 2026-07-05
-  - `0348` fix host start windowless boot dropping seeded panes (unblocks hands-off agent validation)
+- **Pre-pay the toll: one transport-agnostic contract** — `0327` (#2361), `0336` on_launch policy (#2362), and `0348` windowless-boot fix (#2363) all landed; hands-off agent validation now works end-to-end
 - **The WASM lane**
   - `0285` WASM-native Python SDK + CPython-in-WASM runtime (draft PR `#2323`)
     - `0286` WASM bundle distribution through the Epoch 3 registry (re-scoped 2026-07-02; also after `0322`, `0344`)
@@ -83,10 +82,10 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 
 P0: none.
 P1: `0241` (open PR needs fixing), `0285` (draft PR), `0338`, `0347`, `0339`*, `0340`*, `0341`*, `0344`*.
-P2 and below: `0348`, `0325`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
+P2 and below: `0325`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0348` — host start windowless-boot pane fix; unblocks hands-off agent validation.
+**Next recommended task:** `0338` — website account service (magic-link + device-code flow); Epoch 3 head, unblocks the whole commercial chain (0339 → 0322/0340 → 0341/0344).
 
 ---
 
