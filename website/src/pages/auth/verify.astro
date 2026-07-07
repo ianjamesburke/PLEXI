@@ -1,0 +1,167 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import {
+  approveDeviceCode,
+  consumeMagicLink,
+  deleteAccount,
+  getOrCreateAccount,
+  issueBearerToken,
+  peekMagicLink,
+  InvalidMagicLinkError,
+} from '../../server/auth';
+import { SESSION_COOKIE } from '../../server/http';
+import type { MagicLinkPurpose } from '../../server/resend';
+
+export const prerender = false;
+
+// Side effects happen only on an explicit POST from the confirmation form.
+// A bare GET (email scanners, browser prefetch) never consumes the token.
+
+type Outcome =
+  | { kind: 'device_approve' }
+  | { kind: 'login' }
+  | { kind: 'account_delete' }
+  | { kind: 'error'; message: string };
+
+type View =
+  | { mode: 'confirm'; token: string; purpose: MagicLinkPurpose }
+  | { mode: 'result'; outcome: Outcome };
+
+const CONFIRM: Record<MagicLinkPurpose, { title: string; body: string; button: string }> = {
+  login: {
+    title: 'Confirm sign-in',
+    body: 'Click below to sign in to your Plexi account.',
+    button: 'Sign in',
+  },
+  device_approve: {
+    title: 'Approve this device',
+    body: 'Click below to approve the device that is trying to sign in.',
+    button: 'Approve sign-in',
+  },
+  account_delete: {
+    title: 'Delete your account',
+    body: 'This permanently erases your account and sign-in tokens. It cannot be undone. Purchases are anonymized, not removed.',
+    button: 'Delete my account',
+  },
+};
+
+const RESULT: Record<Outcome['kind'], { title: string; body: string }> = {
+  device_approve: {
+    title: "You're signed in on your device",
+    body: 'You can close this tab and return to your terminal.',
+  },
+  login: {
+    title: "You're signed in",
+    body: 'Your session is active. You can head back to plexiapp.com.',
+  },
+  account_delete: {
+    title: 'Account deleted',
+    body: 'Your account and sign-in tokens have been erased. Purchases were anonymized, not removed.',
+  },
+  error: { title: 'That link did not work', body: '' },
+};
+
+const INVALID_MESSAGE = 'This link is invalid, expired, or already used. Request a new one.';
+
+let view: View;
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData();
+  const token = String(form.get('token') ?? '');
+  let outcome: Outcome;
+  try {
+    const record = await consumeMagicLink(token);
+    if (record.purpose === 'device_approve') {
+      const account = await getOrCreateAccount(record.email);
+      if (!record.deviceCode) {
+        outcome = { kind: 'error', message: 'This approval link is not tied to a device.' };
+      } else {
+        await approveDeviceCode(record.deviceCode, account.id);
+        outcome = { kind: 'device_approve' };
+      }
+    } else if (record.purpose === 'login') {
+      const account = await getOrCreateAccount(record.email);
+      const { token: bearer } = await issueBearerToken(account.id);
+      // Web session cookie: the browser presents this on authenticated routes.
+      Astro.cookies.set(SESSION_COOKIE, bearer, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 30, // 30 days
+      });
+      outcome = { kind: 'login' };
+    } else {
+      const account = await getOrCreateAccount(record.email);
+      await deleteAccount(account.id);
+      Astro.cookies.delete(SESSION_COOKIE, { path: '/' });
+      outcome = { kind: 'account_delete' };
+    }
+  } catch (err) {
+    if (err instanceof InvalidMagicLinkError) {
+      outcome = { kind: 'error', message: INVALID_MESSAGE };
+    } else {
+      console.error('[auth/verify] failed to apply magic link:', err);
+      outcome = { kind: 'error', message: 'Something went wrong. Please try again.' };
+    }
+  }
+  view = { mode: 'result', outcome };
+} else {
+  const token = Astro.url.searchParams.get('token') ?? '';
+  let purpose: MagicLinkPurpose | null = null;
+  if (token) {
+    try {
+      purpose = await peekMagicLink(token);
+    } catch (err) {
+      console.error('[auth/verify] failed to inspect magic link:', err);
+    }
+  }
+  view = purpose
+    ? { mode: 'confirm', token, purpose }
+    : { mode: 'result', outcome: { kind: 'error', message: INVALID_MESSAGE } };
+}
+
+const heading =
+  view.mode === 'confirm' ? CONFIRM[view.purpose].title : RESULT[view.outcome.kind].title;
+const body =
+  view.mode === 'confirm'
+    ? CONFIRM[view.purpose].body
+    : view.outcome.kind === 'error'
+      ? view.outcome.message
+      : RESULT[view.outcome.kind].body;
+---
+<Layout title={heading} description="Plexi account verification">
+  <section class="verify-page">
+    <div class="wrap">
+      <h1>{heading}</h1>
+      <p class="lead">{body}</p>
+      {view.mode === 'confirm' && (
+        <form method="POST" action="/auth/verify">
+          <input type="hidden" name="token" value={view.token} />
+          <button class="btn lg" type="submit">
+            {CONFIRM[view.purpose].button} <span class="arrow">→</span>
+          </button>
+        </form>
+      )}
+      {view.mode === 'result' && view.outcome.kind === 'error' && (
+        <a class="btn lg" href="/">Back to plexiapp.com <span class="arrow">→</span></a>
+      )}
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .verify-page { padding: 120px 0 80px; }
+  .verify-page h1 { font-size: 48px; font-weight: 700; letter-spacing: 0; margin-bottom: 16px; }
+  .verify-page .lead { color: var(--fg-2); font-size: 17px; line-height: 1.6; max-width: 540px; margin-bottom: 32px; }
+  .verify-page button.btn { font: inherit; cursor: pointer; border: none; }
+
+  @media (max-width: 980px) {
+    .verify-page { padding: 88px 0 60px; }
+    .verify-page h1 { font-size: 36px; }
+  }
+  @media (max-width: 480px) {
+    .verify-page h1 { font-size: 28px; }
+    .verify-page .lead { font-size: 15px; }
+  }
+</style>
