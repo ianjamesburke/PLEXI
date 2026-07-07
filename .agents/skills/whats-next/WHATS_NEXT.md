@@ -6,9 +6,9 @@
 
 ---
 
-## Current State (2026-07-06, post-#2364)
+## Current State (2026-07-07, post-#2365)
 
-`alpha` is at the #2364 merge (`c2944595`). Since the last audit: PR #2364 landed stint 0338 (website account service: Postgres + linear migrations, magic-link auth via Resend, device-code flow, revocable hashed bearer tokens, GDPR-shaped deletion; 11 integration tests against real Postgres) — Epoch 3 head done, `0339`/`0340` unblocked. Railway still needs manual provisioning (DATABASE_URL, PUBLIC_SITE_URL, backups toggle). Earlier this cycle: #2361 (0327 event bus), #2362 (0336 on_launch), #2363 (0348 windowless boot). Details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at the #2365 merge (`e223d6be`). Since the last audit: PR #2365 landed stint 0340 (`plexi account login/logout/status` device-code CLI, real `PlexiAccountProvider`, license/`PaymentProvider` machinery deleted; `account.toml` is now the host's only commercial credential) — live-validated on the installed build: error handling confirmed graceful against the still-unprovisioned production endpoint (404, tagged error, no panic). `0322` now the sole blocker left on `0339`; `0341`/`0344` still block on `0339`. Railway still needs manual provisioning (DATABASE_URL, PUBLIC_SITE_URL, backups toggle) before the device-flow happy path can be live-tested end-to-end. Earlier this cycle: #2364 (0338 website account service), #2361 (0327 event bus), #2362 (0336 on_launch), #2363 (0348 windowless boot). Details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
@@ -49,10 +49,10 @@ The host Assistant becomes the workspace operator: typed host tools behind the p
 The registry brokers money; never a dependency for running installed apps. Spec: `docs/marketplace-monetization.md` (0315, done 2026-07-02) — no client-side licensing, Polar as merchant of record, the paid download is the product.
 
 - `0338` website account service — done (#2364, 2026-07-06)
-  - `0339` — **unblocked**: `0339` Polar checkout/webhooks/gated downloads (the 402 envelope)
-    - `0322` host: account-gated paid downloads (also after `0340`)
-      - `0341` marketplace app + paywall handoff (also after `0327`)
-  - `0340` host `plexi account` CLI + license-machinery deletion
+- `0340` host `plexi account` CLI + license-machinery deletion — done (#2365, 2026-07-07)
+- `0339` — **ready, epoch head now**: Polar checkout/webhooks/gated downloads (the 402 envelope)
+  - `0322` host: account-gated paid downloads — unblocked once `0339` lands
+    - `0341` marketplace app + paywall handoff (also after `0327`, done)
   - `0344` publisher submission pipeline + review queue (`plexi app publish` → admin approval; also after `0339`)
   - `0323` Plexi-managed `ai.query` backend (also after `0339`)
 - `0347` legal surface (ToS, privacy, refund policy, DMCA) — **ready**; gates enabling sales, not development
@@ -81,11 +81,11 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 ## Priority Stack (flat view)
 
 P0: none.
-P1: `0241` (open PR needs fixing), `0285` (draft PR), `0347`, `0339`, `0340`, `0341`*, `0344`*.
+P1: `0241` (open PR needs fixing), `0285` (draft PR), `0347`, `0339`, `0322`*, `0341`*, `0344`*.
 P2 and below: `0325`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0340` — host `plexi account` CLI + license-machinery deletion; pure host-side Rust, hands-off validatable. `0339` (Polar) and `0347` (legal) run parallel.
+**Next recommended task:** `0339` — Polar checkout/webhooks/gated downloads (the 402 envelope); Epoch 3 head now that `0338`/`0340` are done. `0347` (legal surface) runs parallel — it gates enabling sales, not development.
 
 ---
 
