@@ -6,13 +6,12 @@
 
 ---
 
-## Current State (2026-07-06, post-#2363)
+## Current State (2026-07-06, post-#2364)
 
-`alpha` is at the #2363 merge (`23c72451`). Since the last audit: PR #2363 landed stint 0348 (host start windowless-boot fix — `seed_root_pane` fallback; seeded `--pane` flags and socket `pane new` now materialize on an empty window; live-validated headless). Earlier this cycle: #2361 (stint 0327, event-bus unification) and #2362 (stint 0336, manifest on_launch policy) landed, both live-validated; bundle #2360 closed the Epoch 1 DX chain. Details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at the #2364 merge (`c2944595`). Since the last audit: PR #2364 landed stint 0338 (website account service: Postgres + linear migrations, magic-link auth via Resend, device-code flow, revocable hashed bearer tokens, GDPR-shaped deletion; 11 integration tests against real Postgres) — Epoch 3 head done, `0339`/`0340` unblocked. Railway still needs manual provisioning (DATABASE_URL, PUBLIC_SITE_URL, backups toggle). Earlier this cycle: #2361 (0327 event bus), #2362 (0336 on_launch), #2363 (0348 windowless boot). Details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
-- `#2364` open: website account service (`0338`) — Epoch 3 head is now in-pipeline; validating and merging it unblocks `0339`/`0340` and the whole commercial chain.
 - `#2353` open: toolbar button focus steal fix from external branch.
 - `#2323` draft: WASM SDK v3 platform POCs (`0285` / `0287` lane).
 - `#2318` open: stats idle-heartbeat filtering (`0282`).
@@ -49,8 +48,8 @@ The host Assistant becomes the workspace operator: typed host tools behind the p
 
 The registry brokers money; never a dependency for running installed apps. Spec: `docs/marketplace-monetization.md` (0315, done 2026-07-02) — no client-side licensing, Polar as merchant of record, the paid download is the product.
 
-- `0338` website account service (magic-link + device-code flow) — **ready, epoch head**
-  - `0339` Polar checkout/webhooks/gated downloads (the 402 envelope)
+- `0338` website account service — done (#2364, 2026-07-06)
+  - `0339` — **unblocked**: `0339` Polar checkout/webhooks/gated downloads (the 402 envelope)
     - `0322` host: account-gated paid downloads (also after `0340`)
       - `0341` marketplace app + paywall handoff (also after `0327`)
   - `0340` host `plexi account` CLI + license-machinery deletion
@@ -82,11 +81,11 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 ## Priority Stack (flat view)
 
 P0: none.
-P1: `0241` (open PR needs fixing), `0285` (draft PR), `0338` (in-pipeline, PR #2364), `0347`, `0339`*, `0340`*, `0341`*, `0344`*.
+P1: `0241` (open PR needs fixing), `0285` (draft PR), `0347`, `0339`, `0340`, `0341`*, `0344`*.
 P2 and below: `0325`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0347` — legal surface (ToS, privacy, refund, DMCA); only unblocked P1 not already in a PR. Then validate #2364 to unlock `0339`/`0340`. Epoch 2 assistant chain (`0225` → `0226`/`0228`/`0229`) is fully unblocked and runs parallel to Epoch 3.
+**Next recommended task:** `0340` — host `plexi account` CLI + license-machinery deletion; pure host-side Rust, hands-off validatable. `0339` (Polar) and `0347` (legal) run parallel.
 
 ---
 
