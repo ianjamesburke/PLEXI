@@ -102,8 +102,9 @@ pub enum Commands {
     },
     /// Manage your Plexi marketplace account (only needed to publish or buy paid apps).
     ///
-    /// Free apps install without an account. Login/signup require a configured
-    /// auth backend; until then they fail closed with a clear message.
+    /// Free apps install without an account. Login requires the accounts backend
+    /// enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails
+    /// closed with a clear message.
     #[command(next_help_heading = "Apps")]
     Account {
         #[command(subcommand)]
@@ -779,11 +780,6 @@ pub enum AppCmd {
         /// Substring matched against app id, name, description, and tags
         query: String,
     },
-    /// Inspect paid-app licenses stored on this machine.
-    License {
-        #[command(subcommand)]
-        cmd: LicenseCmd,
-    },
     /// Pull git-backed installed apps to their latest source revision.
     ///
     /// Canonical app update command. Resolves workspace-local apps when run
@@ -862,32 +858,18 @@ pub enum HostCmd {
 pub enum AccountCmd {
     /// Show whether you are logged in.
     Status,
-    /// Log in to an existing marketplace account.
+    /// Log in to your marketplace account via emailed sign-in link.
+    ///
+    /// Runs the device-code flow: plexiapp.com emails a link, you click it in
+    /// any browser, and the CLI stores the session. Magic-link login creates the
+    /// account on first use — there is no separate signup.
     Login {
-        /// Account email (falls back to [marketplace].account_email in config)
-        #[arg(long)]
-        email: Option<String>,
-    },
-    /// Create a new marketplace account.
-    Signup {
         /// Account email (falls back to [marketplace].account_email in config)
         #[arg(long)]
         email: Option<String>,
     },
     /// Log out and clear the local session.
     Logout,
-}
-
-/// `plexi app license <cmd>` — inspect paid-app licenses on this machine.
-#[derive(Subcommand)]
-pub enum LicenseCmd {
-    /// List every stored paid-app license.
-    List,
-    /// Show one license in full.
-    Show {
-        /// App id whose license to show
-        id: String,
-    },
 }
 
 #[derive(Subcommand)]

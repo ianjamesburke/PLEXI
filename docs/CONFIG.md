@@ -207,12 +207,13 @@ tips = true
 # Publisher submission endpoint. Unset = `plexi app publish` prepares the package
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
-# Paid-app payment backend. Unset / "none" = paid installs fail closed (no charge
-# possible). A real provider is wired in a future release.
-# payment_backend = "none"
-# Account/auth backend. Unset / "none" = login/signup fail closed. Accounts are
-# only ever needed to publish or buy paid apps — free apps install without one.
-# account_backend = "none"
+# Account/auth backend. "plexi" enables plexiapp.com accounts; unset / "none" =
+# login fails closed. Accounts are only ever needed to publish or buy paid apps —
+# free apps install without one.
+# account_backend = "plexi"
+# Accounts service base URL. Unset = the official plexiapp.com service. Override
+# only to point `plexi account login` at a private deployment.
+# account_url     = "https://plexiapp.com"
 # Default email pre-filled by `plexi account login`.
 # account_email   = "you@example.com"
 ```

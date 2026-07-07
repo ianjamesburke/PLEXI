@@ -1,13 +1,22 @@
-//! Hosted marketplace layer — registry catalog, publisher submission, and the
-//! paid-app license + payment boundary (stint `0018`-`0021`).
+//! Hosted marketplace layer — registry catalog and publisher submission
+//! (stints `0018`-`0021`, `0340`).
 //!
 //! # Invariant carried from `docs/marketplace-hosted.md`
 //!
 //! Hosted services **distribute metadata and broker money**. They never become
 //! a dependency for running a local app. Everything in this module is a
-//! discovery / purchase surface layered *on top of* the local package format
+//! discovery / publish surface layered *on top of* the local package format
 //! (`crate::app::package`) and the local install flow. An installed app never
 //! phones home; the registry being down never breaks an installed app.
+//!
+//! # No client-side licensing
+//!
+//! Per `docs/marketplace-monetization.md`, a purchase is a server-side fact (a
+//! row in the plexiapp.com database keyed on the account), never a file on disk.
+//! The host presents its account bearer token when downloading a paid artifact
+//! and the server decides — there is no `License`, no `LicenseStore`, and no
+//! client-side payment provider. Paid checkout completes in the browser (Polar);
+//! the host observes the result, it never charges.
 //!
 //! # What lives here
 //!
@@ -17,15 +26,6 @@
 //! - [`RegistryEntry`] / [`RegistryIndex`] / [`RegistryClient`] — the hosted
 //!   catalog. The index *republishes* what the local validator already produced
 //!   (`crate::app::package::PackageReport`); it does not invent a second schema.
-//! - [`License`] / [`LicenseStore`] — proof-of-ownership for a paid app, stored
-//!   on disk per-channel. Real and tested. A license is the only thing the host
-//!   checks before installing a paid app.
-//! - [`PaymentProvider`] / [`StubPaymentProvider`] / [`payment_provider`] — the
-//!   payment boundary. Today the factory returns the stub, which fails closed
-//!   with [`PaymentError::NotConfigured`]. A real provider (Stripe, Polar, …)
-//!   slots into [`payment_provider`] with no other change anywhere — the license
-//!   store, the install gate, and the CLI all consume the trait, never a
-//!   concrete provider.
 //! - [`PublishClient`] / [`Submission`] — the publisher submission flow. Builds
 //!   a validated submission from a local package and posts it to a configured
 //!   endpoint; fails closed and honestly when no endpoint is set.
@@ -337,10 +337,7 @@ impl RegistryClient {
     }
 
     fn agent() -> ureq::Agent {
-        ureq::AgentBuilder::new()
-            .timeout_connect(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
+        crate::app::http::agent(std::time::Duration::from_secs(30))
     }
 
     /// Fetch and parse the catalog index.
@@ -378,10 +375,9 @@ impl RegistryClient {
     /// Resolve the artifact URL for an entry: explicit `package_url`, else
     /// `<cdn_base>/<checksum>.plexipkg`.
     pub fn artifact_url(&self, entry: &RegistryEntry) -> String {
-        entry
-            .package_url
-            .clone()
-            .unwrap_or_else(|| format!("{}/{}.plexipkg", self.cdn_base, entry.checksum))
+        entry.package_url.clone().unwrap_or_else(|| {
+            crate::app::http::join_url(&self.cdn_base, &format!("{}.plexipkg", entry.checksum))
+        })
     }
 
     /// Download an entry's `.plexipkg` artifact to `dest`, verifying that the
@@ -483,239 +479,6 @@ impl InstalledRegistrySource {
     }
 }
 
-// ── Licenses ──────────────────────────────────────────────────────────────────
-
-/// A receipt proving a user bought a paid app — like owning a purchased
-/// template file. Issued by a [`PaymentProvider`] on a successful purchase and
-/// persisted on disk. It is **never checked to run the app**: once the package
-/// is installed it runs freely, same path as a free app. The receipt only
-/// matters for re-downloading the paid artifact later without paying twice. The
-/// `token` is an opaque provider-issued string a future server uses to verify
-/// ownership on re-download.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct License {
-    pub schema_version: u32,
-    pub app_id: String,
-    /// Version this license covers, or `"*"` for any version.
-    pub version: String,
-    /// ISO-8601 UTC issue time.
-    pub issued_at: String,
-    /// Opaque provider-issued ownership token, used for server-side re-download
-    /// verification when real payment is wired.
-    pub token: String,
-    /// Which provider issued this license (e.g. `"stub"`, `"stripe"`).
-    pub provider: String,
-}
-
-impl License {
-    /// Whether this license authorizes installing the given app id. v1: same id,
-    /// and either a wildcard version or an exact match.
-    pub fn authorizes(&self, app_id: &str, version: &str) -> bool {
-        self.app_id == app_id && (self.version == "*" || self.version == version)
-    }
-}
-
-/// On-disk license store, one TOML file per app id under
-/// `<config_dir>/licenses/<app_id>.toml`. Per-channel by construction because
-/// `config_dir()` is per-channel.
-pub struct LicenseStore {
-    dir: PathBuf,
-}
-
-impl LicenseStore {
-    /// Open the store for the active channel.
-    pub fn open() -> Self {
-        LicenseStore {
-            dir: crate::config::config_dir().join("licenses"),
-        }
-    }
-
-    /// Open a store rooted at an explicit directory (tests).
-    #[cfg(test)]
-    pub fn open_at(dir: PathBuf) -> Self {
-        LicenseStore { dir }
-    }
-
-    fn path_for(&self, app_id: &str) -> PathBuf {
-        self.dir.join(format!("{app_id}.toml"))
-    }
-
-    /// Load the license for an app id, if one is stored.
-    pub fn load(&self, app_id: &str) -> Option<License> {
-        let path = self.path_for(app_id);
-        let text = std::fs::read_to_string(&path).ok()?;
-        match toml::from_str::<License>(&text) {
-            Ok(lic) => Some(lic),
-            Err(e) => {
-                log::warn!("marketplace: corrupt license at {}: {e}", path.display());
-                None
-            }
-        }
-    }
-
-    /// Persist a license, creating the store dir if needed.
-    pub fn save(&self, license: &License) -> Result<(), String> {
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|e| format!("could not create license dir {}: {e}", self.dir.display()))?;
-        let text = toml::to_string_pretty(license)
-            .map_err(|e| format!("could not serialize license: {e}"))?;
-        let path = self.path_for(&license.app_id);
-        std::fs::write(&path, text)
-            .map_err(|e| format!("could not write license {}: {e}", path.display()))?;
-        log::info!(
-            "marketplace: saved license for '{}' v{} (provider {})",
-            license.app_id,
-            license.version,
-            license.provider
-        );
-        Ok(())
-    }
-
-    /// Whether a stored license authorizes installing this app id + version.
-    pub fn has_valid(&self, app_id: &str, version: &str) -> bool {
-        self.load(app_id)
-            .map(|l| l.authorizes(app_id, version))
-            .unwrap_or(false)
-    }
-
-    /// All stored licenses, sorted by app id.
-    pub fn list(&self) -> Vec<License> {
-        let mut out = Vec::new();
-        if let Ok(read) = std::fs::read_dir(&self.dir) {
-            for entry in read.flatten() {
-                if entry.path().extension().and_then(|e| e.to_str()) == Some("toml") {
-                    if let Ok(text) = std::fs::read_to_string(entry.path()) {
-                        if let Ok(lic) = toml::from_str::<License>(&text) {
-                            out.push(lic);
-                        }
-                    }
-                }
-            }
-        }
-        out.sort_by(|a, b| a.app_id.cmp(&b.app_id));
-        out
-    }
-}
-
-// ── Payment boundary ──────────────────────────────────────────────────────────
-
-/// Why a purchase could not complete.
-#[derive(Debug, thiserror::Error)]
-pub enum PaymentError {
-    /// No real payment provider is configured in this build. The stub returns
-    /// this for every purchase — it is the expected, honest failure until a
-    /// provider (Stripe, Polar, …) is wired into [`payment_provider`].
-    #[error(
-        "paid apps require a configured payment provider — none is set up in this build. \
-         Free apps install normally. See https://plexiapp.com/docs/marketplace"
-    )]
-    NotConfigured,
-    /// The user is not signed in to a marketplace account.
-    #[error("a marketplace account is required to purchase paid apps")]
-    NoAccount,
-}
-
-/// The payment boundary. A purchase turns an account + a paid catalog entry into
-/// a [`License`]. This is the single seam a real processor implements; nothing
-/// else in the codebase references a concrete provider.
-///
-/// Factory rule (`CLAUDE.md`): no method may panic. The stub returns `Err` /
-/// noop for everything it cannot do.
-pub trait PaymentProvider: Send + Sync {
-    /// Provider name for logs and license records (e.g. `"stub"`, `"stripe"`).
-    fn name(&self) -> &'static str;
-
-    /// Whether this provider can actually charge. The stub returns `false`, so
-    /// callers can give a clear "paid apps unavailable" message before prompting.
-    fn is_configured(&self) -> bool;
-
-    /// Attempt to purchase `entry` for the logged-in `session`, returning a
-    /// [`License`] on success. The stub always fails with
-    /// [`PaymentError::NotConfigured`].
-    fn purchase(
-        &self,
-        entry: &RegistryEntry,
-        session: &crate::app::account::AccountSession,
-    ) -> Result<License, PaymentError>;
-}
-
-/// The fail-closed default provider. Charges nothing, issues nothing, and never
-/// panics. Replacing this is the entire job of adding real payments.
-pub struct StubPaymentProvider;
-
-impl PaymentProvider for StubPaymentProvider {
-    fn name(&self) -> &'static str {
-        "stub"
-    }
-
-    fn is_configured(&self) -> bool {
-        false
-    }
-
-    fn purchase(
-        &self,
-        entry: &RegistryEntry,
-        _session: &crate::app::account::AccountSession,
-    ) -> Result<License, PaymentError> {
-        log::warn!(
-            "marketplace: purchase of paid app '{}' attempted with stub provider — not configured",
-            entry.id
-        );
-        Err(PaymentError::NotConfigured)
-    }
-}
-
-/// Resolve the active payment provider from config. Today this only ever returns
-/// the stub; a real provider drops in here keyed on `payment_backend` with zero
-/// changes at any call site.
-///
-/// ```ignore
-/// match backend.as_deref() {
-///     Some("stripe") => Box::new(StripeProvider::from_config(cfg)),
-///     _ => Box::new(StubPaymentProvider),
-/// }
-/// ```
-pub fn payment_provider() -> Box<dyn PaymentProvider> {
-    let backend = crate::config::marketplace_payment_backend();
-    match backend.as_deref() {
-        // Real providers slot in here. None exist yet, so everything falls
-        // through to the stub. This is intentional and must fail closed.
-        Some("none") | None => Box::new(StubPaymentProvider),
-        Some(other) => {
-            log::warn!(
-                "marketplace: payment_backend='{other}' is configured but no provider is built — \
-                 falling back to stub (paid installs will fail closed)"
-            );
-            Box::new(StubPaymentProvider)
-        }
-    }
-}
-
-// ── Install license gate ──────────────────────────────────────────────────────
-
-/// The decision for whether a registry install may proceed, based purely on the
-/// entry's price and the local license store. Pure function — no network, no
-/// disk beyond the store passed in — so it is fully unit-testable.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LicenseDecision {
-    /// Free app, or a paid app the user already owns. Install may proceed.
-    Proceed,
-    /// Paid app with no local license. The caller must purchase (or fail).
-    NeedsPurchase,
-}
-
-/// Decide whether installing `entry` is licensed.
-pub fn license_gate(entry: &RegistryEntry, store: &LicenseStore) -> LicenseDecision {
-    if entry.price.is_free() {
-        return LicenseDecision::Proceed;
-    }
-    if store.has_valid(&entry.id, &entry.version) {
-        LicenseDecision::Proceed
-    } else {
-        LicenseDecision::NeedsPurchase
-    }
-}
-
 // ── Publisher submission ──────────────────────────────────────────────────────
 
 /// Lifecycle of a publisher submission. Mirrors the states in
@@ -781,10 +544,7 @@ impl PublishClient {
         );
         let body = serde_json::to_string(submission)
             .map_err(|e| PublishError::Upload(format!("serialize submission: {e}")))?;
-        let agent = ureq::AgentBuilder::new()
-            .timeout_connect(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(60))
-            .build();
+        let agent = crate::app::http::agent(std::time::Duration::from_secs(60));
         let resp = agent
             .post(url)
             .set("content-type", "application/json")
@@ -943,89 +703,20 @@ mod tests {
     }
 
     #[test]
-    fn license_store_round_trips_and_gates() {
-        let tmp = std::env::temp_dir().join(format!("plexi-lic-test-{}", uuid::Uuid::new_v4()));
-        let store = LicenseStore::open_at(tmp.clone());
-        let paid_entry = entry("pro-app", paid(), Visibility::Public);
-
-        // No license yet → paid app needs purchase.
-        assert_eq!(
-            license_gate(&paid_entry, &store),
-            LicenseDecision::NeedsPurchase
-        );
-
-        // A free app never needs a license.
-        let free_entry = entry("free-app", Price::default(), Visibility::Public);
-        assert_eq!(license_gate(&free_entry, &store), LicenseDecision::Proceed);
-
-        // Save a license, then the paid app proceeds.
-        let lic = License {
-            schema_version: MARKETPLACE_SCHEMA_VERSION,
-            app_id: "pro-app".to_string(),
-            version: "*".to_string(),
-            issued_at: "2026-06-12T00:00:00Z".to_string(),
-            token: "tok_test".to_string(),
-            provider: "stub".to_string(),
-        };
-        store.save(&lic).unwrap();
-        assert_eq!(store.load("pro-app"), Some(lic));
-        assert_eq!(license_gate(&paid_entry, &store), LicenseDecision::Proceed);
-        assert_eq!(store.list().len(), 1);
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn free_registry_entry_needs_no_account_or_license() {
+    fn free_registry_entry_needs_no_account() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = LicenseStore::open_at(tmp.path().join("licenses"));
         let mut free_entry = entry("reviewed-notes", Price::default(), Visibility::Public);
         free_entry.reviewed_native = true;
 
-        assert_eq!(license_gate(&free_entry, &store), LicenseDecision::Proceed);
+        // Free apps carry no price gate and no account requirement — with the
+        // no-license model, `is_free()` is the whole install-time decision.
+        assert!(free_entry.price.is_free());
         assert!(
             crate::app::account::AccountStore::open_at(tmp.path().join("account.toml"))
                 .current()
                 .is_none(),
             "test starts without a marketplace account, but free apps still proceed"
         );
-    }
-
-    #[test]
-    fn license_version_scoping() {
-        let lic = License {
-            schema_version: 1,
-            app_id: "a".to_string(),
-            version: "1.0.0".to_string(),
-            issued_at: "x".to_string(),
-            token: "t".to_string(),
-            provider: "stub".to_string(),
-        };
-        assert!(lic.authorizes("a", "1.0.0"));
-        assert!(!lic.authorizes("a", "2.0.0"));
-        assert!(!lic.authorizes("b", "1.0.0"));
-    }
-
-    // Factory-rule stub test: every trait method runs without panicking, and
-    // purchase fails closed.
-    #[test]
-    fn stub_payment_provider_never_panics_and_fails_closed() {
-        let provider = payment_provider();
-        assert_eq!(provider.name(), "stub");
-        assert!(!provider.is_configured());
-        let e = entry("pro-app", paid(), Visibility::Public);
-        let session = crate::app::account::AccountSession {
-            schema_version: 1,
-            account_id: "acct_1".to_string(),
-            email: "user@example.com".to_string(),
-            token: "tok".to_string(),
-            provider: "stub".to_string(),
-            issued_at: "2026-06-12T00:00:00Z".to_string(),
-        };
-        match provider.purchase(&e, &session) {
-            Err(PaymentError::NotConfigured) => {}
-            other => panic!("stub must fail closed, got {other:?}"),
-        }
     }
 
     #[test]
@@ -1156,10 +847,6 @@ mod tests {
         let hits = fetched.search("notes");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "reviewed-notes");
-        assert_eq!(
-            license_gate(hits[0], &LicenseStore::open_at(tmp.path().join("licenses"))),
-            LicenseDecision::Proceed
-        );
 
         let dest = tmp.path().join("downloaded.plexipkg");
         client

@@ -7,6 +7,7 @@ mod focus;
 pub(crate) mod focus_journal;
 pub mod host_mcp;
 pub mod host_version;
+pub mod http;
 pub(crate) mod launch_spec;
 mod lifecycle;
 pub mod marketplace;

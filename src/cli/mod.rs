@@ -310,7 +310,7 @@ pub(super) fn binary_in_path(name: &str) -> bool {
 }
 
 // ── Public re-exports (preserve crate::cli::fn_name() call sites in main.rs) ──
-pub use account::{account_login_cli, account_logout_cli, account_signup_cli, account_status_cli};
+pub use account::{account_login_cli, account_logout_cli, account_status_cli};
 pub use agent::{
     agent_add, agent_hook_install_cli, agent_hook_uninstall_cli, agent_init, agent_list,
     agent_report_cli, agent_status_cli, agent_update,
@@ -340,9 +340,7 @@ pub use install::{
     self_update_cli, update_cli,
 };
 pub use list::{freeze_cli, parse_notify_choice};
-pub use marketplace::{
-    app_browse_cli, app_license_list_cli, app_license_show_cli, app_publish_cli, app_search_cli,
-};
+pub use marketplace::{app_browse_cli, app_publish_cli, app_search_cli};
 pub use notes::{notes_list_cli, notes_open_cli};
 pub use notify::notify_cli;
 pub use open::{
