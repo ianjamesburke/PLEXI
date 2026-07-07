@@ -137,8 +137,8 @@ const KNOWN_MARKETPLACE: &[&str] = &[
     "registry_url",
     "cdn_url",
     "submit_url",
-    "payment_backend",
     "account_backend",
+    "account_url",
     "account_email",
 ];
 const KNOWN_KEYBINDINGS: &[&str] = &[
@@ -508,9 +508,9 @@ pub struct CliConfig {
 /// Hosted marketplace configuration (`[marketplace]`). All fields optional —
 /// the hosted catalog/CDN default to `plexiapp.com` in code (see
 /// `crate::app::marketplace::DEFAULT_REGISTRY_URL`), so an empty section uses
-/// the official registry. `submit_url` and `payment_backend` are intentionally
-/// unset by default: publishing and paid purchases fail closed until a real
-/// endpoint / provider is wired up.
+/// the official registry. `submit_url` and `account_backend` are intentionally
+/// unset by default: publishing and accounts fail closed until they are wired
+/// up.
 #[derive(Deserialize, Default, Clone)]
 pub struct MarketplaceConfig {
     /// Override the catalog index URL. Default: official `plexiapp.com` index.
@@ -520,14 +520,13 @@ pub struct MarketplaceConfig {
     /// Publisher submission endpoint. Unset = publishing prepared locally but
     /// not uploaded (fails closed with a clear message).
     pub submit_url: Option<String>,
-    /// Payment backend selector. Unset / `"none"` = stub (paid installs fail
-    /// closed). A real provider (e.g. `"stripe"`) slots into
-    /// `crate::app::marketplace::payment_provider()` keyed on this value.
-    pub payment_backend: Option<String>,
-    /// Account/auth backend selector. Unset / `"none"` = stub (login/signup
-    /// fail closed). A real provider slots into
-    /// `crate::app::account::account_provider()` keyed on this value.
+    /// Account/auth backend selector. `"plexi"` enables plexiapp.com accounts;
+    /// unset / `"none"` = stub (login fails closed). Selects the provider in
+    /// `crate::app::account::account_provider()`.
     pub account_backend: Option<String>,
+    /// Override the accounts service base URL. Default:
+    /// `crate::app::account::DEFAULT_ACCOUNT_URL` (`plexiapp.com`).
+    pub account_url: Option<String>,
     /// Default email pre-filled by `plexi account login`. Unset = prompt.
     pub account_email: Option<String>,
 }
@@ -1374,8 +1373,8 @@ impl MarketplaceConfig {
         overlay_field!(registry_url);
         overlay_field!(cdn_url);
         overlay_field!(submit_url);
-        overlay_field!(payment_backend);
         overlay_field!(account_backend);
+        overlay_field!(account_url);
         overlay_field!(account_email);
     }
 }
@@ -1404,14 +1403,17 @@ pub fn marketplace_submit_url() -> Option<String> {
     marketplace_config().submit_url
 }
 
-/// Payment backend selector (e.g. `"none"`, `"stripe"`). `None` = stub.
-pub fn marketplace_payment_backend() -> Option<String> {
-    marketplace_config().payment_backend
-}
-
 /// Account/auth backend selector (e.g. `"none"`, `"plexi"`). `None` = stub.
 pub fn marketplace_account_backend() -> Option<String> {
     marketplace_config().account_backend
+}
+
+/// Accounts service base URL, defaulting to the product domain at the call site.
+pub fn marketplace_account_url() -> String {
+    marketplace_config()
+        .account_url
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| crate::app::account::DEFAULT_ACCOUNT_URL.to_string())
 }
 
 /// Default email pre-filled by `plexi account login`, if set.
@@ -1654,8 +1656,8 @@ mod tests {
              registry_url = \"https://plexiapp.com/registry/v1/index.json\"\n\
              cdn_url = \"https://plexiapp.com/registry/v1/packages\"\n\
              submit_url = \"https://plexiapp.com/registry/v1/submit\"\n\
-             payment_backend = \"none\"\n\
-             account_backend = \"none\"\n\
+             account_backend = \"plexi\"\n\
+             account_url = \"https://plexiapp.com\"\n\
              account_email = \"publisher@example.com\"\n",
         )
         .unwrap();

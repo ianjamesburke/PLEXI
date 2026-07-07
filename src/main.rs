@@ -218,7 +218,7 @@ fn main() -> eframe::Result {
         .collect();
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd,
-        EventsCmd, HookAction, HostCmd, LicenseCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd,
+        EventsCmd, HookAction, HostCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd,
         RoutineCmd, SecretCmd,
         UpdateCmd, WorkspaceCmd,
     };
@@ -576,20 +576,6 @@ fn main() -> eframe::Result {
                                 );
                                 std::process::exit(cli::app_search_cli(&query));
                             }
-                            AppCmd::License { cmd } => match cmd {
-                                LicenseCmd::List => {
-                                    exit_if_feature_disabled(
-                                        crate::release::ReleaseFeature::Marketplace,
-                                    );
-                                    std::process::exit(cli::app_license_list_cli())
-                                }
-                                LicenseCmd::Show { id } => {
-                                    exit_if_feature_disabled(
-                                        crate::release::ReleaseFeature::Marketplace,
-                                    );
-                                    std::process::exit(cli::app_license_show_cli(&id))
-                                }
-                            },
                             AppCmd::Update { id } => {
                                 log::info!("app_update:cli: id={id:?}");
                                 std::process::exit(cli::app_update_cli(id.as_deref()));
@@ -1015,9 +1001,6 @@ fn main() -> eframe::Result {
                             AccountCmd::Status => std::process::exit(cli::account_status_cli()),
                             AccountCmd::Login { email } => {
                                 std::process::exit(cli::account_login_cli(email.as_deref()))
-                            }
-                            AccountCmd::Signup { email } => {
-                                std::process::exit(cli::account_signup_cli(email.as_deref()))
                             }
                             AccountCmd::Logout => std::process::exit(cli::account_logout_cli()),
                         }

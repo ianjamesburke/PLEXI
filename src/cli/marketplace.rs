@@ -1,19 +1,17 @@
 //! Marketplace CLI surface — browse/search the hosted catalog, publish an app,
-//! manage paid-app licenses, and gate paid installs (stint `0018`-`0021`).
+//! and plan bare-id installs (stints `0018`-`0021`, `0340`).
 //!
 //! Every command here is a thin shell over `crate::app::marketplace`. The
 //! invariant from the PRM holds at this layer too: nothing here is required to
 //! run a locally-installed app. Browse/search need the network; if the registry
 //! is unreachable they fail with a clear message and a nonzero code, but they
-//! never touch installed apps. The paid-install gate fails *open* on registry
-//! errors for free/local apps (registry down never blocks a local install) and
-//! fails *closed* only for confirmed paid apps with no license.
+//! never touch installed apps. Paid apps are bought through the marketplace
+//! (browser checkout); the CLI never charges and there is no client-side
+//! license — a bare CLI install of a paid app is blocked with a pointer.
 
-use crate::app::account::AccountStore;
 use crate::app::marketplace::{
-    license_gate, payment_provider, InstalledRegistrySource, LicenseDecision, LicenseStore,
-    MarketplaceManifest, PaymentError, PublishClient, RegistryClient, RegistryEntry, RegistryError,
-    Submission, Visibility,
+    InstalledRegistrySource, MarketplaceManifest, PublishClient, RegistryClient, RegistryEntry,
+    RegistryError, Submission, Visibility,
 };
 use crate::app::package;
 use std::path::{Path, PathBuf};
@@ -92,8 +90,8 @@ fn print_entry_table(entries: &[&RegistryEntry]) {
 /// hosted catalog and the license store. There is no legacy fallback — the
 /// catalog is the only source for a bare id.
 pub enum InstallPlan {
-    /// Catalog app, free or licensed, artifact downloaded + checksum-verified.
-    /// Install this `.plexipkg` directly.
+    /// Free catalog app, artifact downloaded + checksum-verified. Install this
+    /// `.plexipkg` directly.
     Package {
         path: PathBuf,
         reviewed_native: bool,
@@ -108,8 +106,8 @@ pub enum InstallPlan {
     /// resolved through the catalog. (Already-installed apps are unaffected;
     /// only *new* installs need the catalog.)
     Unreachable,
-    /// Paid app with no license, and purchase is unavailable or failed. Abort.
-    /// A message was already printed.
+    /// The install cannot proceed (paid app, malformed entry, or download
+    /// failure). A message was already printed.
     Blocked,
 }
 
@@ -117,9 +115,10 @@ pub enum InstallPlan {
 /// `install_cli`. The catalog is the sole source of truth for a bare id —
 /// there is no legacy resolver and no backwards-compatibility path.
 ///
-/// A paid app the user does not own is taken through purchase (which fails
-/// closed with the stub provider). Free / licensed apps install from the CDN
-/// artifact, or from a declared source spec for github-hosted catalog entries.
+/// Paid apps are blocked here: they are bought through the marketplace (browser
+/// checkout), and the server gates the paid artifact download on the account's
+/// purchase row. Free apps install from the CDN artifact, or from a declared
+/// source spec for github-hosted catalog entries.
 pub fn plan_install(app_id: &str) -> InstallPlan {
     let cli = client();
     let entry = match cli.fetch_entry(app_id) {
@@ -149,11 +148,18 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
         }
     }
 
-    // License gate before any download or source resolution.
-    let store = LicenseStore::open();
-    if license_gate(&entry, &store) == LicenseDecision::NeedsPurchase
-        && !attempt_purchase(&entry, &store)
-    {
+    // Paid apps are purchased through the marketplace, never the CLI: the server
+    // gates the paid artifact download on the account's purchase row. Block a
+    // bare CLI install of a paid app with a clear pointer. Free apps proceed.
+    if !entry.price.is_free() {
+        log::info!("marketplace: bare install of paid app '{app_id}' blocked (buy via marketplace)");
+        eprintln!(
+            "error: '{}' is a paid app ({}). Buy it through the marketplace — open the app in \
+             Plexi or visit https://plexiapp.com — then it installs for your account. \
+             Log in first with `plexi account login`.",
+            entry.id,
+            entry.price.display()
+        );
         return InstallPlan::Blocked;
     }
 
@@ -189,89 +195,6 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
          the registry entry is malformed"
     );
     InstallPlan::Blocked
-}
-
-/// Attempt to buy a paid app the user does not yet own. Requires a logged-in
-/// account; today the stub payment provider always fails closed, telling the
-/// user exactly why. When a real provider is wired into `payment_provider()`,
-/// this issues + persists a license and returns `true` with no other change.
-fn attempt_purchase(entry: &RegistryEntry, store: &LicenseStore) -> bool {
-    println!("'{}' is a paid app ({}).", entry.id, entry.price.display());
-
-    let Some(session) = AccountStore::open().current() else {
-        eprintln!("error: {}", PaymentError::NoAccount);
-        eprintln!("  Log in first: `plexi account login`.");
-        return false;
-    };
-
-    let provider = payment_provider();
-    log::info!(
-        "marketplace: payment provider '{}' configured={}",
-        provider.name(),
-        provider.is_configured()
-    );
-    if !provider.is_configured() {
-        eprintln!("error: {}", PaymentError::NotConfigured);
-        return false;
-    }
-    log::info!(
-        "marketplace: purchasing '{}' as {}",
-        entry.id,
-        session.email
-    );
-    match provider.purchase(entry, &session) {
-        Ok(license) => {
-            if let Err(e) = store.save(&license) {
-                eprintln!("error: purchased but could not save license: {e}");
-                return false;
-            }
-            println!("Purchased '{}'. License saved.", entry.id);
-            true
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            false
-        }
-    }
-}
-
-/// `plexi app license list` — show every stored paid-app license.
-pub fn app_license_list_cli() -> i32 {
-    log::info!("marketplace: license list");
-    let store = LicenseStore::open();
-    let licenses = store.list();
-    if licenses.is_empty() {
-        println!("No paid-app licenses on this machine.");
-        return 0;
-    }
-    println!("{} license(s):\n", licenses.len());
-    for lic in &licenses {
-        println!(
-            "  {}  v{}  (provider: {}, issued: {})",
-            lic.app_id, lic.version, lic.provider, lic.issued_at
-        );
-    }
-    0
-}
-
-/// `plexi app license show <id>` — show one license in full.
-pub fn app_license_show_cli(id: &str) -> i32 {
-    log::info!("marketplace: license show id={id}");
-    let store = LicenseStore::open();
-    match store.load(id) {
-        Some(lic) => {
-            println!("app:       {}", lic.app_id);
-            println!("version:   {}", lic.version);
-            println!("provider:  {}", lic.provider);
-            println!("issued_at: {}", lic.issued_at);
-            println!("token:     {}", lic.token);
-            0
-        }
-        None => {
-            eprintln!("no license stored for '{id}'");
-            1
-        }
-    }
 }
 
 /// `plexi app publish [<path>]` — validate, package, and submit an app to the

@@ -83,8 +83,8 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     ("marketplace.registry_url", "string", "Override catalog index URL"),
     ("marketplace.cdn_url", "string", "Override package CDN base URL"),
     ("marketplace.submit_url", "string", "Publisher submission endpoint"),
-    ("marketplace.payment_backend", "string", "Payment backend selector"),
-    ("marketplace.account_backend", "string", "Account/auth backend selector"),
+    ("marketplace.account_backend", "string", "Account/auth backend selector (\"plexi\" to enable)"),
+    ("marketplace.account_url", "string", "Accounts service base URL (default plexiapp.com)"),
     ("marketplace.account_email", "string", "Default email for plexi account login"),
 ];
 
