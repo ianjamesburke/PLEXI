@@ -12,6 +12,7 @@
 
 Open PRs that affect priority reading:
 
+- `#2364` open: website account service (`0338`) — Epoch 3 head is now in-pipeline; validating and merging it unblocks `0339`/`0340` and the whole commercial chain.
 - `#2353` open: toolbar button focus steal fix from external branch.
 - `#2323` draft: WASM SDK v3 platform POCs (`0285` / `0287` lane).
 - `#2318` open: stats idle-heartbeat filtering (`0282`).
@@ -81,11 +82,11 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 ## Priority Stack (flat view)
 
 P0: none.
-P1: `0241` (open PR needs fixing), `0285` (draft PR), `0338`, `0347`, `0339`*, `0340`*, `0341`*, `0344`*.
+P1: `0241` (open PR needs fixing), `0285` (draft PR), `0338` (in-pipeline, PR #2364), `0347`, `0339`*, `0340`*, `0341`*, `0344`*.
 P2 and below: `0325`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0338` — website account service (magic-link + device-code flow); Epoch 3 head, unblocks the whole commercial chain (0339 → 0322/0340 → 0341/0344).
+**Next recommended task:** `0347` — legal surface (ToS, privacy, refund, DMCA); only unblocked P1 not already in a PR. Then validate #2364 to unlock `0339`/`0340`. Epoch 2 assistant chain (`0225` → `0226`/`0228`/`0229`) is fully unblocked and runs parallel to Epoch 3.
 
 ---
 
