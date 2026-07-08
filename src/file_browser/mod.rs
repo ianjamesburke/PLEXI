@@ -2976,6 +2976,38 @@ mod tests {
         );
     }
 
+    /// Regression for stint 0351: `plexi pane key <id> enter` must drive the
+    /// same `handle_key` → `open_file` path a physical Enter press takes. In
+    /// prod, `open_file` hands the path to the host's `OpenArtifact` resolver
+    /// (`open_file_in_app`, #2283) — that resolver has its own coverage; this
+    /// test proves the CLI key-string vocabulary reaches it for a selected
+    /// media file.
+    #[test]
+    fn cli_key_string_enter_opens_selected_media_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("clip.mp4"), b"not a real video").expect("write");
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        assert!(!app.entries[0].is_dir, "fixture must select the media file");
+
+        let raw = crate::app::key_str_to_egui_raw_input("enter")
+            .expect("CLI key string 'enter' must map to an egui event");
+        let ctx = egui::Context::default();
+        let mut consumed = false;
+        let _ = ctx.run(raw, |ctx| {
+            ctx.input(|i| {
+                consumed = app.handle_key(i) == crate::app::app_trait::KeyDisposition::Consumed;
+            });
+        });
+
+        assert!(consumed, "injected Enter must be consumed by the app");
+        assert_eq!(
+            app.opened_files.len(),
+            1,
+            "injected Enter must reach open_file for the selected media file"
+        );
+        assert!(app.opened_files[0].ends_with("clip.mp4"));
+    }
+
     #[test]
     fn l_key_on_file_opens_file() {
         let (mut app, _dir) = make_file_only_dir_app();

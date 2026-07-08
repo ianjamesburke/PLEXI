@@ -4082,6 +4082,118 @@ fn parse_key_str_to_event(key: &str) -> (String, crate::app_protocol::Modifiers)
     (key_str, modifiers)
 }
 
+/// Translate a key string (same vocabulary as `key_str_to_pty_bytes`) into a
+/// synthesized `egui::RawInput` for native app panes. Native (builtin/WASM)
+/// apps read keys from `egui::InputState` via `App::handle_key`, not the PGAP
+/// event queue, so CLI key injection must produce egui events. Returns `None`
+/// for key strings that don't map to an `egui::Key`.
+pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
+    let mut parts: Vec<&str> = key.split('+').collect();
+    let key_part = parts.pop().unwrap_or(key);
+    let mut modifiers = egui::Modifiers::default();
+    for m in &parts {
+        match m.to_lowercase().as_str() {
+            "ctrl" | "control" => {
+                modifiers.ctrl = true;
+                if !cfg!(target_os = "macos") {
+                    modifiers.command = true;
+                }
+            }
+            "shift" => modifiers.shift = true,
+            "alt" => modifiers.alt = true,
+            "cmd" | "command" | "meta" => {
+                modifiers.mac_cmd = cfg!(target_os = "macos");
+                modifiers.command = true;
+            }
+            _ => {}
+        }
+    }
+    let lower = key_part.to_lowercase();
+    // Named keys use egui's `Key::from_name` vocabulary; single printable
+    // chars ("a", "/", "1") and F-keys ("f5") pass through — `from_name`
+    // accepts lowercase letters and punctuation chars directly.
+    let name: String = match lower.as_str() {
+        "enter" | "return" => "Enter".into(),
+        "escape" | "esc" => "Escape".into(),
+        "space" => "Space".into(),
+        "backspace" => "Backspace".into(),
+        "tab" => "Tab".into(),
+        "delete" => "Delete".into(),
+        "home" => "Home".into(),
+        "end" => "End".into(),
+        "pageup" => "PageUp".into(),
+        "pagedown" => "PageDown".into(),
+        "up" | "arrowup" => "ArrowUp".into(),
+        "down" | "arrowdown" => "ArrowDown".into(),
+        "left" | "arrowleft" => "ArrowLeft".into(),
+        "right" | "arrowright" => "ArrowRight".into(),
+        "plus" => "Plus".into(),
+        "minus" => "Minus".into(),
+        "equals" => "Equals".into(),
+        "slash" => "Slash".into(),
+        f if f.starts_with('f') && f.len() > 1 && f[1..].chars().all(|c| c.is_ascii_digit()) => {
+            f.to_uppercase()
+        }
+        other => other.into(),
+    };
+    let egui_key = egui::Key::from_name(&name)?;
+    let mut events = vec![egui::Event::Key {
+        key: egui_key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }];
+    // Real keyboard input also emits an `Event::Text` for printable chars
+    // (search fields and text inputs read Text, not Key). Mirror that unless
+    // a chord modifier is held.
+    if !modifiers.ctrl && !modifiers.command && !modifiers.mac_cmd && !modifiers.alt {
+        let text = if lower == "space" {
+            Some(" ".to_string())
+        } else {
+            let mut chars = key_part.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) if !ch.is_control() => Some(if modifiers.shift {
+                    ch.to_uppercase().to_string()
+                } else {
+                    ch.to_string()
+                }),
+                _ => None,
+            }
+        };
+        if let Some(t) = text {
+            events.push(egui::Event::Text(t));
+        }
+    }
+    Some(egui::RawInput {
+        events,
+        modifiers,
+        ..Default::default()
+    })
+}
+
+/// Drive a native (builtin or WASM) app pane's `App::handle_key` with a
+/// synthesized key — the same handler a real keystroke reaches through
+/// `dispatch_app_key_events`. Never bypass this into app internals: `pane key`
+/// must exercise the app's real keyboard path so live validation observes
+/// production behavior.
+fn drive_native_pane_key(
+    runtime: &mut crate::host::pane::AppRuntime,
+    key: &str,
+) -> Result<app_trait::KeyDisposition, String> {
+    let raw = key_str_to_egui_raw_input(key)
+        .ok_or_else(|| format!("key {key:?} does not map to a native app key event"))?;
+    // Throwaway context: the cheapest way to build a well-formed InputState.
+    // handle_key only reads input — it never paints — so no fonts/render
+    // setup is needed.
+    let ctx = egui::Context::default();
+    let mut disposition = app_trait::KeyDisposition::Passthrough;
+    let _ = ctx.run(raw, |ctx| {
+        ctx.input(|i| disposition = runtime.handle_key(i));
+    });
+    Ok(disposition)
+}
+
 /// process-app registry to register against (terminals — should never reach
 /// this path; logged at the call site).
 fn register_directed_pipe_on_target(pane: &mut crate::host::pane::Pane, pipe_id: &str) -> bool {
