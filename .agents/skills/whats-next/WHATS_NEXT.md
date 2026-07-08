@@ -6,12 +6,13 @@
 
 ---
 
-## Current State (2026-07-07, post-#2365)
+## Current State (2026-07-08, post-v0.1.17)
 
-`alpha` is at the #2365 merge (`e223d6be`). Since the last audit: PR #2365 landed stint 0340 (`plexi account login/logout/status` device-code CLI, real `PlexiAccountProvider`, license/`PaymentProvider` machinery deleted; `account.toml` is now the host's only commercial credential) — live-validated on the installed build: error handling confirmed graceful against the still-unprovisioned production endpoint (404, tagged error, no panic). `0322` now the sole blocker left on `0339`; `0341`/`0344` still block on `0339`. Railway still needs manual provisioning (DATABASE_URL, PUBLIC_SITE_URL, backups toggle) before the device-flow happy path can be live-tested end-to-end. Earlier this cycle: #2364 (0338 website account service), #2361 (0327 event bus), #2362 (0336 on_launch), #2363 (0348 windowless boot). Details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at `7c72177d` (release v0.1.17). Since the last audit: v0.1.17 shipped; stint 0349 (explorer opens files in native Plexi viewers) went in-progress with PR #2366 open; live validation of that PR exposed a P0 gap — `plexi pane key` does not reach native app keyboard handlers (filed as `0351`), which blocks hands-off PR validation for any native-app pane. A second P0, `0350`, swaps agent pip semantics (flashing yellow = working, solid green = idle). Railway still needs manual provisioning (DATABASE_URL, PUBLIC_SITE_URL, backups toggle) before the account device-flow happy path can be live-tested end-to-end. Earlier this cycle: #2365 (0340 account CLI), #2364 (0338 website account service), #2361 (0327 event bus), #2363 (0348 windowless boot). Details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
+- `#2366` open: explorer native viewers (`0349`, in-progress) — validation blocked on `0351` (pane-key injection gap).
 - `#2353` open: toolbar button focus steal fix from external branch.
 - `#2323` draft: WASM SDK v3 platform POCs (`0285` / `0287` lane).
 - `#2318` open: stats idle-heartbeat filtering (`0282`).
@@ -32,6 +33,9 @@ Every epoch feeds the next; the whole line points at `NORTH_STAR.md` ("the last 
 A stranger installs, an agent builds an app first try, a free reviewed app installs from the hosted registry.
 
 - **First-user surface** is effectively landed: onboarding `0324`, website `0272`, registry go-live `0345`, palette scroll `0280`, app-builder DX `0330`/`0331`/`0332`/`0215`, exemplar apps `0335`/`0334`, SDK component coverage `0328`, and hosted Core catalog `0346` are done.
+- `0351` fix: pane key must drive native app keyboard handlers — **P0**; blocks hands-off PR validation (gates merging #2366 / `0349`)
+  - `0349` explorer opens files in native viewers (image/video/audio player apps) — in-progress, PR #2366 open
+- `0350` polish: swap agent pip semantics (flashing yellow = working, solid green = idle) — **P0**
 - **Missing tracked gap:** production hosted-registry smoke after #2360 deploys from alpha (`just website-smoke`, then fresh-profile `plexi app install <id>` against production). Create a stint if this cannot be folded into release verification.
 
 ### Epoch 2 — Intelligence (NORTH_STAR Phase 3; runs parallel to Epoch 3)
@@ -80,12 +84,12 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 
 ## Priority Stack (flat view)
 
-P0: none.
-P1: `0241` (open PR needs fixing), `0285` (draft PR), `0347`, `0339`, `0322`*, `0341`*, `0344`*.
+P0: `0351` (pane key → native app handlers; gates #2366 validation), `0350` (agent pip color swap).
+P1: `0349` (in-progress, PR #2366), `0241` (open PR needs fixing), `0285` (draft PR), `0347`, `0339`, `0322`*, `0341`*, `0344`*.
 P2 and below: `0325`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0339` — Polar checkout/webhooks/gated downloads (the 402 envelope); Epoch 3 head now that `0338`/`0340` are done. `0347` (legal surface) runs parallel — it gates enabling sales, not development.
+**Next recommended task:** `0351` — fix `plexi pane key` so injected keys reach native app keyboard handlers. It is P0 and the direct gate on validating and merging PR #2366 (`0349`); everything else queues behind that pipeline. `0339` (Polar checkout, Epoch 3 head) resumes after.
 
 ---
 
