@@ -387,7 +387,6 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `publish` | Validate, package, and submit an app to the Plexi marketplace |
 | `browse` | Browse every public app in the hosted marketplace |
 | `search` | Search the public marketplace catalog |
-| `license` | Inspect paid-app licenses stored on this machine |
 | `update` | Pull git-backed installed apps to their latest source revision |
 | `action` | Send a semantic action to a running app pane |
 
@@ -566,27 +565,6 @@ Search the public marketplace catalog
 |---|---|---|---|
 | `<query>` | string | yes | Substring matched against app id, name, description, and tags |
 
-### `plexi app license`
-
-Inspect paid-app licenses stored on this machine
-
-| Subcommand | Description |
-|---|---|
-| `list` | List every stored paid-app license |
-| `show` | Show one license in full |
-
-#### `plexi app license list`
-
-List every stored paid-app license
-
-#### `plexi app license show`
-
-Show one license in full
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<id>` | string | yes | App id whose license to show |
-
 ### `plexi app update`
 
 Pull git-backed installed apps to their latest source revision.
@@ -615,13 +593,12 @@ Example: plexi app action 42 refresh Example: plexi app action 42 navigate-to /s
 
 Manage your Plexi marketplace account (only needed to publish or buy paid apps).
 
-Free apps install without an account. Login/signup require a configured auth backend; until then they fail closed with a clear message.
+Free apps install without an account. Login requires the accounts backend enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails closed with a clear message.
 
 | Subcommand | Description |
 |---|---|
 | `status` | Show whether you are logged in |
-| `login` | Log in to an existing marketplace account |
-| `signup` | Create a new marketplace account |
+| `login` | Log in to your marketplace account via emailed sign-in link |
 | `logout` | Log out and clear the local session |
 
 ### `plexi account status`
@@ -630,15 +607,9 @@ Show whether you are logged in
 
 ### `plexi account login`
 
-Log in to an existing marketplace account
+Log in to your marketplace account via emailed sign-in link.
 
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--email` | string | no | Account email (falls back to [marketplace].account_email in config) |
-
-### `plexi account signup`
-
-Create a new marketplace account
+Runs the device-code flow: plexiapp.com emails a link, you click it in any browser, and the CLI stores the session. Magic-link login creates the account on first use — there is no separate signup.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
