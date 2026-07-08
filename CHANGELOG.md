@@ -1,6 +1,20 @@
 # Changelog
 
 Newest releases appear first.
+## [0.1.17] — 2026-07-08
+
+### Changes
+- feat: host plexi account CLI + PlexiAccountProvider; delete license machinery (#2365)
+- feat: website account service — Postgres, magic-link auth, device-code flow (#2364)
+- fix: host start windowless boot drops seeded/spawned panes (#2363)
+- feat: manifest [launch] on_launch policy — focus, dedup, duplicates (#2362)
+- fix: clarify merge-pr stint checkout requirement
+- Bundle: Epoch 1 close (#2360)
+- Bundle: stints 0343 + 0311 + 0296 + 0298 (drive-host skill, Cmd+P fix, canonical core apps, assistant stub cleanup) (#2359)
+- feat(cli): plexi host start — CLI-driven host launch with declarative boot state (#2358)
+- fix: reset palette scroll offset on open (#2314)
+- fix: pane new --tab anchors to caller pane's window, not active (#2357)
+- fix: scratchpad/notes editor scrolls to follow cursor on Enter/Tab/backspace
 ## [0.1.16] — 2026-07-01
 
 ### Changes
