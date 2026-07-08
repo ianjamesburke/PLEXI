@@ -11,6 +11,7 @@ const TEXT_PREVIEW_MAX_BYTES: u64 = 32 * 1024;
 /// (`open` / `xdg-open`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MediaKind {
+    Image,
     Video,
     Audio,
     Other,
@@ -28,6 +29,7 @@ impl MediaKind {
             return Self::Other;
         };
         match ext.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "webp" => Self::Image,
             // Common video container formats. AVFoundation handles the
             // big three on macOS (#346); the rest still route to the
             // in-app player so it can surface a decoder error rather
@@ -46,6 +48,7 @@ impl MediaKind {
     /// means "fall through to the system default opener".
     pub(crate) fn player_app_id(self) -> Option<&'static str> {
         match self {
+            Self::Image => Some("image-viewer"),
             Self::Video => Some("video-player"),
             Self::Audio => Some("audio-player"),
             Self::Other => None,
@@ -557,6 +560,23 @@ mod media_bridge_tests {
     use std::path::PathBuf;
 
     #[test]
+    fn open_image_file_routes_to_image_viewer_app() {
+        for ext in &["png", "PNG", "jpg", "jpeg", "gif", "bmp", "tiff", "webp"] {
+            let p = PathBuf::from(format!("/tmp/photo.{ext}"));
+            assert_eq!(
+                MediaKind::for_path(&p),
+                MediaKind::Image,
+                "extension {ext} should classify as Image"
+            );
+            assert_eq!(
+                MediaKind::for_path(&p).player_app_id(),
+                Some("image-viewer"),
+                "image routes to image-viewer app"
+            );
+        }
+    }
+
+    #[test]
     fn open_video_file_routes_to_video_player_app() {
         for ext in &["mp4", "MP4", "mov", "mkv", "webm", "m4v", "avi"] {
             let p = PathBuf::from(format!("/tmp/clip.{ext}"));
@@ -594,7 +614,6 @@ mod media_bridge_tests {
     fn unrecognized_extension_falls_back_to_system_open() {
         for path in &[
             "/tmp/notes.txt",
-            "/tmp/photo.tiff",
             "/tmp/archive.zip",
             "/tmp/Makefile",
             "/tmp/.dotfile",

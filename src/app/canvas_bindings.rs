@@ -462,7 +462,7 @@ impl PlexiApp {
         }
 
         // (d) OS default — mandatory fallback.
-        log::info!("open: '{path}' → OS default (no Plexi handler)");
+        log::info!("open: '{path}' → OS default (resolver fallthrough: no Plexi handler)");
         shell_open(path, false);
     }
 
@@ -471,7 +471,9 @@ impl PlexiApp {
     /// Returns `true` on a successful launch; `false` when the app is not
     /// available, so the resolver can fall through to the OS opener.
     fn launch_app_with_path(&mut self, id: &str, path: &str) -> bool {
-        match self.launch_app_by_id_with_layout(id, None, &[path.to_string()], None) {
+        let layout = matches!(id, "image-viewer" | "video-player" | "audio-player")
+            .then(|| "split_h".to_string());
+        match self.launch_app_by_id_with_layout(id, layout, &[path.to_string()], None) {
             Ok(_) => true,
             Err(e) => {
                 log::warn!("open: launch of app '{id}' for '{path}' failed — {e}");
