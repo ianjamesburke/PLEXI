@@ -3457,14 +3457,14 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
         );
     }
 
-    // Pip status wins over hook agent state: set an Idle agent, then report green.
+    // Pip status wins over hook agent state: set a Working agent, then report green.
     h.app.windows[0]
         .panes
         .get_mut(&pane)
         .unwrap()
         .set_agent(Some(PaneAgentState {
             pane_id: pane,
-            state: AgentState::Idle,
+            state: AgentState::Working,
             agent: "test".to_string(),
             detail: None,
             session_id: None,
@@ -3480,7 +3480,7 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
     let p = h.app.windows[0].panes.get(&pane).unwrap();
     assert_eq!(
         p.effective_activity(),
-        Some(&AgentState::Working),
-        "green pip -> Working (green dot), overriding the Idle agent state"
+        Some(&AgentState::Idle),
+        "green pip -> Idle (green dot), overriding the Working agent state"
     );
 }

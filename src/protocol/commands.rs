@@ -541,13 +541,13 @@ pub enum PipStatus {
 impl PipStatus {
     /// Map the app-reported status onto the host activity-dot vocabulary so the
     /// dot renders the app's intended color. The pip palette (`src/ui/theme.rs`)
-    /// is green=Working, yellow=Idle, red=Blocked, so the color-faithful mapping
-    /// is green→Working, yellow→Idle, red→Blocked. (Green maps to Working, which
-    /// pulses — a "healthy + active" dot.)
+    /// is yellow=Working, green=Idle, red=Blocked, so the color-faithful mapping
+    /// is yellow→Working, green→Idle, red→Blocked. (Yellow maps to Working, which
+    /// pulses — an "attention + active" dot.)
     pub fn as_agent_state(self) -> &'static AgentState {
         match self {
-            PipStatus::Green => &AgentState::Working,
-            PipStatus::Yellow => &AgentState::Idle,
+            PipStatus::Green => &AgentState::Idle,
+            PipStatus::Yellow => &AgentState::Working,
             PipStatus::Red => &AgentState::Blocked,
         }
     }
@@ -4187,10 +4187,10 @@ mod pip_status_tests {
 
     #[test]
     fn pip_status_maps_color_faithfully_to_agent_state() {
-        // The pip palette (src/ui/theme.rs) is green=Working, yellow=Idle,
+        // The pip palette (src/ui/theme.rs) is yellow=Working, green=Idle,
         // red=Blocked, so the dot renders the app's intended color.
-        assert_eq!(PipStatus::Green.as_agent_state(), &AgentState::Working);
-        assert_eq!(PipStatus::Yellow.as_agent_state(), &AgentState::Idle);
+        assert_eq!(PipStatus::Green.as_agent_state(), &AgentState::Idle);
+        assert_eq!(PipStatus::Yellow.as_agent_state(), &AgentState::Working);
         assert_eq!(PipStatus::Red.as_agent_state(), &AgentState::Blocked);
     }
 
