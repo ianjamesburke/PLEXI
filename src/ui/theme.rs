@@ -135,11 +135,11 @@ impl Colors {
             warning: parse_hex_or(&cfg.yellow, Color32::from_rgb(0xf9, 0xe2, 0xaf)),
             pip_working: parse_hex_or(
                 &cfg.pip_working,
-                parse_hex_or(&cfg.green, Color32::from_rgb(0xa6, 0xe3, 0xa1)),
+                parse_hex_or(&cfg.yellow, Color32::from_rgb(0xf9, 0xe2, 0xaf)),
             ),
             pip_idle: parse_hex_or(
                 &cfg.pip_idle,
-                parse_hex_or(&cfg.yellow, Color32::from_rgb(0xf9, 0xe2, 0xaf)),
+                parse_hex_or(&cfg.green, Color32::from_rgb(0xa6, 0xe3, 0xa1)),
             ),
             pip_blocked: parse_hex_or(
                 &cfg.pip_blocked,
@@ -1116,14 +1116,14 @@ mod tests {
     use super::*;
     use crate::config::ThemeConfig;
 
-    /// pip_working/idle/blocked fall back to success/warning/danger when not set,
+    /// pip_working/idle/blocked fall back to warning/success/danger when not set,
     /// and use the override color when set. pip_dim defaults to 0.45.
     #[test]
     fn pip_colors_fall_back_to_semantic_and_accept_overrides() {
         let default_cfg = ThemeConfig::default();
         let colors = Colors::from_config(&default_cfg);
-        assert_eq!(colors.pip_working, colors.success);
-        assert_eq!(colors.pip_idle, colors.warning);
+        assert_eq!(colors.pip_working, colors.warning);
+        assert_eq!(colors.pip_idle, colors.success);
         assert_eq!(colors.pip_blocked, colors.danger);
         assert!((colors.pip_dim - 0.45).abs() < f32::EPSILON);
 
