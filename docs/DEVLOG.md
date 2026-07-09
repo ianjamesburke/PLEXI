@@ -6,6 +6,12 @@ or `/merge-pr` trims the orientation file; do not rewrite old entries.
 
 ---
 
+## 2026-07-08 — Native pane-key driving
+
+`0351` landed in #2367: `plexi pane key` on a native (builtin/WASM) app pane was a silent no-op — the host queued `PlexiEvent::Key`, which native apps never read (they consume `egui::InputState` via `App::handle_key`). The `KeyPane` handler now synthesizes an `egui::InputState` and drives the app's real `handle_key`, the same path a physical keystroke takes; responses report `disposition: consumed|passthrough` so drive-host validation can detect ignored keys. Unblocks validating PR #2366 (`0349`, explorer native viewers), which exposed the gap.
+
+---
+
 ## 2026-07-02 — Epoch 1 close bundle
 
 `0330`, `0331`, `0332`, `0335`, `0328`, `0334`, `0346`, and `0215` landed in #2360:
