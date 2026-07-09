@@ -10,7 +10,10 @@ same meaning.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Literal, Optional
+
+PipStatus = Literal["green", "yellow", "red"]
+"""Traffic-light health an app reports for its own activity dot."""
 
 
 @dataclass
@@ -143,6 +146,18 @@ class SetStatus:
     """Set the pane status text shown by Plexi chrome."""
 
     text: str
+
+
+@dataclass
+class SetPipStatus:
+    """Report this app's own pip status — a red/yellow/green activity dot.
+
+    Takes priority over the host's derived activity until the app reports a
+    new status. The host stamps the pane id, so an app can only ever set its
+    own pip. ``status`` must be ``"green"``, ``"yellow"``, or ``"red"``.
+    """
+
+    status: PipStatus
 
 
 @dataclass
