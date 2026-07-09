@@ -21,6 +21,7 @@ Test infrastructure for the Plexi host. `HostHarness` (headless egui test harnes
 
 ## Traps
 
+- **`plexi pane key` must exercise real key handlers, never a parallel resolver path.** The host `KeyPane` handler routes by pane type: terminals get PTY bytes, process/PGAP apps get `PlexiEvent::Key`, and native (builtin/WASM) apps get a synthesized `egui::InputState` driven through `App::handle_key` (`drive_native_pane_key` in `src/app/mod.rs`) — the same handler a physical keystroke reaches. When adding pane-driving capabilities, extend these paths; never add a hidden CLI that bypasses an app's own keyboard flow. Native panes report `disposition` (consumed/passthrough) in the response file so drive-host validation can detect ignored keys.
 - **`cargo test --lib` silently misses host tests.** `--lib` only runs the `app_protocol` lib target (~47 tests). Host tests — app_registry, HostHarness, process_app, workspace_secrets — live in the binary target. Always use `cargo test --bin plexi`.
 - **`HostHarness::add_test_pane()` inserts a `ProcessApp` pane, not a Terminal.** Terminal-count assertions must not assume the initial pane is a Terminal; offset accordingly.
 - **Test constructor sync.** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Run `cargo test --bin plexi` on the base branch first to distinguish pre-existing failures from regressions.

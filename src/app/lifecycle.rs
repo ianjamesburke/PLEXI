@@ -1237,7 +1237,7 @@ impl PlexiApp {
                 response_file,
             } => {
                 log::info!("pane_ipc: kind=key_pane pane_id={pane_id} key={key:?}");
-                let result = match self
+                let result: Result<serde_json::Value, String> = match self
                     .windows
                     .iter_mut()
                     .find_map(|win| win.panes.get_mut(pane_id))
@@ -1251,17 +1251,48 @@ impl PlexiApp {
                             let bytes = super::key_str_to_pty_bytes(key);
                             term.backend
                                 .process_command(egui_term::BackendCommand::Write(bytes));
-                            Ok(())
+                            Ok(serde_json::json!({"ok": true}))
                         } else if let Some(app_pane) = pane.as_app_mut() {
-                            let (key_str, modifiers) = super::parse_key_str_to_event(key);
-                            app_pane.runtime.queue_outbound_event(
-                                crate::app_protocol::PlexiEvent::Key {
-                                    key: key_str,
-                                    modifiers,
-                                    pressed: true,
+                            match &mut app_pane.runtime {
+                                crate::host::pane::AppRuntime::Process(_) => {
+                                    let (key_str, modifiers) = super::parse_key_str_to_event(key);
+                                    app_pane.runtime.queue_outbound_event(
+                                        crate::app_protocol::PlexiEvent::Key {
+                                            key: key_str,
+                                            modifiers,
+                                            pressed: true,
+                                        },
+                                    );
+                                    Ok(serde_json::json!({"ok": true}))
+                                }
+                                // Native (builtin/WASM) apps read keys from egui
+                                // InputState, not the PGAP event queue — drive
+                                // their real `handle_key` handler.
+                                runtime => match super::drive_native_pane_key(runtime, key) {
+                                    Ok(disposition) => {
+                                        let disposition = match disposition {
+                                            crate::app::app_trait::KeyDisposition::Consumed => {
+                                                "consumed"
+                                            }
+                                            crate::app::app_trait::KeyDisposition::Passthrough => {
+                                                "passthrough"
+                                            }
+                                        };
+                                        log::info!(
+                                            "pane_ipc: key_pane: native app pane_id={pane_id} \
+                                             key={key:?} disposition={disposition}"
+                                        );
+                                        Ok(serde_json::json!({
+                                            "ok": true,
+                                            "disposition": disposition,
+                                        }))
+                                    }
+                                    Err(e) => {
+                                        log::warn!("pane_ipc: key_pane: {e}");
+                                        Err(e)
+                                    }
                                 },
-                            );
-                            Ok(())
+                            }
                         } else {
                             Err(format!("pane {pane_id}: unknown pane type"))
                         }
@@ -1269,7 +1300,7 @@ impl PlexiApp {
                 };
                 if let Some(rf) = response_file {
                     let json = match &result {
-                        Ok(()) => serde_json::json!({"ok": true}).to_string(),
+                        Ok(v) => v.to_string(),
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
                     if let Err(e) = std::fs::write(rf, &json) {

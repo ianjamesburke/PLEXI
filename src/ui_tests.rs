@@ -361,6 +361,64 @@ mod tests {
         })
     }
 
+    /// Regression for stint 0351: `AppRequest::KeyPane` (the `plexi pane key`
+    /// socket path) must drive a native app pane through its real
+    /// `App::handle_key` — not the PGAP event queue, which native apps never
+    /// read. Enter on the File Explorer's selected directory must run the
+    /// app's own Activate flow (navigate_into), and the response file must
+    /// report the disposition so driving agents can detect ignored keys.
+    #[test]
+    fn pane_key_ipc_drives_native_file_browser_handle_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("inner")).expect("mkdir");
+
+        let mut h = PlexiUiHarness::new();
+        h.open_file_browser(dir.path().to_path_buf());
+        h.step();
+
+        let pane_id = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .iter()
+                .find_map(|(id, p)| p.as_app().map(|_| *id))
+                .expect("file browser pane must exist after open_file_browser")
+        });
+
+        let rf_dir = tempfile::tempdir().expect("tempdir");
+        let rf = rf_dir.path().join("key-response.json");
+        h.with_app_mut(|app| {
+            app.handle_pane_ipc_request(crate::app_protocol::AppRequest::KeyPane {
+                pane_id,
+                key: "enter".to_string(),
+                response_file: Some(rf.to_string_lossy().into_owned()),
+            })
+        });
+
+        let content = std::fs::read_to_string(&rf).expect("KeyPane must write a response file");
+        let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
+        assert_eq!(v["ok"], true, "response must be ok; got {content}");
+        assert_eq!(
+            v["disposition"], "consumed",
+            "File Explorer must consume Enter; got {content}"
+        );
+
+        // Enter on the selected directory (dirs sort first, selected=0) runs
+        // the app's real Activate flow — cwd must now be the subdirectory.
+        let cwd = h.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .get(&pane_id)
+                .and_then(|p| p.as_app())
+                .and_then(|a| a.runtime.serialize_state())
+                .and_then(|s| s["cwd"].as_str().map(str::to_string))
+                .expect("file browser must serialize cwd")
+        });
+        assert!(
+            cwd.ends_with("inner"),
+            "Enter must navigate into the selected directory; cwd={cwd}"
+        );
+    }
+
     /// Stint 0207: render the four new canvas styling primitives (rect gradient,
     /// rect glow + stroke, circle glow + stroke, arc_ring) directly through
     /// `render_draw_commands` and save a PNG for visual inspection.

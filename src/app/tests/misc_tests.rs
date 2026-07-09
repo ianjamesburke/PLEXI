@@ -28,6 +28,70 @@ fn parse_key_str_to_event_preserves_modifiers() {
 }
 
 #[test]
+fn key_str_to_egui_raw_input_maps_named_keys_without_text() {
+    let raw = key_str_to_egui_raw_input("enter").expect("enter must map");
+    assert_eq!(raw.events.len(), 1, "named keys emit no Text event");
+    assert!(matches!(
+        raw.events[0],
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            pressed: true,
+            repeat: false,
+            ..
+        }
+    ));
+
+    let raw = key_str_to_egui_raw_input("ArrowDown").expect("ArrowDown must map");
+    assert!(matches!(
+        raw.events[0],
+        egui::Event::Key {
+            key: egui::Key::ArrowDown,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn key_str_to_egui_raw_input_emits_text_for_printable_chars() {
+    let raw = key_str_to_egui_raw_input("a").expect("a must map");
+    assert!(matches!(
+        raw.events[0],
+        egui::Event::Key {
+            key: egui::Key::A,
+            ..
+        }
+    ));
+    assert!(
+        matches!(&raw.events[1], egui::Event::Text(t) if t == "a"),
+        "printable chars must also emit Text for search fields; got {:?}",
+        raw.events
+    );
+
+    let raw = key_str_to_egui_raw_input("space").expect("space must map");
+    assert!(matches!(&raw.events[1], egui::Event::Text(t) if t == " "));
+}
+
+#[test]
+fn key_str_to_egui_raw_input_chords_set_modifiers_and_suppress_text() {
+    let raw = key_str_to_egui_raw_input("ctrl+c").expect("ctrl+c must map");
+    assert!(raw.modifiers.ctrl);
+    assert_eq!(
+        raw.events.len(),
+        1,
+        "chord keys must not emit Text; got {:?}",
+        raw.events
+    );
+
+    let raw = key_str_to_egui_raw_input("cmd+enter").expect("cmd+enter must map");
+    assert!(raw.modifiers.command);
+}
+
+#[test]
+fn key_str_to_egui_raw_input_rejects_unmappable_strings() {
+    assert!(key_str_to_egui_raw_input("notakey").is_none());
+}
+
+#[test]
 fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
     let ctx = egui::Context::default();
     let ft = crate::platform::logging::new_frame_tick();

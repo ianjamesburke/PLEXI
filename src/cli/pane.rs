@@ -644,6 +644,17 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
                     let _ = std::fs::remove_file(&response_path);
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
                         if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            // Native app panes report whether the app's key
+                            // handler consumed the key — surface a miss so
+                            // driving agents don't assume the key acted.
+                            if let Some(d) = v.get("disposition").and_then(|v| v.as_str()) {
+                                if d != "consumed" {
+                                    eprintln!(
+                                        "note: key delivered but not consumed by the app \
+                                         (disposition: {d})"
+                                    );
+                                }
+                            }
                             return 0;
                         }
                         if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
