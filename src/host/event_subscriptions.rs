@@ -246,10 +246,18 @@ pub struct HostSubscribeRequest {
     /// Pane id stamped by the host PTY env (`PLEXI_PANE_ID`), forwarded by the
     /// transport. Host-trusted: the CLI cannot pass a subscriber identity flag.
     pub from_pane_id: Option<u64>,
-    /// Transport-supplied subscriber id, used instead of the pane-derived one.
-    /// Set only by trusted host transport code (e.g. the host MCP server uses
-    /// `mcp:host`), never sourced from an untrusted client argument.
+    /// Transport-supplied subscriber id — the *delivery routing key*: where this
+    /// specific in-flight wait's events are queued and torn down. Must be unique
+    /// per concurrent waiter (e.g. the host MCP server mints `mcp:host:<uuid>`),
+    /// never sourced from an untrusted client argument.
     pub subscriber_override: Option<String>,
+    /// Transport-supplied *authorization identity*: the stable actor id the
+    /// broker checks grants against, decoupled from the per-call routing key
+    /// above (#2290). When `None`, the broker actor is the routing id itself
+    /// (the CLI case, where `pane:N` is already both stable and unique). The
+    /// host MCP server sets this to the stable `mcp:host` so one "Always" grant
+    /// covers every concurrent connection.
+    pub broker_actor_override: Option<String>,
     pub reply: SyncSender<HostSubscribeReply>,
 }
 
@@ -263,7 +271,13 @@ pub struct HostSubscribeRequest {
 /// taken from the user's click.
 pub struct PendingEventConsent {
     pub subscriber_type: ActorType,
+    /// Delivery routing key — unique per waiter; the recorded subscription and
+    /// its teardown key on this.
     pub subscriber_id: String,
+    /// Authorization identity — stable actor the broker grant is persisted
+    /// against on `AllowAlways` (#2290). Equals `subscriber_id` unless the
+    /// transport decoupled them (host MCP: `mcp:host`).
+    pub broker_actor_id: String,
     /// App-id namespace the streams live under.
     pub app_id: String,
     /// Stream names touched (empty = all of the app's declared streams). Drives
@@ -461,6 +475,13 @@ impl HostSubscriptionService {
             Some(id) => (ActorType::Agent, id.clone()),
             None => Self::resolve_cli_subscriber(req.from_pane_id),
         };
+        // Authorization identity: the stable actor the broker grants are keyed
+        // to. Defaults to the routing id (CLI: `pane:N` is both), overridden by
+        // the host MCP server to `mcp:host` so grants outlive any one connection.
+        let broker_actor_id = req
+            .broker_actor_override
+            .clone()
+            .unwrap_or_else(|| subscriber_id.clone());
         // Reject undeclared streams before involving the broker so the client
         // gets a precise error instead of a generic permission denial.
         let undeclared: Vec<String> = req
@@ -485,7 +506,7 @@ impl HostSubscriptionService {
             &self.workspace_root,
             &req.publisher_app_id,
             subscriber_type,
-            &subscriber_id,
+            &broker_actor_id,
             &req.event_names,
         );
         match decision {
@@ -523,6 +544,7 @@ impl HostSubscriptionService {
                 Some(PendingEventConsent {
                     subscriber_type,
                     subscriber_id,
+                    broker_actor_id,
                     app_id: req.publisher_app_id,
                     event_names: req.event_names,
                     action: ConsentAction::Subscribe {
@@ -551,6 +573,7 @@ impl HostSubscriptionService {
         let PendingEventConsent {
             subscriber_type,
             subscriber_id,
+            broker_actor_id,
             app_id,
             event_names,
             action,
@@ -566,7 +589,13 @@ impl HostSubscriptionService {
                 ConsentAction::Subscribe { .. } => subscription_targets(&app_id, &event_names),
                 ConsentAction::Publish { .. } => publish_targets(&app_id, &event_names),
             };
-            self.persist_always_grants(subscriber_type, &subscriber_id, &app_id, &targets, config_dir);
+            self.persist_always_grants(
+                subscriber_type,
+                &broker_actor_id,
+                &app_id,
+                &targets,
+                config_dir,
+            );
         }
         let scope = if choice == ConsentChoice::AllowAlways {
             "always"
@@ -782,6 +811,9 @@ impl HostSubscriptionService {
                 );
                 Some(PendingEventConsent {
                     subscriber_type: actor_type,
+                    // Publish is one-shot with no long-poll, so routing and
+                    // authorization identity are the same emitter id.
+                    broker_actor_id: actor_id.clone(),
                     subscriber_id: actor_id,
                     app_id: req.app_id,
                     event_names,
@@ -947,9 +979,81 @@ mod tests {
             resource_id: None,
             from_pane_id: Some(7),
             subscriber_override: override_id.map(String::from),
+            broker_actor_override: None,
             reply: tx,
         };
         (req, rx)
+    }
+
+    /// A subscribe request that decouples the delivery routing key from the
+    /// broker actor id (the host-MCP shape): grants are checked against
+    /// `broker_actor`, deliveries route to the unique `delivery_id` (#2290).
+    fn subscribe_request_decoupled(
+        delivery_id: &str,
+        broker_actor: &str,
+    ) -> (HostSubscribeRequest, std::sync::mpsc::Receiver<HostSubscribeReply>) {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let req = HostSubscribeRequest {
+            publisher_app_id: "event-probe".to_string(),
+            event_names: vec!["probe.tick".to_string()],
+            payload_mode: PayloadMode::Full,
+            trigger_mode: TriggerMode::Conversation,
+            resource_id: None,
+            from_pane_id: None,
+            subscriber_override: Some(delivery_id.to_string()),
+            broker_actor_override: Some(broker_actor.to_string()),
+            reply: tx,
+        };
+        (req, rx)
+    }
+
+    /// Two concurrent host-MCP waiters share the stable broker actor `mcp:host`
+    /// but mint distinct delivery keys. Each must receive its own delivery, and
+    /// tearing one down must leave the other live (#2290).
+    #[test]
+    fn concurrent_mcp_subscribers_do_not_collide() {
+        let timeline = timeline_with_stream();
+        let svc = granted_service(Arc::clone(&timeline));
+
+        let (req_a, rx_a) = subscribe_request_decoupled("mcp:host:aaaa", "mcp:host");
+        let (req_b, rx_b) = subscribe_request_decoupled("mcp:host:bbbb", "mcp:host");
+        assert!(svc.classify_subscribe_request(req_a).is_none());
+        assert!(svc.classify_subscribe_request(req_b).is_none());
+        let (ta, sa) = match rx_a.recv().unwrap() {
+            HostSubscribeReply::Ok { subscriber_type, subscriber_id, .. } => {
+                (subscriber_type, subscriber_id)
+            }
+            HostSubscribeReply::Err { message } => panic!("subscribe A failed: {message}"),
+        };
+        let (tb, sb) = match rx_b.recv().unwrap() {
+            HostSubscribeReply::Ok { subscriber_type, subscriber_id, .. } => {
+                (subscriber_type, subscriber_id)
+            }
+            HostSubscribeReply::Err { message } => panic!("subscribe B failed: {message}"),
+        };
+        // The reply echoes the unique routing key, not the shared broker actor.
+        assert_eq!(sa, "mcp:host:aaaa");
+        assert_eq!(sb, "mcp:host:bbbb");
+        assert_eq!(timeline.lock().unwrap().subscriptions().len(), 2);
+
+        // One emitted event fans out to both independent subscriptions.
+        timeline
+            .lock()
+            .unwrap()
+            .record_event("event-probe", 7, probe_event(1))
+            .expect("emit should record");
+
+        // Tear down A. B's subscription and its queued delivery must survive.
+        let (subs, _drops) = timeline.lock().unwrap().clear_subscriber(ta, &sa);
+        assert_eq!(subs, 1, "clearing A removes exactly A's subscription");
+        assert_eq!(
+            timeline.lock().unwrap().subscriptions().len(),
+            1,
+            "B's subscription must remain after A is cleared"
+        );
+        let deliveries_b = timeline.lock().unwrap().take_deliveries_for(tb, &sb);
+        assert_eq!(deliveries_b.len(), 1, "B still receives its own delivery");
+        assert_eq!(deliveries_b[0].event, "probe.tick");
     }
 
     fn probe_event(count: u64) -> EmittedEvent {

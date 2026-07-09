@@ -598,6 +598,9 @@ fn handle_events_subscribe(
         resource_id,
         from_pane_id,
         subscriber_override: None,
+        // CLI identity (`pane:N`) is already stable and unique per pane, so the
+        // broker actor is the routing id itself — no decoupling needed.
+        broker_actor_override: None,
         reply: reply_tx,
     };
     if subscribe_tx.send(req).is_err() {

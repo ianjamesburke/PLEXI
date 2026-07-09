@@ -62,8 +62,17 @@ pub struct CliRendererApp {
     last_selected: usize,
     /// Per-flag form values, keyed by flag name.
     field_values: HashMap<String, String>,
+    /// Path the descriptor was read from. Owned so the per-pane temp descriptor
+    /// (`$TMPDIR/plexi-descriptor-<uuid>.json`) is deleted on pane close via
+    /// `Drop`, instead of leaking one file per CLI open (#2246).
+    descriptor_path: String,
     /// Linked terminal pane id (0 = not yet linked).
     terminal_pane_id: u64,
+    /// Set when the terminal-link handshake returns pane id 0 (host could not
+    /// spawn the linked terminal). Distinguishes a hard failure from the normal
+    /// "still connecting" state so the renderer surfaces a visible error instead
+    /// of a stuck "(connecting terminal…)" label (#2246).
+    terminal_link_failed: bool,
     /// Pending AppCommands to drain each frame.
     pending_commands: Vec<AppCommand>,
     /// Last command string that was run (shown as a hint).
@@ -119,7 +128,9 @@ impl CliRendererApp {
             selected: 0,
             last_selected: 0,
             field_values: HashMap::new(),
+            descriptor_path,
             terminal_pane_id: 0,
+            terminal_link_failed: false,
             pending_commands: vec![],
             last_run: String::new(),
             terminal_requested: false,
@@ -534,7 +545,9 @@ impl CliRendererApp {
         // Run button
         ui.horizontal(|ui| {
             ui.add_space(style::SPACE_MD);
-            let run_text = if self.terminal_pane_id == 0 {
+            let run_text = if self.terminal_link_failed {
+                "▶  Run  (terminal unavailable)"
+            } else if self.terminal_pane_id == 0 {
                 "▶  Run  (connecting terminal…)"
             } else {
                 "▶  Run"
@@ -543,6 +556,20 @@ impl CliRendererApp {
                 self.execute();
             }
         });
+
+        // Surface a visible error when the terminal link hard-failed, so the Run
+        // affordance is not silently inert (#2246).
+        if self.terminal_link_failed {
+            ui.add_space(style::SPACE_SM);
+            ui.horizontal(|ui| {
+                ui.add_space(style::SPACE_MD);
+                ui.label(
+                    RichText::new("Could not open a linked terminal — reopen this tool to retry.")
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.danger),
+                );
+            });
+        }
 
         // Last run hint
         if !self.last_run.is_empty() {
@@ -660,6 +687,33 @@ impl CliRendererApp {
             });
         });
         took_focus
+    }
+}
+
+impl Drop for CliRendererApp {
+    /// Delete the per-pane temp descriptor on close (#2246). Guarded to the
+    /// host-minted `$TMPDIR/plexi-descriptor-*.json` pattern so a caller-supplied
+    /// or test-fixture path is never touched.
+    fn drop(&mut self) {
+        let path = std::path::Path::new(&self.descriptor_path);
+        let in_temp_dir = path.parent() == Some(std::env::temp_dir().as_path());
+        let is_descriptor = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("plexi-descriptor-") && n.ends_with(".json"));
+        if in_temp_dir && is_descriptor {
+            match std::fs::remove_file(path) {
+                Ok(()) => log::info!(
+                    "CliRendererApp: cleaned up temp descriptor {}",
+                    self.descriptor_path
+                ),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => log::warn!(
+                    "CliRendererApp: failed to remove temp descriptor {}: {e}",
+                    self.descriptor_path
+                ),
+            }
+        }
     }
 }
 
@@ -801,10 +855,21 @@ impl App for CliRendererApp {
         {
             if request_id == &self.terminal_request_id {
                 self.terminal_pane_id = *terminal_pane_id;
-                log::info!(
-                    "CliRendererApp: linked terminal ready, pane_id={}",
-                    terminal_pane_id
-                );
+                if *terminal_pane_id == 0 {
+                    // Handshake completed but the host could not spawn a linked
+                    // terminal — surface it instead of a stuck "connecting" state.
+                    self.terminal_link_failed = true;
+                    log::warn!(
+                        "CliRendererApp: linked terminal request {request_id} returned pane id 0 \
+                         — terminal link failed"
+                    );
+                } else {
+                    self.terminal_link_failed = false;
+                    log::info!(
+                        "CliRendererApp: linked terminal ready, pane_id={}",
+                        terminal_pane_id
+                    );
+                }
             }
         }
     }
@@ -1054,5 +1119,56 @@ mod tests {
         let app = CliRendererApp::new("/nonexistent/descriptor/path.json".into());
         assert!(matches!(app.view, View::Error(_)));
         assert!(app.descriptor.is_none());
+    }
+
+    /// Dropping the renderer deletes its host-minted temp descriptor (#2246), so
+    /// `$TMPDIR/plexi-descriptor-*.json` files do not accumulate per CLI open.
+    #[test]
+    fn drop_removes_temp_descriptor_file() {
+        let path = std::env::temp_dir().join(format!(
+            "plexi-descriptor-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, FIXTURE).expect("write temp descriptor");
+        assert!(path.exists());
+        {
+            let _app = CliRendererApp::new(path.to_string_lossy().into_owned());
+        }
+        assert!(
+            !path.exists(),
+            "temp descriptor must be removed when the renderer pane closes"
+        );
+    }
+
+    /// A non-temp descriptor path (e.g. a test fixture) is never deleted on drop.
+    #[test]
+    fn drop_leaves_non_temp_descriptor_file() {
+        let (app, dir) = app_from_fixture();
+        let path = dir.path().join("descriptor.json");
+        assert!(path.exists());
+        drop(app);
+        assert!(
+            path.exists(),
+            "a fixture descriptor outside the temp pattern must survive drop"
+        );
+    }
+
+    /// A `LinkedTerminalReady` handshake that returns pane id 0 is a hard failure,
+    /// not the normal "still connecting" state — the renderer flags it so a
+    /// visible error replaces the stuck "connecting terminal…" label (#2246).
+    #[test]
+    fn zero_terminal_pane_id_flags_link_failure() {
+        let (mut app, _dir) = app_from_fixture();
+        assert!(!app.terminal_link_failed);
+        let request_id = app.terminal_request_id.clone();
+        app.queue_outbound_event(crate::app_protocol::PlexiEvent::LinkedTerminalReady {
+            request_id,
+            terminal_pane_id: 0,
+        });
+        assert!(
+            app.terminal_link_failed,
+            "pane id 0 must mark the terminal link as failed"
+        );
+        assert_eq!(app.terminal_pane_id, 0);
     }
 }
