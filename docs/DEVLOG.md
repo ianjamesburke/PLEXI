@@ -6,6 +6,10 @@ or `/merge-pr` trims the orientation file; do not rewrite old entries.
 
 ---
 
+## 2026-07-09 — Agent pip color swap
+
+`0350` landed in #2368: agent activity pips now flash yellow while working and sit solid green while idle — the reverse of the prior default. `Colors::from_config` swaps the fallback (`pip_working` → `cfg.yellow`, `pip_idle` → `cfg.green`); explicit `[theme]` overrides are untouched. `PipStatus::as_agent_state()` (the app-reported green/yellow/red pip status apps set via the SDK) was swapped alongside it so a green pip still reads as color-faithful "idle" and yellow as "working" under the new palette. Verified via exact-value unit tests plus a live IPC round-trip against the installed PR build (`plexi agent report --state working` correctly flipped pane state); a full on-screen pixel screenshot was blocked by a macOS Screen Recording permission gap in the validating session, not a code issue. Last P0 in the queue — none remain.
+
 ## 2026-07-08 — Native pane-key driving
 
 `0351` landed in #2367: `plexi pane key` on a native (builtin/WASM) app pane was a silent no-op — the host queued `PlexiEvent::Key`, which native apps never read (they consume `egui::InputState` via `App::handle_key`). The `KeyPane` handler now synthesizes an `egui::InputState` and drives the app's real `handle_key`, the same path a physical keystroke takes; responses report `disposition: consumed|passthrough` so drive-host validation can detect ignored keys. Unblocks validating PR #2366 (`0349`, explorer native viewers), which exposed the gap.

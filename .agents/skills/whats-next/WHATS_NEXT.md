@@ -6,9 +6,9 @@
 
 ---
 
-## Current State (2026-07-08, post-#2367)
+## Current State (2026-07-09, post-#2368)
 
-`alpha` is at `5fb3c5a7` (#2367 merge). Since the last audit: PR #2367 landed stint 0351 — `plexi pane key` now drives native (builtin/WASM) app panes through their real `App::handle_key`, the same path a physical keystroke takes, instead of silently queuing a `PlexiEvent::Key` no native app reads. Native-pane responses report `disposition: consumed|passthrough` so drive-host validation can detect ignored keys. Live-smoked on the PR build (host start → `pane key <explorer> enter` → log shows `disposition=consumed` → navigated). This unblocks validating PR #2366 (`0349`, explorer native viewers), which was stuck on this exact gap. Remaining P0: `0350` (swap agent pip semantics — flashing yellow = working, solid green = idle). Railway still needs manual provisioning (DATABASE_URL, PUBLIC_SITE_URL, backups toggle) before the account device-flow happy path can be live-tested end-to-end. Earlier this cycle: v0.1.17 release, #2365 (0340 account CLI), #2364 (0338 website account service). Details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
+`alpha` is at `5f99f41e` (#2368 merge). Since the last audit: PR #2368 landed stint 0350 — agent pip semantics swapped so working agents flash yellow and idle agents sit solid green (previously the reverse); `[theme]` overrides for `pip_working`/`pip_idle` are untouched, and `PipStatus::as_agent_state()` (app-reported green/yellow/red) was swapped to stay color-faithful. That was the last P0 in the queue — **no P0s remain**. Earlier this cycle: PR #2367 landed stint 0351 (`plexi pane key` now drives native app panes through their real `App::handle_key`), which unblocked PR #2366 (`0349`, explorer native viewers) for validation — still open and ready to validate. Railway still needs manual provisioning (DATABASE_URL, PUBLIC_SITE_URL, backups toggle) before the account device-flow happy path can be live-tested end-to-end. Details live in `docs/DEVLOG.md`. The free v1 spine (scaffold, demo apps, packaging, trust labels, hosted registry files, secrets, onboarding, website) is landed. The v1 finish line: **a stranger installs Plexi, an agent builds a working app from the scaffold on the first try, and a reviewed free app installs from the hosted registry without an account.**
 
 Open PRs that affect priority reading:
 
@@ -32,9 +32,8 @@ Every epoch feeds the next; the whole line points at `NORTH_STAR.md` ("the last 
 
 A stranger installs, an agent builds an app first try, a free reviewed app installs from the hosted registry.
 
-- **First-user surface** is effectively landed: onboarding `0324`, website `0272`, registry go-live `0345`, palette scroll `0280`, app-builder DX `0330`/`0331`/`0332`/`0215`, exemplar apps `0335`/`0334`, SDK component coverage `0328`, hosted Core catalog `0346`, and native pane-key driving `0351` (#2367) are done.
-- `0349` explorer opens files in native viewers (image/video/audio player apps) — in-progress, PR #2366 open, unblocked for validation
-- `0350` polish: swap agent pip semantics (flashing yellow = working, solid green = idle) — **P0**
+- **First-user surface** is effectively landed: onboarding `0324`, website `0272`, registry go-live `0345`, palette scroll `0280`, app-builder DX `0330`/`0331`/`0332`/`0215`, exemplar apps `0335`/`0334`, SDK component coverage `0328`, hosted Core catalog `0346`, native pane-key driving `0351` (#2367), and agent pip color swap `0350` (#2368) are done.
+- `0349` explorer opens files in native viewers (image/video/audio player apps) — in-progress, PR #2366 open, unblocked for validation — **P1, next up**
 - **Missing tracked gap:** production hosted-registry smoke after #2360 deploys from alpha (`just website-smoke`, then fresh-profile `plexi app install <id>` against production). Create a stint if this cannot be folded into release verification.
 
 ### Epoch 2 — Intelligence (NORTH_STAR Phase 3; runs parallel to Epoch 3)
@@ -83,12 +82,12 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 
 ## Priority Stack (flat view)
 
-P0: `0350` (agent pip color swap).
+P0: none.
 P1: `0349` (in-progress, PR #2366 — ready to validate), `0241` (open PR needs fixing), `0285` (draft PR), `0347`, `0339`, `0322`*, `0341`*, `0344`*.
 P2 and below: `0325`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0350` — swap agent pip semantics (flashing yellow = working, solid green = idle). It's the last P0 in the queue. In parallel, PR #2366 (`0349`) is now unblocked for validation now that `0351` landed.
+**Next recommended task:** `0349` — validate PR #2366 (explorer native viewers). No P0s remain; this is the highest-priority open item since its blocker (`0351`) landed.
 
 ---
 
