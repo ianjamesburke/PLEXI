@@ -41,7 +41,26 @@ One-time setup:
    All three are required — `DATABASE_URL` and `RESEND_API_KEY` fail the service
    at boot, and `PUBLIC_SITE_URL` throws when a magic-link URL is first built
    (no silent fallback).
-4. **Deploy.** Push to the connected GitHub branch, or `railway up`.
+4. **Commerce variables (Polar money path, stint 0339).** Required only for the
+   checkout, webhook, subscription, and gated-download endpoints; each throws on
+   first use when absent (no silent fallback). Sales stay off until `SALES_ENABLED`.
+   ```
+   SALES_ENABLED=false                 # flip to "true" at go-live (after 0347 legal surface)
+   POLAR_ACCESS_TOKEN=<org access token>
+   POLAR_WEBHOOK_SECRET=<Standard Webhooks endpoint secret>
+   POLAR_SERVER=sandbox                # or "production"
+   POLAR_AI_PRO_PRODUCT_ID=<Plexi AI Pro subscription product id>
+   # Private paid-artifact bucket (S3-compatible Railway object storage):
+   PLEXI_ARTIFACT_BUCKET=<bucket name>
+   PLEXI_ARTIFACT_S3_ENDPOINT=<https endpoint>
+   PLEXI_ARTIFACT_S3_REGION=auto
+   PLEXI_ARTIFACT_S3_ACCESS_KEY_ID=<key id>
+   PLEXI_ARTIFACT_S3_SECRET_ACCESS_KEY=<secret>
+   ```
+   Paid artifacts live only in this private bucket — never in the public repo or
+   `public/`. The Polar webhook endpoint is `/api/commerce/webhook/polar`;
+   register it in Polar's dashboard and paste its signing secret above.
+5. **Deploy.** Push to the connected GitHub branch, or `railway up`.
 
 ## Backups (user action)
 
