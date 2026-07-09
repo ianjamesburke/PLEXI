@@ -1,0 +1,144 @@
+---
+import LegalLayout from '../../layouts/LegalLayout.astro';
+const CONTACT = 'adhdisntreal@gmail.com';
+---
+<LegalLayout
+  title="Terms of Service"
+  description="The terms for using Plexi, plexiapp.com, and the app marketplace, including publisher terms."
+  lastReviewed="July 9, 2026"
+>
+  <p>
+    These terms cover your use of Plexi: the macOS app, the website at
+    plexiapp.com, and the app marketplace. Using any of them means you accept
+    what is written here. If you do not, do not use them.
+  </p>
+
+  <h2>The software is yours to run</h2>
+  <p>
+    Plexi is open-source software you install and run on your own Mac. The
+    code you install and the files you create live on your disk. Nothing we
+    do on our end can reach in and delete or disable what you have already
+    installed. That is a design choice, not a promise we might revoke later.
+  </p>
+  <p>
+    You can use Plexi for anything legal. You are responsible for what you
+    run inside it and for the agents, commands, and apps you choose to
+    execute.
+  </p>
+
+  <h2>Accounts</h2>
+  <p>
+    You only need an account to publish an app, buy a paid app, or use the
+    Plexi AI subscription. Browsing and installing free apps needs no account.
+  </p>
+  <p>
+    Accounts are email only. You sign in with a magic link sent to your
+    address, so there is no password to lose. Keep access to that email
+    secure, because anyone who can read it can sign in as you. Tell us at
+    <a href={`mailto:${CONTACT}`}>{CONTACT}</a> if you think your account has
+    been used without your permission.
+  </p>
+
+  <h2>Acceptable use</h2>
+  <p>Do not use Plexi or plexiapp.com to:</p>
+  <ul>
+    <li>break the law or help someone else break it;</li>
+    <li>distribute malware, or ship an app that does something it does not disclose;</li>
+    <li>infringe someone else's copyright, trademark, or other rights;</li>
+    <li>attack, overload, or try to break into our systems or other people's.</li>
+  </ul>
+
+  <h2>Buying apps</h2>
+  <p>
+    A purchase is a fact recorded on our server: this account owns this app.
+    Once you buy an app, the files are yours the way a book is yours. The app
+    keeps working whether or not you stay subscribed to anything, and whether
+    or not the app stays listed in the marketplace.
+  </p>
+  <p>
+    Refunds run 14 days, no questions asked. See the
+    <a href="/legal/refunds">Refund Policy</a> for exactly what happens when
+    you request one.
+  </p>
+
+  <h2>Payments</h2>
+  <p>
+    Payments go through <strong>Polar</strong>, which acts as the merchant of
+    record. Polar owns the checkout page and handles your card, sales tax and
+    VAT, and chargebacks. Card details are entered in your browser on Polar's
+    checkout and never touch Plexi's systems. Your use of checkout is also
+    subject to
+    <a href="https://polar.sh/legal/terms" target="_blank" rel="noopener noreferrer">Polar's terms</a>.
+  </p>
+
+  <h2>Publisher terms</h2>
+  <p>
+    These apply if you publish an app to the Plexi marketplace.
+  </p>
+  <ul>
+    <li>
+      <strong>Revenue share is 85/15.</strong> You keep 85% of the net
+      revenue on your paid apps, after Polar's payment fees. Plexi keeps 15%.
+      Payouts are made on a monthly cycle to the payout details you provide
+      during onboarding.
+    </li>
+    <li>
+      <strong>Every app is reviewed before it lists.</strong> There is no way
+      onto the marketplace except through human review. We can ask for
+      changes, or reject a submission, before it goes live.
+    </li>
+    <li>
+      <strong>We can review, delist, and take down.</strong> We can remove an
+      app from the catalog to stop new sales, for example if it breaks these
+      terms, infringes someone's rights, or turns out to be malware.
+    </li>
+    <li>
+      <strong>Existing installs keep working.</strong> Delisting an app stops
+      new sales but does not touch copies people already installed. People who
+      already bought it keep their downloads and updates. The one exception is
+      a malware takedown: there we stop downloads and notify affected users,
+      but we still never uninstall anything from their machines.
+    </li>
+    <li>
+      You are responsible for what your app does and for having the rights to
+      everything you ship in it. You must not publish an app that is malware,
+      infringes someone else's rights, or does something it does not disclose
+      to the people who install it.
+    </li>
+  </ul>
+
+  <h2>The Plexi AI subscription</h2>
+  <p>
+    The AI subscription gives you 50 free requests each month. After that,
+    Pro is $10/month. When you hit your limit the request stops with a clear
+    message; you are never quietly billed extra or charged a surprise
+    overage.
+  </p>
+
+  <h2>No warranty</h2>
+  <p>
+    Plexi is provided as is. We do our best to make it reliable, but we do not
+    guarantee it will be error-free, uninterrupted, or fit for a particular
+    purpose. You run it, your agents, and third-party apps at your own risk.
+  </p>
+
+  <h2>Limitation of liability</h2>
+  <p>
+    To the extent the law allows, Plexi and its maintainers are not liable for
+    indirect, incidental, or consequential damages arising from your use of
+    the software, the website, or the marketplace. Nothing here limits
+    liability that cannot be limited by law.
+  </p>
+
+  <h2>Changes to these terms</h2>
+  <p>
+    We may update these terms as Plexi grows. When we make a meaningful
+    change, we update the last-reviewed date at the top of this page. Your
+    continued use after a change means you accept the updated terms.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    Questions about these terms: <a href={`mailto:${CONTACT}`}>{CONTACT}</a>.
+  </p>
+</LegalLayout>

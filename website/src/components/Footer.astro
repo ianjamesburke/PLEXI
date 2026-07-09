@@ -15,4 +15,26 @@ import Logo from './Logo.astro';
       <a href="/rss.xml">RSS</a>
     </div>
   </div>
+  <div class="wrap legal-row">
+    <a href="/legal/terms">Terms</a>
+    <a href="/legal/privacy">Privacy</a>
+    <a href="/legal/refunds">Refunds</a>
+    <a href="/legal/dmca">DMCA & Abuse</a>
+  </div>
 </footer>
+
+<style>
+  footer .legal-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+  footer .legal-row a { color: var(--fg-4); transition: color 150ms; }
+  footer .legal-row a:hover { color: var(--fg-2); }
+</style>

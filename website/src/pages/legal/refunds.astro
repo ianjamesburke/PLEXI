@@ -1,0 +1,47 @@
+---
+import LegalLayout from '../../layouts/LegalLayout.astro';
+const CONTACT = 'adhdisntreal@gmail.com';
+---
+<LegalLayout
+  title="Refund Policy"
+  description="Plexi's 14-day, no-questions-asked refund policy for paid apps and subscriptions."
+  lastReviewed="July 9, 2026"
+>
+  <p>
+    If a paid app is not what you wanted, you have 14 days to get your money
+    back. No questions asked.
+  </p>
+
+  <h2>How to get a refund</h2>
+  <p>
+    Request a refund within 14 days of buying the app. Email
+    <a href={`mailto:${CONTACT}`}>{CONTACT}</a> with the account email you used
+    and the app you bought, and we will process it through Polar. Because Polar
+    is the merchant of record, the refund is issued to the same card you paid
+    with.
+  </p>
+
+  <h2>What happens when you refund</h2>
+  <ul>
+    <li>Polar reverses the charge.</li>
+    <li>The record that your account owns the app is deleted.</li>
+    <li>
+      The app you already installed keeps working. A refund does not reach
+      into your machine and remove anything. What you lose is future access:
+      the app no longer re-downloads or pulls updates from the marketplace.
+    </li>
+  </ul>
+
+  <h2>Subscriptions</h2>
+  <p>
+    You can cancel the Plexi AI subscription at any time. Cancelling stops it
+    from renewing; you keep Pro access through the end of the billing period
+    you already paid for. If something went wrong with a charge, email us and
+    we will make it right.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    Refund questions: <a href={`mailto:${CONTACT}`}>{CONTACT}</a>.
+  </p>
+</LegalLayout>

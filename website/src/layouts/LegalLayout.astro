@@ -1,0 +1,92 @@
+---
+import Layout from './Layout.astro';
+
+interface Props {
+  title: string;
+  description?: string;
+  lastReviewed: string;
+}
+
+const { title, description = '', lastReviewed } = Astro.props;
+
+const legalPages = [
+  { href: '/legal/terms', label: 'Terms' },
+  { href: '/legal/privacy', label: 'Privacy' },
+  { href: '/legal/refunds', label: 'Refunds' },
+  { href: '/legal/dmca', label: 'DMCA & Abuse' },
+];
+
+const currentPath = Astro.url.pathname.replace(/\/$/, '');
+---
+<Layout title={`${title} — Plexi`} description={description}>
+  <article class="legal-article">
+    <div class="wrap">
+      <header class="legal-header">
+        <h1>{title}</h1>
+        <p class="reviewed">Last reviewed: {lastReviewed}</p>
+        <nav class="legal-nav" aria-label="Legal pages">
+          {legalPages.map(p => (
+            <a href={p.href} class:list={['legal-nav-link', { active: currentPath === p.href }]}>{p.label}</a>
+          ))}
+        </nav>
+      </header>
+
+      <div class="legal-note">
+        These are plain-language drafts written by the Plexi team, not a lawyer.
+        They are under professional legal review before commercial launch. If
+        anything here conflicts with what a signed agreement or applicable law
+        requires, the law wins.
+      </div>
+
+      <div class="prose">
+        <slot />
+      </div>
+    </div>
+  </article>
+</Layout>
+
+<style>
+  .legal-article { padding: 112px 0 80px; }
+  .legal-article .wrap { max-width: 760px; }
+
+  .legal-header { margin-bottom: 40px; }
+  .legal-header h1 { font-size: 40px; font-weight: 650; letter-spacing: 0; line-height: 1.1; margin-bottom: 12px; }
+  .legal-header .reviewed { color: var(--fg-4); font-size: 13px; letter-spacing: 0.04em; margin-bottom: 24px; }
+
+  .legal-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+  .legal-nav-link {
+    font-size: 12px; letter-spacing: 0.02em;
+    padding: 6px 12px; border-radius: 6px;
+    color: var(--fg-3); border: 1px solid var(--border);
+    background: var(--bg-2); transition: color 150ms, background 150ms, border-color 150ms;
+  }
+  .legal-nav-link:hover { color: var(--fg); border-color: var(--border-2); }
+  .legal-nav-link.active { color: var(--accent-light); border-color: var(--accent); background: var(--accent-dim); }
+
+  .legal-note {
+    border: 1px solid var(--border-2); border-left: 2px solid var(--accent);
+    background: var(--bg-2); border-radius: 8px;
+    padding: 16px 18px; margin-bottom: 40px;
+    color: var(--fg-3); font-size: 13px; line-height: 1.7;
+  }
+
+  .prose { color: var(--fg); font-size: 14px; line-height: 1.8; }
+  .prose :global(h2) { font-size: 22px; letter-spacing: 0; font-weight: 600; margin: 44px 0 16px; color: var(--fg); }
+  .prose :global(h3) { font-size: 16px; font-weight: 600; margin: 30px 0 12px; color: var(--fg); }
+  .prose :global(p) { margin-bottom: 18px; color: var(--fg-2); }
+  .prose :global(a) { color: var(--accent-light); border-bottom: 1px solid rgba(147, 51, 234, 0.35); transition: color 150ms, border-color 150ms; }
+  .prose :global(a:hover) { color: var(--fg); border-bottom-color: var(--fg); }
+  .prose :global(ul), .prose :global(ol) { margin: 0 0 18px 22px; color: var(--fg-2); }
+  .prose :global(li) { margin-bottom: 8px; }
+  .prose :global(strong) { color: var(--fg); font-weight: 600; }
+  .prose :global(hr) { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+  .prose :global(code) { background: var(--bg-3); padding: 2px 6px; border-radius: 4px; font-size: 12.5px; color: var(--accent-light); border: 1px solid var(--border); }
+
+  @media (max-width: 980px) {
+    .legal-article { padding: 88px 0 60px; }
+    .legal-header h1 { font-size: 30px; }
+  }
+  @media (max-width: 480px) {
+    .legal-header h1 { font-size: 26px; }
+  }
+</style>
