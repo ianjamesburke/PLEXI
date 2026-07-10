@@ -36,3 +36,28 @@ export function siteUrl(): string {
   if (!url) throw new MissingSiteUrlError();
   return url.replace(/\/+$/, '');
 }
+
+/** Thrown when a required environment variable is absent — fail fast. */
+export class MissingEnvError extends Error {
+  constructor(key: string, why: string) {
+    super(`${key} is not set — ${why}`);
+    this.name = 'MissingEnvError';
+  }
+}
+
+/** Read a required env var, throwing {@link MissingEnvError} when absent. */
+export function requireEnv(key: string, why: string): string {
+  const value = readEnv(key);
+  if (!value) throw new MissingEnvError(key, why);
+  return value;
+}
+
+/**
+ * Commercial launch gate. Purchases (checkout + subscription creation) are only
+ * enabled publicly once the legal surface (stint 0347) is live. Development runs
+ * with this off; the operator flips SALES_ENABLED=true to go live. Webhooks and
+ * gated downloads stay on regardless so in-flight and prior purchases still work.
+ */
+export function salesEnabled(): boolean {
+  return readEnv('SALES_ENABLED') === 'true';
+}
