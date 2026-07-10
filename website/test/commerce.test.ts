@@ -168,9 +168,10 @@ describe('order webhooks (real signature + real Polar schema)', () => {
     expect(await hasEntitlement(account.id, APP_ID)).toBe(true);
     expect(await getPurchaseState(purchase_id, account.id)).toBe('complete');
 
-    // net_cents = net_amount(1200) - platform_fee_amount(60)
+    // net_cents = net_amount(1200) - platform_fee_amount(110), from the real
+    // sandbox-recorded order.paid fixture.
     const row = await query('SELECT net_cents, amount_cents FROM purchases WHERE id = $1', [purchase_id]);
-    expect(row.rows[0].net_cents).toBe(1140);
+    expect(row.rows[0].net_cents).toBe(1090);
     expect(row.rows[0].amount_cents).toBe(1200);
 
     // Replay is a no-op — still exactly one row, still complete.
