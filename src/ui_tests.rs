@@ -913,6 +913,24 @@ mod tests {
     }
 
     #[test]
+    fn ui_gallery_overlay_smoke() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 640.0);
+        h.step();
+        h.with_app_mut(|app| {
+            app.show_ui_gallery = true;
+        });
+        // Two steps: egui Areas spend their first frame on an invisible sizing
+        // pass; the modal is visible from the second frame.
+        h.run_steps(2);
+
+        // Modal title and the first section header are real ui.label widgets.
+        h.harness().get_by_label("Host UI Gallery");
+        h.harness().get_by_label("Chrome primitives");
+        h.save_screenshot("/tmp/plexi_ui_gallery.png")
+            .expect("render failed");
+    }
+
+    #[test]
     fn parked_sidebar_dropdown_uses_shared_list_header() {
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
         h.with_app_mut(|app| {

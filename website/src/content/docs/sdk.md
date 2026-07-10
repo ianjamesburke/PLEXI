@@ -114,6 +114,14 @@ Set the pane title shown by Plexi chrome.
 
 Set the pane status text shown by Plexi chrome.
 
+### `SetPipStatus`
+
+Report this app's own pip status — a red/yellow/green activity dot.
+
+Takes priority over the host's derived activity until the app reports a
+new status. The host stamps the pane id, so an app can only ever set its
+own pip. ``status`` must be ``"green"``, ``"yellow"``, or ``"red"``.
+
 ### `CloseSelf`
 
 Ask the host to close this app pane.

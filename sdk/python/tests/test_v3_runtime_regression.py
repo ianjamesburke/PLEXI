@@ -154,6 +154,16 @@ class TestEffects:
         finally:
             proc.kill()
 
+    def test_set_pip_status(self, tmp_path):
+        app = self._app_with_init_effects(tmp_path, 'SetPipStatus("yellow")')
+        proc = _spawn_v3_app(app)
+        try:
+            events = _init_and_render(proc)
+            pips = _find_events(events, "set_pip_status")
+            assert any(p.get("status") == "yellow" for p in pips)
+        finally:
+            proc.kill()
+
     def test_set_timer(self, tmp_path):
         app = self._app_with_init_effects(tmp_path, 'SetTimer(id=42, delay_ms=1000, repeat=True)')
         proc = _spawn_v3_app(app)
@@ -603,7 +613,7 @@ class TestFrameTiming:
         finally:
             proc.kill()
 
-    def test_balls_physics_progresses(self, tmp_path):
+    def test_balls_physics_progresses(self):
         """The balls app physics must actually advance between frames."""
         from plexi_sdk.testing import AppHarness
         balls_path = REPO_ROOT / "apps" / "dev" / "balls" / "balls.py"

@@ -376,6 +376,8 @@ class V3AppRuntime:
                 _emit({"type": "status_summary", "text": effect.text})
             elif isinstance(effect, effects.SetTitle):
                 _emit({"type": "set_title", "title": effect.title})
+            elif isinstance(effect, effects.SetPipStatus):
+                _emit({"type": "set_pip_status", "status": effect.status})
             elif isinstance(effect, effects.SetTimer):
                 _emit({
                     "type": "set_timer",
