@@ -11,6 +11,7 @@
     "preview": "astro preview",
     "astro": "astro",
     "og": "node scripts/generate-og.mjs",
+    "commerce": "vite-node scripts/commerce.ts --",
     "test": "vitest run"
   },
   "dependencies": {
@@ -32,6 +33,7 @@
     "@types/pg": "^8.11.10",
     "embedded-postgres": "^18.4.0-beta.17",
     "typescript": "^5.9.3",
+    "vite-node": "^3.2.4",
     "vitest": "^3.0.0"
   }
 }

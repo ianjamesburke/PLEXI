@@ -44,6 +44,38 @@ export async function getProduct(appId: string): Promise<AppProduct | null> {
   };
 }
 
+/** The Polar product mapping to persist for a first-party paid app (stint 0355). */
+export interface AppProductUpsert {
+  appId: string;
+  polarProductId: string;
+  priceCents: number;
+  currency: string;
+  publisher: string;
+}
+
+/**
+ * Upsert a paid app's product mapping (stint 0355). The presence of this row is
+ * what marks an app PAID. `polar_product_id` is written on first setup and
+ * updated in place on later runs (a price change is an update, never a new row);
+ * `artifact_key` is left untouched — the publish flow (stint 0344) owns it.
+ */
+export async function upsertAppProduct(row: AppProductUpsert): Promise<void> {
+  await query(
+    `INSERT INTO app_products (app_id, polar_product_id, price_cents, currency, publisher)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (app_id) DO UPDATE
+       SET polar_product_id = EXCLUDED.polar_product_id,
+           price_cents      = EXCLUDED.price_cents,
+           currency         = EXCLUDED.currency,
+           publisher        = EXCLUDED.publisher,
+           updated_at       = now()`,
+    [row.appId, row.polarProductId, row.priceCents, row.currency, row.publisher],
+  );
+  console.info(
+    `[commerce] app_products upserted app_id=${row.appId} product_id=${row.polarProductId} price_cents=${row.priceCents}`,
+  );
+}
+
 /** Render a cents amount as the envelope's `price` string, e.g. "12.00 USD". */
 export function formatPrice(cents: number, currency: string): string {
   return `${(cents / 100).toFixed(2)} ${currency.toUpperCase()}`;
