@@ -58,8 +58,7 @@ The registry brokers money; never a dependency for running installed apps. Spec:
 
 **Buy-side foundation — landed (0339/0347/0325 merged this session).**
 
-**First-party monetization (the shortest path to real revenue, ready now):**
-- `0355` first-party paid-app product setup — create Polar products under Plexi's own account for its apps + AI Pro; also replaces `#2370`'s schema-grounded fixtures with real sandbox-recorded webhooks. **Ready, P1 — the next money task.**
+**First-party monetization — landed (`0355`, #2374 merged).** Polar product seam under Plexi's org + AI Pro wiring + operator CLI; `#2370`'s fixtures replaced with real sandbox-recorded order/subscription shapes (never-mock gap closed). **Remaining to go live: provision Polar org/product-ids/webhook-secret + private Railway bucket, then flip `SALES_ENABLED`** (ops, not a code task).
   - `0322` host account-gated paid downloads — unblocks once `0339` lands
     - `0341` marketplace app + paywall handoff
   - `0354` verify AI Pro subscription gates on *active status*, not row presence
@@ -93,11 +92,11 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 ## Priority Stack (flat view)
 
 P0: none.
-P1: `0355` (first-party money, **ready**), `0349` (PR `#2366`, ready to validate), `0241` (open PR needs fixing), `0285` (draft PR), `0322`, `0341`*, `0344`*.
-P2 and below: `0354`, `0352`, `0353`, `0323`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
+P1: `0349` (PR `#2366`, ready to validate), `0241` (open PR needs fixing), `0285` (draft PR), `0322` (paid-download host gating), `0341`*, `0344`*.
+P2 and below: `0354` (subscription active-gating), `0352`, `0353`, `0323`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0355` — first-party paid-app monetization against the Polar sandbox key (buy-side is now on alpha and sandbox-validated). It is the shortest path to real revenue and closes `#2370`'s fixture gap. `0349` (validate `#2366`) is the top non-money item.
+**Next recommended task:** first-party sales are code-complete — the remaining money step is **ops**: provision Polar + the private bucket and flip `SALES_ENABLED`. For coding work, `0349` (validate `#2366`, explorer viewers) is the top item; `0322` (host paid-download gating) + `0354` (subscription active-gating) extend the money path host-side.
 
 ---
 

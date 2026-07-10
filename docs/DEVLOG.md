@@ -6,6 +6,10 @@ or `/merge-pr` trims the orientation file; do not rewrite old entries.
 
 ---
 
+## 2026-07-10 — First-party monetization landed
+
+`0355` (#2374) built the first-party sell-side on top of the merged buy-side: `website/src/server/products.ts` `ensureAppProduct` creates Polar products under Plexi's org with `metadata.app_id` and upserts `app_products` (idempotent PATCH on re-run, free apps rejected — the seam 0344 reuses); `ensureAiProProduct` wires the recurring $10/mo AI Pro product to the existing `POLAR_AI_PRO_PRODUCT_ID`; operator CLI `npm run commerce -- set-app/ensure-ai-pro`. Deliberately no `src/cli/app.rs` change — the client binary must not hold seller Polar/DB creds. **Closed #2370's never-mock gap**: completed real Polar sandbox checkouts (test card via Playwright) and recorded genuine `order.paid`/`order.refunded`/`subscription.created` shapes (real `platform_fee_amount`=110 → net 1090, correcting the fabricated 1140). 26/26 website tests. Remaining to go live is ops only: provision Polar org/product-ids/webhook-secret + private bucket, flip `SALES_ENABLED`. Live-verified: org token omits `organization_id`; buyer email must be deliverable.
+
 ## 2026-07-10 — Money-path buy-side + Polar AUP split
 
 Five PRs landed via a sequential subagent run, moving Epoch 3's buy-side onto alpha: `0339` Polar merchant-of-record (#2370 — checkout/webhooks/402 envelope/gated artifact download/`002_commerce.sql`), `0347` legal surface (#2369 — ToS/privacy/refund/DMCA), `0325` package envelope spec (#2371), `0245` host bug bundle (#2372 — FooterKeys wrap, OpenArtifact symlink containment, event-subscriber identity split, cli-renderer degraded-ready + temp-file cleanup), and `0252` v1 polish (#2373 — app-reported pip-status SDK effect + UI gallery smoke). `0339` was validated **live against the Polar sandbox** (auth → product create → checkout create; `metadata.app_id` round-trips; org token must omit `organization_id`; buyer email must be deliverable).
