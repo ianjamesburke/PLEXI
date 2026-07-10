@@ -6,6 +6,12 @@ or `/merge-pr` trims the orientation file; do not rewrite old entries.
 
 ---
 
+## 2026-07-10 — Money-path buy-side + Polar AUP split
+
+Five PRs landed via a sequential subagent run, moving Epoch 3's buy-side onto alpha: `0339` Polar merchant-of-record (#2370 — checkout/webhooks/402 envelope/gated artifact download/`002_commerce.sql`), `0347` legal surface (#2369 — ToS/privacy/refund/DMCA), `0325` package envelope spec (#2371), `0245` host bug bundle (#2372 — FooterKeys wrap, OpenArtifact symlink containment, event-subscriber identity split, cli-renderer degraded-ready + temp-file cleanup), and `0252` v1 polish (#2373 — app-reported pip-status SDK effect + UI gallery smoke). `0339` was validated **live against the Polar sandbox** (auth → product create → checkout create; `metadata.app_id` round-trips; org token must omit `organization_id`; buyer email must be deliverable).
+
+Key discovery: **Polar's AUP bars the third-party-marketplace model** (outside sellers with payouts owed back) — Polar is first-party MoR only. This split Epoch 3: first-party monetization (`0355`, ready — sell Plexi's own apps + AI Pro now) vs the deferred third-party economy (`0352` payout-rail decision → `0344`/`0353`). New tasks filed: `0352`, `0353`, `0354`, `0355`; `0344` re-scoped so its third-party product creation blocks on `0352`. `#2370` caveats before sales go live: fixtures are schema-grounded not sandbox-recorded (closed in `0355`), Polar/bucket provisioning still needed, `SALES_ENABLED` keeps it dark.
+
 ## 2026-07-09 — Agent pip color swap
 
 `0350` landed in #2368: agent activity pips now flash yellow while working and sit solid green while idle — the reverse of the prior default. `Colors::from_config` swaps the fallback (`pip_working` → `cfg.yellow`, `pip_idle` → `cfg.green`); explicit `[theme]` overrides are untouched. `PipStatus::as_agent_state()` (the app-reported green/yellow/red pip status apps set via the SDK) was swapped alongside it so a green pip still reads as color-faithful "idle" and yellow as "working" under the new palette. Verified via exact-value unit tests plus a live IPC round-trip against the installed PR build (`plexi agent report --state working` correctly flipped pane state); a full on-screen pixel screenshot was blocked by a macOS Screen Recording permission gap in the validating session, not a code issue. Last P0 in the queue — none remain.
