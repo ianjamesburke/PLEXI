@@ -141,6 +141,12 @@ const body =
           <button class="btn lg" type="submit">
             {CONFIRM[view.purpose].button} <span class="arrow">→</span>
           </button>
+          {view.purpose !== 'account_delete' && (
+            <p class="legal-consent">
+              By continuing you agree to the <a href="/legal/terms">Terms of Service</a>
+              and <a href="/legal/privacy">Privacy Policy</a>.
+            </p>
+          )}
         </form>
       )}
       {view.mode === 'result' && view.outcome.kind === 'error' && (
@@ -155,6 +161,9 @@ const body =
   .verify-page h1 { font-size: 48px; font-weight: 700; letter-spacing: 0; margin-bottom: 16px; }
   .verify-page .lead { color: var(--fg-2); font-size: 17px; line-height: 1.6; max-width: 540px; margin-bottom: 32px; }
   .verify-page button.btn { font: inherit; cursor: pointer; border: none; }
+  .verify-page .legal-consent { margin-top: 20px; color: var(--fg-4); font-size: 13px; line-height: 1.6; max-width: 400px; }
+  .verify-page .legal-consent a { color: var(--fg-3); border-bottom: 1px solid var(--border-2); transition: color 150ms; }
+  .verify-page .legal-consent a:hover { color: var(--fg); }
 
   @media (max-width: 980px) {
     .verify-page { padding: 88px 0 60px; }

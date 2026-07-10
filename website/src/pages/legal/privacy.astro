@@ -1,0 +1,74 @@
+---
+import LegalLayout from '../../layouts/LegalLayout.astro';
+const CONTACT = 'adhdisntreal@gmail.com';
+---
+<LegalLayout
+  title="Privacy Policy"
+  description="What Plexi stores, what it never stores, and how your data is handled."
+  lastReviewed="July 9, 2026"
+>
+  <p>
+    Plexi stores as little about you as it can. This page says exactly what we
+    keep, what we never keep, and who else touches your data.
+  </p>
+
+  <h2>What we store</h2>
+  <ul>
+    <li><strong>Your email address</strong>, so you can sign in and we can send magic links and receipts.</li>
+    <li><strong>Your purchases and entitlements</strong> — which apps your account owns.</li>
+    <li><strong>Your subscription status</strong>, if you subscribe to Plexi AI.</li>
+    <li><strong>Sign-in tokens</strong>, stored hashed, never in plain text.</li>
+  </ul>
+  <p>
+    That is the whole list. We do not build advertising profiles, and we do
+    not sell your data.
+  </p>
+
+  <h2>What we never store</h2>
+  <p>
+    We never store your payment details. Card numbers are entered on
+    <strong>Polar's</strong> checkout in your browser. Polar is the merchant
+    of record and holds the payment data; it never reaches Plexi's systems. We
+    only receive confirmation from Polar that a purchase happened.
+  </p>
+
+  <h2>No tracking cookies, no consent banner</h2>
+  <p>
+    Plexi does not use tracking or advertising cookies, so there is nothing to
+    consent to and no cookie banner to click through. The website sets one
+    session cookie, and only after you sign in, so that you stay signed in.
+    That is it.
+  </p>
+
+  <h2>Using free apps stays private</h2>
+  <p>
+    Browsing the marketplace and installing free apps needs no account, so we
+    have nothing to collect when you do. An account only comes into it when
+    you publish, buy, or use the AI subscription.
+  </p>
+
+  <h2>Who else touches your data</h2>
+  <ul>
+    <li><strong>Resend</strong> sends the magic-link and receipt emails, so it processes your email address.</li>
+    <li><strong>Polar</strong> handles checkout and payments, so it holds your payment details and billing information.</li>
+    <li><strong>Railway</strong> hosts plexiapp.com and its database.</li>
+  </ul>
+  <p>
+    Each of these has its own terms and privacy policy covering the data it
+    handles on our behalf.
+  </p>
+
+  <h2>Your data, your call</h2>
+  <p>
+    You can ask us to delete your account and the data tied to it at any time.
+    Deleting your account removes your email and account record. Apps you
+    already installed stay on your disk and keep working, because that code
+    lives on your machine, not ours.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    To delete your data or ask a privacy question, email
+    <a href={`mailto:${CONTACT}`}>{CONTACT}</a>.
+  </p>
+</LegalLayout>

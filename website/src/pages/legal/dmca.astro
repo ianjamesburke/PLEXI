@@ -1,0 +1,60 @@
+---
+import LegalLayout from '../../layouts/LegalLayout.astro';
+const CONTACT = 'adhdisntreal@gmail.com';
+---
+<LegalLayout
+  title="DMCA & Abuse"
+  description="How to report copyright infringement, malware, or abuse in the Plexi marketplace."
+  lastReviewed="July 9, 2026"
+>
+  <p>
+    If an app in the Plexi marketplace infringes your copyright, ships
+    malware, or abuses the platform, report it and we will act. Send every
+    report to <a href={`mailto:${CONTACT}`}>{CONTACT}</a>.
+  </p>
+
+  <h2>Reporting copyright infringement</h2>
+  <p>
+    If you own the rights to something an app copied without permission, send a
+    notice that includes:
+  </p>
+  <ul>
+    <li>your name and contact details;</li>
+    <li>what work was infringed, and where the original lives;</li>
+    <li>which app or listing is infringing, with enough detail for us to find it;</li>
+    <li>a statement that you believe in good faith the use was not authorized by the rights holder or the law;</li>
+    <li>a statement, under penalty of perjury, that your notice is accurate and you are the rights holder or authorized to act for them;</li>
+    <li>your signature (a typed name is fine).</li>
+  </ul>
+
+  <h2>What we do with a valid notice</h2>
+  <p>
+    We review it and, if it holds up, we delist the app so it stops selling
+    and we notify the publisher. Existing installs on people's machines keep
+    working, because we do not reach into anyone's computer to remove files.
+  </p>
+
+  <h2>Counter-notice</h2>
+  <p>
+    If your app was taken down and you believe that was a mistake, send a
+    counter-notice to <a href={`mailto:${CONTACT}`}>{CONTACT}</a> with your
+    contact details, the app that was removed, and a statement, under penalty
+    of perjury, that you believe it was removed by mistake or misidentification.
+    We will pass it to the party who filed the original notice and restore the
+    listing if that is the right outcome.
+  </p>
+
+  <h2>Reporting malware or abuse</h2>
+  <p>
+    If an app does something harmful or something it never disclosed, tell us
+    and describe what you saw. When we confirm an app is malware, we stop its
+    downloads and notify affected users. Even then we never uninstall anything
+    from anyone's machine; we make sure people know so they can decide what to
+    do.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    All notices and reports: <a href={`mailto:${CONTACT}`}>{CONTACT}</a>.
+  </p>
+</LegalLayout>
