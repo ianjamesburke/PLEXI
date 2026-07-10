@@ -23,3 +23,4 @@ A PRM is the destination spec for a feature. It describes what to build and why.
 | `wasm-runtime.md` | WASM runtime architecture | see file |
 | `wasm-runtime-impl-plan.md` | WASM runtime build sequence (G1-G7, G11-G13) | see file |
 | `workspace-env-secrets.md` | Workspace env secret injection | 0237 |
+| `package-envelope.md` | One package format for apps, agents, and skills | 0325 |
