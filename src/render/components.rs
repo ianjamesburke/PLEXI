@@ -2081,7 +2081,9 @@ fn text_edit_should_submit(
 /// if the height cannot be determined without rendering.
 fn bottom_pin_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
     match node {
-        UiNode::FooterKeys { divider, .. } => Some(app_chrome::footer_keys_height(ui, *divider)),
+        UiNode::FooterKeys { entries, divider } => {
+            Some(app_chrome::footer_keys_height(ui, entries, *divider))
+        }
         UiNode::Footer { .. } => Some(app_chrome::footer_height()),
         _ => None,
     }

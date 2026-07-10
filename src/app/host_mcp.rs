@@ -323,6 +323,12 @@ fn tool_subscribe_and_wait(
         .clamp(1, MAX_WAIT_SECS);
 
     // Route the broker-checked subscribe through the UI thread.
+    //
+    // Identity is split (#2290): the broker actor stays the stable `mcp:host`
+    // so one "Always" grant covers every host-MCP connection, while the delivery
+    // routing key is minted unique per call so two concurrent waiters never
+    // cross-talk or tear each other down.
+    let delivery_id = format!("{MCP_SUBSCRIBER_ID}:{}", uuid::Uuid::new_v4());
     let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<HostSubscribeReply>(1);
     let req = HostSubscribeRequest {
         publisher_app_id: app_id.clone(),
@@ -331,7 +337,8 @@ fn tool_subscribe_and_wait(
         trigger_mode: crate::app_protocol::TriggerMode::Conversation,
         resource_id: None,
         from_pane_id: None,
-        subscriber_override: Some(MCP_SUBSCRIBER_ID.to_string()),
+        subscriber_override: Some(delivery_id),
+        broker_actor_override: Some(MCP_SUBSCRIBER_ID.to_string()),
         reply: reply_tx,
     };
     subscribe_tx

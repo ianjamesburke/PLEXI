@@ -299,9 +299,13 @@ impl PlexiApp {
         // already removed (race between close and dispatch), so we allow through
         // rather than silently dropping a legitimate late-arriving command.
         //
-        // Note: validation is lexical (normalize_path collapses ".." without I/O).
-        // Symlinks inside the workspace root that point outside are treated as
-        // trusted, consistent with OS-level file permission semantics.
+        // Two gates, both must pass:
+        //   1. Lexical (normalize_path collapses ".." without I/O) — a cheap
+        //      first reject for obvious `../` traversal.
+        //   2. Canonical (resolves symlinks via the filesystem) — a symlink that
+        //      lives inside the workspace but points outside passes the lexical
+        //      check, so `open` would follow it out of the sandbox (#2242). The
+        //      canonical gate rejects targets whose *real* path escapes the root.
         if let Some(ref root) = workspace_root {
             let p = std::path::Path::new(&path);
             let absolute = if p.is_absolute() {
@@ -314,6 +318,13 @@ impl PlexiApp {
                 log::warn!(
                     "OpenArtifact: pane {sender_pane_id} rejected — path {path:?} outside \
                      workspace {root:?}"
+                );
+                return;
+            }
+            if !canonical_within_workspace(root, &absolute) {
+                log::warn!(
+                    "OpenArtifact: pane {sender_pane_id} rejected — real path of {path:?} \
+                     escapes workspace {root:?} (symlink)"
                 );
                 return;
             }
@@ -554,6 +565,32 @@ fn shell_open(path: &str, reveal: bool) {
     }
 }
 
+/// True when the *real* (symlink-resolved) path of `absolute` stays inside the
+/// canonicalized `workspace_root`. Complements the lexical `normalize_path`
+/// check: a symlink inside the workspace pointing outside it passes the lexical
+/// gate but fails here (#2242).
+fn canonical_within_workspace(root: &std::path::Path, absolute: &std::path::Path) -> bool {
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    canonicalize_existing_prefix(absolute).starts_with(&canonical_root)
+}
+
+/// Canonicalize the deepest existing ancestor of `path` (resolving any symlinks
+/// on the way) and re-append the not-yet-existing tail. Symlinks can only live
+/// on the existing prefix, so this catches a workspace-internal symlink that
+/// redirects outside the sandbox even when the final target does not exist yet.
+/// Falls back to the lexical normalization when nothing on the chain exists.
+fn canonicalize_existing_prefix(path: &std::path::Path) -> std::path::PathBuf {
+    for ancestor in path.ancestors() {
+        if let Ok(canonical) = ancestor.canonicalize() {
+            return match path.strip_prefix(ancestor) {
+                Ok(rest) => canonical.join(rest),
+                Err(_) => canonical,
+            };
+        }
+    }
+    normalize_path(path)
+}
+
 fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
     use std::path::Component;
     let mut result = std::path::PathBuf::new();
@@ -571,8 +608,49 @@ fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_path, quote_for_shell};
+    use super::{canonical_within_workspace, normalize_path, quote_for_shell};
     use std::path::PathBuf;
+
+    /// A symlink that lives inside the workspace but points outside it passes the
+    /// lexical check yet must be rejected by the canonical containment gate
+    /// (#2242). Regression for the OpenArtifact sandbox escape.
+    #[test]
+    #[cfg(unix)]
+    fn canonical_check_rejects_workspace_internal_symlink_to_outside() {
+        let tmp = std::env::temp_dir().join(format!("plexi-artifact-{}", uuid::Uuid::new_v4()));
+        let workspace = tmp.join("workspace");
+        let outside = tmp.join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let secret = outside.join("secret.txt");
+        std::fs::write(&secret, b"top secret").unwrap();
+
+        // `workspace/link` -> `../outside` (a symlink inside the workspace).
+        let link = workspace.join("link");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+        // Lexically, `workspace/link/secret.txt` is under the workspace root.
+        let via_symlink = link.join("secret.txt");
+        assert!(
+            normalize_path(&via_symlink).starts_with(&workspace),
+            "lexical check should pass (that is the bug)"
+        );
+        // Canonically, its real path escapes the workspace and must be rejected.
+        assert!(
+            !canonical_within_workspace(&workspace, &via_symlink),
+            "canonical check must reject a symlink escaping the workspace"
+        );
+
+        // A genuine in-workspace file is still accepted.
+        let inside = workspace.join("ok.txt");
+        std::fs::write(&inside, b"fine").unwrap();
+        assert!(
+            canonical_within_workspace(&workspace, &inside),
+            "canonical check must accept a real in-workspace file"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn normalize_path_collapses_parent_dirs() {

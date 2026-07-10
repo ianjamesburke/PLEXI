@@ -182,7 +182,16 @@ impl<'a> AppChrome<'a> {
 
     pub(crate) fn paint_footer_keys(&self, ui: &mut Ui, entries: &[FooterKeyEntry], divider: bool) {
         let chip_row_h = chip_row_height(ui);
-        let total_h = footer_keys_height(ui, divider);
+        let row_h = chip_row_h + 4.0;
+        let chip_font = FontId::monospace(style::TEXT_HINT);
+        let desc_font = FontId::proportional(style::TEXT_HINT);
+
+        // Measure against the width the height pass used, so allocation and paint
+        // agree on the wrapped row count.
+        let avail_w = footer_keys_available_width(ui);
+        let rows = footer_keys_rows(ui, entries, &chip_font, &desc_font, avail_w);
+        let total_h = footer_keys_height(ui, entries, divider);
+
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), total_h),
             egui::Sense::hover(),
@@ -204,11 +213,25 @@ impl<'a> AppChrome<'a> {
             );
         }
 
-        let chip_font = FontId::monospace(style::TEXT_HINT);
-        let desc_font = FontId::proportional(style::TEXT_HINT);
-        let content_w = footer_keys_content_width(ui, entries, &chip_font, &desc_font, self.colors);
-        let content_rect = footer_keys_content_rect(full_rect, content_w, chip_row_h, divider);
-        paint_footer_keys_row(ui, content_rect, entries, chip_font, desc_font, self.colors);
+        // Each row is centered horizontally (preserving the single-line centering
+        // of #2111) and stacked top-to-bottom inside the band.
+        let content_top = full_rect.min.y + if divider { 1.0 } else { 0.0 } + style::SPACE_SM;
+        for (idx, (start, end, row_w)) in rows.iter().enumerate() {
+            let row_top = content_top + idx as f32 * (row_h + style::SPACE_XS);
+            let row_band = egui::Rect::from_min_size(
+                egui::pos2(full_rect.min.x, row_top),
+                egui::vec2(full_rect.width(), row_h),
+            );
+            let content_rect = footer_keys_content_rect(row_band, *row_w, chip_row_h, false);
+            paint_footer_keys_row(
+                ui,
+                content_rect,
+                &entries[*start..*end],
+                chip_font.clone(),
+                desc_font.clone(),
+                self.colors,
+            );
+        }
     }
 
     pub(crate) fn paint_action_bar_background(&self, ui: &Ui, rect: egui::Rect) {
@@ -572,13 +595,95 @@ pub(crate) fn chip_row_height(ui: &egui::Ui) -> f32 {
     text_h + style::KEYCHIP_PAD_V * 2.0
 }
 
-pub(crate) fn footer_keys_height(ui: &egui::Ui, divider: bool) -> f32 {
+/// Height of the footer-keys band, accounting for wrapping: in a pane too
+/// narrow to hold every entry on one line, entries flow onto additional rows and
+/// the band grows to fit (#2240). `ui.available_width()` is the same width the
+/// paint pass lays out against, so the host-measured height the `Column` /
+/// bottom-pin allocator reserves always matches what gets painted.
+pub(crate) fn footer_keys_height(ui: &egui::Ui, entries: &[FooterKeyEntry], divider: bool) -> f32 {
+    let chip_font = FontId::monospace(style::TEXT_HINT);
+    let desc_font = FontId::proportional(style::TEXT_HINT);
+    let avail_w = footer_keys_available_width(ui);
+    let rows = footer_keys_rows(ui, entries, &chip_font, &desc_font, avail_w);
+    let n = rows.len().max(1) as f32;
     let row_h = chip_row_height(ui) + 4.0;
+    let base = style::SPACE_SM + n * row_h + (n - 1.0) * style::SPACE_XS + style::SPACE_SM;
     if divider {
-        1.0 + style::SPACE_SM + row_h + style::SPACE_SM
+        1.0 + base
     } else {
-        style::SPACE_SM + row_h + style::SPACE_SM
+        base
     }
+}
+
+/// Usable content width for footer-key rows: the available width minus the
+/// left/right band insets [`footer_keys_content_rect`] applies.
+fn footer_keys_available_width(ui: &egui::Ui) -> f32 {
+    (ui.available_width() - style::SPACE_MD * 2.0).max(0.0)
+}
+
+/// Width of a single footer entry (its key chips + gaps + description) as an
+/// atomic, un-wrappable unit. Color does not affect glyph advance, so a fixed
+/// color is used — this lets the free-function height path measure without a
+/// `Colors` handle.
+fn footer_entry_width(
+    ui: &Ui,
+    entry: &FooterKeyEntry,
+    chip_font: &FontId,
+    desc_font: &FontId,
+) -> f32 {
+    let chip_row_h = chip_row_height(ui);
+    let mut w: f32 = 0.0;
+    for (ki, key) in entry.keys.iter().enumerate() {
+        if ki > 0 {
+            w += style::KEYCHIP_GAP;
+        }
+        let tw = ui.fonts(|f| {
+            f.layout_no_wrap(key.clone(), chip_font.clone(), Color32::WHITE)
+                .size()
+                .x
+        });
+        w += (tw + style::KEYCHIP_PAD_H * 2.0)
+            .max(chip_row_h)
+            .max(style::KEYCHIP_MIN_W);
+    }
+    w += 4.0;
+    w += ui.fonts(|f| {
+        f.layout_no_wrap(entry.description.clone(), desc_font.clone(), Color32::WHITE)
+            .size()
+            .x
+    });
+    w
+}
+
+/// Greedily pack footer entries into rows no wider than `avail_w`. Each row is
+/// `(start, end, row_width)` over `entries[start..end]`. An entry that alone
+/// exceeds `avail_w` still occupies its own row (never dropped). The height and
+/// paint passes both call this so their row counts always agree.
+fn footer_keys_rows(
+    ui: &Ui,
+    entries: &[FooterKeyEntry],
+    chip_font: &FontId,
+    desc_font: &FontId,
+    avail_w: f32,
+) -> Vec<(usize, usize, f32)> {
+    let mut rows = Vec::new();
+    let mut i = 0;
+    while i < entries.len() {
+        let start = i;
+        let mut row_w = 0.0;
+        while i < entries.len() {
+            let ew = footer_entry_width(ui, &entries[i], chip_font, desc_font);
+            let sep = if i > start { style::SPACE_MD } else { 0.0 };
+            // Always keep at least one entry per row, even if it overflows alone.
+            if i > start && row_w + sep + ew > avail_w {
+                break;
+            }
+            row_w += sep + ew;
+            i += 1;
+        }
+        rows.push((start, i, row_w));
+    }
+    rows
 }
 
 pub(crate) fn footer_keys_content_rect(
@@ -600,46 +705,6 @@ pub(crate) fn footer_keys_content_rect(
     let chrome_h = (full_rect.max.y - chrome_top).max(0.0);
     let top = chrome_top + (chrome_h - chip_row_h).max(0.0) / 2.0;
     egui::Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, chip_row_h))
-}
-
-fn footer_keys_content_width(
-    ui: &Ui,
-    entries: &[FooterKeyEntry],
-    chip_font: &FontId,
-    desc_font: &FontId,
-    colors: &Colors,
-) -> f32 {
-    let chip_row_h = chip_row_height(ui);
-    let mut content_w: f32 = 0.0;
-    for (ei, entry) in entries.iter().enumerate() {
-        for (ki, key) in entry.keys.iter().enumerate() {
-            if ki > 0 {
-                content_w += style::KEYCHIP_GAP;
-            }
-            let tw = ui.fonts(|f| {
-                f.layout_no_wrap(key.clone(), chip_font.clone(), colors.text_primary)
-                    .size()
-                    .x
-            });
-            content_w += (tw + style::KEYCHIP_PAD_H * 2.0)
-                .max(chip_row_h)
-                .max(style::KEYCHIP_MIN_W);
-        }
-        content_w += 4.0;
-        content_w += ui.fonts(|f| {
-            f.layout_no_wrap(
-                entry.description.clone(),
-                desc_font.clone(),
-                colors.text_dim,
-            )
-            .size()
-            .x
-        });
-        if ei + 1 < entries.len() {
-            content_w += style::SPACE_MD;
-        }
-    }
-    content_w
 }
 
 fn paint_footer_keys_row(
@@ -740,6 +805,47 @@ mod tests {
         assert_eq!(chrome.text_color("", "accent"), colors.accent);
         assert_eq!(chrome.text_color("accent", ""), colors.accent);
         assert_eq!(chrome.text_color("neutral", ""), colors.bg_active);
+    }
+
+    /// #2240: footer keys pack onto one row when they fit and wrap onto
+    /// additional rows in a narrow band, and the measured height grows with the
+    /// wrapped row count so `Column`/bottom-pin reserves enough space.
+    #[test]
+    fn footer_keys_wrap_in_narrow_band() {
+        let entries: Vec<FooterKeyEntry> = (0..6)
+            .map(|i| FooterKeyEntry {
+                keys: vec![format!("^{i}")],
+                description: format!("action {i}"),
+            })
+            .collect();
+        let chip_font = FontId::monospace(style::TEXT_HINT);
+        let desc_font = FontId::proportional(style::TEXT_HINT);
+
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            // Wide band: everything fits on a single row.
+            let wide = footer_keys_rows(ui, &entries, &chip_font, &desc_font, 10_000.0);
+            assert_eq!(wide.len(), 1, "all entries fit on one row when wide");
+            assert_eq!(wide[0], (0, entries.len(), wide[0].2));
+
+            // Narrow band: entries wrap onto multiple rows, none dropped.
+            let narrow = footer_keys_rows(ui, &entries, &chip_font, &desc_font, 90.0);
+            assert!(narrow.len() > 1, "entries must wrap in a narrow band");
+            let covered: usize = narrow.iter().map(|(s, e, _)| e - s).sum();
+            assert_eq!(covered, entries.len(), "every entry appears exactly once");
+            for w in narrow.windows(2) {
+                assert_eq!(w[0].1, w[1].0, "rows are contiguous");
+            }
+
+            // Height reflects the wrapped row count: taller than a single row.
+            let one_row = style::SPACE_SM + (chip_row_height(ui) + 4.0) + style::SPACE_SM;
+            assert!(
+                footer_keys_height(ui, &entries, false) >= one_row,
+                "wrapped footer height must be at least one row tall"
+            );
+        });
+        let _ = ctx.end_pass();
     }
 
     #[test]
