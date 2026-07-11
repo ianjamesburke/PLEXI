@@ -22,6 +22,8 @@ Three testing layers exist. Pick the cheapest one that can observe the behavior 
 
 If a HostHarness test or committed scene can reproduce it, write that instead — it is deterministic and runs in CI. This skill is the escape hatch for the rest.
 
+When a committed TOML scene already describes the flow, prefer `just scene-live <scene> <channel>` over spelling out this loop manually. It uses the same scene schema and report shape as the headless backend while owning readiness, bounded eventual assertions, and teardown.
+
 ## The loop
 
 All four steps run against one channel. For a PR build the channel is `pr-<N>` and the binary is `plexi-pr-<N>`; substitute your channel throughout. `host start/stop/status` resolve the socket from the channel's own config dir (`~/.plexi-<channel>/notify.sock`), so they ignore any inherited `PLEXI_SOCKET` — the drive commands in step 2 do not, which is the whole reason for the env discipline below.

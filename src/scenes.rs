@@ -1,8 +1,9 @@
 //! Declarative scene runner — TOML scenes ARE the UI tests.
 //!
 //! A scene file describes setup steps, actions, structured assertions, and
-//! optional screenshots. One engine (`PlexiUiHarness`) executes every scene:
-//! real host chrome, real PGAP app processes, headless wgpu rendering.
+//! optional screenshots. `HeadlessBackend` executes through `PlexiUiHarness`;
+//! `LiveBackend` executes the same schema against one explicit installed host
+//! channel through sanctioned CLI/IPC commands.
 //!
 //! # Entry points
 //!
@@ -14,10 +15,11 @@
 //!
 //! # Output
 //!
-//! Every run writes a `SceneReport` JSON (schema-versioned) to the out dir:
-//! pass/fail per step, host state snapshot, and the committed L1 render tree
-//! of the last-opened app. Agents read the report; screenshots are an
-//! optional artifact (`shot` steps; suppressed by `PLEXI_SCENE_NO_SHOTS=1`).
+//! Every run writes a schema-v3 `SceneReport` JSON to the out dir: backend,
+//! channel, pass/fail per step, resolved pane ids, host state, teardown result,
+//! and the last-opened app's available state/semantic snapshot. Screenshots are
+//! an optional headless artifact (`shot` steps; suppressed by
+//! `PLEXI_SCENE_NO_SHOTS=1`).
 //!
 //! # DSL
 //!
@@ -26,7 +28,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -34,7 +37,89 @@ use crate::host::pane::{AppRuntime, Pane};
 use crate::spatial::tiling::PaneId;
 use crate::ui_tests::PlexiUiHarness;
 
-pub const SCENE_REPORT_SCHEMA_VERSION: u32 = 2;
+pub const SCENE_REPORT_SCHEMA_VERSION: u32 = 3;
+const LIVE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostStatusClass {
+    Running,
+    Stopped,
+    Unknown,
+}
+
+fn classify_host_status(status: &serde_json::Value) -> HostStatusClass {
+    let ready = status.get("ready").and_then(serde_json::Value::as_bool);
+    let pid = status.get("pid");
+    if ready == Some(true) || pid.is_some_and(|value| !value.is_null()) {
+        HostStatusClass::Running
+    } else if ready == Some(false) && pid.is_some_and(serde_json::Value::is_null) {
+        HostStatusClass::Stopped
+    } else {
+        HostStatusClass::Unknown
+    }
+}
+
+fn host_seed_ready(status: &serde_json::Value, minimum_panes: u64) -> bool {
+    status.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
+        && status
+            .get("pane_count")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|count| count >= minimum_panes)
+}
+
+fn poll_until<T>(
+    timeout: Duration,
+    interval: Duration,
+    mut observe: impl FnMut() -> Option<T>,
+) -> Result<T, SceneError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(value) = observe() {
+            return Ok(value);
+        }
+        if Instant::now() >= deadline {
+            return Err(SceneError::new(
+                "eventual_timeout",
+                "eventual assertion did not pass before timeout",
+            ));
+        }
+        std::thread::sleep(interval);
+    }
+}
+
+fn live_context_count(contexts: Option<&serde_json::Value>, panes: &[serde_json::Value]) -> usize {
+    contexts
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_else(|| {
+            panes
+                .iter()
+                .filter_map(|pane| pane.get("context_id").and_then(serde_json::Value::as_u64))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        })
+}
+
+fn live_builtin_cwd(open: &OpenSpec) -> Option<PathBuf> {
+    match open {
+        OpenSpec::Builtin { cwd, .. } => cwd.as_deref().map(resolve),
+        OpenSpec::Process { .. } | OpenSpec::Wasm { .. } => None,
+    }
+}
+
+fn resolve_live_pane_target(
+    handles: &PaneHandles,
+    target: &str,
+    operation: &str,
+) -> Result<PaneId, SceneError> {
+    match handles.resolve_input(target)? {
+        InputTarget::Pane(pane_id) => Ok(pane_id),
+        InputTarget::Host => Err(SceneError::new(
+            "unsupported_live_target",
+            format!("live {operation} does not support target = 'host'"),
+        )),
+    }
+}
 
 // ─── Scene file format ───────────────────────────────────────────────────────
 
@@ -187,6 +272,8 @@ pub struct AssertSpec {
 #[derive(Serialize, Debug)]
 pub struct SceneReport {
     pub schema_version: u32,
+    pub backend: String,
+    pub channel: String,
     pub scene: String,
     pub passed: bool,
     pub steps: Vec<StepResult>,
@@ -196,6 +283,24 @@ pub struct SceneReport {
     pub host: HostState,
     /// Last-opened app pane state, when a scene opened one.
     pub app: Option<AppState>,
+    pub teardown: TeardownResult,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct TeardownResult {
+    pub attempted: bool,
+    pub ok: bool,
+    pub detail: String,
+}
+
+impl TeardownResult {
+    fn headless() -> Self {
+        Self {
+            attempted: false,
+            ok: true,
+            detail: "not_required".to_string(),
+        }
+    }
 }
 
 #[derive(Serialize, Debug)]
@@ -338,7 +443,7 @@ impl PaneHandles {
     }
 }
 
-pub struct SceneRunner {
+pub struct HeadlessBackend {
     h: PlexiUiHarness,
     last_app_pane: Option<PaneId>,
     handles: PaneHandles,
@@ -350,6 +455,9 @@ pub struct SceneRunner {
 /// report. Execution stops at the first failing step (fail fast); the report
 /// records everything up to and including the failure.
 pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneReport {
+    if std::env::var("PLEXI_SCENE_BACKEND").is_ok_and(|value| value == "live") {
+        return run_live_scene(scene_path, out_dir, no_shots);
+    }
     let scene_name = scene_path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -381,7 +489,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
 
     let mut h = PlexiUiHarness::new_sized(scene.size[0], scene.size[1]);
     h.step();
-    let mut runner = SceneRunner {
+    let mut runner = HeadlessBackend {
         h,
         last_app_pane: None,
         handles: PaneHandles::default(),
@@ -418,6 +526,8 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
 
     let report = SceneReport {
         schema_version: SCENE_REPORT_SCHEMA_VERSION,
+        backend: "headless".to_string(),
+        channel: "isolated-test".to_string(),
         scene: scene_name.clone(),
         passed,
         steps,
@@ -425,6 +535,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         handles: runner.handles.report(),
         host: runner.host_state(),
         app: runner.app_state(),
+        teardown: TeardownResult::headless(),
     };
     let report_path = out_dir.join(format!("{scene_name}.json"));
     match serde_json::to_string_pretty(&report) {
@@ -444,6 +555,8 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
 fn failed_report(scene: String, error: SceneError) -> SceneReport {
     SceneReport {
         schema_version: SCENE_REPORT_SCHEMA_VERSION,
+        backend: "headless".to_string(),
+        channel: "isolated-test".to_string(),
         scene,
         passed: false,
         steps: vec![StepResult {
@@ -463,7 +576,723 @@ fn failed_report(scene: String, error: SceneError) -> SceneReport {
             sidebar: false,
         },
         app: None,
+        teardown: TeardownResult::headless(),
     }
+}
+
+struct LiveBackend {
+    binary: String,
+    channel: String,
+    socket: PathBuf,
+    owned_host: bool,
+    attached_host: bool,
+    handles: PaneHandles,
+    last_app_pane: Option<PaneId>,
+    teardown: TeardownResult,
+    owner_file: Option<PathBuf>,
+}
+
+impl LiveBackend {
+    fn from_env() -> Result<Self, SceneError> {
+        let channel = std::env::var("PLEXI_SCENE_CHANNEL").map_err(|_| {
+            SceneError::new(
+                "live_channel_required",
+                "live scenes require PLEXI_SCENE_CHANNEL=<explicit-channel>",
+            )
+        })?;
+        if channel.trim().is_empty() {
+            return Err(SceneError::new(
+                "live_channel_required",
+                "live scene channel cannot be empty",
+            ));
+        }
+        let binary = std::env::var("PLEXI_SCENE_BIN").unwrap_or_else(|_| match channel.as_str() {
+            "main" => "plexi".to_string(),
+            other => format!("plexi-{other}"),
+        });
+        let home = dirs::home_dir()
+            .ok_or_else(|| SceneError::new("home_unavailable", "cannot resolve home directory"))?;
+        let profile = if channel == "main" {
+            ".plexi".to_string()
+        } else {
+            format!(".plexi-{channel}")
+        };
+        Ok(Self {
+            binary,
+            channel,
+            socket: home.join(profile).join("notify.sock"),
+            owned_host: false,
+            attached_host: false,
+            handles: PaneHandles::default(),
+            last_app_pane: None,
+            teardown: TeardownResult {
+                attempted: false,
+                ok: false,
+                detail: "pending".to_string(),
+            },
+            owner_file: std::env::var_os("PLEXI_SCENE_OWNER_FILE").map(PathBuf::from),
+        })
+    }
+
+    fn command(&self, args: &[String], drive: bool) -> Result<Output, SceneError> {
+        self.command_with_cwd(args, drive, None)
+    }
+
+    fn command_with_cwd(
+        &self,
+        args: &[String],
+        drive: bool,
+        cwd: Option<&Path>,
+    ) -> Result<Output, SceneError> {
+        let mut command = Command::new(&self.binary);
+        command.args(args).env("PLEXI_CHANNEL", &self.channel);
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        if drive {
+            command
+                .env("PLEXI_SOCKET", &self.socket)
+                .env_remove("PLEXI_PANE_ID")
+                .env_remove("PLEXI_CONTEXT_ID")
+                .env_remove("PLEXI_CONTEXT_ROOT")
+                .env_remove("PLEXI_RUNNING");
+        }
+        let output = command.output().map_err(|error| {
+            SceneError::new(
+                "live_command_failed",
+                format!("run {}: {error}", self.binary),
+            )
+        })?;
+        if !output.status.success() {
+            let operation = args.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
+            let stderr = if args.first().map(String::as_str) == Some("pane")
+                && args.get(1).map(String::as_str) == Some("key")
+            {
+                "input delivery failed".to_string()
+            } else {
+                String::from_utf8_lossy(&output.stderr).trim().to_string()
+            };
+            return Err(SceneError::new(
+                "live_command_failed",
+                format!("{} {} failed: {}", self.binary, operation, stderr),
+            ));
+        }
+        Ok(output)
+    }
+
+    fn json(&self, args: &[&str]) -> Result<serde_json::Value, SceneError> {
+        let args: Vec<String> = args.iter().map(|value| (*value).to_string()).collect();
+        let output = self.command(&args, true)?;
+        serde_json::from_slice(&output.stdout).map_err(|error| {
+            SceneError::new(
+                "live_json_invalid",
+                format!("{} returned invalid JSON: {error}", args.join(" ")),
+            )
+        })
+    }
+
+    fn start_or_attach(&mut self) -> Result<(), SceneError> {
+        let status_args = vec![
+            "host".to_string(),
+            "status".to_string(),
+            "--json".to_string(),
+        ];
+        let status = self
+            .command(&status_args, false)
+            .ok()
+            .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok());
+        match status.as_ref().map(classify_host_status) {
+            Some(HostStatusClass::Running) => {
+                if std::env::var("PLEXI_SCENE_ATTACH").is_ok_and(|value| value == "1") {
+                    self.attached_host = true;
+                    log::info!(
+                        "scene_live: attached channel={} binary={}",
+                        self.channel,
+                        self.binary
+                    );
+                    return Ok(());
+                }
+                return Err(SceneError::new(
+                    "live_host_already_running",
+                    format!(
+                        "channel '{}' already has a host; set PLEXI_SCENE_ATTACH=1 to attach",
+                        self.channel
+                    ),
+                ));
+            }
+            Some(HostStatusClass::Stopped) => {}
+            Some(HostStatusClass::Unknown) | None => {
+                return Err(SceneError::new(
+                    "live_status_invalid",
+                    format!(
+                        "could not classify host status for channel '{}'",
+                        self.channel
+                    ),
+                ));
+            }
+        }
+        let pane = format!("cwd={}", env!("CARGO_MANIFEST_DIR"));
+        self.command(
+            &[
+                "host".to_string(),
+                "start".to_string(),
+                "--pane".to_string(),
+                pane,
+            ],
+            false,
+        )?;
+        self.owned_host = true;
+        if let Some(owner_file) = &self.owner_file {
+            std::fs::write(owner_file, format!("{}\n", self.channel)).map_err(|error| {
+                SceneError::new(
+                    "owner_marker_failed",
+                    format!("could not create live-scene ownership marker: {error}"),
+                )
+            })?;
+        }
+        poll_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
+            self.json(&["host", "status", "--json"])
+                .ok()
+                .filter(|status| host_seed_ready(status, 1))
+        })
+        .map_err(|_| {
+            SceneError::new(
+                "live_seed_not_ready",
+                "host became reachable but its declared seed pane did not settle",
+            )
+        })?;
+        log::info!(
+            "scene_live: started channel={} binary={} ready=true seed_panes>=1",
+            self.channel,
+            self.binary
+        );
+        Ok(())
+    }
+
+    fn teardown(&mut self) {
+        if !self.owned_host {
+            self.teardown = TeardownResult {
+                attempted: false,
+                ok: true,
+                detail: if self.attached_host {
+                    "attached_host_untouched"
+                } else {
+                    "host_not_started"
+                }
+                .to_string(),
+            };
+            return;
+        }
+        self.teardown.attempted = true;
+        let stopped = self.command(&["host".into(), "stop".into()], false).is_ok();
+        let gone = poll_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
+            self.command(&["host".into(), "status".into(), "--json".into()], false)
+                .ok()
+                .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok())
+                .filter(|status| classify_host_status(status) == HostStatusClass::Stopped)
+        })
+        .is_ok();
+        self.teardown.ok = stopped && gone;
+        self.teardown.detail = if self.teardown.ok {
+            "runner_host_stopped"
+        } else {
+            "runner_host_teardown_failed"
+        }
+        .to_string();
+        log::info!(
+            "scene_live: teardown channel={} ok={}",
+            self.channel,
+            self.teardown.ok
+        );
+        if self.teardown.ok {
+            if let Some(owner_file) = &self.owner_file {
+                let _ = std::fs::remove_file(owner_file);
+            }
+        }
+        self.owned_host = false;
+    }
+
+    fn pane_state(&self, pane_id: PaneId) -> Result<serde_json::Value, SceneError> {
+        self.json(&["pane", "state", &pane_id.to_string()])
+    }
+
+    fn settled_state(
+        &self,
+        pane_id: PaneId,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, SceneError> {
+        let mut previous = None;
+        poll_until(timeout, LIVE_POLL_INTERVAL, || {
+            if let Ok(state) = self.pane_state(pane_id) {
+                if previous.as_ref() == Some(&state) {
+                    return Some(state);
+                }
+                previous = Some(state);
+            }
+            None
+        })
+    }
+
+    fn exec(
+        &mut self,
+        step: &Step,
+        _shots: &mut Vec<String>,
+    ) -> Result<Option<StepDetail>, SceneError> {
+        match step {
+            Step::Open { open } => {
+                self.handles.ensure_available(open.handle())?;
+                let target = match open {
+                    OpenSpec::Process { path, .. } | OpenSpec::Wasm { path, .. } => {
+                        resolve(path).display().to_string()
+                    }
+                    OpenSpec::Builtin { id, .. } => id.clone(),
+                };
+                let mut args = vec!["app".to_string(), "open".to_string(), target];
+                match open {
+                    OpenSpec::Process {
+                        args: launch_args, ..
+                    }
+                    | OpenSpec::Wasm {
+                        args: launch_args, ..
+                    }
+                    | OpenSpec::Builtin {
+                        args: launch_args, ..
+                    } => args.extend(launch_args.iter().cloned()),
+                }
+                let cwd = live_builtin_cwd(open);
+                let output = self.command_with_cwd(&args, true, cwd.as_deref())?;
+                let pane_id = String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse::<PaneId>()
+                    .map_err(|error| {
+                        SceneError::new(
+                            "open_response_invalid",
+                            format!("app open did not return a pane id: {error}"),
+                        )
+                    })?;
+                self.handles.bind(open.handle(), pane_id)?;
+                self.last_app_pane = Some(pane_id);
+                let _ = self.settled_state(pane_id, Duration::from_secs(5))?;
+                log::info!(
+                    "scene_live: step=open channel={} kind={} pane_id={pane_id}",
+                    self.channel,
+                    open.target_kind()
+                );
+                Ok(Some(StepDetail::Opened {
+                    target_kind: open.target_kind().to_string(),
+                    handle: open.handle().to_string(),
+                    pane_id,
+                }))
+            }
+            Step::Text { text } => {
+                let pane_id = resolve_live_pane_target(&self.handles, &text.target, "text input")?;
+                self.command(
+                    &[
+                        "pane".into(),
+                        "send".into(),
+                        pane_id.to_string(),
+                        text.value.clone(),
+                    ],
+                    true,
+                )?;
+                let _ = self.settled_state(pane_id, Duration::from_secs(5))?;
+                let length = text.value.chars().count();
+                log::info!(
+                    "scene_live: step=text channel={} pane_id={pane_id} length={length}",
+                    self.channel
+                );
+                Ok(Some(StepDetail::TextInput {
+                    target: text.target.clone(),
+                    pane_id: Some(pane_id),
+                    length,
+                }))
+            }
+            Step::Key { key } => {
+                let pane_id = resolve_live_pane_target(&self.handles, &key.target, "key input")?;
+                self.command(
+                    &[
+                        "pane".into(),
+                        "key".into(),
+                        pane_id.to_string(),
+                        key.value.clone(),
+                    ],
+                    true,
+                )?;
+                let _ = self.settled_state(pane_id, Duration::from_secs(5))?;
+                Ok(Some(StepDetail::KeyInput {
+                    target: key.target.clone(),
+                    pane_id: Some(pane_id),
+                    value: key.value.clone(),
+                }))
+            }
+            Step::WaitAppFrame { wait_app_frame } => {
+                let pane_id = self.handles.resolve(&wait_app_frame.target)?;
+                let _ =
+                    self.settled_state(pane_id, Duration::from_secs_f32(wait_app_frame.timeout_s))?;
+                Ok(None)
+            }
+            Step::RunSteps { .. } => {
+                if let Some(pane_id) = self.last_app_pane {
+                    let _ = self.settled_state(pane_id, Duration::from_secs(5))?;
+                }
+                Ok(None)
+            }
+            Step::AssertLabel { assert_label } => {
+                let pane_id = resolve_live_pane_target(
+                    &self.handles,
+                    &assert_label.target,
+                    "semantic label assertion",
+                )?;
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    let state = self.pane_state(pane_id)?;
+                    let matched = state
+                        .pointer("/semantic/nodes")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|nodes| {
+                            nodes.iter().any(|node| {
+                                node.get("label").and_then(serde_json::Value::as_str)
+                                    == Some(assert_label.label.as_str())
+                                    || node.get("value").and_then(serde_json::Value::as_str)
+                                        == Some(assert_label.label.as_str())
+                            })
+                        });
+                    if matched {
+                        return Ok(Some(StepDetail::LabelMatched {
+                            target: assert_label.target.clone(),
+                            pane_id: Some(pane_id),
+                            label: assert_label.label.clone(),
+                        }));
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(SceneError::new(
+                            "label_not_found",
+                            format!(
+                                "assert_label: {:?} not found in live pane {}",
+                                assert_label.label, pane_id
+                            ),
+                        ));
+                    }
+                    std::thread::sleep(LIVE_POLL_INTERVAL);
+                }
+            }
+            Step::Assert { assert } => self.check_eventually(assert).map(|()| None),
+            Step::Shot { shot } => Ok(Some(StepDetail::Message {
+                message: format!("live backend skips optional screenshot {shot}"),
+            })),
+            Step::SwitchContext { switch_context } => {
+                let contexts = self.json(&["context", "list"])?;
+                let entries = contexts.as_array().ok_or_else(|| {
+                    SceneError::new("live_json_invalid", "context list did not return an array")
+                })?;
+                let context = entries.get(*switch_context).ok_or_else(|| {
+                    SceneError::new(
+                        "invalid_context",
+                        format!(
+                            "switch_context {}: only {} contexts exist",
+                            switch_context,
+                            entries.len()
+                        ),
+                    )
+                })?;
+                let context_id = context
+                    .get("context_id")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        SceneError::new("live_json_invalid", "context entry has no context_id")
+                    })?;
+                self.command(
+                    &["context".into(), "zoom".into(), context_id.to_string()],
+                    true,
+                )?;
+                poll_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
+                    self.json(&["context", "list"]).ok().and_then(|value| {
+                        value
+                            .as_array()?
+                            .iter()
+                            .find(|entry| {
+                                entry.get("context_id").and_then(serde_json::Value::as_u64)
+                                    == Some(context_id)
+                            })
+                            .and_then(|entry| {
+                                entry.get("is_active").and_then(serde_json::Value::as_bool)
+                            })
+                            .filter(|active| *active)
+                    })
+                })?;
+                Ok(None)
+            }
+            Step::PushToSubcontext { push_to_subcontext } => {
+                let pane_id = self.last_app_pane.ok_or_else(|| {
+                    SceneError::new(
+                        "missing_target",
+                        "push_to_subcontext requires an opened pane",
+                    )
+                })?;
+                let before = self
+                    .json(&["context", "list"])?
+                    .as_array()
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                self.command(
+                    &[
+                        "context".into(),
+                        "push".into(),
+                        push_to_subcontext.clone(),
+                        "--pane-id".into(),
+                        pane_id.to_string(),
+                    ],
+                    true,
+                )?;
+                poll_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
+                    self.json(&["context", "list"])
+                        .ok()
+                        .and_then(|value| (value.as_array()?.len() > before).then_some(()))
+                })?;
+                Ok(None)
+            }
+            Step::Sidebar { .. } => Err(SceneError::new(
+                "unsupported_live_verb",
+                "sidebar mutation has no sanctioned live CLI/IPC command",
+            )),
+        }
+    }
+
+    fn host_state(&self) -> HostState {
+        let panes = self
+            .json(&["pane", "list"])
+            .ok()
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default();
+        let contexts = self.json(&["context", "list"]).ok();
+        let context_count = live_context_count(contexts.as_ref(), &panes);
+        let window_count = panes
+            .iter()
+            .filter_map(|pane| pane.get("window_id").and_then(serde_json::Value::as_u64))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        HostState {
+            context_count,
+            window_count,
+            pane_count: panes.len(),
+            portal_count: panes
+                .iter()
+                .filter(|pane| {
+                    pane.get("type").and_then(serde_json::Value::as_str) == Some("portal")
+                })
+                .count(),
+            sidebar: false,
+        }
+    }
+
+    fn app_state(&self) -> Option<AppState> {
+        let pane_id = self.last_app_pane?;
+        let tree = self.pane_state(pane_id).ok()?;
+        let lifecycle = tree
+            .get("lifecycle")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unavailable")
+            .to_string();
+        Some(AppState {
+            pane_id,
+            lifecycle,
+            tree,
+        })
+    }
+
+    fn check(&self, spec: &AssertSpec) -> Result<(), SceneError> {
+        if spec.sidebar.is_some() {
+            return Err(SceneError::new(
+                "unsupported_live_assertion",
+                "sidebar state is not exposed by the live pane metadata API",
+            ));
+        }
+        let host = self.host_state();
+        let mut failures = Vec::new();
+        if let Some(expected) = spec
+            .pane_count
+            .filter(|expected| *expected != host.pane_count)
+        {
+            failures.push(format!(
+                "pane_count: expected {expected}, got {}",
+                host.pane_count
+            ));
+        }
+        if let Some(expected) = spec
+            .window_count
+            .filter(|expected| *expected != host.window_count)
+        {
+            failures.push(format!(
+                "window_count: expected {expected}, got {}",
+                host.window_count
+            ));
+        }
+        if let Some(expected) = spec
+            .context_count
+            .filter(|expected| *expected != host.context_count)
+        {
+            failures.push(format!(
+                "context_count: expected {expected}, got {}",
+                host.context_count
+            ));
+        }
+        if let Some(target) = spec.target.as_deref() {
+            let pane_id = self.handles.resolve(target)?;
+            let state = self.pane_state(pane_id)?;
+            if let Some(expected) = &spec.lifecycle {
+                let actual = state
+                    .get("lifecycle")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unavailable");
+                if actual != expected {
+                    failures.push(format!("lifecycle: expected {expected}, got {actual}"));
+                }
+            }
+            if let Some(needle) = &spec.tree_contains {
+                if !state.to_string().contains(needle) {
+                    failures.push(format!("tree_contains: {needle:?} not found in app tree"));
+                }
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(SceneError::new("assertion_failed", failures.join("; ")))
+        }
+    }
+
+    fn check_eventually(&self, spec: &AssertSpec) -> Result<(), SceneError> {
+        poll_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
+            match self.check(spec) {
+                Ok(()) => Some(()),
+                Err(_) => None,
+            }
+        })
+    }
+}
+
+impl Drop for LiveBackend {
+    fn drop(&mut self) {
+        if self.owned_host {
+            self.teardown();
+        }
+    }
+}
+
+fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneReport {
+    let scene_name = scene_path
+        .file_stem()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| scene_path.display().to_string());
+    let raw = match std::fs::read_to_string(scene_path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            return live_failed_report(
+                scene_name,
+                None,
+                SceneError::new(
+                    "scene_read",
+                    format!("read {}: {error}", scene_path.display()),
+                ),
+            )
+        }
+    };
+    let scene: Scene = match toml::from_str(&raw) {
+        Ok(scene) => scene,
+        Err(error) => {
+            return live_failed_report(
+                scene_name,
+                None,
+                SceneError::new(
+                    "scene_parse",
+                    format!("parse {}: {error}", scene_path.display()),
+                ),
+            )
+        }
+    };
+    let mut backend = match LiveBackend::from_env() {
+        Ok(backend) => backend,
+        Err(error) => {
+            return live_failed_report(scene_name, std::env::var("PLEXI_SCENE_CHANNEL").ok(), error)
+        }
+    };
+    let channel = backend.channel.clone();
+    let mut steps = Vec::new();
+    let mut shots = Vec::new();
+    let start_error = backend.start_or_attach().err();
+    let mut passed = start_error.is_none();
+    if passed {
+        for (index, step) in scene.steps.iter().enumerate() {
+            match backend.exec(step, &mut shots) {
+                Ok(detail) => steps.push(StepResult {
+                    index,
+                    step: step_label(step),
+                    ok: true,
+                    detail,
+                    error: None,
+                }),
+                Err(error) => {
+                    steps.push(StepResult {
+                        index,
+                        step: step_label(step),
+                        ok: false,
+                        detail: None,
+                        error: Some(error),
+                    });
+                    passed = false;
+                    break;
+                }
+            }
+        }
+    } else {
+        steps.push(StepResult {
+            index: 0,
+            step: "live_start".to_string(),
+            ok: false,
+            detail: None,
+            error: start_error,
+        });
+    }
+    let handles = backend.handles.report();
+    let host = backend.host_state();
+    let app = backend.app_state();
+    backend.teardown();
+    passed &= backend.teardown.ok;
+    let report = SceneReport {
+        schema_version: SCENE_REPORT_SCHEMA_VERSION,
+        backend: "live".to_string(),
+        channel,
+        scene: scene_name.clone(),
+        passed,
+        steps,
+        shots,
+        handles,
+        host,
+        app,
+        teardown: backend.teardown.clone(),
+    };
+    if let Err(error) = std::fs::create_dir_all(out_dir).and_then(|()| {
+        std::fs::write(
+            out_dir.join(format!("{scene_name}.json")),
+            serde_json::to_vec_pretty(&report).unwrap_or_default(),
+        )
+    }) {
+        log::warn!("scene_live: failed to write report: {error}");
+    }
+    let _ = no_shots;
+    report
+}
+
+fn live_failed_report(scene: String, channel: Option<String>, error: SceneError) -> SceneReport {
+    let mut report = failed_report(scene, error);
+    report.backend = "live".to_string();
+    report.channel = channel.unwrap_or_else(|| "unconfigured".to_string());
+    report.teardown = TeardownResult {
+        attempted: false,
+        ok: true,
+        detail: "host_not_started".to_string(),
+    };
+    report
 }
 
 fn step_label(step: &Step) -> String {
@@ -537,7 +1366,7 @@ fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-impl SceneRunner {
+impl HeadlessBackend {
     fn exec(
         &mut self,
         step: &Step,
@@ -894,6 +1723,9 @@ fn parse_key(combo: &str) -> Result<(egui::Modifiers, egui::Key), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static LIVE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn scenes_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1045,6 +1877,15 @@ mod tests {
     }
 
     #[test]
+    fn live_missing_target_fails_before_any_host_command() {
+        let handles = PaneHandles::default();
+
+        let error = handles.resolve("not-opened").unwrap_err();
+
+        assert_eq!(error.code, "missing_target");
+    }
+
+    #[test]
     fn pane_handles_reserve_host_target() {
         let mut handles = PaneHandles::default();
 
@@ -1060,5 +1901,192 @@ mod tests {
         let target = handles.resolve_input("host").expect("host input target");
 
         assert_eq!(target, InputTarget::Host);
+    }
+
+    #[test]
+    fn live_backend_requires_an_explicit_channel() {
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("PLEXI_SCENE_CHANNEL");
+
+        let error = LiveBackend::from_env()
+            .err()
+            .expect("channel must be required");
+
+        assert_eq!(error.code, "live_channel_required");
+    }
+
+    #[test]
+    fn live_backend_channel_selects_isolated_binary_and_socket() {
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        std::env::set_var("PLEXI_SCENE_CHANNEL", "pr-4242");
+        std::env::remove_var("PLEXI_SCENE_BIN");
+
+        let backend = LiveBackend::from_env().expect("live config");
+
+        assert_eq!(backend.binary, "plexi-pr-4242");
+        assert!(backend.socket.ends_with(".plexi-pr-4242/notify.sock"));
+        std::env::remove_var("PLEXI_SCENE_CHANNEL");
+    }
+
+    #[test]
+    fn attached_live_backend_teardown_leaves_host_untouched() {
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        std::env::set_var("PLEXI_SCENE_CHANNEL", "test-attach");
+        let mut backend = LiveBackend::from_env().expect("live config");
+        backend.attached_host = true;
+
+        backend.teardown();
+
+        assert_eq!(
+            backend.teardown,
+            TeardownResult {
+                attempted: false,
+                ok: true,
+                detail: "attached_host_untouched".to_string(),
+            }
+        );
+        std::env::remove_var("PLEXI_SCENE_CHANNEL");
+    }
+
+    #[test]
+    fn report_schema_has_backend_channel_errors_and_teardown_parity() {
+        let report = failed_report(
+            "parity".to_string(),
+            SceneError::new("eventual_timeout", "bounded wait expired"),
+        );
+        let json = serde_json::to_value(report).expect("serialize report");
+
+        assert_eq!(json["schema_version"], SCENE_REPORT_SCHEMA_VERSION);
+        assert_eq!(json["backend"], "headless");
+        assert!(json.get("channel").is_some());
+        assert_eq!(json["steps"][0]["error"]["code"], "eventual_timeout");
+        assert!(json.get("teardown").is_some());
+    }
+
+    #[test]
+    fn real_host_status_json_classifies_running_and_stopped() {
+        let running = serde_json::json!({
+            "ready": true,
+            "pane_count": 2,
+            "pid": 47709,
+            "socket": "/tmp/notify.sock"
+        });
+        let starting = serde_json::json!({
+            "ready": false,
+            "pane_count": null,
+            "pid": 47709,
+            "socket": "/tmp/notify.sock"
+        });
+        let stopped = serde_json::json!({
+            "ready": false,
+            "pane_count": null,
+            "pid": null,
+            "socket": "/tmp/notify.sock"
+        });
+
+        assert_eq!(classify_host_status(&running), HostStatusClass::Running);
+        assert_eq!(classify_host_status(&starting), HostStatusClass::Running);
+        assert_eq!(classify_host_status(&stopped), HostStatusClass::Stopped);
+        assert_eq!(
+            classify_host_status(&serde_json::json!({})),
+            HostStatusClass::Unknown
+        );
+    }
+
+    #[test]
+    fn live_seed_readiness_requires_ready_and_declared_pane_count() {
+        assert!(!host_seed_ready(
+            &serde_json::json!({"ready": false, "pane_count": 1, "pid": 42}),
+            1,
+        ));
+        assert!(!host_seed_ready(
+            &serde_json::json!({"ready": true, "pane_count": 0, "pid": 42}),
+            1,
+        ));
+        assert!(host_seed_ready(
+            &serde_json::json!({"ready": true, "pane_count": 1, "pid": 42}),
+            1,
+        ));
+    }
+
+    #[test]
+    fn live_seed_readiness_timeout_is_bounded() {
+        let error = poll_until(Duration::from_millis(3), Duration::from_millis(1), || {
+            host_seed_ready(
+                &serde_json::json!({"ready": true, "pane_count": 0, "pid": 42}),
+                1,
+            )
+            .then_some(())
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code, "eventual_timeout");
+    }
+
+    #[test]
+    fn bounded_eventual_timeout_is_fast_and_structured() {
+        let started = Instant::now();
+
+        let error = poll_until(Duration::from_millis(3), Duration::from_millis(1), || {
+            None::<()>
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code, "eventual_timeout");
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn ownership_marker_distinguishes_runner_host_from_attached_host() {
+        let dir = tempfile::tempdir().expect("marker dir");
+        let marker = dir.path().join("owner");
+        assert!(!marker.exists(), "attached host has no ownership marker");
+
+        std::fs::write(&marker, "pr-4242\n").expect("write owner marker");
+        assert!(
+            marker.exists(),
+            "runner-owned host authorizes interrupt cleanup"
+        );
+
+        std::fs::remove_file(&marker).expect("clear marker after teardown");
+        assert!(
+            !marker.exists(),
+            "successful teardown revokes cleanup authority"
+        );
+    }
+
+    #[test]
+    fn live_context_count_includes_empty_contexts_and_has_pane_fallback() {
+        let contexts = serde_json::json!([
+            {"context_id": 10, "is_active": true},
+            {"context_id": 20, "is_active": false}
+        ]);
+        let panes = vec![serde_json::json!({"id": 1, "context_id": 10})];
+
+        assert_eq!(live_context_count(Some(&contexts), &panes), 2);
+        assert_eq!(live_context_count(None, &panes), 1);
+    }
+
+    #[test]
+    fn live_builtin_open_resolves_explicit_cwd_for_command() {
+        let open = OpenSpec::Builtin {
+            id: "file_browser".to_string(),
+            handle: "files".to_string(),
+            cwd: Some("tests".to_string()),
+            args: Vec::new(),
+        };
+
+        let cwd = live_builtin_cwd(&open).expect("explicit builtin cwd");
+
+        assert_eq!(cwd, Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"));
+    }
+
+    #[test]
+    fn live_whole_host_target_fails_explicitly() {
+        let handles = PaneHandles::default();
+
+        let error = resolve_live_pane_target(&handles, "host", "key input").unwrap_err();
+
+        assert_eq!(error.code, "unsupported_live_target");
     }
 }

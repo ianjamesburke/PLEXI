@@ -1,0 +1,27 @@
+# Shared native multi-pane contract. This exact scene runs headlessly and
+# through `just scene-live` against an installed channel.
+size = [1280.0, 800.0]
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }
+
+[[steps]]
+open = { kind = "builtin", id = "assistant", as = "assistant" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "assistant", label = "Assistant" }
+
+[[steps]]
+text = { target = "assistant", value = "/settings" }
+
+[[steps]]
+key = { target = "assistant", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "assistant", label = "Assistant settings" }

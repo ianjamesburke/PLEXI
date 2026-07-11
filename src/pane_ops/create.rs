@@ -1379,6 +1379,31 @@ impl PlexiApp {
             return Ok(None);
         }
 
+        // The Assistant is a compiled-in app whose constructor needs the live
+        // broker and channel profile, so it cannot participate in the
+        // broker-free `builtin_factory`. Keep it on the same generic app-open
+        // route as every other builtin so scene and CLI callers do not need an
+        // app-specific command.
+        if id == "assistant" {
+            if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
+                crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
+                return Err("assistant is not enabled on this release channel".to_string());
+            }
+            let predicted = self.host.next_pane_id();
+            self.open_assistant_pane_with_hint(layout.as_deref().unwrap_or("overlay"));
+            let pane_id = self.windows[self.active_window]
+                .panes
+                .iter()
+                .find_map(|(pane_id, pane)| {
+                    pane.as_app()
+                        .filter(|app| app.runtime.type_id() == "assistant")
+                        .map(|_| *pane_id)
+                })
+                .unwrap_or(predicted);
+            log::info!("launch_app_by_id_with_layout: 'assistant' resolved as builtin pane_id={pane_id}");
+            return Ok(Some(pane_id));
+        }
+
         // When the caller does not specify a placement, fall back to the app's
         // manifest-declared `[launch] placement` before the host default
         // (`overlay`). One resolution point so every downstream hint inherits
@@ -1767,6 +1792,10 @@ impl PlexiApp {
     /// hardcoded here rather than expressed as `focus_existing_in_context`,
     /// which would change the granularity from window to context.
     pub(crate) fn open_assistant_pane(&mut self) {
+        self.open_assistant_pane_with_hint("overlay");
+    }
+
+    fn open_assistant_pane_with_hint(&mut self, hint: &str) {
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
             return;
@@ -1808,7 +1837,7 @@ impl PlexiApp {
             &crate::config::config_dir(),
         ));
         let perms = crate::app::permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(app, perms, workspace_root, None, Some("overlay"), None);
+        self.open_builtin_app_pane(app, perms, workspace_root, None, Some(hint), None);
     }
 
     /// Create a new scratch note in `notes/inbox/` and open it in a text-editor
@@ -2147,6 +2176,25 @@ mod tests {
             h.app.windows[0].tree.root.is_some(),
             "tree root should be set after launch into empty context"
         );
+    }
+
+    #[test]
+    fn generic_app_launch_resolves_assistant_builtin() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let mut h = HostHarness::new();
+
+        let pane_id = h
+            .app
+            .launch_app_by_id_with_layout("assistant", Some("split_h".into()), &[], None)
+            .expect("generic Assistant launch must succeed")
+            .expect("Assistant launch returns its real pane id");
+
+        let pane = h.app.windows[0]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .expect("Assistant app pane");
+        assert_eq!(pane.runtime.type_id(), "assistant");
     }
 
     #[test]

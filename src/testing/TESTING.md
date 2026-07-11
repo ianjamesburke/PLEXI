@@ -66,6 +66,7 @@ Every `open` step binds one unique symbolic handle. Later pane steps reject miss
 ```bash
 just scene tests/scenes/balls.toml           # one scene → /tmp/plexi-scenes
 just scene <file> /tmp/out 0                 # state-only: skip shot steps (no GPU)
+just scene-live <file> pr-123                # same schema against installed host
 cargo test --bin plexi scene_suite           # all committed suite scenes
 ```
 
@@ -73,7 +74,11 @@ cargo test --bin plexi scene_suite           # all committed suite scenes
 
 ### SceneReport
 
-Every run writes `<out>/<scene>.json` (`schema_version: 2`). It includes pass/fail per step, resolved handles, host state, and the last-opened process or WASM app's committed state. Successful action details and failures are structured objects; failures carry stable `code` and `message` fields. Prefer state and semantic-label assertions over pixel comparisons. Screenshots remain a human review artifact.
+Every run writes `<out>/<scene>.json` (`schema_version: 3`). It includes the selected backend and channel, pass/fail per step, resolved real pane ids, host state, teardown result, and the last-opened app state. Successful action details and failures are structured objects; failures carry stable `code` and `message` fields. Prefer state and semantic-label assertions over pixel comparisons. Screenshots remain a human review artifact.
+
+`just scene-live` requires an explicit installed channel, boots that channel's host, drives generic app open/text/key/context switch/context push operations through the public CLI/IPC surface, observes `pane state` and context metadata, and always tears down a runner-owned host. Set `PLEXI_SCENE_ATTACH=1` only to attach deliberately; attached hosts are never stopped by the runner. The outer script writes a runner-only ownership marker, so SIGINT/SIGTERM/HUP cleanup can stop an owned host without touching an attached one. Unsupported live verbs fail with `unsupported_live_verb` rather than silently diverging from headless semantics. Live assertions use bounded eventual polling with a small poll interval and a stable-state barrier, never fixed workflow sleeps.
+
+Whole-host `text`, `key`, and `assert_label` targets are headless-only because the installed host exposes no sanctioned generic host-input or host-semantic CLI/IPC seam. The live backend returns `unsupported_live_target` for `target = "host"`; pane targets retain the shared semantics.
 
 ## Real App Processes in Tests
 

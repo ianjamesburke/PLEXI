@@ -400,6 +400,11 @@ scene FILE out="/tmp/plexi-scenes" shots="1":
     {{ if shots == "0" { "PLEXI_SCENE_NO_SHOTS=1" } else { "" } }} \
     cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
 
+# Run the same TOML scene against an explicit installed host channel.
+# The runner owns and tears down the host unless PLEXI_SCENE_ATTACH=1 is set.
+scene-live FILE channel out="/tmp/plexi-scenes-live":
+    bash scripts/run-live-scene.sh {{FILE}} {{channel}} {{out}}
+
 # Run one agent-drives-agent app-authoring E2E session from a prompt fixture.
 # Provisions an isolated session and leaves a capture dir under benchmarks/app-authoring/sessions.
 #   just e2e-session tools/e2e_authoring/fixtures/counter.toml            — live (needs channel + display)

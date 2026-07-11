@@ -1191,32 +1191,56 @@ impl PlexiApp {
             } => {
                 log::info!("pane_ipc: kind=send_to_pane pane_id={pane_id} len={} windows={} response_file={response_file:?}", text.len(), self.windows.len());
                 let text_with_newlines = text.replace("\\n", "\n");
-                let result = match self
-                    .windows
-                    .iter_mut()
-                    .find_map(|win| win.panes.get_mut(pane_id))
-                {
+                let pane_kind = self.windows.iter().find_map(|win| {
+                    win.panes.get(pane_id).map(|pane| {
+                        if pane.as_terminal().is_some() {
+                            "terminal"
+                        } else if pane.as_app().is_some() {
+                            "app"
+                        } else {
+                            "unsupported"
+                        }
+                    })
+                });
+                let result = match pane_kind {
                     None => {
                         log::warn!(
                             "pane_ipc: send_to_pane: pane_id={pane_id} not found in any window"
                         );
                         Err(format!("pane {pane_id} not found"))
                     }
-                    Some(pane) => {
-                        match pane.as_terminal_mut() {
-                            None => {
-                                log::warn!("pane_ipc: send_to_pane: pane_id={pane_id} is not a terminal pane");
-                                Err(format!("pane {pane_id} is not a terminal pane"))
-                            }
+                    Some("terminal") => {
+                        match self
+                            .windows
+                            .iter_mut()
+                            .find_map(|win| win.panes.get_mut(pane_id))
+                            .and_then(crate::host::pane::Pane::as_terminal_mut)
+                        {
                             Some(term) => {
-                                term.backend
-                                    .process_command(egui_term::BackendCommand::Write(
-                                        text_with_newlines.into_bytes(),
-                                    ));
+                                term.backend.process_command(egui_term::BackendCommand::Write(
+                                    text_with_newlines.into_bytes(),
+                                ));
                                 Ok(())
                             }
+                            None => Err(format!("pane {pane_id} changed while routing text")),
                         }
                     }
+                    Some("app") => {
+                        if !self.pane_navigate(*pane_id) {
+                            Err(format!("pane {pane_id} could not be focused"))
+                        } else {
+                            self.ctx.input_mut(|input| {
+                                input.events.push(egui::Event::Text(text_with_newlines));
+                            });
+                            self.ctx.request_repaint();
+                            log::info!(
+                                "pane_ipc: send_to_pane: app pane_id={pane_id} text_chars={}",
+                                text.chars().count()
+                            );
+                            Ok(())
+                        }
+                    }
+                    Some(_) => Err(format!("pane {pane_id} does not accept text input")),
                 };
                 if let Some(rf) = response_file {
                     let json = match result {
@@ -1236,8 +1260,12 @@ impl PlexiApp {
                 key,
                 response_file,
             } => {
-                log::info!("pane_ipc: kind=key_pane pane_id={pane_id} key={key:?}");
-                let result: Result<serde_json::Value, String> = match self
+                log::info!(
+                    "pane_ipc: kind=key_pane pane_id={pane_id} key_chars={}",
+                    key.chars().count()
+                );
+                let mut passthrough_raw = None;
+                let mut result: Result<serde_json::Value, String> = match self
                     .windows
                     .iter_mut()
                     .find_map(|win| win.panes.get_mut(pane_id))
@@ -1270,21 +1298,24 @@ impl PlexiApp {
                                 // their real `handle_key` handler.
                                 runtime => match super::drive_native_pane_key(runtime, key) {
                                     Ok(disposition) => {
-                                        let disposition = match disposition {
+                                        let disposition_label = match disposition {
                                             crate::app::app_trait::KeyDisposition::Consumed => {
                                                 "consumed"
                                             }
                                             crate::app::app_trait::KeyDisposition::Passthrough => {
+                                                passthrough_raw =
+                                                    super::key_str_to_egui_raw_input(key);
                                                 "passthrough"
                                             }
                                         };
                                         log::info!(
                                             "pane_ipc: key_pane: native app pane_id={pane_id} \
-                                             key={key:?} disposition={disposition}"
+                                             key_chars={} disposition={disposition_label}",
+                                            key.chars().count()
                                         );
                                         Ok(serde_json::json!({
                                             "ok": true,
-                                            "disposition": disposition,
+                                            "disposition": disposition_label,
                                         }))
                                     }
                                     Err(e) => {
@@ -1298,6 +1329,17 @@ impl PlexiApp {
                         }
                     }
                 };
+                if let Some(raw) = passthrough_raw {
+                    if self.pane_navigate(*pane_id) {
+                        self.ctx.input_mut(|input| {
+                            input.modifiers = raw.modifiers;
+                            input.events.extend(raw.events);
+                        });
+                        self.ctx.request_repaint();
+                    } else {
+                        result = Err(format!("pane {pane_id} could not be focused"));
+                    }
+                }
                 if let Some(rf) = response_file {
                     let json = match &result {
                         Ok(v) => v.to_string(),
@@ -1411,6 +1453,15 @@ impl PlexiApp {
                                 .frame_json()
                                 .unwrap_or(serde_json::Value::Array(vec![]));
                             let semantic = app_pane.semantic_state();
+                            let lifecycle = match &app_pane.runtime {
+                                crate::host::pane::AppRuntime::Process(process) => {
+                                    format!("{:?}", process.lifecycle.state()).to_lowercase()
+                                }
+                                crate::host::pane::AppRuntime::Wasm(wasm) => {
+                                    if wasm.is_running() { "running" } else { "exited" }.to_string()
+                                }
+                                crate::host::pane::AppRuntime::Builtin(_) => "running".to_string(),
+                            };
                             log::info!(
                                 "pane_ipc: get_pane_state: pane_id={pane_id} runtime={} schema_version={} node_count={}",
                                 app_pane.runtime.runtime_kind(),
@@ -1422,6 +1473,7 @@ impl PlexiApp {
                                 "type": "app",
                                 "title": app_pane.name,
                                 "manifest_id": app_pane.manifest_id,
+                                "lifecycle": lifecycle,
                                 "frame": frame,
                                 "semantic": semantic,
                             })

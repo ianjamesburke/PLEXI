@@ -4045,7 +4045,10 @@ fn key_str_to_pty_bytes(key: &str) -> Vec<u8> {
                     return ch.encode_utf8(&mut buf).as_bytes().to_vec();
                 }
             }
-            log::warn!("pane_ipc: key_pane: unrecognized key string {key:?}, sending raw bytes");
+            log::warn!(
+                "pane_ipc: key_pane: unrecognized key string ({} chars), sending raw bytes",
+                key.chars().count()
+            );
             key.as_bytes().to_vec()
         }
     }
