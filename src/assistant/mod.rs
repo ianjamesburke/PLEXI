@@ -9,6 +9,8 @@
 
 pub mod audit;
 pub mod commands;
+#[cfg(test)]
+pub mod harness;
 pub mod model;
 pub mod render;
 pub mod settings;
