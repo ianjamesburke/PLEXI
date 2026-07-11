@@ -11,6 +11,7 @@ pub mod audit;
 pub mod commands;
 pub mod model;
 pub mod render;
+pub mod settings;
 pub mod store;
 
 use std::collections::HashSet;
@@ -43,6 +44,7 @@ use crate::plexi_ai::tool_dispatch::{
 use audit::{AuditEvent, AuditLog};
 use model::{AssistantEffect, AssistantModel, PermissionChoice, TurnRole};
 use render::{AssistantRenderer, ComposerEvent, MarkdownTextCache};
+use settings::{AssistantSettings, SessionOverrides, SettingsLoadError, SettingsLoader};
 use store::AssistantStore;
 
 const ASSISTANT_SYSTEM_PROMPT: &str = "You are the Plexi Assistant, the workspace \
@@ -178,12 +180,27 @@ fn summarize_input(input_json: &str) -> String {
     }
 }
 
+fn format_setting_ids(ids: &[String]) -> String {
+    if ids.is_empty() {
+        "none".to_string()
+    } else {
+        ids.iter()
+            .map(|id| format!("`{id}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// The host Assistant pane: model + store + broker + grant wiring.
 pub struct AssistantApp {
     pub(crate) model: AssistantModel,
     store: AssistantStore,
     broker: Arc<dyn AiBroker>,
     workspace_root: PathBuf,
+    settings_loader: SettingsLoader,
+    session_overrides: SessionOverrides,
+    settings: AssistantSettings,
+    settings_errors: Vec<SettingsLoadError>,
     /// Unified broker grants (same `grants.toml` shape as `AgentHost`).
     /// Session grants are recorded in memory only; "always" grants are saved.
     grant_store: GrantStore,
@@ -271,6 +288,9 @@ impl AssistantApp {
         // Load persisted session name (if any) so it survives restarts.
         model.session_name = store.active_session_name();
         model.show_thoughts = store.show_thoughts();
+        let settings_loader = SettingsLoader::new(profile_dir, &workspace_root);
+        let session_overrides = SessionOverrides::default();
+        let settings_report = settings_loader.load(&session_overrides);
         let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
         let (flow_tx, flow_rx) = std::sync::mpsc::channel();
         let mut app = Self {
@@ -278,6 +298,10 @@ impl AssistantApp {
             store,
             broker,
             workspace_root,
+            settings_loader,
+            session_overrides,
+            settings: settings_report.settings,
+            settings_errors: settings_report.errors,
             grant_store: GrantStore::load_or_default(profile_dir),
             audit: AuditLog::new(profile_dir.join("audit.jsonl")),
             outcome_tx,
@@ -333,6 +357,12 @@ impl AssistantApp {
                 continue;
             };
             let (app, event) = (app.to_string(), event.to_string());
+            if self.event_stream_decision(&app, &event) != Decision::Allow {
+                log::info!(
+                    "assistant: persisted subscription '{target}' withheld by permission posture"
+                );
+                continue;
+            }
             self.subscribe_stream(&app, &event);
         }
         log::info!(
@@ -349,7 +379,11 @@ impl AssistantApp {
             log::info!("assistant: already subscribed to '{target}'");
             return;
         }
-        let event_names = if event == "*" { Vec::new() } else { vec![event.to_string()] };
+        let event_names = if event == "*" {
+            Vec::new()
+        } else {
+            vec![event.to_string()]
+        };
         let subscription_id = crate::host::event_subscriptions::record_subscription(
             &self.timeline,
             app,
@@ -399,6 +433,9 @@ impl AssistantApp {
                 AssistantEffect::ListPermissions => self.cmd_list_permissions(),
                 AssistantEffect::RevokeGrant { target_id } => self.cmd_revoke(&target_id),
                 AssistantEffect::ShowAudit => self.cmd_show_audit(),
+                AssistantEffect::ShowSettings => self.cmd_show_settings(),
+                AssistantEffect::ShowModelSetting => self.cmd_show_model_setting(),
+                AssistantEffect::SetSessionModel(tier) => self.set_session_model(tier),
                 AssistantEffect::PersistShowThoughts(show) => {
                     if let Err(e) = self.store.set_show_thoughts(show) {
                         log::error!("assistant: failed to persist show_thoughts={show}: {e}");
@@ -423,15 +460,39 @@ impl AssistantApp {
     }
 
     /// Evaluate one app connector tool for the assistant actor.
-    fn tool_decision(&self, tool: &str) -> Decision {
+    fn tool_decision(&self, tool: &AiTool) -> Decision {
+        if self.settings.permissions.posture.value == settings::AssistantPermissionPosture::Plan
+            && !tool.read_only
+        {
+            return Decision::Deny;
+        }
         let req = PermissionRequest::new(
             ActorType::Agent,
             ASSISTANT_ACTOR_ID,
             TargetType::AppConnector,
-            &Self::connector_target(tool),
+            &Self::connector_target(&tool.name),
             Some(&self.workspace_root),
         );
-        self.grant_store.evaluate(&req, None)
+        let posture = self.settings.permissions.broker_posture();
+        self.grant_store.evaluate(&req, Some(&posture))
+    }
+
+    fn event_stream_decision(&self, app: &str, event: &str) -> Decision {
+        let event_names = if event == "*" {
+            Vec::new()
+        } else {
+            vec![event.to_string()]
+        };
+        let posture = self.settings.permissions.broker_posture();
+        crate::host::event_subscriptions::evaluate_subscription(
+            &self.grant_store,
+            Some(&posture),
+            &self.workspace_root,
+            app,
+            ActorType::Agent,
+            ASSISTANT_ACTOR_ID,
+            &event_names,
+        )
     }
 
     /// Build the broker-gated dispatcher for one turn: denied tools are
@@ -448,7 +509,7 @@ impl AssistantApp {
         let mut denied = 0usize;
         let mut ro_auto = 0usize;
         for tool in dispatcher.all_tools() {
-            match self.tool_decision(&tool.name) {
+            match self.tool_decision(&tool) {
                 // Read-only tools skip the ask prompt (no permission sheet) but
                 // still respect explicit Deny grants — an admin deny wins.
                 Decision::Allow | Decision::Ask if tool.read_only => {
@@ -631,16 +692,7 @@ impl AssistantApp {
                     let _ = reply.send(ok(format!("already subscribed to {target}")));
                     return;
                 }
-                let event_names = if event == "*" { Vec::new() } else { vec![event.clone()] };
-                match crate::host::event_subscriptions::evaluate_subscription(
-                    &self.grant_store,
-                    None,
-                    &self.workspace_root,
-                    &app,
-                    ActorType::Agent,
-                    ASSISTANT_ACTOR_ID,
-                    &event_names,
-                ) {
+                match self.event_stream_decision(&app, &event) {
                     Decision::Allow => {
                         self.subscribe_stream(&app, &event);
                         self.audit
@@ -699,7 +751,7 @@ impl AssistantApp {
         let dispatcher = self.gated_dispatcher();
         let request = AiBrokerRequest {
             app_id: "assistant".to_string(),
-            model_tier: ModelTier::Medium,
+            model_tier: self.settings.model.tier.value,
             system: ASSISTANT_SYSTEM_PROMPT.to_string(),
             messages: self.history_messages(),
             tools: Vec::new(),
@@ -1118,6 +1170,95 @@ impl AssistantApp {
         });
     }
 
+    fn reload_settings(&mut self) {
+        let report = self.settings_loader.load(&self.session_overrides);
+        self.settings = report.settings;
+        self.settings_errors = report.errors;
+    }
+
+    fn set_session_model(&mut self, tier: ModelTier) {
+        self.session_overrides.model_tier = Some(tier);
+        self.reload_settings();
+        log::info!(
+            "assistant[{}]: session model tier changed to {}",
+            self.model.conversation_id,
+            settings::model_tier_name(tier)
+        );
+        let effects = self.model.push_info(format!(
+            "Model tier set to `{}` for this session.",
+            settings::model_tier_name(tier)
+        ));
+        self.execute_effects(effects);
+    }
+
+    fn cmd_show_model_setting(&mut self) {
+        self.reload_settings();
+        let tier = &self.settings.model.tier;
+        log::info!(
+            "assistant: /model showing {} from {}",
+            settings::model_tier_name(tier.value),
+            tier.source.description()
+        );
+        let effects = self.model.push_info(format!(
+            "Model tier: `{}` ({}).",
+            settings::model_tier_name(tier.value),
+            tier.source.description()
+        ));
+        self.execute_effects(effects);
+    }
+
+    fn cmd_show_settings(&mut self) {
+        self.reload_settings();
+        let tier = &self.settings.model.tier;
+        let mut text = format!(
+            "**Assistant settings**\n\n- Model tier: `{}` ({})\n\
+             - Permission posture: `{}` ({})\n\
+             - Enabled tools: {} ({})\n\
+             - Memory: {} ({})\n\
+             - Enabled hooks: {} ({})\n",
+            settings::model_tier_name(tier.value),
+            tier.source.description(),
+            self.settings.permissions.posture.value.as_str(),
+            self.settings.permissions.posture.source.description(),
+            format_setting_ids(&self.settings.tools.enabled.value),
+            self.settings.tools.enabled.source.description(),
+            if self.settings.memory.enabled.value {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            self.settings.memory.enabled.source.description(),
+            format_setting_ids(&self.settings.hooks.enabled.value),
+            self.settings.hooks.enabled.source.description()
+        );
+        if self.settings.permissions.rules.is_empty() {
+            text.push_str("- Permission rules: none\n");
+        } else {
+            text.push_str("- Permission rules:\n");
+            for rule in &self.settings.permissions.rules {
+                text.push_str(&format!(
+                    "  - `{}`: {} ({})\n",
+                    rule.rule,
+                    rule.decision.as_str(),
+                    rule.source.description()
+                ));
+            }
+        }
+        if !self.settings_errors.is_empty() {
+            text.push_str("\n**Load errors**\n\n");
+            for error in &self.settings_errors {
+                text.push_str(&format!("- {error}\n"));
+            }
+        }
+        log::info!(
+            "assistant: /settings showing {} permission rule(s), {} load error(s)",
+            self.settings.permissions.rules.len(),
+            self.settings_errors.len()
+        );
+        let effects = self.model.push_info(text);
+        self.execute_effects(effects);
+    }
+
     /// `/tools`: discovered app connector tools with their broker decisions.
     fn cmd_list_tools(&mut self) {
         let dispatcher = ToolDispatcher::from_registry(
@@ -1141,7 +1282,7 @@ impl AssistantApp {
                 out.push_str(&format!(
                     "{} — {}\n",
                     Self::connector_target(&tool.name),
-                    self.tool_decision(&tool.name).as_str()
+                    self.tool_decision(&tool).as_str()
                 ));
             }
             out
@@ -1152,14 +1293,7 @@ impl AssistantApp {
             text.push_str("\nApp event streams (host.events.subscribe / unsubscribe):\n");
             for (app, event) in streams {
                 let target = format!("{app}::{event}");
-                let req = PermissionRequest::new(
-                    ActorType::Agent,
-                    ASSISTANT_ACTOR_ID,
-                    TargetType::AppEventStream,
-                    &target,
-                    Some(&self.workspace_root),
-                );
-                let decision = self.grant_store.evaluate(&req, None);
+                let decision = self.event_stream_decision(&app, &event);
                 let subscribed = self.live_subs.iter().any(|(t, _)| *t == target);
                 text.push_str(&format!(
                     "{target} — {}{}\n",
@@ -1194,7 +1328,7 @@ impl AssistantApp {
                     tools.len()
                 ));
                 for tool in &tools {
-                    let decision = self.tool_decision(&tool.name);
+                    let decision = self.tool_decision(tool);
                     let kind = if tool.read_only { "read" } else { "mutate" };
                     out.push_str(&format!(
                         "  {} [{}] — {}\n",
@@ -1526,6 +1660,87 @@ mod tests {
     }
 
     #[test]
+    fn resolved_settings_deny_is_enforced_by_the_permission_broker() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            settings_path,
+            "[permissions]\ndeny = [\"app.csv.read_range\"]\n",
+        )
+        .unwrap();
+        let app = test_app(ws.path());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        tool_dispatch::register(
+            9206,
+            "csv".to_string(),
+            vec![crate::app_protocol::AiTool {
+                name: "csv.read_range".to_string(),
+                description: "read cells".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+                timeout_ms: None,
+                read_only: true,
+            }],
+            AppEventSender { tx },
+            ws.path().to_path_buf(),
+        );
+
+        let visible: Vec<String> = app
+            .gated_dispatcher()
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+
+        assert!(!visible.contains(&"csv.read_range".to_string()));
+        tool_dispatch::unregister(9206);
+    }
+
+    #[test]
+    fn plan_posture_hides_mutating_connector_despite_allow_grant_but_keeps_reads() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(settings_path, "[permissions]\ndefault_posture = \"plan\"\n").unwrap();
+        let mut app = test_app(ws.path());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        tool_dispatch::register(
+            9207,
+            "csv".to_string(),
+            vec![
+                crate::app_protocol::AiTool {
+                    name: "csv.read_range".to_string(),
+                    description: "read cells".to_string(),
+                    input_schema: serde_json::json!({"type": "object"}),
+                    timeout_ms: None,
+                    read_only: true,
+                },
+                crate::app_protocol::AiTool {
+                    name: "csv.write_cell".to_string(),
+                    description: "write a cell".to_string(),
+                    input_schema: serde_json::json!({"type": "object"}),
+                    timeout_ms: None,
+                    read_only: false,
+                },
+            ],
+            AppEventSender { tx },
+            ws.path().to_path_buf(),
+        );
+        seed_grant(&mut app, "app.csv.write_cell", Decision::Allow);
+
+        let visible: HashSet<String> = app
+            .gated_dispatcher()
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+
+        assert!(visible.contains("csv.read_range"));
+        assert!(!visible.contains("csv.write_cell"));
+        tool_dispatch::unregister(9207);
+    }
+
+    #[test]
     fn apps_command_lists_running_app_connectors() {
         let ws = tempfile::tempdir().unwrap();
         let mut app = test_app(ws.path());
@@ -1628,7 +1843,13 @@ mod tests {
                 read_only: false,
             })
             .collect();
-        tool_dispatch::register(pane_id, "test-app".to_string(), tools, AppEventSender { tx }, ws);
+        tool_dispatch::register(
+            pane_id,
+            "test-app".to_string(),
+            tools,
+            AppEventSender { tx },
+            ws,
+        );
         std::thread::spawn(move || {
             while let Ok(item) = rx.recv() {
                 let crate::process_app::StdinItem::Event(json) = item else {
@@ -2419,6 +2640,89 @@ mod tests {
     }
 
     #[test]
+    fn resolved_settings_deny_blocks_event_subscription() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            settings_path,
+            "[permissions]\ndeny = [\"chess::move.played\"]\n",
+        )
+        .unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_app_with_timeline(ws.path(), timeline.clone());
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+
+        app.handle_host_call(
+            HOST_TOOL_SUBSCRIBE,
+            r#"{"app": "chess", "event": "move.played"}"#,
+            tx,
+        );
+
+        let result = rx.try_recv().expect("settings deny replies synchronously");
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("permission_denied"));
+        assert!(app.live_subs.is_empty());
+        assert!(timeline.lock().unwrap().subscriptions().is_empty());
+    }
+
+    #[test]
+    fn plan_posture_allows_read_only_event_subscription_when_rule_allows() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            settings_path,
+            "[permissions]\ndefault_posture = \"plan\"\nallow = [\"chess::move.played\"]\n",
+        )
+        .unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_app_with_timeline(ws.path(), timeline.clone());
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+
+        app.handle_host_call(
+            HOST_TOOL_SUBSCRIBE,
+            r#"{"app": "chess", "event": "move.played"}"#,
+            tx,
+        );
+
+        let result = rx
+            .try_recv()
+            .expect("an allowed subscription replies synchronously");
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(app.live_subs.len(), 1);
+        assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
+    }
+
+    #[test]
+    fn tools_view_reports_resolved_event_stream_decision() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            settings_path,
+            "[permissions]\ndeny = [\"chess::move.played\"]\n",
+        )
+        .unwrap();
+        let mut app = test_app_with_timeline(ws.path(), chess_timeline());
+
+        app.model.composer = "/tools".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+
+        assert!(app
+            .model
+            .turns
+            .last()
+            .unwrap()
+            .text
+            .contains("chess::move.played — deny"));
+    }
+
+    #[test]
     fn host_unsubscribe_removes_live_subscription() {
         let ws = tempfile::tempdir().unwrap();
         let timeline = chess_timeline();
@@ -2473,5 +2777,171 @@ mod tests {
         app.execute_effects(effects);
         wait_for_turn(&mut app);
         assert_eq!(app.model.turns.last().unwrap().role, TurnRole::Error);
+    }
+
+    #[test]
+    fn model_command_changes_session_scope_without_writing_settings_files() {
+        let ws = tempfile::tempdir().unwrap();
+        let user_path = ws.path().join("agents/settings.toml");
+        let workspace_agents = ws
+            .path()
+            .join(crate::config::workspace_channel_dir())
+            .join("agents");
+        let workspace_path = workspace_agents.join("settings.toml");
+        let local_path = workspace_agents.join("settings.local.toml");
+        let mut app = test_app(ws.path());
+
+        app.model.composer = "/model high".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+
+        assert_eq!(app.session_overrides.model_tier, Some(ModelTier::High));
+        assert_eq!(app.settings.model.tier.value, ModelTier::High);
+        assert_eq!(
+            app.settings.model.tier.source.scope,
+            settings::SettingsScope::Session
+        );
+        assert!(app
+            .model
+            .turns
+            .last()
+            .unwrap()
+            .text
+            .contains("this session"));
+        assert!(!user_path.is_file());
+        assert!(!workspace_path.is_file());
+        assert!(!local_path.is_file());
+    }
+
+    #[test]
+    fn settings_load_errors_do_not_persist_as_conversation_turns() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(&settings_path, "unknown = true\n").unwrap();
+
+        let app = test_app(ws.path());
+        assert_eq!(app.settings_errors.len(), 1);
+        assert!(app.model.turns.is_empty());
+        drop(app);
+
+        std::fs::write(&settings_path, "[model]\ntier = \"low\"\n").unwrap();
+        let reopened = test_app(ws.path());
+        assert!(reopened.settings_errors.is_empty());
+        assert!(reopened.model.turns.is_empty());
+    }
+
+    #[test]
+    fn model_without_args_shows_the_resolved_tier_and_source() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(&settings_path, "[model]\ntier = \"low\"\n").unwrap();
+        let mut app = test_app(ws.path());
+
+        app.model.composer = "/model".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+
+        let output = &app.model.turns.last().unwrap().text;
+        assert!(output.contains("`low`") && output.contains("user"));
+    }
+
+    #[test]
+    fn settings_and_config_commands_show_the_same_resolved_view() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+
+        app.model.composer = "/settings".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        let settings_output = app.model.turns.last().unwrap().text.clone();
+
+        app.model.composer = "/config".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        let config_output = &app.model.turns.last().unwrap().text;
+
+        assert_eq!(config_output, &settings_output);
+    }
+
+    #[test]
+    fn settings_command_shows_tools_memory_and_hooks_with_sources() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings_path,
+            "[tools]\nenabled = [\"host.panes.read\"]\n\
+             [memory]\nenabled = true\n\
+             [hooks]\nenabled = [\"turn.finished\"]\n",
+        )
+        .unwrap();
+        let mut app = test_app(ws.path());
+
+        app.model.composer = "/settings".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+
+        let output = &app.model.turns.last().unwrap().text;
+        assert!(output.contains("Enabled tools: `host.panes.read` (user"));
+        assert!(output.contains("Memory: enabled (user"));
+        assert!(output.contains("Enabled hooks: `turn.finished` (user"));
+    }
+
+    #[test]
+    fn invalid_settings_toml_is_visible_without_preventing_startup() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(&settings_path, "[model\ntier = nope").unwrap();
+
+        let mut app = test_app(ws.path());
+        assert_eq!(app.settings_errors.len(), 1);
+
+        app.model.composer = "/settings".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert!(app
+            .model
+            .turns
+            .last()
+            .unwrap()
+            .text
+            .contains(settings_path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn reopening_with_the_same_settings_error_keeps_one_active_error() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(&settings_path, "[model\ntier = nope").unwrap();
+
+        drop(test_app(ws.path()));
+        let reopened = test_app(ws.path());
+        assert_eq!(reopened.settings_errors.len(), 1);
+        assert!(reopened.model.turns.is_empty());
+    }
+
+    #[test]
+    fn settings_read_error_is_visible_without_preventing_startup() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(&settings_path).unwrap();
+
+        let mut app = test_app(ws.path());
+        assert_eq!(app.settings_errors.len(), 1);
+
+        app.model.composer = "/settings".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert!(app
+            .model
+            .turns
+            .last()
+            .unwrap()
+            .text
+            .contains(settings_path.to_string_lossy().as_ref()));
     }
 }

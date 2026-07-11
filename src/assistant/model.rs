@@ -5,6 +5,7 @@
 //! shell (`AssistantApp`) executes them.
 
 use super::commands::{self, ParsedCommand};
+use crate::app_protocol::ModelTier;
 
 /// Who produced a transcript row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -117,6 +118,12 @@ pub enum AssistantEffect {
     RevokeGrant { target_id: String },
     /// `/audit`: show recent audit events.
     ShowAudit,
+    /// `/settings` and `/config`: show the resolved Assistant settings.
+    ShowSettings,
+    /// `/model`: show the resolved model tier and its source.
+    ShowModelSetting,
+    /// `/model low|medium|high`: override the model tier for this session.
+    SetSessionModel(ModelTier),
     /// `/thoughts`: persist the flipped show-thoughts preference.
     PersistShowThoughts(bool),
     /// `/clear` or `/new` ran while a turn was in flight: unblock any worker
@@ -416,6 +423,31 @@ impl AssistantModel {
             "apps" => vec![AssistantEffect::ListApps],
             "permissions" => vec![AssistantEffect::ListPermissions],
             "audit" => vec![AssistantEffect::ShowAudit],
+            "settings" | "config" => vec![AssistantEffect::ShowSettings],
+            "model" if cmd.args.is_empty() => vec![AssistantEffect::ShowModelSetting],
+            "model" => {
+                let tier = match cmd.args.as_str() {
+                    "low" => Some(ModelTier::Low),
+                    "medium" => Some(ModelTier::Medium),
+                    "high" => Some(ModelTier::High),
+                    _ => None,
+                };
+                match tier {
+                    Some(tier) => vec![AssistantEffect::SetSessionModel(tier)],
+                    None => {
+                        self.turns.push(Turn::now(
+                            TurnRole::Error,
+                            format!(
+                                "Invalid model tier '{}'. Expected low | medium | high.",
+                                cmd.args
+                            ),
+                        ));
+                        vec![AssistantEffect::SessionWrite {
+                            conversation_id: self.conversation_id.clone(),
+                        }]
+                    }
+                }
+            }
             "revoke" => {
                 if cmd.args.is_empty() {
                     self.turns.push(Turn::now(
@@ -857,6 +889,62 @@ mod tests {
         let effects = submitted(&mut m, "/revoke");
         assert!(matches!(&effects[0], AssistantEffect::SessionWrite { .. }));
         assert_eq!(m.turns.last().unwrap().role, TurnRole::Error);
+    }
+
+    #[test]
+    fn settings_and_config_commands_are_equivalent() {
+        let mut settings_model = AssistantModel::fresh();
+        let mut config_model = AssistantModel::fresh();
+
+        let settings_effects = submitted(&mut settings_model, "/settings");
+        let config_effects = submitted(&mut config_model, "/config");
+
+        assert_eq!(settings_effects, config_effects);
+        assert_eq!(settings_effects, vec![AssistantEffect::ShowSettings]);
+    }
+
+    #[test]
+    fn model_without_args_requests_the_resolved_setting() {
+        let mut model = AssistantModel::fresh();
+
+        let effects = submitted(&mut model, "/model");
+
+        assert_eq!(effects, vec![AssistantEffect::ShowModelSetting]);
+    }
+
+    #[test]
+    fn model_with_valid_tier_requests_a_session_override() {
+        let mut model = AssistantModel::fresh();
+
+        let effects = submitted(&mut model, "/model high");
+
+        assert_eq!(
+            effects,
+            vec![AssistantEffect::SetSessionModel(
+                crate::app_protocol::ModelTier::High
+            )]
+        );
+    }
+
+    #[test]
+    fn model_rejects_invalid_tier_without_requesting_a_mutation() {
+        let mut model = AssistantModel::fresh();
+
+        let effects = submitted(&mut model, "/model turbo");
+
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, AssistantEffect::SetSessionModel(_))),
+            "invalid tier must not request a settings mutation: {effects:?}"
+        );
+        assert_eq!(model.turns.last().unwrap().role, TurnRole::Error);
+        assert!(model
+            .turns
+            .last()
+            .unwrap()
+            .text
+            .contains("low | medium | high"));
     }
 
     #[test]
