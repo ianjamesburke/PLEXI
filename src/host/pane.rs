@@ -6,6 +6,247 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
+pub(crate) const SEMANTIC_PANE_STATE_SCHEMA_VERSION: u32 = 1;
+
+/// Runtime-neutral, read-only representation returned by `plexi pane state`.
+#[derive(Clone, Debug, serde::Serialize)]
+pub(crate) struct SemanticPaneState {
+    pub schema_version: u32,
+    pub runtime_kind: String,
+    pub roots: Vec<String>,
+    pub nodes: Vec<SemanticPaneNode>,
+}
+
+impl Default for SemanticPaneState {
+    fn default() -> Self {
+        Self::empty("builtin")
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub(crate) struct SemanticPaneNode {
+    pub id: String,
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bounds: Option<[f64; 4]>,
+}
+
+impl SemanticPaneState {
+    pub(crate) fn empty(runtime_kind: &str) -> Self {
+        Self {
+            schema_version: SEMANTIC_PANE_STATE_SCHEMA_VERSION,
+            runtime_kind: runtime_kind.to_string(),
+            roots: Vec::new(),
+            nodes: Vec::new(),
+        }
+    }
+
+    pub(crate) fn from_process_frame(frame: &serde_json::Value) -> Self {
+        let mut nodes = Vec::new();
+        let roots = collect_process_semantics(frame, "frame", &mut nodes);
+        Self {
+            schema_version: SEMANTIC_PANE_STATE_SCHEMA_VERSION,
+            runtime_kind: "process".to_string(),
+            roots,
+            nodes,
+        }
+    }
+
+    pub(crate) fn from_accesskit(
+        nodes: &egui::IdMap<egui::accesskit::Node>,
+        pane_rect: egui::Rect,
+    ) -> Self {
+        let mut nodes: Vec<SemanticPaneNode> = nodes
+            .iter()
+            .filter_map(|(id, node)| {
+                let bounds = node.bounds()?;
+                let center = egui::pos2(
+                    ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                    ((bounds.y0 + bounds.y1) / 2.0) as f32,
+                );
+                pane_rect.contains(center).then(|| SemanticPaneNode {
+                    id: id.value().to_string(),
+                    role: format!("{:?}", node.role()).to_ascii_lowercase(),
+                    label: node.label().map(str::to_string),
+                    value: node.value().map(str::to_string),
+                    children: node.children().iter().map(|id| id.0.to_string()).collect(),
+                    bounds: Some([bounds.x0, bounds.y0, bounds.x1, bounds.y1]),
+                })
+            })
+            .collect();
+        let retained_ids: std::collections::HashSet<String> =
+            nodes.iter().map(|node| node.id.clone()).collect();
+        for node in &mut nodes {
+            node.children.retain(|child| retained_ids.contains(child));
+        }
+        let child_ids: std::collections::HashSet<&str> = nodes
+            .iter()
+            .flat_map(|node| node.children.iter().map(String::as_str))
+            .collect();
+        let roots = nodes
+            .iter()
+            .filter(|node| !child_ids.contains(node.id.as_str()))
+            .map(|node| node.id.clone())
+            .collect();
+        Self {
+            schema_version: SEMANTIC_PANE_STATE_SCHEMA_VERSION,
+            runtime_kind: "builtin".to_string(),
+            roots,
+            nodes,
+        }
+    }
+
+    pub(crate) fn from_wasm_tree(tree: &crate::host::wasm_app::UiTree) -> Self {
+        use crate::host::wasm_app::UiNodeData;
+
+        let nodes = tree
+            .nodes
+            .iter()
+            .map(|node| {
+                let (role, label, value, children) = match &node.data {
+                    UiNodeData::Empty => ("empty", None, None, Vec::new()),
+                    UiNodeData::Text(text) => {
+                        ("text", Some(text.text.clone()), None, Vec::new())
+                    }
+                    UiNodeData::Button(button) => {
+                        ("button", Some(button.label.clone()), None, Vec::new())
+                    }
+                    UiNodeData::TextInput(input) => (
+                        "text_input",
+                        Some(input.placeholder.clone()),
+                        (!input.password).then(|| input.value.clone()),
+                        Vec::new(),
+                    ),
+                    UiNodeData::Row(row) => (
+                        "row",
+                        None,
+                        None,
+                        row.children.iter().map(u32::to_string).collect(),
+                    ),
+                    UiNodeData::Column(column) => (
+                        "column",
+                        None,
+                        None,
+                        column.children.iter().map(u32::to_string).collect(),
+                    ),
+                    UiNodeData::ProgressBar(progress) => (
+                        "progress_bar",
+                        progress.label.clone(),
+                        Some(progress.value.to_string()),
+                        Vec::new(),
+                    ),
+                    UiNodeData::Badge(badge) => {
+                        ("badge", Some(badge.text.clone()), None, Vec::new())
+                    }
+                    UiNodeData::ListView(list) => (
+                        "list_view",
+                        None,
+                        list.selected.map(|selected| selected.to_string()),
+                        list.items.iter().map(u32::to_string).collect(),
+                    ),
+                    UiNodeData::Scroll(scroll) => {
+                        ("scroll", None, None, vec![scroll.child.to_string()])
+                    }
+                    UiNodeData::Padding(padding) => {
+                        ("padding", None, None, vec![padding.child.to_string()])
+                    }
+                    UiNodeData::Divider => ("divider", None, None, Vec::new()),
+                    UiNodeData::Space(space) => {
+                        ("space", None, Some(space.to_string()), Vec::new())
+                    }
+                    UiNodeData::Surface(surface) => (
+                        "surface",
+                        None,
+                        Some(format!("{}x{}", surface.width, surface.height)),
+                        Vec::new(),
+                    ),
+                };
+                SemanticPaneNode {
+                    id: node.id.to_string(),
+                    role: role.to_string(),
+                    label,
+                    value,
+                    children,
+                    bounds: None,
+                }
+            })
+            .collect();
+        Self {
+            schema_version: SEMANTIC_PANE_STATE_SCHEMA_VERSION,
+            runtime_kind: "wasm".to_string(),
+            roots: vec![tree.root.to_string()],
+            nodes,
+        }
+    }
+}
+
+fn collect_process_semantics(
+    value: &serde_json::Value,
+    path: &str,
+    nodes: &mut Vec<SemanticPaneNode>,
+) -> Vec<String> {
+    match value {
+        serde_json::Value::Array(values) => values
+            .iter()
+            .enumerate()
+            .flat_map(|(index, value)| {
+                collect_process_semantics(value, &format!("{path}.{index}"), nodes)
+            })
+            .collect(),
+        serde_json::Value::Object(object) => {
+            let children: Vec<String> = object
+                .iter()
+                .flat_map(|(key, value)| {
+                    collect_process_semantics(value, &format!("{path}.{key}"), nodes)
+                })
+                .collect();
+            let Some(role) = object.get("type").and_then(serde_json::Value::as_str) else {
+                return children;
+            };
+            let label = object
+                .get("text")
+                .or_else(|| object.get("label"))
+                .or_else(|| object.get("title"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let value = object.get("value").and_then(|value| match value {
+                serde_json::Value::String(value) => Some(value.clone()),
+                serde_json::Value::Number(value) => Some(value.to_string()),
+                _ => None,
+            });
+            nodes.push(SemanticPaneNode {
+                id: path.to_string(),
+                role: role.to_string(),
+                label,
+                value,
+                children,
+                bounds: process_command_bounds(object),
+            });
+            vec![path.to_string()]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn process_command_bounds(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Option<[f64; 4]> {
+    let x = object.get("x")?.as_f64()?;
+    let y = object.get("y")?.as_f64()?;
+    let width = object.get("w").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+    let height = object
+        .get("h")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    Some([x, y, x + width, y + height])
+}
+
 // ---------------------------------------------------------------------------
 // Pane ADT (spec §2) — Terminal | App | Portal.
 // Issue #1374 added the Portal variant (formerly SubContext).
@@ -451,6 +692,14 @@ impl AppRuntime {
             AppRuntime::Wasm(_) => None,
         }
     }
+
+    pub(crate) fn runtime_kind(&self) -> &'static str {
+        match self {
+            AppRuntime::Process(_) => "process",
+            AppRuntime::Builtin(_) => "builtin",
+            AppRuntime::Wasm(_) => "wasm",
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -476,4 +725,92 @@ pub struct AppPane {
     /// activity for the activity dot. `None` = fall back to agent()/host-observed.
     pub pip_status: Option<crate::app_protocol::PipStatus>,
     pub slots: HashMap<String, PathBuf>,
+    /// Last semantics committed by the production render path for native apps.
+    pub(crate) semantic_state: SemanticPaneState,
+}
+
+impl AppPane {
+    pub(crate) fn semantic_state(&self) -> SemanticPaneState {
+        match &self.runtime {
+            AppRuntime::Process(_) => self
+                .runtime
+                .frame_json()
+                .as_ref()
+                .map(SemanticPaneState::from_process_frame)
+                .unwrap_or_else(|| SemanticPaneState::empty("process")),
+            AppRuntime::Builtin(_) => self.semantic_state.clone(),
+            AppRuntime::Wasm(app) => app.semantic_state().clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod semantic_state_tests {
+    use super::*;
+
+    #[test]
+    fn process_frame_normalization_preserves_text_and_runtime_kind() {
+        let frame = serde_json::json!([
+            {"type": "text", "text": "process label", "x": 1.0, "y": 2.0},
+            {"type": "rect", "hit_region": "open-settings"}
+        ]);
+
+        let state = SemanticPaneState::from_process_frame(&frame);
+
+        assert_eq!(state.schema_version, SEMANTIC_PANE_STATE_SCHEMA_VERSION);
+        assert_eq!(state.runtime_kind, "process");
+        assert!(state.nodes.iter().any(|node| {
+            node.role == "text" && node.label.as_deref() == Some("process label")
+        }));
+    }
+
+    #[test]
+    fn default_builtin_state_has_valid_versioned_metadata() {
+        let state = SemanticPaneState::default();
+
+        assert_eq!(state.schema_version, SEMANTIC_PANE_STATE_SCHEMA_VERSION);
+        assert_eq!(state.runtime_kind, "builtin");
+    }
+
+    #[test]
+    fn accesskit_normalization_removes_children_outside_pane() {
+        let parent_id = egui::Id::new("parent");
+        let inside_id = egui::Id::new("inside");
+        let outside_id = egui::Id::new("outside");
+        let mut parent = egui::accesskit::Node::new(egui::accesskit::Role::Group);
+        parent.set_bounds(egui::accesskit::Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 100.0,
+            y1: 100.0,
+        });
+        parent.push_child(inside_id.value().into());
+        parent.push_child(outside_id.value().into());
+        let node_at = |x0, x1| {
+            let mut node = egui::accesskit::Node::new(egui::accesskit::Role::Label);
+            node.set_bounds(egui::accesskit::Rect {
+                x0,
+                y0: 10.0,
+                x1,
+                y1: 20.0,
+            });
+            node
+        };
+        let mut nodes = egui::IdMap::default();
+        nodes.insert(parent_id, parent);
+        nodes.insert(inside_id, node_at(10.0, 20.0));
+        nodes.insert(outside_id, node_at(200.0, 220.0));
+
+        let state = SemanticPaneState::from_accesskit(
+            &nodes,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(100.0, 100.0)),
+        );
+        let parent = state
+            .nodes
+            .iter()
+            .find(|node| node.id == parent_id.value().to_string())
+            .expect("parent retained");
+
+        assert_eq!(parent.children, vec![inside_id.value().to_string()]);
+    }
 }

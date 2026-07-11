@@ -2005,6 +2005,7 @@ mod restore_overlay_replacement_tests {
             hidden: false,
             agent: None,
             slots: HashMap::new(),
+            semantic_state: Default::default(),
         }))
     }
 
@@ -2066,6 +2067,7 @@ mod move_to_adjacent_window_tests {
             hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
         }))
     }
 
@@ -2203,6 +2205,7 @@ mod pop_pane_to_new_window_tests {
             hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
         }))
     }
 
@@ -2388,6 +2391,7 @@ mod move_to_row_boundary_tests {
             hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
         }))
     }
 
@@ -2597,6 +2601,7 @@ mod context_root_cwd_tests {
             hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
         };
         let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
         app.windows[0].tree.root = Some(tile);
@@ -2727,6 +2732,7 @@ mod navigate_boundary_tests {
             hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
         }))
     }
 

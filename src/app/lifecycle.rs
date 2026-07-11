@@ -1410,12 +1410,20 @@ impl PlexiApp {
                                 .runtime
                                 .frame_json()
                                 .unwrap_or(serde_json::Value::Array(vec![]));
+                            let semantic = app_pane.semantic_state();
+                            log::info!(
+                                "pane_ipc: get_pane_state: pane_id={pane_id} runtime={} schema_version={} node_count={}",
+                                app_pane.runtime.runtime_kind(),
+                                semantic.schema_version,
+                                semantic.nodes.len(),
+                            );
                             serde_json::json!({
                                 "pane_id": pane_id,
                                 "type": "app",
                                 "title": app_pane.name,
                                 "manifest_id": app_pane.manifest_id,
                                 "frame": frame,
+                                "semantic": semantic,
                             })
                             .to_string()
                         } else if let Some(term) = pane.as_terminal() {

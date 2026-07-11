@@ -1719,6 +1719,7 @@ mod tests {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
             }))
         };
 

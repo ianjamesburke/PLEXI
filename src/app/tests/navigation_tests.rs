@@ -160,6 +160,7 @@ fn send_to_pane_searches_all_windows() {
             hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
         }
     };
     win1.panes.insert(
@@ -235,6 +236,7 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
         hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
+        semantic_state: Default::default(),
     }));
     h.app.windows[0].panes.insert(orphan_id, orphan_pane);
     assert!(
@@ -397,6 +399,7 @@ fn overlay_panes_preserve_replaced_pane_agent_state() {
             hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
         })),
     );
 
@@ -907,6 +910,7 @@ fn on_launch_focus_existing_reveals_instance_behind_overlay() {
             hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
         }))
     };
     h.app.windows[0].panes.insert(slot, overlay_pane);

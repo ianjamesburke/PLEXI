@@ -6,6 +6,10 @@ or `/merge-pr` trims the orientation file; do not rewrite old entries.
 
 ---
 
+## 2026-07-11: Assistant identity and shared scene verbs landed
+
+`0226` (#2375) added scoped Assistant settings. `0362` (#2376) replaced feature-specific scene actions with generic open, text, key, context, symbolic-handle, assertion, and report primitives. `0225` (#2377) added the file-backed agent registry, model-tier routing, `/agent`, and `/effort`; validation also made agent and effort choices survive reopen, rejected partial agent-definition overwrites, and kept PR installs compatible with Rust 1.97's new float-literal warning.
+
 ## 2026-07-10 — Explorer native media viewers landed
 
 `0349` (#2366) completed the explorer-as-window-manager loop: image, video, and audio files opened from File Explorer now land in native Rust viewer panes (`image-viewer` fit/zoom/pan, `video-player` and `audio-player` play/pause/seek) instead of bouncing to the macOS opener, and closing a viewer returns focus to the explorer with its selection intact. The branch was 15 commits stale (predated the money-path merge run); rebased cleanly onto alpha with one expected touch-point in `pane_ops/create.rs` (shared with `0245`'s bug bundle) resolving without conflict, re-verified 1527/1527 `cargo test --bin plexi` green post-rebase. Manually exercised on `plexi-pr-2366`: log trace confirmed correct `launch_app_by_id_with_layout` routing for all three viewer types, `close_tile` returning focus to the file_browser tile on both audio closes, and unsupported types (`.json`, `.pdf`) still falling through to the OS opener. This was the last tracked P1 gap in the Epoch 1 (free v1) finish line.

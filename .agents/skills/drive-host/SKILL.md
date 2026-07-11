@@ -77,12 +77,12 @@ env -u PLEXI_PANE_ID ... PLEXI_SOCKET=$HOME/.plexi-pr-<N>/notify.sock PLEXI_CHAN
 Ground truth comes from the host, never from what you expect to have happened:
 
 ```bash
-plexi-pr-<N> pane state <pane-id>     # app panes: JSON frame of the L1 UiNode tree; terminals: status
+plexi-pr-<N> pane state <pane-id>     # app panes: normalized semantic tree; terminals: status
 plexi-pr-<N> pane capture <pane-id> --lines 80
 tail -100 ~/.plexi-pr-<N>/plexi.log
 ```
 
-`pane state` is the L1 render tree for app panes — assert against it, not against a screenshot you eyeballed. `pane capture` returns terminal output as a JSON array; use `--from-cursor <n>` to read only lines written since a prior capture. The channel log (`~/.plexi-pr-<N>/plexi.log`) is the source for anything the drive commands can't surface — every feature ships an `info` trace, so grep it for the behavior you seeded.
+`pane state` exposes the last committed normalized semantic tree for process, native builtin, and WASM app panes — assert against `semantic.nodes`, not against a screenshot you eyeballed. Process panes also retain their compatible `frame` field. `pane capture` returns terminal output as a JSON array; use `--from-cursor <n>` to read only lines written since a prior capture. The channel log (`~/.plexi-pr-<N>/plexi.log`) is the source for anything the drive commands can't surface — every feature ships an `info` trace, so grep it for the behavior you seeded.
 
 ### 4. Teardown
 

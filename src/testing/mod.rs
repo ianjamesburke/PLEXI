@@ -132,6 +132,7 @@ impl HostHarness {
             hidden: false,
             agent: None,
             slots: HashMap::new(),
+            semantic_state: Default::default(),
         };
 
         let win = &mut self.app.windows[0];

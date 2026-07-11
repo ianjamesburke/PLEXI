@@ -1086,6 +1086,8 @@ pub struct LiveWasmPane {
     /// Concatenated text of the last rendered view tree. Lets the headless
     /// scene runner assert on rendered content without re-entering the guest.
     last_text: String,
+    /// Runtime-neutral semantics retained from the last committed guest tree.
+    semantic_state: crate::host::pane::SemanticPaneState,
     /// egui texture id of the guest surface, registered once into the host's
     /// shared renderer and sampled live (zero-copy). `None` until first present
     /// or when no shared device exists (headless).
@@ -1124,6 +1126,7 @@ impl LiveWasmPane {
             pending_init: Some(snapshot),
             error: None,
             last_text: String::new(),
+            semantic_state: crate::host::pane::SemanticPaneState::empty("wasm"),
             surface_id: None,
             surface_dims: None,
             fallback_tex: None,
@@ -1168,6 +1171,10 @@ impl LiveWasmPane {
         self.title
             .clone()
             .unwrap_or_else(|| self.spawn_name.clone())
+    }
+
+    pub(crate) fn semantic_state(&self) -> &crate::host::pane::SemanticPaneState {
+        &self.semantic_state
     }
 
     pub fn has_pending_capability_prompt(&self) -> bool {
@@ -1309,6 +1316,7 @@ impl LiveWasmPane {
             }
         };
         self.last_text = collect_tree_text(&tree);
+        self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
         // Composite the guest's GPU render zero-copy: register its surface
         // texture into the host's shared egui renderer once and sample it live.
         // The guest re-renders into the same texture every frame, so the
@@ -1364,7 +1372,11 @@ impl LiveWasmPane {
         match self.inner.apply_render_result(result, now) {
             Ok(true) => {
                 match self.inner.view() {
-                    Ok(t) => self.last_text = collect_tree_text(&t),
+                    Ok(t) => {
+                        self.last_text = collect_tree_text(&t);
+                        self.semantic_state =
+                            crate::host::pane::SemanticPaneState::from_wasm_tree(&t);
+                    }
                     Err(e) => {
                         self.fail("view after input", e);
                         return;
@@ -2204,6 +2216,21 @@ mod tests {
 
         let text = tree_text(&harness.state_mut().view()?);
         assert!(text.contains("Count: 1"), "guest view after click:\n{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn wasm_view_normalizes_committed_semantics() -> wasmtime::Result<()> {
+        let mut p = counter_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
+
+        let state = crate::host::pane::SemanticPaneState::from_wasm_tree(&p.view()?);
+
+        assert_eq!(state.runtime_kind, "wasm");
+        assert!(state
+            .nodes
+            .iter()
+            .any(|node| node.label.as_deref() == Some("Increment")));
         Ok(())
     }
 

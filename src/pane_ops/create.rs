@@ -123,6 +123,7 @@ pub(crate) fn restore_builtin_app_pane(
         hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
+        semantic_state: Default::default(),
     })))
 }
 
@@ -163,6 +164,7 @@ pub(crate) fn restore_assistant_pane(
         hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
+        semantic_state: Default::default(),
     }))
 }
 
@@ -283,6 +285,7 @@ impl PlexiApp {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
             }))
         };
 
@@ -428,6 +431,7 @@ impl PlexiApp {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
             })),
         );
         if self.windows[active].focused_pane.is_none() {
@@ -609,6 +613,7 @@ impl PlexiApp {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
             })),
         );
         crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
@@ -921,6 +926,7 @@ impl PlexiApp {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
             }))
         };
 
