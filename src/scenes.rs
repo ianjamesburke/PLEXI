@@ -24,6 +24,7 @@
 //! Assertions are structured keys (typed matchers), never expression strings.
 //! New verbs require a scene that needs them.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -33,7 +34,7 @@ use crate::host::pane::{AppRuntime, Pane};
 use crate::spatial::tiling::PaneId;
 use crate::ui_tests::PlexiUiHarness;
 
-pub const SCENE_REPORT_SCHEMA_VERSION: u32 = 1;
+pub const SCENE_REPORT_SCHEMA_VERSION: u32 = 2;
 
 // ─── Scene file format ───────────────────────────────────────────────────────
 
@@ -62,59 +63,122 @@ fn default_true() -> bool {
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 pub enum Step {
-    /// Launch a real PGAP app process from a repo-relative app dir.
-    /// `args` are forwarded in `PlexiEvent::Init` and surface as `ctx.args` —
-    /// pass JSON state for deterministic scenes.
-    OpenApp {
-        open_app: String,
-        #[serde(default)]
-        args: Vec<String>,
-    },
-    /// Open the built-in file browser at a repo-relative (or absolute) dir.
-    OpenFileBrowser { open_file_browser: String },
-    /// Launch a sandboxed WASM component app from a repo-relative `.wasm` file.
-    /// `args` are forwarded to the guest's `init` as its argv.
-    OpenWasm {
-        open_wasm: String,
-        #[serde(default)]
-        args: Vec<String>,
-    },
-    /// Press a key combo, e.g. "cmd+b", "enter", "ctrl+shift+p".
-    Key { key: String },
+    /// Open one process, WASM, or builtin app and bind its pane id to a handle.
+    Open { open: OpenSpec },
+    /// Insert text through egui's normal text-input event path.
+    Text { text: TextSpec },
+    /// Press a key combo against a pane handle or the whole host.
+    Key { key: KeySpec },
     /// Toggle the host sidebar.
     Sidebar { sidebar: bool },
     /// Switch to the context at this router index.
     SwitchContext { switch_context: usize },
     /// Push the focused pane into a new subcontext with this name.
     PushToSubcontext { push_to_subcontext: String },
-    /// Block until the last-opened app commits its first real frame.
+    /// Block until a process app handle commits its first real frame.
     WaitAppFrame { wait_app_frame: WaitSpec },
     /// Advance N harness frames.
     RunSteps { run_steps: usize },
     /// Structured assertions — every present key must match.
     Assert { assert: AssertSpec },
+    /// Assert that the headless host accessibility tree contains an exact label.
+    AssertLabel { assert_label: AssertLabelSpec },
     /// Save a headless screenshot to `<out_dir>/<name>`.
     Shot { shot: String },
+}
+
+/// One generic app-opening request. `kind` determines which production launch
+/// path runs; `as` binds the resulting pane id for later steps.
+#[derive(Deserialize, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OpenSpec {
+    /// Launch a real PGAP process from an app directory.
+    Process {
+        path: String,
+        #[serde(rename = "as")]
+        handle: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    /// Launch a reviewed raw WASM component.
+    Wasm {
+        path: String,
+        #[serde(rename = "as")]
+        handle: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    /// Open a compiled-in app by its production builtin id.
+    Builtin {
+        id: String,
+        #[serde(rename = "as")]
+        handle: String,
+        cwd: Option<String>,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+}
+
+impl OpenSpec {
+    fn handle(&self) -> &str {
+        match self {
+            Self::Process { handle, .. }
+            | Self::Wasm { handle, .. }
+            | Self::Builtin { handle, .. } => handle,
+        }
+    }
+
+    fn target_kind(&self) -> &'static str {
+        match self {
+            Self::Process { .. } => "process",
+            Self::Wasm { .. } => "wasm",
+            Self::Builtin { .. } => "builtin",
+        }
+    }
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TextSpec {
+    pub target: String,
+    pub value: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct KeySpec {
+    pub target: String,
+    pub value: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct AssertLabelSpec {
+    pub target: String,
+    pub label: String,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct WaitSpec {
+    pub target: String,
     pub timeout_s: f32,
 }
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct AssertSpec {
+    /// Pane handle used by app lifecycle and tree assertions.
+    pub target: Option<String>,
     pub pane_count: Option<usize>,
     pub window_count: Option<usize>,
     pub context_count: Option<usize>,
     /// Portal panes across all windows.
     pub portal_count: Option<usize>,
     pub sidebar: Option<bool>,
-    /// Lifecycle of the last-opened app pane, lowercase (e.g. "running").
+    /// Lifecycle of the target app pane, lowercase (e.g. "running").
     pub lifecycle: Option<String>,
-    /// Substring match against the last-opened app's serialized L1 tree.
+    /// Substring match against the target app's serialized L1 tree.
     pub tree_contains: Option<String>,
 }
 
@@ -127,6 +191,8 @@ pub struct SceneReport {
     pub passed: bool,
     pub steps: Vec<StepResult>,
     pub shots: Vec<String>,
+    /// Symbolic pane handles resolved during this run.
+    pub handles: BTreeMap<String, PaneId>,
     pub host: HostState,
     /// Last-opened app pane state, when a scene opened one.
     pub app: Option<AppState>,
@@ -138,7 +204,52 @@ pub struct StepResult {
     pub step: String,
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
+    pub detail: Option<StepDetail>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<SceneError>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StepDetail {
+    Opened {
+        target_kind: String,
+        handle: String,
+        pane_id: PaneId,
+    },
+    TextInput {
+        target: String,
+        pane_id: Option<PaneId>,
+        length: usize,
+    },
+    KeyInput {
+        target: String,
+        pane_id: Option<PaneId>,
+        value: String,
+    },
+    LabelMatched {
+        target: String,
+        pane_id: Option<PaneId>,
+        label: String,
+    },
+    Message {
+        message: String,
+    },
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct SceneError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl SceneError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Serialize, Debug)]
@@ -162,9 +273,75 @@ pub struct AppState {
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputTarget {
+    Host,
+    Pane(PaneId),
+}
+
+#[derive(Default)]
+struct PaneHandles {
+    by_name: HashMap<String, PaneId>,
+}
+
+impl PaneHandles {
+    fn ensure_available(&self, handle: &str) -> Result<(), SceneError> {
+        if handle.trim().is_empty() {
+            return Err(SceneError::new(
+                "invalid_handle",
+                "open: symbolic handle cannot be empty",
+            ));
+        }
+        if handle == "host" {
+            return Err(SceneError::new(
+                "reserved_handle",
+                "open: 'host' is reserved for whole-host input",
+            ));
+        }
+        if self.by_name.contains_key(handle) {
+            return Err(SceneError::new(
+                "duplicate_handle",
+                format!("open: symbolic handle '{handle}' is already bound"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn bind(&mut self, handle: &str, pane_id: PaneId) -> Result<(), SceneError> {
+        self.ensure_available(handle)?;
+        self.by_name.insert(handle.to_string(), pane_id);
+        Ok(())
+    }
+
+    fn resolve(&self, target: &str) -> Result<PaneId, SceneError> {
+        self.by_name.get(target).copied().ok_or_else(|| {
+            SceneError::new(
+                "missing_target",
+                format!("target '{target}' has not been opened in this scene"),
+            )
+        })
+    }
+
+    fn resolve_input(&self, target: &str) -> Result<InputTarget, SceneError> {
+        if target == "host" {
+            Ok(InputTarget::Host)
+        } else {
+            self.resolve(target).map(InputTarget::Pane)
+        }
+    }
+
+    fn report(&self) -> BTreeMap<String, PaneId> {
+        self.by_name
+            .iter()
+            .map(|(name, pane_id)| (name.clone(), *pane_id))
+            .collect()
+    }
+}
+
 pub struct SceneRunner {
     h: PlexiUiHarness,
     last_app_pane: Option<PaneId>,
+    handles: PaneHandles,
     out_dir: PathBuf,
     no_shots: bool,
 }
@@ -181,13 +358,22 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
     let raw = match std::fs::read_to_string(scene_path) {
         Ok(r) => r,
         Err(e) => {
-            return failed_report(scene_name, format!("read {}: {e}", scene_path.display()));
+            return failed_report(
+                scene_name,
+                SceneError::new("scene_read", format!("read {}: {e}", scene_path.display())),
+            );
         }
     };
     let scene: Scene = match toml::from_str(&raw) {
         Ok(s) => s,
         Err(e) => {
-            return failed_report(scene_name, format!("parse {}: {e}", scene_path.display()));
+            return failed_report(
+                scene_name,
+                SceneError::new(
+                    "scene_parse",
+                    format!("parse {}: {e}", scene_path.display()),
+                ),
+            );
         }
     };
 
@@ -198,6 +384,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
     let mut runner = SceneRunner {
         h,
         last_app_pane: None,
+        handles: PaneHandles::default(),
         out_dir: out_dir.to_path_buf(),
         no_shots,
     };
@@ -213,13 +400,15 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
                 step: label,
                 ok: true,
                 detail,
+                error: None,
             }),
             Err(e) => {
                 steps.push(StepResult {
                     index,
                     step: label,
                     ok: false,
-                    detail: Some(e),
+                    detail: None,
+                    error: Some(e),
                 });
                 passed = false;
                 break;
@@ -233,6 +422,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         passed,
         steps,
         shots,
+        handles: runner.handles.report(),
         host: runner.host_state(),
         app: runner.app_state(),
     };
@@ -251,7 +441,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
     report
 }
 
-fn failed_report(scene: String, error: String) -> SceneReport {
+fn failed_report(scene: String, error: SceneError) -> SceneReport {
     SceneReport {
         schema_version: SCENE_REPORT_SCHEMA_VERSION,
         scene,
@@ -260,9 +450,11 @@ fn failed_report(scene: String, error: String) -> SceneReport {
             index: 0,
             step: "load".to_string(),
             ok: false,
-            detail: Some(error),
+            detail: None,
+            error: Some(error),
         }],
         shots: Vec::new(),
+        handles: BTreeMap::new(),
         host: HostState {
             context_count: 0,
             window_count: 0,
@@ -276,28 +468,32 @@ fn failed_report(scene: String, error: String) -> SceneReport {
 
 fn step_label(step: &Step) -> String {
     match step {
-        Step::OpenApp { open_app, .. } => format!("open_app {open_app}"),
-        Step::OpenFileBrowser { open_file_browser } => {
-            format!("open_file_browser {open_file_browser}")
-        }
-        Step::OpenWasm { open_wasm, args } => {
-            if args.is_empty() {
-                format!("open_wasm {open_wasm}")
-            } else {
-                format!("open_wasm {open_wasm} -- {}", args.join(" "))
-            }
-        }
-        Step::Key { key } => format!("key {key}"),
+        Step::Open { open } => format!("open {} as {}", open.target_kind(), open.handle()),
+        Step::Text { text } => format!(
+            "text {} ({} chars)",
+            text.target,
+            text.value.chars().count()
+        ),
+        Step::Key { key } => format!("key {} {}", key.target, key.value),
         Step::Sidebar { sidebar } => format!("sidebar {sidebar}"),
         Step::SwitchContext { switch_context } => format!("switch_context {switch_context}"),
         Step::PushToSubcontext { push_to_subcontext } => {
             format!("push_to_subcontext {push_to_subcontext}")
         }
         Step::WaitAppFrame { wait_app_frame } => {
-            format!("wait_app_frame {}s", wait_app_frame.timeout_s)
+            format!(
+                "wait_app_frame {} {}s",
+                wait_app_frame.target, wait_app_frame.timeout_s
+            )
         }
         Step::RunSteps { run_steps } => format!("run_steps {run_steps}"),
         Step::Assert { .. } => "assert".to_string(),
+        Step::AssertLabel { assert_label } => {
+            format!(
+                "assert_label {} {:?}",
+                assert_label.target, assert_label.label
+            )
+        }
         Step::Shot { shot } => format!("shot {shot}"),
     }
 }
@@ -342,28 +538,82 @@ fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
 }
 
 impl SceneRunner {
-    fn exec(&mut self, step: &Step, shots: &mut Vec<String>) -> Result<Option<String>, String> {
+    fn exec(
+        &mut self,
+        step: &Step,
+        shots: &mut Vec<String>,
+    ) -> Result<Option<StepDetail>, SceneError> {
         match step {
-            Step::OpenApp { open_app, args } => {
-                let pane_id = self.h.open_app_at(&resolve(open_app), args)?;
+            Step::Open { open } => {
+                let handle = open.handle();
+                self.handles.ensure_available(handle)?;
+                let pane_id = match open {
+                    OpenSpec::Process { path, args, .. } => {
+                        let path = resolve(path);
+                        self.h
+                            .open_target(crate::ui_tests::HarnessOpenTarget::Process {
+                                path: &path,
+                                args,
+                            })
+                    }
+                    OpenSpec::Wasm { path, args, .. } => {
+                        let path = resolve(path);
+                        preapprove_wasm_scene_grants(&path).map_err(|message| {
+                            SceneError::new("wasm_preapproval_failed", message)
+                        })?;
+                        self.h
+                            .open_target(crate::ui_tests::HarnessOpenTarget::Wasm {
+                                path: &path,
+                                args,
+                            })
+                    }
+                    OpenSpec::Builtin { id, cwd, args, .. } => {
+                        let cwd = cwd
+                            .as_deref()
+                            .map(resolve)
+                            .unwrap_or_else(|| self.h.workspace_root().to_path_buf());
+                        self.h
+                            .open_target(crate::ui_tests::HarnessOpenTarget::Builtin {
+                                id,
+                                cwd: &cwd,
+                                args,
+                            })
+                    }
+                }
+                .map_err(|message| SceneError::new("open_failed", message))?;
+                self.handles.bind(handle, pane_id)?;
                 self.last_app_pane = Some(pane_id);
                 self.h.step();
-                Ok(Some(format!("pane {pane_id}")))
+                log::info!(
+                    "scene: open kind={} handle={} pane_id={pane_id}",
+                    open.target_kind(),
+                    handle
+                );
+                Ok(Some(StepDetail::Opened {
+                    target_kind: open.target_kind().to_string(),
+                    handle: handle.to_string(),
+                    pane_id,
+                }))
             }
-            Step::OpenFileBrowser { open_file_browser } => {
-                self.h.open_file_browser(resolve(open_file_browser));
+            Step::Text { text } => {
+                let target = self.handles.resolve_input(&text.target)?;
+                let pane_id = self.focus_target(target)?;
+                self.h
+                    .harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::Text(text.value.clone()));
                 self.h.step();
-                Ok(None)
-            }
-            Step::OpenWasm { open_wasm, args } => {
-                let wasm_path = resolve(open_wasm);
-                preapprove_wasm_scene_grants(&wasm_path)?;
-                let pane_id = self
-                    .h
-                    .open_wasm_at_with_args(&wasm_path, args.clone())?;
-                self.last_app_pane = Some(pane_id);
-                self.h.step();
-                Ok(Some(format!("pane {pane_id}")))
+                let length = text.value.chars().count();
+                log::info!(
+                    "scene: text target={} pane_id={pane_id:?} length={length}",
+                    text.target
+                );
+                Ok(Some(StepDetail::TextInput {
+                    target: text.target.clone(),
+                    pane_id,
+                    length,
+                }))
             }
             Step::Key { key } => {
                 // Bare printable character — not a named key or modifier chord.
@@ -377,21 +627,35 @@ impl SceneRunner {
                 // named keys ("enter", "left") and chords ("ctrl+z") are always
                 // multi-character. No `+`-prefix check needed — a literal `+`
                 // key has len == 1 and must take the Event::Text path.
-                let mut key_chars = key.chars();
-                let is_bare_printable =
-                    key_chars.next().is_some_and(|c| !c.is_control()) && key_chars.next().is_none();
+                let target = self.handles.resolve_input(&key.target)?;
+                let pane_id = self.focus_target(target)?;
+                let mut key_chars = key.value.chars();
+                let is_bare_printable = key_chars
+                    .next()
+                    .is_some_and(|character| !character.is_control())
+                    && key_chars.next().is_none();
                 if is_bare_printable {
                     self.h
                         .harness()
                         .input_mut()
                         .events
-                        .push(egui::Event::Text(key.to_string()));
+                        .push(egui::Event::Text(key.value.clone()));
                 } else {
-                    let (modifiers, k) = parse_key(key)?;
+                    let (modifiers, k) = parse_key(&key.value)
+                        .map_err(|message| SceneError::new("invalid_key", message))?;
                     self.h.harness().press_key_modifiers(modifiers, k);
                 }
                 self.h.step();
-                Ok(None)
+                log::info!(
+                    "scene: key target={} pane_id={pane_id:?} value={}",
+                    key.target,
+                    key.value
+                );
+                Ok(Some(StepDetail::KeyInput {
+                    target: key.target.clone(),
+                    pane_id,
+                    value: key.value.clone(),
+                }))
             }
             Step::Sidebar { sidebar } => {
                 let v = *sidebar;
@@ -403,7 +667,10 @@ impl SceneRunner {
                 let idx = *switch_context;
                 let len = self.h.with_app(|app| app.router.len());
                 if idx >= len {
-                    return Err(format!("switch_context {idx}: only {len} contexts exist"));
+                    return Err(SceneError::new(
+                        "invalid_context",
+                        format!("switch_context {idx}: only {len} contexts exist"),
+                    ));
                 }
                 self.h.with_app_mut(|app| app.switch_workspace(idx));
                 self.h.step();
@@ -416,13 +683,10 @@ impl SceneRunner {
                 Ok(None)
             }
             Step::WaitAppFrame { wait_app_frame } => {
-                let pane_id = self
-                    .last_app_pane
-                    .ok_or("wait_app_frame: no app opened yet")?;
-                self.h.wait_for_app_frame(
-                    pane_id,
-                    Duration::from_secs_f32(wait_app_frame.timeout_s),
-                )?;
+                let pane_id = self.handles.resolve(&wait_app_frame.target)?;
+                self.h
+                    .wait_for_app_frame(pane_id, Duration::from_secs_f32(wait_app_frame.timeout_s))
+                    .map_err(|message| SceneError::new("wait_app_frame_failed", message))?;
                 Ok(None)
             }
             Step::RunSteps { run_steps } => {
@@ -430,21 +694,62 @@ impl SceneRunner {
                 Ok(None)
             }
             Step::Assert { assert } => self.check(assert).map(|()| None),
+            Step::AssertLabel { assert_label } => {
+                let target = self.handles.resolve_input(&assert_label.target)?;
+                let pane_id = self.focus_target(target)?;
+                let matched = match pane_id {
+                    Some(pane_id) => self.h.pane_has_label(pane_id, &assert_label.label),
+                    None => self.h.host_has_label(&assert_label.label),
+                };
+                if !matched {
+                    return Err(SceneError::new(
+                        "label_not_found",
+                        format!(
+                            "assert_label: {:?} not found after focusing target '{}'",
+                            assert_label.label, assert_label.target
+                        ),
+                    ));
+                }
+                Ok(Some(StepDetail::LabelMatched {
+                    target: assert_label.target.clone(),
+                    pane_id,
+                    label: assert_label.label.clone(),
+                }))
+            }
             Step::Shot { shot } => {
                 if self.no_shots {
-                    return Ok(Some("skipped (no-shots)".to_string()));
+                    return Ok(Some(StepDetail::Message {
+                        message: "skipped (no-shots)".to_string(),
+                    }));
                 }
                 let path = self.out_dir.join(shot);
                 self.h
                     .save_screenshot(&path.to_string_lossy())
-                    .map_err(|e| format!("shot {shot}: {e}"))?;
+                    .map_err(|error| {
+                        SceneError::new("screenshot_failed", format!("shot {shot}: {error}"))
+                    })?;
                 shots.push(path.display().to_string());
-                Ok(Some(path.display().to_string()))
+                Ok(Some(StepDetail::Message {
+                    message: path.display().to_string(),
+                }))
             }
         }
     }
 
-    fn check(&mut self, spec: &AssertSpec) -> Result<(), String> {
+    fn focus_target(&mut self, target: InputTarget) -> Result<Option<PaneId>, SceneError> {
+        match target {
+            InputTarget::Host => Ok(None),
+            InputTarget::Pane(pane_id) => {
+                self.h
+                    .focus_pane(pane_id)
+                    .map_err(|message| SceneError::new("target_unavailable", message))?;
+                self.h.step();
+                Ok(Some(pane_id))
+            }
+        }
+    }
+
+    fn check(&mut self, spec: &AssertSpec) -> Result<(), SceneError> {
         let host = self.host_state();
         let mut failures = Vec::new();
         let mut expect = |name: &str, expected: String, actual: String| {
@@ -472,9 +777,21 @@ impl SceneRunner {
             expect("sidebar", v.to_string(), host.sidebar.to_string());
         }
         if spec.lifecycle.is_some() || spec.tree_contains.is_some() {
-            let app = self
-                .app_state()
-                .ok_or("assert lifecycle/tree_contains: no app opened yet")?;
+            let target = spec.target.as_deref().ok_or_else(|| {
+                SceneError::new(
+                    "missing_assert_target",
+                    "assert lifecycle/tree_contains requires target = '<handle>'",
+                )
+            })?;
+            let pane_id = self.handles.resolve(target)?;
+            let app = self.app_state_for(pane_id).ok_or_else(|| {
+                SceneError::new(
+                    "app_state_unavailable",
+                    format!(
+                        "assert target '{target}' has no process or WASM app state; use assert_label for native UI"
+                    ),
+                )
+            })?;
             if let Some(v) = &spec.lifecycle {
                 expect("lifecycle", v.clone(), app.lifecycle.clone());
             }
@@ -488,7 +805,7 @@ impl SceneRunner {
         if failures.is_empty() {
             Ok(())
         } else {
-            Err(failures.join("; "))
+            Err(SceneError::new("assertion_failed", failures.join("; ")))
         }
     }
 
@@ -509,6 +826,10 @@ impl SceneRunner {
 
     fn app_state(&self) -> Option<AppState> {
         let pane_id = self.last_app_pane?;
+        self.app_state_for(pane_id)
+    }
+
+    fn app_state_for(&self, pane_id: PaneId) -> Option<AppState> {
         self.h.with_app(|app| {
             for win in &app.windows {
                 if let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) {
@@ -656,5 +977,88 @@ mod tests {
         assert_eq!(k, egui::Key::Enter);
         assert!(parse_key("cmd+").is_err());
         assert!(parse_key("cmd+bogus").is_err());
+    }
+
+    #[test]
+    fn generic_scene_steps_parse_with_typed_targets() {
+        let raw = r#"
+            [[steps]]
+            open = { kind = "builtin", id = "assistant", cwd = ".", as = "assistant" }
+
+            [[steps]]
+            text = { target = "assistant", value = "/settings" }
+
+            [[steps]]
+            key = { target = "assistant", value = "enter" }
+
+            [[steps]]
+            assert_label = { target = "assistant", label = "Assistant settings" }
+        "#;
+
+        let scene: Scene = toml::from_str(raw).expect("generic scene should parse");
+
+        assert!(matches!(
+            &scene.steps[..],
+            [
+                Step::Open {
+                    open: OpenSpec::Builtin { handle, .. }
+                },
+                Step::Text { text: TextSpec { target: text_target, .. } },
+                Step::Key { key: KeySpec { target: key_target, .. } },
+                Step::AssertLabel {
+                    assert_label: AssertLabelSpec { target: label_target, .. }
+                }
+            ] if handle == "assistant"
+                && text_target == "assistant"
+                && key_target == "assistant"
+                && label_target == "assistant"
+        ));
+    }
+
+    #[test]
+    fn generic_open_rejects_fields_from_another_target_kind() {
+        let raw = r#"
+            [[steps]]
+            open = { kind = "builtin", id = "assistant", path = "apps/dev/balls", as = "assistant" }
+        "#;
+
+        assert!(toml::from_str::<Scene>(raw).is_err());
+    }
+
+    #[test]
+    fn pane_handles_reject_duplicate_names() {
+        let mut handles = PaneHandles::default();
+        handles.bind("assistant", 41).expect("first bind");
+
+        let error = handles.bind("assistant", 42).unwrap_err();
+
+        assert_eq!(error.code, "duplicate_handle");
+    }
+
+    #[test]
+    fn pane_handles_reject_missing_targets() {
+        let handles = PaneHandles::default();
+
+        let error = handles.resolve("missing").unwrap_err();
+
+        assert_eq!(error.code, "missing_target");
+    }
+
+    #[test]
+    fn pane_handles_reserve_host_target() {
+        let mut handles = PaneHandles::default();
+
+        let error = handles.bind("host", 41).unwrap_err();
+
+        assert_eq!(error.code, "reserved_handle");
+    }
+
+    #[test]
+    fn pane_handles_resolve_host_only_as_an_input_target() {
+        let handles = PaneHandles::default();
+
+        let target = handles.resolve_input("host").expect("host input target");
+
+        assert_eq!(target, InputTarget::Host);
     }
 }

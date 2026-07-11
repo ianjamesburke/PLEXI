@@ -8,17 +8,17 @@ size = [280.0, 480.0]
 suite = false
 
 [[steps]]
-open_app = "apps/dev/ui-gallery"
+open = { kind = "process", path = "apps/dev/ui-gallery", as = "gallery" }
 
 [[steps]]
-wait_app_frame = { timeout_s = 15.0 }
+wait_app_frame = { target = "gallery", timeout_s = 15.0 }
 
 [[steps]]
 run_steps = 10
 
 # The app survives the narrow pane and keeps rendering its tree (footer included).
 [[steps]]
-assert = { pane_count = 1, lifecycle = "running", tree_contains = "Footer" }
+assert = { target = "gallery", pane_count = 1, lifecycle = "running", tree_contains = "Footer" }
 
 [[steps]]
 shot = "footer-small-pane.png"

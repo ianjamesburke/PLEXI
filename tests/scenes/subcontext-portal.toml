@@ -3,7 +3,7 @@
 size = [1280.0, 800.0]
 
 [[steps]]
-open_file_browser = "."
+open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }
 
 [[steps]]
 run_steps = 2

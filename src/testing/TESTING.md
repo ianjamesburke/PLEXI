@@ -25,14 +25,13 @@ suite = false               # optional, default true. false = excluded from
                             # processes); run them via `just scene`.
 
 [[steps]]
-open_app = "apps/dev/balls"                     # real Python process, production launch path
-args = ["--state", '{"balls": 3}']          # optional; surfaces as ctx.args in the SDK
+open = { kind = "process", path = "apps/dev/balls", as = "balls", args = ["--state", '{"balls": 3}'] }
 
 [[steps]]
-wait_app_frame = { timeout_s = 15.0 }       # block until first committed frame
+wait_app_frame = { target = "balls", timeout_s = 15.0 }
 
 [[steps]]
-assert = { pane_count = 1, lifecycle = "running", tree_contains = "balls" }
+assert = { target = "balls", pane_count = 1, lifecycle = "running", tree_contains = "balls" }
 
 [[steps]]
 shot = "balls.png"                          # optional; written to the out dir
@@ -42,22 +41,25 @@ shot = "balls.png"                          # optional; written to the out dir
 
 | Verb | Effect |
 |---|---|
-| `open_app = "<dir>"` (+ optional `args = [...]`) | Spawn a real PGAP app process from an app dir (relative paths resolve from the repo root). Args surface as `ctx.args`. |
-| `open_file_browser = "<dir>"` | Open the built-in file browser host app at a dir. |
-| `key = "cmd+b"` | Press a key combo (`cmd`/`ctrl`/`alt`/`shift` + key name). |
+| `open = { kind = "process", path = "<dir>", as = "<handle>", args = [...] }` | Spawn a real PGAP app process from an app dir. Relative paths resolve from the repo root. Args surface as `ctx.args`. |
+| `open = { kind = "wasm", path = "<file.wasm>", as = "<handle>", args = [...] }` | Open a reviewed raw WASM component. |
+| `open = { kind = "builtin", id = "<id>", as = "<handle>", cwd = "<dir>" }` | Open a compiled-in host app by id. `cwd` is optional and defaults to a fresh harness-owned directory. |
+| `text = { target = "<handle>", value = "hello" }` | Focus a pane and insert text through egui's normal text-input path. The report records the character count, not the text. |
+| `key = { target = "<handle>", value = "enter" }` | Focus a pane and press a key combo (`cmd`/`ctrl`/`alt`/`shift` plus a key name). Use `target = "host"` for a whole-host shortcut. |
 | `sidebar = true` | Show/hide the host sidebar. |
 | `switch_context = 0` | Switch to the context at this router index. |
 | `push_to_subcontext = "Name"` | Push the focused pane into a new subcontext (creates a portal). |
-| `wait_app_frame = { timeout_s = N }` | Wait for the last-opened app's first committed frame. Fails with the app's stderr on crash/timeout. |
+| `wait_app_frame = { target = "<handle>", timeout_s = N }` | Wait for a process app's first committed frame. Fails with the app's stderr on crash or timeout. |
 | `run_steps = N` | Advance N harness frames. |
 | `assert = { ... }` | Structured assertions — see below. |
+| `assert_label = { target = "<handle>", label = "Settings" }` | Focus a pane and require an exact semantic label inside that pane's rendered rectangle. Use `target = "host"` for the whole accessibility tree. |
 | `shot = "name.png"` | Headless screenshot to the out dir. |
 
-New verbs require a scene that needs them — no speculative DSL growth. Assertions are structured keys, never expression strings.
+Every `open` step binds one unique symbolic handle. Later pane steps reject missing handles, duplicate handles fail before an app opens, and `host` is reserved for explicit whole-host input. New verbs require a scene that needs them. Assertions are structured keys, never expression strings. `tests/scenes/assistant-settings.toml` exercises `open`, `text`, pane-targeted `key`, and `assert_label` against the native Assistant without starting an AI turn.
 
 ### Assertions
 
-`pane_count`, `window_count`, `context_count`, `portal_count` (across all windows), `sidebar`, `lifecycle` (last-opened app, lowercase, e.g. `"running"`), `tree_contains` (substring match against the app's serialized L1 render tree). Every present key must match.
+`pane_count`, `window_count`, `context_count`, `portal_count` (across all windows), and `sidebar` assert host state. `lifecycle` and `tree_contains` require `target = "<handle>"`; they inspect that process or WASM app's serialized L1 state. Native builtins use `assert_label`. Every present key must match.
 
 ### Running
 
@@ -71,11 +73,11 @@ cargo test --bin plexi scene_suite           # all committed suite scenes
 
 ### SceneReport
 
-Every run writes `<out>/<scene>.json` (`schema_version: 1`): pass/fail per step, host state snapshot (context/window/pane/portal counts, sidebar), and the last-opened app's `lifecycle` plus its full committed L1 render tree as JSON. **Prefer asserting on state over comparing pixels** — the tree is the app's UI state; screenshots are an artifact for human review.
+Every run writes `<out>/<scene>.json` (`schema_version: 2`). It includes pass/fail per step, resolved handles, host state, and the last-opened process or WASM app's committed state. Successful action details and failures are structured objects; failures carry stable `code` and `message` fields. Prefer state and semantic-label assertions over pixel comparisons. Screenshots remain a human review artifact.
 
 ## Real App Processes in Tests
 
-`open_app` (and `PlexiUiHarness::open_app_at`) uses the production path: manifest load → `ProcessApp::launch` → real child process, IPC threads, L1 render pipeline. Outside an installed bundle the repo SDK is exported via `PLEXI_SDK_PATH=sdk/python` automatically. Python resolution comes from `src/app/python_env.rs`: per-app `.venv` → bundled python → system `python3`, with Python >=3.11 required.
+`open = { kind = "process", ... }` uses the production path: manifest load, `ProcessApp::launch`, real child process, IPC threads, and the L1 render pipeline. Outside an installed bundle the repo SDK is exported through `PLEXI_SDK_PATH=sdk/python` automatically. Python resolution comes from `src/app/python_env.rs`: per-app `.venv`, bundled python, then system `python3`, with Python 3.11 or newer required.
 
 ## Pre-Push Evidence
 
