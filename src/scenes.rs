@@ -59,6 +59,14 @@ fn classify_host_status(status: &serde_json::Value) -> HostStatusClass {
     }
 }
 
+fn host_seed_ready(status: &serde_json::Value, minimum_panes: u64) -> bool {
+    status.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
+        && status
+            .get("pane_count")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|count| count >= minimum_panes)
+}
+
 fn poll_until<T>(
     timeout: Duration,
     interval: Duration,
@@ -742,19 +750,19 @@ impl LiveBackend {
                 )
             })?;
         }
-        let status = self.json(&["host", "status", "--json"])?;
-        if !status
-            .get("ready")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            return Err(SceneError::new(
-                "live_host_not_ready",
-                "host started but did not report ready",
-            ));
-        }
+        poll_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
+            self.json(&["host", "status", "--json"])
+                .ok()
+                .filter(|status| host_seed_ready(status, 1))
+        })
+        .map_err(|_| {
+            SceneError::new(
+                "live_seed_not_ready",
+                "host became reachable but its declared seed pane did not settle",
+            )
+        })?;
         log::info!(
-            "scene_live: started channel={} binary={} ready=true",
+            "scene_live: started channel={} binary={} ready=true seed_panes>=1",
             self.channel,
             self.binary
         );
@@ -1983,6 +1991,36 @@ mod tests {
             classify_host_status(&serde_json::json!({})),
             HostStatusClass::Unknown
         );
+    }
+
+    #[test]
+    fn live_seed_readiness_requires_ready_and_declared_pane_count() {
+        assert!(!host_seed_ready(
+            &serde_json::json!({"ready": false, "pane_count": 1, "pid": 42}),
+            1,
+        ));
+        assert!(!host_seed_ready(
+            &serde_json::json!({"ready": true, "pane_count": 0, "pid": 42}),
+            1,
+        ));
+        assert!(host_seed_ready(
+            &serde_json::json!({"ready": true, "pane_count": 1, "pid": 42}),
+            1,
+        ));
+    }
+
+    #[test]
+    fn live_seed_readiness_timeout_is_bounded() {
+        let error = poll_until(Duration::from_millis(3), Duration::from_millis(1), || {
+            host_seed_ready(
+                &serde_json::json!({"ready": true, "pane_count": 0, "pid": 42}),
+                1,
+            )
+            .then_some(())
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code, "eventual_timeout");
     }
 
     #[test]
