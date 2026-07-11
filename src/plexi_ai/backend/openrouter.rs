@@ -140,11 +140,7 @@ fn stream_openrouter(
         body["tools"] = serde_json::Value::Array(tools_json);
     }
 
-    // Disable reasoning for Low-tier queries — speed matters more than depth
-    // at this tier, and leaving it on adds latency and cost (Gemini Flash Lite).
-    if request.model_tier == Some(ModelTier::Low) {
-        body["reasoning"] = serde_json::json!({ "enabled": false });
-    }
+    apply_reasoning_config(&mut body, request.model_tier, request.reasoning_effort);
 
     let body_str = match serde_json::to_string(&body) {
         Ok(s) => s,
@@ -349,9 +345,32 @@ fn stream_openrouter(
     }
 }
 
+fn apply_reasoning_config(
+    body: &mut serde_json::Value,
+    tier: Option<ModelTier>,
+    effort: Option<super::ReasoningEffort>,
+) {
+    if let Some(effort) = effort {
+        body["reasoning"] = serde_json::json!({ "effort": effort.label() });
+    } else if tier == Some(ModelTier::Low) {
+        body["reasoning"] = serde_json::json!({ "enabled": false });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_reasoning_effort_is_encoded_in_payload() {
+        let mut body = serde_json::json!({});
+        apply_reasoning_config(
+            &mut body,
+            Some(ModelTier::Low),
+            Some(crate::plexi_ai::backend::ReasoningEffort::High),
+        );
+        assert_eq!(body["reasoning"], serde_json::json!({"effort": "high"}));
+    }
 
     /// Verify that the system prompt is injected as a leading messages-array
     /// entry (OpenAI format), not as a top-level "system" field (Anthropic).

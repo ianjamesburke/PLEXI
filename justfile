@@ -4,7 +4,9 @@
 PYTHON_VERSION := "3.12.13"
 PYTHON_PBS_DATE := "20260414"
 
-export RUSTFLAGS := "-D warnings"
+# Rust 1.97 warns on f64-to-f32 literal fallback throughout egui call sites.
+# Keep the global warning gate while upstream APIs transition to typed literals.
+export RUSTFLAGS := "-D warnings -A float-literal-f32-fallback"
 
 # Download the python-build-standalone runtime into assets/python/ for bundling.
 # Skips if the correct version is already present. macOS only.

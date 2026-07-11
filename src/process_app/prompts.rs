@@ -424,6 +424,8 @@ pub(crate) fn show_prompt_modal(
                                         AiBrokerRequest {
                                             app_id,
                                             model_tier: q.model_tier,
+                                            concrete_model: None,
+                                            reasoning_effort: None,
                                             system: q.system,
                                             messages: q.messages,
                                             tools: q.tools,

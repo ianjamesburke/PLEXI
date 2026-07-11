@@ -34,14 +34,50 @@ use crate::broker::{
     TargetType,
 };
 use crate::host::app_timeline::{AppTimeline, EventDelivery};
-use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest};
+use crate::plexi_ai::broker::{
+    AiBroker, AiBrokerRequest, ConcreteModelRoute, ReasoningEffort,
+};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 // ── Agent definition ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AgentSource {
+    BuiltIn,
+    User,
+    Workspace,
+}
+
+impl AgentSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::BuiltIn => "built-in",
+            Self::User => "user",
+            Self::Workspace => "workspace",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentModelRoutes {
+    pub low: Option<ConcreteModelRoute>,
+    pub medium: Option<ConcreteModelRoute>,
+    pub high: Option<ConcreteModelRoute>,
+}
+
+impl AgentModelRoutes {
+    pub fn for_tier(&self, tier: ModelTier) -> Option<&ConcreteModelRoute> {
+        match tier {
+            ModelTier::Low => self.low.as_ref(),
+            ModelTier::Medium => self.medium.as_ref(),
+            ModelTier::High => self.high.as_ref(),
+        }
+    }
+}
 
 /// One requested event subscription from `[[subscriptions]]` in
 /// `settings.toml`. A request, not a grant — `AgentHost::attach` only
@@ -68,6 +104,14 @@ pub struct AgentDefinition {
     /// `[permissions]` posture — actor-tier allow/ask/deny lists.
     pub posture: PermissionPosture,
     pub subscriptions: Vec<AgentSubscriptionRequest>,
+    pub source: AgentSource,
+    pub path: Option<PathBuf>,
+    pub description: String,
+    pub model_routes: AgentModelRoutes,
+    pub effort: Option<ReasoningEffort>,
+    pub tools: Vec<String>,
+    pub skills: Vec<String>,
+    pub hooks: Vec<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -75,6 +119,26 @@ struct SettingsToml {
     agent: AgentTable,
     #[serde(default)]
     subscriptions: Vec<SubscriptionTable>,
+    #[serde(default)]
+    models: BTreeMap<String, ModelRouteTable>,
+    #[serde(default)]
+    tools: NameList,
+    #[serde(default)]
+    skills: NameList,
+    #[serde(default)]
+    hooks: NameList,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct NameList {
+    #[serde(default)]
+    enabled: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ModelRouteTable {
+    provider: String,
+    model: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -82,6 +146,10 @@ struct AgentTable {
     id: String,
     display_name: String,
     default_tier: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    effort: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -142,7 +210,17 @@ impl AgentDefinition {
     /// Parse an agent from raw `AGENT.md` + `settings.toml` contents.
     /// Required fields fail fast with errors naming the field; nothing is
     /// silently defaulted.
+    #[cfg(test)]
     pub fn parse(prompt: &str, settings_toml: &str) -> Result<Self, String> {
+        Self::parse_from(prompt, settings_toml, AgentSource::Workspace, None)
+    }
+
+    fn parse_from(
+        prompt: &str,
+        settings_toml: &str,
+        source: AgentSource,
+        path: Option<PathBuf>,
+    ) -> Result<Self, String> {
         if prompt.trim().is_empty() {
             return Err("AGENT.md must be non-empty — it is the agent's system prompt".to_string());
         }
@@ -158,6 +236,30 @@ impl AgentDefinition {
             .map_err(|e| format!("settings.toml: [agent] {e}"))?;
         let posture = PermissionPosture::from_toml_str(settings_toml)
             .map_err(|e| format!("settings.toml: {e}"))?;
+        let effort = settings
+            .agent
+            .effort
+            .as_deref()
+            .map(ReasoningEffort::parse)
+            .transpose()
+            .map_err(|e| format!("settings.toml: [agent] {e}"))?;
+        let mut model_routes = AgentModelRoutes::default();
+        for (tier, route) in settings.models {
+            let parsed = ConcreteModelRoute {
+                provider: route.provider,
+                model: route.model,
+            };
+            if parsed.provider.trim().is_empty() || parsed.model.trim().is_empty() {
+                return Err(
+                    "settings.toml: [models] provider and model must be non-empty".to_string(),
+                );
+            }
+            match parse_tier(&tier).map_err(|e| format!("settings.toml: [models] {e}"))? {
+                ModelTier::Low => model_routes.low = Some(parsed),
+                ModelTier::Medium => model_routes.medium = Some(parsed),
+                ModelTier::High => model_routes.high = Some(parsed),
+            }
+        }
         let mut subscriptions = Vec::with_capacity(settings.subscriptions.len());
         for (i, sub) in settings.subscriptions.iter().enumerate() {
             let ctx = |e: String| format!("settings.toml: [[subscriptions]] #{}: {e}", i + 1);
@@ -182,6 +284,14 @@ impl AgentDefinition {
             prompt: prompt.to_string(),
             posture,
             subscriptions,
+            source,
+            path,
+            description: settings.agent.description,
+            model_routes,
+            effort,
+            tools: settings.tools.enabled,
+            skills: settings.skills.enabled,
+            hooks: settings.hooks.enabled,
         })
     }
 
@@ -193,8 +303,138 @@ impl AgentDefinition {
             .map_err(|e| format!("failed to read {}: {e}", prompt_path.display()))?;
         let settings = std::fs::read_to_string(&settings_path)
             .map_err(|e| format!("failed to read {}: {e}", settings_path.display()))?;
-        Self::parse(&prompt, &settings)
+        Self::parse_from(
+            &prompt,
+            &settings,
+            AgentSource::Workspace,
+            Some(dir.to_path_buf()),
+        )
     }
+
+    fn load_dir_from(dir: &Path, source: AgentSource) -> Result<Self, String> {
+        let mut definition = Self::load_dir(dir)?;
+        definition.source = source;
+        Ok(definition)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentRegistry {
+    active: BTreeMap<String, AgentDefinition>,
+    shadowed: BTreeMap<String, Vec<AgentDefinition>>,
+}
+
+impl AgentRegistry {
+    pub fn load(profile_dir: &Path, workspace_root: &Path) -> Self {
+        let default = AgentDefinition {
+            id: "default".to_string(),
+            display_name: "Plexi Assistant".to_string(),
+            default_tier: ModelTier::Medium,
+            prompt: crate::assistant::DEFAULT_AGENT_PROMPT.to_string(),
+            posture: PermissionPosture {
+                default_posture: Decision::Ask,
+                allow: Vec::new(),
+                ask: Vec::new(),
+                deny: Vec::new(),
+            },
+            subscriptions: Vec::new(),
+            source: AgentSource::BuiltIn,
+            path: None,
+            description: "General workspace assistant".to_string(),
+            model_routes: AgentModelRoutes::default(),
+            effort: None,
+            tools: Vec::new(),
+            skills: Vec::new(),
+            hooks: Vec::new(),
+        };
+        let user_dir = profile_dir.join("agents");
+        let workspace_dir = workspace_root
+            .join(crate::config::workspace_channel_dir())
+            .join("agents");
+        let user_agents = load_agents_dir(&user_dir, AgentSource::User);
+        let workspace_agents = load_agents_dir(&workspace_dir, AgentSource::Workspace);
+        log::info!(
+            "assistant: agent registry sources built-in=1 user={} workspace={}",
+            user_agents.len(),
+            workspace_agents.len()
+        );
+        let mut definitions = vec![default];
+        definitions.extend(user_agents);
+        definitions.extend(workspace_agents);
+        let mut active = BTreeMap::new();
+        let mut shadowed: BTreeMap<String, Vec<AgentDefinition>> = BTreeMap::new();
+        for definition in definitions {
+            if let Some(replaced) = active.insert(definition.id.clone(), definition) {
+                shadowed
+                    .entry(replaced.id.clone())
+                    .or_default()
+                    .push(replaced);
+            }
+        }
+        log::info!(
+            "assistant: agent registry loaded {} active, {} shadowed",
+            active.len(),
+            shadowed.values().map(Vec::len).sum::<usize>()
+        );
+        Self { active, shadowed }
+    }
+
+    pub fn active(&self, id: &str) -> Option<&AgentDefinition> {
+        self.active.get(id)
+    }
+
+    pub fn agents(&self) -> impl Iterator<Item = &AgentDefinition> {
+        self.active.values()
+    }
+    pub fn shadowed(&self, id: &str) -> &[AgentDefinition] {
+        self.shadowed.get(id).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+fn load_agents_dir(dir: &Path, source: AgentSource) -> Vec<AgentDefinition> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            log::error!(
+                "assistant: failed to read {} agent directory {}: {error}",
+                source.label(),
+                dir.display()
+            );
+            return Vec::new();
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                if path.is_dir() && path.join("settings.toml").is_file() {
+                    paths.push(path);
+                }
+            }
+            Err(error) => log::error!(
+                "assistant: failed to read entry in {} agent directory {}: {error}",
+                source.label(),
+                dir.display()
+            ),
+        }
+    }
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|path| match AgentDefinition::load_dir_from(&path, source) {
+            Ok(definition) => Some(definition),
+            Err(error) => {
+                log::error!(
+                    "assistant: agent registry skipped {} definition {}: {error}",
+                    source.label(),
+                    path.display()
+                );
+                None
+            }
+        })
+        .collect()
 }
 
 /// Load every agent under `<workspace>/<workspace_channel_dir>/agents/`.
@@ -208,8 +448,17 @@ pub fn load_workspace_agents(workspace_root: &Path) -> Vec<AgentDefinition> {
         return Vec::new();
     };
     let mut agents = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                log::error!(
+                    "agent: failed to read workspace agent directory entry in {}: {error}",
+                    agents_dir.display()
+                );
+                continue;
+            }
+        };
         if !path.is_dir() {
             continue;
         }
@@ -223,7 +472,7 @@ pub fn load_workspace_agents(workspace_root: &Path) -> Vec<AgentDefinition> {
             );
             continue;
         }
-        match AgentDefinition::load_dir(&path) {
+        match AgentDefinition::load_dir_from(&path, AgentSource::Workspace) {
             Ok(def) => {
                 log::info!(
                     "agent: loaded '{}' ({}) from {}",
@@ -598,6 +847,8 @@ impl AgentHost {
         let request = AiBrokerRequest {
             app_id: format!("agent:{}", agent.def.id),
             model_tier: agent.def.default_tier,
+            concrete_model: agent.def.model_routes.for_tier(agent.def.default_tier).cloned(),
+            reasoning_effort: agent.def.effort,
             system: agent.def.prompt.clone(),
             messages,
             tools: Vec::new(),
@@ -956,5 +1207,75 @@ default_tier = "low"
         // A user-caused event triggers a turn.
         host.handle_deliveries(0, vec![delivery(3, AppEventActor::User, "chess", None)]);
         assert_eq!(host.agents[0].in_flight, 1, "user event must trigger");
+    }
+
+    #[test]
+    fn registry_precedence_keeps_shadowed_definitions_visible() {
+        let profile = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let write_agent = |root: &Path, name: &str| {
+            let dir = root.join("agents").join("default");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("AGENT.md"), format!("{name} prompt")).unwrap();
+            std::fs::write(
+                dir.join("settings.toml"),
+                format!(
+                    "[agent]\nid = \"default\"\ndisplay_name = \"{name}\"\ndefault_tier = \"medium\"\n\n[permissions]\ndefault_posture = \"ask\"\n"
+                ),
+            )
+            .unwrap();
+        };
+        write_agent(profile.path(), "User");
+        let workspace_channel = workspace.path().join(crate::config::workspace_channel_dir());
+        write_agent(&workspace_channel, "Workspace");
+
+        let registry = AgentRegistry::load(profile.path(), workspace.path());
+        assert_eq!(
+            registry.active("default").unwrap().display_name,
+            "Workspace"
+        );
+        assert_eq!(
+            registry.active("default").unwrap().source,
+            AgentSource::Workspace
+        );
+        assert_eq!(registry.shadowed("default").len(), 2);
+        assert_eq!(
+            registry.shadowed("default")[0].source,
+            AgentSource::BuiltIn
+        );
+        assert_eq!(registry.shadowed("default")[1].source, AgentSource::User);
+    }
+
+    #[test]
+    fn definition_parses_routes_effort_tools_skills_and_hooks() {
+        let settings = r#"
+[agent]
+id = "writer"
+display_name = "Writer"
+description = "Writes clearly"
+default_tier = "high"
+effort = "medium"
+[permissions]
+default_posture = "ask"
+[models.high]
+provider = "openrouter"
+model = "anthropic/claude-sonnet-4"
+[tools]
+enabled = ["docs.read"]
+[skills]
+enabled = ["human-writing"]
+[hooks]
+enabled = ["before-turn"]
+"#;
+        let definition = AgentDefinition::parse("Write.", settings).unwrap();
+        assert_eq!(definition.description, "Writes clearly");
+        assert_eq!(definition.effort, Some(ReasoningEffort::Medium));
+        assert_eq!(definition.tools, vec!["docs.read"]);
+        assert_eq!(definition.skills, vec!["human-writing"]);
+        assert_eq!(definition.hooks, vec!["before-turn"]);
+        assert_eq!(
+            definition.model_routes.high.unwrap().model,
+            "anthropic/claude-sonnet-4"
+        );
     }
 }

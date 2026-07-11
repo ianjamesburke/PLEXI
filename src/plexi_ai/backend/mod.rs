@@ -14,6 +14,43 @@ use std::sync::{mpsc, Arc};
 
 use crate::app_protocol::ModelTier;
 
+/// Provider-neutral concrete model route selected by an Assistant agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConcreteModelRoute {
+    pub provider: String,
+    pub model: String,
+}
+
+/// Provider-neutral reasoning effort selected by an Assistant agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            other => Err(format!(
+                "invalid effort '{other}' (expected low | medium | high)"
+            )),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
 /// Whether the backend is billed per-token or via a flat subscription.
 /// Drives the cost ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -90,6 +127,8 @@ pub struct AiBackendRequest {
     /// Model tier from the broker request. Used by backends to apply
     /// tier-specific request parameters (e.g. disabling reasoning for Low).
     pub model_tier: Option<ModelTier>,
+    /// Provider-neutral reasoning effort requested by an Assistant agent.
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Cooperative cancellation handle. The streaming read loop checks this
     /// each chunk and aborts (drops `tx`) when tripped, so an interrupted turn
     /// stops consuming the network stream instead of running to completion.

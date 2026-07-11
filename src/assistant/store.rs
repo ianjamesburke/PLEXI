@@ -16,8 +16,9 @@
 use std::path::{Path, PathBuf};
 
 use super::model::Turn;
+use crate::plexi_ai::broker::ReasoningEffort;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct StateToml {
     active_conversation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -25,6 +26,10 @@ struct StateToml {
     /// `/thoughts` toggle: show reasoning sections in the transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     show_thoughts: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effort_override: Option<ReasoningEffort>,
 }
 
 /// Handle to the on-disk Assistant store for one workspace.
@@ -84,20 +89,28 @@ impl AssistantStore {
         &self,
         id: &str,
         session_name: Option<&str>,
+        active_agent_id: &str,
+        effort_override: Option<ReasoningEffort>,
     ) -> Result<(), String> {
-        let mut state = self.read_state().unwrap_or(StateToml {
-            active_conversation: String::new(),
-            session_name: None,
-            show_thoughts: None,
-        });
+        let mut state = self.read_state().unwrap_or_default();
         state.active_conversation = id.to_string();
         state.session_name = session_name.map(str::to_string);
+        state.active_agent_id = Some(active_agent_id.to_string());
+        state.effort_override = effort_override;
         self.write_state(&state)
     }
 
     /// The persisted session name for the active conversation, if any.
     pub fn active_session_name(&self) -> Option<String> {
         self.read_state()?.session_name
+    }
+
+    pub fn active_agent_id(&self) -> Option<String> {
+        self.read_state()?.active_agent_id
+    }
+
+    pub fn effort_override(&self) -> Option<ReasoningEffort> {
+        self.read_state()?.effort_override
     }
 
     /// The persisted `/thoughts` toggle. Default: hidden.
@@ -109,11 +122,7 @@ impl AssistantStore {
 
     /// Persist the `/thoughts` toggle, preserving the rest of the state.
     pub fn set_show_thoughts(&self, show: bool) -> Result<(), String> {
-        let mut state = self.read_state().unwrap_or(StateToml {
-            active_conversation: String::new(),
-            session_name: None,
-            show_thoughts: None,
-        });
+        let mut state = self.read_state().unwrap_or_default();
         state.show_thoughts = Some(show);
         self.write_state(&state)
     }
@@ -181,7 +190,9 @@ mod tests {
         assert_eq!(store.active_conversation(), None);
 
         let id = "conv-test-1";
-        store.set_active_conversation(id, None).unwrap();
+        store
+            .set_active_conversation(id, None, "default", None)
+            .unwrap();
         store
             .write_turns(
                 id,
@@ -215,7 +226,9 @@ mod tests {
     fn store_path_is_channel_aware() {
         let ws = tempfile::tempdir().unwrap();
         let store = AssistantStore::new(ws.path());
-        store.set_active_conversation("c1", None).unwrap();
+        store
+            .set_active_conversation("c1", None, "default", None)
+            .unwrap();
         let expected = ws
             .path()
             .join(crate::config::workspace_channel_dir())
@@ -234,7 +247,9 @@ mod tests {
         assert!(store.show_thoughts());
 
         // Switching conversations must not clobber the preference.
-        store.set_active_conversation("c2", Some("notes")).unwrap();
+        store
+            .set_active_conversation("c2", Some("notes"), "default", None)
+            .unwrap();
         assert!(store.show_thoughts());
         assert_eq!(store.active_conversation().as_deref(), Some("c2"));
         assert_eq!(store.active_session_name().as_deref(), Some("notes"));

@@ -21,12 +21,13 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::app_trait::{App, AppRenderContext, KeyDisposition};
 use crate::app_protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
+use crate::agent::{AgentDefinition, AgentRegistry, AgentSource};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionRequest, ResourceScope, TargetType,
 };
 use crate::host::app_timeline::AppTimeline;
-use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest};
+use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ReasoningEffort};
 use crate::plexi_ai::turn_loop::TurnDelta;
 use crate::plexi_ai::CancelToken;
 
@@ -47,7 +48,7 @@ use render::{AssistantRenderer, ComposerEvent, MarkdownTextCache};
 use settings::{AssistantSettings, SessionOverrides, SettingsLoadError, SettingsLoader};
 use store::AssistantStore;
 
-const ASSISTANT_SYSTEM_PROMPT: &str = "You are the Plexi Assistant, the workspace \
+pub(crate) const DEFAULT_AGENT_PROMPT: &str = "You are the Plexi Assistant, the workspace \
 operator inside the Plexi terminal environment. Answer concisely. Tools exposed \
 by running apps are available to you when listed; calls may pause for the user's \
 permission. You can subscribe to app event streams with the host tool \
@@ -103,6 +104,8 @@ enum ToolFlowEvent {
     Ask {
         tool: String,
         input_json: String,
+        actor_id: String,
+        actor_scope: ActorScope,
         reply: SyncSender<PermissionReply>,
     },
     /// A host tool call (`host.events.*`) for the pane to execute on the UI
@@ -126,6 +129,8 @@ struct AssistantToolHooks {
     /// Tools the user allowed with "remember" during this turn.
     session_allowed: Mutex<HashSet<String>>,
     flow_tx: Sender<ToolFlowEvent>,
+    actor_id: String,
+    actor_scope: ActorScope,
 }
 
 impl ToolCallHooks for AssistantToolHooks {
@@ -138,6 +143,8 @@ impl ToolCallHooks for AssistantToolHooks {
                 .send(ToolFlowEvent::Ask {
                     tool: name.to_string(),
                     input_json: input_json.to_string(),
+                    actor_id: self.actor_id.clone(),
+                    actor_scope: self.actor_scope,
                     reply: reply_tx,
                 })
                 .map_err(|_| "permission_denied: assistant pane closed".to_string())?;
@@ -197,6 +204,8 @@ pub struct AssistantApp {
     store: AssistantStore,
     broker: Arc<dyn AiBroker>,
     workspace_root: PathBuf,
+    profile_dir: PathBuf,
+    agent_registry: AgentRegistry,
     settings_loader: SettingsLoader,
     session_overrides: SessionOverrides,
     settings: AssistantSettings,
@@ -213,6 +222,7 @@ pub struct AssistantApp {
     flow_rx: Receiver<ToolFlowEvent>,
     /// Reply channel for the worker blocked on the pending permission sheet.
     pending_reply: Option<SyncSender<PermissionReply>>,
+    pending_connector_actor: Option<(String, ActorScope)>,
     /// Shared app event timeline (production: the global instance).
     timeline: Arc<Mutex<AppTimeline>>,
     /// Live event-stream subscriptions: `(target_id, subscription_id)` where
@@ -288,7 +298,19 @@ impl AssistantApp {
         // Load persisted session name (if any) so it survives restarts.
         model.session_name = store.active_session_name();
         model.show_thoughts = store.show_thoughts();
+        model.active_agent_id = store
+            .active_agent_id()
+            .unwrap_or_else(|| "default".to_string());
+        model.effort_override = store.effort_override();
         let settings_loader = SettingsLoader::new(profile_dir, &workspace_root);
+        let agent_registry = AgentRegistry::load(profile_dir, &workspace_root);
+        if agent_registry.active(&model.active_agent_id).is_none() {
+            log::warn!(
+                "assistant: persisted agent '{}' is unavailable; using default",
+                model.active_agent_id
+            );
+            model.active_agent_id = "default".to_string();
+        }
         let session_overrides = SessionOverrides::default();
         let settings_report = settings_loader.load(&session_overrides);
         let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
@@ -298,6 +320,8 @@ impl AssistantApp {
             store,
             broker,
             workspace_root,
+            profile_dir: profile_dir.to_path_buf(),
+            agent_registry,
             settings_loader,
             session_overrides,
             settings: settings_report.settings,
@@ -310,6 +334,7 @@ impl AssistantApp {
             flow_tx,
             flow_rx,
             pending_reply: None,
+            pending_connector_actor: None,
             timeline,
             live_subs: Vec::new(),
             pending_subscribe: None,
@@ -436,6 +461,13 @@ impl AssistantApp {
                 AssistantEffect::ShowSettings => self.cmd_show_settings(),
                 AssistantEffect::ShowModelSetting => self.cmd_show_model_setting(),
                 AssistantEffect::SetSessionModel(tier) => self.set_session_model(tier),
+                AssistantEffect::ListAgents => self.cmd_list_agents(),
+                AssistantEffect::SwitchAgent(id) => self.cmd_switch_agent(&id),
+                AssistantEffect::InspectAgent(id) => self.cmd_inspect_agent(&id),
+                AssistantEffect::CreateAgent(id) => self.cmd_create_agent(&id),
+                AssistantEffect::EditAgent(id) => self.cmd_edit_agent(&id),
+                AssistantEffect::ShowEffort => self.cmd_show_effort(),
+                AssistantEffect::SetSessionEffort(effort) => self.set_session_effort(effort),
                 AssistantEffect::PersistShowThoughts(show) => {
                     if let Err(e) = self.store.set_show_thoughts(show) {
                         log::error!("assistant: failed to persist show_thoughts={show}: {e}");
@@ -459,6 +491,55 @@ impl AssistantApp {
         format!("app.{tool}")
     }
 
+    fn active_agent(&self) -> Option<&AgentDefinition> {
+        self.agent_registry
+            .active(&self.model.active_agent_id)
+            .or_else(|| self.agent_registry.active("default"))
+    }
+
+    fn connector_actor(&self) -> (String, ActorScope) {
+        self.active_agent()
+            .map(|agent| {
+                let scope = match agent.source {
+                    AgentSource::BuiltIn => ActorScope::BuiltIn,
+                    AgentSource::User => ActorScope::User,
+                    AgentSource::Workspace => ActorScope::Workspace,
+                };
+                (agent.id.clone(), scope)
+            })
+            .unwrap_or_else(|| (ASSISTANT_ACTOR_ID.to_string(), ActorScope::BuiltIn))
+    }
+
+    fn active_posture(&self) -> crate::broker::PermissionPosture {
+        let settings = self.settings.permissions.broker_posture();
+        let Some(agent) = self.active_agent().map(|agent| &agent.posture) else {
+            return settings;
+        };
+        let default_posture = if settings.default_posture == Decision::Deny
+            || agent.default_posture == Decision::Deny
+        {
+            Decision::Deny
+        } else if settings.default_posture == Decision::Ask
+            || agent.default_posture == Decision::Ask
+        {
+            Decision::Ask
+        } else {
+            Decision::Allow
+        };
+        let mut allow = settings.allow;
+        allow.extend(agent.allow.iter().cloned());
+        let mut ask = settings.ask;
+        ask.extend(agent.ask.iter().cloned());
+        let mut deny = settings.deny;
+        deny.extend(agent.deny.iter().cloned());
+        crate::broker::PermissionPosture {
+            default_posture,
+            allow,
+            ask,
+            deny,
+        }
+    }
+
     /// Evaluate one app connector tool for the assistant actor.
     fn tool_decision(&self, tool: &AiTool) -> Decision {
         if self.settings.permissions.posture.value == settings::AssistantPermissionPosture::Plan
@@ -466,14 +547,15 @@ impl AssistantApp {
         {
             return Decision::Deny;
         }
+        let (actor_id, _) = self.connector_actor();
         let req = PermissionRequest::new(
             ActorType::Agent,
-            ASSISTANT_ACTOR_ID,
+            &actor_id,
             TargetType::AppConnector,
             &Self::connector_target(&tool.name),
             Some(&self.workspace_root),
         );
-        let posture = self.settings.permissions.broker_posture();
+        let posture = self.active_posture();
         self.grant_store.evaluate(&req, Some(&posture))
     }
 
@@ -483,7 +565,7 @@ impl AssistantApp {
         } else {
             vec![event.to_string()]
         };
-        let posture = self.settings.permissions.broker_posture();
+        let posture = self.active_posture();
         crate::host::event_subscriptions::evaluate_subscription(
             &self.grant_store,
             Some(&posture),
@@ -501,14 +583,25 @@ impl AssistantApp {
     fn gated_dispatcher(&self) -> ToolDispatcher {
         let mut dispatcher = ToolDispatcher::from_registry(
             0,
-            format!("agent:{ASSISTANT_ACTOR_ID}"),
+            format!("agent:{}", self.connector_actor().0),
             self.workspace_root.clone(),
         );
         let mut allowed = HashSet::new();
         let mut ask_tools = HashSet::new();
         let mut denied = 0usize;
         let mut ro_auto = 0usize;
+        let declared_tools = self
+            .active_agent()
+            .map(|agent| agent.tools.as_slice())
+            .unwrap_or(&[]);
+        let settings_tools = &self.settings.tools.enabled.value;
         for tool in dispatcher.all_tools() {
+            if (!declared_tools.is_empty() && !declared_tools.contains(&tool.name))
+                || (!settings_tools.is_empty() && !settings_tools.contains(&tool.name))
+            {
+                denied += 1;
+                continue;
+            }
             match self.tool_decision(&tool) {
                 // Read-only tools skip the ask prompt (no permission sheet) but
                 // still respect explicit Deny grants — an admin deny wins.
@@ -539,10 +632,13 @@ impl AssistantApp {
             ask_tools.len(),
         );
         dispatcher.retain_allowed(&allowed);
+        let (actor_id, actor_scope) = self.connector_actor();
         dispatcher.set_hooks(Arc::new(AssistantToolHooks {
             ask_tools,
             session_allowed: Mutex::new(HashSet::new()),
             flow_tx: self.flow_tx.clone(),
+            actor_id,
+            actor_scope,
         }));
         // Host event tools: always visible; subscribing is ask-gated
         // per-stream inside the pane's host-call handler, not here.
@@ -607,6 +703,8 @@ impl AssistantApp {
         if let Err(e) = self.store.set_active_conversation(
             &self.model.conversation_id,
             self.model.session_name.as_deref(),
+            &self.model.active_agent_id,
+            self.model.effort_override,
         ) {
             log::error!("assistant: failed to persist active conversation: {e}");
         }
@@ -749,10 +847,30 @@ impl AssistantApp {
         let cancel = CancelToken::new();
         self.turn_cancel = cancel.clone();
         let dispatcher = self.gated_dispatcher();
+        let Some(agent) = self.active_agent().cloned() else {
+            log::error!("assistant: no active or default agent available for dispatch");
+            let effects = self.model.finish_turn(
+                &conversation_id,
+                Err("Assistant agent registry has no default agent.".to_string()),
+            );
+            self.execute_effects(effects);
+            return;
+        };
+        let tier = self.session_overrides.model_tier.unwrap_or_else(|| {
+            if self.settings.model.tier.source.scope == settings::SettingsScope::Default {
+                agent.default_tier
+            } else {
+                self.settings.model.tier.value
+            }
+        });
+        let concrete_model = agent.model_routes.for_tier(tier).cloned();
+        let effort = self.model.effort_override.or(agent.effort);
         let request = AiBrokerRequest {
             app_id: "assistant".to_string(),
-            model_tier: self.settings.model.tier.value,
-            system: ASSISTANT_SYSTEM_PROMPT.to_string(),
+            model_tier: tier,
+            concrete_model,
+            reasoning_effort: effort,
+            system: agent.prompt,
             messages: self.history_messages(),
             tools: Vec::new(),
             workspace_root: Some(self.workspace_root.clone()),
@@ -761,8 +879,24 @@ impl AssistantApp {
             cancel,
         };
         log::info!(
-            "assistant[{conversation_id}]: dispatching turn ({} message(s))",
-            request.messages.len()
+            "assistant[{conversation_id}]: dispatching agent={} tier={} route={} effort={} messages={} tools={}",
+            agent.id,
+            settings::model_tier_name(request.model_tier),
+            request
+                .concrete_model
+                .as_ref()
+                .map(|route| format!("{}/{}", route.provider, route.model))
+                .unwrap_or_else(|| "tier-default".to_string()),
+            request
+                .reasoning_effort
+                .map(ReasoningEffort::label)
+                .unwrap_or("auto"),
+            request.messages.len(),
+            request
+                .tool_dispatcher
+                .as_ref()
+                .map(|dispatcher| dispatcher.all_tools().len())
+                .unwrap_or(0)
         );
         let broker = Arc::clone(&self.broker);
         let outcome_tx = self.outcome_tx.clone();
@@ -820,12 +954,15 @@ impl AssistantApp {
                 ToolFlowEvent::Ask {
                     tool,
                     input_json,
+                    actor_id,
+                    actor_scope,
                     reply,
                 } => {
                     log::info!("assistant: permission sheet shown for '{tool}'");
                     self.model
                         .permission_requested(&tool, &summarize_input(&input_json));
                     self.pending_reply = Some(reply);
+                    self.pending_connector_actor = Some((actor_id, actor_scope));
                 }
                 ToolFlowEvent::HostCall {
                     tool,
@@ -846,6 +983,7 @@ impl AssistantApp {
         while let Ok(outcome) = self.outcome_rx.try_recv() {
             self.delta_rx = None;
             self.pending_reply = None;
+            self.pending_connector_actor = None;
             let result = match (outcome.text, outcome.error) {
                 (Some(text), _) => Ok(text),
                 (None, Some(error)) => Err(error),
@@ -1002,6 +1140,7 @@ impl AssistantApp {
         if let Some(tx) = self.pending_reply.take() {
             let _ = tx.send(PermissionReply::Deny);
         }
+        self.pending_connector_actor = None;
         if let Some(pending) = self.pending_subscribe.take() {
             let _ = pending.reply.send(ToolCallResult {
                 output_json: None,
@@ -1027,7 +1166,7 @@ impl AssistantApp {
                 ("allow_once", PermissionReply::Allow { remember: false })
             }
             PermissionChoice::AllowSession => {
-                self.record_assistant_grant(
+                self.record_connector_grant(
                     TargetType::AppConnector,
                     &target,
                     GrantDuration::Session,
@@ -1036,7 +1175,7 @@ impl AssistantApp {
                 ("allow_session", PermissionReply::Allow { remember: true })
             }
             PermissionChoice::AllowAlways => {
-                self.record_assistant_grant(
+                self.record_connector_grant(
                     TargetType::AppConnector,
                     &target,
                     GrantDuration::Always,
@@ -1065,6 +1204,7 @@ impl AssistantApp {
                 pending.tool
             ),
         }
+        self.pending_connector_actor = None;
         let effects = self.model.permission_resolved(choice);
         self.execute_effects(effects);
     }
@@ -1136,9 +1276,49 @@ impl AssistantApp {
         self.execute_effects(effects);
     }
 
-    /// Record an Allow grant for the assistant actor on `target`.
+    fn record_connector_grant(
+        &mut self,
+        target_type: TargetType,
+        target: &str,
+        duration: GrantDuration,
+        source: GrantSource,
+    ) {
+        let (actor_id, actor_scope) = self
+            .pending_connector_actor
+            .clone()
+            .unwrap_or_else(|| self.connector_actor());
+        self.record_grant(
+            &actor_id,
+            actor_scope,
+            target_type,
+            target,
+            duration,
+            source,
+        );
+    }
+
+    /// Record an Allow grant for the shared Assistant event actor on `target`.
     fn record_assistant_grant(
         &mut self,
+        target_type: TargetType,
+        target: &str,
+        duration: GrantDuration,
+        source: GrantSource,
+    ) {
+        self.record_grant(
+            ASSISTANT_ACTOR_ID,
+            ActorScope::BuiltIn,
+            target_type,
+            target,
+            duration,
+            source,
+        );
+    }
+
+    fn record_grant(
+        &mut self,
+        actor_id: &str,
+        actor_scope: ActorScope,
         target_type: TargetType,
         target: &str,
         duration: GrantDuration,
@@ -1152,8 +1332,8 @@ impl AssistantApp {
             .unwrap_or_else(|_| self.workspace_root.clone());
         self.grant_store.record(GrantRecord {
             actor_type: ActorType::Agent,
-            actor_id: ASSISTANT_ACTOR_ID.to_string(),
-            actor_scope: ActorScope::BuiltIn,
+            actor_id: actor_id.to_string(),
+            actor_scope,
             workspace_root: Some(workspace_root),
             target_type,
             target_id: target.to_string(),
@@ -1176,6 +1356,279 @@ impl AssistantApp {
         self.settings_errors = report.errors;
     }
 
+    fn reload_agents(&mut self) {
+        self.agent_registry = AgentRegistry::load(&self.profile_dir, &self.workspace_root);
+        if self.agent_registry.active(&self.model.active_agent_id).is_none() {
+            self.model.active_agent_id = "default".to_string();
+        }
+    }
+
+    fn cmd_list_agents(&mut self) {
+        self.reload_agents();
+        let lines = self
+            .agent_registry
+            .agents()
+            .map(|agent| {
+                let marker = if agent.id == self.model.active_agent_id {
+                    " (active)"
+                } else {
+                    ""
+                };
+                let shadowed = self.agent_registry.shadowed(&agent.id);
+                let shadow_note = if shadowed.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; {} shadowed: {}",
+                        shadowed.len(),
+                        shadowed
+                            .iter()
+                            .map(|entry| entry.source.label())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                format!(
+                    "- `{}`: {} [{}]{}{}",
+                    agent.id,
+                    agent.display_name,
+                    agent.source.label(),
+                    marker,
+                    shadow_note
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let effects = self.model.push_info(format!("**Assistant agents**\n\n{lines}"));
+        self.execute_effects(effects);
+    }
+
+    fn cmd_switch_agent(&mut self, id: &str) {
+        self.reload_agents();
+        let Some(agent) = self.agent_registry.active(id) else {
+            let effects = self
+                .model
+                .push_error(format!("Unknown agent `{id}`. Run /agent to list agents."));
+            self.execute_effects(effects);
+            return;
+        };
+        self.model.active_agent_id = agent.id.clone();
+        self.model.effort_override = None;
+        log::info!(
+            "assistant: switched active agent to '{}' ({})",
+            agent.id,
+            agent.source.label()
+        );
+        let effects = self.model.push_info(format!(
+            "Active agent: `{}` ({}).",
+            agent.id, agent.display_name
+        ));
+        self.execute_effects(effects);
+    }
+
+    fn cmd_inspect_agent(&mut self, id: &str) {
+        self.reload_agents();
+        let Some(agent) = self.agent_registry.active(id) else {
+            let effects = self.model.push_error(format!("Unknown agent `{id}`."));
+            self.execute_effects(effects);
+            return;
+        };
+        let shadowed = self
+            .agent_registry
+            .shadowed(id)
+            .iter()
+            .map(|entry| entry.source.label())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let routes = [ModelTier::Low, ModelTier::Medium, ModelTier::High]
+            .into_iter()
+            .filter_map(|tier| {
+                agent.model_routes.for_tier(tier).map(|route| {
+                    format!(
+                        "{}={}/{}",
+                        settings::model_tier_name(tier),
+                        route.provider,
+                        route.model
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let shadow_details = self
+            .agent_registry
+            .shadowed(id)
+            .iter()
+            .map(|entry| {
+                format!(
+                    "- {} [{}], tier={}, description={}, path={}, tools={}, skills={}, hooks={}",
+                    entry.display_name,
+                    entry.source.label(),
+                    settings::model_tier_name(entry.default_tier),
+                    if entry.description.is_empty() {
+                        "none"
+                    } else {
+                        &entry.description
+                    },
+                    entry
+                        .path
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "compiled".to_string()),
+                    format_setting_ids(&entry.tools),
+                    format_setting_ids(&entry.skills),
+                    format_setting_ids(&entry.hooks)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = format!(
+            "**Agent `{}`**\n\n- Name: {}\n- Source: {}\n- Description: {}\n- Default tier: {}\n- Routes: {}\n- Effort: {}\n- Tools: {}\n- Skills: {}\n- Hooks: {}\n- Shadowed sources: {}",
+            agent.id,
+            agent.display_name,
+            agent.source.label(),
+            if agent.description.is_empty() { "none" } else { &agent.description },
+            settings::model_tier_name(agent.default_tier),
+            if routes.is_empty() { "tier defaults" } else { &routes },
+            agent.effort.map(ReasoningEffort::label).unwrap_or("auto"),
+            format_setting_ids(&agent.tools),
+            format_setting_ids(&agent.skills),
+            format_setting_ids(&agent.hooks),
+            if shadowed.is_empty() { "none" } else { &shadowed }
+        );
+        let text = if shadow_details.is_empty() {
+            text
+        } else {
+            format!("{text}\n\n**Shadowed definitions**\n\n{shadow_details}")
+        };
+        let effects = self.model.push_info(text);
+        self.execute_effects(effects);
+    }
+
+    fn valid_agent_id(id: &str) -> bool {
+        !id.is_empty()
+            && id.chars().all(|ch| {
+                ch.is_ascii_lowercase()
+                    || ch.is_ascii_digit()
+                    || ch == '-'
+                    || ch == '_'
+            })
+    }
+
+    fn cmd_create_agent(&mut self, id: &str) {
+        self.reload_agents();
+        if !Self::valid_agent_id(id) {
+            let effects = self.model.push_error(
+                "Agent ids use lowercase letters, digits, hyphens, and underscores only."
+                    .to_string(),
+            );
+            self.execute_effects(effects);
+            return;
+        }
+        if self.agent_registry.active(id).is_some() {
+            let effects = self.model.push_error(format!("Agent `{id}` already exists."));
+            self.execute_effects(effects);
+            return;
+        }
+        let parent = self.profile_dir.join("agents");
+        let dir = parent.join(id);
+        let mut created_dir = false;
+        let result = (|| {
+            std::fs::create_dir_all(&parent)?;
+            std::fs::create_dir(&dir)?;
+            created_dir = true;
+            std::fs::write(
+                dir.join("AGENT.md"),
+                format!("You are {id}, a Plexi Assistant agent.\n"),
+            )?;
+            std::fs::write(
+                dir.join("settings.toml"),
+                format!(
+                    "[agent]\nid = \"{id}\"\ndisplay_name = \"{id}\"\ndefault_tier = \"medium\"\n\n[permissions]\ndefault_posture = \"ask\"\n"
+                ),
+            )
+        })();
+        if let Err(error) = result {
+            if created_dir {
+                if let Err(cleanup_error) = std::fs::remove_dir_all(&dir) {
+                    log::error!(
+                        "assistant: failed to clean partial agent '{}' at {}: {cleanup_error}",
+                        id,
+                        dir.display()
+                    );
+                }
+            }
+            log::error!(
+                "assistant: failed to create agent '{}' at {}: {error}",
+                id,
+                dir.display()
+            );
+            let effects = self.model.push_error(format!("Failed to create agent `{id}`: {error}"));
+            self.execute_effects(effects);
+            return;
+        }
+        self.reload_agents();
+        log::info!(
+            "assistant: created user agent '{}' at {}",
+            id,
+            dir.display()
+        );
+        let effects = self.model.push_info(format!("Created agent `{id}` at `{}`.", dir.display()));
+        self.execute_effects(effects);
+    }
+
+    fn cmd_edit_agent(&mut self, id: &str) {
+        self.reload_agents();
+        let Some(agent) = self.agent_registry.active(id) else {
+            let effects = self.model.push_error(format!("Unknown agent `{id}`."));
+            self.execute_effects(effects);
+            return;
+        };
+        if agent.source == AgentSource::BuiltIn {
+            let effects = self.model.push_error(
+                "Built-in agents cannot be edited. Create a user agent instead.".to_string(),
+            );
+            self.execute_effects(effects);
+            return;
+        }
+        let path = agent
+            .path
+            .clone()
+            .unwrap_or_else(|| self.profile_dir.join("agents").join(id));
+        log::info!("assistant: edit agent '{}' at {}", id, path.display());
+        let effects = self.model.push_info(format!("Edit agent `{id}` at `{}`.", path.display()));
+        self.execute_effects(effects);
+    }
+
+    fn cmd_show_effort(&mut self) {
+        let agent_effort = self.active_agent().and_then(|agent| agent.effort);
+        let effective = self.model.effort_override.or(agent_effort);
+        let source = if self.model.effort_override.is_some() {
+            "session"
+        } else if agent_effort.is_some() {
+            "agent"
+        } else {
+            "provider default"
+        };
+        let effects = self.model.push_info(format!(
+            "Reasoning effort: `{}` ({source}).",
+            effective.map(ReasoningEffort::label).unwrap_or("auto")
+        ));
+        self.execute_effects(effects);
+    }
+
+    fn set_session_effort(&mut self, effort: Option<ReasoningEffort>) {
+        self.model.effort_override = effort;
+        log::info!(
+            "assistant: session reasoning effort set to {}",
+            effort.map(ReasoningEffort::label).unwrap_or("auto")
+        );
+        let effects = self.model.push_info(format!(
+            "Reasoning effort set to `{}` for this session.",
+            effort.map(ReasoningEffort::label).unwrap_or("auto")
+        ));
+        self.execute_effects(effects);
+    }
+
     fn set_session_model(&mut self, tier: ModelTier) {
         self.session_overrides.model_tier = Some(tier);
         self.reload_settings();
@@ -1193,16 +1646,28 @@ impl AssistantApp {
 
     fn cmd_show_model_setting(&mut self) {
         self.reload_settings();
-        let tier = &self.settings.model.tier;
+        let configured = &self.settings.model.tier;
+        let (tier, source) = if self.session_overrides.model_tier.is_some()
+            || configured.source.scope != settings::SettingsScope::Default
+        {
+            (configured.value, configured.source.description())
+        } else if let Some(agent) = self.active_agent() {
+            (
+                agent.default_tier,
+                format!("agent `{}` [{}]", agent.id, agent.source.label()),
+            )
+        } else {
+            (configured.value, configured.source.description())
+        };
         log::info!(
             "assistant: /model showing {} from {}",
-            settings::model_tier_name(tier.value),
-            tier.source.description()
+            settings::model_tier_name(tier),
+            source
         );
         let effects = self.model.push_info(format!(
             "Model tier: `{}` ({}).",
-            settings::model_tier_name(tier.value),
-            tier.source.description()
+            settings::model_tier_name(tier),
+            source
         ));
         self.execute_effects(effects);
     }
@@ -1346,11 +1811,18 @@ impl AssistantApp {
 
     /// `/permissions`: persisted grants for the assistant actor.
     fn cmd_list_permissions(&mut self) {
+        let connector_actor_id = self.connector_actor().0;
         let lines: Vec<String> = self
             .grant_store
             .records()
             .iter()
-            .filter(|r| r.actor_type == ActorType::Agent && r.actor_id == ASSISTANT_ACTOR_ID)
+            .filter(|r| {
+                r.actor_type == ActorType::Agent
+                    && ((r.target_type == TargetType::AppConnector
+                        && r.actor_id == connector_actor_id)
+                        || (r.target_type == TargetType::AppEventStream
+                            && r.actor_id == ASSISTANT_ACTOR_ID))
+            })
             .map(|r| {
                 format!(
                     "{} = {} ({:?}, {:?})",
@@ -1380,9 +1852,14 @@ impl AssistantApp {
     /// `/revoke <target_id>`: remove persisted grants for one target. Event
     /// stream targets also lose their live timeline subscription.
     fn cmd_revoke(&mut self, target_id: &str) {
+        let actor_id = if target_id.starts_with("app.") {
+            self.connector_actor().0
+        } else {
+            ASSISTANT_ACTOR_ID.to_string()
+        };
         let removed = self
             .grant_store
-            .revoke(ActorType::Agent, ASSISTANT_ACTOR_ID, target_id);
+            .revoke(ActorType::Agent, &actor_id, target_id);
         let unsubscribed = self.unsubscribe_stream(target_id);
         let text = if removed == 0 && unsubscribed == 0 {
             format!("No grants found for '{target_id}'. See /permissions for target ids.")
@@ -1512,6 +1989,22 @@ mod tests {
         reply: Option<String>,
     }
 
+    #[derive(Default)]
+    struct CapturingBroker {
+        seen: Mutex<Vec<AiBrokerRequest>>,
+    }
+
+    impl AiBroker for CapturingBroker {
+        fn dispatch(
+            &self,
+            request: AiBrokerRequest,
+            _on_delta: &mut dyn FnMut(TurnDelta<'_>),
+        ) -> AiBrokerResponse {
+            self.seen.lock().unwrap().push(request);
+            AiBrokerResponse::ok("ok".to_string(), 0, 0)
+        }
+    }
+
     impl MockBroker {
         fn ok(reply: impl Into<String>) -> Arc<Self> {
             Arc::new(Self {
@@ -1585,6 +2078,203 @@ mod tests {
         assert_eq!(reopened.model.conversation_id, conversation_id);
         assert_eq!(reopened.model.turns.len(), 2);
         assert_eq!(reopened.model.turns[1].text, "echo: ok");
+    }
+
+    #[test]
+    fn scoped_and_session_model_tiers_route_active_agent_concretely() {
+        let ws = tempfile::tempdir().unwrap();
+        let assistant_settings_dir = ws
+            .path()
+            .join(crate::config::workspace_channel_dir())
+            .join("agents");
+        std::fs::create_dir_all(&assistant_settings_dir).unwrap();
+        std::fs::write(
+            assistant_settings_dir.join("settings.toml"),
+            "[model]\ntier = \"medium\"\n",
+        )
+        .unwrap();
+        let agent_dir = ws.path().join("agents").join("writer");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("AGENT.md"), "Writer system prompt").unwrap();
+        std::fs::write(
+            agent_dir.join("settings.toml"),
+            r#"
+[agent]
+id = "writer"
+display_name = "Writer"
+default_tier = "high"
+effort = "medium"
+[permissions]
+default_posture = "ask"
+[models.high]
+provider = "openrouter"
+model = "anthropic/test"
+[models.medium]
+provider = "openrouter"
+model = "anthropic/medium"
+[models.low]
+provider = "openrouter"
+model = "anthropic/low"
+[tools]
+enabled = ["allowed.tool"]
+"#,
+        )
+        .unwrap();
+        let broker = Arc::new(CapturingBroker::default());
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path());
+        register_echo_provider(
+            9199,
+            &["allowed.tool", "denied.tool"],
+            ws.path().to_path_buf(),
+        );
+
+        app.model.composer = "/agent writer".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        app.model.composer = "hello".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        wait_for_turn(&mut app);
+
+        app.model.composer = "/model low".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        app.model.composer = "hello again".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        wait_for_turn(&mut app);
+
+        let seen = broker.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].system, "Writer system prompt");
+        assert_eq!(seen[0].model_tier, ModelTier::Medium);
+        assert_eq!(
+            seen[0].concrete_model.as_ref().unwrap().model,
+            "anthropic/medium"
+        );
+        assert_eq!(seen[1].model_tier, ModelTier::Low);
+        assert_eq!(
+            seen[1].concrete_model.as_ref().unwrap().model,
+            "anthropic/low"
+        );
+        assert_eq!(seen[1].reasoning_effort, Some(ReasoningEffort::Medium));
+        let tool_names = seen[1]
+            .tool_dispatcher
+            .as_ref()
+            .unwrap()
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        assert!(tool_names.contains(&"allowed.tool".to_string()));
+        assert!(!tool_names.contains(&"denied.tool".to_string()));
+        tool_dispatch::unregister(9199);
+    }
+
+    #[test]
+    fn create_and_edit_agent_are_file_backed_and_builtin_is_read_only() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        app.cmd_create_agent("writer");
+        let dir = ws.path().join("agents").join("writer");
+        assert!(dir.join("AGENT.md").is_file());
+        assert!(dir.join("settings.toml").is_file());
+        app.cmd_edit_agent("writer");
+        assert!(app
+            .model
+            .turns
+            .last()
+            .unwrap()
+            .text
+            .contains(&dir.display().to_string()));
+        app.cmd_edit_agent("default");
+        assert_eq!(app.model.turns.last().unwrap().role, TurnRole::Error);
+        assert!(app
+            .model
+            .turns
+            .last()
+            .unwrap()
+            .text
+            .contains("cannot be edited"));
+    }
+
+    #[test]
+    fn create_agent_refuses_to_overwrite_partial_definition() {
+        let ws = tempfile::tempdir().unwrap();
+        let dir = ws.path().join("agents").join("writer");
+        std::fs::create_dir_all(&dir).unwrap();
+        let prompt_path = dir.join("AGENT.md");
+        std::fs::write(&prompt_path, "Keep this prompt.\n").unwrap();
+        let mut app = test_app(ws.path());
+
+        app.cmd_create_agent("writer");
+
+        assert_eq!(
+            std::fs::read_to_string(prompt_path).unwrap(),
+            "Keep this prompt.\n"
+        );
+        assert!(!dir.join("settings.toml").exists());
+        assert_eq!(app.model.turns.last().unwrap().role, TurnRole::Error);
+    }
+
+    #[test]
+    fn named_agent_connector_permissions_use_agent_identity_and_scope() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        app.cmd_create_agent("writer");
+        app.cmd_switch_agent("writer");
+        app.record_connector_grant(
+            TargetType::AppConnector,
+            "app.docs.write",
+            GrantDuration::Session,
+            GrantSource::Session,
+        );
+
+        let record = app.grant_store.records().last().unwrap();
+        assert_eq!(record.actor_id, "writer");
+        assert_eq!(record.actor_scope, ActorScope::User);
+        let tool = AiTool {
+            name: "docs.write".to_string(),
+            description: "write docs".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            timeout_ms: None,
+            read_only: false,
+        };
+        assert_eq!(app.tool_decision(&tool), Decision::Allow);
+    }
+
+    #[test]
+    fn agent_commands_expose_shadowed_definition_summaries() {
+        let ws = tempfile::tempdir().unwrap();
+        let write_agent = |dir: PathBuf, name: &str, description: &str| {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("AGENT.md"), format!("{name} prompt")).unwrap();
+            std::fs::write(
+                dir.join("settings.toml"),
+                format!(
+                    "[agent]\nid = \"writer\"\ndisplay_name = \"{name}\"\ndescription = \"{description}\"\ndefault_tier = \"medium\"\n\n[permissions]\ndefault_posture = \"ask\"\n"
+                ),
+            )
+            .unwrap();
+        };
+        write_agent(ws.path().join("agents/writer"), "User Writer", "user copy");
+        write_agent(
+            ws.path()
+                .join(crate::config::workspace_channel_dir())
+                .join("agents/writer"),
+            "Workspace Writer",
+            "workspace copy",
+        );
+        let mut app = test_app(ws.path());
+
+        app.cmd_list_agents();
+        let list = &app.model.turns.last().unwrap().text;
+        assert!(list.contains("1 shadowed: user"), "{list}");
+        app.cmd_inspect_agent("writer");
+        let inspect = &app.model.turns.last().unwrap().text;
+        assert!(inspect.contains("Workspace Writer"), "{inspect}");
+        assert!(inspect.contains("User Writer [user]"), "{inspect}");
+        assert!(inspect.contains("description=user copy"), "{inspect}");
     }
 
     #[test]
@@ -1874,16 +2564,17 @@ mod tests {
         });
     }
 
-    /// Persist a grant for the assistant actor directly into the app's store.
+    /// Persist a grant for the active connector agent directly into the store.
     fn seed_grant(app: &mut AssistantApp, target: &str, decision: Decision) {
+        let (actor_id, actor_scope) = app.connector_actor();
         let workspace_root = app
             .workspace_root
             .canonicalize()
             .unwrap_or_else(|_| app.workspace_root.clone());
         app.grant_store.record(GrantRecord {
             actor_type: ActorType::Agent,
-            actor_id: ASSISTANT_ACTOR_ID.to_string(),
-            actor_scope: ActorScope::BuiltIn,
+            actor_id,
+            actor_scope,
             workspace_root: Some(workspace_root),
             target_type: TargetType::AppConnector,
             target_id: target.to_string(),
@@ -2766,6 +3457,21 @@ mod tests {
         drop(app);
         let reopened = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path());
         assert_eq!(reopened.model.session_name.as_deref(), Some("My Session"));
+    }
+
+    #[test]
+    fn selected_agent_and_effort_persist_when_conversation_reopens() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        app.cmd_create_agent("writer");
+        app.cmd_switch_agent("writer");
+        app.set_session_effort(Some(ReasoningEffort::High));
+
+        drop(app);
+        let reopened = test_app(ws.path());
+
+        assert_eq!(reopened.model.active_agent_id, "writer");
+        assert_eq!(reopened.model.effort_override, Some(ReasoningEffort::High));
     }
 
     #[test]

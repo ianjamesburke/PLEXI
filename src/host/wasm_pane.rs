@@ -847,6 +847,8 @@ impl WasmPane {
                     AiBrokerRequest {
                         app_id,
                         model_tier,
+                        concrete_model: None,
+                        reasoning_effort: None,
                         system: req.system,
                         messages,
                         tools: Vec::new(),
