@@ -878,17 +878,15 @@ impl LiveBackend {
             }
             Step::Text { text } => {
                 let pane_id = resolve_live_pane_target(&self.handles, &text.target, "text input")?;
-                for character in text.value.chars() {
-                    self.command(
-                        &[
-                            "pane".into(),
-                            "key".into(),
-                            pane_id.to_string(),
-                            character.to_string(),
-                        ],
-                        true,
-                    )?;
-                }
+                self.command(
+                    &[
+                        "pane".into(),
+                        "send".into(),
+                        pane_id.to_string(),
+                        text.value.clone(),
+                    ],
+                    true,
+                )?;
                 let _ = self.settled_state(pane_id, Duration::from_secs(5))?;
                 let length = text.value.chars().count();
                 log::info!(

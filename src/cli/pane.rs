@@ -560,8 +560,9 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
 
 /// `plexi pane send <pane_id> <text>`
 ///
-/// Writes text to the target pane's PTY stdin. Polls a response file to
-/// surface errors (e.g. pane not found) back to the caller.
+/// Writes text to a terminal pane's PTY stdin, or focuses an app pane and
+/// injects one egui text-input event through the production render path.
+/// Polls a response file to surface errors (e.g. pane not found) to the caller.
 /// Returns 0 on success, 1 on error.
 pub fn pane_send_cli(pane_id: u64, text: &str) -> i32 {
     let id = uuid::Uuid::new_v4();

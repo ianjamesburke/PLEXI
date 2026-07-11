@@ -966,7 +966,9 @@ pub enum PaneCmd {
     },
     /// Type text into another pane as if it came from the keyboard.
     ///
-    /// Use `\n` in the text to press Enter (which submits a command).
+    /// Terminal panes receive PTY bytes. App panes receive one real egui text
+    /// input event after the host focuses the target pane. Use `\n` in terminal
+    /// text to press Enter (which submits a command).
     ///
     /// Example: plexi pane send 42 "git status\n"
     Send {

@@ -367,6 +367,63 @@ fn read_json_response(path: &str) -> serde_json::Value {
     serde_json::from_str(&content).expect("response must be valid JSON")
 }
 
+#[derive(Default)]
+struct TextInputProbe {
+    text: String,
+}
+
+impl crate::app::app_trait::App for TextInputProbe {
+    fn type_id(&self) -> &'static str {
+        "text-input-probe"
+    }
+
+    fn display_name(&self) -> String {
+        "Text Input Probe".to_string()
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &crate::app::app_trait::AppRenderContext<'_>) {
+        let response = ui.text_edit_singleline(&mut self.text);
+        response.request_focus();
+    }
+
+    fn serialize_state(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "text": self.text }))
+    }
+}
+
+#[test]
+fn send_to_app_pane_injects_text_through_focused_render_input() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::<TextInputProbe>::default(),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.run_frames(2);
+    let response_file = temp_response(tmp.path(), "send-text");
+
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id,
+        text: "/settings".to_string(),
+        response_file: Some(response_file.clone()),
+    });
+    h.run_frames(1);
+
+    assert_eq!(read_json_response(&response_file)["ok"], true);
+    let state = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state())
+        .expect("probe state");
+    assert_eq!(state["text"], "/settings");
+}
+
 #[test]
 fn get_pane_state_preserves_process_frame_and_adds_normalized_semantics() {
     let tmp = tempfile::tempdir().expect("tempdir");
