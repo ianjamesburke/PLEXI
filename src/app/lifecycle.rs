@@ -1264,7 +1264,8 @@ impl PlexiApp {
                     "pane_ipc: kind=key_pane pane_id={pane_id} key_chars={}",
                     key.chars().count()
                 );
-                let result: Result<serde_json::Value, String> = match self
+                let mut passthrough_raw = None;
+                let mut result: Result<serde_json::Value, String> = match self
                     .windows
                     .iter_mut()
                     .find_map(|win| win.panes.get_mut(pane_id))
@@ -1297,21 +1298,24 @@ impl PlexiApp {
                                 // their real `handle_key` handler.
                                 runtime => match super::drive_native_pane_key(runtime, key) {
                                     Ok(disposition) => {
-                                        let disposition = match disposition {
+                                        let disposition_label = match disposition {
                                             crate::app::app_trait::KeyDisposition::Consumed => {
                                                 "consumed"
                                             }
                                             crate::app::app_trait::KeyDisposition::Passthrough => {
+                                                passthrough_raw =
+                                                    super::key_str_to_egui_raw_input(key);
                                                 "passthrough"
                                             }
                                         };
                                         log::info!(
                                             "pane_ipc: key_pane: native app pane_id={pane_id} \
-                                             key={key:?} disposition={disposition}"
+                                             key_chars={} disposition={disposition_label}",
+                                            key.chars().count()
                                         );
                                         Ok(serde_json::json!({
                                             "ok": true,
-                                            "disposition": disposition,
+                                            "disposition": disposition_label,
                                         }))
                                     }
                                     Err(e) => {
@@ -1325,6 +1329,17 @@ impl PlexiApp {
                         }
                     }
                 };
+                if let Some(raw) = passthrough_raw {
+                    if self.pane_navigate(*pane_id) {
+                        self.ctx.input_mut(|input| {
+                            input.modifiers = raw.modifiers;
+                            input.events.extend(raw.events);
+                        });
+                        self.ctx.request_repaint();
+                    } else {
+                        result = Err(format!("pane {pane_id} could not be focused"));
+                    }
+                }
                 if let Some(rf) = response_file {
                     let json = match &result {
                         Ok(v) => v.to_string(),

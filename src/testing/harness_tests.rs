@@ -370,6 +370,9 @@ fn read_json_response(path: &str) -> serde_json::Value {
 #[derive(Default)]
 struct TextInputProbe {
     text: String,
+    enter_handled: bool,
+    enter_rendered: bool,
+    consume_enter: bool,
 }
 
 impl crate::app::app_trait::App for TextInputProbe {
@@ -382,12 +385,32 @@ impl crate::app::app_trait::App for TextInputProbe {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _ctx: &crate::app::app_trait::AppRenderContext<'_>) {
+        if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+            self.enter_rendered = true;
+        }
         let response = ui.text_edit_singleline(&mut self.text);
         response.request_focus();
     }
 
+    fn handle_key(
+        &mut self,
+        input: &egui::InputState,
+    ) -> crate::app::app_trait::KeyDisposition {
+        if input.key_pressed(egui::Key::Enter) {
+            self.enter_handled = true;
+            if self.consume_enter {
+                return crate::app::app_trait::KeyDisposition::Consumed;
+            }
+        }
+        crate::app::app_trait::KeyDisposition::Passthrough
+    }
+
     fn serialize_state(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({ "text": self.text }))
+        Some(serde_json::json!({
+            "text": self.text,
+            "enter_handled": self.enter_handled,
+            "enter_rendered": self.enter_rendered,
+        }))
     }
 }
 
@@ -422,6 +445,64 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
         .and_then(|pane| pane.runtime.serialize_state())
         .expect("probe state");
     assert_eq!(state["text"], "/settings");
+
+    let key_response = temp_response(tmp.path(), "key-enter");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "enter".to_string(),
+        response_file: Some(key_response.clone()),
+    });
+    h.run_frames(1);
+
+    let response = read_json_response(&key_response);
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["disposition"], "passthrough");
+    let state = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state())
+        .expect("probe state after Enter");
+    assert_eq!(state["enter_handled"], true);
+    assert_eq!(state["enter_rendered"], true);
+}
+
+#[test]
+fn consumed_native_key_is_not_replayed_into_render_input() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(TextInputProbe {
+            consume_enter: true,
+            ..Default::default()
+        }),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.run_frames(2);
+    let response_file = temp_response(tmp.path(), "consumed-enter");
+
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "enter".to_string(),
+        response_file: Some(response_file.clone()),
+    });
+    h.run_frames(1);
+
+    let response = read_json_response(&response_file);
+    assert_eq!(response["disposition"], "consumed");
+    let state = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state())
+        .expect("consuming probe state");
+    assert_eq!(state["enter_handled"], true);
+    assert_eq!(state["enter_rendered"], false);
 }
 
 #[test]
