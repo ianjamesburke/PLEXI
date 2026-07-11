@@ -154,6 +154,10 @@ pub enum Step {
     Text { text: TextSpec },
     /// Press a key combo against a pane handle or the whole host.
     Key { key: KeySpec },
+    /// Focus an opened pane through the production pane-navigation path.
+    Focus { focus: String },
+    /// Close an opened pane through the production pane-close path.
+    Close { close: String },
     /// Toggle the host sidebar.
     Sidebar { sidebar: bool },
     /// Switch to the context at this router index.
@@ -261,6 +265,10 @@ pub struct AssertSpec {
     /// Portal panes across all windows.
     pub portal_count: Option<usize>,
     pub sidebar: Option<bool>,
+    /// Whether the target pane currently exists.
+    pub exists: Option<bool>,
+    /// Whether the target pane is the active focused pane.
+    pub focused: Option<bool>,
     /// Lifecycle of the target app pane, lowercase (e.g. "running").
     pub lifecycle: Option<String>,
     /// Substring match against the target app's serialized L1 tree.
@@ -925,6 +933,51 @@ impl LiveBackend {
                     value: key.value.clone(),
                 }))
             }
+            Step::Focus { focus } => {
+                let pane_id = self.handles.resolve(focus)?;
+                self.command(&["pane".into(), "focus".into(), pane_id.to_string()], true)?;
+                poll_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
+                    self.json(&["pane", "list"]).ok().and_then(|value| {
+                        value.as_array()?.iter().find_map(|pane| {
+                            (pane.get("id").and_then(serde_json::Value::as_u64) == Some(pane_id)
+                                && pane.get("focused").and_then(serde_json::Value::as_bool)
+                                    == Some(true))
+                            .then_some(())
+                        })
+                    })
+                })?;
+                log::info!(
+                    "scene_live: step=focus channel={} handle={} pane_id={pane_id}",
+                    self.channel,
+                    focus
+                );
+                Ok(Some(StepDetail::Message {
+                    message: format!("focused {focus} (pane {pane_id})"),
+                }))
+            }
+            Step::Close { close } => {
+                let pane_id = self.handles.resolve(close)?;
+                self.command(&["pane".into(), "close".into(), pane_id.to_string()], true)?;
+                poll_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, || {
+                    self.json(&["pane", "list"]).ok().and_then(|value| {
+                        value
+                            .as_array()?
+                            .iter()
+                            .all(|pane| {
+                                pane.get("id").and_then(serde_json::Value::as_u64) != Some(pane_id)
+                            })
+                            .then_some(())
+                    })
+                })?;
+                log::info!(
+                    "scene_live: step=close channel={} handle={} pane_id={pane_id}",
+                    self.channel,
+                    close
+                );
+                Ok(Some(StepDetail::Message {
+                    message: format!("closed {close} (pane {pane_id})"),
+                }))
+            }
             Step::WaitAppFrame { wait_app_frame } => {
                 let pane_id = self.handles.resolve(&wait_app_frame.target)?;
                 let _ =
@@ -1136,7 +1189,54 @@ impl LiveBackend {
                 host.context_count
             ));
         }
-        if let Some(target) = spec.target.as_deref() {
+        if let Some(expected) = spec.focused {
+            let target = spec.target.as_deref().ok_or_else(|| {
+                SceneError::new(
+                    "missing_assert_target",
+                    "assert focused requires target = '<handle>'",
+                )
+            })?;
+            let pane_id = self.handles.resolve(target)?;
+            let panes = self.json(&["pane", "list"])?;
+            let actual = panes.as_array().and_then(|entries| {
+                entries.iter().find_map(|pane| {
+                    (pane.get("id").and_then(serde_json::Value::as_u64) == Some(pane_id))
+                        .then(|| pane.get("focused").and_then(serde_json::Value::as_bool))
+                        .flatten()
+                })
+            });
+            if actual != Some(expected) {
+                failures.push(format!(
+                    "focused: expected {expected}, got {}",
+                    actual.map_or_else(|| "unavailable".to_string(), |value| value.to_string())
+                ));
+            }
+        }
+        if let Some(expected) = spec.exists {
+            let target = spec.target.as_deref().ok_or_else(|| {
+                SceneError::new(
+                    "missing_assert_target",
+                    "assert exists requires target = '<handle>'",
+                )
+            })?;
+            let pane_id = self.handles.resolve(target)?;
+            let panes = self.json(&["pane", "list"])?;
+            let actual = panes.as_array().is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|pane| pane.get("id").and_then(serde_json::Value::as_u64) == Some(pane_id))
+            });
+            if actual != expected {
+                failures.push(format!("exists: expected {expected}, got {actual}"));
+            }
+        }
+        if spec.lifecycle.is_some() || spec.tree_contains.is_some() {
+            let target = spec.target.as_deref().ok_or_else(|| {
+                SceneError::new(
+                    "missing_assert_target",
+                    "assert lifecycle/tree_contains requires target = '<handle>'",
+                )
+            })?;
             let pane_id = self.handles.resolve(target)?;
             let state = self.pane_state(pane_id)?;
             if let Some(expected) = &spec.lifecycle {
@@ -1304,6 +1404,8 @@ fn step_label(step: &Step) -> String {
             text.value.chars().count()
         ),
         Step::Key { key } => format!("key {} {}", key.target, key.value),
+        Step::Focus { focus } => format!("focus {focus}"),
+        Step::Close { close } => format!("close {close}"),
         Step::Sidebar { sidebar } => format!("sidebar {sidebar}"),
         Step::SwitchContext { switch_context } => format!("switch_context {switch_context}"),
         Step::PushToSubcontext { push_to_subcontext } => {
@@ -1486,6 +1588,34 @@ impl HeadlessBackend {
                     value: key.value.clone(),
                 }))
             }
+            Step::Focus { focus } => {
+                let pane_id = self.handles.resolve(focus)?;
+                self.h
+                    .focus_pane(pane_id)
+                    .map_err(|message| SceneError::new("focus_failed", message))?;
+                // Focus changes can invalidate pane rectangles for the current
+                // frame; settle one render and one post-layout frame before a
+                // following assertion or screenshot observes the host.
+                self.h.run_steps(2);
+                log::info!("scene: focus handle={focus} pane_id={pane_id}");
+                Ok(Some(StepDetail::Message {
+                    message: format!("focused {focus} (pane {pane_id})"),
+                }))
+            }
+            Step::Close { close } => {
+                let pane_id = self.handles.resolve(close)?;
+                self.h
+                    .close_pane(pane_id)
+                    .map_err(|message| SceneError::new("close_failed", message))?;
+                // Closing rewrites the tile tree before egui recomputes the
+                // surviving pane rect. Settle both phases so an immediately
+                // following shot cannot capture the transient old clip rect.
+                self.h.run_steps(2);
+                log::info!("scene: close handle={close} pane_id={pane_id}");
+                Ok(Some(StepDetail::Message {
+                    message: format!("closed {close} (pane {pane_id})"),
+                }))
+            }
             Step::Sidebar { sidebar } => {
                 let v = *sidebar;
                 self.h.with_app_mut(|app| app.sidebar_visible = v);
@@ -1604,6 +1734,45 @@ impl HeadlessBackend {
         }
         if let Some(v) = spec.sidebar {
             expect("sidebar", v.to_string(), host.sidebar.to_string());
+        }
+        if let Some(expected) = spec.exists {
+            let target = spec.target.as_deref().ok_or_else(|| {
+                SceneError::new(
+                    "missing_assert_target",
+                    "assert exists requires target = '<handle>'",
+                )
+            })?;
+            let pane_id = self.handles.resolve(target)?;
+            let actual = self.h.with_app(|app| {
+                app.windows
+                    .iter()
+                    .any(|window| window.panes.contains_key(&pane_id))
+            });
+            expect("exists", expected.to_string(), actual.to_string());
+        }
+        if let Some(expected) = spec.focused {
+            let target = spec.target.as_deref().ok_or_else(|| {
+                SceneError::new(
+                    "missing_assert_target",
+                    "assert focused requires target = '<handle>'",
+                )
+            })?;
+            let pane_id = self.handles.resolve(target)?;
+            let actual = self.h.with_app(|app| {
+                app.windows
+                    .iter()
+                    .enumerate()
+                    .any(|(window_index, window)| {
+                        window_index == app.active_window
+                            && window.focused_pane.is_some_and(|tile_id| {
+                                matches!(
+                                    window.tree.tiles.get(tile_id),
+                                    Some(egui_tiles::Tile::Pane(id)) if *id == pane_id
+                                )
+                            })
+                    })
+            });
+            expect("focused", expected.to_string(), actual.to_string());
         }
         if spec.lifecycle.is_some() || spec.tree_contains.is_some() {
             let target = spec.target.as_deref().ok_or_else(|| {
@@ -1824,6 +1993,12 @@ mod tests {
             key = { target = "assistant", value = "enter" }
 
             [[steps]]
+            focus = "assistant"
+
+            [[steps]]
+            close = "assistant"
+
+            [[steps]]
             assert_label = { target = "assistant", label = "Assistant settings" }
         "#;
 
@@ -1837,12 +2012,16 @@ mod tests {
                 },
                 Step::Text { text: TextSpec { target: text_target, .. } },
                 Step::Key { key: KeySpec { target: key_target, .. } },
+                Step::Focus { focus },
+                Step::Close { close },
                 Step::AssertLabel {
                     assert_label: AssertLabelSpec { target: label_target, .. }
                 }
             ] if handle == "assistant"
                 && text_target == "assistant"
                 && key_target == "assistant"
+                && focus == "assistant"
+                && close == "assistant"
                 && label_target == "assistant"
         ));
     }

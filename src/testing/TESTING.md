@@ -46,6 +46,8 @@ shot = "balls.png"                          # optional; written to the out dir
 | `open = { kind = "builtin", id = "<id>", as = "<handle>", cwd = "<dir>" }` | Open a compiled-in host app by id. `cwd` is optional and defaults to a fresh harness-owned directory. |
 | `text = { target = "<handle>", value = "hello" }` | Focus a pane and insert text through egui's normal text-input path. The report records the character count, not the text. |
 | `key = { target = "<handle>", value = "enter" }` | Focus a pane and press a key combo (`cmd`/`ctrl`/`alt`/`shift` plus a key name). Use `target = "host"` for a whole-host shortcut. |
+| `focus = "<handle>"` | Focus an opened pane through the production pane-navigation path (`plexi pane focus` live). |
+| `close = "<handle>"` | Close an opened pane through the production pane lifecycle path (`plexi pane close` live). |
 | `sidebar = true` | Show/hide the host sidebar. |
 | `switch_context = 0` | Switch to the context at this router index. |
 | `push_to_subcontext = "Name"` | Push the focused pane into a new subcontext (creates a portal). |
@@ -59,7 +61,7 @@ Every `open` step binds one unique symbolic handle. Later pane steps reject miss
 
 ### Assertions
 
-`pane_count`, `window_count`, `context_count`, `portal_count` (across all windows), and `sidebar` assert host state. `lifecycle` and `tree_contains` require `target = "<handle>"`; they inspect that process or WASM app's serialized L1 state. Native builtins use `assert_label`. Every present key must match.
+`pane_count`, `window_count`, `context_count`, `portal_count` (across all windows), and `sidebar` assert host state. `exists`, `focused`, `lifecycle`, and `tree_contains` require `target = "<handle>"`; `exists` and `focused` check pane lifecycle/focus while the latter two inspect a process or WASM app's serialized L1 state. Native builtins use `assert_label`. Every present key must match. Prefer handle-scoped assertions in scenes meant for both backends: an installed profile may restore unrelated panes, so absolute global counts are intentionally profile-dependent.
 
 ### Running
 
@@ -78,7 +80,34 @@ Every run writes `<out>/<scene>.json` (`schema_version: 3`). It includes the sel
 
 `just scene-live` requires an explicit installed channel, boots that channel's host, drives generic app open/text/key/context switch/context push operations through the public CLI/IPC surface, observes `pane state` and context metadata, and always tears down a runner-owned host. Set `PLEXI_SCENE_ATTACH=1` only to attach deliberately; attached hosts are never stopped by the runner. The outer script writes a runner-only ownership marker, so SIGINT/SIGTERM/HUP cleanup can stop an owned host without touching an attached one. Unsupported live verbs fail with `unsupported_live_verb` rather than silently diverging from headless semantics. Live assertions use bounded eventual polling with a small poll interval and a stable-state barrier, never fixed workflow sleeps.
 
+Changes to `LiveBackend` require a `just scene-live` run against the installed PR
+channel. A passing headless scene does not exercise CLI command construction,
+host startup/ownership, or eventual polling.
+
 Whole-host `text`, `key`, and `assert_label` targets are headless-only because the installed host exposes no sanctioned generic host-input or host-semantic CLI/IPC seam. The live backend returns `unsupported_live_target` for `target = "host"`; pane targets retain the shared semantics.
+
+## Host Surface Coverage
+
+Use this map before extending the DSL. “Scene” means observable coverage through
+the shared TOML schema; “logic” names the lower layer for invariants that are not
+pixels. A blank scene cell is a deliberate gap, not permission to add an ad hoc
+driver.
+
+| Host surface | Scene coverage | Logic coverage | Live CLI surface |
+|---|---|---|---|
+| Open process, builtin, and WASM panes | `open`, app-specific scenes | launch and lifecycle tests | `plexi app open` |
+| Pane focus, close, text, and native/process/WASM keys | `focus`, `close`, `text`, `key`; `pane-lifecycle.toml`, `assistant-settings.toml`, `wasm-sysmon.toml` | `HostHarness` IPC and native key tests | `plexi pane focus/close/send/key` |
+| Split directions, tabs, overlays, and multi-window placement | host shortcuts can be driven with whole-host `key`; placement state is covered in focused Rust tests | pane layout, window cleanup, and spawn tests | `plexi pane new` / `plexi app open` placement flags |
+| Context switch, subcontext push, and portals | `switch_context`, `push_to_subcontext`; `subcontext-portal.toml` | context and portal lifecycle tests | `plexi context zoom/push/list` |
+| Sidebar and context drag/drop | `sidebar`; file-browser sidebar scene. Pointer drag remains a direct `PlexiUiHarness` edge-case test. | sidebar reorder/drop resolver tests | no generic pointer-injection command; context mutations use `plexi context` |
+| Command palette and host overlays | whole-host `key` plus semantic/pixel assertions; direct harness tests cover draw-pass focus edge cases | palette, notification, quick-note, and focus-stack tests | no generic whole-host key command; invoke the underlying pane/context/app CLI command |
+| Agent panes and terminal PTY behavior | host state and pane chrome can be captured; PTY behavior is not simulated | agent-state and `#[ignore = "requires-pty"]` tests | `plexi pane new`, `plexi agent report`, `plexi pane capture` |
+| Native, process, WASM, portal, sidebar, and overlay screenshots | `shot` captures the entire headless host framebuffer, so pane type does not require a separate capture path | renderer and semantic-state tests | live scenes intentionally skip `shot`; installed validation uses `drive-host` capture |
+
+Do not require scene and CLI syntax to be identical. They must converge on the
+same production host operation. Pointer-only UI affordances and whole-host
+overlays have no sanctioned live input seam; test their observable UI headlessly
+and test the underlying mutation through its public CLI command.
 
 ## Real App Processes in Tests
 
@@ -86,7 +115,11 @@ Whole-host `text`, `key`, and `assert_label` targets are headless-only because t
 
 ## Pre-Push Evidence
 
-The `/testing` skill (`.agents/skills/testing/SKILL.md`) is the agent workflow: classify the diff, run the matching layer's tests/scenes, inspect screenshots, write the `**Test evidence:**` block into the issue Ship Log. validate-pr reads that block; `install skippable — full coverage` means diff-review-only validation.
+This file is the self-validation contract for every coding agent. The `/testing`
+skill (`.agents/skills/testing/SKILL.md`) is its executable workflow: classify the
+diff, run every touched layer, inspect every generated screenshot, and write the
+`**Test evidence:**` block into the issue Ship Log or PR body. validate-pr reads
+that block; `install skippable — full coverage` means diff-review-only validation.
 
 ## Conventions
 

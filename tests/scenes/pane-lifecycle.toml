@@ -1,0 +1,32 @@
+# Pane focus and close use the same host lifecycle paths as the public CLI.
+size = [1280.0, 800.0]
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = "tests", as = "second" }
+
+[[steps]]
+assert = { target = "second", exists = true }
+
+[[steps]]
+focus = "second"
+
+[[steps]]
+assert = { target = "second", focused = true }
+
+[[steps]]
+focus = "files"
+
+[[steps]]
+assert = { target = "files", focused = true }
+
+[[steps]]
+close = "second"
+
+[[steps]]
+assert = { target = "second", exists = false }
+
+[[steps]]
+shot = "pane-lifecycle.png"

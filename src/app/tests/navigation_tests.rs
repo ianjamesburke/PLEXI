@@ -129,9 +129,9 @@ fn pane_navigate_cross_window_syncs_router() {
 /// returned "not found" when `active_window == 0`.
 ///
 /// Strategy: insert an App pane into a second window, keep `active_window = 0`,
-/// inject `SendToPane` targeting that pane. The response must contain
-/// "not a terminal pane" (pane was found across windows but is an App pane),
-/// NOT "not found" (which would indicate the pre-fix single-window search).
+/// inject `SendToPane` targeting that pane. App panes accept text through the
+/// production egui input path, so success plus cross-window focus proves the
+/// lookup reached the target instead of returning "not found".
 #[test]
 fn send_to_pane_searches_all_windows() {
     let mut h = HostHarness::new();
@@ -194,14 +194,16 @@ fn send_to_pane_searches_all_windows() {
 
     let response = std::fs::read_to_string(&resp_file)
         .expect("response file must be written by SendToPane handler");
-    // Pre-fix: response contains "not found" (pane not visible from active window).
-    // Post-fix: pane IS found across windows but is an App pane → "is not a terminal pane".
-    // The distinct error messages let us confirm the cross-window search reached the pane.
-    assert!(
-        response.contains("is not a terminal pane"),
-        "expected cross-window lookup to find the pane (error contains 'is not a terminal pane'), \
-         got: {response}. If 'not found', the single-window regression is back."
-    );
+    assert_eq!(response, r#"{"ok":true}"#);
+    assert_eq!(h.app.active_window, 1, "target window must become active");
+    let focused_pane = h.app.windows[1]
+        .focused_pane
+        .and_then(|tile_id| h.app.windows[1].tree.tiles.get(tile_id))
+        .and_then(|tile| match tile {
+            egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
+            _ => None,
+        });
+    assert_eq!(focused_pane, Some(cross_window_pane_id));
     let _ = std::fs::remove_file(&resp_file);
 }
 

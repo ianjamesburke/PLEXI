@@ -273,6 +273,20 @@ impl PlexiUiHarness {
         }
     }
 
+    /// Close a pane through the same lifecycle path used by `plexi pane close`.
+    pub fn close_pane(&mut self, pane_id: PaneId) -> Result<(), String> {
+        let exists = self.with_app(|app| {
+            app.windows
+                .iter()
+                .any(|window| window.panes.contains_key(&pane_id))
+        });
+        if !exists {
+            return Err(format!("pane {pane_id} no longer exists"));
+        }
+        self.with_app_mut(|app| app.close_pane_by_id(pane_id));
+        Ok(())
+    }
+
     /// Exact semantic-label lookup scoped to one rendered pane rectangle.
     pub fn pane_has_label(&mut self, pane_id: PaneId, label: &str) -> bool {
         use egui_kittest::kittest::Queryable;

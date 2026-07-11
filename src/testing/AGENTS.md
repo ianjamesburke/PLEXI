@@ -8,7 +8,7 @@ Test infrastructure for the Plexi host. `HostHarness` (headless egui test harnes
 
 ## Reference
 
-- [TESTING.md](TESTING.md) — full testing guide: layers, scene format, conventions, profile isolation.
+- [TESTING.md](TESTING.md) — mandatory self-validation contract for every coding agent: layers, scene format, coverage map, evidence workflow, and profile isolation.
 
 ## Rules
 
