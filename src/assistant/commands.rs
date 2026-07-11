@@ -42,13 +42,33 @@ pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
         "Show or hide the model's reasoning for every turn.",
     ),
     ("model", "Show or change the model tier for this session."),
-    ("agent", "List, inspect, create, edit, or switch Assistant agents."),
-    ("effort", "Show or change reasoning effort for this session."),
+    (
+        "agent",
+        "List, inspect, create, edit, or switch Assistant agents.",
+    ),
+    (
+        "effort",
+        "Show or change reasoning effort for this session.",
+    ),
     (
         "settings",
         "Show resolved Assistant settings and their sources.",
     ),
     ("config", "Show Assistant settings (alias for /settings)."),
+    ("resume", "List or resume a prior workspace conversation."),
+    (
+        "history",
+        "Show turns, checkpoints, compactions, and interruptions.",
+    ),
+    (
+        "rewind",
+        "Rewind conversation context to an explicit turn or checkpoint.",
+    ),
+    (
+        "compact",
+        "Compact older context while preserving raw history.",
+    ),
+    ("export", "Export the transcript and Assistant audit log."),
 ];
 
 /// Parse `input` as a slash command. Returns `None` when the input is not a
@@ -206,5 +226,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["config"]
         );
+    }
+
+    #[test]
+    fn conversation_history_commands_are_discoverable() {
+        let names: Vec<&str> = BUILT_IN_COMMANDS.iter().map(|(name, _)| *name).collect();
+        for expected in ["resume", "history", "rewind", "compact", "export"] {
+            assert!(names.contains(&expected), "missing /{expected}");
+            assert!(help_text().contains(&format!("/{expected}")));
+        }
     }
 }
