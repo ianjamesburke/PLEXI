@@ -1225,6 +1225,8 @@ impl ProcessApp {
                             AiBrokerRequest {
                                 app_id,
                                 model_tier,
+                                concrete_model: None,
+                                reasoning_effort: None,
                                 system,
                                 messages,
                                 tools,

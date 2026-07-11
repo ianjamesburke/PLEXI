@@ -209,19 +209,32 @@ impl AssistantRenderer {
             pip_color,
         );
 
-        let title = model
+        let session = model
             .session_name
             .clone()
             .unwrap_or_else(|| "Assistant".to_string());
-        // A real label (not painter text) so the title stays in the
-        // accessibility tree for UI-harness queries.
+        // Keep the session title and active agent as separate semantic labels.
+        // Scenes and assistive technology rely on the stable session label,
+        // while the adjacent agent label makes selection state observable.
         let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
         bar_ui.centered_and_justified(|ui| {
-            ui.label(
-                RichText::new(title)
-                    .size(Self::HEADER_FONT_SIZE)
-                    .color(colors.text_dim),
-            );
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(session)
+                        .size(Self::HEADER_FONT_SIZE)
+                        .color(colors.text_dim),
+                );
+                ui.label(
+                    RichText::new("·")
+                        .size(Self::HEADER_FONT_SIZE)
+                        .color(colors.text_dim),
+                );
+                ui.label(
+                    RichText::new(&model.active_agent_id)
+                        .size(Self::HEADER_FONT_SIZE)
+                        .color(colors.text_dim),
+                );
+            });
         });
     }
 

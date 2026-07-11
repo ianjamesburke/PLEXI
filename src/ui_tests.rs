@@ -1440,6 +1440,7 @@ mod tests {
         h.run_steps(2);
 
         assert!(h.pane_has_label(assistant, "Assistant"));
+        assert!(h.pane_has_label(assistant, "default"));
         assert!(!h.pane_has_label(files, "Assistant"));
     }
 

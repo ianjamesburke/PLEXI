@@ -23,6 +23,7 @@ use crate::host::event_log::{self, HostEvent};
 use crate::plexi_ai::backend::ollama::OllamaBackend;
 use crate::plexi_ai::backend::openrouter::OpenRouterBackend;
 use crate::plexi_ai::backend::{AiBackend, AiBackendRequest, BillingModel};
+pub use crate::plexi_ai::backend::{ConcreteModelRoute, ReasoningEffort};
 use crate::plexi_ai::ledger::{self, LedgerRow};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::plexi_ai::turn_loop::{self, TurnError};
@@ -69,6 +70,11 @@ pub fn get_pane_snapshot() -> Arc<Vec<PaneContext>> {
 pub struct AiBrokerRequest {
     pub app_id: String,
     pub model_tier: ModelTier,
+    /// Optional agent-selected provider/model route. Ordinary app callers
+    /// leave this unset and retain configured tier routing.
+    pub concrete_model: Option<ConcreteModelRoute>,
+    /// Optional agent-selected reasoning effort.
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub system: String,
     pub messages: Vec<AiMessage>,
     pub tools: Vec<AiTool>,
@@ -182,11 +188,17 @@ impl AiBroker for LiveAiBroker {
             return AiBrokerResponse::err(format!("budget_exceeded: {reason}"));
         }
 
-        let backend_name = ai_config.backend.as_deref().unwrap_or("openrouter");
+        let backend_name = request
+            .concrete_model
+            .as_ref()
+            .map(|route| route.provider.clone())
+            .or_else(|| ai_config.backend.clone())
+            .unwrap_or_else(|| "openrouter".to_string());
 
-        match backend_name {
+        match backend_name.as_str() {
             "ollama" => dispatch_ollama(request, ai_config, on_delta),
-            _ => dispatch_openrouter(request, ai_config, on_delta),
+            "openrouter" => dispatch_openrouter(request, ai_config, on_delta),
+            other => AiBrokerResponse::err(format!("unsupported_model_provider: {other}")),
         }
     }
 }
@@ -206,7 +218,18 @@ fn dispatch_openrouter(
         }
     };
 
-    let model_id = resolve_model_tier(&request.model_tier, or_config);
+    if let Some(route) = request
+        .concrete_model
+        .as_ref()
+        .filter(|route| route.provider != "openrouter")
+    {
+        return AiBrokerResponse::err(format!("unsupported_model_provider: {}", route.provider));
+    }
+    let model_id = request
+        .concrete_model
+        .as_ref()
+        .map(|route| route.model.clone())
+        .or_else(|| resolve_model_tier(&request.model_tier, or_config));
     let model_id = match model_id {
         Some(m) => m,
         None => {
@@ -373,7 +396,18 @@ fn dispatch_ollama(
         }
     };
 
-    let model_id = resolve_ollama_model_tier(&request.model_tier, ollama_config);
+    if let Some(route) = request
+        .concrete_model
+        .as_ref()
+        .filter(|route| route.provider != "ollama")
+    {
+        return AiBrokerResponse::err(format!("unsupported_model_provider: {}", route.provider));
+    }
+    let model_id = request
+        .concrete_model
+        .as_ref()
+        .map(|route| route.model.clone())
+        .or_else(|| resolve_ollama_model_tier(&request.model_tier, ollama_config));
     let model_id = match model_id {
         Some(m) => m,
         None => {
@@ -536,6 +570,7 @@ fn run_turn_and_respond(
             system: Arc::clone(&system),
             tools: Arc::clone(&all_tools),
             model_tier: Some(request.model_tier),
+            reasoning_effort: request.reasoning_effort,
             cancel: request.cancel.clone(),
         };
 
@@ -1002,6 +1037,8 @@ mod tests {
             AiBrokerRequest {
                 app_id: "test".to_string(),
                 model_tier: ModelTier::Low,
+                concrete_model: None,
+                reasoning_effort: None,
                 system: "be helpful".to_string(),
                 messages: messages.clone(),
                 tools: vec![],
@@ -1035,6 +1072,8 @@ mod tests {
             AiBrokerRequest {
                 app_id: "test".to_string(),
                 model_tier: ModelTier::Low,
+                concrete_model: None,
+                reasoning_effort: None,
                 system: String::new(),
                 messages: vec![AiMessage {
                     role: "user".to_string(),
@@ -1226,6 +1265,8 @@ mod tests {
             AiBrokerRequest {
                 app_id: "test".to_string(),
                 model_tier: ModelTier::Low,
+                concrete_model: None,
+                reasoning_effort: None,
                 system: String::new(),
                 messages: vec![AiMessage {
                     role: "user".to_string(),
@@ -1261,6 +1302,8 @@ mod tests {
             AiBrokerRequest {
                 app_id: "test".to_string(),
                 model_tier: ModelTier::Low,
+                concrete_model: None,
+                reasoning_effort: None,
                 system: String::new(),
                 messages: vec![AiMessage {
                     role: "user".to_string(),
@@ -1373,6 +1416,8 @@ mod tests {
         let request = AiBrokerRequest {
             app_id: "test".to_string(),
             model_tier: crate::app_protocol::ModelTier::Low,
+            concrete_model: None,
+            reasoning_effort: None,
             system: "sys".to_string(),
             messages: vec![crate::app_protocol::AiMessage {
                 role: "user".to_string(),
@@ -1467,6 +1512,8 @@ mod tests {
         let request = AiBrokerRequest {
             app_id: "test".to_string(),
             model_tier: ModelTier::Low,
+            concrete_model: None,
+            reasoning_effort: None,
             system: "sys".to_string(),
             messages: vec![AiMessage {
                 role: "user".to_string(),
@@ -1546,6 +1593,8 @@ mod tests {
         let request = AiBrokerRequest {
             app_id: "test".to_string(),
             model_tier: ModelTier::Low,
+            concrete_model: None,
+            reasoning_effort: None,
             system: "sys".to_string(),
             messages: vec![AiMessage {
                 role: "user".to_string(),

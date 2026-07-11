@@ -6,6 +6,7 @@
 
 use super::commands::{self, ParsedCommand};
 use crate::app_protocol::ModelTier;
+use crate::plexi_ai::broker::ReasoningEffort;
 
 /// Who produced a transcript row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -124,6 +125,13 @@ pub enum AssistantEffect {
     ShowModelSetting,
     /// `/model low|medium|high`: override the model tier for this session.
     SetSessionModel(ModelTier),
+    ListAgents,
+    SwitchAgent(String),
+    InspectAgent(String),
+    CreateAgent(String),
+    EditAgent(String),
+    ShowEffort,
+    SetSessionEffort(Option<ReasoningEffort>),
     /// `/thoughts`: persist the flipped show-thoughts preference.
     PersistShowThoughts(bool),
     /// `/clear` or `/new` ran while a turn was in flight: unblock any worker
@@ -165,6 +173,8 @@ pub struct AssistantModel {
     /// Show reasoning ("thoughts") sections in the transcript. Toggled by
     /// `/thoughts`, persisted in the assistant store's `state.toml`.
     pub show_thoughts: bool,
+    pub active_agent_id: String,
+    pub effort_override: Option<ReasoningEffort>,
     /// Shell-style composer history cursor over prior user turns. `None`
     /// means normal editing; `Some(0)` is the newest user message.
     history_cursor: Option<usize>,
@@ -185,6 +195,8 @@ impl AssistantModel {
             queued_user_turns: 0,
             turn_anchor: None,
             show_thoughts: false,
+            active_agent_id: "default".to_string(),
+            effort_override: None,
             history_cursor: None,
         }
     }
@@ -448,6 +460,50 @@ impl AssistantModel {
                     }
                 }
             }
+            "agent" if cmd.args.is_empty() => vec![AssistantEffect::ListAgents],
+            "agent" => {
+                let mut parts = cmd.args.split_whitespace();
+                let first = parts.next().unwrap_or("");
+                let second = parts.next();
+                match (first, second, parts.next()) {
+                    ("inspect", Some(id), None) => {
+                        vec![AssistantEffect::InspectAgent(id.to_string())]
+                    }
+                    ("create", Some(id), None) => {
+                        vec![AssistantEffect::CreateAgent(id.to_string())]
+                    }
+                    ("edit", Some(id), None) => vec![AssistantEffect::EditAgent(id.to_string())],
+                    (id, None, None) => vec![AssistantEffect::SwitchAgent(id.to_string())],
+                    _ => {
+                        self.turns.push(Turn::now(
+                            TurnRole::Error,
+                            "Usage: /agent [<id> | inspect <id> | create <id> | edit <id>].",
+                        ));
+                        vec![AssistantEffect::SessionWrite {
+                            conversation_id: self.conversation_id.clone(),
+                        }]
+                    }
+                }
+            }
+            "effort" if cmd.args.is_empty() => vec![AssistantEffect::ShowEffort],
+            "effort" => match cmd.args.as_str() {
+                "auto" => vec![AssistantEffect::SetSessionEffort(None)],
+                "low" => vec![AssistantEffect::SetSessionEffort(Some(ReasoningEffort::Low))],
+                "medium" => vec![AssistantEffect::SetSessionEffort(Some(ReasoningEffort::Medium))],
+                "high" => vec![AssistantEffect::SetSessionEffort(Some(ReasoningEffort::High))],
+                _ => {
+                    self.turns.push(Turn::now(
+                        TurnRole::Error,
+                        format!(
+                            "Invalid effort '{}'. Expected auto | low | medium | high.",
+                            cmd.args
+                        ),
+                    ));
+                    vec![AssistantEffect::SessionWrite {
+                        conversation_id: self.conversation_id.clone(),
+                    }]
+                }
+            },
             "revoke" => {
                 if cmd.args.is_empty() {
                     self.turns.push(Turn::now(
@@ -493,6 +549,13 @@ impl AssistantModel {
     /// persistence effect.
     pub fn push_info(&mut self, text: impl Into<String>) -> Vec<AssistantEffect> {
         self.turns.push(Turn::now(TurnRole::Assistant, text));
+        vec![AssistantEffect::SessionWrite {
+            conversation_id: self.conversation_id.clone(),
+        }]
+    }
+
+    pub fn push_error(&mut self, text: impl Into<String>) -> Vec<AssistantEffect> {
+        self.turns.push(Turn::now(TurnRole::Error, text));
         vec![AssistantEffect::SessionWrite {
             conversation_id: self.conversation_id.clone(),
         }]
@@ -901,6 +964,41 @@ mod tests {
 
         assert_eq!(settings_effects, config_effects);
         assert_eq!(settings_effects, vec![AssistantEffect::ShowSettings]);
+    }
+
+    #[test]
+    fn agent_and_effort_commands_emit_typed_effects() {
+        let mut model = AssistantModel::fresh();
+        assert_eq!(
+            submitted(&mut model, "/agent"),
+            vec![AssistantEffect::ListAgents]
+        );
+        assert_eq!(
+            submitted(&mut model, "/agent writer"),
+            vec![AssistantEffect::SwitchAgent("writer".to_string())]
+        );
+        assert_eq!(
+            submitted(&mut model, "/agent inspect writer"),
+            vec![AssistantEffect::InspectAgent("writer".to_string())]
+        );
+        assert_eq!(
+            submitted(&mut model, "/agent create writer"),
+            vec![AssistantEffect::CreateAgent("writer".to_string())]
+        );
+        assert_eq!(
+            submitted(&mut model, "/agent edit writer"),
+            vec![AssistantEffect::EditAgent("writer".to_string())]
+        );
+        assert_eq!(
+            submitted(&mut model, "/effort high"),
+            vec![AssistantEffect::SetSessionEffort(Some(
+                ReasoningEffort::High
+            ))]
+        );
+        assert_eq!(
+            submitted(&mut model, "/effort auto"),
+            vec![AssistantEffect::SetSessionEffort(None)]
+        );
     }
 
     #[test]

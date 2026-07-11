@@ -42,6 +42,8 @@ pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
         "Show or hide the model's reasoning for every turn.",
     ),
     ("model", "Show or change the model tier for this session."),
+    ("agent", "List, inspect, create, edit, or switch Assistant agents."),
+    ("effort", "Show or change reasoning effort for this session."),
     (
         "settings",
         "Show resolved Assistant settings and their sources.",
