@@ -6,7 +6,7 @@
 //! Uses a 5s connect timeout (fail fast if Ollama isn't running) and a 60s
 //! overall timeout (local models can be slow on first load).
 
-use std::collections::VecDeque;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc;
 use std::thread;
@@ -23,7 +23,7 @@ pub struct OllamaBackend {
 
 fn messages_for_ollama(messages: &[serde_json::Value]) -> Result<Vec<serde_json::Value>, String> {
     let mut translated = Vec::with_capacity(messages.len());
-    let mut pending_tool_names = VecDeque::new();
+    let mut pending_tool_names = HashMap::new();
 
     for source in messages {
         let mut message = source.clone();
@@ -71,17 +71,28 @@ fn messages_for_ollama(messages: &[serde_json::Value]) -> Result<Vec<serde_json:
                             "assistant tool call '{name}' arguments must be a JSON object"
                         ));
                     }
-                    pending_tool_names.push_back(name);
+                    let id = tool_call
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| {
+                            format!("assistant tool call '{name}' is missing an id")
+                        })?;
+                    pending_tool_names.insert(id.to_string(), name);
                 }
             }
         } else if role == Some("tool") {
             let object = message
                 .as_object_mut()
                 .ok_or_else(|| "tool result message must be a JSON object".to_string())?;
-            let pending_name = pending_tool_names.pop_front();
             if object.get("tool_name").is_none() {
-                let name = pending_name.ok_or_else(|| {
-                    "tool result has no preceding assistant tool call".to_string()
+                let call_id = object
+                    .get("tool_call_id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| "tool result is missing tool_call_id".to_string())?;
+                let name = pending_tool_names.remove(call_id).ok_or_else(|| {
+                    format!("tool result references unknown tool call '{call_id}'")
                 })?;
                 object.insert("tool_name".to_string(), serde_json::Value::String(name));
             }
@@ -379,6 +390,43 @@ mod tests {
                 "content": "{\"ok\":true,\"pane_id\":5}"
             })
         );
+    }
+
+    #[test]
+    fn reordered_tool_results_keep_their_matching_ollama_tool_names() {
+        let messages = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": { "name": "host.apps.open", "arguments": "{}" }
+                    },
+                    {
+                        "id": "call-2",
+                        "type": "function",
+                        "function": { "name": "host.panes.list", "arguments": "{}" }
+                    }
+                ]
+            }),
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": "call-2",
+                "content": "[]"
+            }),
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": "{\"ok\":true}"
+            }),
+        ];
+
+        let translated = messages_for_ollama(&messages).unwrap();
+
+        assert_eq!(translated[1]["tool_name"], "host.panes.list");
+        assert_eq!(translated[2]["tool_name"], "host.apps.open");
     }
 
     /// Parse a sample Ollama tool call streaming line and verify name + arguments.
