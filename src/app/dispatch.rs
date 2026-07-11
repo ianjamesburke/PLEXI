@@ -503,6 +503,15 @@ impl PlexiApp {
             let resolved_scope = self.registry.default_notification_scope_for(&type_id);
             for cmd in cmds {
                 match cmd {
+                    AppCommand::AssistantHostTool { name, input_json, reply, .. } => {
+                        deferred.push(AppCommand::AssistantHostTool {
+                            name,
+                            input_json,
+                            origin_pane_id: pane_id,
+                            origin_context_id: context_id,
+                            reply,
+                        });
+                    }
                     AppCommand::SpawnApp { .. }
                     | AppCommand::SpawnPane { .. }
                     | AppCommand::ForwardPaneRequest { .. }

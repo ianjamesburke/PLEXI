@@ -115,6 +115,13 @@ pub enum AssistantEffect {
     ListTools,
     /// `/apps`: list running apps and their exposed connectors.
     ListApps,
+    ListSkills,
+    ShowContext,
+    ShowHooks,
+    InvokeSkill {
+        name: String,
+        args: String,
+    },
     /// `/permissions`: list persisted grants for the assistant actor.
     ListPermissions,
     /// `/revoke <target_id>`: remove persisted grants for one target.
@@ -256,6 +263,12 @@ impl AssistantModel {
         if let Some(cmd) = commands::parse_slash_command(&input) {
             return self.execute_command(&cmd);
         }
+        self.submit_prompt(input)
+    }
+
+    /// Submit text as a user prompt without slash-command reparsing. Used
+    /// after an installed skill command has already consumed its command name.
+    pub fn submit_prompt(&mut self, input: String) -> Vec<AssistantEffect> {
         if self.streaming.in_flight {
             log::info!(
                 "assistant[{}]: message queued — turn in flight ({} chars)",
@@ -459,6 +472,9 @@ impl AssistantModel {
             // and answers with an info row.
             "tools" => vec![AssistantEffect::ListTools],
             "apps" => vec![AssistantEffect::ListApps],
+            "skills" => vec![AssistantEffect::ListSkills],
+            "context" => vec![AssistantEffect::ShowContext],
+            "hooks" => vec![AssistantEffect::ShowHooks],
             "permissions" => vec![AssistantEffect::ListPermissions],
             "audit" => vec![AssistantEffect::ShowAudit],
             "settings" | "config" => vec![AssistantEffect::ShowSettings],
@@ -566,15 +582,10 @@ impl AssistantModel {
                     }]
                 }
             }
-            name => {
-                self.turns.push(Turn::now(
-                    TurnRole::Error,
-                    format!("Unknown command /{name}. Type /help for the list."),
-                ));
-                vec![AssistantEffect::SessionWrite {
-                    conversation_id: self.conversation_id.clone(),
-                }]
-            }
+            name => vec![AssistantEffect::InvokeSkill {
+                name: name.to_string(),
+                args: cmd.args.clone(),
+            }],
         }
     }
 
@@ -973,11 +984,20 @@ mod tests {
     }
 
     #[test]
-    fn removed_builtin_is_now_an_unknown_command() {
+    fn skills_context_and_hooks_route_to_real_effects() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "/skills");
-        assert_eq!(m.turns[0].role, TurnRole::Error);
-        assert!(m.turns[0].text.contains("Unknown command /skills"));
+        assert_eq!(
+            submitted(&mut m, "/skills"),
+            vec![AssistantEffect::ListSkills]
+        );
+        assert_eq!(
+            submitted(&mut m, "/context"),
+            vec![AssistantEffect::ShowContext]
+        );
+        assert_eq!(
+            submitted(&mut m, "/hooks"),
+            vec![AssistantEffect::ShowHooks]
+        );
     }
 
     #[test]
@@ -1101,11 +1121,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_command_answers_with_error_row() {
+    fn unknown_command_routes_to_skill_registry_fallback() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "/frobnicate");
-        assert_eq!(m.turns[0].role, TurnRole::Error);
-        assert!(m.turns[0].text.contains("/frobnicate"));
+        assert_eq!(
+            submitted(&mut m, "/frobnicate now"),
+            vec![AssistantEffect::InvokeSkill {
+                name: "frobnicate".to_string(),
+                args: "now".to_string(),
+            }]
+        );
     }
 
     #[test]
