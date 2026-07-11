@@ -41,6 +41,12 @@ pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
         "thoughts",
         "Show or hide the model's reasoning for every turn.",
     ),
+    ("model", "Show or change the model tier for this session."),
+    (
+        "settings",
+        "Show resolved Assistant settings and their sources.",
+    ),
+    ("config", "Show Assistant settings (alias for /settings)."),
 ];
 
 /// Parse `input` as a slash command. Returns `None` when the input is not a
@@ -172,11 +178,31 @@ mod tests {
     fn help_lists_every_builtin_and_marks_none_unimplemented() {
         let help = help_text();
         for (name, _) in BUILT_IN_COMMANDS {
-            assert!(help.contains(&format!("/{name}")), "{name} missing from /help");
+            assert!(
+                help.contains(&format!("/{name}")),
+                "{name} missing from /help"
+            );
         }
         assert!(
             !help.contains("not yet implemented"),
             "no built-in should advertise itself as unimplemented"
+        );
+    }
+
+    #[test]
+    fn settings_and_model_handlers_are_exposed_in_help_and_picker() {
+        let names: Vec<&str> = BUILT_IN_COMMANDS.iter().map(|(name, _)| *name).collect();
+
+        assert!(names.contains(&"model"));
+        assert!(names.contains(&"settings"));
+        assert!(names.contains(&"config"));
+        assert!(help_text().contains("/model"));
+        assert_eq!(
+            filter_commands("config")
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["config"]
         );
     }
 }
