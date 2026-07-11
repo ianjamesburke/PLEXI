@@ -108,7 +108,9 @@ pub enum AssistantEffect {
         prompt: String,
     },
     /// Persist unwritten turns and the active conversation id to disk.
-    SessionWrite { conversation_id: String },
+    SessionWrite {
+        conversation_id: String,
+    },
     /// `/tools`: list discovered app connector tools with broker decisions.
     ListTools,
     /// `/apps`: list running apps and their exposed connectors.
@@ -116,7 +118,9 @@ pub enum AssistantEffect {
     /// `/permissions`: list persisted grants for the assistant actor.
     ListPermissions,
     /// `/revoke <target_id>`: remove persisted grants for one target.
-    RevokeGrant { target_id: String },
+    RevokeGrant {
+        target_id: String,
+    },
     /// `/audit`: show recent audit events.
     ShowAudit,
     /// `/settings` and `/config`: show the resolved Assistant settings.
@@ -132,6 +136,12 @@ pub enum AssistantEffect {
     EditAgent(String),
     ShowEffort,
     SetSessionEffort(Option<ReasoningEffort>),
+    ListConversations,
+    ResumeConversation(String),
+    ShowHistory,
+    RewindConversation(String),
+    CompactConversation,
+    ExportConversation,
     /// `/thoughts`: persist the flipped show-thoughts preference.
     PersistShowThoughts(bool),
     /// `/clear` or `/new` ran while a turn was in flight: unblock any worker
@@ -338,6 +348,20 @@ impl AssistantModel {
         vec![AssistantEffect::CancelTurn]
     }
 
+    pub(crate) fn switch_conversation(
+        &mut self,
+        conversation_id: String,
+        turns: Vec<Turn>,
+    ) -> Vec<AssistantEffect> {
+        let effects = self.interrupt_turn();
+        self.conversation_id = conversation_id;
+        self.turns = turns;
+        self.composer.clear();
+        self.history_cursor = None;
+        self.picker_selected = 0;
+        effects
+    }
+
     /// Insert a row that belongs to the in-flight turn at the turn anchor,
     /// keeping it above anything appended mid-turn (slash-view output,
     /// queued messages). Falls back to a plain append when no turn is in
@@ -357,10 +381,10 @@ impl AssistantModel {
     /// below; unknown names answer with an error row.
     fn execute_command(&mut self, cmd: &ParsedCommand) -> Vec<AssistantEffect> {
         log::info!(
-            "assistant[{}]: command /{} args='{}'",
+            "assistant[{}]: command /{} args_len={}",
             self.conversation_id,
             cmd.name,
-            cmd.args
+            cmd.args.len()
         );
         match cmd.name.as_str() {
             // Fresh context in a new conversation; the prior transcript
@@ -369,6 +393,7 @@ impl AssistantModel {
                 let mut effects = self.interrupt_turn();
                 let prior = self.conversation_id.clone();
                 self.conversation_id = new_conversation_id();
+                self.session_name = None;
                 self.turns.clear();
                 log::info!(
                     "assistant: /clear — new conversation {} (prior {prior} resumable)",
@@ -384,6 +409,7 @@ impl AssistantModel {
                 let mut effects = self.interrupt_turn();
                 self.conversation_id = new_conversation_id();
                 self.turns.clear();
+                self.set_session_name(&cmd.args);
                 if !cmd.args.is_empty() {
                     self.turns.push(Turn::now(
                         TurnRole::Assistant,
@@ -436,6 +462,21 @@ impl AssistantModel {
             "permissions" => vec![AssistantEffect::ListPermissions],
             "audit" => vec![AssistantEffect::ShowAudit],
             "settings" | "config" => vec![AssistantEffect::ShowSettings],
+            "resume" if cmd.args.is_empty() => vec![AssistantEffect::ListConversations],
+            "resume" => vec![AssistantEffect::ResumeConversation(cmd.args.clone())],
+            "history" => vec![AssistantEffect::ShowHistory],
+            "rewind" if cmd.args.is_empty() => {
+                self.turns.push(Turn::now(
+                    TurnRole::Error,
+                    "Usage: /rewind <turn:N | checkpoint:ID>. Conversation context only; files and apps are untouched.",
+                ));
+                vec![AssistantEffect::SessionWrite {
+                    conversation_id: self.conversation_id.clone(),
+                }]
+            }
+            "rewind" => vec![AssistantEffect::RewindConversation(cmd.args.clone())],
+            "compact" => vec![AssistantEffect::CompactConversation],
+            "export" => vec![AssistantEffect::ExportConversation],
             "model" if cmd.args.is_empty() => vec![AssistantEffect::ShowModelSetting],
             "model" => {
                 let tier = match cmd.args.as_str() {
@@ -488,9 +529,15 @@ impl AssistantModel {
             "effort" if cmd.args.is_empty() => vec![AssistantEffect::ShowEffort],
             "effort" => match cmd.args.as_str() {
                 "auto" => vec![AssistantEffect::SetSessionEffort(None)],
-                "low" => vec![AssistantEffect::SetSessionEffort(Some(ReasoningEffort::Low))],
-                "medium" => vec![AssistantEffect::SetSessionEffort(Some(ReasoningEffort::Medium))],
-                "high" => vec![AssistantEffect::SetSessionEffort(Some(ReasoningEffort::High))],
+                "low" => vec![AssistantEffect::SetSessionEffort(Some(
+                    ReasoningEffort::Low,
+                ))],
+                "medium" => vec![AssistantEffect::SetSessionEffort(Some(
+                    ReasoningEffort::Medium,
+                ))],
+                "high" => vec![AssistantEffect::SetSessionEffort(Some(
+                    ReasoningEffort::High,
+                ))],
                 _ => {
                     self.turns.push(Turn::now(
                         TurnRole::Error,
@@ -1175,5 +1222,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(legacy.status, None);
+    }
+
+    #[test]
+    fn conversation_commands_emit_store_backed_effects() {
+        let mut model = AssistantModel::fresh();
+        assert_eq!(
+            submitted(&mut model, "/resume"),
+            vec![AssistantEffect::ListConversations]
+        );
+        assert_eq!(
+            submitted(&mut model, "/resume 2"),
+            vec![AssistantEffect::ResumeConversation("2".to_string())]
+        );
+        assert_eq!(
+            submitted(&mut model, "/history"),
+            vec![AssistantEffect::ShowHistory]
+        );
+        assert_eq!(
+            submitted(&mut model, "/rewind turn:2"),
+            vec![AssistantEffect::RewindConversation("turn:2".to_string())]
+        );
+        assert_eq!(
+            submitted(&mut model, "/compact"),
+            vec![AssistantEffect::CompactConversation]
+        );
+        assert_eq!(
+            submitted(&mut model, "/export"),
+            vec![AssistantEffect::ExportConversation]
+        );
+    }
+
+    #[test]
+    fn rewind_requires_an_explicit_selector() {
+        let mut model = AssistantModel::fresh();
+        let effects = submitted(&mut model, "/rewind");
+        assert!(matches!(
+            effects.as_slice(),
+            [AssistantEffect::SessionWrite { .. }]
+        ));
+        assert!(model.turns.last().unwrap().text.contains("Usage: /rewind"));
     }
 }

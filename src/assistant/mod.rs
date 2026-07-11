@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
+use crate::agent::{AgentDefinition, AgentRegistry, AgentSource};
 use crate::app::app_trait::{App, AppRenderContext, KeyDisposition};
 use crate::app_protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
-use crate::agent::{AgentDefinition, AgentRegistry, AgentSource};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionRequest, ResourceScope, TargetType,
@@ -198,6 +198,60 @@ fn format_setting_ids(ids: &[String]) -> String {
     }
 }
 
+fn bounded_head_tail(text: &str, budget: usize) -> String {
+    let flat = text.replace('\n', " ");
+    let chars = flat.chars().collect::<Vec<_>>();
+    if chars.len() <= budget {
+        return flat;
+    }
+    if budget < 12 {
+        return chars.into_iter().take(budget).collect();
+    }
+
+    let mut keep = budget;
+    for _ in 0..2 {
+        let omitted = chars.len().saturating_sub(keep);
+        let marker_len = format!(" [{omitted} chars omitted] ").chars().count();
+        keep = budget.saturating_sub(marker_len);
+    }
+    let head = keep.div_ceil(2);
+    let tail = keep.saturating_sub(head);
+    let omitted = chars.len().saturating_sub(head + tail);
+    let marker = format!(" [{omitted} chars omitted] ");
+    let mut out = chars.iter().take(head).collect::<String>();
+    out.push_str(&marker);
+    out.extend(chars.iter().skip(chars.len() - tail));
+    out.chars().take(budget).collect()
+}
+
+fn deterministic_context_summary(turns: &[model::Turn], budget: usize) -> String {
+    let mut out = String::new();
+    for (index, turn) in turns.iter().enumerate() {
+        let remaining = budget.saturating_sub(out.chars().count());
+        let turns_left = turns.len() - index;
+        let label = format!("- {:?}: ", turn.role);
+        let fair_share = (remaining / turns_left).min(640);
+        if fair_share <= label.chars().count() + 1 {
+            let omitted = turns.len() - index;
+            let marker = format!("- [{omitted} older turn(s) omitted; see raw checkpoint]");
+            let available = budget.saturating_sub(out.chars().count());
+            out.push_str(&bounded_head_tail(&marker, available));
+            break;
+        }
+        let content_budget = fair_share - label.chars().count() - 1;
+        out.push_str(&label);
+        out.push_str(&bounded_head_tail(&turn.text, content_budget));
+        out.push('\n');
+    }
+    out.truncate(
+        out.char_indices()
+            .nth(budget)
+            .map(|(index, _)| index)
+            .unwrap_or(out.len()),
+    );
+    out
+}
+
 /// The host Assistant pane: model + store + broker + grant wiring.
 pub struct AssistantApp {
     pub(crate) model: AssistantModel,
@@ -302,6 +356,23 @@ impl AssistantApp {
             .active_agent_id()
             .unwrap_or_else(|| "default".to_string());
         model.effort_override = store.effort_override();
+        match store.recover_interrupted_turn(&model.conversation_id) {
+            Ok(true) => {
+                model.turns.push(model::Turn::now(
+                    TurnRole::Error,
+                    "The previous model/tool turn was interrupted when Plexi stopped.",
+                ));
+                log::info!(
+                    "assistant[{}]: recovered interrupted turn",
+                    model.conversation_id
+                );
+            }
+            Ok(false) => {}
+            Err(e) => log::error!(
+                "assistant[{}]: failed to recover interrupted turn: {e}",
+                model.conversation_id
+            ),
+        }
         let settings_loader = SettingsLoader::new(profile_dir, &workspace_root);
         let agent_registry = AgentRegistry::load(profile_dir, &workspace_root);
         if agent_registry.active(&model.active_agent_id).is_none() {
@@ -468,6 +539,16 @@ impl AssistantApp {
                 AssistantEffect::EditAgent(id) => self.cmd_edit_agent(&id),
                 AssistantEffect::ShowEffort => self.cmd_show_effort(),
                 AssistantEffect::SetSessionEffort(effort) => self.set_session_effort(effort),
+                AssistantEffect::ListConversations => self.cmd_list_conversations(),
+                AssistantEffect::ResumeConversation(selector) => {
+                    self.cmd_resume_conversation(&selector)
+                }
+                AssistantEffect::ShowHistory => self.cmd_show_history(),
+                AssistantEffect::RewindConversation(selector) => {
+                    self.cmd_rewind_conversation(&selector)
+                }
+                AssistantEffect::CompactConversation => self.cmd_compact_conversation(),
+                AssistantEffect::ExportConversation => self.cmd_export_conversation(),
                 AssistantEffect::PersistShowThoughts(show) => {
                     if let Err(e) = self.store.set_show_thoughts(show) {
                         log::error!("assistant: failed to persist show_thoughts={show}: {e}");
@@ -714,6 +795,15 @@ impl AssistantApp {
         {
             log::error!(
                 "assistant[{}]: failed to persist transcript: {e}",
+                self.model.conversation_id
+            );
+        }
+        if let Err(e) = self
+            .store
+            .set_turn_in_flight(self.model.streaming.in_flight)
+        {
+            log::error!(
+                "assistant[{}]: failed to persist in-flight state: {e}",
                 self.model.conversation_id
             );
         }
@@ -1358,7 +1448,11 @@ impl AssistantApp {
 
     fn reload_agents(&mut self) {
         self.agent_registry = AgentRegistry::load(&self.profile_dir, &self.workspace_root);
-        if self.agent_registry.active(&self.model.active_agent_id).is_none() {
+        if self
+            .agent_registry
+            .active(&self.model.active_agent_id)
+            .is_none()
+        {
             self.model.active_agent_id = "default".to_string();
         }
     }
@@ -1399,7 +1493,9 @@ impl AssistantApp {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let effects = self.model.push_info(format!("**Assistant agents**\n\n{lines}"));
+        let effects = self
+            .model
+            .push_info(format!("**Assistant agents**\n\n{lines}"));
         self.execute_effects(effects);
     }
 
@@ -1506,12 +1602,9 @@ impl AssistantApp {
 
     fn valid_agent_id(id: &str) -> bool {
         !id.is_empty()
-            && id.chars().all(|ch| {
-                ch.is_ascii_lowercase()
-                    || ch.is_ascii_digit()
-                    || ch == '-'
-                    || ch == '_'
-            })
+            && id
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
     }
 
     fn cmd_create_agent(&mut self, id: &str) {
@@ -1525,7 +1618,9 @@ impl AssistantApp {
             return;
         }
         if self.agent_registry.active(id).is_some() {
-            let effects = self.model.push_error(format!("Agent `{id}` already exists."));
+            let effects = self
+                .model
+                .push_error(format!("Agent `{id}` already exists."));
             self.execute_effects(effects);
             return;
         }
@@ -1562,7 +1657,9 @@ impl AssistantApp {
                 id,
                 dir.display()
             );
-            let effects = self.model.push_error(format!("Failed to create agent `{id}`: {error}"));
+            let effects = self
+                .model
+                .push_error(format!("Failed to create agent `{id}`: {error}"));
             self.execute_effects(effects);
             return;
         }
@@ -1572,7 +1669,9 @@ impl AssistantApp {
             id,
             dir.display()
         );
-        let effects = self.model.push_info(format!("Created agent `{id}` at `{}`.", dir.display()));
+        let effects = self
+            .model
+            .push_info(format!("Created agent `{id}` at `{}`.", dir.display()));
         self.execute_effects(effects);
     }
 
@@ -1595,7 +1694,9 @@ impl AssistantApp {
             .clone()
             .unwrap_or_else(|| self.profile_dir.join("agents").join(id));
         log::info!("assistant: edit agent '{}' at {}", id, path.display());
-        let effects = self.model.push_info(format!("Edit agent `{id}` at `{}`.", path.display()));
+        let effects = self
+            .model
+            .push_info(format!("Edit agent `{id}` at `{}`.", path.display()));
         self.execute_effects(effects);
     }
 
@@ -1627,6 +1728,308 @@ impl AssistantApp {
             effort.map(ReasoningEffort::label).unwrap_or("auto")
         ));
         self.execute_effects(effects);
+    }
+
+    fn cmd_list_conversations(&mut self) {
+        match self.store.list_conversations() {
+            Ok(items) => {
+                log::info!("assistant: /resume listed {} conversation(s)", items.len());
+                let body = if items.is_empty() {
+                    "No saved conversations in this workspace.".to_string()
+                } else {
+                    let rows = items
+                        .iter()
+                        .enumerate()
+                        .map(|(index, item)| {
+                            format!(
+                                "{}. {} `{}`: {} turn(s){}",
+                                index + 1,
+                                item.title,
+                                item.id,
+                                item.turn_count,
+                                if item.active { " (active)" } else { "" }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    format!("**Workspace conversations**\n\n{rows}\n\nUse `/resume <index-or-id>`.")
+                };
+                let effects = self.model.push_info(body);
+                self.execute_effects(effects);
+            }
+            Err(e) => {
+                log::error!("assistant: /resume failed to list conversations: {e}");
+                let effects = self
+                    .model
+                    .push_error(format!("Could not list conversations: {e}"));
+                self.execute_effects(effects);
+            }
+        }
+    }
+
+    fn resolve_conversation(&self, selector: &str) -> Result<String, String> {
+        let items = self.store.list_conversations()?;
+        if let Ok(index) = selector.parse::<usize>() {
+            return items
+                .get(index.saturating_sub(1))
+                .map(|item| item.id.clone())
+                .ok_or_else(|| format!("No conversation at index {index}."));
+        }
+        let matches = items
+            .iter()
+            .filter(|item| item.id == selector || item.id.starts_with(selector))
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [item] => Ok(item.id.clone()),
+            [] => Err(format!("No conversation matches `{selector}`.")),
+            _ => Err(format!("Conversation selector `{selector}` is ambiguous.")),
+        }
+    }
+
+    fn cmd_resume_conversation(&mut self, selector: &str) {
+        let id = match self.resolve_conversation(selector) {
+            Ok(id) => id,
+            Err(e) => {
+                let effects = self.model.push_error(e);
+                self.execute_effects(effects);
+                return;
+            }
+        };
+        let turns = self.store.load_turns(&id);
+        let session_name = match self.store.load_history(&id) {
+            Ok(history) => history.name,
+            Err(e) => {
+                log::error!("assistant[{id}]: /resume failed to read metadata: {e}");
+                let effects = self
+                    .model
+                    .push_error(format!("Could not resume conversation metadata: {e}"));
+                self.execute_effects(effects);
+                return;
+            }
+        };
+        let turn_count = turns.len();
+        let cancel = self.model.switch_conversation(id.clone(), turns);
+        self.model.session_name = session_name;
+        self.execute_effects(cancel);
+        log::info!("assistant[{id}]: resumed conversation ({turn_count} turn(s))");
+        let effects = self.model.push_info(format!(
+            "Resumed `{id}` with {turn_count} turn(s). Agent, effort, and thought settings were preserved."
+        ));
+        self.execute_effects(effects);
+    }
+
+    fn cmd_show_history(&mut self) {
+        let id = self.model.conversation_id.clone();
+        match self.store.load_history(&id) {
+            Ok(history) => {
+                let mut rows = self
+                    .model
+                    .turns
+                    .iter()
+                    .enumerate()
+                    .map(|(index, turn)| {
+                        let preview: String =
+                            turn.text.replace('\n', " ").chars().take(80).collect();
+                        format!(
+                            "- turn:{} | {:?} | {} | {}",
+                            index + 1,
+                            turn.role,
+                            turn.created_at,
+                            preview
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                rows.extend(history.checkpoints.iter().map(|checkpoint| {
+                    format!(
+                        "- checkpoint:{} | {} | {} turn(s) | {}",
+                        checkpoint.id,
+                        checkpoint.label,
+                        checkpoint.turn_count,
+                        checkpoint.created_at
+                    )
+                }));
+                rows.extend(history.compactions.iter().map(|boundary| {
+                    format!(
+                        "- compaction | {} older turn(s) | raw checkpoint:{} | {}",
+                        boundary.compacted_turns, boundary.checkpoint_id, boundary.created_at
+                    )
+                }));
+                rows.extend(
+                    history
+                        .interruptions
+                        .iter()
+                        .map(|at| format!("- interrupted | {at}")),
+                );
+                log::info!(
+                    "assistant[{id}]: /history turns={} checkpoints={} compactions={} interruptions={}",
+                    self.model.turns.len(),
+                    history.checkpoints.len(),
+                    history.compactions.len(),
+                    history.interruptions.len()
+                );
+                let effects = self.model.push_info(format!(
+                    "**Conversation history**\n\n{}",
+                    if rows.is_empty() {
+                        "No history yet.".to_string()
+                    } else {
+                        rows.join("\n")
+                    }
+                ));
+                self.execute_effects(effects);
+            }
+            Err(e) => {
+                log::error!("assistant[{id}]: /history failed: {e}");
+                let effects = self
+                    .model
+                    .push_error(format!("Could not read history: {e}"));
+                self.execute_effects(effects);
+            }
+        }
+    }
+
+    fn cmd_rewind_conversation(&mut self, selector: &str) {
+        let target = if let Some(raw) = selector.strip_prefix("turn:") {
+            match raw.parse::<usize>() {
+                Ok(count) if count <= self.model.turns.len() => {
+                    Ok(self.model.turns[..count].to_vec())
+                }
+                _ => Err(format!("Invalid turn selector `{selector}`.")),
+            }
+        } else if let Some(checkpoint) = selector.strip_prefix("checkpoint:") {
+            self.store
+                .load_checkpoint(&self.model.conversation_id, checkpoint)
+        } else {
+            Err("Use `/rewind turn:N` or `/rewind checkpoint:ID`.".to_string())
+        };
+        let target = match target {
+            Ok(target) => target,
+            Err(e) => {
+                let effects = self.model.push_error(e);
+                self.execute_effects(effects);
+                return;
+            }
+        };
+        let id = self.model.conversation_id.clone();
+        let checkpoint = match self
+            .store
+            .write_checkpoint(&id, "rewind-safety", &self.model.turns)
+        {
+            Ok(checkpoint) => checkpoint,
+            Err(e) => {
+                log::error!("assistant[{id}]: /rewind safety checkpoint failed: {e}");
+                let effects = self.model.push_error(format!(
+                    "Rewind stopped: could not write safety checkpoint: {e}"
+                ));
+                self.execute_effects(effects);
+                return;
+            }
+        };
+        let cancel = self.model.switch_conversation(id.clone(), target);
+        self.execute_effects(cancel);
+        log::info!(
+            "assistant[{id}]: rewound conversation context safety_checkpoint={}",
+            checkpoint.id
+        );
+        let effects = self.model.push_info(format!(
+            "Conversation context rewound to `{selector}`. Safety checkpoint: `{}`. Files and apps were untouched.",
+            checkpoint.id
+        ));
+        self.execute_effects(effects);
+    }
+
+    fn cmd_compact_conversation(&mut self) {
+        const RETAIN_RECENT: usize = 6;
+        const SUMMARY_BUDGET_CHARS: usize = 4_096;
+        if self.model.turns.len() <= RETAIN_RECENT {
+            let effects = self
+                .model
+                .push_info("Nothing to compact yet; fewer than seven turns are active.");
+            self.execute_effects(effects);
+            return;
+        }
+        let id = self.model.conversation_id.clone();
+        let compacted = self.model.turns.len() - RETAIN_RECENT;
+        let checkpoint =
+            match self
+                .store
+                .write_checkpoint(&id, "pre-compaction-raw-history", &self.model.turns)
+            {
+                Ok(checkpoint) => checkpoint,
+                Err(e) => {
+                    log::error!("assistant[{id}]: /compact checkpoint failed: {e}");
+                    let effects = self.model.push_error(format!(
+                        "Compaction stopped: could not preserve raw history: {e}"
+                    ));
+                    self.execute_effects(effects);
+                    return;
+                }
+            };
+        let summary =
+            deterministic_context_summary(&self.model.turns[..compacted], SUMMARY_BUDGET_CHARS);
+        let recent = self.model.turns[compacted..].to_vec();
+        let mut compacted_turns = vec![model::Turn::now(
+            TurnRole::Assistant,
+            format!(
+                "Compacted context ({compacted} turn(s)); raw history checkpoint `{}`:\n{excerpts}",
+                checkpoint.id,
+                excerpts = summary
+            ),
+        )];
+        compacted_turns.extend(recent);
+        if let Err(e) = self.store.record_compaction(&id, &checkpoint.id, compacted) {
+            log::error!("assistant[{id}]: failed to record compaction boundary: {e}");
+            let effects = self.model.push_error(format!(
+                "Raw checkpoint written, but compaction stopped because boundary metadata failed: {e}"
+            ));
+            self.execute_effects(effects);
+            return;
+        }
+        let cancel = self.model.switch_conversation(id.clone(), compacted_turns);
+        self.execute_effects(cancel);
+        log::info!(
+            "assistant[{id}]: compacted {compacted} turn(s) checkpoint={}",
+            checkpoint.id
+        );
+        self.session_write();
+    }
+
+    fn cmd_export_conversation(&mut self) {
+        let audit_path = self.profile_dir.join("audit.jsonl");
+        let audit = match std::fs::read_to_string(&audit_path) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                log::error!("assistant: /export read {}: {e}", audit_path.display());
+                let effects = self.model.push_error(format!(
+                    "Export failed reading {}: {e}",
+                    audit_path.display()
+                ));
+                self.execute_effects(effects);
+                return;
+            }
+        };
+        let id = self.model.conversation_id.clone();
+        match self
+            .store
+            .export_conversation(&id, &self.model.turns, &audit)
+        {
+            Ok(path) => {
+                log::info!(
+                    "assistant[{id}]: exported transcript and audit to {}",
+                    path.display()
+                );
+                let effects = self.model.push_info(format!(
+                    "Exported transcript and tool/audit log to `{}`.",
+                    path.display()
+                ));
+                self.execute_effects(effects);
+            }
+            Err(e) => {
+                log::error!("assistant[{id}]: /export failed: {e}");
+                let effects = self.model.push_error(format!("Export failed: {e}"));
+                self.execute_effects(effects);
+            }
+        }
     }
 
     fn set_session_model(&mut self, tier: ModelTier) {
@@ -2504,6 +2907,128 @@ enabled = ["allowed.tool"]
         assert_eq!(
             app.store.active_conversation().as_deref(),
             Some(second_id.as_str())
+        );
+    }
+
+    #[test]
+    fn resume_history_rewind_compact_and_export_are_observable() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        let first_id = app.model.conversation_id.clone();
+        for index in 0..4 {
+            let question = if index == 0 {
+                format!("beginning-intent {} ending-intent", "q".repeat(2_000))
+            } else {
+                format!("question {index}")
+            };
+            app.model
+                .turns
+                .push(model::Turn::now(TurnRole::User, question));
+            app.model.turns.push(model::Turn::now(
+                TurnRole::Assistant,
+                format!("answer {index}"),
+            ));
+        }
+        app.session_write();
+
+        app.model.composer = "/new second".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        let second_id = app.model.conversation_id.clone();
+
+        app.model.composer = "/resume".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert!(app.model.turns.last().unwrap().text.contains(&first_id));
+        assert!(app.model.turns.last().unwrap().text.contains(&second_id));
+
+        app.model.composer = format!("/resume {first_id}");
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert_eq!(app.model.conversation_id, first_id);
+        assert!(app.model.turns.last().unwrap().text.contains("Resumed"));
+
+        let pre_compaction = app.model.turns.clone();
+        let pre_compaction_chars = pre_compaction
+            .iter()
+            .map(|turn| turn.text.chars().count())
+            .sum::<usize>();
+        app.model.composer = "/compact".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert!(app.model.turns[0].text.contains("Compacted context"));
+        assert!(app.model.turns[0].text.contains("beginning-intent"));
+        assert!(app.model.turns[0].text.contains("ending-intent"));
+        assert!(app.model.turns[0].text.contains("chars omitted"));
+        let history = app.store.load_history(&first_id).unwrap();
+        assert_eq!(history.compactions.len(), 1);
+        let raw = app
+            .store
+            .load_checkpoint(&first_id, &history.compactions[0].checkpoint_id)
+            .unwrap();
+        assert_eq!(raw, pre_compaction, "raw checkpoint is exact");
+        let compacted_chars = app
+            .model
+            .turns
+            .iter()
+            .map(|turn| turn.text.chars().count())
+            .sum::<usize>();
+        assert!(
+            compacted_chars < pre_compaction_chars / 2,
+            "active context must be materially smaller"
+        );
+
+        app.model.composer = "/rewind turn:2".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert_eq!(app.model.turns.len(), 3, "two turns plus rewind notice");
+        assert!(app
+            .model
+            .turns
+            .last()
+            .unwrap()
+            .text
+            .contains("Files and apps were untouched"));
+
+        app.model.composer = "/history".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        let history_row = app.model.turns.last().unwrap();
+        assert!(history_row.text.contains("checkpoint:"));
+        assert!(history_row.text.contains("compaction"));
+
+        app.model.composer = "/export".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        let export_row = app.model.turns.last().unwrap();
+        assert!(export_row.text.contains("/exports/"));
+    }
+
+    #[test]
+    fn restart_marks_persisted_in_flight_turn_interrupted() {
+        let ws = tempfile::tempdir().unwrap();
+        let id = {
+            let mut app = test_app(ws.path());
+            app.model.streaming.in_flight = true;
+            app.session_write();
+            app.model.conversation_id.clone()
+        };
+
+        let reopened = test_app(ws.path());
+        assert_eq!(reopened.model.conversation_id, id);
+        assert!(reopened
+            .model
+            .turns
+            .iter()
+            .any(|turn| turn.text.contains("was interrupted")));
+        assert_eq!(
+            reopened
+                .store
+                .load_history(&id)
+                .unwrap()
+                .interruptions
+                .len(),
+            1
         );
     }
 
