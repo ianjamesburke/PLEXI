@@ -5,16 +5,16 @@ size = [1280.0, 800.0]
 suite = false
 
 [[steps]]
-open_app = "apps/dev/balls"
+open = { kind = "process", path = "apps/dev/balls", as = "balls" }
 
 [[steps]]
-wait_app_frame = { timeout_s = 15.0 }
+wait_app_frame = { target = "balls", timeout_s = 15.0 }
 
 [[steps]]
 run_steps = 5
 
 [[steps]]
-assert = { pane_count = 1, lifecycle = "running", tree_contains = "balls" }
+assert = { target = "balls", pane_count = 1, lifecycle = "running", tree_contains = "balls" }
 
 [[steps]]
 shot = "balls.png"

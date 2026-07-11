@@ -40,28 +40,81 @@ use crate::spatial::tiling::PaneId;
 
 // ─── PlexiUiHarness ──────────────────────────────────────────────────────────
 
+/// Generic app target used by the scene runner. Builtin ids resolve through
+/// the production factory plus the test-only registry below.
+pub(crate) enum HarnessOpenTarget<'a> {
+    Process {
+        path: &'a Path,
+        args: &'a [String],
+    },
+    Wasm {
+        path: &'a Path,
+        args: &'a [String],
+    },
+    Builtin {
+        id: &'a str,
+        cwd: &'a Path,
+        args: &'a [String],
+    },
+}
+
+type HarnessBuiltinFactory = fn(&Path, &[String]) -> Box<dyn crate::app::app_trait::App>;
+
+fn assistant_harness_factory(
+    workspace_root: &Path,
+    _args: &[String],
+) -> Box<dyn crate::app::app_trait::App> {
+    let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+        std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
+    Box::new(crate::assistant::AssistantApp::new(
+        workspace_root.to_path_buf(),
+        broker,
+        workspace_root,
+    ))
+}
+
+const HARNESS_BUILTIN_FACTORIES: &[(&str, HarnessBuiltinFactory)] =
+    &[("assistant", assistant_harness_factory)];
+
+fn harness_builtin_factory(
+    id: &str,
+    cwd: &Path,
+    args: &[String],
+) -> Option<Box<dyn crate::app::app_trait::App>> {
+    HARNESS_BUILTIN_FACTORIES
+        .iter()
+        .find(|(candidate, _)| *candidate == id)
+        .map(|(_, factory)| factory(cwd, args))
+}
+
 /// Semantic UI test harness. Wraps egui_kittest's `Harness<PlexiApp>` using the
 /// `new_eframe` constructor so PlexiApp gets the kittest-managed egui::Context
 /// at construction time — no shared-state gymnastics needed.
 pub struct PlexiUiHarness {
     inner: egui_kittest::Harness<'static, PlexiApp>,
+    workspace: tempfile::TempDir,
 }
 
 impl PlexiUiHarness {
     /// Create a harness with a fresh, isolated PlexiApp.
     pub fn new() -> Self {
+        let workspace = tempfile::tempdir().expect("create UI harness workspace");
         let frame_tick = Arc::new(AtomicU64::new(0));
         let harness = egui_kittest::Harness::new_eframe(move |cc| {
             let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
             app
         });
-        Self { inner: harness }
+        Self {
+            inner: harness,
+            workspace,
+        }
     }
 
     /// Create a harness with an explicit surface size. Use for screenshot
     /// tests — the default kittest surface is too small for pane chrome and
     /// app content to be legible in the saved PNG.
     pub fn new_sized(width: f32, height: f32) -> Self {
+        let workspace = tempfile::tempdir().expect("create UI harness workspace");
         let frame_tick = Arc::new(AtomicU64::new(0));
         let harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(width, height))
@@ -69,7 +122,10 @@ impl PlexiUiHarness {
                 let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
                 app
             });
-        Self { inner: harness }
+        Self {
+            inner: harness,
+            workspace,
+        }
     }
 
     /// Advance one frame. Uses `step()` — PlexiApp continuously requests
@@ -133,7 +189,127 @@ impl PlexiUiHarness {
         f(self.inner.state())
     }
 
+    /// Fresh directory owned by this harness. Scenes use it when an open step
+    /// omits `cwd`, keeping native app state out of the developer's workspace.
+    pub fn workspace_root(&self) -> &Path {
+        self.workspace.path()
+    }
+
     // ── Real app / host app / portal drivers ─────────────────────────────────
+
+    /// Open any supported scene target through its normal pane-opening path.
+    pub fn open_target(&mut self, target: HarnessOpenTarget<'_>) -> Result<PaneId, String> {
+        match target {
+            HarnessOpenTarget::Process { path, args } => self.open_app_at(path, args),
+            HarnessOpenTarget::Wasm { path, args } => {
+                self.open_wasm_at_with_args(path, args.to_vec())
+            }
+            HarnessOpenTarget::Builtin { id, cwd, args } => self.open_builtin_by_id(id, cwd, args),
+        }
+    }
+
+    fn open_builtin_by_id(
+        &mut self,
+        id: &str,
+        cwd: &Path,
+        args: &[String],
+    ) -> Result<PaneId, String> {
+        let before: std::collections::HashSet<PaneId> = self.with_app(|app| {
+            app.windows
+                .iter()
+                .flat_map(|window| window.panes.keys())
+                .copied()
+                .collect()
+        });
+        if let Some(app) = harness_builtin_factory(id, cwd, args) {
+            self.with_app_mut(|host| {
+                host.open_builtin_app_pane(
+                    app,
+                    crate::app::permissions::AppPermissions::builtin(),
+                    cwd.to_path_buf(),
+                    None,
+                    Some("split_v"),
+                    None,
+                );
+            });
+        } else {
+            self.with_app_mut(|host| {
+                host.launch_app_by_id_with_layout(
+                    id,
+                    Some("split_v".to_string()),
+                    args,
+                    Some(cwd.to_path_buf()),
+                )
+            })?;
+        }
+        let pane_id = self.with_app(|host| {
+            host.windows
+                .iter()
+                .flat_map(|window| window.panes.keys())
+                .find(|pane_id| !before.contains(pane_id))
+                .copied()
+                .ok_or_else(|| format!("no new pane appeared after opening builtin '{id}'"))
+        })?;
+        let is_builtin = self.with_app(|host| {
+            host.windows.iter().any(|window| {
+                matches!(
+                    window.panes.get(&pane_id),
+                    Some(Pane::App(app)) if matches!(app.runtime, AppRuntime::Builtin(_))
+                )
+            })
+        });
+        if !is_builtin {
+            return Err(format!("app id '{id}' did not resolve to a builtin"));
+        }
+        Ok(pane_id)
+    }
+
+    /// Focus a pane through the same navigation path used by host commands.
+    pub fn focus_pane(&mut self, pane_id: PaneId) -> Result<(), String> {
+        if self.with_app_mut(|app| app.pane_navigate(pane_id)) {
+            Ok(())
+        } else {
+            Err(format!("pane {pane_id} no longer exists"))
+        }
+    }
+
+    /// Exact semantic-label lookup scoped to one rendered pane rectangle.
+    pub fn pane_has_label(&mut self, pane_id: PaneId, label: &str) -> bool {
+        use egui_kittest::kittest::Queryable;
+
+        let pane_rect = self.with_app(|host| {
+            host.windows.iter().find_map(|window| {
+                if !window.panes.contains_key(&pane_id) {
+                    return None;
+                }
+                let tile_id = window.tree.tiles.iter().find_map(|(tile_id, tile)| {
+                    matches!(tile, egui_tiles::Tile::Pane(id) if *id == pane_id)
+                        .then_some(tile_id)
+                })?;
+                window.tree.tiles.rect(*tile_id)
+            })
+        });
+        let Some(pane_rect) = pane_rect else {
+            return false;
+        };
+
+        self.inner.query_all_by_label(label).any(|node| {
+            node.raw_bounds().is_some_and(|bounds| {
+                let center = egui::pos2(
+                    ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                    ((bounds.y0 + bounds.y1) / 2.0) as f32,
+                );
+                pane_rect.contains(center)
+            })
+        })
+    }
+
+    /// Exact semantic-label lookup against the whole headless host tree.
+    pub fn host_has_label(&mut self, label: &str) -> bool {
+        use egui_kittest::kittest::Queryable;
+
+        self.inner.query_all_by_label(label).next().is_some()
+    }
 
     /// Launch a real PGAP app process from `app_dir` (a directory containing
     /// `manifest.toml`) — the same production path as `plexi app open <path>`.
@@ -1240,6 +1416,31 @@ mod tests {
         h.save_screenshot("/tmp/plexi_assistant_pane.png")
             .expect("render failed");
         println!("Screenshot saved to /tmp/plexi_assistant_pane.png");
+    }
+
+    #[test]
+    fn semantic_label_lookup_is_scoped_to_the_target_pane() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
+        let workspace = h.workspace_root().to_path_buf();
+        let assistant = h
+            .open_target(HarnessOpenTarget::Builtin {
+                id: "assistant",
+                cwd: &workspace,
+                args: &[],
+            })
+            .expect("open Assistant");
+        h.step();
+        let files = h
+            .open_target(HarnessOpenTarget::Builtin {
+                id: "file_browser",
+                cwd: &workspace,
+                args: &[],
+            })
+            .expect("open File Browser");
+        h.run_steps(2);
+
+        assert!(h.pane_has_label(assistant, "Assistant"));
+        assert!(!h.pane_has_label(files, "Assistant"));
     }
 
     /// Assistant pane with a pending permission sheet renders (Phase D2).

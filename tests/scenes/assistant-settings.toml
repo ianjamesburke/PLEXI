@@ -1,0 +1,39 @@
+# Native Assistant command scene. It drives the real composer through egui
+# input and checks semantic labels without dispatching an AI turn.
+size = [1280.0, 800.0]
+
+[[steps]]
+open = { kind = "builtin", id = "assistant", as = "assistant" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert_label = { target = "assistant", label = "Assistant" }
+
+[[steps]]
+text = { target = "assistant", value = "/settings" }
+
+[[steps]]
+key = { target = "assistant", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "assistant", label = "Assistant settings" }
+
+[[steps]]
+text = { target = "assistant", value = "/model" }
+
+[[steps]]
+key = { target = "assistant", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "assistant", label = "Model tier: " }
+
+[[steps]]
+shot = "assistant-settings.png"

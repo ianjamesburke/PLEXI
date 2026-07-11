@@ -7,25 +7,25 @@ size = [640.0, 480.0]
 suite = false
 
 [[steps]]
-open_app = "apps/dev/keymap-probe"
+open = { kind = "process", path = "apps/dev/keymap-probe", as = "probe" }
 
 [[steps]]
-wait_app_frame = { timeout_s = 15.0 }
+wait_app_frame = { target = "probe", timeout_s = 15.0 }
 
 [[steps]]
 run_steps = 5
 
 [[steps]]
-assert = { pane_count = 1, lifecycle = "running", tree_contains = "last_action=none" }
+assert = { target = "probe", pane_count = 1, lifecycle = "running", tree_contains = "last_action=none" }
 
 [[steps]]
-key = "z"
+key = { target = "probe", value = "z" }
 
 [[steps]]
 run_steps = 30
 
 [[steps]]
-assert = { tree_contains = "bare-z" }
+assert = { target = "probe", tree_contains = "bare-z" }
 
 [[steps]]
 shot = "keymap-probe.png"

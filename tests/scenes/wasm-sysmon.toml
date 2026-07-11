@@ -8,19 +8,19 @@ size = [900.0, 640.0]
 suite = true
 
 [[steps]]
-open_wasm = "tests/wasm-fixtures/sysmon.wasm"
+open = { kind = "wasm", path = "tests/wasm-fixtures/sysmon.wasm", as = "sysmon" }
 
 [[steps]]
 run_steps = 3
 
 [[steps]]
-assert = { pane_count = 1, lifecycle = "running", tree_contains = "System Monitor" }
+assert = { target = "sysmon", pane_count = 1, lifecycle = "running", tree_contains = "System Monitor" }
 
 [[steps]]
-assert = { tree_contains = "CPU" }
+assert = { target = "sysmon", tree_contains = "CPU" }
 
 [[steps]]
-assert = { tree_contains = "Mem" }
+assert = { target = "sysmon", tree_contains = "Mem" }
 
 [[steps]]
 shot = "wasm-sysmon.png"

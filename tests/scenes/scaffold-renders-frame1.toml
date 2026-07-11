@@ -7,27 +7,27 @@ size = [1280.0, 800.0]
 suite = false
 
 [[steps]]
-open_app = "apps/dev/counter"
+open = { kind = "process", path = "apps/dev/counter", as = "counter" }
 
 [[steps]]
-wait_app_frame = { timeout_s = 15.0 }
+wait_app_frame = { target = "counter", timeout_s = 15.0 }
 
 [[steps]]
 run_steps = 8
 
 # First frame renders the scaffold's AppBar title.
 [[steps]]
-assert = { pane_count = 1, lifecycle = "running", tree_contains = "Counter" }
+assert = { target = "counter", pane_count = 1, lifecycle = "running", tree_contains = "Counter" }
 
 # A keystroke reaches the on_key handler; the app keeps running (no crash).
 [[steps]]
-key = "plus"
+key = { target = "counter", value = "plus" }
 
 [[steps]]
 run_steps = 8
 
 [[steps]]
-assert = { pane_count = 1, lifecycle = "running", tree_contains = "Counter" }
+assert = { target = "counter", pane_count = 1, lifecycle = "running", tree_contains = "Counter" }
 
 [[steps]]
 shot = "scaffold-renders-frame1.png"
