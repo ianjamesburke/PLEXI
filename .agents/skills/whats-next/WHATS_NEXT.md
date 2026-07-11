@@ -6,20 +6,18 @@
 
 ---
 
-## Current State (2026-07-10, money-path buy-side landed)
+## Current State (2026-07-10, money-path + explorer viewers landed)
 
-`alpha` is at the `#2370` merge. **Five money-path/polish PRs landed this session** (0325/0339/0347/0245/0252 — detail in `docs/DEVLOG.md`), moving Epoch 3's entire buy-side foundation onto alpha:
+`alpha` is at the `#2366` merge (`bf7cb0a4`). Six PRs landed this session — the full money-path buy-side/sell-side/legal bundle (0325/0339/0347/0245/0252/0355, detail in `docs/DEVLOG.md`) plus `0349` explorer native viewers (`#2366`, rebased onto post-money-path alpha, re-verified 1527/1527 tests green, manually exercised on `plexi-pr-2366` — image/video/audio launch, resolver routing, close-return-to-explorer focus, and OS fallthrough all confirmed correct via log trace).
 
-- `0339` Polar buy-side (checkout, webhooks, 402 envelope, gated artifact download, `002_commerce.sql`) — **validated live against the Polar sandbox** (auth → product create → checkout create, `metadata.app_id` round-trips).
-- `0347` legal surface, `0325` package envelope spec, `0245` host bug bundle, `0252` v1 polish.
+**Free v1 finish line is now effectively complete.** The last tracked P1 gap (`0349`) is merged. Remaining gap: production hosted-registry install smoke after deploying alpha — not yet a stint task.
 
-**Critical constraint — the Polar AUP wall.** Polar is a merchant of record for **first-party** digital products only; its AUP **bars the marketplace model** (third-party sellers collecting with payouts owed back). Epoch 3 is split: Plexi can sell **its own** apps + the AI Pro subscription on Polar now (`0355`, ready); paying outside publishers their 85% needs a different rail (Stripe Connect / etc.) and is deferred to `0352`.
+**Critical constraint — the Polar AUP wall.** Polar is a merchant of record for **first-party** digital products only; its AUP **bars the marketplace model** (third-party sellers collecting with payouts owed back). Epoch 3 is split: Plexi can sell **its own** apps + the AI Pro subscription on Polar now (`0355`, done); paying outside publishers their 85% needs a different rail (Stripe Connect / etc.) and is deferred to `0352`.
 
-**Before first-party sales go live:** replace `#2370`'s schema-grounded fixtures with real sandbox-recorded webhooks (in `0355`); provision Polar org + product-ids + webhook-secret + a private Railway artifact bucket; the `SALES_ENABLED` gate keeps it dark until then. Live-verified real-shape notes for `0355`: an org token must **omit** `organization_id` on product create (else 422), and the buyer email must be deliverable.
+**First-party sales are code-complete, dark behind `SALES_ENABLED`.** `0356` (new, P1) is the single ops runbook to go live: production Polar org, product creation (`ensure-ai-pro` + `set-app`), private Railway artifact bucket, webhook registration, confirm legal live, flip the switch, real smoke purchase+refund. Pure provisioning, no code.
 
 Other open PRs affecting priority reading:
 
-- `#2366` open: explorer native viewers (`0349`, in-progress) — ready to validate.
 - `#2353` open: toolbar button focus-steal fix (external branch).
 - `#2323` draft: WASM SDK v3 platform POCs (`0285`/`0287` lane).
 - `#2318` open: stats idle-heartbeat filtering (`0282`).
@@ -27,7 +25,7 @@ Other open PRs affecting priority reading:
 - `#2282` open: collapsible subcontexts (`0241`), failed build check.
 - `#1604` open: Windows port (external branch).
 
-Not real yet: first-party sales live (needs `0355` + Polar provisioning + legal merged), production hosted-registry install smoke after alpha deploy, managed `ai.query` backend (`0323`), the entire third-party publisher economy (`0344`/`0352`/`0353`).
+Not real yet: first-party sales live (needs `0356` provisioning), production hosted-registry install smoke after alpha deploy, managed `ai.query` backend (`0323`), the entire third-party publisher economy (`0344`/`0352`/`0353`).
 
 ---
 
@@ -35,12 +33,11 @@ Not real yet: first-party sales live (needs `0355` + Polar provisioning + legal 
 
 Every epoch feeds the next; the whole line points at `NORTH_STAR.md` ("the last app you'll ever need" — a portable, ownable computing environment where the marketplace is how it gets apps and makes money). Tasks are indented under the outcome they serve; nested tasks are blocked by their parent.
 
-### Epoch 1 — Land v1 (now)
+### Epoch 1 — Land v1 (now) — effectively done
 
 A stranger installs, an agent builds an app first try, a free reviewed app installs from the hosted registry.
 
-- First-user surface is effectively landed (onboarding, website, registry go-live, palette scroll, app-builder DX, exemplar apps, SDK coverage, hosted Core catalog, native pane-key driving, agent pip color). Detail in `docs/DEVLOG.md`.
-- `0349` explorer opens files in native viewers — in-progress, PR `#2366` open, ready to validate.
+- First-user surface is landed (onboarding, website, registry go-live, palette scroll, app-builder DX, exemplar apps, SDK coverage, hosted Core catalog, native pane-key driving, agent pip color, explorer native media viewers `0349`). Detail in `docs/DEVLOG.md`.
 - **Missing tracked gap:** production hosted-registry smoke after deploy from alpha. Create a stint if it can't fold into release verification.
 
 ### Epoch 2 — Intelligence (NORTH_STAR Phase 3; runs parallel to Epoch 3)
@@ -58,7 +55,7 @@ The registry brokers money; never a dependency for running installed apps. Spec:
 
 **Buy-side foundation — landed (0339/0347/0325 merged this session).**
 
-**First-party monetization — landed (`0355`, #2374 merged).** Polar product seam under Plexi's org + AI Pro wiring + operator CLI; `#2370`'s fixtures replaced with real sandbox-recorded order/subscription shapes (never-mock gap closed). **Remaining to go live: provision Polar org/product-ids/webhook-secret + private Railway bucket, then flip `SALES_ENABLED`** (ops, not a code task).
+**First-party monetization — landed (`0355`, #2374 merged).** Polar product seam under Plexi's org + AI Pro wiring + operator CLI; `#2370`'s fixtures replaced with real sandbox-recorded order/subscription shapes (never-mock gap closed). **Remaining to go live:** `0356` (new, P1) — provision Polar org/product-ids/webhook-secret + private Railway bucket, confirm legal live, then flip `SALES_ENABLED` (ops, not a code task).
   - `0322` host account-gated paid downloads — unblocks once `0339` lands
     - `0341` marketplace app + paywall handoff
   - `0354` verify AI Pro subscription gates on *active status*, not row presence
@@ -92,11 +89,11 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 ## Priority Stack (flat view)
 
 P0: none.
-P1: `0349` (PR `#2366`, ready to validate), `0241` (open PR needs fixing), `0285` (draft PR), `0322` (paid-download host gating), `0341`*, `0344`*.
-P2 and below: `0354` (subscription active-gating), `0352`, `0353`, `0323`, `0317`, `0295`, `0297`, plus the backlog in `stint list`.
+P1: `0356` (ops: go-live provisioning), `0241` (open PR needs fixing), `0285` (draft PR), `0322` (paid-download host gating), `0344`, `0341`*.
+P2 and below: `0354` (subscription active-gating), `0352`, `0353`, `0323`, `0317`, `0295`, `0297`, `0357` (P3, sudo-noise investigation), plus the backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** first-party sales are code-complete — the remaining money step is **ops**: provision Polar + the private bucket and flip `SALES_ENABLED`. For coding work, `0349` (validate `#2366`, explorer viewers) is the top item; `0322` (host paid-download gating) + `0354` (subscription active-gating) extend the money path host-side.
+**Next recommended task:** free v1's last coding gap (`0349`) is merged — the finish line is real pending only a post-deploy registry smoke. The top remaining item is **`0356`**: ops-only, provision Polar production + the private bucket and flip `SALES_ENABLED` — that's the entire distance between merged code and live revenue. For coding work, `0322` (host paid-download gating) + `0354` (subscription active-gating) extend the money path host-side; `0344` (publisher pipeline) is ready but its third-party product creation stays blocked on `0352`.
 
 ---
 
