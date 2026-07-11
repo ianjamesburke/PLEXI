@@ -1263,6 +1263,7 @@ fn test_app_pane(pane_id: u64) -> crate::host::pane::Pane {
         hidden: false,
         agent: None,
         slots: std::collections::HashMap::new(),
+        semantic_state: Default::default(),
     }))
 }
 

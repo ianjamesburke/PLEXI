@@ -422,6 +422,7 @@ pub struct PlexiApp {
 #[cfg(test)]
 fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_fonts(ctx);
+    ctx.enable_accesskit();
     ctx.set_visuals(egui::Visuals::dark());
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
     theme::setup_style(ctx, colors, true);
@@ -898,6 +899,7 @@ impl PlexiApp {
         log::info!(target: "plexi::frame_diag", "frame diagnostics active; summary every 10s");
 
         theme::setup_fonts(&cc.egui_ctx);
+        cc.egui_ctx.enable_accesskit();
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
 
@@ -1118,6 +1120,7 @@ impl PlexiApp {
                                         hidden: false,
                                         agent: None,
                                         slots: std::collections::HashMap::new(),
+                                        semantic_state: Default::default(),
                                     })));
                             }
                         }
@@ -1895,6 +1898,7 @@ impl PlexiApp {
             hidden: false,
             agent: None,
             slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
         };
 
         let win = &mut self.windows[win_idx];

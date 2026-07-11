@@ -525,6 +525,7 @@ mod tests {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
             win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
@@ -877,6 +878,7 @@ mod tests {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
             };
             let mut child_panes = std::collections::HashMap::new();
             child_panes.insert(editor_pane_id, Pane::App(Box::new(editor)));
@@ -1027,6 +1029,7 @@ mod tests {
                 hidden: false,
                 agent: None,
                 slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
             win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
@@ -1444,6 +1447,46 @@ mod tests {
         assert!(!h.pane_has_label(files, "Assistant"));
     }
 
+    #[test]
+    fn native_builtin_pane_state_retains_committed_semantics() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
+        let workspace = h.workspace_root().to_path_buf();
+        let assistant = h
+            .open_target(HarnessOpenTarget::Builtin {
+                id: "assistant",
+                cwd: &workspace,
+                args: &[],
+            })
+            .expect("open Assistant");
+        let files = h
+            .open_target(HarnessOpenTarget::Builtin {
+                id: "file_browser",
+                cwd: &workspace,
+                args: &[],
+            })
+            .expect("open File Browser");
+        h.run_steps(2);
+
+        let (assistant_state, files_state) = h.with_app(|host| {
+            let state = |pane_id| {
+                host.windows
+                    .iter()
+                    .find_map(|window| window.panes.get(&pane_id))
+                    .and_then(Pane::as_app)
+                    .map(|pane| pane.semantic_state())
+                    .expect("builtin pane state")
+            };
+            (state(assistant), state(files))
+        });
+
+        assert_eq!(assistant_state.runtime_kind, "builtin");
+        assert!(assistant_state.nodes.iter().any(|node| {
+            node.label.as_deref() == Some("Assistant") || node.value.as_deref() == Some("Assistant")
+        }));
+        assert_eq!(files_state.runtime_kind, "builtin");
+        assert!(!files_state.nodes.is_empty());
+    }
+
     /// Assistant pane with a pending permission sheet renders (Phase D2).
     #[test]
     fn assistant_permission_sheet_renders() {
@@ -1581,6 +1624,7 @@ mod tests {
                 hidden: true,
                 agent: None,
                 slots: std::collections::HashMap::new(),
+                semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
             win.panes
@@ -1922,6 +1966,7 @@ mod tests {
                     hidden: false,
                     agent: None,
                     slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[app.active_window];
                 win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));

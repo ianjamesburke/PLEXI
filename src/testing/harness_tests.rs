@@ -367,6 +367,49 @@ fn read_json_response(path: &str) -> serde_json::Value {
     serde_json::from_str(&content).expect("response must be valid JSON")
 }
 
+#[test]
+fn get_pane_state_preserves_process_frame_and_adds_normalized_semantics() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+    let Some(Pane::App(app_pane)) = h.app.windows[0].panes.get_mut(&pane_id) else {
+        panic!("expected app pane");
+    };
+    let AppRuntime::Process(process) = &mut app_pane.runtime else {
+        panic!("expected process runtime");
+    };
+    process.frame.push(crate::app_protocol::RenderCommand::Text {
+        x: 4.0,
+        y: 8.0,
+        text: "process state label".to_string(),
+        size: 14.0,
+        color: "#ffffff".to_string(),
+        monospace: false,
+        bold: false,
+        align: Default::default(),
+        max_width: None,
+        elide: false,
+        selectable: false,
+        max_lines: None,
+        hit_region: None,
+    });
+    let response_file = temp_response(tmp.path(), "pane-state");
+
+    h.inject_ipc(AppRequest::GetPaneState {
+        pane_id,
+        response_file: response_file.clone(),
+    });
+    h.run_frames(1);
+    let response = read_json_response(&response_file);
+
+    assert_eq!(response["frame"][0]["text"], "process state label");
+    assert_eq!(response["semantic"]["schema_version"], 1);
+    assert_eq!(response["semantic"]["runtime_kind"], "process");
+    assert!(response["semantic"]["nodes"]
+        .as_array()
+        .is_some_and(|nodes| !nodes.is_empty()));
+}
+
 // -- Pane file slots ------------------------------------------------------
 
 #[test]
@@ -3264,6 +3307,7 @@ fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, pane_id: u64) {
         hidden: false,
         agent: None,
         slots: HashMap::new(),
+        semantic_state: Default::default(),
     };
     let win = h
         .app

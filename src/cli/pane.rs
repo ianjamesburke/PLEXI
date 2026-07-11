@@ -771,7 +771,8 @@ pub fn pane_capture_cli(
 /// `plexi pane state <id>`
 ///
 /// Sends a `get_pane_state` command to PLEXI_SOCKET. For app panes, the host
-/// writes a JSON object containing the last-rendered frame (RenderCommand array).
+/// writes a JSON object containing a versioned normalized `semantic` tree.
+/// Process apps also retain the compatible `frame` RenderCommand array.
 /// For terminal panes, returns a simple status object. Returns 0 on success, 1 on error.
 pub fn pane_state_cli(pane_id: u64) -> i32 {
     let id = uuid::Uuid::new_v4();

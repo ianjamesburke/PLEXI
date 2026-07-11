@@ -948,7 +948,8 @@ pub enum AppRequest {
     },
 
     /// Query the last-rendered UI state of a pane. Sent by `plexi pane state`.
-    /// For app panes: host writes a JSON object with a `frame` array of RenderCommands.
+    /// For app panes: host writes a versioned `semantic` tree for every runtime.
+    /// Process panes also retain the compatible `frame` RenderCommand array.
     /// For terminal panes: host writes a simple status object.
     /// Host writes `{"error":"..."}` if the pane is not found.
     GetPaneState { pane_id: u64, response_file: String },

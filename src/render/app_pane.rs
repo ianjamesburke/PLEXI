@@ -134,7 +134,24 @@ pub fn render(
     // guaranteed by the allocate_exact_size calls above. Apps read ui.available_height() /
     // available_size() and always see the post-chrome budget with no guesswork.
     let ctx = AppRenderContext { colors, is_focused };
+    let content_rect = ui.available_rect_before_wrap();
     app_pane.runtime.ui(ui, &ctx);
+    if matches!(app_pane.runtime, crate::host::pane::AppRuntime::Builtin(_)) {
+        if let Some(state) = ui.ctx().viewport(|viewport| {
+            viewport
+                .this_pass
+                .accesskit_state
+                .as_ref()
+                .map(|accesskit| {
+                    crate::host::pane::SemanticPaneState::from_accesskit(
+                        &accesskit.nodes,
+                        content_rect,
+                    )
+                })
+        }) {
+            app_pane.semantic_state = state;
+        }
+    }
 }
 
 #[cfg(test)]

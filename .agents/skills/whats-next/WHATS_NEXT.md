@@ -6,9 +6,9 @@
 
 ---
 
-## Current State (2026-07-10, money-path + explorer viewers landed)
+## Current State (2026-07-11, Assistant identity + shared scene verbs landed)
 
-`alpha` is at the `#2366` merge (`bf7cb0a4`). Six PRs landed this session — the full money-path buy-side/sell-side/legal bundle (0325/0339/0347/0245/0252/0355, detail in `docs/DEVLOG.md`) plus `0349` explorer native viewers (`#2366`, rebased onto post-money-path alpha, re-verified 1527/1527 tests green, manually exercised on `plexi-pr-2366` — image/video/audio launch, resolver routing, close-return-to-explorer focus, and OS fallthrough all confirmed correct via log trace).
+`alpha` is at `d610a776`: scoped Assistant settings (`0226`), backend-neutral scene verbs and symbolic pane handles (`0362`), and the Assistant agent registry/model-routing foundation (`0225`) are landed. Details live in `docs/DEVLOG.md`.
 
 **Free v1 finish line is now effectively complete.** The last tracked P1 gap (`0349`) is merged. Remaining gap: production hosted-registry install smoke after deploying alpha — not yet a stint task.
 
@@ -25,7 +25,7 @@ Other open PRs affecting priority reading:
 - `#2282` open: collapsible subcontexts (`0241`), failed build check.
 - `#1604` open: Windows port (external branch).
 
-Not real yet: first-party sales live (needs `0356` provisioning), production hosted-registry install smoke after alpha deploy, managed `ai.query` backend (`0323`), the entire third-party publisher economy (`0344`/`0352`/`0353`).
+Not real yet: native/WASM semantic state over live IPC (`0363`), the shared live scene backend (`0364`), complete Assistant conversation history (`0228`), skills and host-native Assistant tools (`0229`), first-party sales live (needs `0356` provisioning), production hosted-registry install smoke after alpha deploy, managed `ai.query` backend (`0323`), and the third-party publisher economy (`0344`/`0352`/`0353`).
 
 ---
 
@@ -44,10 +44,18 @@ A stranger installs, an agent builds an app first try, a free reviewed app insta
 
 The host Assistant becomes the workspace operator: typed host tools behind the permission broker, named agent personas, skills, app connectors.
 
-- `0225` agent registry + model routing
-- `0226` settings scopes (user/workspace/local/session)
+- Agent registry, model routing, and settings scopes are landed (`0225`, `0226`).
 - `0228` conversation persistence + history
-- `0229` skills + host tools (pane/app/terminal operations)
+  - `0229` skills + host tools (pane/app/terminal operations)
+    - `0359` Assistant E2E + local/cheap-model verification
+
+### Testing foundation: shared headless/live vocabulary
+
+Agents must be able to drive and verify every host surface through one scene language. Generic verbs and symbolic handles are landed (`0362`).
+
+- `0363` expose normalized Process, native, and WASM semantics through `plexi pane state`
+  - `0364` execute the shared TOML scene language against an installed host
+    - `0361` audit and close the remaining host-wide E2E gaps
 
 ### Epoch 3 — Commercial launch (Track B)
 
@@ -89,11 +97,11 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 ## Priority Stack (flat view)
 
 P0: none.
-P1: `0356` (ops: go-live provisioning), `0241` (open PR needs fixing), `0285` (draft PR), `0322` (paid-download host gating), `0344`, `0341`*.
-P2 and below: `0354` (subscription active-gating), `0352`, `0353`, `0323`, `0317`, `0295`, `0297`, `0357` (P3, sudo-noise investigation), plus the backlog in `stint list`.
+P1: `0361`*, `0359`*, `0356` (ops: go-live provisioning), `0241` (open PR needs fixing), `0285` (draft PR), `0322` (paid-download host gating), `0344`, `0341`*.
+P2 and below: `0363`, `0364`*, `0228`, `0229`, `0354` (subscription active-gating), `0352`, `0353`, `0323`, `0317`, `0295`, `0297`, `0360` (P3, deactivate noise), `0357` (P3, sudo noise), plus the backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** free v1's last coding gap (`0349`) is merged — the finish line is real pending only a post-deploy registry smoke. The top remaining item is **`0356`**: ops-only, provision Polar production + the private bucket and flip `SALES_ENABLED` — that's the entire distance between merged code and live revenue. For coding work, `0322` (host paid-download gating) + `0354` (subscription active-gating) extend the money path host-side; `0344` (publisher pipeline) is ready but its third-party product creation stays blocked on `0352`.
+**Next recommended task:** `0363`, the observation layer required before a live scene backend can verify native and WASM panes.
 
 ---
 
