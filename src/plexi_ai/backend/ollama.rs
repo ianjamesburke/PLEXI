@@ -275,7 +275,7 @@ fn stream_ollama(
         if let Some(tool_calls_arr) = chunk["message"]["tool_calls"].as_array() {
             if !tool_calls_arr.is_empty() {
                 let mut calls: Vec<RawToolCall> = Vec::new();
-                for tc in tool_calls_arr {
+                for (index, tc) in tool_calls_arr.iter().enumerate() {
                     let name = match tc["function"]["name"].as_str() {
                         Some(n) if !n.is_empty() => n.to_string(),
                         _ => {
@@ -297,7 +297,10 @@ fn stream_ollama(
                         }
                     };
                     calls.push(RawToolCall {
-                        id: String::new(), // Ollama does not assign call IDs
+                        // Ollama does not assign call IDs. The broker needs a
+                        // stable identifier to pair each result with its call
+                        // when translating the next history request.
+                        id: format!("ollama-{}", index + 1),
                         name,
                         arguments,
                     });
@@ -427,6 +430,31 @@ mod tests {
 
         assert_eq!(translated[1]["tool_name"], "host.panes.list");
         assert_eq!(translated[2]["tool_name"], "host.apps.open");
+    }
+
+    #[test]
+    fn synthesized_ollama_call_id_round_trips_into_tool_result_history() {
+        let call_id = format!("ollama-{}", 1);
+        let messages = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": { "name": "host.panes.list", "arguments": "{}" }
+                }]
+            }),
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": "[]"
+            }),
+        ];
+
+        let translated = messages_for_ollama(&messages).unwrap();
+
+        assert_eq!(translated[1]["tool_name"], "host.panes.list");
     }
 
     /// Parse a sample Ollama tool call streaming line and verify name + arguments.
