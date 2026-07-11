@@ -28,6 +28,12 @@ pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
         "Show app connector tools and event streams with their broker decisions.",
     ),
     ("apps", "Show app connectors available in the workspace."),
+    ("skills", "Show installed user and workspace skills."),
+    (
+        "context",
+        "Show token use, instructions, active context, and enabled tools.",
+    ),
+    ("hooks", "Show active lifecycle hooks and their source."),
     (
         "permissions",
         "Show persisted grants for the assistant actor.",

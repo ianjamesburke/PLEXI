@@ -18,6 +18,15 @@ pub struct AppRenderContext<'a> {
 
 /// Commands an app can issue back to the system.
 pub enum AppCommand {
+    /// Execute an Assistant host tool against live host state without shelling
+    /// out to the CLI. The host replies directly to the blocked model worker.
+    AssistantHostTool {
+        name: String,
+        input_json: String,
+        origin_pane_id: u64,
+        origin_context_id: u64,
+        reply: std::sync::mpsc::SyncSender<crate::plexi_ai::tool_dispatch::ToolCallResult>,
+    },
     /// Post an ephemeral notification.
     Notify(String),
     /// Request the host to spawn a new app pane.
@@ -212,6 +221,14 @@ pub trait App: Send {
     /// so the host can act on them each frame without changing the trait signature.
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         vec![]
+    }
+
+    /// Pump asynchronous work while the app's context is off-screen.
+    fn background_tick(&mut self) {}
+
+    /// Whether `background_tick` can currently make progress.
+    fn needs_background_tick(&self) -> bool {
+        false
     }
 
     /// Returns true if this app wants to capture all keyboard input, preventing

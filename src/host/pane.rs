@@ -625,11 +625,11 @@ impl AppRuntime {
         }
     }
 
-    /// Pump event I/O for a pane not in the active context. No-op for builtins.
+    /// Pump event I/O for a pane not in the active context.
     pub fn background_tick(&mut self) {
         match self {
             AppRuntime::Process(app) => app.background_tick(),
-            AppRuntime::Builtin(_) => {}
+            AppRuntime::Builtin(app) => app.background_tick(),
             // Timers advance only while the pane renders (visible). Background
             // ticking for off-screen WASM panes is deferred.
             AppRuntime::Wasm(_) => {}
@@ -637,12 +637,11 @@ impl AppRuntime {
     }
 
     /// Does this pane have pending background work that `background_tick`
-    /// would make progress on? Always false for builtins — they have no
-    /// subprocess, timers, or async workers (#2021).
+    /// would make progress on?
     pub fn needs_background_tick(&self) -> bool {
         match self {
             AppRuntime::Process(app) => app.needs_background_tick(),
-            AppRuntime::Builtin(_) => false,
+            AppRuntime::Builtin(app) => app.needs_background_tick(),
             AppRuntime::Wasm(_) => false,
         }
     }

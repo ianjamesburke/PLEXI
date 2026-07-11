@@ -12,6 +12,7 @@ pub mod commands;
 pub mod model;
 pub mod render;
 pub mod settings;
+pub mod skills;
 pub mod store;
 
 use std::collections::HashSet;
@@ -20,6 +21,7 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use crate::agent::{AgentDefinition, AgentRegistry, AgentSource};
+use crate::app::app_trait::AppCommand;
 use crate::app::app_trait::{App, AppRenderContext, KeyDisposition};
 use crate::app_protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
 use crate::broker::{
@@ -46,6 +48,7 @@ use audit::{AuditEvent, AuditLog};
 use model::{AssistantEffect, AssistantModel, PermissionChoice, TurnRole};
 use render::{AssistantRenderer, ComposerEvent, MarkdownTextCache};
 use settings::{AssistantSettings, SessionOverrides, SettingsLoadError, SettingsLoader};
+use skills::{SkillDefinition, SkillRegistry};
 use store::AssistantStore;
 
 pub(crate) const DEFAULT_AGENT_PROMPT: &str = "You are the Plexi Assistant, the workspace \
@@ -65,12 +68,19 @@ When a delivered event hands you the turn, ACT: if the situation calls for a \
 tool call, make it immediately rather than only describing what you would do. \
 Do not narrate intentions you can carry out — take the action, then report the \
 result. \
-Pane and terminal control arrives in a later phase — when \
-asked to act on panes, explain that those tools are not wired up yet.";
+Use the host.panes.*, host.apps.open, and host.terminals.open tools for native \
+pane, app, and terminal operations; never shell out to the plexi CLI.";
 
 /// Host tool names the Assistant injects into its dispatcher snapshot.
 const HOST_TOOL_SUBSCRIBE: &str = "host.events.subscribe";
 const HOST_TOOL_UNSUBSCRIBE: &str = "host.events.unsubscribe";
+const HOST_TOOL_PANES_LIST: &str = "host.panes.list";
+const HOST_TOOL_PANES_STATE: &str = "host.panes.state";
+const HOST_TOOL_PANES_OPEN: &str = "host.panes.open";
+const HOST_TOOL_PANES_FOCUS: &str = "host.panes.focus";
+const HOST_TOOL_PANES_CLOSE: &str = "host.panes.close";
+const HOST_TOOL_APPS_OPEN: &str = "host.apps.open";
+const HOST_TOOL_TERMINALS_OPEN: &str = "host.terminals.open";
 
 /// Broker identity for the Assistant: actor id at the permission tiers,
 /// `agent:assistant` as the `ToolDispatcher` caller id (Phase C convention).
@@ -260,6 +270,9 @@ pub struct AssistantApp {
     workspace_root: PathBuf,
     profile_dir: PathBuf,
     agent_registry: AgentRegistry,
+    skill_registry: SkillRegistry,
+    pending_skill: Option<SkillDefinition>,
+    pending_commands: Vec<AppCommand>,
     settings_loader: SettingsLoader,
     session_overrides: SessionOverrides,
     settings: AssistantSettings,
@@ -375,6 +388,7 @@ impl AssistantApp {
         }
         let settings_loader = SettingsLoader::new(profile_dir, &workspace_root);
         let agent_registry = AgentRegistry::load(profile_dir, &workspace_root);
+        let skill_registry = SkillRegistry::load(profile_dir, &workspace_root);
         if agent_registry.active(&model.active_agent_id).is_none() {
             log::warn!(
                 "assistant: persisted agent '{}' is unavailable; using default",
@@ -393,6 +407,9 @@ impl AssistantApp {
             workspace_root,
             profile_dir: profile_dir.to_path_buf(),
             agent_registry,
+            skill_registry,
+            pending_skill: None,
+            pending_commands: Vec::new(),
             settings_loader,
             session_overrides,
             settings: settings_report.settings,
@@ -526,6 +543,10 @@ impl AssistantApp {
                 AssistantEffect::SessionWrite { .. } => self.session_write(),
                 AssistantEffect::ListTools => self.cmd_list_tools(),
                 AssistantEffect::ListApps => self.cmd_list_apps(),
+                AssistantEffect::ListSkills => self.cmd_list_skills(),
+                AssistantEffect::ShowContext => self.cmd_show_context(),
+                AssistantEffect::ShowHooks => self.cmd_show_hooks(),
+                AssistantEffect::InvokeSkill { name, args } => self.cmd_invoke_skill(&name, &args),
                 AssistantEffect::ListPermissions => self.cmd_list_permissions(),
                 AssistantEffect::RevokeGrant { target_id } => self.cmd_revoke(&target_id),
                 AssistantEffect::ShowAudit => self.cmd_show_audit(),
@@ -558,6 +579,7 @@ impl AssistantApp {
                 // unblock worker threads parked on a permission reply so they
                 // can finish and have their stale outcome dropped.
                 AssistantEffect::CancelTurn => {
+                    self.pending_skill = None;
                     self.unblock_pending_workers(
                         "cancelled: the conversation was cleared mid-turn",
                     );
@@ -640,6 +662,24 @@ impl AssistantApp {
         self.grant_store.evaluate(&req, Some(&posture))
     }
 
+    fn host_tool_decision(&self, tool: &AiTool) -> Decision {
+        if self.settings.permissions.posture.value == settings::AssistantPermissionPosture::Plan
+            && !tool.read_only
+        {
+            return Decision::Deny;
+        }
+        let (actor_id, _) = self.connector_actor();
+        let req = PermissionRequest::new(
+            ActorType::Agent,
+            &actor_id,
+            TargetType::HostTool,
+            &tool.name,
+            Some(&self.workspace_root),
+        );
+        self.grant_store
+            .evaluate(&req, Some(&self.active_posture()))
+    }
+
     fn event_stream_decision(&self, app: &str, event: &str) -> Decision {
         let event_names = if event == "*" {
             Vec::new()
@@ -714,6 +754,26 @@ impl AssistantApp {
         );
         dispatcher.retain_allowed(&allowed);
         let (actor_id, actor_scope) = self.connector_actor();
+        let native_tools = Self::host_tools();
+        let mut visible_host_tools = Vec::new();
+        for tool in native_tools {
+            if (!declared_tools.is_empty() && !declared_tools.contains(&tool.name))
+                || (!settings_tools.is_empty() && !settings_tools.contains(&tool.name))
+            {
+                log::info!("assistant: host tool '{}' withheld by enabled-tool filter", tool.name);
+                continue;
+            }
+            match self.host_tool_decision(&tool) {
+                Decision::Deny => {
+                    log::info!("assistant: host tool '{}' withheld (deny)", tool.name)
+                }
+                Decision::Ask if !tool.read_only => {
+                    ask_tools.insert(tool.name.clone());
+                    visible_host_tools.push(tool);
+                }
+                Decision::Allow | Decision::Ask => visible_host_tools.push(tool),
+            }
+        }
         dispatcher.set_hooks(Arc::new(AssistantToolHooks {
             ask_tools,
             session_allowed: Mutex::new(HashSet::new()),
@@ -742,7 +802,8 @@ impl AssistantApp {
                 error: Some("host_tool_failed: assistant pane closed".to_string()),
             })
         });
-        dispatcher.add_host_tools(Self::host_event_tools(), handler);
+        visible_host_tools.extend(Self::host_event_tools());
+        dispatcher.add_host_tools(visible_host_tools, handler);
         dispatcher
     }
 
@@ -773,6 +834,64 @@ impl AssistantApp {
                 name: HOST_TOOL_UNSUBSCRIBE.to_string(),
                 description: "Stop receiving an app's event stream.".to_string(),
                 input_schema: schema,
+                timeout_ms: Some(30_000),
+                read_only: false,
+            },
+        ]
+    }
+
+    fn host_tools() -> Vec<AiTool> {
+        let pane_id = serde_json::json!({
+            "type": "object", "properties": {"pane_id": {"type": "integer"}},
+            "required": ["pane_id"]
+        });
+        vec![
+            AiTool {
+                name: HOST_TOOL_PANES_LIST.into(),
+                description: "List live Plexi panes and their context.".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: true,
+            },
+            AiTool {
+                name: HOST_TOOL_PANES_STATE.into(),
+                description: "Read the semantic state of a live pane.".into(),
+                input_schema: pane_id.clone(),
+                timeout_ms: Some(30_000),
+                read_only: true,
+            },
+            AiTool {
+                name: HOST_TOOL_PANES_OPEN.into(),
+                description: "Open an app or terminal pane by native type id.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"type_id":{"type":"string"},"layout":{"type":"string"},"cwd":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["type_id"]}),
+                timeout_ms: Some(30_000),
+                read_only: false,
+            },
+            AiTool {
+                name: HOST_TOOL_PANES_FOCUS.into(),
+                description: "Focus a live pane by id.".into(),
+                input_schema: pane_id.clone(),
+                timeout_ms: Some(30_000),
+                read_only: false,
+            },
+            AiTool {
+                name: HOST_TOOL_PANES_CLOSE.into(),
+                description: "Close a live pane by id.".into(),
+                input_schema: pane_id,
+                timeout_ms: Some(30_000),
+                read_only: false,
+            },
+            AiTool {
+                name: HOST_TOOL_APPS_OPEN.into(),
+                description: "Open an installed Plexi app in a pane.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"app":{"type":"string"},"layout":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["app"]}),
+                timeout_ms: Some(30_000),
+                read_only: false,
+            },
+            AiTool {
+                name: HOST_TOOL_TERMINALS_OPEN.into(),
+                description: "Open a terminal pane, optionally at a cwd.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"layout":{"type":"string"},"cwd":{"type":"string"}}}),
                 timeout_ms: Some(30_000),
                 read_only: false,
             },
@@ -842,6 +961,17 @@ impl AssistantApp {
         input_json: &str,
         reply: SyncSender<ToolCallResult>,
     ) {
+        if !matches!(tool, HOST_TOOL_SUBSCRIBE | HOST_TOOL_UNSUBSCRIBE) {
+            log::info!("assistant: queueing native host tool '{tool}'");
+            self.pending_commands.push(AppCommand::AssistantHostTool {
+                name: tool.to_string(),
+                input_json: input_json.to_string(),
+                origin_pane_id: 0,
+                origin_context_id: 0,
+                reply,
+            });
+            return;
+        }
         let err = |msg: String| ToolCallResult {
             output_json: None,
             error: Some(msg),
@@ -929,7 +1059,7 @@ impl AssistantApp {
     }
 
     /// Run one model turn on a worker thread (the broker blocks on network).
-    fn start_turn(&mut self, conversation_id: String, _prompt: String) {
+    fn start_turn(&mut self, conversation_id: String, prompt: String) {
         let (delta_tx, delta_rx) = std::sync::mpsc::channel();
         self.delta_rx = Some(delta_rx);
         // Fresh cancel token per turn — a clone goes to the worker/broker, the
@@ -955,12 +1085,31 @@ impl AssistantApp {
         });
         let concrete_model = agent.model_routes.for_tier(tier).cloned();
         let effort = self.model.effort_override.or(agent.effort);
+        let selected_skill = self
+            .pending_skill
+            .take()
+            .or_else(|| {
+                self.skill_registry
+                    .matching_enabled(&prompt, &agent.skills)
+                    .cloned()
+            });
+        let mut system = agent.prompt;
+        if let Some(skill) = selected_skill {
+            log::info!(
+                "assistant[{conversation_id}]: loading {} skill '{}' from {}",
+                skill.source.label(),
+                skill.name,
+                skill.path.display()
+            );
+            system.push_str("\n\nFollow this loaded skill for the current turn:\n");
+            system.push_str(&skill.instructions);
+        }
         let request = AiBrokerRequest {
             app_id: "assistant".to_string(),
             model_tier: tier,
             concrete_model,
             reasoning_effort: effort,
-            system: agent.prompt,
+            system,
             messages: self.history_messages(),
             tools: Vec::new(),
             workspace_root: Some(self.workspace_root.clone()),
@@ -1032,9 +1181,14 @@ impl AssistantApp {
                         "assistant: tool '{tool}' finished ({})",
                         if error.is_none() { "ok" } else { "error" }
                     );
+                    let audit_target = if tool.starts_with("host.") {
+                        tool.clone()
+                    } else {
+                        Self::connector_target(&tool)
+                    };
                     self.audit.append(&AuditEvent::now(
                         "tool_call",
-                        &Self::connector_target(&tool),
+                        &audit_target,
                         if error.is_none() { "ok" } else { "error" },
                         error.as_deref().unwrap_or(""),
                     ));
@@ -1249,7 +1403,17 @@ impl AssistantApp {
         let Some(pending) = self.model.pending_permission.clone() else {
             return;
         };
-        let target = Self::connector_target(&pending.tool);
+        let is_host_tool = pending.tool.starts_with("host.");
+        let target_type = if is_host_tool {
+            TargetType::HostTool
+        } else {
+            TargetType::AppConnector
+        };
+        let target = if is_host_tool {
+            pending.tool.clone()
+        } else {
+            Self::connector_target(&pending.tool)
+        };
         let (decision_str, reply) = match choice {
             PermissionChoice::Deny => ("deny", PermissionReply::Deny),
             PermissionChoice::AllowOnce => {
@@ -1257,7 +1421,7 @@ impl AssistantApp {
             }
             PermissionChoice::AllowSession => {
                 self.record_connector_grant(
-                    TargetType::AppConnector,
+                    target_type,
                     &target,
                     GrantDuration::Session,
                     GrantSource::Session,
@@ -1266,7 +1430,7 @@ impl AssistantApp {
             }
             PermissionChoice::AllowAlways => {
                 self.record_connector_grant(
-                    TargetType::AppConnector,
+                    target_type,
                     &target,
                     GrantDuration::Always,
                     GrantSource::User,
@@ -1808,6 +1972,7 @@ impl AssistantApp {
             }
         };
         let turn_count = turns.len();
+        self.pending_skill = None;
         let cancel = self.model.switch_conversation(id.clone(), turns);
         self.model.session_name = session_name;
         self.execute_effects(cancel);
@@ -1924,6 +2089,7 @@ impl AssistantApp {
                 return;
             }
         };
+        self.pending_skill = None;
         let cancel = self.model.switch_conversation(id.clone(), target);
         self.execute_effects(cancel);
         log::info!(
@@ -1984,6 +2150,7 @@ impl AssistantApp {
             self.execute_effects(effects);
             return;
         }
+        self.pending_skill = None;
         let cancel = self.model.switch_conversation(id.clone(), compacted_turns);
         self.execute_effects(cancel);
         log::info!(
@@ -2155,6 +2322,14 @@ impl AssistantApp {
             }
             out
         };
+        text.push_str("\nNative host tools:\n");
+        for tool in Self::host_tools() {
+            text.push_str(&format!(
+                "{} — {}\n",
+                tool.name,
+                self.host_tool_decision(&tool).as_str()
+            ));
+        }
         if streams.is_empty() {
             text.push_str("\nNo app event streams declared in this workspace.");
         } else {
@@ -2170,6 +2345,152 @@ impl AssistantApp {
                 ));
             }
         }
+        let effects = self.model.push_info(text);
+        self.execute_effects(effects);
+    }
+
+    fn cmd_list_skills(&mut self) {
+        let enabled = self.active_agent().map(|agent| agent.skills.as_slice()).unwrap_or(&[]);
+        let visible = self
+            .skill_registry
+            .all()
+            .iter()
+            .filter(|skill| enabled.is_empty() || enabled.contains(&skill.name))
+            .collect::<Vec<_>>();
+        log::info!(
+            "assistant: /skills — {} installed skill(s)",
+            visible.len()
+        );
+        let text = if visible.is_empty() {
+            "No skills are installed for this channel or workspace.".to_string()
+        } else {
+            let mut text = String::from("Installed skills:\n");
+            for skill in visible {
+                text.push_str(&format!(
+                    "- `/{}` — {} _({}: {})_\n",
+                    skill.name,
+                    skill.description,
+                    skill.source.label(),
+                    skill.path.display()
+                ));
+            }
+            text
+        };
+        let effects = self.model.push_info(text);
+        self.execute_effects(effects);
+    }
+
+    fn cmd_invoke_skill(&mut self, name: &str, args: &str) {
+        let enabled = self.active_agent().map(|agent| agent.skills.as_slice()).unwrap_or(&[]);
+        if !enabled.is_empty() && !enabled.iter().any(|skill| skill == name) {
+            let effects = self.model.push_error(format!(
+                "Skill `/{name}` is not enabled for agent `{}`.",
+                self.model.active_agent_id
+            ));
+            self.execute_effects(effects);
+            return;
+        }
+        let Some(skill) = self.skill_registry.get(name).cloned() else {
+            let effects = self.model.push_error(format!(
+                "Unknown command or installed skill `/{name}`. Type /help or /skills."
+            ));
+            self.execute_effects(effects);
+            return;
+        };
+        log::info!(
+            "assistant: manually invoking {} skill '{}'",
+            skill.source.label(),
+            name
+        );
+        self.pending_skill = Some(skill);
+        let prompt = if args.is_empty() {
+            format!("Run the /{name} skill.")
+        } else {
+            args.to_string()
+        };
+        let effects = self.model.submit_prompt(prompt);
+        self.execute_effects(effects);
+    }
+
+    fn cmd_show_context(&mut self) {
+        let chars: usize = self
+            .model
+            .turns
+            .iter()
+            .map(|turn| turn.text.chars().count())
+            .sum();
+        let tool_names = self
+            .gated_dispatcher()
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+        let agent = self.active_agent();
+        let enabled_skill_count = agent
+            .map(|agent| {
+                self.skill_registry
+                    .all()
+                    .iter()
+                    .filter(|skill| agent.skills.is_empty() || agent.skills.contains(&skill.name))
+                    .count()
+            })
+            .unwrap_or(0);
+        let panes = crate::plexi_ai::broker::get_pane_snapshot();
+        let pane_context = if panes.is_empty() {
+            "none reported yet".to_string()
+        } else {
+            panes
+                .iter()
+                .map(|pane| format!("{} (pane {})", pane.type_id, pane.pane_id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let text = format!(
+            "Assistant context:\n- Estimated transcript tokens: ~{} ({} turns)\n- Loaded instructions: agent `{}` plus {} installed skill(s) available on demand\n- Active workspace context: `{}`\n- Open pane/app context: {}\n- Enabled tools: {}",
+            chars.div_ceil(4),
+            self.model.turns.len(),
+            agent.map(|agent| agent.id.as_str()).unwrap_or("default"),
+            enabled_skill_count,
+            self.workspace_root.display(),
+            pane_context,
+            if tool_names.is_empty() { "none".to_string() } else { tool_names.join(", ") },
+        );
+        log::info!(
+            "assistant: /context — turns={} estimated_tokens={}",
+            self.model.turns.len(),
+            chars.div_ceil(4)
+        );
+        let effects = self.model.push_info(text);
+        self.execute_effects(effects);
+    }
+
+    fn cmd_show_hooks(&mut self) {
+        let mut hooks = self.settings.hooks.enabled.value.clone();
+        if let Some(agent) = self.active_agent() {
+            hooks.extend(agent.hooks.iter().cloned());
+        }
+        hooks.sort();
+        hooks.dedup();
+        let source = &self.settings.hooks.enabled.source;
+        let text = if hooks.is_empty() {
+            "No Assistant lifecycle hooks are enabled.".to_string()
+        } else {
+            format!(
+                "Assistant lifecycle hooks (settings source: `{:?}` at `{}`):\n{}",
+                source.scope,
+                source
+                    .path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "defaults".to_string()),
+                hooks
+                    .into_iter()
+                    .map(|hook| format!("- `{hook}`"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
+        log::info!("assistant: /hooks");
         let effects = self.model.push_info(text);
         self.execute_effects(effects);
     }
@@ -2223,6 +2544,8 @@ impl AssistantApp {
                 r.actor_type == ActorType::Agent
                     && ((r.target_type == TargetType::AppConnector
                         && r.actor_id == connector_actor_id)
+                        || (r.target_type == TargetType::HostTool
+                            && r.actor_id == connector_actor_id)
                         || (r.target_type == TargetType::AppEventStream
                             && r.actor_id == ASSISTANT_ACTOR_ID))
             })
@@ -2255,7 +2578,7 @@ impl AssistantApp {
     /// `/revoke <target_id>`: remove persisted grants for one target. Event
     /// stream targets also lose their live timeline subscription.
     fn cmd_revoke(&mut self, target_id: &str) {
-        let actor_id = if target_id.starts_with("app.") {
+        let actor_id = if target_id.starts_with("app.") || target_id.starts_with("host.") {
             self.connector_actor().0
         } else {
             ASSISTANT_ACTOR_ID.to_string()
@@ -2326,6 +2649,18 @@ impl App for AssistantApp {
 
     fn display_name(&self) -> String {
         "Assistant".to_string()
+    }
+
+    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+        std::mem::take(&mut self.pending_commands)
+    }
+
+    fn background_tick(&mut self) {
+        self.pump_turn_io();
+    }
+
+    fn needs_background_tick(&self) -> bool {
+        self.model.streaming.in_flight || !self.pending_commands.is_empty()
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
@@ -2830,7 +3165,30 @@ enabled = ["allowed.tool"]
 
         assert!(visible.contains("csv.read_range"));
         assert!(!visible.contains("csv.write_cell"));
+        assert!(visible.contains(HOST_TOOL_PANES_LIST));
+        assert!(!visible.contains(HOST_TOOL_PANES_CLOSE));
+        assert!(!visible.contains(HOST_TOOL_APPS_OPEN));
         tool_dispatch::unregister(9207);
+    }
+
+    #[test]
+    fn enabled_tool_filter_applies_to_native_host_tools() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(settings_path, "[tools]\nenabled = [\"host.panes.list\"]\n").unwrap();
+        let app = test_app(ws.path());
+
+        let visible = app
+            .gated_dispatcher()
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<HashSet<_>>();
+
+        assert!(visible.contains(HOST_TOOL_PANES_LIST));
+        assert!(!visible.contains(HOST_TOOL_PANES_CLOSE));
+        assert!(!visible.contains(HOST_TOOL_APPS_OPEN));
     }
 
     #[test]
@@ -3163,16 +3521,18 @@ enabled = ["allowed.tool"]
         let dispatcher = app.gated_dispatcher();
         let mut visible: Vec<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
         visible.sort();
+        let connectors = visible
+            .iter()
+            .filter(|name| name.starts_with("t_"))
+            .map(String::as_str)
+            .collect::<Vec<_>>();
         assert_eq!(
-            visible,
-            vec![
-                HOST_TOOL_SUBSCRIBE,
-                HOST_TOOL_UNSUBSCRIBE,
-                "t_allow",
-                "t_ask"
-            ],
-            "denied tool must be invisible; host tools always visible"
+            connectors,
+            vec!["t_allow", "t_ask"],
+            "denied connector must be invisible"
         );
+        assert!(visible.iter().any(|name| name == HOST_TOOL_PANES_LIST));
+        assert!(visible.iter().any(|name| name == HOST_TOOL_SUBSCRIBE));
 
         // Denied tool is also uninvocable.
         let result = dispatcher.dispatch_call("c-deny".to_string(), "t_deny", "{}".to_string());
@@ -4174,5 +4534,73 @@ enabled = ["allowed.tool"]
             .unwrap()
             .text
             .contains(settings_path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn context_command_reports_open_pane_context() {
+        let ws = tempfile::tempdir().unwrap();
+        crate::plexi_ai::broker::update_pane_snapshot(vec![crate::plexi_ai::broker::PaneContext {
+            type_id: "text-editor".to_string(),
+            pane_id: 42,
+        }]);
+        let mut app = test_app(ws.path());
+        app.model.composer = "/context".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        let output = &app.model.turns.last().unwrap().text;
+        assert!(output.contains("Active workspace context"));
+        assert!(output.contains("text-editor (pane 42)"));
+    }
+
+    #[test]
+    fn background_tick_queues_native_host_calls_for_offscreen_assistant() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        let (reply, _reply_rx) = std::sync::mpsc::sync_channel(1);
+        app.model.streaming.in_flight = true;
+        app.flow_tx
+            .send(ToolFlowEvent::HostCall {
+                tool: HOST_TOOL_PANES_LIST.to_string(),
+                input_json: "{}".to_string(),
+                reply,
+            })
+            .unwrap();
+
+        assert!(App::needs_background_tick(&app));
+        App::background_tick(&mut app);
+        let commands = App::take_pending_commands(&mut app);
+        assert!(matches!(
+            commands.as_slice(),
+            [AppCommand::AssistantHostTool { name, .. }] if name == HOST_TOOL_PANES_LIST
+        ));
+    }
+
+    #[test]
+    fn unknown_slash_command_invokes_matching_installed_skill_with_args() {
+        let ws = tempfile::tempdir().unwrap();
+        let skill_path = ws.path().join(".plexi/skills/release/SKILL.md");
+        std::fs::create_dir_all(skill_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &skill_path,
+            "---\nname: release\ndescription: prepare a release\n---\nCHECK THE RELEASE CONTRACT",
+        )
+        .unwrap();
+        let broker = Arc::new(CapturingBroker::default());
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path());
+        app.model.composer = "/release /Users/ian/project".to_string();
+        let effects = app.model.submit();
+        assert!(matches!(
+            &effects[0],
+            AssistantEffect::InvokeSkill { name, args }
+                if name == "release" && args == "/Users/ian/project"
+        ));
+        app.execute_effects(effects);
+        wait_for_turn(&mut app);
+        let seen = broker.seen.lock().unwrap();
+        assert!(seen[0].system.contains("CHECK THE RELEASE CONTRACT"));
+        assert!(seen[0]
+            .messages
+            .iter()
+            .any(|message| message.content == "/Users/ian/project"));
     }
 }

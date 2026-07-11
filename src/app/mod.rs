@@ -1,5 +1,6 @@
 pub mod account;
 pub mod app_trait;
+mod assistant_host_tools;
 pub mod audio_player_app;
 mod canvas_bindings;
 mod dispatch;
@@ -2090,6 +2091,10 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
         | AppCommand::RunInLinkedTerminal { .. }
         | AppCommand::InsertPathToken { .. }
         | AppCommand::OpenArtifact { .. } => true,
+        AppCommand::AssistantHostTool { name, .. } => !matches!(
+            name.as_str(),
+            "host.panes.list" | "host.panes.state"
+        ),
         AppCommand::DeliverNotifyAction { host_action, .. } => host_action
             .as_deref()
             .map(|a| a.starts_with("pane_focus:"))
@@ -2107,6 +2112,7 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
         AppCommand::RunInLinkedTerminal { .. } => "RunInLinkedTerminal",
         AppCommand::InsertPathToken { .. } => "InsertPathToken",
         AppCommand::OpenArtifact { .. } => "OpenArtifact",
+        AppCommand::AssistantHostTool { .. } => "AssistantHostTool",
         AppCommand::DeliverNotifyAction { .. } => "DeliverNotifyAction(pane_focus)",
         _ => "unknown",
     }
@@ -2346,6 +2352,23 @@ impl eframe::App for PlexiApp {
                 continue;
             }
             match cmd {
+                AppCommand::AssistantHostTool {
+                    name,
+                    input_json,
+                    origin_pane_id,
+                    origin_context_id,
+                    reply,
+                } => {
+                    let result = self.handle_assistant_host_tool(
+                        &name,
+                        &input_json,
+                        origin_pane_id,
+                        origin_context_id,
+                    );
+                    if reply.send(result).is_err() {
+                        log::warn!("assistant_host_tool: worker dropped reply for '{name}'");
+                    }
+                }
                 // Capability-gated pane read/control request from a PGAP app
                 // (stint 0013/0014). routing.rs already checked panes.read /
                 // panes.control; execute it through the same handler CLI
