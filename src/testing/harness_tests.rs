@@ -405,6 +405,7 @@ fn get_pane_state_preserves_process_frame_and_adds_normalized_semantics() {
     assert_eq!(response["frame"][0]["text"], "process state label");
     assert_eq!(response["semantic"]["schema_version"], 1);
     assert_eq!(response["semantic"]["runtime_kind"], "process");
+    assert_eq!(response["lifecycle"], "booting");
     assert!(response["semantic"]["nodes"]
         .as_array()
         .is_some_and(|nodes| !nodes.is_empty()));

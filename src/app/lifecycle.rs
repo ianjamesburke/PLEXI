@@ -1236,7 +1236,10 @@ impl PlexiApp {
                 key,
                 response_file,
             } => {
-                log::info!("pane_ipc: kind=key_pane pane_id={pane_id} key={key:?}");
+                log::info!(
+                    "pane_ipc: kind=key_pane pane_id={pane_id} key_chars={}",
+                    key.chars().count()
+                );
                 let result: Result<serde_json::Value, String> = match self
                     .windows
                     .iter_mut()
@@ -1411,6 +1414,15 @@ impl PlexiApp {
                                 .frame_json()
                                 .unwrap_or(serde_json::Value::Array(vec![]));
                             let semantic = app_pane.semantic_state();
+                            let lifecycle = match &app_pane.runtime {
+                                crate::host::pane::AppRuntime::Process(process) => {
+                                    format!("{:?}", process.lifecycle.state()).to_lowercase()
+                                }
+                                crate::host::pane::AppRuntime::Wasm(wasm) => {
+                                    if wasm.is_running() { "running" } else { "exited" }.to_string()
+                                }
+                                crate::host::pane::AppRuntime::Builtin(_) => "running".to_string(),
+                            };
                             log::info!(
                                 "pane_ipc: get_pane_state: pane_id={pane_id} runtime={} schema_version={} node_count={}",
                                 app_pane.runtime.runtime_kind(),
@@ -1422,6 +1434,7 @@ impl PlexiApp {
                                 "type": "app",
                                 "title": app_pane.name,
                                 "manifest_id": app_pane.manifest_id,
+                                "lifecycle": lifecycle,
                                 "frame": frame,
                                 "semantic": semantic,
                             })

@@ -625,7 +625,10 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
         .join(format!("pane-key-response-{id}.json"))
         .to_string_lossy()
         .into_owned();
-    log::info!("pane_key:cli: pane_id={pane_id} key={key:?} response_file={response_file:?}");
+    log::info!(
+        "pane_key:cli: pane_id={pane_id} key_chars={} response_file={response_file:?}",
+        key.chars().count()
+    );
     let code = send_to_socket(serde_json::json!({
         "type": "key_pane",
         "pane_id": pane_id,
