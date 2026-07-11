@@ -26,6 +26,24 @@ use std::path::{Path, PathBuf};
 /// `"terminal"` is intentionally absent — it is a PTY pane, not an `App`.
 pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<Box<dyn App>> {
     match id {
+        "image-viewer" => {
+            let path = args.first().map(PathBuf::from)?;
+            Some(Box::new(crate::app::image_viewer_app::ImageViewerApp::new(
+                path,
+            )))
+        }
+        "video-player" => {
+            let path = args.first().map(PathBuf::from)?;
+            Some(Box::new(crate::app::video_player_app::VideoPlayerApp::new(
+                path,
+            )))
+        }
+        "audio-player" => {
+            let path = args.first().map(PathBuf::from)?;
+            Some(Box::new(crate::app::audio_player_app::AudioPlayerApp::new(
+                path,
+            )))
+        }
         "text-editor" => {
             // No explicit path → a fresh scratch note in the inbox. The file is
             // only created once content is typed (empty notes are deleted).
@@ -65,7 +83,7 @@ fn builtin_restore_args(
     app_state: Option<&serde_json::Value>,
 ) -> Option<Vec<String>> {
     match app_id {
-        "text-editor" => app_state
+        "text-editor" | "image-viewer" | "video-player" | "audio-player" => app_state
             .and_then(|state| state.get("path"))
             .and_then(|path| path.as_str())
             .map(|path| vec![path.to_string()]),
@@ -2014,6 +2032,25 @@ mod tests {
             cli_open_placement(Some("tab".to_string()), Some("overlay".to_string())),
             "tab"
         );
+    }
+
+    #[test]
+    fn builtin_factory_registers_native_media_viewers() {
+        let cwd = std::path::Path::new("/tmp");
+        for (id, path) in [
+            ("image-viewer", "/tmp/photo.png"),
+            ("video-player", "/tmp/clip.mp4"),
+            ("audio-player", "/tmp/song.mp3"),
+        ] {
+            let args = vec![path.to_string()];
+            let app = builtin_factory(id, cwd, &args).expect("media viewer builtin");
+            assert_eq!(app.type_id(), id);
+            assert!(
+                app.display_name()
+                    .contains(std::path::Path::new(path).file_name().unwrap().to_str().unwrap()),
+                "display name should include opened file"
+            );
+        }
     }
 
     fn write_sleeping_process_app(app_dir: &std::path::Path, id: &str) {

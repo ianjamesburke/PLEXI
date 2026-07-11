@@ -1,5 +1,6 @@
 pub mod account;
 pub mod app_trait;
+pub mod audio_player_app;
 mod canvas_bindings;
 mod dispatch;
 pub mod file_handlers;
@@ -8,6 +9,7 @@ pub(crate) mod focus_journal;
 pub mod host_mcp;
 pub mod host_version;
 pub mod http;
+pub mod image_viewer_app;
 pub(crate) mod launch_spec;
 mod lifecycle;
 pub mod marketplace;
@@ -24,6 +26,7 @@ mod render;
 pub mod secrets_app;
 mod sync;
 pub mod text_editor_app;
+pub mod video_player_app;
 
 #[cfg(test)]
 pub(crate) use focus::FocusLogOutcome;

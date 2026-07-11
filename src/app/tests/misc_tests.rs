@@ -222,6 +222,119 @@ fn file_handler_config_routes_extension_to_app() {
     );
 }
 
+#[test]
+fn media_files_route_to_native_viewer_apps() {
+    let ctx = egui::Context::default();
+    let ft = crate::platform::logging::new_frame_tick();
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
+    let (_tile, _pane) = app.add_test_pane();
+
+    for (filename, expected_id) in [
+        ("photo.png", "image-viewer"),
+        ("clip.mp4", "video-player"),
+        ("song.mp3", "audio-player"),
+    ] {
+        let panes_before: usize = app.windows.iter().map(|w| w.panes.len()).sum();
+        let path = std::env::temp_dir()
+            .join(filename)
+            .to_string_lossy()
+            .to_string();
+
+        app.dispatch_open_artifact(0, path, crate::app_protocol::ArtifactOpenMode::OpenInPane);
+
+        let panes_after: usize = app.windows.iter().map(|w| w.panes.len()).sum();
+        assert_eq!(
+            panes_after,
+            panes_before + 1,
+            "{filename} should open exactly one in-Plexi pane"
+        );
+        assert!(
+            app.windows.iter().any(|w| {
+                w.panes.values().any(|p| {
+                    p.as_app()
+                        .map(|a| a.runtime.type_id() == expected_id)
+                        .unwrap_or(false)
+                })
+            }),
+            "{filename} should route to {expected_id}"
+        );
+    }
+}
+
+#[test]
+fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
+    let ctx = egui::Context::default();
+    let ft = crate::platform::logging::new_frame_tick();
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let selected_path = dir.path().join("photo.png");
+    std::fs::write(&selected_path, b"not decoded in this test").expect("write image");
+
+    let browser: Box<dyn crate::app::app_trait::App> =
+        Box::new(crate::file_browser::FileBrowserApp::new(dir.path().to_path_buf()));
+    app.open_builtin_app_pane(
+        browser,
+        crate::app::permissions::AppPermissions::builtin(),
+        dir.path().to_path_buf(),
+        Some("cwd".to_string()),
+        Some("split_v"),
+        Some(0.5),
+    );
+
+    let browser_tile = app.windows[0].focused_pane.expect("browser focused");
+    let browser_pane_id = match app.windows[0].tree.tiles.get(browser_tile) {
+        Some(egui_tiles::Tile::Pane(id)) => *id,
+        other => panic!("expected browser pane tile, got {other:?}"),
+    };
+    let browser_state_before = app.windows[0]
+        .panes
+        .get(&browser_pane_id)
+        .and_then(|p| p.as_app())
+        .and_then(|a| a.runtime.serialize_state())
+        .expect("browser state before");
+    assert_eq!(browser_state_before["selected"], 0);
+
+    app.dispatch_open_artifact(
+        browser_pane_id,
+        selected_path.to_string_lossy().to_string(),
+        crate::app_protocol::ArtifactOpenMode::OpenInPane,
+    );
+
+    let viewer_tile = app.windows[0].focused_pane.expect("viewer focused");
+    assert_ne!(viewer_tile, browser_tile, "viewer should open as split sibling");
+    let viewer_pane_id = match app.windows[0].tree.tiles.get(viewer_tile) {
+        Some(egui_tiles::Tile::Pane(id)) => *id,
+        other => panic!("expected viewer pane tile, got {other:?}"),
+    };
+    assert!(
+        app.windows[0]
+            .panes
+            .get(&viewer_pane_id)
+            .and_then(|p| p.as_app())
+            .map(|a| a.runtime.type_id() == "image-viewer")
+            .unwrap_or(false),
+        "selected image should open in native image viewer"
+    );
+
+    app.close_focused();
+
+    assert_eq!(
+        app.windows[0].focused_pane,
+        Some(browser_tile),
+        "closing viewer should return focus to explorer sibling"
+    );
+    let browser_state_after = app.windows[0]
+        .panes
+        .get(&browser_pane_id)
+        .and_then(|p| p.as_app())
+        .and_then(|a| a.runtime.serialize_state())
+        .expect("browser state after");
+    assert_eq!(
+        browser_state_after["selected"], browser_state_before["selected"],
+        "browser selection should survive viewer open and close"
+    );
+}
+
 /// The file browser must open at the context root when one is set, not the
 /// focused pane's CWD. Mirrors `resolve_new_pane_cwd`'s precedence
 /// (context.root → focused cwd → home) that every other new-pane path uses.

@@ -150,6 +150,12 @@ impl PlaybackSession {
     pub fn set_volume(&self, v: f32) {
         self.player.set_volume(v);
     }
+    pub fn seek(&self, position: std::time::Duration) -> Result<(), String> {
+        self.player.try_seek(position).map_err(|e| e.to_string())
+    }
+    pub fn position(&self) -> std::time::Duration {
+        self.player.get_pos()
+    }
 }
 
 #[cfg(not(test))]
@@ -182,6 +188,17 @@ pub fn start_playback(request: PlaybackRequest) -> Result<PlaybackSession, Audio
     })
 }
 
+#[cfg(not(test))]
+pub fn source_duration_ms(source: &str) -> Option<u64> {
+    use rodio::Source;
+
+    let file = std::fs::File::open(source).ok()?;
+    let decoder = rodio::Decoder::try_from(file).ok()?;
+    decoder
+        .total_duration()
+        .map(|duration| duration.as_millis() as u64)
+}
+
 /// Test stub — playback is not exercised in unit tests; real hardware is not
 /// available in CI. The stub returns `Ok` unconditionally so routing tests
 /// can exercise the `AudioPlay` handler path without hardware.
@@ -195,6 +212,12 @@ impl PlaybackSession {
     pub fn pause(&self) {}
     pub fn resume(&self) {}
     pub fn set_volume(&self, _v: f32) {}
+    pub fn seek(&self, _position: std::time::Duration) -> Result<(), String> {
+        Ok(())
+    }
+    pub fn position(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
 }
 
 #[cfg(test)]
@@ -212,6 +235,11 @@ pub fn start_playback(request: PlaybackRequest) -> Result<PlaybackSession, Audio
         request.volume
     );
     Ok(PlaybackSession { _phantom: () })
+}
+
+#[cfg(test)]
+pub fn source_duration_ms(_source: &str) -> Option<u64> {
+    None
 }
 
 // ─── Real-time output stream (WASM audio, G12) ────────────────────────────────
