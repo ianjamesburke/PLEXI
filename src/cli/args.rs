@@ -1043,9 +1043,9 @@ pub enum PaneCmd {
     },
     /// Return the current UI state of a pane as JSON.
     ///
-    /// For app panes: returns a JSON object with a `frame` array of RenderCommands
-    /// representing the last-rendered L1 UiNode tree. Agents can use this to inspect
-    /// what an app is currently displaying.
+    /// For app panes: returns a versioned, runtime-neutral `semantic` tree. Process
+    /// apps also retain the compatible `frame` RenderCommand array. Agents can use
+    /// the semantic nodes to inspect what any app runtime is currently displaying.
     ///
     /// For terminal panes: returns a simple status object (type, title, pane_id).
     ///
