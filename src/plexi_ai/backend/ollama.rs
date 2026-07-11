@@ -6,6 +6,7 @@
 //! Uses a 5s connect timeout (fail fast if Ollama isn't running) and a 60s
 //! overall timeout (local models can be slow on first load).
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc;
 use std::thread;
@@ -18,6 +19,79 @@ pub struct OllamaBackend {
     pub host: String,
     /// Ollama model name. e.g. `"llama3.2:3b"`.
     pub model: String,
+}
+
+fn messages_for_ollama(messages: &[serde_json::Value]) -> Result<Vec<serde_json::Value>, String> {
+    let mut translated = Vec::with_capacity(messages.len());
+    let mut pending_tool_names = VecDeque::new();
+
+    for source in messages {
+        let mut message = source.clone();
+        let role = message.get("role").and_then(serde_json::Value::as_str);
+
+        if role == Some("assistant") {
+            if let Some(tool_calls) = message
+                .get_mut("tool_calls")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                pending_tool_names.clear();
+                for tool_call in tool_calls {
+                    let function = tool_call
+                        .get_mut("function")
+                        .and_then(serde_json::Value::as_object_mut)
+                        .ok_or_else(|| {
+                            "assistant tool call is missing a function object".to_string()
+                        })?;
+                    let name = function
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|name| !name.is_empty())
+                        .ok_or_else(|| {
+                            "assistant tool call is missing a function name".to_string()
+                        })?
+                        .to_string();
+                    let arguments = function.get_mut("arguments").ok_or_else(|| {
+                        format!("assistant tool call '{name}' is missing arguments")
+                    })?;
+                    if let Some(encoded) = arguments.as_str() {
+                        let parsed: serde_json::Value =
+                            serde_json::from_str(encoded).map_err(|e| {
+                                format!(
+                                    "assistant tool call '{name}' has invalid JSON arguments: {e}"
+                                )
+                            })?;
+                        if !parsed.is_object() {
+                            return Err(format!(
+                                "assistant tool call '{name}' arguments must be a JSON object"
+                            ));
+                        }
+                        *arguments = parsed;
+                    } else if !arguments.is_object() {
+                        return Err(format!(
+                            "assistant tool call '{name}' arguments must be a JSON object"
+                        ));
+                    }
+                    pending_tool_names.push_back(name);
+                }
+            }
+        } else if role == Some("tool") {
+            let object = message
+                .as_object_mut()
+                .ok_or_else(|| "tool result message must be a JSON object".to_string())?;
+            let pending_name = pending_tool_names.pop_front();
+            if object.get("tool_name").is_none() {
+                let name = pending_name.ok_or_else(|| {
+                    "tool result has no preceding assistant tool call".to_string()
+                })?;
+                object.insert("tool_name".to_string(), serde_json::Value::String(name));
+            }
+            object.remove("tool_call_id");
+        }
+
+        translated.push(message);
+    }
+
+    Ok(translated)
 }
 
 impl AiBackend for OllamaBackend {
@@ -61,8 +135,7 @@ fn stream_ollama(
         return;
     }
 
-    // Build messages in Ollama format (same as OpenAI: role + content).
-    // Messages are already serde_json::Value — pass them through directly.
+    // Build the Ollama conversation, including its native tool-history fields.
     let mut messages: Vec<serde_json::Value> = Vec::new();
     if !request.system.is_empty() {
         messages.push(serde_json::json!({
@@ -70,7 +143,16 @@ fn stream_ollama(
             "content": request.system
         }));
     }
-    messages.extend(request.messages.iter().cloned());
+    let translated = match messages_for_ollama(&request.messages) {
+        Ok(messages) => messages,
+        Err(error) => {
+            let _ = tx.send(StreamEvent::Error(format!(
+                "failed to translate Ollama messages: {error}"
+            )));
+            return;
+        }
+    };
+    messages.extend(translated);
 
     let mut body = serde_json::json!({
         "model": model,
@@ -78,7 +160,7 @@ fn stream_ollama(
         "stream": true
     });
 
-    // Inject tools when present (Ollama uses same OpenAI function-calling schema).
+    // Ollama tool definitions use the OpenAI function-definition schema.
     if !request.tools.is_empty() {
         let tools_json: Vec<serde_json::Value> = request
             .tools
@@ -240,7 +322,64 @@ fn stream_ollama(
 
 #[cfg(test)]
 mod tests {
-    use super::RawToolCall;
+    use super::{messages_for_ollama, RawToolCall};
+
+    #[test]
+    fn tool_call_arguments_are_objects_in_ollama_history() {
+        let messages = vec![serde_json::json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "host.apps.open",
+                    "arguments": "{\"app\":\"file_browser\",\"layout\":\"split_h\"}"
+                }
+            }]
+        })];
+
+        let translated = messages_for_ollama(&messages).unwrap();
+
+        assert_eq!(
+            translated[0]["tool_calls"][0]["function"]["arguments"],
+            serde_json::json!({"app": "file_browser", "layout": "split_h"})
+        );
+    }
+
+    #[test]
+    fn tool_results_use_ollama_tool_name_instead_of_tool_call_id() {
+        let messages = vec![
+            serde_json::json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "host.apps.open",
+                        "arguments": "{\"app\":\"file_browser\"}"
+                    }
+                }]
+            }),
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": "{\"ok\":true,\"pane_id\":5}"
+            }),
+        ];
+
+        let translated = messages_for_ollama(&messages).unwrap();
+
+        assert_eq!(
+            translated[1],
+            serde_json::json!({
+                "role": "tool",
+                "tool_name": "host.apps.open",
+                "content": "{\"ok\":true,\"pane_id\":5}"
+            })
+        );
+    }
 
     /// Parse a sample Ollama tool call streaming line and verify name + arguments.
     #[test]

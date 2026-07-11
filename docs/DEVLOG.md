@@ -10,16 +10,18 @@ or `/merge-pr` trims the orientation file; do not rewrite old entries.
 
 `0359` added a deterministic, non-egui Assistant harness around the real `AssistantApp` effect path and gated tool dispatcher. Tests script model/tool outcomes and capture typed events for agent and model selection, skills offered and activated, calls and JSON arguments, permission decisions, tool results, native host effects, results observed by the model, and final outcomes. Assertions reject missing, repeated, reordered, unexpected, or wrong-argument calls. Connector result injection fails before dispatch because connector success requires a registered app; HostHarness owns that integration layer.
 
-Real-host checks used an isolated `pr-3590` install in `/tmp/plexi-0359-live`. The local route used `ollama/gemma4:latest`. The cheap cloud route used `openrouter/qwen/qwen3.6-flash` and cost $0.000463125. No secret value was logged or recorded.
+Initial real-host checks used an isolated `pr-3590` install in `/tmp/plexi-0359-live`; the fixed Ollama rerun used `pr-2383`. The local route used `ollama/gemma4:latest`. The cheap cloud route used `openrouter/qwen/qwen3.6-flash` and cost $0.000463125. No secret value was logged or recorded.
+
+The first Ollama tool-result follow-up returned HTTP 400 with `{"error":"Value looks like object, but can't find closing '}' symbol"}`. Plexi was sending OpenAI-style history to Ollama's native `POST /api/chat`: `function.arguments` was a JSON string and tool results used `tool_call_id`. Ollama's [native tool-calling format](https://docs.ollama.com/capabilities/tool-calling) requires an arguments object and identifies results with `tool_name`. A minimal replay against Ollama 0.30.7 reproduced the boundary exactly: string arguments returned the same HTTP 400; changing only arguments to an object returned HTTP 200 and a final Gemma answer. The Ollama adapter now performs both native translations before serialization. The fixed `pr-2383` rerun completed `host.apps.open`, `host.panes.list`, both result-feedback iterations, and the final answer.
 
 | Contract | Ollama `gemma4:latest` | OpenRouter `qwen/qwen3.6-flash` |
 |---|---|---|
 | Agent/model routing | PASS: `local-verify`, low tier, concrete Ollama route | PASS: `cheap-verify`, low tier, concrete OpenRouter route |
 | Settings read/write | PASS: workspace settings loaded; active agent survived restart | PASS: `/model low` applied a session write; workspace settings loaded |
-| Conversation restart | PASS: prior user turn and provider error restored | PASS: completed 10-turn conversation, active agent, and final answer restored |
+| Conversation restart | PASS: completed 6-turn conversation, final answer, Assistant pane, and File Browser pane 9 restored | PASS: completed 10-turn conversation, active agent, and final answer restored |
 | Skill activation | PASS: workspace `pane-check` instructions loaded | PASS: workspace `pane-check` instructions loaded |
-| Native host operation | PASS: `host.apps.open` created File Browser pane 5 | PASS: `host.apps.open` created pane 7; `host.panes.list` returned pane 7 |
-| Result back to model | FAIL: the follow-up request reached Ollama, then Ollama returned HTTP 400 while parsing the tool-call object | PASS: model observed both results and produced a semantic success outcome |
+| Native host operation | PASS: fixed rerun created File Browser pane 9; `host.panes.list` returned pane 9 | PASS: `host.apps.open` created pane 7; `host.panes.list` returned pane 7 |
+| Result back to model | PASS after adapter fix: Gemma observed both results and produced a semantic success outcome | PASS: model observed both results and produced a semantic success outcome |
 
 Typed real-model traces:
 
@@ -30,11 +32,20 @@ agent = "local-verify"
 tier = "low"
 model = "gemma4:latest"
 skill_activated = "pane-check"
-calls = [{ name = "host.apps.open", arguments = { app = "file_browser", layout = "split_h", args = [] } }]
-permissions = [{ name = "host.apps.open", decision = "persisted_allow" }]
-host_effects = [{ name = "host.apps.open", pane_id = 5, result = "ok" }]
-model_observed_results = ["host.apps.open:ok"]
-final = { class = "provider_error", code = 400, detail = "Ollama rejected the follow-up tool-call object" }
+calls = [
+  { name = "host.apps.open", arguments = { app = "file_browser", layout = "split_h", args = [] } },
+  { name = "host.panes.list", arguments = {} },
+]
+permissions = [
+  { name = "host.apps.open", decision = "persisted_allow" },
+  { name = "host.panes.list", decision = "persisted_allow" },
+]
+host_effects = [
+  { name = "host.apps.open", pane_id = 9, result = "ok" },
+  { name = "host.panes.list", contains_pane_id = 9, result = "ok" },
+]
+model_observed_results = ["host.apps.open:ok", "host.panes.list:contains_pane_9"]
+final = { class = "success", semantic = "opened_pane_is_present_in_list" }
 
 [[trace]]
 backend = "openrouter"
