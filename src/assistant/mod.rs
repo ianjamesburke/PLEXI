@@ -291,16 +291,6 @@ impl AssistantApp {
         let settings_loader = SettingsLoader::new(profile_dir, &workspace_root);
         let session_overrides = SessionOverrides::default();
         let settings_report = settings_loader.load(&session_overrides);
-        for error in &settings_report.errors {
-            let text = format!("Assistant settings error: {error}");
-            if !model
-                .turns
-                .iter()
-                .any(|turn| turn.role == TurnRole::Error && turn.text == text)
-            {
-                model.turns.push(model::Turn::now(TurnRole::Error, text));
-            }
-        }
         let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
         let (flow_tx, flow_rx) = std::sync::mpsc::channel();
         let mut app = Self {
@@ -2824,6 +2814,24 @@ mod tests {
     }
 
     #[test]
+    fn settings_load_errors_do_not_persist_as_conversation_turns() {
+        let ws = tempfile::tempdir().unwrap();
+        let settings_path = ws.path().join("agents/settings.toml");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(&settings_path, "unknown = true\n").unwrap();
+
+        let app = test_app(ws.path());
+        assert_eq!(app.settings_errors.len(), 1);
+        assert!(app.model.turns.is_empty());
+        drop(app);
+
+        std::fs::write(&settings_path, "[model]\ntier = \"low\"\n").unwrap();
+        let reopened = test_app(ws.path());
+        assert!(reopened.settings_errors.is_empty());
+        assert!(reopened.model.turns.is_empty());
+    }
+
+    #[test]
     fn model_without_args_shows_the_resolved_tier_and_source() {
         let ws = tempfile::tempdir().unwrap();
         let settings_path = ws.path().join("agents/settings.toml");
@@ -2888,21 +2896,23 @@ mod tests {
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
         std::fs::write(&settings_path, "[model\ntier = nope").unwrap();
 
-        let app = test_app(ws.path());
+        let mut app = test_app(ws.path());
+        assert_eq!(app.settings_errors.len(), 1);
 
-        let error = app
+        app.model.composer = "/settings".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert!(app
             .model
             .turns
-            .iter()
-            .find(|turn| turn.role == TurnRole::Error)
-            .expect("settings parse error must be visible in the transcript");
-        assert!(error
+            .last()
+            .unwrap()
             .text
             .contains(settings_path.to_string_lossy().as_ref()));
     }
 
     #[test]
-    fn reopening_with_the_same_settings_error_does_not_duplicate_the_row() {
+    fn reopening_with_the_same_settings_error_keeps_one_active_error() {
         let ws = tempfile::tempdir().unwrap();
         let settings_path = ws.path().join("agents/settings.toml");
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
@@ -2910,17 +2920,8 @@ mod tests {
 
         drop(test_app(ws.path()));
         let reopened = test_app(ws.path());
-        let matching_errors = reopened
-            .model
-            .turns
-            .iter()
-            .filter(|turn| {
-                turn.role == TurnRole::Error
-                    && turn.text.contains(settings_path.to_string_lossy().as_ref())
-            })
-            .count();
-
-        assert_eq!(matching_errors, 1);
+        assert_eq!(reopened.settings_errors.len(), 1);
+        assert!(reopened.model.turns.is_empty());
     }
 
     #[test]
@@ -2929,15 +2930,17 @@ mod tests {
         let settings_path = ws.path().join("agents/settings.toml");
         std::fs::create_dir_all(&settings_path).unwrap();
 
-        let app = test_app(ws.path());
+        let mut app = test_app(ws.path());
+        assert_eq!(app.settings_errors.len(), 1);
 
-        let error = app
+        app.model.composer = "/settings".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert!(app
             .model
             .turns
-            .iter()
-            .find(|turn| turn.role == TurnRole::Error)
-            .expect("settings read error must be visible in the transcript");
-        assert!(error
+            .last()
+            .unwrap()
             .text
             .contains(settings_path.to_string_lossy().as_ref()));
     }
