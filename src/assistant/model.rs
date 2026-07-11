@@ -887,12 +887,16 @@ mod tests {
     #[test]
     fn clear_starts_fresh_conversation_with_new_id() {
         let mut m = AssistantModel::fresh();
+        m.active_agent_id = "writer".to_string();
+        m.effort_override = Some(ReasoningEffort::High);
         let old_id = m.conversation_id.clone();
         submitted(&mut m, "remember this");
         m.streaming = StreamingState::default();
         let effects = submitted(&mut m, "/clear");
         assert_ne!(m.conversation_id, old_id);
         assert!(m.turns.is_empty());
+        assert_eq!(m.active_agent_id, "writer");
+        assert_eq!(m.effort_override, Some(ReasoningEffort::High));
         assert!(
             matches!(&effects[0], AssistantEffect::SessionWrite { conversation_id }
             if *conversation_id == m.conversation_id)
@@ -902,11 +906,15 @@ mod tests {
     #[test]
     fn new_creates_named_conversation() {
         let mut m = AssistantModel::fresh();
+        m.active_agent_id = "writer".to_string();
+        m.effort_override = Some(ReasoningEffort::High);
         let old_id = m.conversation_id.clone();
         submitted(&mut m, "/new project notes");
         assert_ne!(m.conversation_id, old_id);
         assert_eq!(m.turns.len(), 1);
         assert!(m.turns[0].text.contains("project notes"));
+        assert_eq!(m.active_agent_id, "writer");
+        assert_eq!(m.effort_override, Some(ReasoningEffort::High));
     }
 
     #[test]

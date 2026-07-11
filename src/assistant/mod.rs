@@ -298,8 +298,19 @@ impl AssistantApp {
         // Load persisted session name (if any) so it survives restarts.
         model.session_name = store.active_session_name();
         model.show_thoughts = store.show_thoughts();
+        model.active_agent_id = store
+            .active_agent_id()
+            .unwrap_or_else(|| "default".to_string());
+        model.effort_override = store.effort_override();
         let settings_loader = SettingsLoader::new(profile_dir, &workspace_root);
         let agent_registry = AgentRegistry::load(profile_dir, &workspace_root);
+        if agent_registry.active(&model.active_agent_id).is_none() {
+            log::warn!(
+                "assistant: persisted agent '{}' is unavailable; using default",
+                model.active_agent_id
+            );
+            model.active_agent_id = "default".to_string();
+        }
         let session_overrides = SessionOverrides::default();
         let settings_report = settings_loader.load(&session_overrides);
         let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
@@ -692,6 +703,8 @@ impl AssistantApp {
         if let Err(e) = self.store.set_active_conversation(
             &self.model.conversation_id,
             self.model.session_name.as_deref(),
+            &self.model.active_agent_id,
+            self.model.effort_override,
         ) {
             log::error!("assistant: failed to persist active conversation: {e}");
         }
@@ -1516,23 +1529,34 @@ impl AssistantApp {
             self.execute_effects(effects);
             return;
         }
-        let dir = self.profile_dir.join("agents").join(id);
-        let result = std::fs::create_dir_all(&dir)
-            .and_then(|_| {
-                std::fs::write(
-                    dir.join("AGENT.md"),
-                    format!("You are {id}, a Plexi Assistant agent.\n"),
-                )
-            })
-            .and_then(|_| {
-                std::fs::write(
-                    dir.join("settings.toml"),
-                    format!(
-                        "[agent]\nid = \"{id}\"\ndisplay_name = \"{id}\"\ndefault_tier = \"medium\"\n\n[permissions]\ndefault_posture = \"ask\"\n"
-                    ),
-                )
-            });
+        let parent = self.profile_dir.join("agents");
+        let dir = parent.join(id);
+        let mut created_dir = false;
+        let result = (|| {
+            std::fs::create_dir_all(&parent)?;
+            std::fs::create_dir(&dir)?;
+            created_dir = true;
+            std::fs::write(
+                dir.join("AGENT.md"),
+                format!("You are {id}, a Plexi Assistant agent.\n"),
+            )?;
+            std::fs::write(
+                dir.join("settings.toml"),
+                format!(
+                    "[agent]\nid = \"{id}\"\ndisplay_name = \"{id}\"\ndefault_tier = \"medium\"\n\n[permissions]\ndefault_posture = \"ask\"\n"
+                ),
+            )
+        })();
         if let Err(error) = result {
+            if created_dir {
+                if let Err(cleanup_error) = std::fs::remove_dir_all(&dir) {
+                    log::error!(
+                        "assistant: failed to clean partial agent '{}' at {}: {cleanup_error}",
+                        id,
+                        dir.display()
+                    );
+                }
+            }
             log::error!(
                 "assistant: failed to create agent '{}' at {}: {error}",
                 id,
@@ -2172,6 +2196,25 @@ enabled = ["allowed.tool"]
             .unwrap()
             .text
             .contains("cannot be edited"));
+    }
+
+    #[test]
+    fn create_agent_refuses_to_overwrite_partial_definition() {
+        let ws = tempfile::tempdir().unwrap();
+        let dir = ws.path().join("agents").join("writer");
+        std::fs::create_dir_all(&dir).unwrap();
+        let prompt_path = dir.join("AGENT.md");
+        std::fs::write(&prompt_path, "Keep this prompt.\n").unwrap();
+        let mut app = test_app(ws.path());
+
+        app.cmd_create_agent("writer");
+
+        assert_eq!(
+            std::fs::read_to_string(prompt_path).unwrap(),
+            "Keep this prompt.\n"
+        );
+        assert!(!dir.join("settings.toml").exists());
+        assert_eq!(app.model.turns.last().unwrap().role, TurnRole::Error);
     }
 
     #[test]
@@ -3414,6 +3457,21 @@ enabled = ["allowed.tool"]
         drop(app);
         let reopened = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path());
         assert_eq!(reopened.model.session_name.as_deref(), Some("My Session"));
+    }
+
+    #[test]
+    fn selected_agent_and_effort_persist_when_conversation_reopens() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        app.cmd_create_agent("writer");
+        app.cmd_switch_agent("writer");
+        app.set_session_effort(Some(ReasoningEffort::High));
+
+        drop(app);
+        let reopened = test_app(ws.path());
+
+        assert_eq!(reopened.model.active_agent_id, "writer");
+        assert_eq!(reopened.model.effort_override, Some(ReasoningEffort::High));
     }
 
     #[test]
