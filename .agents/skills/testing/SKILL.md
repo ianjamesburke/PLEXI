@@ -28,7 +28,13 @@ Before a test can be called flaky:
 
 ```bash
 git diff --name-only origin/alpha...HEAD
+git diff --name-only HEAD
+git ls-files --others --exclude-standard
 ```
+
+The first command classifies committed branch changes; the latter two include
+the current pre-push worktree. Do not classify from `origin/alpha...HEAD` alone
+when implementation is still uncommitted.
 
 | Touched | Layer | Evidence required |
 |---|---|---|
@@ -49,6 +55,10 @@ cargo test --bin plexi
 ```
 
 Record pass/fail counts and the module filters used. New `AppRequest`/`HostEffect` handlers must have a `HostHarness` test (`src/testing/mod.rs`) — written first, per repo discipline.
+Use `-- --exact` only with the fully-qualified test name; a basename plus
+`--exact` can succeed after running zero tests. The full bin suite must be green
+in the current attempt; do not substitute an earlier run without recording when
+and against which diff it ran.
 
 ## Step 3 — UI & App Evidence: Scenes and AppHarness
 
@@ -68,16 +78,17 @@ For a new or changed overlay/widget/pane type: **add a committed scene file** un
 size = [1280.0, 800.0]
 
 [[steps]]
-open_app = "apps/dev/balls"          # real Python process; args = [...] surface as ctx.args
+open = { kind = "process", path = "apps/dev/balls", as = "balls" }
 [[steps]]
-wait_app_frame = { timeout_s = 15.0 }
+wait_app_frame = { target = "balls", timeout_s = 15.0 }
 [[steps]]
-assert = { pane_count = 1, lifecycle = "running", tree_contains = "balls" }
+assert = { target = "balls", pane_count = 1, lifecycle = "running", tree_contains = "balls" }
 [[steps]]
 shot = "balls.png"
 ```
 
-For scene DSL reference (verbs, assertions, SceneReport format), see `docs/TESTING.md`.
+For the canonical scene DSL reference, coverage map, assertions, and SceneReport
+format, see `src/testing/TESTING.md`.
 
 ### Python PGAP apps — AppHarness PNG renders
 
@@ -121,6 +132,9 @@ Append to the Ship Log entry for this attempt (issue body), or the PR descriptio
 Conclusion rules:
 - `install skippable — full coverage`: every touched layer has green tests AND any visual change has an inspected screenshot.
 - `binary install required`: PTY/terminal interaction, keyboard-capture flows, anything `#[ignore = "requires-pty"]`, or behavior only observable in the installed bundle (menus, dock, file associations).
+- A `LiveBackend` change always requires `just scene-live` against the installed
+  PR channel. Headless parity proves schema semantics, not CLI execution or
+  eventual polling against a real host.
 
 ## Guards
 

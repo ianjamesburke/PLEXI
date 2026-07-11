@@ -1799,9 +1799,8 @@ fn pgap_send_to_pane_denied_without_panes_control() {
 }
 
 /// App WITH `panes.control` sends SendToPane via PGAP: the request reaches the
-/// host pane-IPC handler. The target is the app's own (non-terminal) pane, so
-/// the handler — not the capability gate — answers with its pane-type error,
-/// proving the forward happened.
+/// host pane-IPC handler. App panes accept text through the production egui
+/// input path, so an `ok` response proves the capability gate forwarded it.
 #[test]
 fn pgap_send_to_pane_forwarded_with_panes_control() {
     let mut h = HostHarness::new();
@@ -1828,11 +1827,9 @@ fn pgap_send_to_pane_forwarded_with_panes_control() {
         v.get("capability").is_none(),
         "granted request must not produce a capability denial: {content}"
     );
-    assert!(
-        v["error"]
-            .as_str()
-            .is_some_and(|e| e.contains("not a terminal pane")),
-        "host handler must answer with its own pane-type error: {content}"
+    assert_eq!(
+        v["ok"], true,
+        "host handler must accept app text: {content}"
     );
 }
 
