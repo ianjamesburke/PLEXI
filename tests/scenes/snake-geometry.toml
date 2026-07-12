@@ -1,0 +1,9 @@
+size = [1280.0, 800.0]
+suite = false
+
+[[steps]]
+open = { kind = "process", path = "apps/snake", as = "snake" }
+[[steps]]
+wait_app_frame = { target = "snake", timeout_s = 15.0 }
+[[steps]]
+assert = { target = "snake", fit = "contain" }

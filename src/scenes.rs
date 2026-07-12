@@ -37,7 +37,7 @@ use crate::host::pane::{AppRuntime, Pane};
 use crate::spatial::tiling::PaneId;
 use crate::ui_tests::PlexiUiHarness;
 
-pub const SCENE_REPORT_SCHEMA_VERSION: u32 = 3;
+pub const SCENE_REPORT_SCHEMA_VERSION: u32 = 4;
 const LIVE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +170,8 @@ pub enum Step {
     RunSteps { run_steps: usize },
     /// Structured assertions — every present key must match.
     Assert { assert: AssertSpec },
+    /// Eventual semantic assertion, optionally after normal input delivery.
+    Expect { expect: ExpectSpec },
     /// Assert that the headless host accessibility tree contains an exact label.
     AssertLabel { assert_label: AssertLabelSpec },
     /// Save a headless screenshot to `<out_dir>/<name>`.
@@ -273,6 +275,24 @@ pub struct AssertSpec {
     pub lifecycle: Option<String>,
     /// Substring match against the target app's serialized L1 tree.
     pub tree_contains: Option<String>,
+    pub fit: Option<String>,
+    pub aspect: Option<[f64; 2]>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectSpec {
+    pub target: String,
+    pub after_key: Option<String>,
+    pub after_text: Option<String>,
+    pub node_changes: Option<String>,
+    pub tree_contains: Option<String>,
+    #[serde(default = "default_expect_timeout")]
+    pub timeout_s: f32,
+}
+
+fn default_expect_timeout() -> f32 {
+    5.0
 }
 
 // ─── Report format ───────────────────────────────────────────────────────────
@@ -292,6 +312,8 @@ pub struct SceneReport {
     /// Last-opened app pane state, when a scene opened one.
     pub app: Option<AppState>,
     pub teardown: TeardownResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_bundle: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -320,6 +342,8 @@ pub struct StepResult {
     pub detail: Option<StepDetail>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<SceneError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_bundle: Option<String>,
 }
 
 #[derive(Serialize, Debug)]
@@ -517,14 +541,25 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
                 ok: true,
                 detail,
                 error: None,
+                failure_bundle: None,
             }),
             Err(e) => {
+                let bundle = write_failure_bundle(
+                    out_dir,
+                    &scene_name,
+                    index,
+                    "headless",
+                    &e,
+                    runner.app_state(),
+                    Some(&mut runner),
+                );
                 steps.push(StepResult {
                     index,
                     step: label,
                     ok: false,
                     detail: None,
                     error: Some(e),
+                    failure_bundle: Some(bundle),
                 });
                 passed = false;
                 break;
@@ -532,6 +567,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         }
     }
 
+    let failure_bundle = steps.iter().find_map(|step| step.failure_bundle.clone());
     let report = SceneReport {
         schema_version: SCENE_REPORT_SCHEMA_VERSION,
         backend: "headless".to_string(),
@@ -544,6 +580,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         host: runner.host_state(),
         app: runner.app_state(),
         teardown: TeardownResult::headless(),
+        failure_bundle,
     };
     let report_path = out_dir.join(format!("{scene_name}.json"));
     match serde_json::to_string_pretty(&report) {
@@ -573,6 +610,7 @@ fn failed_report(scene: String, error: SceneError) -> SceneReport {
             ok: false,
             detail: None,
             error: Some(error),
+            failure_bundle: None,
         }],
         shots: Vec::new(),
         handles: BTreeMap::new(),
@@ -585,7 +623,59 @@ fn failed_report(scene: String, error: SceneError) -> SceneReport {
         },
         app: None,
         teardown: TeardownResult::headless(),
+        failure_bundle: None,
     }
+}
+
+fn write_failure_bundle(
+    out_dir: &Path,
+    scene: &str,
+    step: usize,
+    backend: &str,
+    error: &SceneError,
+    app: Option<AppState>,
+    mut headless: Option<&mut HeadlessBackend>,
+) -> String {
+    let dir = out_dir.join(format!("{scene}.failure-{step}"));
+    let _ = std::fs::create_dir_all(&dir);
+    let screenshot = if let Some(runner) = headless.as_mut() {
+        let path = dir.join("screenshot.png");
+        runner
+            .h
+            .save_screenshot(&path.to_string_lossy())
+            .ok()
+            .map(|_| "screenshot.png")
+    } else {
+        None
+    };
+    let semantic = app
+        .map(|state| state.tree)
+        .unwrap_or(serde_json::Value::Null);
+    let _ = std::fs::write(
+        dir.join("semantic.json"),
+        serde_json::to_vec_pretty(&semantic).unwrap_or_default(),
+    );
+    let log_path = dirs::home_dir().map(|home| home.join(".plexi-alpha/plexi.log"));
+    let log_tail = log_path
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|log| {
+            log.lines()
+                .rev()
+                .take(200)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let _ = std::fs::write(dir.join("log-tail.txt"), log_tail);
+    let manifest = serde_json::json!({"step_index": step, "backend": backend, "code": error.code, "message": error.message, "poll_history": [] , "screenshot": screenshot});
+    let _ = std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
+    );
+    dir.display().to_string()
 }
 
 struct LiveBackend {
@@ -1030,6 +1120,7 @@ impl LiveBackend {
                 }
             }
             Step::Assert { assert } => self.check_eventually(assert).map(|()| None),
+            Step::Expect { expect } => self.expect(expect),
             Step::Shot { shot } => Ok(Some(StepDetail::Message {
                 message: format!("live backend skips optional screenshot {shot}"),
             })),
@@ -1269,6 +1360,60 @@ impl LiveBackend {
             }
         })
     }
+
+    fn expect(&mut self, spec: &ExpectSpec) -> Result<Option<StepDetail>, SceneError> {
+        let pane_id = self.handles.resolve(&spec.target)?;
+        let before = self.pane_state(pane_id)?;
+        if let Some(key) = &spec.after_key {
+            self.command(
+                &[
+                    "pane".into(),
+                    "key".into(),
+                    pane_id.to_string(),
+                    key.clone(),
+                ],
+                true,
+            )?;
+        }
+        if let Some(text) = &spec.after_text {
+            self.command(
+                &[
+                    "pane".into(),
+                    "send".into(),
+                    pane_id.to_string(),
+                    text.clone(),
+                ],
+                true,
+            )?;
+        }
+        let timeout = Duration::from_secs_f32(spec.timeout_s);
+        let result = poll_until(timeout, LIVE_POLL_INTERVAL, || {
+            let state = self.pane_state(pane_id).ok()?;
+            let changed = spec
+                .node_changes
+                .as_ref()
+                .is_none_or(|needle| state.to_string().contains(needle) && state != before);
+            let contains = spec
+                .tree_contains
+                .as_ref()
+                .is_none_or(|needle| state.to_string().contains(needle));
+            (changed && contains).then_some(())
+        });
+        result.map_err(|_| {
+            SceneError::new(
+                if spec.after_key.is_some() || spec.after_text.is_some() {
+                    "input_no_effect"
+                } else {
+                    "eventual_timeout"
+                },
+                format!(
+                    "expect target '{}' did not satisfy semantic predicate; before={before}",
+                    spec.target
+                ),
+            )
+        })?;
+        Ok(None)
+    }
 }
 
 impl Drop for LiveBackend {
@@ -1330,6 +1475,7 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
                     ok: true,
                     detail,
                     error: None,
+                    failure_bundle: None,
                 }),
                 Err(error) => {
                     steps.push(StepResult {
@@ -1338,6 +1484,7 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
                         ok: false,
                         detail: None,
                         error: Some(error),
+                        failure_bundle: None,
                     });
                     passed = false;
                     break;
@@ -1351,6 +1498,7 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
             ok: false,
             detail: None,
             error: start_error,
+            failure_bundle: None,
         });
     }
     let handles = backend.handles.report();
@@ -1370,6 +1518,7 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
         host,
         app,
         teardown: backend.teardown.clone(),
+        failure_bundle: None,
     };
     if let Err(error) = std::fs::create_dir_all(out_dir).and_then(|()| {
         std::fs::write(
@@ -1419,6 +1568,7 @@ fn step_label(step: &Step) -> String {
         }
         Step::RunSteps { run_steps } => format!("run_steps {run_steps}"),
         Step::Assert { .. } => "assert".to_string(),
+        Step::Expect { .. } => "expect".to_string(),
         Step::AssertLabel { assert_label } => {
             format!(
                 "assert_label {} {:?}",
@@ -1653,6 +1803,7 @@ impl HeadlessBackend {
                 Ok(None)
             }
             Step::Assert { assert } => self.check(assert).map(|()| None),
+            Step::Expect { expect } => self.expect(expect),
             Step::AssertLabel { assert_label } => {
                 let target = self.handles.resolve_input(&assert_label.target)?;
                 let pane_id = self.focus_target(target)?;
@@ -1774,7 +1925,11 @@ impl HeadlessBackend {
             });
             expect("focused", expected.to_string(), actual.to_string());
         }
-        if spec.lifecycle.is_some() || spec.tree_contains.is_some() {
+        if spec.lifecycle.is_some()
+            || spec.tree_contains.is_some()
+            || spec.fit.is_some()
+            || spec.aspect.is_some()
+        {
             let target = spec.target.as_deref().ok_or_else(|| {
                 SceneError::new(
                     "missing_assert_target",
@@ -1799,11 +1954,119 @@ impl HeadlessBackend {
                     failures.push(format!("tree_contains: \"{needle}\" not found in app tree"));
                 }
             }
+            if spec.fit.is_some() || spec.aspect.is_some() {
+                self.check_geometry(spec, &app.tree, &mut failures);
+            }
         }
         if failures.is_empty() {
             Ok(())
         } else {
             Err(SceneError::new("assertion_failed", failures.join("; ")))
+        }
+    }
+
+    fn check_geometry(
+        &self,
+        spec: &AssertSpec,
+        tree: &serde_json::Value,
+        failures: &mut Vec<String>,
+    ) {
+        let Some(nodes) = tree
+            .pointer("/semantic/nodes")
+            .and_then(serde_json::Value::as_array)
+        else {
+            return;
+        };
+        let Some(canvas) = nodes
+            .iter()
+            .find(|node| node.get("role").and_then(serde_json::Value::as_str) == Some("canvas"))
+        else {
+            failures.push("geometry: no canvas semantic node".into());
+            return;
+        };
+        let Some(bounds) = canvas.get("bounds").and_then(serde_json::Value::as_array) else {
+            failures.push("geometry: canvas has no bounds".into());
+            return;
+        };
+        if bounds.len() != 4 {
+            failures.push("geometry: invalid canvas bounds".into());
+            return;
+        }
+        let w = bounds[2].as_f64().unwrap_or(0.0) - bounds[0].as_f64().unwrap_or(0.0);
+        let h = bounds[3].as_f64().unwrap_or(0.0) - bounds[1].as_f64().unwrap_or(0.0);
+        if let Some([aw, ah]) = spec.aspect {
+            if (w / h - aw / ah).abs() > 0.03 {
+                failures.push(format!("aspect: expected {aw}:{ah}, got {w}:{h}"));
+            }
+        }
+        if let Some(fit) = &spec.fit {
+            if !matches!(fit.as_str(), "fill" | "contain") {
+                failures.push(format!("fit: unsupported {fit}"));
+            }
+        }
+    }
+
+    fn expect(&mut self, spec: &ExpectSpec) -> Result<Option<StepDetail>, SceneError> {
+        let pane_id = self.handles.resolve(&spec.target)?;
+        let before = self
+            .app_state_for(pane_id)
+            .ok_or_else(|| SceneError::new("app_state_unavailable", "expect requires app state"))?
+            .tree;
+        if let Some(key) = &spec.after_key {
+            self.exec(
+                &Step::Key {
+                    key: KeySpec {
+                        target: spec.target.clone(),
+                        value: key.clone(),
+                    },
+                },
+                &mut Vec::new(),
+            )?;
+        }
+        if let Some(text) = &spec.after_text {
+            self.exec(
+                &Step::Text {
+                    text: TextSpec {
+                        target: spec.target.clone(),
+                        value: text.clone(),
+                    },
+                },
+                &mut Vec::new(),
+            )?;
+        }
+        let deadline = Instant::now() + Duration::from_secs_f32(spec.timeout_s);
+        loop {
+            self.h.step();
+            let state = self
+                .app_state_for(pane_id)
+                .ok_or_else(|| {
+                    SceneError::new("app_state_unavailable", "expect requires app state")
+                })?
+                .tree;
+            let changed = spec
+                .node_changes
+                .as_ref()
+                .is_none_or(|needle| state.to_string().contains(needle) && state != before);
+            let contains = spec
+                .tree_contains
+                .as_ref()
+                .is_none_or(|needle| state.to_string().contains(needle));
+            if changed && contains {
+                return Ok(None);
+            }
+            if Instant::now() >= deadline {
+                return Err(SceneError::new(
+                    if spec.after_key.is_some() || spec.after_text.is_some() {
+                        "input_no_effect"
+                    } else {
+                        "eventual_timeout"
+                    },
+                    format!(
+                        "expect target '{}' did not satisfy semantic predicate; before={before}",
+                        spec.target
+                    ),
+                ));
+            }
         }
     }
 
@@ -1831,12 +2094,11 @@ impl HeadlessBackend {
         self.h.with_app(|app| {
             for win in &app.windows {
                 if let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) {
-                    if let AppRuntime::Python(p) = &app_pane.runtime {
+                    if let AppRuntime::Process(p) = &app_pane.runtime {
                         return Some(AppState {
                             pane_id,
-                            lifecycle: if p.error().is_some() { "error" } else { "running" }
-                                .to_string(),
-                            tree: serde_json::Value::Null,
+                            lifecycle: format!("{:?}", p.lifecycle.state()).to_lowercase(),
+                            tree: serde_json::json!({"frame": p.frame, "semantic": app_pane.semantic_state()}),
                         });
                     }
                     if let AppRuntime::Wasm(w) = &app_pane.runtime {
@@ -1844,7 +2106,7 @@ impl HeadlessBackend {
                             pane_id,
                             lifecycle: if w.is_running() { "running" } else { "exited" }
                                 .to_string(),
-                            tree: serde_json::Value::String(w.last_render_text().to_string()),
+                            tree: serde_json::json!({"frame": w.last_render_text(), "semantic": app_pane.semantic_state()}),
                         });
                     }
                 }
