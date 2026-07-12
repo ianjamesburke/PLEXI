@@ -305,7 +305,8 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the [TESTING] block, then reply pass/fail/modify." ""
 # Route reply to PM pane if PM dispatched this skill, otherwise this pane
 REPLY_PANE="${PM_PANE_ID:-$PLEXI_PANE_ID}"
-plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} notify --no-wait \
+PLEXI_SOCKET="$PLEXI_SOCKET" PLEXI_CHANNEL="$PLEXI_CHANNEL" \
+  plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} notify --no-wait \
   --title "PR #<n> quality checks done (attempt $((ATTEMPT_COUNT+1))/3)" \
   --body "<title>. Review the [TESTING] block, then reply pass/fail/modify." \
   --choice "talk:Talk to Claude:pane_focus:$REPLY_PANE"

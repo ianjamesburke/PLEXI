@@ -248,10 +248,208 @@ pub(super) fn print_tip(msg: &str) {
     }
 }
 
+#[cfg(test)]
+mod socket_resolution_tests {
+    use super::{command_socket_available_from, resolve_command_socket_from};
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn pr_binary_uses_own_channel_socket_when_ambient_socket_mismatches() {
+        let actual = resolve_command_socket_from(
+            None,
+            Some("pr-2384"),
+            Some(OsStr::new("/tmp/alpha.sock")),
+            Path::new("/Users/test"),
+        );
+
+        assert_eq!(
+            actual,
+            Some(PathBuf::from(
+                "/Users/test/.plexi-pr-2384/notify.sock"
+            ))
+        );
+    }
+
+    #[test]
+    fn alpha_binary_uses_own_channel_socket_when_ambient_socket_mismatches() {
+        let actual = resolve_command_socket_from(
+            None,
+            Some("alpha"),
+            Some(OsStr::new("/tmp/beta.sock")),
+            Path::new("/Users/test"),
+        );
+
+        assert_eq!(
+            actual,
+            Some(PathBuf::from("/Users/test/.plexi-alpha/notify.sock"))
+        );
+    }
+
+    #[test]
+    fn beta_binary_uses_own_channel_socket_when_ambient_socket_mismatches() {
+        let actual = resolve_command_socket_from(
+            None,
+            Some("beta"),
+            Some(OsStr::new("/tmp/alpha.sock")),
+            Path::new("/Users/test"),
+        );
+
+        assert_eq!(
+            actual,
+            Some(PathBuf::from("/Users/test/.plexi-beta/notify.sock"))
+        );
+    }
+
+    #[test]
+    fn bare_binary_preserves_ambient_socket() {
+        let actual = resolve_command_socket_from(
+            None,
+            None,
+            Some(OsStr::new("/tmp/ambient.sock")),
+            Path::new("/Users/test"),
+        );
+
+        assert_eq!(actual, Some(PathBuf::from("/tmp/ambient.sock")));
+    }
+
+    #[test]
+    fn suffixed_binary_accepts_matching_channel_socket() {
+        let actual = resolve_command_socket_from(
+            None,
+            Some("alpha"),
+            Some(OsStr::new("/Users/test/.plexi-alpha/notify.sock")),
+            Path::new("/Users/test"),
+        );
+
+        assert_eq!(
+            actual,
+            Some(PathBuf::from("/Users/test/.plexi-alpha/notify.sock"))
+        );
+    }
+
+    #[test]
+    fn explicit_socket_override_wins_for_suffixed_binary() {
+        let actual = resolve_command_socket_from(
+            Some(Path::new("/tmp/explicit.sock")),
+            Some("pr-2384"),
+            Some(OsStr::new("/tmp/ambient.sock")),
+            Path::new("/Users/test"),
+        );
+
+        assert_eq!(actual, Some(PathBuf::from("/tmp/explicit.sock")));
+    }
+
+    #[test]
+    fn explicit_socket_override_enables_direct_dispatch_without_ambient_socket() {
+        assert!(command_socket_available_from(true, false));
+    }
+
+    #[test]
+    fn binary_suffix_alone_does_not_enable_direct_dispatch() {
+        let resolved = resolve_command_socket_from(
+            None,
+            Some("alpha"),
+            None,
+            Path::new("/Users/test"),
+        );
+
+        assert_eq!(
+            (resolved, command_socket_available_from(false, false)),
+            (
+                Some(PathBuf::from("/Users/test/.plexi-alpha/notify.sock")),
+                false,
+            )
+        );
+    }
+}
+
+fn resolve_command_socket_from(
+    explicit_socket: Option<&std::path::Path>,
+    binary_channel: Option<&str>,
+    ambient_socket: Option<&std::ffi::OsStr>,
+    home_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    if let Some(socket) = explicit_socket {
+        return Some(socket.to_path_buf());
+    }
+    if let Some(channel) = binary_channel {
+        return Some(
+            home_dir
+                .join(format!(".plexi-{channel}"))
+                .join("notify.sock"),
+        );
+    }
+    ambient_socket.map(std::path::PathBuf::from)
+}
+
+static COMMAND_SOCKET_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> =
+    std::sync::OnceLock::new();
+
+pub fn set_command_socket_override(path: std::path::PathBuf) {
+    if COMMAND_SOCKET_OVERRIDE.set(path.clone()).is_err() {
+        log::warn!("cli: command socket override was already set; keeping the first path");
+    } else {
+        log::info!("cli: set explicit command socket override path={path:?}");
+    }
+}
+
+fn command_socket_available_from(explicit_override: bool, ambient_socket: bool) -> bool {
+    explicit_override || ambient_socket
+}
+
+pub(super) fn command_socket_available() -> bool {
+    command_socket_available_from(
+        COMMAND_SOCKET_OVERRIDE.get().is_some(),
+        std::env::var_os("PLEXI_SOCKET").is_some(),
+    )
+}
+
+fn command_binary_channel() -> Option<String> {
+    let channel = crate::config::build_channel();
+    #[cfg(test)]
+    {
+        let is_cargo_test_artifact = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|parent| parent.ends_with("deps")))
+            .unwrap_or(false);
+        if is_cargo_test_artifact {
+            return None;
+        }
+    }
+    channel
+}
+
+pub(super) fn resolve_command_socket() -> Option<std::path::PathBuf> {
+    let channel = command_binary_channel();
+    let ambient = std::env::var_os("PLEXI_SOCKET");
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let explicit = COMMAND_SOCKET_OVERRIDE.get();
+    let socket = resolve_command_socket_from(
+        explicit.map(std::path::PathBuf::as_path),
+        channel.as_deref(),
+        ambient.as_deref(),
+        &home,
+    );
+    if let Some(path) = socket.as_ref() {
+        let source = if explicit.is_some() {
+            "--socket"
+        } else if channel.is_some() {
+            "binary-channel"
+        } else {
+            "PLEXI_SOCKET"
+        };
+        log::info!(
+            "cli: resolved command socket source={source} binary_channel={channel:?} path={path:?}"
+        );
+    }
+    socket
+}
+
 pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
-    let socket_path = match std::env::var("PLEXI_SOCKET") {
-        Ok(v) => v,
-        Err(_) => {
+    let socket_path = match resolve_command_socket() {
+        Some(path) => path,
+        None => {
             eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
             return 1;
         }

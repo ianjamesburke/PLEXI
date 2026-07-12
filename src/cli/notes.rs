@@ -158,7 +158,7 @@ pub fn notes_open_cli() -> i32 {
         return 1;
     }
 
-    if std::env::var("PLEXI_SOCKET").is_err() {
+    if !super::command_socket_available() {
         eprintln!("hint: run inside a Plexi pane for interactive note picking");
         eprintln!("notes directory: {notes_dir_str}");
         return 0;

@@ -433,9 +433,9 @@ pub fn pane_self_cli() -> i32 {
 /// Merges in client-side fields (socket, channel) and pretty-prints the result
 /// as JSON. Returns 0 on success, 1 on error.
 pub fn pane_info_cli(previous: Option<u64>) -> i32 {
-    let socket_path = match std::env::var("PLEXI_SOCKET") {
-        Ok(v) => v,
-        Err(_) => {
+    let socket_path = match super::resolve_command_socket() {
+        Some(path) => path,
+        None => {
             eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
             return 1;
         }
@@ -503,7 +503,9 @@ pub fn pane_info_cli(previous: Option<u64>) -> i32 {
                             return 1;
                         }
                         let mut obj = v;
-                        obj["socket"] = serde_json::Value::String(socket_path);
+                        obj["socket"] = serde_json::Value::String(
+                            socket_path.to_string_lossy().into_owned(),
+                        );
                         let channel =
                             crate::config::build_channel().unwrap_or_else(|| "main".to_string());
                         obj["channel"] = serde_json::Value::String(channel);
@@ -912,7 +914,7 @@ pub(super) fn open_github_ephemeral(
         "open_github_ephemeral: launching from {abs_path} workspace_root={workspace_root:?}"
     );
 
-    if std::env::var("PLEXI_SOCKET").is_ok() {
+    if super::command_socket_available() {
         let id = uuid::Uuid::new_v4();
         let response_file = crate::config::config_dir()
             .join(format!("spawn-pane-response-{id}.json"))
