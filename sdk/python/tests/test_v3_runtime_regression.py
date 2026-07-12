@@ -642,6 +642,7 @@ class TestTimers:
             # The host owns the fixed cadence after the initial registration.
             rearms = _find_events(events, "set_timer")
             assert not rearms
+            assert len(_find_events(events, "schedule_render")) == 1
         finally:
             proc.kill()
 

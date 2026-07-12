@@ -484,8 +484,7 @@ pub struct LivePythonPane {
     tree: Option<UiTree>,
     initialized: bool,
     ready: bool,
-    render_in_flight: bool,
-    render_sent_at: Option<std::time::Instant>,
+    pending_renders: VecDeque<(u64, std::time::Instant)>,
     next_render_at: std::time::Instant,
     continuous_scheduler: bool,
     render_requested: bool,
@@ -573,8 +572,7 @@ impl LivePythonPane {
             tree: None,
             initialized: false,
             ready: false,
-            render_in_flight: false,
-            render_sent_at: None,
+            pending_renders: VecDeque::new(),
             next_render_at: std::time::Instant::now(),
             continuous_scheduler: false,
             render_requested: true,
@@ -666,7 +664,8 @@ impl LivePythonPane {
         if should_send_python_render(
             self.initialized,
             self.ready,
-            self.render_in_flight,
+            self.pending_renders.len(),
+            render_pipeline_capacity(self.continuous_scheduler),
             self.continuous_scheduler || self.render_requested,
             now >= self.next_render_at,
         ) {
@@ -678,8 +677,8 @@ impl LivePythonPane {
                 self.error = Some(error.to_string());
                 return;
             }
-            self.render_in_flight = true;
-            self.render_sent_at = Some(std::time::Instant::now());
+            self.pending_renders
+                .push_back((self.frame_id, std::time::Instant::now()));
             self.render_requested = false;
             if self.continuous_scheduler {
                 self.next_render_at = advance_fixed_deadline(
@@ -860,10 +859,24 @@ impl LivePythonPane {
                             self.next_render_at = std::time::Instant::now() + self.repaint_after;
                         }
                         Some("frame_done") => {
-                            self.render_in_flight = false;
                             self.perf_guest_frames += 1;
-                            if let Some(sent_at) = self.render_sent_at.take() {
+                            let completed_frame = message.get("frame_id").and_then(Value::as_u64);
+                            let completed = if let Some(frame_id) = completed_frame {
+                                self.pending_renders
+                                    .iter()
+                                    .position(|(pending_id, _)| *pending_id == frame_id)
+                                    .and_then(|position| self.pending_renders.remove(position))
+                            } else {
+                                self.pending_renders.pop_front()
+                            };
+                            if let Some((_, sent_at)) = completed {
                                 self.perf_guest_roundtrip += sent_at.elapsed();
+                            } else {
+                                log::warn!(
+                                    "app::{}: CPython WASM completed unknown frame {:?}",
+                                    self.app_id,
+                                    completed_frame
+                                );
                             }
                         }
                         Some("close") | Some("close_self") => self.wants_close = true,
@@ -1113,8 +1126,6 @@ impl LivePythonPane {
                 self.timers.remove(&id);
             }
             let _ = self.runtime.send(&json!({"type": "timer", "timer_id": id}));
-            self.render_requested = true;
-            self.next_render_at = now + std::time::Duration::from_millis(1);
         }
     }
 
@@ -1166,8 +1177,7 @@ impl LivePythonPane {
         self.tree = None;
         self.initialized = false;
         self.ready = false;
-        self.render_in_flight = false;
-        self.render_sent_at = None;
+        self.pending_renders.clear();
         self.error = None;
         self.wants_close = false;
         self.timers.clear();
@@ -1233,11 +1243,25 @@ fn advance_fixed_deadline(
 fn should_send_python_render(
     initialized: bool,
     ready: bool,
-    render_in_flight: bool,
+    pending_renders: usize,
+    pipeline_capacity: usize,
     render_requested: bool,
     deadline_reached: bool,
 ) -> bool {
-    initialized && ready && !render_in_flight && render_requested && deadline_reached
+    initialized
+        && ready
+        && pending_renders < pipeline_capacity
+        && render_requested
+        && deadline_reached
+}
+
+fn render_pipeline_capacity(continuous_scheduler: bool) -> usize {
+    // Cover two delayed host handoffs without allowing an unbounded frame backlog.
+    if continuous_scheduler {
+        3
+    } else {
+        1
+    }
 }
 
 fn http_host_allowed(raw_url: &str, allowed_hosts: &[String]) -> bool {
@@ -2467,12 +2491,29 @@ mod tests {
     }
 
     #[test]
-    fn render_waits_for_ready_and_never_queues_behind_in_flight_frame() {
-        assert!(!should_send_python_render(true, false, false, true, true));
-        assert!(should_send_python_render(true, true, false, true, true));
-        assert!(!should_send_python_render(true, true, true, true, true));
-        assert!(!should_send_python_render(true, true, false, true, false));
-        assert!(!should_send_python_render(true, true, false, false, true));
+    fn event_driven_render_waits_for_ready_and_in_flight_frame() {
+        assert!(!should_send_python_render(true, false, 0, 1, true, true));
+        assert!(should_send_python_render(true, true, 0, 1, true, true));
+        assert!(!should_send_python_render(true, true, 1, 1, true, true));
+        assert!(!should_send_python_render(true, true, 0, 1, true, false));
+        assert!(!should_send_python_render(true, true, 0, 1, false, true));
+    }
+
+    #[test]
+    fn continuous_scheduler_keeps_a_bounded_frame_pipeline() {
+        let capacity = render_pipeline_capacity(true);
+
+        assert_eq!(capacity, 3);
+        assert!(should_send_python_render(
+            true, true, 1, capacity, true, true
+        ));
+        assert!(should_send_python_render(
+            true, true, 2, capacity, true, true
+        ));
+        assert!(!should_send_python_render(
+            true, true, 3, capacity, true, true
+        ));
+        assert_eq!(render_pipeline_capacity(false), 1);
     }
 
     #[test]
