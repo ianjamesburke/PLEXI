@@ -59,6 +59,7 @@ class V3AppRuntime:
         self._workspace_root = ""
         self._capabilities: list[str] = []
         self._running = True
+        self._pgap_wire = False
 
     def run(self) -> None:
         while self._running:
@@ -126,6 +127,7 @@ class V3AppRuntime:
         self._app_id = ev.get("app_id", "")
         self._workspace_root = ev.get("workspace_root", "")
         self._capabilities = ev.get("capabilities", [])
+        self._pgap_wire = ev.get("protocol") == "pgap/3"
 
         from ._theme import theme as _theme
         _theme.update_from(ev.get("theme"))
@@ -141,10 +143,10 @@ class V3AppRuntime:
         })
 
         self._set_state(in_view=False)
-        init_effects = self._module.init(
-            tuple(ev.get("size", [0.0, 0.0])),
-            self._launch_args,
-        )
+        size = ev.get("size")
+        if not isinstance(size, (list, tuple)) or len(size) != 2:
+            size = [ev.get("width", 0.0), ev.get("height", 0.0)]
+        init_effects = self._module.init(tuple(size), self._launch_args)
         self._apply_effects(init_effects)
 
     def _handle_render(self, ev: dict) -> None:
@@ -165,8 +167,16 @@ class V3AppRuntime:
             self._set_state(in_view=False)
 
         if root is not None:
-            from ._adapter import _encode_uitree
-            _emit({"type": "component_tree", "tree": _encode_uitree(root)})
+            if self._pgap_wire:
+                root_node = root if isinstance(root, dict) else root.to_node()
+                if not isinstance(root_node, dict):
+                    raise TypeError(
+                        f"Unknown PGAP UINode type: {type(root).__name__}"
+                    )
+                _emit({"type": "component_tree", "root": root_node})
+            else:
+                from ._adapter import _encode_uitree
+                _emit({"type": "component_tree", "tree": _encode_uitree(root)})
 
         frame_id = ev.get("frame_id", self._frame_id)
         _emit({"type": "frame_done", "frame_id": frame_id})

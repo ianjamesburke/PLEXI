@@ -41,17 +41,19 @@ def _spawn_v3_app(app_file: Path):
     return proc
 
 
-def _init_app(proc, state=None, capabilities=None):
+def _init_app(proc, state=None, capabilities=None, protocol="pgap/3"):
     """Send init message and wait for ready."""
     msg = {
         "type": "init",
-        "protocol": "pgap/3",
         "app_id": "regression-test",
         "workspace_root": "/tmp",
         "capabilities": capabilities or [],
         "feature_flags": [],
-        "size": [640.0, 360.0],
+        "width": 640.0,
+        "height": 360.0,
     }
+    if protocol is not None:
+        msg["protocol"] = protocol
     if state is not None:
         msg["state"] = state
     proc.stdin.write(json.dumps(msg) + "\n")
@@ -478,6 +480,44 @@ class TestState:
             events = _render(proc, frame_id=2)
             trees = _find_events(events, "component_tree")
             assert any("n=3" in json.dumps(t) for t in trees)
+        finally:
+            proc.kill()
+
+
+class TestWireFormat:
+    def _text_app(self, tmp_path: Path) -> Path:
+        app = tmp_path / "wire_app.py"
+        app.write_text(textwrap.dedent("""
+            from plexi_sdk.ui import Text
+
+            def init(size, args):
+                return []
+
+            def update(event):
+                return []
+
+            def view():
+                return Text("wire-format")
+        """).lstrip())
+        return app
+
+    def test_pgap_protocol_emits_render_command_component_tree(self, tmp_path):
+        proc = _spawn_v3_app(self._text_app(tmp_path))
+        try:
+            _init_app(proc)
+            events = _render(proc)
+            tree = _find_events(events, "component_tree")[0]
+            assert "root" in tree and "tree" not in tree
+        finally:
+            proc.kill()
+
+    def test_wasm_protocol_emits_indexed_component_tree(self, tmp_path):
+        proc = _spawn_v3_app(self._text_app(tmp_path))
+        try:
+            _init_app(proc, protocol=None)
+            events = _render(proc)
+            tree = _find_events(events, "component_tree")[0]
+            assert "tree" in tree and "root" not in tree
         finally:
             proc.kill()
 
