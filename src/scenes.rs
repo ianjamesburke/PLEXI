@@ -670,7 +670,7 @@ fn write_failure_bundle(
         })
         .unwrap_or_default();
     let _ = std::fs::write(dir.join("log-tail.txt"), log_tail);
-    let manifest = serde_json::json!({"step_index": step, "backend": backend, "code": error.code, "message": error.message, "poll_history": [] , "screenshot": screenshot});
+    let manifest = serde_json::json!({"step_index": step, "backend": backend, "code": error.code, "message": error.message, "poll_history": [{"timestamp_ms": 0, "observed": semantic}], "screenshot": screenshot});
     let _ = std::fs::write(
         dir.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
@@ -1321,7 +1321,11 @@ impl LiveBackend {
                 failures.push(format!("exists: expected {expected}, got {actual}"));
             }
         }
-        if spec.lifecycle.is_some() || spec.tree_contains.is_some() {
+        if spec.lifecycle.is_some()
+            || spec.tree_contains.is_some()
+            || spec.fit.is_some()
+            || spec.aspect.is_some()
+        {
             let target = spec.target.as_deref().ok_or_else(|| {
                 SceneError::new(
                     "missing_assert_target",
@@ -1344,6 +1348,7 @@ impl LiveBackend {
                     failures.push(format!("tree_contains: {needle:?} not found in app tree"));
                 }
             }
+            geometry_failures(spec, &state, &mut failures);
         }
         if failures.is_empty() {
             Ok(())
@@ -1416,6 +1421,91 @@ impl LiveBackend {
     }
 }
 
+fn geometry_failures(spec: &AssertSpec, tree: &serde_json::Value, failures: &mut Vec<String>) {
+    if spec.fit.is_none() && spec.aspect.is_none() {
+        return;
+    }
+    let Some(nodes) = tree
+        .pointer("/semantic/nodes")
+        .and_then(serde_json::Value::as_array)
+    else {
+        failures.push("geometry: semantic tree unavailable".into());
+        return;
+    };
+    let Some(canvas) = nodes
+        .iter()
+        .find(|node| node.get("role").and_then(serde_json::Value::as_str) == Some("canvas"))
+    else {
+        failures.push("geometry: no canvas semantic node".into());
+        return;
+    };
+    let Some(bounds) = canvas.get("bounds").and_then(serde_json::Value::as_array) else {
+        failures.push("geometry: canvas has no bounds".into());
+        return;
+    };
+    let (w, h) = (
+        bounds[2].as_f64().unwrap_or(0.0) - bounds[0].as_f64().unwrap_or(0.0),
+        bounds[3].as_f64().unwrap_or(0.0) - bounds[1].as_f64().unwrap_or(0.0),
+    );
+    let children = canvas
+        .get("children")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let rects: Vec<[f64; 4]> = nodes
+        .iter()
+        .filter(|n| {
+            children
+                .iter()
+                .any(|id| id == n.get("id").unwrap_or(&serde_json::Value::Null))
+        })
+        .filter_map(|n| n.get("bounds").and_then(serde_json::Value::as_array))
+        .filter_map(|b| {
+            if b.len() == 4 {
+                Some([
+                    b[0].as_f64()?,
+                    b[1].as_f64()?,
+                    b[2].as_f64()?,
+                    b[3].as_f64()?,
+                ])
+            } else {
+                None
+            }
+        })
+        .collect();
+    let interior: Vec<_> = rects
+        .iter()
+        .filter(|b| b[0] > 0.5 || b[1] > 0.5 || b[2] < w - 0.5 || b[3] < h - 0.5)
+        .collect();
+    if let Some([aw, ah]) = spec.aspect {
+        if !interior
+            .iter()
+            .any(|b| (((b[2] - b[0]) / (b[3] - b[1])) - aw / ah).abs() <= 0.03)
+        {
+            failures.push(format!(
+                "aspect: expected {aw}:{ah}, no committed content rect matched"
+            ));
+        }
+    }
+    match spec.fit.as_deref() {
+        Some("fill")
+            if !rects.iter().any(|b| {
+                b[0].abs() <= 0.5
+                    && b[1].abs() <= 0.5
+                    && (b[2] - w).abs() <= 0.5
+                    && (b[3] - h).abs() <= 0.5
+            }) =>
+        {
+            failures.push("fit=fill: no content rect covers canvas".into())
+        }
+        Some("contain") if interior.is_empty() => {
+            failures.push("fit=contain: no letterboxed content rect inside canvas".into())
+        }
+        Some("fill") | Some("contain") | None => {}
+        Some(other) => failures.push(format!("fit: unsupported {other}")),
+    }
+}
+
 impl Drop for LiveBackend {
     fn drop(&mut self) {
         if self.owned_host {
@@ -1478,13 +1568,22 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
                     failure_bundle: None,
                 }),
                 Err(error) => {
+                    let bundle = write_failure_bundle(
+                        out_dir,
+                        &scene_name,
+                        index,
+                        "live",
+                        &error,
+                        backend.app_state(),
+                        None,
+                    );
                     steps.push(StepResult {
                         index,
                         step: step_label(step),
                         ok: false,
                         detail: None,
                         error: Some(error),
-                        failure_bundle: None,
+                        failure_bundle: Some(bundle),
                     });
                     passed = false;
                     break;
@@ -1506,6 +1605,7 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
     let app = backend.app_state();
     backend.teardown();
     passed &= backend.teardown.ok;
+    let failure_bundle = steps.iter().find_map(|step| step.failure_bundle.clone());
     let report = SceneReport {
         schema_version: SCENE_REPORT_SCHEMA_VERSION,
         backend: "live".to_string(),
@@ -1518,7 +1618,7 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
         host,
         app,
         teardown: backend.teardown.clone(),
-        failure_bundle: None,
+        failure_bundle,
     };
     if let Err(error) = std::fs::create_dir_all(out_dir).and_then(|()| {
         std::fs::write(
@@ -1994,14 +2094,59 @@ impl HeadlessBackend {
         }
         let w = bounds[2].as_f64().unwrap_or(0.0) - bounds[0].as_f64().unwrap_or(0.0);
         let h = bounds[3].as_f64().unwrap_or(0.0) - bounds[1].as_f64().unwrap_or(0.0);
+        let canvas_children = canvas
+            .get("children")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let child_bounds: Vec<[f64; 4]> = nodes
+            .iter()
+            .filter(|node| {
+                canvas_children
+                    .iter()
+                    .any(|id| id == node.get("id").unwrap_or(&serde_json::Value::Null))
+            })
+            .filter_map(|node| node.get("bounds").and_then(serde_json::Value::as_array))
+            .filter_map(|b| {
+                Some([
+                    b.get(0)?.as_f64()?,
+                    b.get(1)?.as_f64()?,
+                    b.get(2)?.as_f64()?,
+                    b.get(3)?.as_f64()?,
+                ])
+            })
+            .collect();
+        let interior: Vec<_> = child_bounds
+            .iter()
+            .filter(|b| b[0] > 0.5 || b[1] > 0.5 || b[2] < w - 0.5 || b[3] < h - 0.5)
+            .collect();
         if let Some([aw, ah]) = spec.aspect {
-            if (w / h - aw / ah).abs() > 0.03 {
-                failures.push(format!("aspect: expected {aw}:{ah}, got {w}:{h}"));
+            if !interior
+                .iter()
+                .any(|b| (((b[2] - b[0]) / (b[3] - b[1])) - aw / ah).abs() <= 0.03)
+            {
+                failures.push(format!(
+                    "aspect: expected {aw}:{ah}, no committed content rect matched"
+                ));
             }
         }
         if let Some(fit) = &spec.fit {
-            if !matches!(fit.as_str(), "fill" | "contain") {
-                failures.push(format!("fit: unsupported {fit}"));
+            match fit.as_str() {
+                "fill"
+                    if !child_bounds.iter().any(|b| {
+                        (b[0]).abs() <= 0.5
+                            && b[1].abs() <= 0.5
+                            && (b[2] - w).abs() <= 0.5
+                            && (b[3] - h).abs() <= 0.5
+                    }) =>
+                {
+                    failures.push("fit=fill: no content rect covers canvas".into())
+                }
+                "contain" if interior.is_empty() => {
+                    failures.push("fit=contain: no letterboxed content rect inside canvas".into())
+                }
+                "fill" | "contain" => {}
+                _ => failures.push(format!("fit: unsupported {fit}")),
             }
         }
     }

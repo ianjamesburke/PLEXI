@@ -1,5 +1,5 @@
 size = [1280.0, 800.0]
-suite = false
+suite = true
 
 [[steps]]
 open = { kind = "process", path = "apps/tetris", as = "tetris" }
