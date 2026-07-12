@@ -1306,27 +1306,15 @@ impl LivePythonPane {
         &mut self,
         input: &egui::InputState,
     ) -> crate::app::app_trait::KeyDisposition {
-        let mut consumed = false;
-        for event in &input.events {
-            if let egui::Event::Key {
-                key,
-                pressed,
-                modifiers,
-                ..
-            } = event
-            {
-                let _ = self.runtime.send(&json!({
-                    "type": "key", "key": python_key_name(*key),
-                    "pressed": pressed,
-                    "modifiers": {"ctrl": modifiers.ctrl, "shift": modifiers.shift, "alt": modifiers.alt, "meta": modifiers.mac_cmd || modifiers.command}
-                }));
-                consumed = true;
-            }
-        }
-        if consumed {
-            crate::app::app_trait::KeyDisposition::Consumed
-        } else {
+        let events = python_key_events(&input.events);
+        if events.is_empty() {
             crate::app::app_trait::KeyDisposition::Passthrough
+        } else {
+            let _ = self.runtime.send(&json!({
+                "type": "key_events",
+                "events": events,
+            }));
+            crate::app::app_trait::KeyDisposition::Consumed
         }
     }
 
@@ -1403,6 +1391,33 @@ fn python_key_name(key: egui::Key) -> String {
         egui::Key::Space => "space".to_string(),
         other => format!("{other:?}").to_ascii_lowercase(),
     }
+}
+
+fn python_key_events(events: &[egui::Event]) -> Vec<Value> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let egui::Event::Key {
+                key,
+                pressed,
+                modifiers,
+                ..
+            } = event
+            else {
+                return None;
+            };
+            Some(json!({
+                "key": python_key_name(*key),
+                "pressed": pressed,
+                "modifiers": {
+                    "ctrl": modifiers.ctrl,
+                    "shift": modifiers.shift,
+                    "alt": modifiers.alt,
+                    "meta": modifiers.mac_cmd || modifiers.command,
+                }
+            }))
+        })
+        .collect()
 }
 
 fn scheduler_repaint_after(mode: Option<&str>, fps: Option<u64>) -> std::time::Duration {
@@ -2681,6 +2696,19 @@ mod tests {
     fn python_keys_use_sdk_lowercase_names() {
         assert_eq!(python_key_name(egui::Key::ArrowDown), "down");
         assert_eq!(python_key_name(egui::Key::Escape), "escape");
+    }
+
+    #[test]
+    fn python_key_tap_keeps_press_and_release_in_one_bridge_batch() {
+        let raw = crate::app::key_str_to_egui_raw_input("right").expect("right key");
+
+        let events = python_key_events(&raw.events);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["key"], "right");
+        assert_eq!(events[0]["pressed"], true);
+        assert_eq!(events[1]["key"], "right");
+        assert_eq!(events[1]["pressed"], false);
     }
 
     #[test]

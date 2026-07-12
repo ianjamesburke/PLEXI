@@ -111,6 +111,8 @@ class V3AppRuntime:
             self._handle_render(ev)
         elif t == "key":
             self._handle_key(ev)
+        elif t == "key_events":
+            self._handle_key_events(ev)
         elif t == "timer":
             self._handle_timer(ev)
         elif t == "component_event":
@@ -221,7 +223,7 @@ class V3AppRuntime:
 
         _emit({"type": "frame_done", "frame_id": frame_id})
 
-    def _handle_key(self, ev: dict) -> None:
+    def _handle_key(self, ev: dict, *, schedule_render: bool = True) -> None:
         key = _normalize_key(ev.get("key", ""))
         mods = ev.get("modifiers", {})
         modifiers = events.Modifiers(
@@ -234,7 +236,19 @@ class V3AppRuntime:
             key=key,
             modifiers=modifiers,
             pressed=bool(ev.get("pressed", True)),
-        ))
+        ), schedule_render=schedule_render)
+
+    def _handle_key_events(self, ev: dict) -> None:
+        key_events = ev.get("events", [])
+        if not isinstance(key_events, list):
+            return
+        handled = False
+        for key_event in key_events:
+            if isinstance(key_event, dict):
+                self._handle_key(key_event, schedule_render=False)
+                handled = True
+        if handled:
+            _emit({"type": "schedule_render", "after_ms": 16})
 
     def _handle_timer(self, ev: dict) -> None:
         self._dispatch_timer(

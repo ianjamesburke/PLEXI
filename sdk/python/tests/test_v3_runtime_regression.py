@@ -322,6 +322,36 @@ class TestEventDispatch:
         finally:
             proc.kill()
 
+    def test_key_batch_applies_press_and_release_atomically(self, tmp_path):
+        app = tmp_path / "key_batch_app.py"
+        app.write_text(textwrap.dedent("""
+            from plexi_sdk.events import KeyEvent
+            from plexi_sdk.ui import Text
+
+            _held = {"right"}
+
+            def init(size, args): return []
+            def update(event):
+                if isinstance(event, KeyEvent):
+                    (_held.add if event.pressed else _held.discard)(event.key)
+                return []
+            def view(): return Text(f"held={sorted(_held)}")
+        """).lstrip())
+        proc = _spawn_v3_app(app)
+        try:
+            _init_app(proc)
+            _send_event(proc, {
+                "type": "key_events",
+                "events": [
+                    {"key": "right", "pressed": True, "modifiers": {}},
+                    {"key": "right", "pressed": False, "modifiers": {}},
+                ],
+            })
+            trees = _find_events(_render(proc), "component_tree")
+            assert any("held=[]" in json.dumps(tree) for tree in trees)
+        finally:
+            proc.kill()
+
     def test_timer_event(self, tmp_path):
         app = self._app_that_echoes_event_type(tmp_path)
         proc = _spawn_v3_app(app)
