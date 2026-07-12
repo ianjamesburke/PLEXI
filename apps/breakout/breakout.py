@@ -327,11 +327,7 @@ def _draw(data: dict, w: float, h: float) -> list:
     br = _ball_radius()
     commands: list = [CanvasRect(0, 0, w, h, "#0d0d1a")]
 
-    for brick in data["bricks"]:
-        if brick["alive"]:
-            commands.append(
-                CanvasRect(brick["x"], brick["y"], brick["w"], brick["h"], brick["color"], radius=2.0)
-            )
+    commands.extend(_draw_bricks(data))
 
     commands.append(
         CanvasRect(data["paddle_x"], data["paddle_y"], pw, ph, "#cdd6f4", radius=4.0)
@@ -367,5 +363,45 @@ def _draw(data: dict, w: float, h: float) -> list:
         commands.append(
             CanvasText(w / 2, h / 2, "Press SPACE to launch", size=14.0, color="#a6adc8", align="center_center")
         )
+
+    return commands
+
+
+def _draw_bricks(data: dict) -> list:
+    """Render live bricks as row runs, then cut the column gaps back out."""
+    bricks = data["bricks"]
+    commands: list = []
+
+    for row in range(BRICK_ROWS):
+        row_bricks = bricks[row * BRICK_COLS : (row + 1) * BRICK_COLS]
+        run_start = None
+        for col in range(BRICK_COLS + 1):
+            alive = col < BRICK_COLS and row_bricks[col]["alive"]
+            if alive and run_start is None:
+                run_start = col
+            if run_start is None or alive:
+                continue
+
+            first = row_bricks[run_start]
+            last = row_bricks[col - 1]
+            commands.append(
+                CanvasRect(
+                    first["x"],
+                    first["y"],
+                    last["x"] + last["w"] - first["x"],
+                    first["h"],
+                    first["color"],
+                    radius=2.0,
+                )
+            )
+            run_start = None
+
+    first_row = bricks[:BRICK_COLS]
+    top = bricks[0]["y"]
+    bottom = bricks[-1]["y"] + bricks[-1]["h"]
+    for left, right in zip(first_row, first_row[1:]):
+        gap_x = left["x"] + left["w"]
+        gap_width = right["x"] - gap_x
+        commands.append(CanvasRect(gap_x, top, gap_width, bottom - top, "#0d0d1a"))
 
     return commands

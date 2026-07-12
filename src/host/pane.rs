@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
-pub(crate) const SEMANTIC_PANE_STATE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const SEMANTIC_PANE_STATE_SCHEMA_VERSION: u32 = 2;
 
 /// Runtime-neutral, read-only representation returned by `plexi pane state`.
 #[derive(Clone, Debug, serde::Serialize)]
@@ -35,6 +35,8 @@ pub(crate) struct SemanticPaneNode {
     pub children: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bounds: Option<[f64; 4]>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub canvas_commands: Vec<serde_json::Value>,
 }
 
 impl SemanticPaneState {
@@ -78,6 +80,7 @@ impl SemanticPaneState {
                     value: node.value().map(str::to_string),
                     children: node.children().iter().map(|id| id.0.to_string()).collect(),
                     bounds: Some([bounds.x0, bounds.y0, bounds.x1, bounds.y1]),
+                    canvas_commands: Vec::new(),
                 })
             })
             .collect();
@@ -179,6 +182,7 @@ impl SemanticPaneState {
                     value,
                     children,
                     bounds: None,
+                    canvas_commands: Vec::new(),
                 }
             })
             .collect();
@@ -187,6 +191,23 @@ impl SemanticPaneState {
             runtime_kind: "wasm".to_string(),
             roots: vec![tree.root.to_string()],
             nodes,
+        }
+    }
+
+    pub(crate) fn expose_canvas_commands(
+        &mut self,
+        tree: &crate::host::wasm_app::UiTree,
+    ) {
+        use crate::host::wasm_app::UiNodeData;
+
+        for (state_node, tree_node) in self.nodes.iter_mut().zip(&tree.nodes) {
+            if let UiNodeData::Canvas(canvas) = &tree_node.data {
+                state_node.canvas_commands = canvas
+                    .commands
+                    .iter()
+                    .map(semantic_canvas_command)
+                    .collect();
+            }
         }
     }
 }
@@ -233,10 +254,68 @@ fn collect_process_semantics(
                 value,
                 children,
                 bounds: process_command_bounds(object),
+                canvas_commands: Vec::new(),
             });
             vec![path.to_string()]
         }
         _ => Vec::new(),
+    }
+}
+
+fn semantic_canvas_command(
+    command: &crate::host::wasm_app::bindings::plexi::platform::types::CanvasCommand,
+) -> serde_json::Value {
+    use crate::host::wasm_app::bindings::plexi::platform::types::CanvasCommand;
+
+    match command {
+        CanvasCommand::Rect(rect) => serde_json::json!({
+            "type": "rect",
+            "x": rect.x,
+            "y": rect.y,
+            "width": rect.width,
+            "height": rect.height,
+            "fill": semantic_color(&rect.fill),
+            "radius": rect.radius,
+        }),
+        CanvasCommand::Circle(circle) => serde_json::json!({
+            "type": "circle",
+            "x": circle.x,
+            "y": circle.y,
+            "radius": circle.radius,
+            "fill": semantic_color(&circle.fill),
+        }),
+        CanvasCommand::Line(line) => serde_json::json!({
+            "type": "line",
+            "x1": line.x1,
+            "y1": line.y1,
+            "x2": line.x2,
+            "y2": line.y2,
+            "width": line.width,
+            "color": semantic_color(&line.color),
+        }),
+        CanvasCommand::Text(text) => serde_json::json!({
+            "type": "text",
+            "x": text.x,
+            "y": text.y,
+            "text": text.text,
+            "size": text.size,
+            "color": semantic_color(&text.color),
+            "bold": text.bold,
+            "align": format!("{:?}", text.align).to_ascii_lowercase(),
+        }),
+    }
+}
+
+fn semantic_color(
+    color: &crate::host::wasm_app::bindings::plexi::platform::types::Color,
+) -> String {
+    if color.a == u8::MAX {
+        format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
+    } else {
+        format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            color.r, color.g, color.b, color.a
+        )
     }
 }
 

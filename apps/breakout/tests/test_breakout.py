@@ -104,6 +104,41 @@ def test_view_returns_canvas_with_correct_structure() -> None:
     assert footer["child"]["type"] == "footer_keys"
 
 
+def test_initial_frame_batches_contiguous_bricks() -> None:
+    data = _reset()
+    commands = breakout._draw(data, sdk.canvas_width, sdk.canvas_height)
+
+    brick_colors = set(breakout.BRICK_COLORS)
+    brick_commands = [
+        command
+        for command in commands
+        if command.to_command().get("fill") in brick_colors
+    ]
+    assert len(brick_commands) == breakout.BRICK_ROWS
+    assert len(commands) <= 20
+
+
+def test_destroyed_brick_remains_a_hole_in_batched_row() -> None:
+    data = _reset()
+    missing = data["bricks"][4]
+    missing["alive"] = False
+
+    commands = breakout._draw(data, sdk.canvas_width, sdk.canvas_height)
+    row_color = breakout.BRICK_COLORS[0]
+    row_rects = [
+        command.to_command()
+        for command in commands
+        if command.to_command().get("fill") == row_color
+    ]
+
+    assert len(row_rects) == 2
+    assert all(
+        rect["x"] + rect["w"] <= missing["x"]
+        or rect["x"] >= missing["x"] + missing["w"]
+        for rect in row_rects
+    )
+
+
 def test_game_over_on_lives_exhausted() -> None:
     data = _reset()
     data["lives"] = 1

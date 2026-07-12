@@ -1340,6 +1340,7 @@ fn python_semantic_state(tree: Option<&UiTree>) -> crate::host::pane::SemanticPa
     };
     let mut state = crate::host::pane::SemanticPaneState::from_wasm_tree(tree);
     state.runtime_kind = "python-wasm".to_string();
+    state.expose_canvas_commands(tree);
     state
 }
 
@@ -3312,21 +3313,34 @@ python_compat = true
     #[test]
     fn python_semantics_expose_decoded_tree_to_pane_state() {
         let tree = decode_ui_tree(
-            r#"{
+            r##"{
                 "root":0,
                 "nodes":[
-                    {"id":0,"key":"0","data":{"type":"Column","children":[1],"gap":0.0}},
-                    {"id":1,"key":"0/title","data":{"type":"Text","text":"Balls"}}
+                    {"id":0,"key":"0","data":{"type":"Column","children":[1,2],"gap":0.0}},
+                    {"id":1,"key":"0/title","data":{"type":"Text","text":"Balls"}},
+                    {"id":2,"key":"0/canvas","data":{"type":"Canvas","width":640.0,"height":360.0,"grow":true,"commands":[
+                        {"type":"circle","x":41.0,"y":42.0,"radius":8.0,"fill":"#abcdef"}
+                    ]}}
                 ]
-            }"#,
+            }"##,
         )
         .expect("tree");
 
         let state = python_semantic_state(Some(&tree));
         assert_eq!(state.runtime_kind, "python-wasm");
         assert_eq!(state.roots, ["0"]);
-        assert_eq!(state.nodes.len(), 2);
+        assert_eq!(state.nodes.len(), 3);
         assert_eq!(state.nodes[1].label.as_deref(), Some("Balls"));
+        assert_eq!(
+            state.nodes[2].canvas_commands,
+            [json!({
+                "type": "circle",
+                "x": 41.0,
+                "y": 42.0,
+                "radius": 8.0,
+                "fill": "#abcdef",
+            })]
+        );
     }
 
     #[test]
