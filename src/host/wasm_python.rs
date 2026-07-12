@@ -563,6 +563,10 @@ enum PythonSchedulerMode {
     Continuous { interval: std::time::Duration },
 }
 
+// Admit one transaction before its presentation deadline so timer jitter and
+// guest round-trip do not turn a slightly late wake into a skipped frame.
+const CONTINUOUS_FRAME_HEADROOM: std::time::Duration = std::time::Duration::from_millis(5);
+
 #[derive(Debug)]
 struct PythonFrameScheduler {
     mode: PythonSchedulerMode,
@@ -613,7 +617,7 @@ impl PythonFrameScheduler {
             matches!(self.mode, PythonSchedulerMode::Continuous { .. }) || self.render_requested;
         if !render_needed
             || self.pending.len() >= self.pipeline_capacity()
-            || self.next_deadline > now
+            || self.admission_deadline() > now
         {
             return None;
         }
@@ -641,17 +645,19 @@ impl PythonFrameScheduler {
         if !render_needed {
             return None;
         }
-        if matches!(self.mode, PythonSchedulerMode::Continuous { .. }) && self.next_deadline > now {
-            return Some(self.next_deadline);
+        let admission_deadline = self.admission_deadline();
+        if matches!(self.mode, PythonSchedulerMode::Continuous { .. }) && admission_deadline > now {
+            return Some(admission_deadline);
         }
         if self.pending.len() >= self.pipeline_capacity() {
             return None;
         }
-        Some(self.next_deadline.max(now))
+        Some(admission_deadline.max(now))
     }
 
     fn output_notifications_enabled(&self, now: std::time::Instant) -> bool {
-        !(matches!(self.mode, PythonSchedulerMode::Continuous { .. }) && self.next_deadline > now)
+        !(matches!(self.mode, PythonSchedulerMode::Continuous { .. })
+            && self.admission_deadline() > now)
     }
 
     fn pipeline_capacity(&self) -> usize {
@@ -663,6 +669,16 @@ impl PythonFrameScheduler {
 
     fn oldest_pending_frame_id(&self) -> Option<u64> {
         self.pending.front().map(|(frame_id, _)| *frame_id)
+    }
+
+    fn admission_deadline(&self) -> std::time::Instant {
+        match self.mode {
+            PythonSchedulerMode::Continuous { interval } => self
+                .next_deadline
+                .checked_sub(CONTINUOUS_FRAME_HEADROOM.min(interval / 2))
+                .unwrap_or(self.next_deadline),
+            PythonSchedulerMode::Scheduled => self.next_deadline,
+        }
     }
 
     fn reset(&mut self, now: std::time::Instant) {
@@ -2724,6 +2740,23 @@ mod tests {
     }
 
     #[test]
+    fn continuous_scheduler_admits_one_frame_before_the_presentation_deadline() {
+        let now = std::time::Instant::now();
+        let interval = scheduler_repaint_after(Some("continuous"), Some(60));
+        let mut scheduler = PythonFrameScheduler::new(now);
+        scheduler.set_mode(Some("continuous"), Some(60), now);
+        let first = scheduler.poll_render(now).expect("first frame");
+        scheduler
+            .complete_frame(first)
+            .expect("complete first frame");
+
+        let wake_at = now + interval - CONTINUOUS_FRAME_HEADROOM;
+        assert_eq!(scheduler.next_repaint_deadline(now), Some(wake_at));
+        scheduler.poll_render(wake_at).expect("second frame");
+        assert!(scheduler.poll_render(now + interval).is_none());
+    }
+
+    #[test]
     fn continuous_scheduler_sends_one_transaction_per_host_tick() {
         let start = std::time::Instant::now();
         let interval = scheduler_repaint_after(Some("continuous"), Some(60));
@@ -2735,7 +2768,10 @@ mod tests {
             let now = start + interval * tick;
             assert_eq!(scheduler.complete_frame(frame_id), Some(now - interval));
             frame_id = scheduler.poll_render(now).expect("next frame");
-            assert_eq!(scheduler.next_repaint_deadline(now), Some(now + interval));
+            assert_eq!(
+                scheduler.next_repaint_deadline(now),
+                Some(now + interval - CONTINUOUS_FRAME_HEADROOM)
+            );
             assert!(!scheduler.output_notifications_enabled(now));
         }
     }
