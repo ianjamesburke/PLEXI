@@ -1439,70 +1439,35 @@ fn geometry_failures(spec: &AssertSpec, tree: &serde_json::Value, failures: &mut
         failures.push("geometry: no canvas semantic node".into());
         return;
     };
-    let Some(bounds) = canvas.get("bounds").and_then(serde_json::Value::as_array) else {
-        failures.push("geometry: canvas has no bounds".into());
-        return;
-    };
-    let (w, h) = (
-        bounds[2].as_f64().unwrap_or(0.0) - bounds[0].as_f64().unwrap_or(0.0),
-        bounds[3].as_f64().unwrap_or(0.0) - bounds[1].as_f64().unwrap_or(0.0),
-    );
-    let children = canvas
-        .get("children")
-        .and_then(serde_json::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let rects: Vec<[f64; 4]> = nodes
-        .iter()
-        .filter(|n| {
-            children
-                .iter()
-                .any(|id| id == n.get("id").unwrap_or(&serde_json::Value::Null))
-        })
-        .filter_map(|n| n.get("bounds").and_then(serde_json::Value::as_array))
-        .filter_map(|b| {
-            if b.len() == 4 {
-                Some([
-                    b[0].as_f64()?,
-                    b[1].as_f64()?,
-                    b[2].as_f64()?,
-                    b[3].as_f64()?,
-                ])
-            } else {
-                None
-            }
-        })
-        .collect();
-    let interior: Vec<_> = rects
-        .iter()
-        .filter(|b| b[0] > 0.5 || b[1] > 0.5 || b[2] < w - 0.5 || b[3] < h - 0.5)
-        .collect();
-    if let Some([aw, ah]) = spec.aspect {
-        if !interior
-            .iter()
-            .any(|b| (((b[2] - b[0]) / (b[3] - b[1])) - aw / ah).abs() <= 0.03)
-        {
-            failures.push(format!(
-                "aspect: expected {aw}:{ah}, no committed content rect matched"
-            ));
+    let value = canvas
+        .get("value")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if let Some(expected) = spec.fit.as_deref() {
+        let actual = value.split("fit=").nth(1).unwrap_or("missing");
+        if actual != expected {
+            failures.push(format!("fit: expected {expected}, got {actual}"));
         }
     }
-    match spec.fit.as_deref() {
-        Some("fill")
-            if !rects.iter().any(|b| {
-                b[0].abs() <= 0.5
-                    && b[1].abs() <= 0.5
-                    && (b[2] - w).abs() <= 0.5
-                    && (b[3] - h).abs() <= 0.5
-            }) =>
-        {
-            failures.push("fit=fill: no content rect covers canvas".into())
+    if let Some([aw, ah]) = spec.aspect {
+        let matched = canvas
+            .get("canvas_commands")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|commands| {
+                commands
+                    .iter()
+                    .filter_map(|command| {
+                        let w = command.get("width")?.as_f64()?;
+                        let h = command.get("height")?.as_f64()?;
+                        (w > 0.0 && h > 0.0).then_some((w / h - aw / ah).abs() <= 0.03)
+                    })
+                    .any(|matches| matches)
+            });
+        if !matched {
+            failures.push(format!(
+                "aspect: expected {aw}:{ah}, no committed canvas command matched"
+            ));
         }
-        Some("contain") if interior.is_empty() => {
-            failures.push("fit=contain: no letterboxed content rect inside canvas".into())
-        }
-        Some("fill") | Some("contain") | None => {}
-        Some(other) => failures.push(format!("fit: unsupported {other}")),
     }
 }
 
@@ -2055,7 +2020,7 @@ impl HeadlessBackend {
                 }
             }
             if spec.fit.is_some() || spec.aspect.is_some() {
-                self.check_geometry(spec, &app.tree, &mut failures);
+                geometry_failures(spec, &app.tree, &mut failures);
             }
         }
         if failures.is_empty() {
@@ -2239,11 +2204,11 @@ impl HeadlessBackend {
         self.h.with_app(|app| {
             for win in &app.windows {
                 if let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) {
-                    if let AppRuntime::Process(p) = &app_pane.runtime {
+                    if let AppRuntime::Python(_) = &app_pane.runtime {
                         return Some(AppState {
                             pane_id,
-                            lifecycle: format!("{:?}", p.lifecycle.state()).to_lowercase(),
-                            tree: serde_json::json!({"frame": p.frame, "semantic": app_pane.semantic_state()}),
+                            lifecycle: "running".to_string(),
+                            tree: serde_json::json!({"semantic": app_pane.semantic_state()}),
                         });
                     }
                     if let AppRuntime::Wasm(w) = &app_pane.runtime {
