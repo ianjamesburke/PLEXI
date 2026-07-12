@@ -378,6 +378,14 @@ pub enum StepDetail {
 pub struct SceneError {
     pub code: &'static str,
     pub message: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub poll_history: Vec<PollSample>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct PollSample {
+    pub timestamp_ms: u128,
+    pub observed: serde_json::Value,
 }
 
 impl SceneError {
@@ -385,7 +393,13 @@ impl SceneError {
         Self {
             code,
             message: message.into(),
+            poll_history: Vec::new(),
         }
+    }
+
+    fn with_poll_history(mut self, poll_history: Vec<PollSample>) -> Self {
+        self.poll_history = poll_history;
+        self
     }
 }
 
@@ -670,7 +684,7 @@ fn write_failure_bundle(
         })
         .unwrap_or_default();
     let _ = std::fs::write(dir.join("log-tail.txt"), log_tail);
-    let manifest = serde_json::json!({"step_index": step, "backend": backend, "code": error.code, "message": error.message, "poll_history": [{"timestamp_ms": 0, "observed": semantic}], "screenshot": screenshot});
+    let manifest = serde_json::json!({"step_index": step, "backend": backend, "code": error.code, "message": error.message, "poll_history": error.poll_history, "screenshot": screenshot});
     let _ = std::fs::write(
         dir.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
@@ -1391,9 +1405,15 @@ impl LiveBackend {
                 true,
             )?;
         }
-        let timeout = Duration::from_secs_f32(spec.timeout_s);
-        let result = poll_until(timeout, LIVE_POLL_INTERVAL, || {
-            let state = self.pane_state(pane_id).ok()?;
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs_f32(spec.timeout_s);
+        let mut history = Vec::new();
+        loop {
+            let state = self.pane_state(pane_id)?;
+            history.push(PollSample {
+                timestamp_ms: started.elapsed().as_millis(),
+                observed: state.clone(),
+            });
             let changed = spec
                 .node_changes
                 .as_ref()
@@ -1402,21 +1422,25 @@ impl LiveBackend {
                 .tree_contains
                 .as_ref()
                 .is_none_or(|needle| state.to_string().contains(needle));
-            (changed && contains).then_some(())
-        });
-        result.map_err(|_| {
-            SceneError::new(
-                if spec.after_key.is_some() || spec.after_text.is_some() {
-                    "input_no_effect"
-                } else {
-                    "eventual_timeout"
-                },
-                format!(
-                    "expect target '{}' did not satisfy semantic predicate; before={before}",
-                    spec.target
-                ),
-            )
-        })?;
+            if changed && contains {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(SceneError::new(
+                    if spec.after_key.is_some() || spec.after_text.is_some() {
+                        "input_no_effect"
+                    } else {
+                        "eventual_timeout"
+                    },
+                    format!(
+                        "expect target '{}' did not satisfy semantic predicate; before={before}",
+                        spec.target
+                    ),
+                )
+                .with_poll_history(history));
+            }
+            std::thread::sleep(LIVE_POLL_INTERVAL);
+        }
         Ok(None)
     }
 }
@@ -2030,92 +2054,6 @@ impl HeadlessBackend {
         }
     }
 
-    fn check_geometry(
-        &self,
-        spec: &AssertSpec,
-        tree: &serde_json::Value,
-        failures: &mut Vec<String>,
-    ) {
-        let Some(nodes) = tree
-            .pointer("/semantic/nodes")
-            .and_then(serde_json::Value::as_array)
-        else {
-            return;
-        };
-        let Some(canvas) = nodes
-            .iter()
-            .find(|node| node.get("role").and_then(serde_json::Value::as_str) == Some("canvas"))
-        else {
-            failures.push("geometry: no canvas semantic node".into());
-            return;
-        };
-        let Some(bounds) = canvas.get("bounds").and_then(serde_json::Value::as_array) else {
-            failures.push("geometry: canvas has no bounds".into());
-            return;
-        };
-        if bounds.len() != 4 {
-            failures.push("geometry: invalid canvas bounds".into());
-            return;
-        }
-        let w = bounds[2].as_f64().unwrap_or(0.0) - bounds[0].as_f64().unwrap_or(0.0);
-        let h = bounds[3].as_f64().unwrap_or(0.0) - bounds[1].as_f64().unwrap_or(0.0);
-        let canvas_children = canvas
-            .get("children")
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let child_bounds: Vec<[f64; 4]> = nodes
-            .iter()
-            .filter(|node| {
-                canvas_children
-                    .iter()
-                    .any(|id| id == node.get("id").unwrap_or(&serde_json::Value::Null))
-            })
-            .filter_map(|node| node.get("bounds").and_then(serde_json::Value::as_array))
-            .filter_map(|b| {
-                Some([
-                    b.get(0)?.as_f64()?,
-                    b.get(1)?.as_f64()?,
-                    b.get(2)?.as_f64()?,
-                    b.get(3)?.as_f64()?,
-                ])
-            })
-            .collect();
-        let interior: Vec<_> = child_bounds
-            .iter()
-            .filter(|b| b[0] > 0.5 || b[1] > 0.5 || b[2] < w - 0.5 || b[3] < h - 0.5)
-            .collect();
-        if let Some([aw, ah]) = spec.aspect {
-            if !interior
-                .iter()
-                .any(|b| (((b[2] - b[0]) / (b[3] - b[1])) - aw / ah).abs() <= 0.03)
-            {
-                failures.push(format!(
-                    "aspect: expected {aw}:{ah}, no committed content rect matched"
-                ));
-            }
-        }
-        if let Some(fit) = &spec.fit {
-            match fit.as_str() {
-                "fill"
-                    if !child_bounds.iter().any(|b| {
-                        (b[0]).abs() <= 0.5
-                            && b[1].abs() <= 0.5
-                            && (b[2] - w).abs() <= 0.5
-                            && (b[3] - h).abs() <= 0.5
-                    }) =>
-                {
-                    failures.push("fit=fill: no content rect covers canvas".into())
-                }
-                "contain" if interior.is_empty() => {
-                    failures.push("fit=contain: no letterboxed content rect inside canvas".into())
-                }
-                "fill" | "contain" => {}
-                _ => failures.push(format!("fit: unsupported {fit}")),
-            }
-        }
-    }
-
     fn expect(&mut self, spec: &ExpectSpec) -> Result<Option<StepDetail>, SceneError> {
         let pane_id = self.handles.resolve(&spec.target)?;
         let before = self
@@ -2145,6 +2083,8 @@ impl HeadlessBackend {
             )?;
         }
         let deadline = Instant::now() + Duration::from_secs_f32(spec.timeout_s);
+        let started = Instant::now();
+        let mut history = Vec::new();
         loop {
             self.h.step();
             let state = self
@@ -2153,6 +2093,10 @@ impl HeadlessBackend {
                     SceneError::new("app_state_unavailable", "expect requires app state")
                 })?
                 .tree;
+            history.push(PollSample {
+                timestamp_ms: started.elapsed().as_millis(),
+                observed: state.clone(),
+            });
             let changed = spec
                 .node_changes
                 .as_ref()
@@ -2175,7 +2119,8 @@ impl HeadlessBackend {
                         "expect target '{}' did not satisfy semantic predicate; before={before}",
                         spec.target
                     ),
-                ));
+                )
+                .with_poll_history(history));
             }
         }
     }
