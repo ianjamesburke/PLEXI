@@ -4188,6 +4188,13 @@ pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
             events.push(egui::Event::Text(t));
         }
     }
+    events.push(egui::Event::Key {
+        key: egui_key,
+        physical_key: None,
+        pressed: false,
+        repeat: false,
+        modifiers,
+    });
     Some(egui::RawInput {
         events,
         modifiers,

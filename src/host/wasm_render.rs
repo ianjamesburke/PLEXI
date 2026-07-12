@@ -7,6 +7,7 @@
 // back to the guest. A depth cap guards against malformed/cyclic trees.
 
 use egui::{Color32, RichText};
+use std::collections::HashMap;
 
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -15,6 +16,13 @@ use super::wasm_app::bindings::plexi::platform::types::CanvasCommand;
 use super::wasm_app::{Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, UiNodeData, UiTree};
 
 const MAX_DEPTH: u32 = 256;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CanvasFit {
+    #[default]
+    Fill,
+    Contain,
+}
 
 /// Interactions produced by one render pass, to be translated into guest input.
 #[derive(Default, Debug)]
@@ -34,8 +42,27 @@ pub fn render_ui_tree_with_surface(
     colors: &Colors,
     surface: Option<egui::TextureId>,
 ) -> RenderResult {
+    render_ui_tree_with_canvas_fits(ui, tree, colors, surface, None)
+}
+
+pub fn render_ui_tree_with_canvas_fits(
+    ui: &mut egui::Ui,
+    tree: &UiTree,
+    colors: &Colors,
+    surface: Option<egui::TextureId>,
+    canvas_fits: Option<&HashMap<u32, CanvasFit>>,
+) -> RenderResult {
     let mut out = RenderResult::default();
-    render_node(ui, &tree.nodes, tree.root, colors, &mut out, 0, surface);
+    render_node(
+        ui,
+        &tree.nodes,
+        tree.root,
+        colors,
+        &mut out,
+        0,
+        surface,
+        canvas_fits,
+    );
     out
 }
 
@@ -51,7 +78,12 @@ fn canvas_align(align: Alignment) -> egui::Align2 {
     }
 }
 
-fn canvas_transform(rect: egui::Rect, width: f32, height: f32) -> (egui::Pos2, f32, f32) {
+fn canvas_transform(
+    rect: egui::Rect,
+    width: f32,
+    height: f32,
+    fit: CanvasFit,
+) -> (egui::Pos2, f32, f32) {
     let sx = if width > 0.0 {
         rect.width() / width
     } else {
@@ -62,7 +94,7 @@ fn canvas_transform(rect: egui::Rect, width: f32, height: f32) -> (egui::Pos2, f
     } else {
         1.0
     };
-    if width <= 0.0 || height <= 0.0 {
+    if width <= 0.0 || height <= 0.0 || fit == CanvasFit::Fill {
         return (rect.min, sx, sy);
     }
     let scale = sx.min(sy);
@@ -87,6 +119,7 @@ fn render_node(
     out: &mut RenderResult,
     depth: u32,
     surface: Option<egui::TextureId>,
+    canvas_fits: Option<&HashMap<u32, CanvasFit>>,
 ) {
     if depth > MAX_DEPTH {
         return;
@@ -151,7 +184,7 @@ fn render_node(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = r.gap;
                 for child in &r.children {
-                    render_node(ui, nodes, *child, colors, out, depth + 1, surface);
+                    render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits);
                 }
             });
         }
@@ -160,7 +193,7 @@ fn render_node(
             ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
                 ui.spacing_mut().item_spacing.y = c.gap;
                 for child in &c.children {
-                    render_node(ui, nodes, *child, colors, out, depth + 1, surface);
+                    render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits);
                 }
             });
         }
@@ -210,7 +243,7 @@ fn render_node(
                         if selected {
                             ui.visuals_mut().override_text_color = Some(colors.accent);
                         }
-                        render_node(ui, nodes, *item_id, colors, out, depth + 1, surface);
+                        render_node(ui, nodes, *item_id, colors, out, depth + 1, surface, canvas_fits);
                     })
                     .response
                     .interact(egui::Sense::click());
@@ -229,7 +262,7 @@ fn render_node(
                 egui::ScrollArea::vertical()
             };
             area.show(ui, |ui| {
-                render_node(ui, nodes, s.child, colors, out, depth + 1, surface);
+                render_node(ui, nodes, s.child, colors, out, depth + 1, surface, canvas_fits);
             });
         }
 
@@ -242,7 +275,7 @@ fn render_node(
                     bottom: p.bottom as i8,
                 })
                 .show(ui, |ui| {
-                    render_node(ui, nodes, p.child, colors, out, depth + 1, surface);
+                    render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits);
                 });
         }
 
@@ -262,7 +295,11 @@ fn render_node(
             };
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(width, height.max(1.0)), egui::Sense::hover());
-            let (origin, sx, sy) = canvas_transform(rect, c.width, c.height);
+            let fit = canvas_fits
+                .and_then(|fits| fits.get(&id))
+                .copied()
+                .unwrap_or_default();
+            let (origin, sx, sy) = canvas_transform(rect, c.width, c.height, fit);
             for command in &c.commands {
                 match command {
                     CanvasCommand::Rect(r) => {
@@ -356,10 +393,11 @@ mod tests {
     }
 
     #[test]
-    fn growing_canvas_preserves_source_aspect_ratio_and_centers_content() {
+    fn contained_canvas_preserves_source_aspect_ratio_and_centers_content() {
         let container = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 700.0));
 
-        let (origin, sx, sy) = canvas_transform(container, 360.0, 440.0);
+        let (origin, sx, sy) =
+            canvas_transform(container, 360.0, 440.0, CanvasFit::Contain);
 
         let expected_scale = 300.0 / 360.0;
         let expected_height = 440.0 * expected_scale;
@@ -367,6 +405,17 @@ mod tests {
         assert!((sy - expected_scale).abs() < f32::EPSILON);
         assert!((origin.x - container.left()).abs() < f32::EPSILON);
         assert!((origin.y - (container.top() + (700.0 - expected_height) / 2.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn fill_canvas_uses_the_entire_allocated_rect() {
+        let container = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 700.0));
+
+        let (origin, sx, sy) = canvas_transform(container, 640.0, 360.0, CanvasFit::Fill);
+
+        assert_eq!(origin, container.min);
+        assert!((sx - 300.0 / 640.0).abs() < f32::EPSILON);
+        assert!((sy - 700.0 / 360.0).abs() < f32::EPSILON);
     }
 
     // G4 foundation: a real sysmon view tree (after delivering stats) renders

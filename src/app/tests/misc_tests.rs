@@ -30,7 +30,7 @@ fn parse_key_str_to_event_preserves_modifiers() {
 #[test]
 fn key_str_to_egui_raw_input_maps_named_keys_without_text() {
     let raw = key_str_to_egui_raw_input("enter").expect("enter must map");
-    assert_eq!(raw.events.len(), 1, "named keys emit no Text event");
+    assert_eq!(raw.events.len(), 2, "named keys emit press and release");
     assert!(matches!(
         raw.events[0],
         egui::Event::Key {
@@ -40,6 +40,7 @@ fn key_str_to_egui_raw_input_maps_named_keys_without_text() {
             ..
         }
     ));
+    assert!(matches!(raw.events[1], egui::Event::Key { pressed: false, .. }));
 
     let raw = key_str_to_egui_raw_input("ArrowDown").expect("ArrowDown must map");
     assert!(matches!(
@@ -66,6 +67,7 @@ fn key_str_to_egui_raw_input_emits_text_for_printable_chars() {
         "printable chars must also emit Text for search fields; got {:?}",
         raw.events
     );
+    assert!(matches!(raw.events[2], egui::Event::Key { pressed: false, .. }));
 
     let raw = key_str_to_egui_raw_input("space").expect("space must map");
     assert!(matches!(&raw.events[1], egui::Event::Text(t) if t == " "));
@@ -77,7 +79,7 @@ fn key_str_to_egui_raw_input_chords_set_modifiers_and_suppress_text() {
     assert!(raw.modifiers.ctrl);
     assert_eq!(
         raw.events.len(),
-        1,
+        2,
         "chord keys must not emit Text; got {:?}",
         raw.events
     );

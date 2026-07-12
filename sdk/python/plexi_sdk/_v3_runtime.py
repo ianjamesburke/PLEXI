@@ -230,7 +230,11 @@ class V3AppRuntime:
             alt=bool(mods.get("alt", False)),
             meta=bool(mods.get("meta", False)),
         )
-        self._dispatch(events.KeyEvent(key=key, modifiers=modifiers))
+        self._dispatch(events.KeyEvent(
+            key=key,
+            modifiers=modifiers,
+            pressed=bool(ev.get("pressed", True)),
+        ))
 
     def _handle_timer(self, ev: dict) -> None:
         self._dispatch_timer(

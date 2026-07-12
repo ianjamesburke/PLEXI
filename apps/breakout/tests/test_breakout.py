@@ -74,6 +74,19 @@ def test_paddle_movement_via_arrow_keys() -> None:
     breakout._keys_held.clear()
 
 
+def test_arrow_tap_moves_once_and_release_does_not_stick() -> None:
+    data = _reset()
+    start_x = data["paddle_x"]
+
+    breakout.update(KeyEvent(key="right", pressed=True))
+    breakout.update(KeyEvent(key="right", pressed=False))
+    moved_x = data["paddle_x"]
+    assert moved_x > start_x
+
+    breakout.update(RenderFrame(frame_id=1, elapsed=breakout.TARGET_DT))
+    assert data["paddle_x"] == moved_x
+
+
 def test_brick_collision_removes_brick_and_scores() -> None:
     data = _reset()
     breakout._launch_ball(data)

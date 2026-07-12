@@ -524,8 +524,8 @@ pub struct LivePythonPane {
     runtime: WasmPythonRuntime,
     app_id: String,
     title: Option<String>,
-    tree: Option<UiTree>,
-    pending_trees: HashMap<u64, UiTree>,
+    tree: Option<PythonUiTree>,
+    pending_trees: HashMap<u64, PythonUiTree>,
     initialized: bool,
     ready: bool,
     frame_scheduler: PythonFrameScheduler,
@@ -549,6 +549,12 @@ pub struct LivePythonPane {
     http_tx: std::sync::mpsc::Sender<(String, crate::host::services::HttpResponse)>,
     http_rx: std::sync::mpsc::Receiver<(String, crate::host::services::HttpResponse)>,
     pending_commands: Vec<crate::app::app_trait::AppCommand>,
+}
+
+#[derive(Debug)]
+struct PythonUiTree {
+    tree: UiTree,
+    canvas_fits: HashMap<u32, super::wasm_render::CanvasFit>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -841,7 +847,13 @@ impl LivePythonPane {
         }
         if let Some(tree) = &self.tree {
             let render_started = std::time::Instant::now();
-            let result = super::wasm_render::render_ui_tree_with_surface(ui, tree, colors, None);
+            let result = super::wasm_render::render_ui_tree_with_canvas_fits(
+                ui,
+                &tree.tree,
+                colors,
+                None,
+                Some(&tree.canvas_fits),
+            );
             self.perf_ui_render += render_started.elapsed();
             self.perf_canvas_render += result.canvas_time;
             for action in result.actions {
@@ -948,7 +960,7 @@ impl LivePythonPane {
                         Some("component_tree") => {
                             if let Some(tree) = message.get("tree") {
                                 let decode_started = std::time::Instant::now();
-                                match decode_ui_tree_value(tree) {
+                                match decode_python_ui_tree_value(tree) {
                                     Ok(tree) => {
                                         let frame_id = message
                                             .get("frame_id")
@@ -1294,22 +1306,28 @@ impl LivePythonPane {
         &mut self,
         input: &egui::InputState,
     ) -> crate::app::app_trait::KeyDisposition {
+        let mut consumed = false;
         for event in &input.events {
             if let egui::Event::Key {
                 key,
-                pressed: true,
+                pressed,
                 modifiers,
                 ..
             } = event
             {
                 let _ = self.runtime.send(&json!({
                     "type": "key", "key": python_key_name(*key),
+                    "pressed": pressed,
                     "modifiers": {"ctrl": modifiers.ctrl, "shift": modifiers.shift, "alt": modifiers.alt, "meta": modifiers.mac_cmd || modifiers.command}
                 }));
-                return crate::app::app_trait::KeyDisposition::Consumed;
+                consumed = true;
             }
         }
-        crate::app::app_trait::KeyDisposition::Passthrough
+        if consumed {
+            crate::app::app_trait::KeyDisposition::Consumed
+        } else {
+            crate::app::app_trait::KeyDisposition::Passthrough
+        }
     }
 
     pub fn wants_close(&self) -> bool {
@@ -1350,13 +1368,26 @@ impl LivePythonPane {
     }
 }
 
-fn python_semantic_state(tree: Option<&UiTree>) -> crate::host::pane::SemanticPaneState {
+fn python_semantic_state(tree: Option<&PythonUiTree>) -> crate::host::pane::SemanticPaneState {
     let Some(tree) = tree else {
         return crate::host::pane::SemanticPaneState::empty("python-wasm");
     };
-    let mut state = crate::host::pane::SemanticPaneState::from_wasm_tree(tree);
+    let mut state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree.tree);
     state.runtime_kind = "python-wasm".to_string();
-    state.expose_canvas_commands(tree);
+    state.expose_canvas_commands(&tree.tree);
+    for node in &mut state.nodes {
+        let Ok(id) = node.id.parse::<u32>() else {
+            continue;
+        };
+        if node.role == "canvas" {
+            let fit = tree.canvas_fits.get(&id).copied().unwrap_or_default();
+            let fit = match fit {
+                super::wasm_render::CanvasFit::Fill => "fill",
+                super::wasm_render::CanvasFit::Contain => "contain",
+            };
+            node.value = Some(format!("{} fit={fit}", node.value.as_deref().unwrap_or("canvas")));
+        }
+    }
     state
 }
 
@@ -1425,8 +1456,8 @@ fn python_render_event(frame_id: u64, timer_ids: Vec<String>) -> Value {
 
 fn commit_python_frame(
     scheduler: &mut PythonFrameScheduler,
-    pending_trees: &mut HashMap<u64, UiTree>,
-    visible_tree: &mut Option<UiTree>,
+    pending_trees: &mut HashMap<u64, PythonUiTree>,
+    visible_tree: &mut Option<PythonUiTree>,
     frame_id: u64,
 ) -> Option<std::time::Instant> {
     let sent_at = scheduler.complete_frame(frame_id)?;
@@ -2057,6 +2088,36 @@ fn decode_ui_tree_value(value: &Value) -> Result<UiTree, WasmPythonError> {
         .map(decode_indexed_node)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(UiTree { root, nodes })
+}
+
+fn decode_python_ui_tree_value(value: &Value) -> Result<PythonUiTree, WasmPythonError> {
+    let tree = decode_ui_tree_value(value)?;
+    let mut canvas_fits = HashMap::new();
+    for node in value
+        .get("nodes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(data) = node.get("data") else {
+            continue;
+        };
+        if !matches!(data.get("type").and_then(Value::as_str), Some("Canvas" | "canvas")) {
+            continue;
+        }
+        let id = required_u32(node, "id")?;
+        let fit = match data.get("fit").and_then(Value::as_str).unwrap_or("fill") {
+            "fill" => super::wasm_render::CanvasFit::Fill,
+            "contain" => super::wasm_render::CanvasFit::Contain,
+            other => {
+                return Err(WasmPythonError::BridgeJson(format!(
+                    "canvas fit must be 'fill' or 'contain', got {other:?}"
+                )))
+            }
+        };
+        canvas_fits.insert(id, fit);
+    }
+    Ok(PythonUiTree { tree, canvas_fits })
 }
 
 #[cfg(test)]
@@ -2695,9 +2756,10 @@ mod tests {
         let now = std::time::Instant::now();
         let mut scheduler = PythonFrameScheduler::new(now);
         let frame_id = scheduler.poll_render(now).expect("first frame");
-        let pending_tree = decode_ui_tree(
+        let pending_tree = decode_python_ui_tree_value(&serde_json::from_str(
             r#"{"root":0,"nodes":[{"id":0,"key":"0","data":{"type":"Text","text":"new"}}]}"#,
         )
+        .expect("valid JSON"))
         .expect("pending tree");
         let mut pending = HashMap::from([(frame_id, pending_tree)]);
         let mut visible = None;
@@ -3348,7 +3410,7 @@ python_compat = true
 
     #[test]
     fn python_semantics_expose_decoded_tree_to_pane_state() {
-        let tree = decode_ui_tree(
+        let tree = decode_python_ui_tree_value(&serde_json::from_str(
             r##"{
                 "root":0,
                 "nodes":[
@@ -3360,6 +3422,7 @@ python_compat = true
                 ]
             }"##,
         )
+        .expect("valid JSON"))
         .expect("tree");
 
         let state = python_semantic_state(Some(&tree));
@@ -3367,6 +3430,7 @@ python_compat = true
         assert_eq!(state.roots, ["0"]);
         assert_eq!(state.nodes.len(), 3);
         assert_eq!(state.nodes[1].label.as_deref(), Some("Balls"));
+        assert_eq!(state.nodes[2].value.as_deref(), Some("640x360 fit=fill"));
         assert_eq!(
             state.nodes[2].canvas_commands,
             [json!({

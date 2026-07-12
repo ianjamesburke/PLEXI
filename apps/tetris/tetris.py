@@ -262,7 +262,7 @@ def view():
     return Column(
         [
             AppBar("Tetris", _status(data)),
-            Canvas(_draw(data), width=CANVAS_W, height=CANVAS_H, grow=True),
+            Canvas(_draw(data), width=CANVAS_W, height=CANVAS_H, grow=True, fit="contain"),
             FooterKeys(keys),
         ],
         padding=0,

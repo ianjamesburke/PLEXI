@@ -784,14 +784,18 @@ class Canvas(Component):
         width: float = 640.0,
         height: float = 360.0,
         grow: bool = True,
+        fit: str = "fill",
         key: str = "",
     ) -> None:
         if callable(commands):
             raise TypeError("Canvas expects typed canvas commands, not a draw callback")
+        if fit not in ("fill", "contain"):
+            raise ValueError("Canvas fit must be 'fill' or 'contain'")
         self.commands = list(commands or [])
         self.width = width
         self.height = height
         self.grow = grow
+        self.fit = fit
         self.key = key
 
     def measure(self, _avail_w: float) -> float:
@@ -809,6 +813,7 @@ class Canvas(Component):
             "width": self.width,
             "height": self.height,
             "grow": self.grow,
+            "fit": self.fit,
             "commands": [c.to_command() for c in self.commands],
         }
 

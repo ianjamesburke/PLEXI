@@ -298,6 +298,30 @@ class TestEventDispatch:
         finally:
             proc.kill()
 
+    def test_key_release_is_preserved(self, tmp_path):
+        app = tmp_path / "key_release_app.py"
+        app.write_text(textwrap.dedent("""
+            from plexi_sdk.events import KeyEvent
+            from plexi_sdk.ui import Text
+
+            _pressed = None
+
+            def init(size, args): return []
+            def update(event):
+                global _pressed
+                if isinstance(event, KeyEvent): _pressed = event.pressed
+                return []
+            def view(): return Text(f"pressed={_pressed}")
+        """).lstrip())
+        proc = _spawn_v3_app(app)
+        try:
+            _init_app(proc)
+            _send_event(proc, {"type": "key", "key": "left", "pressed": False, "modifiers": {}})
+            trees = _find_events(_render(proc), "component_tree")
+            assert any("pressed=False" in json.dumps(tree) for tree in trees)
+        finally:
+            proc.kill()
+
     def test_timer_event(self, tmp_path):
         app = self._app_that_echoes_event_type(tmp_path)
         proc = _spawn_v3_app(app)

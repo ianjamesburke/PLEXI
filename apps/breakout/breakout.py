@@ -198,6 +198,10 @@ def _handle_key(event: KeyEvent) -> list:
     else:
         _keys_held.discard(event.key)
 
+    if event.pressed and event.key in ("left", "a", "right", "d"):
+        direction = -1.0 if event.key in ("left", "a") else 1.0
+        _move_paddle(data, direction * _paddle_speed() * TARGET_DT)
+
     if event.key == "space" and event.pressed:
         if data["state"] in ("gameover", "win"):
             _restart(data)
@@ -207,6 +211,13 @@ def _handle_key(event: KeyEvent) -> list:
         return []
 
     return []
+
+
+def _move_paddle(data: dict, dx: float) -> None:
+    pw = _paddle_width()
+    data["paddle_x"] = max(0.0, min(sdk.canvas_width - pw, data["paddle_x"] + dx))
+    if data["ball_attached"]:
+        data["ball_x"] = data["paddle_x"] + pw / 2.0
 
 
 def _step(data: dict, dt: float) -> list:
@@ -223,9 +234,7 @@ def _step(data: dict, dt: float) -> list:
         dx += ps * dt
 
     if dx != 0.0:
-        data["paddle_x"] = max(0.0, min(sdk.canvas_width - pw, data["paddle_x"] + dx))
-        if data["ball_attached"]:
-            data["ball_x"] = data["paddle_x"] + pw / 2.0
+        _move_paddle(data, dx)
 
     if data["ball_attached"]:
         return effects

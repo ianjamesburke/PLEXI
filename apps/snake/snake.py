@@ -165,7 +165,7 @@ def view():
     return Column(
         [
             AppBar("Snake", subtitle),
-            Canvas(commands, width=CANVAS_W, height=CANVAS_H, grow=True),
+            Canvas(commands, width=CANVAS_W, height=CANVAS_H, grow=True, fit="contain"),
             Spacer(8.0),
             FooterKeys(keys),
         ],

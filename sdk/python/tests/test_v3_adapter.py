@@ -146,6 +146,7 @@ def test_ui_tree_serializes_canvas_commands() -> None:
     assert node["type"] == "canvas"
     assert node["width"] == 320.0
     assert node["height"] == 180.0
+    assert node["fit"] == "fill"
     assert node["commands"] == [
         {
             "type": "rect",
@@ -157,6 +158,14 @@ def test_ui_tree_serializes_canvas_commands() -> None:
             "radius": 2.0,
         }
     ]
+
+
+def test_canvas_contain_fit_is_explicit_and_validated() -> None:
+    tree = _encode_uitree(Canvas([], fit="contain"))
+    assert tree["nodes"][0]["data"]["fit"] == "contain"
+
+    with pytest.raises(ValueError, match="fit must be"):
+        Canvas([], fit="stretch")
 
 
 def test_ui_tree_lowers_pinned_footer_keys_to_supported_text() -> None:
