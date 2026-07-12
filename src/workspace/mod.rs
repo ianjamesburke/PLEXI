@@ -6,8 +6,13 @@ use crate::spatial::tiling::PaneId;
 use egui_tiles::{TileId, Tree};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io;
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize, Deserialize)]
 pub struct WorkspaceFile {
@@ -77,11 +82,43 @@ fn workspace_path() -> PathBuf {
 impl WorkspaceFile {
     pub fn save(&self) -> io::Result<()> {
         let path = workspace_path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        let temp_path = unique_temp_path(&path);
+        let started = Instant::now();
+        let result = (|| {
+            let parent = path.parent().ok_or_else(|| {
+                save_error(
+                    "resolve workspace directory",
+                    &temp_path,
+                    io::Error::new(io::ErrorKind::InvalidInput, "workspace path has no parent"),
+                )
+            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| save_error("create workspace directory", &temp_path, error))?;
+            let json = serde_json::to_string_pretty(self).map_err(|error| {
+                save_error("serialize workspace", &temp_path, io::Error::other(error))
+            })?;
+            atomic_save(&path, &temp_path, json.as_bytes(), |file, bytes| {
+                file.write_all(bytes)
+            })?;
+            Ok(json.len())
+        })();
+        match result {
+            Ok(byte_count) => {
+                let pane_count: usize = self.windows.iter().map(|window| window.panes.len()).sum();
+                log::info!(
+                    "workspace_save: saved bytes={} windows={} panes={} elapsed_ms={}",
+                    byte_count,
+                    self.windows.len(),
+                    pane_count,
+                    started.elapsed().as_millis()
+                );
+                Ok(())
+            }
+            Err(error) => {
+                log::error!("workspace_save: {error}");
+                Err(error)
+            }
         }
-        let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
-        std::fs::write(&path, json)
     }
 
     pub fn load() -> Option<Self> {
@@ -125,9 +162,172 @@ impl WorkspaceFile {
     }
 }
 
+fn atomic_save<F>(path: &Path, temp_path: &Path, bytes: &[u8], write_temp: F) -> io::Result<()>
+where
+    F: FnOnce(&mut File, &[u8]) -> io::Result<()>,
+{
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("workspace path has no parent: {}", path.display()),
+        )
+    })?;
+    let result = (|| {
+        let mut temp = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(temp_path)
+            .map_err(|error| save_error("create temp file", temp_path, error))?;
+        write_temp(&mut temp, bytes)
+            .map_err(|error| save_error("write temp file", temp_path, error))?;
+        temp.sync_all()
+            .map_err(|error| save_error("sync temp file", temp_path, error))?;
+
+        if path.exists() {
+            let previous_path = path.with_extension("json.prev");
+            let previous_temp_path = unique_temp_path(&previous_path);
+            let backup_result = (|| {
+                let mut source = File::open(path)
+                    .map_err(|error| save_error("open previous workspace", temp_path, error))?;
+                let mut previous_temp = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&previous_temp_path)
+                    .map_err(|error| save_error("create previous temp file", temp_path, error))?;
+                io::copy(&mut source, &mut previous_temp)
+                    .map_err(|error| save_error("copy previous workspace", temp_path, error))?;
+                previous_temp
+                    .sync_all()
+                    .map_err(|error| save_error("sync previous workspace", temp_path, error))?;
+                std::fs::rename(&previous_temp_path, &previous_path)
+                    .map_err(|error| save_error("replace previous workspace", temp_path, error))
+            })();
+            if backup_result.is_err() {
+                let _ = std::fs::remove_file(&previous_temp_path);
+            }
+            backup_result?;
+        }
+
+        std::fs::rename(temp_path, path)
+            .map_err(|error| save_error("replace workspace", temp_path, error))?;
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| save_error("sync workspace directory", temp_path, error))
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp_path);
+    }
+    result
+}
+
+fn unique_temp_path(path: &Path) -> PathBuf {
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace");
+    path.with_file_name(format!("{file_name}.tmp-{}-{sequence}", std::process::id()))
+}
+
+fn save_error(operation: &str, temp_path: &Path, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!(
+            "{operation} failed (temp_path={}): {error}",
+            temp_path.display()
+        ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_atomic_save<F>(path: &Path, bytes: &[u8], write_temp: F) -> io::Result<()>
+    where
+        F: FnOnce(&mut File, &[u8]) -> io::Result<()>,
+    {
+        atomic_save(path, &unique_temp_path(path), bytes, write_temp)
+    }
+
+    #[test]
+    fn atomic_save_replaces_workspace_without_temp_residue() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("default.json");
+
+        test_atomic_save(&path, b"new workspace", |file, bytes| file.write_all(bytes))
+            .expect("atomic save");
+
+        assert_eq!(
+            std::fs::read(&path).expect("read workspace"),
+            b"new workspace"
+        );
+        let entries: Vec<_> = std::fs::read_dir(directory.path())
+            .expect("read workspace directory")
+            .map(|entry| entry.expect("directory entry").file_name())
+            .collect();
+        assert_eq!(entries, [std::ffi::OsString::from("default.json")]);
+    }
+
+    #[test]
+    fn atomic_save_rotates_one_previous_generation() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("default.json");
+        let previous_path = directory.path().join("default.json.prev");
+
+        test_atomic_save(&path, b"first", |file, bytes| file.write_all(bytes)).expect("first save");
+        assert!(
+            !previous_path.exists(),
+            "first save has no prior generation"
+        );
+
+        test_atomic_save(&path, b"second", |file, bytes| file.write_all(bytes))
+            .expect("second save");
+        assert_eq!(
+            std::fs::read(&previous_path).expect("read first backup"),
+            b"first"
+        );
+
+        test_atomic_save(&path, b"third", |file, bytes| file.write_all(bytes)).expect("third save");
+        assert_eq!(std::fs::read(&path).expect("read current"), b"third");
+        assert_eq!(
+            std::fs::read(&previous_path).expect("read rolling backup"),
+            b"second"
+        );
+    }
+
+    #[test]
+    fn failed_partial_temp_write_preserves_loadable_workspace() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("default.json");
+        let prior = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[],"context_active_window":{}}"#;
+        std::fs::write(&path, prior).expect("seed prior workspace");
+
+        let error = test_atomic_save(&path, b"replacement", |file, bytes| {
+            file.write_all(&bytes[..4])?;
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "injected write failure",
+            ))
+        })
+        .expect_err("partial write must fail");
+
+        assert!(error.to_string().contains("write temp file failed"));
+        assert!(error.to_string().contains("temp_path="));
+        assert_eq!(std::fs::read(&path).expect("read prior workspace"), prior);
+        let loaded: WorkspaceFile =
+            serde_json::from_slice(&std::fs::read(&path).expect("read JSON"))
+                .expect("prior workspace remains loadable");
+        assert_eq!(loaded.version, 2);
+        assert!(std::fs::read_dir(directory.path())
+            .expect("read workspace directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")));
+    }
 
     /// `SavedPaneKind` must serialise every Pane variant produced by mirror-split
     /// (Cmd+N / Cmd+Shift+N): Terminal, App. Round-tripping through JSON
