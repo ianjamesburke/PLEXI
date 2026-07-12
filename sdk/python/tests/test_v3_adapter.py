@@ -27,6 +27,7 @@ from plexi_sdk.ui import (
     CanvasRect,
     Column,
     FooterKeys,
+    Scrollable,
     SelectList,
     Text,
     TextInput,
@@ -95,6 +96,18 @@ def test_ui_tree_serializes_text_input_and_select_list() -> None:
     assert nodes[2]["data"]["type"] == "ListView"
     assert nodes[2]["data"]["selected"] == 1
     assert nodes[2]["data"]["items"] == [3, 4]
+    assert "size" not in nodes[5]["data"]
+
+
+def test_ui_tree_flattens_scrollable_child() -> None:
+    tree = _encode_uitree(Scrollable(Text("log line")))
+
+    assert tree["nodes"][0]["data"] == {
+        "type": "Scroll",
+        "child": 1,
+        "horizontal": False,
+    }
+    assert tree["nodes"][1]["data"]["text"] == "log line"
 
 
 def test_ui_tree_serializes_row_children() -> None:

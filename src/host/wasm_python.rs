@@ -5,13 +5,13 @@
 //! marshalling. It intentionally does not fall back to the native PGAP
 //! subprocess path when the CPython WASM bundle is unavailable.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
 #[cfg(test)]
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::thread::JoinHandle;
 
@@ -197,6 +197,23 @@ pub const FETCH_CPYTHON_BUNDLE_COMMAND: &str = "just fetch-cpython-bundle";
 #[cfg(test)]
 pub const BUILD_CPYTHON_SHIM_COMMAND: &str = "just wasm-python-shim";
 
+static CPYTHON_MODULE_CACHE: LazyLock<Mutex<HashMap<PathBuf, (WasmtimeEngine, Module)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn cached_cpython_module(path: &Path) -> Result<(WasmtimeEngine, Module), String> {
+    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut cache = CPYTHON_MODULE_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(cached) = cache.get(&key) {
+        return Ok(cached.clone());
+    }
+    let engine = WasmtimeEngine::default();
+    let module = Module::from_file(&engine, path).map_err(|error| error.to_string())?;
+    cache.insert(key, (engine.clone(), module.clone()));
+    Ok((engine, module))
+}
+
 #[derive(Debug, Error)]
 pub enum WasmPythonError {
     #[error("read manifest at {path}: {source}")]
@@ -368,8 +385,7 @@ impl WasmPythonRuntime {
         let thread = std::thread::Builder::new()
             .name(format!("plexi-python-wasm-{app_id}"))
             .spawn(move || {
-                let engine = WasmtimeEngine::default();
-                let module = Module::from_file(&engine, &bundle).map_err(|e| e.to_string())?;
+                let (engine, module) = cached_cpython_module(&bundle)?;
                 let mut linker = Linker::<WasiP1Ctx>::new(&engine);
                 p1::add_to_linker_sync(&mut linker, |ctx| ctx).map_err(|e| e.to_string())?;
                 let mut builder = WasiCtxBuilder::new();
@@ -477,7 +493,8 @@ pub struct LivePythonPane {
     frame_id: u64,
     wants_close: bool,
     error: Option<String>,
-    timers: std::collections::HashMap<String, std::time::Instant>,
+    timers: std::collections::HashMap<String, PythonTimer>,
+    viewport_size: Option<(f32, f32)>,
     repaint_after: std::time::Duration,
     perf_started_at: std::time::Instant,
     perf_frames: u64,
@@ -493,6 +510,12 @@ pub struct LivePythonPane {
     http_tx: std::sync::mpsc::Sender<(String, crate::host::services::HttpResponse)>,
     http_rx: std::sync::mpsc::Receiver<(String, crate::host::services::HttpResponse)>,
     pending_commands: Vec<crate::app::app_trait::AppCommand>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PythonTimer {
+    deadline: std::time::Instant,
+    repeat_every: Option<std::time::Duration>,
 }
 
 fn python_state_path(config: &PythonLaunchConfig) -> PathBuf {
@@ -560,6 +583,7 @@ impl LivePythonPane {
             wants_close: false,
             error: None,
             timers: std::collections::HashMap::new(),
+            viewport_size: None,
             repaint_after: std::time::Duration::from_millis(16),
             perf_started_at: std::time::Instant::now(),
             perf_frames: 0,
@@ -593,8 +617,16 @@ impl LivePythonPane {
             return;
         }
         if !self.initialized {
-            self.initialized = true;
             let size = ui.available_size();
+            if !valid_python_viewport(size.x, size.y) {
+                ui.spinner();
+                self.record_render_perf(host_frame_started.elapsed());
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(5));
+                return;
+            }
+            self.initialized = true;
+            self.viewport_size = Some((size.x, size.y));
             if let Err(error) = self.runtime.send(&json!({
                 "type": "init", "app_id": self.app_id,
                 "workspace_root": self.config.workspace_root,
@@ -605,6 +637,22 @@ impl LivePythonPane {
                 self.error = Some(error.to_string());
                 return;
             }
+        }
+        let size = ui.available_size();
+        let viewport_changed = self.viewport_size.is_some_and(|(width, height)| {
+            (width - size.x).abs() > 0.5 || (height - size.y).abs() > 0.5
+        });
+        if viewport_changed && valid_python_viewport(size.x, size.y) {
+            self.viewport_size = Some((size.x, size.y));
+            if let Err(error) = self
+                .runtime
+                .send(&json!({"type": "resize", "width": size.x, "height": size.y}))
+            {
+                self.error = Some(error.to_string());
+                return;
+            }
+            self.render_requested = true;
+            self.next_render_at = std::time::Instant::now();
         }
         self.drain_runtime();
         if !self.ready {
@@ -634,7 +682,11 @@ impl LivePythonPane {
             self.render_sent_at = Some(std::time::Instant::now());
             self.render_requested = false;
             if self.continuous_scheduler {
-                self.next_render_at += self.repaint_after;
+                self.next_render_at = advance_fixed_deadline(
+                    self.next_render_at,
+                    self.repaint_after,
+                    std::time::Instant::now(),
+                );
             }
             self.drain_runtime();
         }
@@ -660,7 +712,7 @@ impl LivePythonPane {
         self.record_render_perf(host_frame_started.elapsed());
         let render_deadline =
             (self.continuous_scheduler || self.render_requested).then_some(self.next_render_at);
-        let timer_deadline = self.timers.values().copied().min();
+        let timer_deadline = self.timers.values().map(|timer| timer.deadline).min();
         let next_wake = render_deadline
             .into_iter()
             .chain(timer_deadline)
@@ -703,6 +755,19 @@ impl LivePythonPane {
         }
     }
 
+    fn reset_perf_window(&mut self) {
+        self.perf_started_at = std::time::Instant::now();
+        self.perf_frames = 0;
+        self.perf_host_time = std::time::Duration::ZERO;
+        self.perf_guest_frames = 0;
+        self.perf_guest_roundtrip = std::time::Duration::ZERO;
+        self.perf_json_decode = std::time::Duration::ZERO;
+        self.perf_tree_decode = std::time::Duration::ZERO;
+        self.perf_stdout_bytes = 0;
+        self.perf_ui_render = std::time::Duration::ZERO;
+        self.perf_canvas_render = std::time::Duration::ZERO;
+    }
+
     fn drain_runtime(&mut self) {
         while let Ok((request_id, response)) = self.http_rx.try_recv() {
             let _ = self.runtime.send(&json!({
@@ -726,6 +791,7 @@ impl LivePythonPane {
                         Some("ready") => {
                             self.ready = true;
                             self.next_render_at = std::time::Instant::now();
+                            self.reset_perf_window();
                             log::info!("app::{}: CPython WASM bridge ready", self.app_id);
                         }
                         Some("component_tree") => {
@@ -755,10 +821,17 @@ impl LivePythonPane {
                                 message.get("timer_id").and_then(Value::as_str),
                                 message.get("after_ms").and_then(Value::as_u64),
                             ) {
+                                let interval = std::time::Duration::from_millis(after_ms.max(1));
                                 self.timers.insert(
                                     id.to_string(),
-                                    std::time::Instant::now()
-                                        + std::time::Duration::from_millis(after_ms),
+                                    PythonTimer {
+                                        deadline: std::time::Instant::now() + interval,
+                                        repeat_every: message
+                                            .get("repeat")
+                                            .and_then(Value::as_bool)
+                                            .unwrap_or(false)
+                                            .then_some(interval),
+                                    },
                                 );
                             }
                         }
@@ -1022,11 +1095,23 @@ impl LivePythonPane {
         let due: Vec<String> = self
             .timers
             .iter()
-            .filter(|(_, deadline)| **deadline <= now)
+            .filter(|(_, timer)| timer.deadline <= now)
             .map(|(id, _)| id.clone())
             .collect();
         for id in due {
-            self.timers.remove(&id);
+            let repeats = if let Some(timer) = self.timers.get_mut(&id) {
+                if let Some(interval) = timer.repeat_every {
+                    timer.deadline = advance_fixed_deadline(timer.deadline, interval, now);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                continue;
+            };
+            if !repeats {
+                self.timers.remove(&id);
+            }
             let _ = self.runtime.send(&json!({"type": "timer", "timer_id": id}));
             self.render_requested = true;
             self.next_render_at = now + std::time::Duration::from_millis(1);
@@ -1086,6 +1171,7 @@ impl LivePythonPane {
         self.error = None;
         self.wants_close = false;
         self.timers.clear();
+        self.viewport_size = None;
         log::info!("app::{}: relaunched CPython WASM runtime", self.app_id);
         Ok(())
     }
@@ -1122,6 +1208,26 @@ fn scheduler_repaint_after(mode: Option<&str>, fps: Option<u64>) -> std::time::D
         }
         _ => std::time::Duration::from_millis(16),
     }
+}
+
+fn valid_python_viewport(width: f32, height: f32) -> bool {
+    width.is_finite() && height.is_finite() && width > 1.0 && height > 1.0
+}
+
+fn advance_fixed_deadline(
+    deadline: std::time::Instant,
+    interval: std::time::Duration,
+    now: std::time::Instant,
+) -> std::time::Instant {
+    let mut next = deadline + interval;
+    if next <= now {
+        let missed = now.duration_since(next).as_nanos() / interval.as_nanos() + 1;
+        let missed = u32::try_from(missed).unwrap_or(u32::MAX);
+        next = next
+            .checked_add(interval * missed)
+            .unwrap_or(now + interval);
+    }
+    next
 }
 
 fn should_send_python_render(
@@ -2141,14 +2247,14 @@ fn required_u8(value: &Value, field: &str) -> Result<u8, WasmPythonError> {
 }
 
 fn optional_f32(value: &Value, field: &str) -> Result<Option<f32>, WasmPythonError> {
-    value
-        .get(field)
-        .map(|v| {
-            v.as_f64().map(|n| n as f32).ok_or_else(|| {
-                WasmPythonError::BridgeJson(format!("field '{field}' must be a number"))
-            })
-        })
-        .transpose()
+    match value.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_f64()
+            .map(|n| n as f32)
+            .ok_or_else(|| WasmPythonError::BridgeJson(format!("field '{field}' must be a number")))
+            .map(Some),
+    }
 }
 
 #[cfg(test)]
@@ -2300,7 +2406,7 @@ mod tests {
     use std::sync::Arc;
     use std::task::{Context, Wake, Waker};
     use tempfile::tempdir;
-    use wasmtime::{Engine, Linker, Module, Store};
+    use wasmtime::{Linker, Store};
     use wasmtime_wasi::p1::{self, WasiP1Ctx};
     use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
     use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
@@ -2341,6 +2447,23 @@ mod tests {
         let interval = scheduler_repaint_after(Some("continuous"), Some(60));
         assert!(interval <= std::time::Duration::from_nanos(16_666_667));
         assert!(interval >= std::time::Duration::from_nanos(16_666_666));
+    }
+
+    #[test]
+    fn python_runtime_waits_for_nonzero_viewport_before_init() {
+        assert!(!valid_python_viewport(0.0, 100.0));
+        assert!(!valid_python_viewport(640.0, 0.0));
+        assert!(valid_python_viewport(640.0, 360.0));
+    }
+
+    #[test]
+    fn fixed_deadline_skips_missed_intervals_without_round_trip_drift() {
+        let start = std::time::Instant::now();
+        let interval = std::time::Duration::from_millis(100);
+
+        let next = advance_fixed_deadline(start, interval, start + interval * 3 + interval / 2);
+
+        assert_eq!(next.duration_since(start), interval * 4);
     }
 
     #[test]
@@ -2478,9 +2601,8 @@ mod tests {
     #[test]
     fn cpython_wasi_executes_inside_wasmtime_without_native_python() {
         let bundle = resolve_default_cpython_bundle().expect("fetched CPython WASI bundle");
-        let engine = Engine::default();
         let stdlib = bundle.parent().expect("bundle directory").join("Lib");
-        let module = Module::from_file(&engine, bundle).expect("raw CPython WASI module");
+        let (engine, module) = cached_cpython_module(&bundle).expect("raw CPython WASI module");
         let mut linker = Linker::<WasiP1Ctx>::new(&engine);
         p1::add_to_linker_sync(&mut linker, |ctx| ctx).expect("WASI preview1 imports");
         let stdout = MemoryOutputPipe::new(4096);
@@ -2788,6 +2910,24 @@ python_compat = true
     }
 
     #[test]
+    fn ui_tree_treats_null_optional_text_size_as_absent() {
+        let tree = decode_ui_tree(
+            r#"{
+                "root":0,
+                "nodes":[
+                    {"id":0,"key":"0","data":{"type":"Text","text":"ok","size":null}}
+                ]
+            }"#,
+        )
+        .expect("tree");
+
+        assert!(matches!(
+            &tree.nodes[0].data,
+            UiNodeData::Text(text) if text.size.is_none()
+        ));
+    }
+
+    #[test]
     fn ui_tree_decodes_interactive_nodes() {
         let tree = decode_ui_tree(
             r#"{
@@ -2958,5 +3098,42 @@ python_compat = true
             .nodes
             .iter()
             .any(|node| matches!(&node.data, UiNodeData::Text(text) if text.text.contains("No focus events"))));
+    }
+
+    fn native_python_app_view(app_name: &str, module_name: &str) -> UiTree {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let snapshot = StateSnapshot {
+            entries: Vec::new(),
+        };
+        let output = run_native_python_lifecycle_probe(
+            &root.join("sdk/python"),
+            &root.join("apps").join(app_name),
+            module_name,
+            &init_bridge_arg(&snapshot, (480.0, 320.0), &[]),
+            &update_bridge_arg(&snapshot, &InputEvent::TimerFired(1)).expect("update arg"),
+            &view_bridge_arg(&snapshot),
+        )
+        .expect("native bridge probe");
+
+        decode_ui_tree(&output.view_json).expect("view tree")
+    }
+
+    #[test]
+    fn native_python_bridge_decodes_kraken_view() {
+        let view = native_python_app_view("kraken", "main");
+
+        assert!(view.nodes.iter().any(
+            |node| matches!(&node.data, UiNodeData::Text(text) if text.text.contains("Kraken"))
+        ));
+    }
+
+    #[test]
+    fn native_python_bridge_decodes_logs_scroll_view() {
+        let view = native_python_app_view("logs", "logs");
+
+        assert!(view
+            .nodes
+            .iter()
+            .any(|node| matches!(node.data, UiNodeData::Scroll(_))));
     }
 }

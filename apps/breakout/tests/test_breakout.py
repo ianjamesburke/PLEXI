@@ -95,6 +95,8 @@ def test_view_returns_canvas_with_correct_structure() -> None:
     assert node is not None
     canvas = node["children"][0]
     assert canvas["type"] == "canvas"
+    assert canvas["width"] == 640.0
+    assert canvas["height"] == 360.0
     assert any(cmd["type"] == "rect" and cmd["fill"] == "#0d0d1a" for cmd in canvas["commands"])
     assert any(cmd["type"] == "circle" for cmd in canvas["commands"])
     footer = node["children"][-1]

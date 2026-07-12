@@ -53,7 +53,6 @@ class V3AppRuntime:
         self._module = _load_module(app_path)
         self._launch_args = launch_args or []
         self._values: dict = {}
-        self._repeating_timers: dict[int, int] = {}
         self._last_render_time: float | None = None
         self._frame_id = 0
         self._app_id = ""
@@ -143,7 +142,7 @@ class V3AppRuntime:
 
         self._set_state(in_view=False)
         init_effects = self._module.init(
-            (0.0, 0.0),
+            tuple(ev.get("size", [0.0, 0.0])),
             self._launch_args,
         )
         self._apply_effects(init_effects)
@@ -190,9 +189,6 @@ class V3AppRuntime:
         except (ValueError, TypeError):
             return
         self._dispatch(events.TimerFired(id=parsed_id))
-        repeat_ms = self._repeating_timers.get(parsed_id)
-        if repeat_ms is not None:
-            _emit({"type": "set_timer", "timer_id": str(parsed_id), "after_ms": repeat_ms})
 
     def _handle_component_event(self, ev: dict) -> None:
         node_id = ev.get("node_id", "")
@@ -280,13 +276,9 @@ class V3AppRuntime:
                     "type": "set_timer",
                     "timer_id": str(effect.id),
                     "after_ms": int(effect.delay_ms),
+                    "repeat": bool(effect.repeat),
                 })
-                if effect.repeat:
-                    self._repeating_timers[int(effect.id)] = int(effect.delay_ms)
-                else:
-                    self._repeating_timers.pop(int(effect.id), None)
             elif isinstance(effect, effects.CancelTimer):
-                self._repeating_timers.pop(int(effect.id), None)
                 _emit({"type": "cancel_timer", "timer_id": str(effect.id)})
             elif isinstance(effect, effects.SetSchedulerMode):
                 payload: dict = {"type": "set_scheduler_mode", "mode": effect.mode}

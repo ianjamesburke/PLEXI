@@ -50,6 +50,7 @@ def _init_app(proc, state=None, capabilities=None):
         "workspace_root": "/tmp",
         "capabilities": capabilities or [],
         "feature_flags": [],
+        "size": [640.0, 360.0],
     }
     if state is not None:
         msg["state"] = state
@@ -160,7 +161,12 @@ class TestEffects:
         try:
             events = _init_and_render(proc)
             timers = _find_events(events, "set_timer")
-            assert any(t.get("timer_id") == "42" and t.get("after_ms") == 1000 for t in timers)
+            assert any(
+                t.get("timer_id") == "42"
+                and t.get("after_ms") == 1000
+                and t.get("repeat") is True
+                for t in timers
+            )
         finally:
             proc.kill()
 
@@ -392,6 +398,30 @@ class TestState:
         finally:
             proc.kill()
 
+    def test_init_receives_host_viewport_size(self, tmp_path):
+        app = tmp_path / "size_app.py"
+        app.write_text(textwrap.dedent("""
+            from plexi_sdk.effects import SetState
+            from plexi_sdk import state
+            from plexi_sdk.ui import Text
+
+            def init(size, args):
+                return [SetState({"size": list(size)})]
+
+            def update(event):
+                return []
+
+            def view():
+                return Text(f"size={state.get('size')}")
+        """).lstrip())
+        proc = _spawn_v3_app(app)
+        try:
+            _init_app(proc)
+            events = _render(proc)
+            assert "size=[640.0, 360.0]" in json.dumps(events)
+        finally:
+            proc.kill()
+
     def test_set_state_visible_in_view(self, tmp_path):
         """SetState in init makes data visible in view() via state.get()."""
         app = tmp_path / "state_app.py"
@@ -540,8 +570,8 @@ class TestFrameTiming:
 class TestTimers:
     """Timer effects and repeat semantics."""
 
-    def test_timer_repeat_rearms(self, tmp_path):
-        """A repeating timer re-emits set_timer after each fire."""
+    def test_repeating_timer_is_owned_by_host_after_initial_registration(self, tmp_path):
+        """The guest must not add round-trip drift by re-arming repeating timers."""
         app = tmp_path / "timer_app.py"
         app.write_text(textwrap.dedent("""
             from plexi_sdk import state
@@ -569,11 +599,9 @@ class TestTimers:
             # Fire the timer
             _send_event(proc, {"type": "timer", "timer_id": "1"})
             events = _render(proc, frame_id=2)
-            # Should re-arm the timer
+            # The host owns the fixed cadence after the initial registration.
             rearms = _find_events(events, "set_timer")
-            assert any(t.get("timer_id") == "1" for t in rearms), (
-                "Repeating timer was not re-armed after fire"
-            )
+            assert not rearms
         finally:
             proc.kill()
 

@@ -155,14 +155,16 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "align": "start",
         }
     if node_type == "label":
-        return {
+        normalized = {
             "type": "Text",
             "text": data.get("text", ""),
-            "size": data.get("size"),
             "bold": data.get("bold", False),
             "truncate": data.get("truncate", False),
             "align": data.get("align", "start"),
         }
+        if data.get("size") is not None:
+            normalized["size"] = data["size"]
+        return normalized
     if node_type == "markdown":
         return {
             "type": "Text",
@@ -241,5 +243,14 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "items": child_ids,
             "selected": selected,
             "on_select": data.get("on_select"),
+        }
+    if node_type in ("scroll", "Scroll"):
+        child = data.get("child")
+        if child is None:
+            raise TypeError("scroll node requires a child")
+        return {
+            "type": "Scroll",
+            "child": flatten(child, f"{key}/0"),
+            "horizontal": data.get("horizontal", False),
         }
     return data

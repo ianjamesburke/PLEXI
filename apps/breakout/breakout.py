@@ -312,7 +312,7 @@ def view():
     w, h = sdk.canvas_width, sdk.canvas_height
     return Column(
         [
-            Canvas(_draw(data, w, h), width=w, height=100.0, grow=True),
+            Canvas(_draw(data, w, h), width=w, height=h, grow=True),
             FooterKeys([("←/→", "move"), ("space", "launch / restart")]),
         ],
         padding=0,
