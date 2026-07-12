@@ -5,12 +5,12 @@ id = "tetris"
 type = "app"
 name = "Tetris"
 version = "0.1.0"
-description = "Classic Tetris — demonstrates ScheduleRender game loop at 60 fps."
+description = "Classic Tetris driven by the continuous WASM frame clock."
 entry = "tetris.py"
 watch = true
 
 [app.capabilities]
-capabilities = ["timer"]
+capabilities = []
 
 [runtime]
 python_compat = true

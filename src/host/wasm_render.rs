@@ -51,6 +51,26 @@ fn canvas_align(align: Alignment) -> egui::Align2 {
     }
 }
 
+fn canvas_transform(rect: egui::Rect, width: f32, height: f32) -> (egui::Pos2, f32, f32) {
+    let sx = if width > 0.0 {
+        rect.width() / width
+    } else {
+        1.0
+    };
+    let sy = if height > 0.0 {
+        rect.height() / height
+    } else {
+        1.0
+    };
+    if width <= 0.0 || height <= 0.0 {
+        return (rect.min, sx, sy);
+    }
+    let scale = sx.min(sy);
+    let content_size = egui::vec2(width * scale, height * scale);
+    let origin = rect.center() - content_size / 2.0;
+    (origin, scale, scale)
+}
+
 fn cross_align(a: Alignment) -> egui::Align {
     match a {
         Alignment::Start | Alignment::Stretch => egui::Align::Min,
@@ -242,20 +262,11 @@ fn render_node(
             };
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(width, height.max(1.0)), egui::Sense::hover());
-            let sx = if c.width > 0.0 {
-                rect.width() / c.width
-            } else {
-                1.0
-            };
-            let sy = if c.height > 0.0 {
-                rect.height() / c.height
-            } else {
-                1.0
-            };
+            let (origin, sx, sy) = canvas_transform(rect, c.width, c.height);
             for command in &c.commands {
                 match command {
                     CanvasCommand::Rect(r) => {
-                        let min = egui::pos2(rect.left() + r.x * sx, rect.top() + r.y * sy);
+                        let min = egui::pos2(origin.x + r.x * sx, origin.y + r.y * sy);
                         let size = egui::vec2(r.width * sx, r.height * sy);
                         ui.painter().rect_filled(
                             egui::Rect::from_min_size(min, size),
@@ -265,7 +276,7 @@ fn render_node(
                     }
                     CanvasCommand::Circle(circle) => {
                         ui.painter().circle_filled(
-                            egui::pos2(rect.left() + circle.x * sx, rect.top() + circle.y * sy),
+                            egui::pos2(origin.x + circle.x * sx, origin.y + circle.y * sy),
                             circle.radius * sx.min(sy),
                             rgba(&circle.fill),
                         );
@@ -273,15 +284,15 @@ fn render_node(
                     CanvasCommand::Line(line) => {
                         ui.painter().line_segment(
                             [
-                                egui::pos2(rect.left() + line.x1 * sx, rect.top() + line.y1 * sy),
-                                egui::pos2(rect.left() + line.x2 * sx, rect.top() + line.y2 * sy),
+                                egui::pos2(origin.x + line.x1 * sx, origin.y + line.y1 * sy),
+                                egui::pos2(origin.x + line.x2 * sx, origin.y + line.y2 * sy),
                             ],
                             egui::Stroke::new(line.width * sx.min(sy), rgba(&line.color)),
                         );
                     }
                     CanvasCommand::Text(text) => {
                         ui.painter().text(
-                            egui::pos2(rect.left() + text.x * sx, rect.top() + text.y * sy),
+                            egui::pos2(origin.x + text.x * sx, origin.y + text.y * sy),
                             canvas_align(text.align),
                             &text.text,
                             egui::FontId::proportional(text.size * sx.min(sy)),
@@ -342,6 +353,20 @@ mod tests {
 
     fn fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/sysmon.wasm")
+    }
+
+    #[test]
+    fn growing_canvas_preserves_source_aspect_ratio_and_centers_content() {
+        let container = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 700.0));
+
+        let (origin, sx, sy) = canvas_transform(container, 360.0, 440.0);
+
+        let expected_scale = 300.0 / 360.0;
+        let expected_height = 440.0 * expected_scale;
+        assert!((sx - expected_scale).abs() < f32::EPSILON);
+        assert!((sy - expected_scale).abs() < f32::EPSILON);
+        assert!((origin.x - container.left()).abs() < f32::EPSILON);
+        assert!((origin.y - (container.top() + (700.0 - expected_height) / 2.0)).abs() < 0.001);
     }
 
     // G4 foundation: a real sysmon view tree (after delivering stats) renders

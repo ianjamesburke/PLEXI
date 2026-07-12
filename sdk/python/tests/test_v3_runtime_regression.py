@@ -725,7 +725,7 @@ def test_core_app_boots_and_renders(relative_path: str) -> None:
 @pytest.mark.parametrize("relative_path,expected_effect", [
     ("apps/balls/balls.py", "set_scheduler_mode"),
     ("apps/snake/snake.py", "set_timer"),
-    ("apps/tetris/tetris.py", "set_timer"),
+    ("apps/tetris/tetris.py", "set_scheduler_mode"),
     ("apps/kraken/main.py", "set_timer"),
     ("apps/logs/logs.py", "set_timer"),
     ("apps/stats/stats.py", "set_timer"),

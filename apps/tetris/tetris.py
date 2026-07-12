@@ -6,8 +6,8 @@ from __future__ import annotations
 import random
 
 from plexi_sdk import log, state
-from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
-from plexi_sdk.events import KeyEvent, TimerFired
+from plexi_sdk.effects import SetSchedulerMode, SetState, SetStatus, SetTitle
+from plexi_sdk.events import KeyEvent, RenderFrame
 from plexi_sdk.ui import AppBar, Canvas, CanvasRect, CanvasText, Column, FooterKeys
 
 ROWS = 20
@@ -15,8 +15,7 @@ COLS = 10
 CELL = 20.0
 CANVAS_W = 360.0
 CANVAS_H = 440.0
-TIMER_ID = 1
-TICK_MS = 100
+TARGET_FPS = 10
 
 PIECES = {
     "I": {
@@ -118,7 +117,7 @@ def init(size, args) -> list:
     effects: list = [
         SetTitle("Tetris"),
         SetStatus(_status(data)),
-        SetTimer(TIMER_ID, TICK_MS, repeat=True),
+        SetSchedulerMode("continuous", fps=TARGET_FPS),
     ]
     if missing:
         effects.append(SetState(missing))
@@ -128,7 +127,7 @@ def init(size, args) -> list:
 
 def update(event) -> list:
     data = _game()
-    if isinstance(event, TimerFired) and event.id == TIMER_ID:
+    if isinstance(event, RenderFrame):
         if not data["alive"] or data["paused"]:
             return []
         data["fall_ticks"] += 1
