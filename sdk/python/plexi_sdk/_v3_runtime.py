@@ -25,11 +25,34 @@ from plexi_sdk._v3_state import StateSnapshot
 
 
 _LOCK = threading.Lock()
+_EMIT_BATCH: list[dict] | None = None
 
 
 def _emit(obj: dict) -> None:
     with _LOCK:
+        if _EMIT_BATCH is not None:
+            _EMIT_BATCH.append(obj)
+            return
         sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.flush()
+
+
+def _begin_emit_batch() -> None:
+    global _EMIT_BATCH
+    with _LOCK:
+        if _EMIT_BATCH is not None:
+            raise RuntimeError("nested protocol output batch")
+        _EMIT_BATCH = []
+
+
+def _finish_emit_batch() -> None:
+    global _EMIT_BATCH
+    with _LOCK:
+        batch = _EMIT_BATCH
+        _EMIT_BATCH = None
+        if not batch:
+            return
+        sys.stdout.write("".join(json.dumps(obj) + "\n" for obj in batch))
         sys.stdout.flush()
 
 
@@ -73,7 +96,11 @@ class V3AppRuntime:
                 ev = json.loads(raw)
             except json.JSONDecodeError:
                 continue
-            self._handle(ev)
+            _begin_emit_batch()
+            try:
+                self._handle(ev)
+            finally:
+                _finish_emit_batch()
 
     def _handle(self, ev: dict) -> None:
         t = ev.get("type", "")
@@ -154,6 +181,12 @@ class V3AppRuntime:
         elapsed = 0.0 if self._last_render_time is None else now - self._last_render_time
         self._last_render_time = now
         self._frame_id += 1
+        frame_id = ev.get("frame_id", self._frame_id)
+
+        timer_ids = ev.get("timer_ids", [])
+        if isinstance(timer_ids, list):
+            for timer_id in timer_ids:
+                self._dispatch_timer(timer_id, schedule_render=False)
 
         self._dispatch(
             events.RenderFrame(frame_id=self._frame_id, elapsed=elapsed),
@@ -173,12 +206,19 @@ class V3AppRuntime:
                     raise TypeError(
                         f"Unknown PGAP UINode type: {type(root).__name__}"
                     )
-                _emit({"type": "component_tree", "root": root_node})
+                _emit({
+                    "type": "component_tree",
+                    "frame_id": frame_id,
+                    "root": root_node,
+                })
             else:
                 from ._adapter import _encode_uitree
-                _emit({"type": "component_tree", "tree": _encode_uitree(root)})
+                _emit({
+                    "type": "component_tree",
+                    "frame_id": frame_id,
+                    "tree": _encode_uitree(root),
+                })
 
-        frame_id = ev.get("frame_id", self._frame_id)
         _emit({"type": "frame_done", "frame_id": frame_id})
 
     def _handle_key(self, ev: dict) -> None:
@@ -193,12 +233,20 @@ class V3AppRuntime:
         self._dispatch(events.KeyEvent(key=key, modifiers=modifiers))
 
     def _handle_timer(self, ev: dict) -> None:
-        timer_id_str = ev.get("timer_id", "")
+        self._dispatch_timer(
+            ev.get("timer_id", ""),
+            schedule_render=self._pgap_wire,
+        )
+
+    def _dispatch_timer(self, timer_id, *, schedule_render: bool) -> None:
         try:
-            parsed_id = int(timer_id_str)
+            parsed_id = int(timer_id)
         except (ValueError, TypeError):
             return
-        self._dispatch(events.TimerFired(id=parsed_id))
+        self._dispatch(
+            events.TimerFired(id=parsed_id),
+            schedule_render=schedule_render,
+        )
 
     def _handle_component_event(self, ev: dict) -> None:
         node_id = ev.get("node_id", "")

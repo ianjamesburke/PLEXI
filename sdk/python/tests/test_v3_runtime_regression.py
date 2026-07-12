@@ -72,13 +72,16 @@ def _init_and_render(proc, state=None, frame_id=1):
     return init_events + render_events
 
 
-def _render(proc, frame_id=1):
+def _render(proc, frame_id=1, timer_ids=None):
     """Send render and collect until frame_done."""
-    proc.stdin.write(json.dumps({
+    event = {
         "type": "render",
         "frame_id": frame_id,
         "rect": {"x": 0.0, "y": 0.0, "w": 640.0, "h": 360.0},
-    }) + "\n")
+    }
+    if timer_ids is not None:
+        event["timer_ids"] = timer_ids
+    proc.stdin.write(json.dumps(event) + "\n")
     proc.stdin.flush()
     return _collect_until(proc, "frame_done")
 
@@ -106,6 +109,33 @@ def _collect_until(proc, target_type: str, timeout: float = 3.0) -> list[dict]:
 
 def _find_events(events: list[dict], event_type: str) -> list[dict]:
     return [e for e in events if e.get("type") == event_type]
+
+
+def test_protocol_output_flushes_one_batch_per_input_event(monkeypatch):
+    from plexi_sdk import _v3_runtime as runtime
+
+    class Output:
+        def __init__(self):
+            self.writes: list[str] = []
+            self.flushes = 0
+
+        def write(self, value: str) -> None:
+            self.writes.append(value)
+
+        def flush(self) -> None:
+            self.flushes += 1
+
+    output = Output()
+    monkeypatch.setattr(runtime.sys, "stdout", output)
+
+    runtime._begin_emit_batch()
+    runtime._emit({"type": "component_tree"})
+    runtime._emit({"type": "frame_done", "frame_id": 7})
+    runtime._finish_emit_batch()
+
+    assert output.flushes == 1
+    assert len(output.writes) == 1
+    assert output.writes[0].count("\n") == 2
 
 
 # =============================================================================
@@ -508,6 +538,7 @@ class TestWireFormat:
             events = _render(proc)
             tree = _find_events(events, "component_tree")[0]
             assert "root" in tree and "tree" not in tree
+            assert tree["frame_id"] == 1
         finally:
             proc.kill()
 
@@ -518,6 +549,7 @@ class TestWireFormat:
             events = _render(proc)
             tree = _find_events(events, "component_tree")[0]
             assert "tree" in tree and "root" not in tree
+            assert tree["frame_id"] == 1
         finally:
             proc.kill()
 
@@ -645,6 +677,16 @@ class TestTimers:
             assert len(_find_events(events, "schedule_render")) == 1
         finally:
             proc.kill()
+
+        wasm_proc = _spawn_v3_app(app)
+        try:
+            _init_app(wasm_proc, protocol=None)
+            _render(wasm_proc, frame_id=1)
+            events = _render(wasm_proc, frame_id=2, timer_ids=["1"])
+            assert not _find_events(events, "schedule_render")
+            assert "fires=1" in json.dumps(events)
+        finally:
+            wasm_proc.kill()
 
 
 # =============================================================================

@@ -114,11 +114,22 @@ impl AsyncRead for AppendableStdin {
     }
 }
 
-#[derive(Default)]
 struct OutputState {
     bytes: Vec<u8>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
     wake_pending: bool,
+    notifications_enabled: bool,
+}
+
+impl Default for OutputState {
+    fn default() -> Self {
+        Self {
+            bytes: Vec::new(),
+            wake: None,
+            wake_pending: false,
+            notifications_enabled: true,
+        }
+    }
 }
 
 /// Cloneable WASI output that can be drained without closing the guest stream.
@@ -135,7 +146,35 @@ impl DrainableOutput {
     }
 
     fn set_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).wake = Some(wake);
+        let should_wake = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.wake = Some(wake.clone());
+            if state.notifications_enabled && !state.wake_pending && state.bytes.contains(&b'\n') {
+                state.wake_pending = true;
+                true
+            } else {
+                false
+            }
+        };
+        if should_wake {
+            wake();
+        }
+    }
+
+    fn set_notifications_enabled(&self, enabled: bool) {
+        let wake = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.notifications_enabled = enabled;
+            if enabled && !state.wake_pending && state.bytes.contains(&b'\n') {
+                state.wake_pending = true;
+                state.wake.clone()
+            } else {
+                None
+            }
+        };
+        if let Some(wake) = wake {
+            wake();
+        }
     }
 }
 
@@ -157,10 +196,18 @@ impl AsyncWrite for DrainableOutput {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .bytes
+            .extend_from_slice(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let wake = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.bytes.extend_from_slice(buf);
-            if !state.wake_pending && buf.contains(&b'\n') {
+            if state.notifications_enabled && !state.wake_pending && state.bytes.contains(&b'\n') {
                 state.wake_pending = true;
                 state.wake.clone()
             } else {
@@ -170,10 +217,6 @@ impl AsyncWrite for DrainableOutput {
         if let Some(wake) = wake {
             wake();
         }
-        Poll::Ready(Ok(buf.len()))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
@@ -482,19 +525,16 @@ pub struct LivePythonPane {
     app_id: String,
     title: Option<String>,
     tree: Option<UiTree>,
+    pending_trees: HashMap<u64, UiTree>,
     initialized: bool,
     ready: bool,
-    pending_renders: VecDeque<(u64, std::time::Instant)>,
-    next_render_at: std::time::Instant,
-    continuous_scheduler: bool,
-    render_requested: bool,
+    frame_scheduler: PythonFrameScheduler,
     output_waker_installed: bool,
-    frame_id: u64,
     wants_close: bool,
     error: Option<String>,
     timers: std::collections::HashMap<String, PythonTimer>,
+    pending_timer_events: Vec<String>,
     viewport_size: Option<(f32, f32)>,
-    repaint_after: std::time::Duration,
     perf_started_at: std::time::Instant,
     perf_frames: u64,
     perf_host_time: std::time::Duration,
@@ -515,6 +555,119 @@ pub struct LivePythonPane {
 struct PythonTimer {
     deadline: std::time::Instant,
     repeat_every: Option<std::time::Duration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PythonSchedulerMode {
+    Scheduled,
+    Continuous { interval: std::time::Duration },
+}
+
+#[derive(Debug)]
+struct PythonFrameScheduler {
+    mode: PythonSchedulerMode,
+    next_deadline: std::time::Instant,
+    render_requested: bool,
+    pending: VecDeque<(u64, std::time::Instant)>,
+    next_frame_id: u64,
+}
+
+impl PythonFrameScheduler {
+    fn new(now: std::time::Instant) -> Self {
+        Self {
+            mode: PythonSchedulerMode::Scheduled,
+            next_deadline: now,
+            render_requested: true,
+            pending: VecDeque::new(),
+            next_frame_id: 0,
+        }
+    }
+
+    fn request_render_at(&mut self, deadline: std::time::Instant) {
+        if matches!(self.mode, PythonSchedulerMode::Continuous { .. }) || self.render_requested {
+            self.next_deadline = self.next_deadline.min(deadline);
+        } else {
+            self.next_deadline = deadline;
+        }
+        self.render_requested = true;
+    }
+
+    fn request_render_after(&mut self, now: std::time::Instant, delay: std::time::Duration) {
+        self.request_render_at(now + delay);
+    }
+
+    fn set_mode(&mut self, mode: Option<&str>, fps: Option<u64>, now: std::time::Instant) {
+        self.mode = match mode {
+            Some("continuous") => PythonSchedulerMode::Continuous {
+                interval: scheduler_repaint_after(mode, fps),
+            },
+            _ => PythonSchedulerMode::Scheduled,
+        };
+        if let PythonSchedulerMode::Continuous { interval } = self.mode {
+            self.next_deadline = self.next_deadline.min(now + interval);
+        }
+    }
+
+    fn poll_render(&mut self, now: std::time::Instant) -> Option<u64> {
+        let render_needed =
+            matches!(self.mode, PythonSchedulerMode::Continuous { .. }) || self.render_requested;
+        if !render_needed
+            || self.pending.len() >= self.pipeline_capacity()
+            || self.next_deadline > now
+        {
+            return None;
+        }
+        self.next_frame_id = self.next_frame_id.saturating_add(1);
+        let frame_id = self.next_frame_id;
+        self.pending.push_back((frame_id, now));
+        self.render_requested = false;
+        if let PythonSchedulerMode::Continuous { interval } = self.mode {
+            self.next_deadline = advance_fixed_deadline(self.next_deadline, interval, now);
+        }
+        Some(frame_id)
+    }
+
+    fn complete_frame(&mut self, completed_frame_id: u64) -> Option<std::time::Instant> {
+        let position = self
+            .pending
+            .iter()
+            .position(|(frame_id, _)| *frame_id == completed_frame_id)?;
+        self.pending.remove(position).map(|(_, sent_at)| sent_at)
+    }
+
+    fn next_repaint_deadline(&self, now: std::time::Instant) -> Option<std::time::Instant> {
+        let render_needed =
+            matches!(self.mode, PythonSchedulerMode::Continuous { .. }) || self.render_requested;
+        if !render_needed {
+            return None;
+        }
+        if matches!(self.mode, PythonSchedulerMode::Continuous { .. }) && self.next_deadline > now {
+            return Some(self.next_deadline);
+        }
+        if self.pending.len() >= self.pipeline_capacity() {
+            return None;
+        }
+        Some(self.next_deadline.max(now))
+    }
+
+    fn output_notifications_enabled(&self, now: std::time::Instant) -> bool {
+        !(matches!(self.mode, PythonSchedulerMode::Continuous { .. }) && self.next_deadline > now)
+    }
+
+    fn pipeline_capacity(&self) -> usize {
+        match self.mode {
+            PythonSchedulerMode::Continuous { .. } => 3,
+            PythonSchedulerMode::Scheduled => 1,
+        }
+    }
+
+    fn oldest_pending_frame_id(&self) -> Option<u64> {
+        self.pending.front().map(|(frame_id, _)| *frame_id)
+    }
+
+    fn reset(&mut self, now: std::time::Instant) {
+        *self = Self::new(now);
+    }
 }
 
 fn python_state_path(config: &PythonLaunchConfig) -> PathBuf {
@@ -570,19 +723,16 @@ impl LivePythonPane {
             app_id,
             title: None,
             tree: None,
+            pending_trees: HashMap::new(),
             initialized: false,
             ready: false,
-            pending_renders: VecDeque::new(),
-            next_render_at: std::time::Instant::now(),
-            continuous_scheduler: false,
-            render_requested: true,
+            frame_scheduler: PythonFrameScheduler::new(std::time::Instant::now()),
             output_waker_installed: false,
-            frame_id: 0,
             wants_close: false,
             error: None,
             timers: std::collections::HashMap::new(),
+            pending_timer_events: Vec::new(),
             viewport_size: None,
-            repaint_after: std::time::Duration::from_millis(16),
             perf_started_at: std::time::Instant::now(),
             perf_frames: 0,
             perf_host_time: std::time::Duration::ZERO,
@@ -605,9 +755,12 @@ impl LivePythonPane {
         if !self.output_waker_installed {
             let context = ui.ctx().clone();
             let viewport = ui.ctx().viewport_id();
-            self.runtime
-                .stdout
-                .set_waker(Arc::new(move || context.request_repaint_of(viewport)));
+            self.runtime.stdout.set_waker(Arc::new(move || {
+                // A zero-delay egui request deliberately produces two paints.
+                // Keep the wake immediate after prediction adjustment without
+                // asking egui for its extra settling pass.
+                context.request_repaint_after_for(std::time::Duration::from_nanos(1), viewport);
+            }));
             self.output_waker_installed = true;
         }
         if let Some(error) = &self.error {
@@ -649,8 +802,8 @@ impl LivePythonPane {
                 self.error = Some(error.to_string());
                 return;
             }
-            self.render_requested = true;
-            self.next_render_at = std::time::Instant::now();
+            self.frame_scheduler
+                .request_render_at(std::time::Instant::now());
         }
         self.drain_runtime();
         if !self.ready {
@@ -660,36 +813,16 @@ impl LivePythonPane {
                 .request_repaint_after(std::time::Duration::from_millis(5));
             return;
         }
+        self.fire_due_timers();
         let now = std::time::Instant::now();
-        if should_send_python_render(
-            self.initialized,
-            self.ready,
-            self.pending_renders.len(),
-            render_pipeline_capacity(self.continuous_scheduler),
-            self.continuous_scheduler || self.render_requested,
-            now >= self.next_render_at,
-        ) {
-            self.frame_id += 1;
-            if let Err(error) = self
-                .runtime
-                .send(&json!({"type": "render", "frame_id": self.frame_id}))
-            {
+        if let Some(frame_id) = self.frame_scheduler.poll_render(now) {
+            let timer_ids = std::mem::take(&mut self.pending_timer_events);
+            if let Err(error) = self.runtime.send(&python_render_event(frame_id, timer_ids)) {
                 self.error = Some(error.to_string());
                 return;
             }
-            self.pending_renders
-                .push_back((self.frame_id, std::time::Instant::now()));
-            self.render_requested = false;
-            if self.continuous_scheduler {
-                self.next_render_at = advance_fixed_deadline(
-                    self.next_render_at,
-                    self.repaint_after,
-                    std::time::Instant::now(),
-                );
-            }
             self.drain_runtime();
         }
-        self.fire_due_timers();
         if let Some(tree) = &self.tree {
             let render_started = std::time::Instant::now();
             let result = super::wasm_render::render_ui_tree_with_surface(ui, tree, colors, None);
@@ -709,16 +842,18 @@ impl LivePythonPane {
             ui.spinner();
         }
         self.record_render_perf(host_frame_started.elapsed());
-        let render_deadline =
-            (self.continuous_scheduler || self.render_requested).then_some(self.next_render_at);
+        let now = std::time::Instant::now();
+        let render_deadline = self.frame_scheduler.next_repaint_deadline(now);
         let timer_deadline = self.timers.values().map(|timer| timer.deadline).min();
-        let next_wake = render_deadline
-            .into_iter()
-            .chain(timer_deadline)
-            .min()
-            .unwrap_or(now + std::time::Duration::from_secs(1));
-        ui.ctx()
-            .request_repaint_after(next_wake.saturating_duration_since(now));
+        self.runtime
+            .stdout
+            .set_notifications_enabled(self.frame_scheduler.output_notifications_enabled(now));
+        if let Some(next_wake) = render_deadline.into_iter().chain(timer_deadline).min() {
+            let predicted_frame =
+                std::time::Duration::from_secs_f32(ui.input(|input| input.predicted_dt));
+            ui.ctx()
+                .request_repaint_after(repaint_delay_until(next_wake, now, predicted_frame));
+        }
     }
 
     fn record_render_perf(&mut self, host_time: std::time::Duration) {
@@ -789,7 +924,8 @@ impl LivePythonPane {
                     match message_type {
                         Some("ready") => {
                             self.ready = true;
-                            self.next_render_at = std::time::Instant::now();
+                            self.frame_scheduler
+                                .request_render_at(std::time::Instant::now());
                             self.reset_perf_window();
                             log::info!("app::{}: CPython WASM bridge ready", self.app_id);
                         }
@@ -797,7 +933,17 @@ impl LivePythonPane {
                             if let Some(tree) = message.get("tree") {
                                 let decode_started = std::time::Instant::now();
                                 match decode_ui_tree_value(tree) {
-                                    Ok(tree) => self.tree = Some(tree),
+                                    Ok(tree) => {
+                                        let frame_id = message
+                                            .get("frame_id")
+                                            .and_then(Value::as_u64)
+                                            .or_else(|| {
+                                                self.frame_scheduler.oldest_pending_frame_id()
+                                            });
+                                        if let Some(frame_id) = frame_id {
+                                            self.pending_trees.insert(frame_id, tree);
+                                        }
+                                    }
                                     Err(error) => {
                                         log::error!(
                                             "app::{}: decode CPython WASM component tree: {error}",
@@ -840,36 +986,34 @@ impl LivePythonPane {
                             }
                         }
                         Some("schedule_render") => {
-                            self.render_requested = true;
-                            self.repaint_after = std::time::Duration::from_millis(
+                            let delay = std::time::Duration::from_millis(
                                 message
                                     .get("after_ms")
                                     .and_then(Value::as_u64)
                                     .unwrap_or(16),
                             );
-                            self.next_render_at = std::time::Instant::now() + self.repaint_after;
+                            self.frame_scheduler
+                                .request_render_after(std::time::Instant::now(), delay);
                         }
                         Some("set_scheduler_mode") => {
-                            self.continuous_scheduler =
-                                message.get("mode").and_then(Value::as_str) == Some("continuous");
-                            self.repaint_after = scheduler_repaint_after(
+                            self.frame_scheduler.set_mode(
                                 message.get("mode").and_then(Value::as_str),
                                 message.get("fps").and_then(Value::as_u64),
+                                std::time::Instant::now(),
                             );
-                            self.next_render_at = std::time::Instant::now() + self.repaint_after;
                         }
                         Some("frame_done") => {
                             self.perf_guest_frames += 1;
                             let completed_frame = message.get("frame_id").and_then(Value::as_u64);
-                            let completed = if let Some(frame_id) = completed_frame {
-                                self.pending_renders
-                                    .iter()
-                                    .position(|(pending_id, _)| *pending_id == frame_id)
-                                    .and_then(|position| self.pending_renders.remove(position))
-                            } else {
-                                self.pending_renders.pop_front()
-                            };
-                            if let Some((_, sent_at)) = completed {
+                            let completed = completed_frame.and_then(|frame_id| {
+                                commit_python_frame(
+                                    &mut self.frame_scheduler,
+                                    &mut self.pending_trees,
+                                    &mut self.tree,
+                                    frame_id,
+                                )
+                            });
+                            if let Some(sent_at) = completed {
                                 self.perf_guest_roundtrip += sent_at.elapsed();
                             } else {
                                 log::warn!(
@@ -1125,7 +1269,8 @@ impl LivePythonPane {
             if !repeats {
                 self.timers.remove(&id);
             }
-            let _ = self.runtime.send(&json!({"type": "timer", "timer_id": id}));
+            self.pending_timer_events.push(id);
+            self.frame_scheduler.request_render_at(now);
         }
     }
 
@@ -1175,12 +1320,14 @@ impl LivePythonPane {
     pub fn relaunch(&mut self) -> Result<(), WasmPythonError> {
         self.runtime = WasmPythonRuntime::launch(&self.config)?;
         self.tree = None;
+        self.pending_trees.clear();
         self.initialized = false;
         self.ready = false;
-        self.pending_renders.clear();
+        self.frame_scheduler.reset(std::time::Instant::now());
         self.error = None;
         self.wants_close = false;
         self.timers.clear();
+        self.pending_timer_events.clear();
         self.viewport_size = None;
         log::info!("app::{}: relaunched CPython WASM runtime", self.app_id);
         Ok(())
@@ -1240,28 +1387,36 @@ fn advance_fixed_deadline(
     next
 }
 
-fn should_send_python_render(
-    initialized: bool,
-    ready: bool,
-    pending_renders: usize,
-    pipeline_capacity: usize,
-    render_requested: bool,
-    deadline_reached: bool,
-) -> bool {
-    initialized
-        && ready
-        && pending_renders < pipeline_capacity
-        && render_requested
-        && deadline_reached
+fn repaint_delay_until(
+    deadline: std::time::Instant,
+    now: std::time::Instant,
+    predicted_frame: std::time::Duration,
+) -> std::time::Duration {
+    // egui starts a repaint one predicted frame before the requested delay.
+    // Add that estimate back so a 60 Hz app does not turn a 16.7 ms deadline
+    // into an immediate, unbounded host repaint loop.
+    deadline.saturating_duration_since(now) + predicted_frame
 }
 
-fn render_pipeline_capacity(continuous_scheduler: bool) -> usize {
-    // Cover two delayed host handoffs without allowing an unbounded frame backlog.
-    if continuous_scheduler {
-        3
-    } else {
-        1
+fn python_render_event(frame_id: u64, timer_ids: Vec<String>) -> Value {
+    json!({
+        "type": "render",
+        "frame_id": frame_id,
+        "timer_ids": timer_ids,
+    })
+}
+
+fn commit_python_frame(
+    scheduler: &mut PythonFrameScheduler,
+    pending_trees: &mut HashMap<u64, UiTree>,
+    visible_tree: &mut Option<UiTree>,
+    frame_id: u64,
+) -> Option<std::time::Instant> {
+    let sent_at = scheduler.complete_frame(frame_id)?;
+    if let Some(tree) = pending_trees.remove(&frame_id) {
+        *visible_tree = Some(tree);
     }
+    Some(sent_at)
 }
 
 fn http_host_allowed(raw_url: &str, allowed_hosts: &[String]) -> bool {
@@ -2160,8 +2315,12 @@ fn decode_canvas_command(value: &Value) -> Result<CanvasCommand, WasmPythonError
             radius: optional_f32(value, "radius")?.unwrap_or(0.0),
         })),
         "circle" | "Circle" => Ok(CanvasCommand::Circle(CanvasCircle {
-            x: optional_f32(value, "x")?.unwrap_or(0.0),
-            y: optional_f32(value, "y")?.unwrap_or(0.0),
+            x: optional_f32(value, "cx")?
+                .or(optional_f32(value, "x")?)
+                .unwrap_or(0.0),
+            y: optional_f32(value, "cy")?
+                .or(optional_f32(value, "y")?)
+                .unwrap_or(0.0),
             radius: optional_f32(value, "radius")?
                 .or(optional_f32(value, "r")?)
                 .unwrap_or(0.0),
@@ -2491,29 +2650,113 @@ mod tests {
     }
 
     #[test]
-    fn event_driven_render_waits_for_ready_and_in_flight_frame() {
-        assert!(!should_send_python_render(true, false, 0, 1, true, true));
-        assert!(should_send_python_render(true, true, 0, 1, true, true));
-        assert!(!should_send_python_render(true, true, 1, 1, true, true));
-        assert!(!should_send_python_render(true, true, 0, 1, true, false));
-        assert!(!should_send_python_render(true, true, 0, 1, false, true));
+    fn scheduled_mode_allows_only_one_render_transaction() {
+        let now = std::time::Instant::now();
+        let mut scheduler = PythonFrameScheduler::new(now);
+
+        let frame_id = scheduler.poll_render(now).expect("first frame");
+
+        assert!(scheduler.poll_render(now).is_none());
+        assert_eq!(scheduler.complete_frame(frame_id), Some(now));
     }
 
     #[test]
-    fn continuous_scheduler_keeps_a_bounded_frame_pipeline() {
-        let capacity = render_pipeline_capacity(true);
+    fn scheduled_mode_uses_new_deadline_after_returning_to_idle() {
+        let now = std::time::Instant::now();
+        let delay = std::time::Duration::from_millis(100);
+        let mut scheduler = PythonFrameScheduler::new(now);
+        let frame_id = scheduler.poll_render(now).expect("first frame");
+        scheduler.complete_frame(frame_id).expect("complete frame");
 
-        assert_eq!(capacity, 3);
-        assert!(should_send_python_render(
-            true, true, 1, capacity, true, true
-        ));
-        assert!(should_send_python_render(
-            true, true, 2, capacity, true, true
-        ));
-        assert!(!should_send_python_render(
-            true, true, 3, capacity, true, true
-        ));
-        assert_eq!(render_pipeline_capacity(false), 1);
+        scheduler.request_render_after(now, delay);
+
+        assert_eq!(scheduler.next_repaint_deadline(now), Some(now + delay));
+    }
+
+    #[test]
+    fn component_tree_becomes_visible_only_at_matching_frame_commit() {
+        let now = std::time::Instant::now();
+        let mut scheduler = PythonFrameScheduler::new(now);
+        let frame_id = scheduler.poll_render(now).expect("first frame");
+        let pending_tree = decode_ui_tree(
+            r#"{"root":0,"nodes":[{"id":0,"key":"0","data":{"type":"Text","text":"new"}}]}"#,
+        )
+        .expect("pending tree");
+        let mut pending = HashMap::from([(frame_id, pending_tree)]);
+        let mut visible = None;
+
+        assert!(visible.is_none());
+        assert!(
+            commit_python_frame(&mut scheduler, &mut pending, &mut visible, frame_id,).is_some()
+        );
+        assert!(pending.is_empty());
+        assert!(visible.is_some());
+    }
+
+    #[test]
+    fn continuous_scheduler_stops_repainting_when_guest_misses_deadline() {
+        let now = std::time::Instant::now();
+        let interval = scheduler_repaint_after(Some("continuous"), Some(60));
+        let mut scheduler = PythonFrameScheduler::new(now);
+        scheduler.set_mode(Some("continuous"), Some(60), now);
+        scheduler.poll_render(now).expect("first frame");
+        scheduler.poll_render(now + interval).expect("second frame");
+        scheduler
+            .poll_render(now + interval * 2)
+            .expect("third frame");
+
+        assert!(scheduler
+            .next_repaint_deadline(now + interval * 3)
+            .is_none());
+        assert!(scheduler.output_notifications_enabled(now + interval * 3));
+    }
+
+    #[test]
+    fn continuous_scheduler_coalesces_guest_wake_into_next_host_deadline() {
+        let now = std::time::Instant::now();
+        let mut scheduler = PythonFrameScheduler::new(now);
+        scheduler.set_mode(Some("continuous"), Some(60), now);
+        scheduler.poll_render(now).expect("first frame");
+
+        assert!(scheduler.next_repaint_deadline(now).is_some());
+        assert!(!scheduler.output_notifications_enabled(now));
+    }
+
+    #[test]
+    fn continuous_scheduler_sends_one_transaction_per_host_tick() {
+        let start = std::time::Instant::now();
+        let interval = scheduler_repaint_after(Some("continuous"), Some(60));
+        let mut scheduler = PythonFrameScheduler::new(start);
+        scheduler.set_mode(Some("continuous"), Some(60), start);
+        let mut frame_id = scheduler.poll_render(start).expect("first frame");
+
+        for tick in 1..=120 {
+            let now = start + interval * tick;
+            assert_eq!(scheduler.complete_frame(frame_id), Some(now - interval));
+            frame_id = scheduler.poll_render(now).expect("next frame");
+            assert_eq!(scheduler.next_repaint_deadline(now), Some(now + interval));
+            assert!(!scheduler.output_notifications_enabled(now));
+        }
+    }
+
+    #[test]
+    fn repaint_delay_compensates_for_egui_predicted_frame_subtraction() {
+        let now = std::time::Instant::now();
+        let interval = std::time::Duration::from_nanos(16_666_666);
+        let predicted = std::time::Duration::from_nanos(16_666_666);
+
+        assert_eq!(
+            repaint_delay_until(now + interval, now, predicted),
+            interval * 2
+        );
+    }
+
+    #[test]
+    fn render_transaction_carries_due_timer_events() {
+        let event = python_render_event(7, vec!["drop".to_string()]);
+
+        assert_eq!(event["frame_id"], 7);
+        assert_eq!(event["timer_ids"], json!(["drop"]));
     }
 
     #[test]
@@ -2568,16 +2811,43 @@ mod tests {
         assert!(Pin::new(&mut writer)
             .poll_write(&mut context, b"frame_done\n")
             .is_ready());
+        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(Pin::new(&mut writer).poll_flush(&mut context).is_ready());
         assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(Pin::new(&mut writer)
             .poll_write(&mut context, b"another_message\n")
             .is_ready());
+        assert!(Pin::new(&mut writer).poll_flush(&mut context).is_ready());
         assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 1);
         output.drain();
         assert!(Pin::new(&mut writer)
             .poll_write(&mut context, b"next_frame\n")
             .is_ready());
+        assert!(Pin::new(&mut writer).poll_flush(&mut context).is_ready());
         assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn drainable_output_defers_wake_until_notifications_are_rearmed() {
+        let output = DrainableOutput::default();
+        let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wake_flag = woke.clone();
+        output.set_waker(Arc::new(move || {
+            wake_flag.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        output.set_notifications_enabled(false);
+        let mut writer = output.clone();
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+
+        assert!(Pin::new(&mut writer)
+            .poll_write(&mut context, b"frame_done\n")
+            .is_ready());
+        assert!(Pin::new(&mut writer).poll_flush(&mut context).is_ready());
+        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        output.set_notifications_enabled(true);
+        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -2585,7 +2855,7 @@ mod tests {
         let app = tempdir().expect("app dir");
         std::fs::write(
             app.path().join("main.py"),
-            "from plexi_sdk.ui import Text\ndef init(size, args): return []\ndef update(event): return []\ndef view(): return Text('wasm-python-live')\n",
+            "from plexi_sdk.ui import Canvas, CanvasCircle, Column, Text\ndef init(size, args): return []\ndef update(event): return []\ndef view(): return Column([Text('wasm-python-live'), Canvas([CanvasCircle(41.0, 42.0, 8.0, '#abcdef')])])\n",
         )
         .expect("write app");
         let config = PythonLaunchConfig {
@@ -2629,6 +2899,20 @@ mod tests {
             "messages={messages:?}; stderr={}",
             runtime.drain_stderr()
         );
+        let tree = messages
+            .iter()
+            .find(|message| message.get("type") == Some(&json!("component_tree")))
+            .and_then(|message| message.get("tree"))
+            .and_then(|tree| decode_ui_tree_value(tree).ok())
+            .expect("decoded runtime tree");
+        assert!(tree.nodes.iter().any(|node| matches!(
+            node.data,
+            UiNodeData::Canvas(ref canvas) if matches!(
+                canvas.commands.first(),
+                Some(CanvasCommand::Circle(CanvasCircle { x, y, .. }))
+                    if *x == 41.0 && *y == 42.0
+            )
+        )));
     }
 
     fn python_shim_fixture() -> PathBuf {
@@ -3002,6 +3286,7 @@ python_compat = true
                         "grow":true,
                         "commands":[
                             {"type":"rect","x":1.0,"y":2.0,"w":30.0,"h":40.0,"fill":"#112233","radius":2.0},
+                            {"type":"circle","cx":41.0,"cy":42.0,"r":8.0,"fill":"#abcdef"},
                             {"type":"text","x":9.0,"y":10.0,"text":"ok","size":14.0,"color":"#ffffffcc","bold":true,"align":"center"}
                         ]
                     }}
@@ -3014,9 +3299,14 @@ python_compat = true
             panic!("expected canvas node");
         };
         assert_eq!(canvas.width, 320.0);
-        assert_eq!(canvas.commands.len(), 2);
+        assert_eq!(canvas.commands.len(), 3);
         assert!(matches!(canvas.commands[0], CanvasCommand::Rect(_)));
-        assert!(matches!(canvas.commands[1], CanvasCommand::Text(_)));
+        assert!(matches!(
+            canvas.commands[1],
+            CanvasCommand::Circle(CanvasCircle { x, y, radius, .. })
+                if x == 41.0 && y == 42.0 && radius == 8.0
+        ));
+        assert!(matches!(canvas.commands[2], CanvasCommand::Text(_)));
     }
 
     #[test]
