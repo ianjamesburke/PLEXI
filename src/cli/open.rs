@@ -86,7 +86,7 @@ pub fn pane_new_cli(
     let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
 
     // Socket path — inside a Plexi pane
-    if std::env::var("PLEXI_SOCKET").is_ok() {
+    if super::command_socket_available() {
         let id = uuid::Uuid::new_v4();
         let response_file = crate::config::config_dir()
             .join(format!("spawn-pane-response-{id}.json"))
@@ -543,7 +543,7 @@ fn open_app_by_path(
         }
     };
 
-    if std::env::var("PLEXI_SOCKET").is_ok() {
+    if super::command_socket_available() {
         let id = uuid::Uuid::new_v4();
         let response_file = crate::config::config_dir()
             .join(format!("spawn-pane-response-{id}.json"))

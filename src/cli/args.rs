@@ -28,6 +28,10 @@ pub struct Cli {
     #[arg(long, global = true, hide = true)]
     pub profile: Option<String>,
 
+    /// Override the host command socket path.
+    #[arg(long, global = true, value_hint = ValueHint::FilePath)]
+    pub socket: Option<std::path::PathBuf>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 
@@ -1489,6 +1493,23 @@ mod tests {
         normalize_config_scope_aliases, AppCmd, Cli, Commands, ConfigCmd, ConfigScope, SecretCmd,
     };
     use clap::Parser;
+
+    #[test]
+    fn global_socket_override_parses_after_subcommand() {
+        let cli = Cli::try_parse_from([
+            "plexi",
+            "pane",
+            "list",
+            "--socket",
+            "/tmp/explicit.sock",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.socket,
+            Some(std::path::PathBuf::from("/tmp/explicit.sock"))
+        );
+    }
 
     #[test]
     fn secret_list_accepts_global_flag() {

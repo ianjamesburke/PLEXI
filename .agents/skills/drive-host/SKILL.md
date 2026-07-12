@@ -26,7 +26,7 @@ When a committed TOML scene already describes the flow, prefer `just scene-live 
 
 ## The loop
 
-All four steps run against one channel. For a PR build the channel is `pr-<N>` and the binary is `plexi-pr-<N>`; substitute your channel throughout. `host start/stop/status` resolve the socket from the channel's own config dir (`~/.plexi-<channel>/notify.sock`), so they ignore any inherited `PLEXI_SOCKET` — the drive commands in step 2 do not, which is the whole reason for the env discipline below.
+All four steps run against one channel. For a PR build the channel is `pr-<N>` and the binary is `plexi-pr-<N>`; substitute your channel throughout. Current channel-suffixed binaries resolve commands from their own config dir (`~/.plexi-<channel>/notify.sock`). Keep the explicit socket and channel environment below so the loop also works with older installed binaries.
 
 ### 1. Boot
 
@@ -59,7 +59,7 @@ plexi-pr-<N> pane new "npm run dev" -n dev
 
 Every drive command needs the env discipline below. Always target panes by the id from `pane list` — never rely on "current pane" defaults, which read stale `PLEXI_*` vars from the pane you launched this skill in.
 
-**Env discipline (the trap).** `pane list/send/state/capture/key/new` resolve their target from `PLEXI_SOCKET`, not from the channel. Inside another Plexi pane that variable points at *your* host, not the PR host, and `PLEXI_PANE_ID` / `PLEXI_CONTEXT_ID` / `PLEXI_CONTEXT_ROOT` are likewise stale. Point every drive command at the PR host's own socket and strip the inherited pane/context identity:
+**Env discipline.** Current channel-suffixed binaries reject a socket inherited from another channel. Keep pointing every drive command at the PR host's socket for compatibility with older binaries, and strip inherited pane/context identity because those values still describe the launching pane:
 
 ```bash
 env -u PLEXI_PANE_ID -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_ROOT -u PLEXI_RUNNING \

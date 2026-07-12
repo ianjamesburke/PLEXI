@@ -227,6 +227,9 @@ fn main() -> eframe::Result {
 
     match Cli::try_parse_from(&args) {
         Ok(cli) => {
+            if let Some(socket) = cli.socket {
+                cli::set_command_socket_override(socket);
+            }
             if let Some(cmd) = cli.command {
                 match cmd {
                     Commands::Run {

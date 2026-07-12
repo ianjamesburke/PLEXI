@@ -13,7 +13,7 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 
 **Path rules:** Never hardcode a profile directory path — always use `config_dir()`. Never hardcode `.plexi/` as a workspace dir — always use `workspace_channel_dir()` or `workspace_config_path()`.
 
-**Socket rule:** Honor `PLEXI_SOCKET` when set; fall back to channel-specific mechanisms only when it is not. New host commands must follow the socket-first pattern in `open_cli()`.
+**Socket rule:** A channel-suffixed binary always sends commands to its own profile's `notify.sock`, even when it inherits a different `PLEXI_SOCKET`. The bare `plexi` binary honors `PLEXI_SOCKET`. Route new command dispatch through `resolve_command_socket()`.
 
 **Completion testing on PR builds:** `just pr-install` skips completion install. To test, manually run `plexi-pr-<N> completions zsh > <path>` and restore after.
 

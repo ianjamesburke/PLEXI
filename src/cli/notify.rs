@@ -7,9 +7,9 @@ pub fn notify_cli(
     timeout_secs: u64,
     scope: Option<crate::app_protocol::NotifyScope>,
 ) -> i32 {
-    let socket_path = match std::env::var("PLEXI_SOCKET") {
-        Ok(v) => v,
-        Err(_) => {
+    let socket_path = match super::resolve_command_socket() {
+        Some(path) => path,
+        None => {
             eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
             return 1;
         }

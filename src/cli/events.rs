@@ -22,9 +22,9 @@ use std::os::unix::net::UnixStream;
 /// behaviour of `send_to_socket`, but returns the live stream so the caller can
 /// stream NDJSON responses back.
 fn connect_socket() -> Result<UnixStream, i32> {
-    let socket_path = match std::env::var("PLEXI_SOCKET") {
-        Ok(v) => v,
-        Err(_) => {
+    let socket_path = match super::resolve_command_socket() {
+        Some(path) => path,
+        None => {
             eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
             return Err(1);
         }
