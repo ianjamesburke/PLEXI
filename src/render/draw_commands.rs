@@ -12,7 +12,7 @@ use taffy::prelude::*;
 /// Render a committed frame's draw commands into the given egui Ui.
 ///
 /// Only visual primitives reach this function — control commands are routed
-/// upstream in `process_app/mod.rs` before commands enter the frame pipeline.
+/// upstream in `host/wasm_pane.rs` before commands enter the frame pipeline.
 ///
 /// # Clip stack
 ///

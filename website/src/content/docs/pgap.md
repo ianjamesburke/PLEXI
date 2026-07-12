@@ -40,20 +40,15 @@ these at runtime:
 capabilities = ["secrets.get", "net.http"]
 ```
 
-Capabilities gate PGAP host APIs; they are not a process sandbox and do not
-restrict what a native Python process can do outside PGAP. The **Cap** column
-in the tables below shows which capability is required. Requests without a cap
-are available to all apps.
-
-Future CPython-in-WASM compatibility work may add a sandboxed Python app route.
-That is deferred and is not the current SDK v3 execution path.
+Capabilities gate PGAP host APIs; they do not sandbox or restrict what a native
+Python process can do outside PGAP. The **Cap** column in the tables below shows
+which capability is required. Requests without a cap are available to all apps.
 
 ## The Python SDK
 
 The recommended way to write a Plexi app is with the Python SDK. It wraps
-PGAP into idiomatic Python: define module-level `init`, `update`, and `view`
-functions, then return effects and component trees. See the
-[SDK reference](/docs/sdk) for the full API.
+PGAP into idiomatic Python — subclass `App`, implement `view()`, and return
+a component tree. See the [SDK reference](/docs/sdk) for the full API.
 
 ## App → Host Requests
 
@@ -77,27 +72,6 @@ Request a workspace-scoped secret. Scoped to Init.workspace_root automatically.
 | Field | Type | Required |
 |-------|------|----------|
 | `key` | `string` | yes |
-
-### `file_read`
-
-Read a file through the native ProcessApp host. Requires `fs.read` and the resolved path must stay inside the app's w...
-
-**Capability:** `fs.read`
-
-| Field | Type | Required |
-|-------|------|----------|
-| `path` | `string` | yes |
-
-### `file_list`
-
-List a directory through the native ProcessApp host. Requires `fs.read` and the resolved path must stay inside the ap...
-
-**Capability:** `fs.read`
-
-| Field | Type | Required |
-|-------|------|----------|
-| `extensions` | `string[]` | no |
-| `path` | `string` | yes |
 
 ### `save_app_state`
 
@@ -241,6 +215,7 @@ Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps. Requires 
 | `name` | `string?` | no |
 | `no_focus` | `boolean` | no |
 | `path` | `string?` | no |
+| `pipe_id` | `string?` | no |
 | `request_id` | `string?` | no |
 | `response_file` | `string?` | no |
 | `target_context` | `integer?` | no |
@@ -518,14 +493,6 @@ Host-brokered HTTP request. Requires `net.http` capability. Host replies with `P
 | `headers` | `object` | no |
 | `method` | `string` | no |
 | `request_id` | `string` | yes |
-| `url` | `string` | yes |
-
-### `open_url`
-
-Open an HTTP(S) URL in the user's default browser.
-
-| Field | Type | Required |
-|-------|------|----------|
 | `url` | `string` | yes |
 
 ### `ai_query`
@@ -890,12 +857,6 @@ No-op wake. Nudges the (zero-frame-idle) UI thread to run a frame so queued work
 
 *No additional fields.*
 
-### `shutdown`
-
-Request a clean host shutdown. Sent by `plexi host stop` over a direct `notify.sock` connection (never over `PLEXI_SO...
-
-*No additional fields.*
-
 ## Host → App Events
 
 Messages the host sends to the app.
@@ -911,12 +872,10 @@ Sent exactly once on startup. App must reply with DrawCommand::Ready.
 | `capabilities` | `string[]` | yes |
 | `compact_threshold` | `number` | no |
 | `feature_flags` | `string[]` | yes |
-| `height` | `number` | no |
 | `protocol` | `string` | yes |
 | `regular_threshold` | `number` | no |
 | `state` | `any` | no |
 | `theme` | `object` | no |
-| `width` | `number` | no |
 | `workspace_root` | `string` | yes |
 
 ### `render`
@@ -925,8 +884,6 @@ Request a new frame. App replies with DrawCommands terminated by FrameDone.
 
 | Field | Type | Required |
 |-------|------|----------|
-| `canvas_height` | `number` | no |
-| `canvas_width` | `number` | no |
 | `frame_id` | `integer` | yes |
 | `rect` | `Rect` | yes |
 
@@ -947,7 +904,6 @@ User input event.
 |-------|------|----------|
 | `key` | `string` | yes |
 | `modifiers` | `Modifiers` | yes |
-| `pressed` | `boolean` | yes |
 
 ### `click`
 
@@ -956,7 +912,6 @@ Mouse click at logical coordinates within the app surface.
 | Field | Type | Required |
 |-------|------|----------|
 | `button` | `MouseButton` | yes |
-| `region` | `string?` | no |
 | `x` | `number` | yes |
 | `y` | `number` | yes |
 
@@ -1016,7 +971,6 @@ Response to a runtime CapabilityRequest.
 
 | Field | Type | Required |
 |-------|------|----------|
-| `capability` | `string` | yes |
 | `granted` | `boolean` | yes |
 | `request_id` | `string` | yes |
 
@@ -1028,24 +982,6 @@ Secret broker response. value is None when denied.
 |-------|------|----------|
 | `key` | `string` | yes |
 | `value` | `string?` | no |
-
-### `file_read_result`
-
-Native ProcessApp file read result.
-
-| Field | Type | Required |
-|-------|------|----------|
-| `content` | `array?` | no |
-| `error` | `string?` | no |
-
-### `file_list_result`
-
-Native ProcessApp directory listing result.
-
-| Field | Type | Required |
-|-------|------|----------|
-| `entries` | `array?` | no |
-| `error` | `string?` | no |
 
 ### `run_update`
 
@@ -1226,6 +1162,34 @@ Response to a `ControlCommand::MeasureTextWrapped` request. `height` is the pixe
 |-------|------|----------|
 | `height` | `number` | yes |
 | `request_id` | `string` | yes |
+
+### `text_submitted`
+
+User pressed Enter inside a `DrawCommand::TextInput` field.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `id` | `string` | yes |
+| `value` | `string` | yes |
+
+### `text_changed`
+
+User edited a `DrawCommand::TextInput` field.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `id` | `string` | yes |
+| `value` | `string` | yes |
+
+### `text_input_key`
+
+User pressed a control key while focused in a `DrawCommand::TextInput`.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `id` | `string` | yes |
+| `key` | `string` | yes |
+| `modifiers` | `Modifiers` | yes |
 
 ### `paste`
 
@@ -1570,7 +1534,6 @@ Fill a rectangle.
 | `glow_radius` | `number` | no |
 | `gradient` | `variant` | no |
 | `h` | `number` | yes |
-| `hit_region` | `string?` | no |
 | `radius` | `number` | no |
 | `stroke` | `string?` | no |
 | `stroke_width` | `number` | no |
@@ -1588,7 +1551,6 @@ Draw text at a position.
 | `bold` | `boolean` | no |
 | `color` | `string` | yes |
 | `elide` | `boolean` | yes |
-| `hit_region` | `string?` | no |
 | `max_lines` | `integer?` | no |
 | `max_width` | `number?` | no |
 | `monospace` | `boolean` | no |
@@ -1803,6 +1765,21 @@ Render an amplitude meter reading from a binary pipe.
 | `pipe_id` | `string` | yes |
 | `rect` | `Rect` | yes |
 
+### `text_input`
+
+Text input field (host-owned buffer, submit-only).
+
+| Field | Type | Required |
+|-------|------|----------|
+| `h` | `number` | no |
+| `id` | `string` | yes |
+| `multiline` | `boolean` | no |
+| `placeholder` | `string` | yes |
+| `value` | `string?` | no |
+| `w` | `number` | yes |
+| `x` | `number` | yes |
+| `y` | `number` | yes |
+
 ### `begin_scroll`
 
 Begin a host-managed vertical scroll region.
@@ -1865,7 +1842,6 @@ SDK ready handshake. Sent once by the app after receiving Init. Host captures sd
 | Field | Type | Required |
 |-------|------|----------|
 | `features_used` | `string[]` | no |
-| `protocol_version` | `string` | no |
 | `sdk` | `string` | no |
 
 ### `frame_done`
@@ -1956,11 +1932,3 @@ Override the manifest-declared minimum size at runtime. Stored by the host and u
 Request the host to close this app's pane gracefully. The host closes the pane on the next frame via the wants_close ...
 
 *No additional fields.*
-
-### `set_title`
-
-Set the display name (tab title) of this app's own pane. Emitted by the SDK v3 runtime when the app calls `emit.set_t...
-
-| Field | Type | Required |
-|-------|------|----------|
-| `title` | `string` | yes |

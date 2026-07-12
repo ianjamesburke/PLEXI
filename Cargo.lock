@@ -3910,6 +3910,7 @@ name = "plexi"
 version = "0.1.17"
 dependencies = [
  "base64",
+ "bytes",
  "chrono",
  "clap",
  "clap_complete",
@@ -3954,6 +3955,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tiny-skia",
+ "tokio",
  "toml 0.8.23",
  "toml_edit 0.22.27",
  "ureq",

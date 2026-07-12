@@ -4,105 +4,33 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 from urllib.parse import quote
 
 from plexi_sdk import log, state
-from plexi_sdk.effects import HttpFetch, OpenUrl, RequestCapability, SetState, SetStatus, SetTitle
-from plexi_sdk.events import (
-    CapabilityDenied,
-    CapabilityGranted,
-    HttpResponse,
-    KeyEvent,
-    ListActivate,
-    ListSelect,
-    UiAction,
-    UiValueChange,
-)
+from plexi_sdk.effects import HttpFetch, SetState, SetStatus, SetTitle
+from plexi_sdk.events import HttpResponse, KeyEvent, UiValueChange
 from plexi_sdk.ui import (
     AppBar,
     Column,
-    Component,
     FooterKeys,
-    LeadingBadge,
-    ListRow,
-    Markdown,
-    RowChip,
     Scrollable,
+    SelectList,
+    Spacer,
     Text,
-    TextEdit,
+    TextInput,
 )
 
 API = "https://api.github.com"
 ISSUE_LIST_LIMIT = "500"
 SORT_MODES = ("created_desc", "created_asc", "number_desc", "number_asc")
 SORT_LABELS = {
-    "created_desc": "created desc",
-    "created_asc": "created asc",
-    "number_desc": "number desc",
-    "number_asc": "number asc",
+    "created_desc": "created ↓",
+    "created_asc": "created ↑",
+    "number_desc": "number ↓",
+    "number_asc": "number ↑",
 }
 PRIORITY_PREFIXES = ("p0", "p1", "p2", "p3", "p4", "bug", "enhancement", "feat", "fix")
 MAX_VISIBLE_CHIPS = 3
-COLOR_ACCENT = "#89b4fa"
-COLOR_DANGER = "#f38ba8"
-COLOR_WARNING = "#f9e2af"
-COLOR_SUCCESS = "#a6e3a1"
-COLOR_MUTED = "#6c7086"
-
-
-class HostListView(Component):
-    def __init__(self, list_id: str, rows: list[dict], selected: int) -> None:
-        self.list_id = list_id
-        self.rows = rows
-        self.selected = selected
-
-    def is_grow(self) -> bool:
-        return True
-
-    def measure(self, avail_w: float) -> float:
-        return 0.0
-
-    def to_node(self) -> dict:
-        return {
-            "type": "raw",
-            "command": {
-                "type": "list_view",
-                "id": self.list_id,
-                "items": self.rows,
-                "selected": self.selected,
-                "loading": False,
-                "error": None,
-            },
-        }
-
-def _detect_repo() -> str:
-    try:
-        import plexi_sdk
-        workspace_root = plexi_sdk._workspace_root
-        if not workspace_root:
-            return ""
-        result = subprocess.run(
-            ["git", "-C", workspace_root, "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            return ""
-        url = result.stdout.strip()
-        if url.startswith("git@github.com:"):
-            path = url[len("git@github.com:"):]
-        elif "github.com/" in url:
-            path = url.split("github.com/", 1)[1]
-        else:
-            return ""
-        if path.endswith(".git"):
-            path = path[:-4]
-        return path.strip("/")
-    except Exception:
-        return ""
-
 
 DEFAULT_STATE = {
     "repo": "",
@@ -112,100 +40,64 @@ DEFAULT_STATE = {
     "pending": "",
     "error": "",
     "filter": "",
-    "filter_active": False,
-    "filter_labels": [],
     "sort_mode": "created_desc",
     "view": "list",
     "detail": None,
-    "picker_query": "",
-    "picker_selected": 0,
-    "picker_staged": [],
 }
+
+
+class RowChip:
+    def __init__(self, label: str, color: str = "neutral") -> None:
+        self.label = label
+        self.color = color
 
 
 def init(size, args) -> list:
     repo = args[0] if args else state.get("repo", "")
-    if not repo:
-        repo = _detect_repo()
     data = _state()
     if repo:
         data["repo"] = repo
     effects: list = [SetTitle("GitHub Issues")]
     if data["repo"]:
+        data["loading"] = True
+        data["pending"] = "list"
         data["error"] = ""
         effects.append(SetState(data))
-        effects.append(RequestCapability("net.http"))
-        effects.append(SetStatus("Requesting network access"))
+        effects.append(_fetch_list(data["repo"]))
+        effects.append(SetStatus("Loading issues"))
         log.info(f"github-issues: SDK v3 initialized repo={data['repo']}")
     else:
-        effects.extend([SetState(data), SetStatus("No repo detected — set context root to a git repo")])
+        effects.extend([SetState(data), SetStatus("Pass owner/repo as launch arg")])
         log.info("github-issues: initialized without repo arg")
     return effects
 
 
 def update(event) -> list:
     data = _state()
-    if isinstance(event, CapabilityGranted) and event.name == "net.http":
-        if data["repo"]:
-            data["loading"] = True
-            data["pending"] = "list"
-            data["error"] = ""
-            return [SetState(data), SetStatus("Loading issues"), _fetch_list(data["repo"])]
-        return []
-    if isinstance(event, CapabilityDenied) and event.name == "net.http":
-        data["error"] = "Network access denied"
-        return [SetState(data), SetStatus("Network access denied")]
     if isinstance(event, HttpResponse):
         data.update(_handle_http(data, event))
         return [SetState(data), SetStatus(_status(data))]
 
     if isinstance(event, UiValueChange) and event.handler_id == "issues-filter":
         data["filter"] = event.value
-        data["filter_active"] = True
         data["selected"] = 0
         return [SetState(data), SetStatus(_status(data))]
-    if isinstance(event, UiAction) and event.handler_id == "issues-filter":
-        data["filter_active"] = False
-        data["selected"] = _clamp(data["selected"], len(_visible_issues(data)))
-        return [SetState(data), SetStatus(_status(data))]
-    if isinstance(event, UiValueChange) and event.handler_id == "issues-picker-query":
-        data["picker_query"] = event.value
-        data["picker_selected"] = 0
-        return [SetState(data), SetStatus(_status(data))]
-    if isinstance(event, ListSelect):
-        return _handle_list_select(data, event)
-    if isinstance(event, ListActivate):
-        return _handle_list_activate(data, event)
 
     if not isinstance(event, KeyEvent) or not event.pressed:
         return []
 
     key = event.key
-    if data["view"] == "picker":
-        return _handle_picker_key(data, key)
-
     if data["view"] == "detail":
         if key == "escape":
             data["view"] = "list"
             data["detail"] = None
             return [SetState(data), SetStatus(_status(data))]
-        if key == "o" and data.get("detail"):
-            url = _issue_url(data, data["detail"])
-            if url:
-                return [SetState(data), SetStatus(f"Opening #{data['detail']['number']}"), OpenUrl(url)]
         return []
 
-    if key == "/":
-        data["filter_active"] = not data.get("filter_active")
-        return [SetState(data), SetStatus("Filtering issues")]
-    if key == "escape" and data.get("filter_active"):
-        data["filter_active"] = False
-        return [SetState(data), SetStatus(_status(data))]
-
     visible = _visible_issues(data)
-    if key in ("down", "j"):
+    if key in ("down", "j", "ArrowDown"):
         data["selected"] = _clamp(data["selected"] + 1, len(visible))
-    elif key in ("up", "k"):
+    elif key in ("up", "k", "ArrowUp"):
         data["selected"] = _clamp(data["selected"] - 1, len(visible))
     elif key in ("return", "enter") and visible:
         issue = visible[data["selected"]]
@@ -230,29 +122,9 @@ def update(event) -> list:
     elif key == "s":
         data["sort_mode"] = _next_sort_mode(data["sort_mode"])
         data["selected"] = _clamp(data["selected"], len(_visible_issues(data)))
-    elif key == "f":
-        _toggle_filter_from_selection(data)
-    elif key == "l":
-        data["view"] = "picker"
-        data["picker_query"] = ""
-        data["picker_selected"] = 0
-        data["picker_staged"] = list(data["filter_labels"])
     elif key == "c":
         data["filter"] = ""
-        data["filter_active"] = False
-        data["filter_labels"] = []
         data["selected"] = 0
-    elif key == "o" and visible:
-        issue = visible[data["selected"]]
-        url = _issue_url(data, issue)
-        if not url:
-            return []
-        return [SetState(data), SetStatus(f"Opening #{issue['number']}"), OpenUrl(url)]
-    elif key == "n":
-        url = _new_issue_url(data)
-        if not url:
-            return []
-        return [SetState(data), SetStatus("Opening new issue"), OpenUrl(url)]
     else:
         return []
     return [SetState(data), SetStatus(_status(data))]
@@ -263,20 +135,15 @@ def view():
     if not data["repo"]:
         return Column(
             [
-                AppBar("GitHub Issues", "no repo detected"),
-                Text(
-                    "Set a context root to a GitHub repo, or launch with:\n"
-                    "  plexi app open github-issues owner/repo",
-                    size=12.0,
-                ),
+                AppBar("GitHub Issues", "missing repo"),
+                Text("Launch with owner/repo, for example plexiapp/plexi.", size=12.0),
+                Spacer(grow=True),
             ],
             grow=True,
             padding=0,
         )
     if data["view"] == "detail":
         return _detail_view(data)
-    if data["view"] == "picker":
-        return _picker_view(data)
     return _list_view(data)
 
 
@@ -287,15 +154,6 @@ def _state() -> dict:
     data["issues"] = [dict(issue) for issue in data.get("issues") or []]
     data["selected"] = max(0, int(data.get("selected") or 0))
     data["filter"] = str(data.get("filter") or "")
-    data["filter_active"] = bool(data.get("filter_active", False))
-    data["filter_labels"] = [
-        str(label) for label in data.get("filter_labels") or [] if str(label)
-    ]
-    data["picker_query"] = str(data.get("picker_query") or "")
-    data["picker_selected"] = max(0, int(data.get("picker_selected") or 0))
-    data["picker_staged"] = [
-        str(label) for label in data.get("picker_staged") or [] if str(label)
-    ]
     data["sort_mode"] = (
         data.get("sort_mode") if data.get("sort_mode") in SORT_MODES else "created_desc"
     )
@@ -316,29 +174,7 @@ def _fetch_detail(repo: str, number: int) -> HttpFetch:
 
 
 def _headers() -> dict:
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": "Plexi"}
-    token = _github_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
-def _github_token() -> str:
-    env_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if env_token:
-        return env_token
-    try:
-        result = subprocess.run(
-            ["gh", "auth", "token"],
-            capture_output=True,
-            text=True,
-            timeout=2.0,
-        )
-    except Exception:
-        return ""
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
+    return {"Accept": "application/vnd.github+json", "User-Agent": "Plexi"}
 
 
 def _handle_http(data: dict, event: HttpResponse) -> dict:
@@ -405,36 +241,34 @@ def _normalize_issue(issue: dict) -> dict:
 
 def _list_view(data: dict):
     visible = _visible_issues(data)
-    rows = _issue_rows(data, visible)
+    rows = [
+        {
+            "name": f"#{issue['number']} {issue['title']}",
+            "description": ", ".join(_issue_labels(issue)),
+        }
+        for issue in visible
+    ]
     body = (
-        _raw_list_view("issues", rows, data["selected"])
+        SelectList(rows, selected_idx=data["selected"])
         if rows
         else Text(_empty_text(data), size=12.0)
     )
-    filter_controls = []
-    if data.get("filter_active"):
-        filter_controls.append(
-            TextEdit(
-                "issues-filter",
-                value=data["filter"],
-                placeholder="filter labels or title",
-            )
-        )
     return Column(
         [
             AppBar("GitHub Issues", _list_subtitle(data)),
-            *filter_controls,
+            TextInput(
+                "issues-filter",
+                value=data["filter"],
+                placeholder="filter labels or title",
+                on_change="issues-filter",
+            ),
             body,
+            Spacer(grow=True),
             FooterKeys(
                 [
                     ("j/k", "select"),
-                    ("enter", "apply" if data.get("filter_active") else "detail"),
-                    ("/", "filter"),
+                    ("enter", "detail"),
                     ("s", "sort"),
-                    ("f", "filter"),
-                    ("l", "labels"),
-                    ("o", "browser"),
-                    ("n", "new"),
                     ("r", "refresh"),
                     ("c", "clear"),
                 ]
@@ -459,123 +293,31 @@ def _detail_view(data: dict):
             ", ".join(a["login"] for a in detail.get("assignees", [])) or "unassigned"
         )
         body = Scrollable(
-            Markdown(
-                f"## #{detail['number']} {detail['title']}\n\n"
-                f"**state:** {detail['state']}  \n"
-                f"**labels:** {labels}  \n"
-                f"**assignees:** {assignees}\n\n"
-                f"{detail.get('body') or '_No body._'}",
+            Text(
+                f"#{detail['number']} {detail['title']}\n"
+                f"state: {detail['state']}\nlabels: {labels}\nassignees: {assignees}\n\n"
+                f"{detail.get('body') or 'No body.'}",
+                size=12.0,
             )
         )
     return Column(
         [
-            AppBar("Issue Detail", f"#{detail['number']}" if detail else ""),
+            AppBar("Issue Detail"),
             body,
-            FooterKeys([("o", "browser"), ("esc", "back")]),
+            Spacer(grow=True),
+            FooterKeys([("esc", "back")]),
         ],
         grow=True,
         padding=0,
     )
-
-
-def _picker_view(data: dict):
-    labels = _picker_filtered_labels(data)
-    data["picker_selected"] = _clamp(data["picker_selected"], len(labels))
-    staged = set(data["picker_staged"])
-    rows = [
-        ListRow(
-            id=f"label-{idx}",
-            leading=LeadingBadge(
-                "x" if label in staged else " ",
-                color=_label_color(label) if label in staged else COLOR_MUTED,
-            ),
-            primary=label,
-            chips=[RowChip(label, _label_color(label))],
-        ).to_dict()
-        for idx, label in enumerate(labels)
-    ]
-    body = (
-        _raw_list_view("label-picker", rows, data["picker_selected"])
-        if rows
-        else Text("No matching labels.", size=12.0)
-    )
-    return Column(
-        [
-            AppBar("Labels", _picker_subtitle(data)),
-            TextEdit(
-                "issues-picker-query",
-                value=data["picker_query"],
-                placeholder="filter labels",
-            ),
-            body,
-            FooterKeys(
-                [
-                    ("space", "toggle"),
-                    ("enter", "apply"),
-                    ("esc", "cancel"),
-                ]
-            ),
-        ],
-        grow=True,
-        padding=0,
-    )
-
-
-def _handle_list_select(data: dict, event: ListSelect) -> list:
-    if event.id == "issues":
-        data["selected"] = _clamp(event.index, len(_visible_issues(data)))
-    elif event.id == "label-picker":
-        data["picker_selected"] = _clamp(event.index, len(_picker_filtered_labels(data)))
-    else:
-        return []
-    return [SetState(data), SetStatus(_status(data))]
-
-
-def _handle_list_activate(data: dict, event: ListActivate) -> list:
-    if event.id == "issues":
-        visible = _visible_issues(data)
-        if not visible:
-            return []
-        data["selected"] = _clamp(event.index, len(visible))
-        issue = visible[data["selected"]]
-        data["view"] = "detail"
-        data["detail"] = None
-        data["loading"] = True
-        data["pending"] = f"detail:{issue['number']}"
-        return [
-            SetState(data),
-            SetStatus(f"Loading #{issue['number']}"),
-            _fetch_detail(data["repo"], issue["number"]),
-        ]
-    if event.id == "label-picker":
-        data["picker_selected"] = _clamp(event.index, len(_picker_filtered_labels(data)))
-        return _handle_picker_key(data, "enter")
-    return []
-
-
-def _issue_rows(data: dict, visible: list[dict]) -> list[dict]:
-    active_filters = set(data["filter_labels"])
-    return [
-        ListRow(
-            id=f"issue-{issue['number']}",
-            leading=LeadingBadge(f"#{issue['number']}", color=COLOR_ACCENT),
-            primary=issue["title"],
-            secondary=_issue_secondary(issue),
-            chips=_select_visible_chips(issue, active_filters),
-            trailing=(issue.get("createdAt") or "")[:10],
-        ).to_dict()
-        for issue in visible
-    ]
-
-
-def _raw_list_view(list_id: str, rows: list[dict], selected: int) -> dict:
-    return HostListView(list_id, rows, selected)
 
 
 def _visible_issues(data: dict) -> list[dict]:
-    labels = set(data.get("filter_labels") or [])
-    if data.get("filter") and not _is_text_filter(data["filter"]):
-        labels.add(data["filter"])
+    labels = (
+        {data["filter"]}
+        if data.get("filter") and not _is_text_filter(data["filter"])
+        else set()
+    )
     visible = _filter_and_sort_issues(data["issues"], labels, data["sort_mode"])
     query = data["filter"].lower().strip()
     if query and _is_text_filter(query):
@@ -593,11 +335,7 @@ def _is_text_filter(value: str) -> bool:
 
 
 def _list_subtitle(data: dict) -> str:
-    parts = [f"{len(_visible_issues(data))} open"]
-    if data.get("filter_labels"):
-        parts.append("label:" + "+".join(sorted(data["filter_labels"])))
-    parts.append(SORT_LABELS[data["sort_mode"]])
-    return " · ".join(parts)
+    return f"{len(_visible_issues(data))} open · {SORT_LABELS[data['sort_mode']]}"
 
 
 def _empty_text(data: dict) -> str:
@@ -641,17 +379,6 @@ def _fuzzy_match(query: str, label: str) -> bool:
     return query.lower() in label.lower()
 
 
-def _label_color(name: str) -> str:
-    lowered = name.lower()
-    if any(token in lowered for token in ("bug", "error", "p0", "p1")):
-        return COLOR_DANGER
-    if any(token in lowered for token in ("p2", "enhancement", "feat")):
-        return COLOR_WARNING
-    if any(token in lowered for token in ("ready", "done", "p3", "p4")):
-        return COLOR_SUCCESS
-    return COLOR_ACCENT
-
-
 def _is_priority_label(name: str) -> bool:
     return name.lower().startswith(PRIORITY_PREFIXES)
 
@@ -670,121 +397,11 @@ def _select_visible_chips(issue: dict, active_filters: set[str]) -> list[RowChip
         if label not in active_filters and not _is_priority_label(label)
     ]
     visible = (active + priority + rest)[:MAX_VISIBLE_CHIPS]
-    chips = [RowChip(label, _label_color(label)) for label in visible]
+    chips = [RowChip(label) for label in visible]
     hidden = len(all_labels) - len(visible)
     if hidden > 0:
-        chips.append(RowChip(f"+{hidden}", COLOR_MUTED))
+        chips.append(RowChip(f"+{hidden}"))
     return chips
-
-
-def _issue_secondary(issue: dict) -> str:
-    assignees = ", ".join(a["login"] for a in issue.get("assignees", []))
-    labels = len(_issue_labels(issue))
-    label_text = f"{labels} label" if labels == 1 else f"{labels} labels"
-    return f"{assignees} · {label_text}" if assignees else label_text
-
-
-def _issue_description(issue: dict, active_filters: set[str]) -> str:
-    chips = _select_visible_chips(issue, active_filters)
-    labels = "  ".join(chip.label for chip in chips)
-    assignees = ", ".join(a["login"] for a in issue.get("assignees", [])) or ""
-    if labels and assignees:
-        return f"{labels} · {assignees}"
-    return labels or assignees or "no labels"
-
-
-def _toggle_filter_from_selection(data: dict) -> None:
-    issue = _selected_issue(data)
-    if not issue:
-        return
-    labels = _issue_labels(issue)
-    if not labels:
-        return
-    keep_number = issue.get("number")
-    current = data["filter_labels"][0] if len(data.get("filter_labels") or []) == 1 else None
-    if current in labels:
-        idx = labels.index(current)
-        data["filter_labels"] = [] if idx == len(labels) - 1 else [labels[idx + 1]]
-    else:
-        data["filter_labels"] = [labels[0]]
-    _select_issue_number(data, keep_number)
-
-
-def _selected_issue(data: dict) -> dict | None:
-    visible = _visible_issues(data)
-    if not visible:
-        return None
-    return visible[_clamp(data["selected"], len(visible))]
-
-
-def _select_issue_number(data: dict, number: int | None) -> None:
-    visible = _visible_issues(data)
-    if number is not None:
-        for idx, issue in enumerate(visible):
-            if issue.get("number") == number:
-                data["selected"] = idx
-                return
-    data["selected"] = _clamp(data["selected"], len(visible))
-
-
-def _issue_url(data: dict, issue: dict) -> str:
-    existing = str(issue.get("html_url") or "")
-    if existing:
-        return existing
-    repo = str(data.get("repo") or "").strip("/")
-    number = int(issue.get("number") or 0)
-    if not repo or number <= 0:
-        return ""
-    return f"https://github.com/{quote(repo, safe='/')}/issues/{number}"
-
-
-def _new_issue_url(data: dict) -> str:
-    repo = str(data.get("repo") or "").strip("/")
-    if not repo:
-        return ""
-    return f"https://github.com/{quote(repo, safe='/')}/issues/new"
-
-
-def _picker_filtered_labels(data: dict) -> list[str]:
-    labels = _collect_unique_labels(data["issues"])
-    query = data["picker_query"].strip()
-    if not query:
-        return labels
-    return [label for label in labels if _fuzzy_match(query, label)]
-
-
-def _picker_subtitle(data: dict) -> str:
-    selected = len(data.get("picker_staged") or [])
-    if selected:
-        return f"{selected} selected"
-    return "type to filter"
-
-
-def _handle_picker_key(data: dict, key: str) -> list:
-    labels = _picker_filtered_labels(data)
-    if key in ("down", "j"):
-        data["picker_selected"] = _clamp(data["picker_selected"] + 1, len(labels))
-    elif key in ("up", "k"):
-        data["picker_selected"] = _clamp(data["picker_selected"] - 1, len(labels))
-    elif key == "space":
-        if labels:
-            label = labels[_clamp(data["picker_selected"], len(labels))]
-            staged = set(data["picker_staged"])
-            if label in staged:
-                staged.remove(label)
-            else:
-                staged.add(label)
-            data["picker_staged"] = sorted(staged, key=str.lower)
-    elif key in ("return", "enter"):
-        data["filter_labels"] = list(data["picker_staged"])
-        data["selected"] = 0
-        data["view"] = "list"
-    elif key == "escape":
-        data["view"] = "list"
-        data["picker_staged"] = list(data["filter_labels"])
-    else:
-        return []
-    return [SetState(data), SetStatus(_status(data))]
 
 
 def _next_sort_mode(mode: str) -> str:

@@ -123,7 +123,7 @@ impl AppRenderSession {
     ) -> Result<Self, String> {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-        // Mirror the env setup from ProcessApp::launch so Python apps can import
+        // Mirror the env setup from WASM app runtime::launch so Python apps can import
         // plexi_sdk and run through the SDK v3 native adapter.
         const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
         let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
@@ -436,9 +436,11 @@ fn render_commands_to_png(
     let colors = render_colors();
     let mut cm_cache = egui_commonmark::CommonMarkCache::default();
     let peaks: HashMap<String, f32> = HashMap::new();
-    let mut img_cache = crate::process_app::image_cache::ImageCache::new();
+    let mut img_cache = crate::protocol_render::image_cache::ImageCache::new();
 
     let full_output = ctx.run(raw_input, |ctx| {
+        let _ = img_cache.poll(ctx);
+        let _ = img_cache.has_pending();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
@@ -446,7 +448,7 @@ fn render_commands_to_png(
                 let mut lv_last_sel = std::collections::HashMap::new();
                 let mut te_buffers = std::collections::HashMap::new();
                 let mut te_focus_ctx = crate::render::components::TextEditFocusCtx::new();
-                crate::process_app::render::render_draw_commands(
+                crate::protocol_render::render::render_draw_commands(
                     ui,
                     rect,
                     commands,

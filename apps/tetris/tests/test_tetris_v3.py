@@ -11,8 +11,8 @@ sys.path.insert(
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from plexi_sdk import StateSnapshot, _v3_state  # noqa: E402
-from plexi_sdk.effects import SetState  # noqa: E402
-from plexi_sdk.events import KeyEvent, TimerFired  # noqa: E402
+from plexi_sdk.effects import SetSchedulerMode, SetState  # noqa: E402
+from plexi_sdk.events import KeyEvent, RenderFrame  # noqa: E402
 
 import tetris  # noqa: E402
 
@@ -42,30 +42,25 @@ def test_key_moves_piece_and_view_has_canvas() -> None:
     assert any(cmd["type"] == "rect" and "w" in cmd and "h" in cmd for cmd in canvas["commands"])
 
 
-def test_timer_drops_piece_after_threshold() -> None:
+def test_init_uses_the_continuous_ten_hz_clock() -> None:
+    _with_state({})
+
+    effects = tetris.init((360.0, 440.0), [])
+
+    assert any(
+        isinstance(effect, SetSchedulerMode)
+        and effect.mode == "continuous"
+        and effect.fps == 10
+        for effect in effects
+    )
+
+
+def test_render_frame_drops_piece_after_threshold() -> None:
     data = tetris._initial()
     data["fall_ticks"] = tetris._drop_ticks(data) - 1
     _with_state(data)
 
-    dropped = _state_effect(tetris.update(TimerFired(tetris.TIMER_ID)))
+    dropped = _state_effect(tetris.update(RenderFrame(frame_id=1, elapsed=0.1)))
 
     assert dropped["current"]["row"] == 1
     assert dropped["fall_ticks"] == 0
-
-
-def test_hard_drop_is_one_shot_until_key_release() -> None:
-    data = tetris._initial()
-    data["current"] = {"key": "O", "rot": 0, "row": 0, "col": 4}
-    data["next"] = "I"
-    _with_state(data)
-
-    after_drop = _state_effect(tetris.update(KeyEvent("space", pressed=True)))
-    _with_state(after_drop)
-    repeated = tetris.update(KeyEvent("space", pressed=True))
-
-    assert sum(1 for row in after_drop["board"] for cell in row if cell) == 4
-    assert after_drop["hard_drop_held"] is True
-    assert repeated == []
-
-    released = _state_effect(tetris.update(KeyEvent("space", pressed=False)))
-    assert released["hard_drop_held"] is False

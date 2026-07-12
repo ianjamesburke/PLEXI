@@ -1,46 +1,86 @@
 #!/usr/bin/env python3
-"""Todo - persisted SDK v3 app."""
+"""Todo — SDK v3 persisted list."""
 
 from __future__ import annotations
 
-from plexi_sdk import log, state
+from plexi_sdk import state
 from plexi_sdk.effects import PersistState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction, UiValueChange
-from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, SelectList, TextEdit
+from plexi_sdk.ui import AppBar, Button, Column, SelectList, Spacer, Text, TextInput
 
-MODE_LIST = "list"
-MODE_ADD = "add"
-
-DRAFT_ID = "todo-draft"
-
-DEFAULT_STATE = {
+DEFAULT_TODO_STATE = {
     "items": [],
     "selected": 0,
-    "mode": MODE_LIST,
+    "adding": False,
+    "cwd": "",
     "draft": "",
 }
 
 
+def _app_state() -> dict:
+    data = dict(DEFAULT_TODO_STATE)
+    for key in data:
+        data[key] = state.get(key, data[key])
+    data["items"] = list(data.get("items") or [])
+    data["selected"] = _clamp_selected(data["items"], int(data.get("selected") or 0))
+    data["adding"] = bool(data.get("adding"))
+    data["draft"] = str(data.get("draft") or "")
+    data["cwd"] = str(data.get("cwd") or "")
+    return data
+
+
+def _set(data: dict) -> list[PersistState]:
+    data["selected"] = _clamp_selected(data["items"], int(data.get("selected") or 0))
+    return [PersistState(data)]
+
+
+def _clamp_selected(items: list, selected: int) -> int:
+    if not items:
+        return 0
+    return max(0, min(selected, len(items) - 1))
+
+
+def _add_item(data: dict) -> list[PersistState]:
+    text = data["draft"].strip()
+    if text:
+        data["items"].append({"text": text, "done": False})
+        data["selected"] = len(data["items"]) - 1
+    data["adding"] = False
+    data["draft"] = ""
+    return _set(data)
+
+
 def init(size, args) -> list:
-    data = _read_state()
-    log.info(f"todo: initialized items={len(data['items'])} mode={data['mode']}")
-    return [SetTitle("Todo"), SetStatus(_status(data)), PersistState(data)]
+    data = _app_state()
+    effects: list = [SetTitle("Todo"), SetStatus(f"{len(data['items'])} todo items")]
+    missing = {
+        key: value
+        for key, value in DEFAULT_TODO_STATE.items()
+        if state.get(key, None) is None
+    }
+    if missing:
+        effects.append(PersistState(missing))
+    return effects
 
 
 def update(event) -> list:
-    data = _read_state()
+    data = _app_state()
 
-    if isinstance(event, UiValueChange) and event.handler_id == DRAFT_ID:
+    if isinstance(event, UiValueChange) and event.handler_id == "todo-add:change":
         data["draft"] = event.value
-        return _persist(data, "draft")
+        return _set(data)
 
     if isinstance(event, UiAction):
-        if event.handler_id == "todo-new":
-            return _start_add(data)
-        if event.handler_id in ("todo-add", DRAFT_ID):
+        if event.handler_id == "todo-add:start":
+            data["adding"] = True
+            data["draft"] = ""
+            return _set(data)
+        if event.handler_id == "todo-add:submit":
             return _add_item(data)
-        if event.handler_id == "todo-cancel":
-            return _cancel_add(data)
+        if event.handler_id == "todo-add:cancel":
+            data["adding"] = False
+            data["draft"] = ""
+            return _set(data)
         if event.handler_id == "todo-toggle":
             return _toggle_selected(data)
         if event.handler_id == "todo-delete":
@@ -49,189 +89,83 @@ def update(event) -> list:
     if not isinstance(event, KeyEvent) or not event.pressed:
         return []
 
-    key = _key(event.key)
-    if data["mode"] == MODE_ADD:
+    key = event.key
+    if data["adding"]:
         if key == "escape":
-            return _cancel_add(data)
-        if key == "enter":
-            return _add_item(data)
+            data["adding"] = False
+            data["draft"] = ""
+            return _set(data)
         return []
 
-    if key in ("j", "down"):
-        return _move_selection(data, 1)
-    if key in ("k", "up"):
-        return _move_selection(data, -1)
-    if key in ("n", "a"):
-        return _start_add(data)
-    if key in ("space", "enter"):
+    if key in ("up", "k", "ArrowUp"):
+        data["selected"] = _clamp_selected(data["items"], data["selected"] - 1)
+        return _set(data)
+    if key in ("down", "j", "ArrowDown"):
+        data["selected"] = _clamp_selected(data["items"], data["selected"] + 1)
+        return _set(data)
+    if key == "space":
         return _toggle_selected(data)
-    if key in ("d", "x", "backspace", "delete"):
+    if key == "a":
+        data["adding"] = True
+        data["draft"] = ""
+        return _set(data)
+    if key == "d":
         return _delete_selected(data)
     return []
 
 
-def view():
-    data = _read_state()
-    if data["mode"] == MODE_ADD:
-        return Column(
-            [
-                AppBar("Todo", "New item"),
-                TextEdit(DRAFT_ID, value=data["draft"], placeholder="What needs doing?"),
-                ActionBar(
-                    [
-                        Button(
-                            "Add",
-                            "todo-add",
-                            style="primary",
-                            disabled=not data["draft"].strip(),
-                        ),
-                        Button("Cancel", "todo-cancel", style="ghost"),
-                    ]
-                ),
-                FooterKeys([("enter", "add"), ("esc", "cancel")]),
-            ],
-            grow=True,
-            padding=0,
-        )
-
-    rows = _rows(data["items"])
-    return Column(
-        [
-            AppBar("Todo", _status(data)),
-            SelectList(rows, selected_idx=data["selected"]),
-            ActionBar(
-                [
-                    Button("New", "todo-new", style="primary"),
-                    Button("Toggle", "todo-toggle", disabled=not rows),
-                    Button("Delete", "todo-delete", style="danger", disabled=not rows),
-                ]
-            ),
-            FooterKeys(
-                [
-                    ("j/k", "select"),
-                    (["space", "enter"], "toggle"),
-                    ("n", "new"),
-                    ("d", "delete"),
-                ]
-            ),
-        ],
-        grow=True,
-        padding=0,
-    )
-
-
-def _read_state() -> dict:
-    data = dict(DEFAULT_STATE)
-    for key, fallback in DEFAULT_STATE.items():
-        data[key] = state.get(key, fallback)
-
-    items = [_normalize_item(item) for item in data.get("items") or []]
-    data["items"] = [item for item in items if item["text"]]
-    data["selected"] = _clamp_index(data.get("selected"), len(data["items"]))
-    data["mode"] = MODE_ADD if data.get("mode") == MODE_ADD else MODE_LIST
-    data["draft"] = str(data.get("draft") or "")
-    return data
-
-
-def _normalize_item(item) -> dict:
-    if isinstance(item, dict):
-        text = str(item.get("text") or "").strip()
-        done = bool(item.get("done"))
-    else:
-        text = str(item).strip()
-        done = False
-    return {"text": text, "done": done}
-
-
-def _rows(items: list[dict]) -> list[dict]:
-    return [
-        {
-            "name": item["text"],
-            "description": "done" if item["done"] else "open",
-            "leading": "[x]" if item["done"] else "[ ]",
-        }
-        for item in items
-    ]
-
-
-def _start_add(data: dict) -> list:
-    data["mode"] = MODE_ADD
-    data["draft"] = ""
-    return _persist(data, "start_add")
-
-
-def _cancel_add(data: dict) -> list:
-    data["mode"] = MODE_LIST
-    data["draft"] = ""
-    return _persist(data, "cancel_add")
-
-
-def _add_item(data: dict) -> list:
-    text = data["draft"].strip()
-    if text:
-        data["items"].append({"text": text, "done": False})
-        data["selected"] = len(data["items"]) - 1
-    data["mode"] = MODE_LIST
-    data["draft"] = ""
-    return _persist(data, "add")
-
-
-def _move_selection(data: dict, delta: int) -> list:
+def _toggle_selected(data: dict) -> list:
     if not data["items"]:
         return []
-    data["selected"] = _clamp_index(data["selected"] + delta, len(data["items"]))
-    return _persist(data, "select")
-
-
-def _toggle_selected(data: dict) -> list:
-    selected = data["selected"]
-    if not data["items"] or selected >= len(data["items"]):
-        return []
-    item = dict(data["items"][selected])
-    item["done"] = not item["done"]
-    data["items"][selected] = item
-    return _persist(data, "toggle")
+    item = dict(data["items"][data["selected"]])
+    item["done"] = not bool(item.get("done"))
+    data["items"][data["selected"]] = item
+    return _set(data)
 
 
 def _delete_selected(data: dict) -> list:
-    selected = data["selected"]
-    if not data["items"] or selected >= len(data["items"]):
+    if not data["items"]:
         return []
-    del data["items"][selected]
-    data["selected"] = _clamp_index(selected, len(data["items"]))
-    return _persist(data, "delete")
+    data["items"].pop(data["selected"])
+    data["selected"] = _clamp_selected(data["items"], data["selected"])
+    return _set(data)
 
 
-def _persist(data: dict, action: str) -> list:
-    data["selected"] = _clamp_index(data["selected"], len(data["items"]))
-    log.info(
-        f"todo: {action} items={len(data['items'])} selected={data['selected']} mode={data['mode']}"
+def view():
+    data = _app_state()
+    if data["adding"]:
+        return Column([
+            AppBar("Todo", "Add item"),
+            TextInput(
+                "todo-add",
+                value=data["draft"],
+                placeholder="New item",
+                on_change="todo-add:change",
+                on_submit="todo-add:submit",
+            ),
+            Button("Add", "todo-add:submit", style="primary", disabled=not data["draft"].strip()),
+            Button("Cancel", "todo-add:cancel", style="ghost"),
+            Spacer(grow=True),
+            Text("Enter saves. Esc cancels.", size=11.0),
+        ], grow=True)
+
+    rows = [
+        {
+            "name": f"{'[x]' if item.get('done') else '[ ]'} {item.get('text', '')}",
+        }
+        for item in data["items"]
+    ]
+    list_area = (
+        SelectList(rows, selected_idx=data["selected"])
+        if rows
+        else Text("No items. Press 'a' to add.", size=12.0)
     )
-    return [PersistState(data), SetStatus(_status(data))]
-
-
-def _status(data: dict) -> str:
-    total = len(data["items"])
-    done = sum(1 for item in data["items"] if item["done"])
-    return f"{done}/{total} done"
-
-
-def _clamp_index(value, total: int) -> int:
-    if total <= 0:
-        return 0
-    try:
-        selected = int(value)
-    except (TypeError, ValueError):
-        selected = 0
-    return max(0, min(selected, total - 1))
-
-
-def _key(key: str) -> str:
-    normalized = str(key or "").lower()
-    return {
-        "arrowdown": "down",
-        "arrowup": "up",
-        "return": "enter",
-        "esc": "escape",
-        " ": "space",
-    }.get(normalized, normalized)
+    return Column([
+        AppBar("Todo", f"{len(rows)} items"),
+        list_area,
+        Spacer(grow=True),
+        Button("Add item", "todo-add:start", style="primary"),
+        Button("Toggle selected", "todo-toggle", disabled=not rows),
+        Button("Delete selected", "todo-delete", style="danger", disabled=not rows),
+        Text("Up/down select. Space toggles. a adds. d deletes.", size=11.0),
+    ], grow=True)

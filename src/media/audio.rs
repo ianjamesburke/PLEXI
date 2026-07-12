@@ -4,7 +4,7 @@
 //!
 //!   1. [`AudioDevice`] — thin host-facing trait. Methods return owned data
 //!      (`AudioDeviceInfo`) so the caller never holds a cpal handle. The trait
-//!      lives behind `Arc<dyn AudioDevice>` on each `ProcessApp` instance, the
+//!      lives behind `Arc<dyn AudioDevice>` on each `WASM app runtime` instance, the
 //!      same shape as `IqBroker` and `NetService`.
 //!
 //!   2. [`CoreAudioDevice`] — production impl. cpal-backed enumeration +
@@ -54,6 +54,7 @@ pub struct AudioDeviceInfo {
 /// nearest supported rate / channel count and report the actual values back
 /// via `AudioCaptureStarted`.
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub struct AudioCaptureRequest {
     /// `None` → use the host's default input device.
     pub device_id: Option<String>,
@@ -65,6 +66,7 @@ pub struct AudioCaptureRequest {
 /// values when interpreting the PCM frames on the pipe — the requested values
 /// are advisory.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub struct NegotiatedCaptureConfig {
     pub sample_rate: u32,
     pub channels: u16,
@@ -79,6 +81,7 @@ pub enum AudioError {
     #[error("no input devices found")]
     NoDevicesAvailable,
     #[error("device id '{0}' not found")]
+    #[cfg(test)]
     DeviceNotFound(String),
     /// Wraps cpal stream-build / play errors. macOS TCC denials surface here
     /// too — cpal returns a generic `BackendSpecific` error rather than a
@@ -94,10 +97,12 @@ pub enum AudioError {
 /// dropped). The trait stays object-safe; the closure does not allocate.
 ///
 /// Frames are interleaved f32 PCM. One frame = one sample per channel.
+#[cfg(test)]
 pub type FrameSink = Arc<dyn Fn(&[f32]) -> Result<(), ()> + Send + Sync + 'static>;
 
 /// Opaque handle returned from `start_capture`. Dropping the handle (or
 /// calling `stop_capture`) tears down the underlying stream.
+#[cfg(test)]
 pub struct CaptureSession {
     /// Cleanup runs on drop. The closure owns whatever the device impl needs
     /// to keep alive — for cpal that's the `Stream` itself, which stops on
@@ -108,6 +113,7 @@ pub struct CaptureSession {
     pub negotiated: NegotiatedCaptureConfig,
 }
 
+#[cfg(test)]
 impl std::fmt::Debug for CaptureSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CaptureSession")
@@ -119,6 +125,7 @@ impl std::fmt::Debug for CaptureSession {
 /// Internal: per-impl cleanup hook. cpal `Stream` is `!Send`, so we erase it
 /// behind this trait and let the concrete `Drop` impl run on whichever
 /// thread currently holds the `CaptureSession`.
+#[cfg(test)]
 trait AudioCaptureGuard: Send {}
 
 // ─── Playback types (#341) ───────────────────────────────────────────────────
@@ -337,7 +344,11 @@ fn pick_output_config(
         let min = range.min_sample_rate();
         let max = range.max_sample_rate();
         let clamped = rate.clamp(min, max);
-        let channel_penalty = if range.channels() == channels { 0 } else { 100_000 };
+        let channel_penalty = if range.channels() == channels {
+            0
+        } else {
+            100_000
+        };
         let dist = clamped.abs_diff(rate) + channel_penalty;
         if best.as_ref().map_or(true, |(d, _)| dist < *d) {
             best = Some((dist, range));
@@ -376,6 +387,7 @@ pub fn start_output_stream(
 
 // ─── Device trait ────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 pub trait AudioDevice: Send + Sync {
     fn list_input_devices(&self) -> Vec<AudioDeviceInfo>;
     fn list_output_devices(&self) -> Vec<AudioDeviceInfo>;
@@ -393,9 +405,11 @@ pub trait AudioDevice: Send + Sync {
 // ─── Production impl: CoreAudioDevice (cpal-backed) ──────────────────────────
 
 #[cfg(not(test))]
+#[cfg(test)]
 pub struct CoreAudioDevice;
 
 #[cfg(not(test))]
+#[cfg(test)]
 impl CoreAudioDevice {
     pub fn new() -> Self {
         Self
@@ -448,12 +462,14 @@ impl CoreAudioDevice {
 
 #[cfg(not(test))]
 #[derive(Clone, Copy, Debug)]
+#[cfg(test)]
 enum DeviceKind {
     Input,
     Output,
 }
 
 #[cfg(not(test))]
+#[cfg(test)]
 impl AudioDevice for CoreAudioDevice {
     fn list_input_devices(&self) -> Vec<AudioDeviceInfo> {
         Self::collect_devices(&Self::host(), DeviceKind::Input)
@@ -559,6 +575,7 @@ struct SendStream {
 unsafe impl Send for SendStream {}
 
 #[cfg(not(test))]
+#[cfg(test)]
 fn pick_input_config(
     device: &cpal::Device,
     request: &AudioCaptureRequest,
@@ -592,6 +609,7 @@ fn pick_input_config(
 }
 
 #[cfg(not(test))]
+#[cfg(test)]
 fn build_input_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -661,9 +679,9 @@ fn build_input_stream(
 /// frame sink with a synthetic 440 Hz sine wave on a worker thread.
 ///
 /// `cfg(test)`-gated because the only consumers are unit tests in this
-/// module and `process_app::tests`. Production code paths use
+/// module and `WASM runtime tests`. Production code paths use
 /// `CoreAudioDevice` exclusively (selected by `default_audio_device` in
-/// `process_app/mod.rs`). When the harness is dropped the worker thread
+/// `host/wasm_pane.rs`). When the harness is dropped the worker thread
 /// exits within one buffer period.
 #[cfg(test)]
 pub struct MockAudioDevice {

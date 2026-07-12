@@ -11,3 +11,6 @@ watch = true
 
 [app.capabilities]
 capabilities = []
+
+[runtime]
+python_compat = true

@@ -30,7 +30,7 @@ fn parse_key_str_to_event_preserves_modifiers() {
 #[test]
 fn key_str_to_egui_raw_input_maps_named_keys_without_text() {
     let raw = key_str_to_egui_raw_input("enter").expect("enter must map");
-    assert_eq!(raw.events.len(), 1, "named keys emit no Text event");
+    assert_eq!(raw.events.len(), 2, "named keys emit press and release");
     assert!(matches!(
         raw.events[0],
         egui::Event::Key {
@@ -40,6 +40,7 @@ fn key_str_to_egui_raw_input_maps_named_keys_without_text() {
             ..
         }
     ));
+    assert!(matches!(raw.events[1], egui::Event::Key { pressed: false, .. }));
 
     let raw = key_str_to_egui_raw_input("ArrowDown").expect("ArrowDown must map");
     assert!(matches!(
@@ -66,6 +67,7 @@ fn key_str_to_egui_raw_input_emits_text_for_printable_chars() {
         "printable chars must also emit Text for search fields; got {:?}",
         raw.events
     );
+    assert!(matches!(raw.events[2], egui::Event::Key { pressed: false, .. }));
 
     let raw = key_str_to_egui_raw_input("space").expect("space must map");
     assert!(matches!(&raw.events[1], egui::Event::Text(t) if t == " "));
@@ -77,7 +79,7 @@ fn key_str_to_egui_raw_input_chords_set_modifiers_and_suppress_text() {
     assert!(raw.modifiers.ctrl);
     assert_eq!(
         raw.events.len(),
-        1,
+        2,
         "chord keys must not emit Text; got {:?}",
         raw.events
     );
@@ -270,8 +272,9 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     let selected_path = dir.path().join("photo.png");
     std::fs::write(&selected_path, b"not decoded in this test").expect("write image");
 
-    let browser: Box<dyn crate::app::app_trait::App> =
-        Box::new(crate::file_browser::FileBrowserApp::new(dir.path().to_path_buf()));
+    let browser: Box<dyn crate::app::app_trait::App> = Box::new(
+        crate::file_browser::FileBrowserApp::new(dir.path().to_path_buf()),
+    );
     app.open_builtin_app_pane(
         browser,
         crate::app::permissions::AppPermissions::builtin(),
@@ -301,7 +304,10 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     );
 
     let viewer_tile = app.windows[0].focused_pane.expect("viewer focused");
-    assert_ne!(viewer_tile, browser_tile, "viewer should open as split sibling");
+    assert_ne!(
+        viewer_tile, browser_tile,
+        "viewer should open as split sibling"
+    );
     let viewer_pane_id = match app.windows[0].tree.tiles.get(viewer_tile) {
         Some(egui_tiles::Tile::Pane(id)) => *id,
         other => panic!("expected viewer pane tile, got {other:?}"),
@@ -573,10 +579,8 @@ fn spawn_pane_seeds_root_in_empty_window() {
         "precondition: window boots with no focused pane"
     );
 
-    let response_file = std::env::temp_dir().join(format!(
-        "plexi_test_seed_root_{}.json",
-        std::process::id()
-    ));
+    let response_file =
+        std::env::temp_dir().join(format!("plexi_test_seed_root_{}.json", std::process::id()));
     let _ = std::fs::remove_file(&response_file);
 
     // Split spawn (not --window), no from_pane_id: falls into the empty-window
@@ -648,8 +652,8 @@ fn spawn_pane_seeds_root_in_empty_window() {
     );
 
     // Response file must report the id of the pane actually created.
-    let raw = std::fs::read_to_string(&response_file)
-        .expect("spawn_pane must write a response file");
+    let raw =
+        std::fs::read_to_string(&response_file).expect("spawn_pane must write a response file");
     let _ = std::fs::remove_file(&response_file);
     let json: serde_json::Value =
         serde_json::from_str(&raw).expect("response file must be valid JSON");

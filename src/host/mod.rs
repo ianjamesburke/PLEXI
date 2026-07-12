@@ -16,6 +16,7 @@ pub mod keys;
 pub mod launch_failed;
 pub mod model;
 pub mod pane;
+#[cfg(test)]
 pub mod runs;
 pub mod scheduler;
 pub mod services;
@@ -25,4 +26,5 @@ pub mod wasm_app;
 pub mod wasm_frame;
 pub mod wasm_gpu;
 pub mod wasm_pane;
+pub mod wasm_python;
 pub mod wasm_render;

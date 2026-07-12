@@ -3427,9 +3427,7 @@ enabled = ["allowed.tool"]
         );
         std::thread::spawn(move || {
             while let Ok(item) = rx.recv() {
-                let crate::process_app::StdinItem::Event(json) = item else {
-                    continue;
-                };
+                let json = item;
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else {
                     continue;
                 };

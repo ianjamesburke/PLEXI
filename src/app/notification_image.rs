@@ -77,7 +77,7 @@ pub(crate) fn resolve(
         }
     }
 
-    // Inline takes precedence (matches the `process_app::routing` mux: when
+    // Inline takes precedence (matches the `host::wasm_pane` mux: when
     // both fields are set inline wins and the pipe is ignored at queue time).
     let resolved = if let Some(inline) = &notif.image_inline {
         decode_inline(inline, egui_ctx, &notif.notify_id)
@@ -154,32 +154,7 @@ fn decode_inline(
 /// ring, if any. Returns `None` when no frame has been pushed yet (caller
 /// should keep the notification in `Pending` and retry next render).
 fn drain_pipe_frame(app: &PlexiApp, sender_pane_id: u64, pipe_id: &str) -> Option<Vec<u8>> {
-    // Walk every context's panes — the sender pane id is unique across the
-    // workspace, so a linear scan is fine for the small N (single-digit
-    // contexts × low-double-digit panes).
-    for ctx in &app.windows {
-        let Some(pane) = ctx.panes.get(&sender_pane_id) else {
-            continue;
-        };
-        let registry = match pane {
-            crate::host::pane::Pane::App(p) => match &p.runtime {
-                crate::host::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
-                crate::host::pane::AppRuntime::Builtin(_) => None,
-                crate::host::pane::AppRuntime::Wasm(_) => None,
-            },
-            _ => None,
-        };
-        let Some(registry) = registry else {
-            continue;
-        };
-        let ring = registry.lock().ok()?.binary_ring(pipe_id)?;
-        // Drain the ring to its tail — we only render the latest frame.
-        let mut latest: Option<Vec<u8>> = None;
-        while let Some(frame) = ring.pop() {
-            latest = Some(frame);
-        }
-        return latest;
-    }
+    let _ = (app, sender_pane_id, pipe_id);
     None
 }
 

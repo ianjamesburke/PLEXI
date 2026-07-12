@@ -1,0 +1,21 @@
+[package]
+name = "python-shim"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+base64 = "0.22"
+serde_json = "1"
+wit-bindgen = "0.41"
+
+[package.metadata.component]
+package = "plexi:python-shim"
+
+[package.metadata.component.target]
+path = "wit"
+world = "plexi-app"
+
+[workspace]

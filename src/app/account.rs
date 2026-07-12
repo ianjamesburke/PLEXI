@@ -180,7 +180,8 @@ pub enum PollOutcome {
 /// across the whole login flow. The device-code poll loop hits this every few
 /// seconds for up to the code's lifetime; a fresh agent per call would pay a new
 /// TLS handshake each time.
-static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| crate::app::http::agent(Duration::from_secs(30)));
+static AGENT: LazyLock<ureq::Agent> =
+    LazyLock::new(|| crate::app::http::agent(Duration::from_secs(30)));
 
 /// `POST {base}/api/auth/device/start` — ask the service to email a sign-in link
 /// and hand back the codes to poll with. See `website/src/pages/api/auth/device/start.ts`.

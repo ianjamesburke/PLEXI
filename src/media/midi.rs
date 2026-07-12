@@ -5,7 +5,7 @@
 //!   1. [`MidiDevice`] — host-facing trait. Methods return owned data
 //!      ([`MidiPortInfo`]) so the caller never holds a `coremidi::Source`
 //!      reference. The trait lives behind `Arc<dyn MidiDevice>` on each
-//!      `ProcessApp` instance, the same shape as [`crate::media::audio::AudioDevice`].
+//!      `WASM app runtime` instance, the same shape as [`crate::media::audio::AudioDevice`].
 //!
 //!   2. [`CoreMidiDevice`] — production impl (macOS only). Wraps `coremidi`
 //!      crate 0.9. CoreMIDI does not gate behind a privacy prompt today
@@ -29,6 +29,7 @@
 //!   - MIDI 2.0 (we ship classic MIDI 1.0 only).
 //!   - Network MIDI / RTP-MIDI.
 
+#[cfg(test)]
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
@@ -53,6 +54,7 @@ pub struct MidiPortInfo {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[cfg(test)]
 pub enum MidiError {
     #[error("port id '{0}' not found")]
     PortNotFound(String),
@@ -71,10 +73,12 @@ pub enum MidiError {
 ///
 /// The trait stays object-safe; the closure does not allocate beyond the
 /// per-packet `Vec<u8>` it's handed.
+#[cfg(test)]
 pub type MidiPacketSink = Arc<dyn Fn(&[u8]) -> Result<(), ()> + Send + Sync + 'static>;
 
 /// Opaque handle returned from `open_input`. Dropping the handle (or calling
 /// `close_input`) tears down the underlying CoreMIDI connection.
+#[cfg(test)]
 pub struct MidiInputSession {
     /// Cleanup runs on drop. The closure owns whatever the device impl needs
     /// to keep alive — for CoreMIDI that's the `InputPort` + `Source` (port
@@ -85,6 +89,7 @@ pub struct MidiInputSession {
     pub port_name: String,
 }
 
+#[cfg(test)]
 impl std::fmt::Debug for MidiInputSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MidiInputSession")
@@ -93,17 +98,20 @@ impl std::fmt::Debug for MidiInputSession {
     }
 }
 
+#[cfg(test)]
 trait MidiInputGuard: Send {}
 
 /// Opaque handle for a CoreMIDI output port + its destination endpoint.
 /// Apps `send_midi(port_id, bytes)` through the host; the host looks up the
 /// output handle for the type_id and dispatches the send. Closing the handle
 /// (drop) destroys the underlying `OutputPort`.
+#[cfg(test)]
 pub struct MidiOutputHandle {
     inner: Box<dyn MidiOutputHandleInner>,
     pub port_name: String,
 }
 
+#[cfg(test)]
 impl std::fmt::Debug for MidiOutputHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MidiOutputHandle")
@@ -112,6 +120,7 @@ impl std::fmt::Debug for MidiOutputHandle {
     }
 }
 
+#[cfg(test)]
 impl MidiOutputHandle {
     /// Send one MIDI 1.0 byte stream to this output's destination. The bytes
     /// are packed into a UMP on group 0; CoreMIDI unpacks them back to legacy
@@ -125,12 +134,14 @@ impl MidiOutputHandle {
     }
 }
 
+#[cfg(test)]
 trait MidiOutputHandleInner: Send {
     fn send(&mut self, bytes: &[u8]) -> Result<(), MidiError>;
 }
 
 // ─── Device trait ────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 pub trait MidiDevice: Send + Sync {
     fn list_input_ports(&self) -> Vec<MidiPortInfo>;
     fn list_output_ports(&self) -> Vec<MidiPortInfo>;
@@ -158,11 +169,13 @@ pub trait MidiDevice: Send + Sync {
 /// Non-test, macOS only — non-mac builds use the `Mock` impl via
 /// `default_midi_device()` so the full host still compiles cross-platform.
 #[cfg(all(not(test), target_os = "macos"))]
+#[cfg(test)]
 pub struct CoreMidiDevice {
     client: coremidi::Client,
 }
 
 #[cfg(all(not(test), target_os = "macos"))]
+#[cfg(test)]
 impl CoreMidiDevice {
     pub fn new() -> Self {
         // Client::new can fail if CoreMIDI is unavailable (e.g. running in a
@@ -232,6 +245,7 @@ impl CoreMidiDevice {
 }
 
 #[cfg(all(not(test), target_os = "macos"))]
+#[cfg(test)]
 impl MidiDevice for CoreMidiDevice {
     fn list_input_ports(&self) -> Vec<MidiPortInfo> {
         Self::collect_sources()
@@ -360,9 +374,11 @@ impl MidiDevice for CoreMidiDevice {
 // empty port list and refuses any open. Keeps the host buildable on Linux/CI
 // without coremidi available.
 #[cfg(all(not(test), not(target_os = "macos")))]
+#[cfg(test)]
 pub struct CoreMidiDevice;
 
 #[cfg(all(not(test), not(target_os = "macos")))]
+#[cfg(test)]
 impl CoreMidiDevice {
     pub fn new() -> Self {
         Self
@@ -370,6 +386,7 @@ impl CoreMidiDevice {
 }
 
 #[cfg(all(not(test), not(target_os = "macos")))]
+#[cfg(test)]
 impl MidiDevice for CoreMidiDevice {
     fn list_input_ports(&self) -> Vec<MidiPortInfo> {
         Vec::new()
@@ -405,6 +422,7 @@ impl MidiDevice for CoreMidiDevice {
 /// Per the MIDI 2.0 spec, 2-byte channel-voice messages (Program Change,
 /// Channel Pressure) still use the 32-bit MIDI 1.0 word format with the
 /// unused data byte set to 0.
+#[cfg(test)]
 fn pack_bytes_to_ump_word(bytes: &[u8]) -> Result<u32, MidiError> {
     if bytes.is_empty() {
         return Err(MidiError::EmptyMessage);
@@ -439,6 +457,7 @@ fn pack_bytes_to_ump_word(bytes: &[u8]) -> Result<u32, MidiError> {
 /// Inverse of `pack_bytes_to_ump_word`. One UMP word may yield zero MIDI 1.0
 /// byte streams (e.g. MIDI 2.0-only message types) or one MIDI 1.0 byte
 /// stream.
+#[cfg(test)]
 fn unpack_ump_word_to_bytes(word: u32) -> Vec<Vec<u8>> {
     let message_type = (word >> 28) & 0xF;
     match message_type {
@@ -475,7 +494,7 @@ fn unpack_ump_word_to_bytes(word: u32) -> Vec<Vec<u8>> {
 /// MIDI byte streams into open inputs without touching real hardware.
 ///
 /// `cfg(test)`-gated. Production code paths use `CoreMidiDevice` exclusively
-/// via `default_midi_device()` in `process_app/mod.rs`.
+/// via `default_midi_device()` in `host/wasm_pane.rs`.
 #[cfg(test)]
 pub struct MockMidiDevice {
     pub inputs: Vec<MidiPortInfo>,

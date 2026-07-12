@@ -1,14 +1,9 @@
-"""Active-time idle clamping — the core of the centre gauge's focus total.
-
-`_counted_duration` walks focus events in order, carrying a single-element
-`idle_stream` flag between calls. Very long single-pane spans are treated as
-idle: the first one is clamped to a short residual, later ones are skipped
-entirely until the next real `pane_switch` re-activates the stream.
-"""
 from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timedelta, timezone
+
 
 sys.path.insert(
     0,
@@ -16,42 +11,114 @@ sys.path.insert(
 )
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from stats import (  # noqa: E402
-    IDLE_CLAMP_SECS,
-    IDLE_THRESHOLD_SECS,
-    _counted_duration,
-)
+import plexi_sdk as sdk  # noqa: E402
+from plexi_sdk import _v3_state  # noqa: E402
+from plexi_sdk.effects import PersistState  # noqa: E402
+from plexi_sdk.events import FocusChanged  # noqa: E402
+
+import stats as stats_app  # noqa: E402
+from stats import _normalize_focus_events, _timeline_fractions  # noqa: E402
 
 
-def _counted(sequence: "list[tuple[str, int]]") -> "list[float]":
-    idle_stream = [False]
-    return [
-        _counted_duration({"reason": reason, "duration_secs": secs}, idle_stream)
-        for reason, secs in sequence
+def _event(duration: int, reason: str, pane_id: int = 1) -> dict:
+    return {
+        "kind": "focus_changed",
+        "timestamp": datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc).isoformat(),
+        "_ts": datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc),
+        "duration_secs": duration,
+        "reason": reason,
+        "pane_id": pane_id,
+        "context_name": "PLEXI",
+        "context_root": "/Users/ianburke/Documents/GitHub/PLEXI",
+        "cwd": "/Users/ianburke/Documents/GitHub/PLEXI",
+    }
+
+
+def test_idle_normalization_clamps_first_stale_segment_and_skips_until_switch():
+    events = [
+        _event(120, "pane_switch"),
+        _event(1800, "heartbeat"),
+        _event(900, "heartbeat"),
+        _event(300, "shutdown"),
+        _event(240, "pane_switch", pane_id=2),
     ]
 
+    normalized, stats = _normalize_focus_events(events)
 
-def test_first_stale_segment_clamps_then_later_stale_segments_skip() -> None:
-    counted = _counted(
-        [
-            ("pane_switch", 120),
-            ("heartbeat", IDLE_THRESHOLD_SECS * 2),
-            ("heartbeat", IDLE_THRESHOLD_SECS),
-            ("shutdown", 300),
-            ("pane_switch", 240),
-        ]
+    assert [ev["duration_secs"] for ev in normalized] == [120, 60, 0, 0, 240]
+    assert [ev["_idle_state"] for ev in normalized] == [
+        "active",
+        "clamped",
+        "skipped",
+        "skipped",
+        "active",
+    ]
+    assert stats["raw_secs"] == 3360
+    assert stats["counted_secs"] == 420
+    assert stats["clamped_secs"] == 1740
+    assert stats["skipped_secs"] == 1200
+    assert stats["counted_events"] == 3
+    assert stats["clamped_events"] == 1
+    assert stats["skipped_events"] == 2
+
+
+def test_idle_normalization_keeps_short_active_sessions():
+    events = [
+        _event(60, "pane_switch"),
+        _event(300, "heartbeat"),
+        _event(480, "shutdown"),
+    ]
+
+    normalized, stats = _normalize_focus_events(events)
+
+    assert [ev["duration_secs"] for ev in normalized] == [60, 300, 480]
+    assert [ev["_idle_state"] for ev in normalized] == ["active", "active", "active"]
+    assert stats["raw_secs"] == 840
+    assert stats["counted_secs"] == 840
+    assert stats["clamped_secs"] == 0
+    assert stats["skipped_secs"] == 0
+
+
+def test_clamped_timeline_counted_slice_starts_at_raw_segment_start():
+    ts = datetime(2026, 6, 10, 12, 30, tzinfo=timezone.utc)
+    window_start = ts - timedelta(hours=12, minutes=30)
+
+    raw_start, raw_end, counted_start, counted_end = _timeline_fractions(
+        ts,
+        counted_secs=60,
+        raw_secs=1800,
+        idle_state="clamped",
+        start_window=window_start,
     )
-    assert counted == [120, IDLE_CLAMP_SECS, 0, 0, 240]
-    assert sum(counted) == 120 + IDLE_CLAMP_SECS + 240
+
+    assert abs((raw_end - raw_start) - (1800 / 86400)) < 0.000001
+    assert counted_start == raw_start
+    assert abs((counted_end - counted_start) - (60 / 86400)) < 0.000001
 
 
-def test_short_active_sessions_are_counted_in_full() -> None:
-    counted = _counted(
-        [
-            ("pane_switch", 60),
-            ("heartbeat", 300),
-            ("shutdown", 480),
-        ]
+def test_focus_changed_event_appends_state_event():
+    _v3_state._state = sdk.StateSnapshot({"focus_events": []}, {"focus_events": b"[]"})
+    _v3_state._in_view = False
+
+    effects = stats_app.update(
+        FocusChanged(
+            timestamp=datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc).isoformat(),
+            duration_secs=90,
+            reason="pane_switch",
+            context_name="PLEXI",
+        )
     )
-    assert counted == [60, 300, 480]
-    assert sum(counted) == 840
+
+    state_effect = next(effect for effect in effects if isinstance(effect, PersistState))
+    assert state_effect.data["focus_events"] == [
+        {
+            "kind": "focus_changed",
+            "timestamp": "2026-06-10T12:00:00+00:00",
+            "duration_secs": 90,
+            "reason": "pane_switch",
+            "pane_id": None,
+            "context_name": "PLEXI",
+            "context_root": None,
+            "cwd": None,
+        }
+    ]

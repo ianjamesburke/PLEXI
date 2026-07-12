@@ -1,6 +1,6 @@
 //! Global tool registry and dispatcher for the v3.7 tool protocol (#399).
 //!
-//! The tool registry is a singleton shared across all `ProcessApp` instances.
+//! The tool registry is a singleton shared across all `WASM app runtime` instances.
 //! When an app sends `DrawCommand::ExposeTools`, its pane registers tool
 //! definitions + an `AppEventSender` here. When the broker wants to call a
 //! tool, it creates a `ToolDispatcher` snapshot, then calls `dispatch_call`
@@ -10,7 +10,7 @@
 //!   3. Blocks (up to `timeout_ms`) on a `SyncReceiver` for the result.
 //!   4. Returns `ToolCallResult { output_json, error }`.
 //!
-//! Pending-call state lives in `PENDING_CALLS`. `ProcessApp::routing` feeds
+//! Pending-call state lives in `PENDING_CALLS`. `WASM app runtime::routing` feeds
 //! `DrawCommand::ToolResult` back here to unblock the waiting broker thread.
 //!
 //! # Authorization model (#1182)
@@ -38,14 +38,14 @@ use crate::app_protocol::{AiTool, PlexiEvent};
 /// Thin wrapper that lets external code send `PlexiEvent`s into a pane's
 /// stdin channel without exposing the `StdinItem` enum publicly.
 pub(crate) struct AppEventSender {
-    pub(crate) tx: std::sync::mpsc::Sender<crate::process_app::StdinItem>,
+    pub(crate) tx: std::sync::mpsc::Sender<String>,
 }
 
 impl AppEventSender {
     pub(crate) fn send_event(&self, event: &PlexiEvent) {
         if let Ok(mut json) = serde_json::to_string(event) {
             json.push('\n');
-            let _ = self.tx.send(crate::process_app::StdinItem::Event(json));
+            let _ = self.tx.send(json);
         }
     }
 }
@@ -76,6 +76,7 @@ impl ToolRegistry {
         }
     }
 
+    #[cfg(test)]
     fn register(
         &mut self,
         pane_id: u64,
@@ -95,6 +96,7 @@ impl ToolRegistry {
         );
     }
 
+    #[cfg(test)]
     fn unregister(&mut self, pane_id: u64) {
         self.entries.remove(&pane_id);
     }
@@ -186,6 +188,7 @@ fn global_registry() -> &'static Arc<Mutex<ToolRegistry>> {
 
 /// Register (or replace) the tools for `pane_id`. Called by routing when
 /// `DrawCommand::ExposeTools` arrives.
+#[cfg(test)]
 pub(crate) fn register(
     pane_id: u64,
     app_id: String,
@@ -202,12 +205,14 @@ pub(crate) fn register(
 }
 
 /// Remove all tools for `pane_id`. Called when a pane is closed.
+#[cfg(test)]
 pub(crate) fn unregister(pane_id: u64) {
     global_registry().lock().unwrap().unregister(pane_id);
 }
 
 /// True when `pane_id` has a registry entry (it exposed tools and is still
 /// open) — i.e. host-routed events can reach it.
+#[cfg(test)]
 pub(crate) fn pane_reachable(pane_id: u64) -> bool {
     global_registry()
         .lock()
@@ -220,6 +225,7 @@ pub(crate) fn pane_reachable(pane_id: u64) -> bool {
 /// host agent runtime delivers cross-pane `RollbackVerify` this way).
 /// Returns false when the pane has no registry entry (closed, or it never
 /// exposed tools).
+#[cfg(test)]
 pub(crate) fn send_event_to_pane(pane_id: u64, event: &PlexiEvent) -> bool {
     let registry = global_registry().lock().unwrap();
     match registry.sender_for(pane_id) {
@@ -257,6 +263,7 @@ fn pending_calls(
 
 /// Called by `routing.rs` when `DrawCommand::ToolResult` arrives for a pane.
 /// Resolves the pending `call_id` so the blocking broker thread can continue.
+#[cfg(test)]
 pub(crate) fn resolve_pending(call_id: &str, result: ToolCallResult) {
     let tx = pending_calls().lock().unwrap().remove(call_id);
     match tx {

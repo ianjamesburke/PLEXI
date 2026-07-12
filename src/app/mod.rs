@@ -298,11 +298,11 @@ pub struct PlexiApp {
     pub(crate) navigating_history: bool,
     pub(crate) host: crate::host::model::HostModel,
     pub(crate) host_services: crate::host::services::HostServices,
-    /// Parked background ProcessApps — kept alive when their pane is closed.
+    /// Parked background WASM app runtimes — kept alive when their pane is closed.
     /// Keyed by app type_id. Value is `(park_context_id, app)` where
     /// `park_context_id` is the context_id the app was running in when its
     /// pane was closed. Used to route notifications to the correct context.
-    pub(crate) background_apps: HashMap<String, (u64, Box<crate::process_app::ProcessApp>)>,
+    pub(crate) background_apps: HashMap<String, (u64, Box<dyn crate::app::app_trait::App>)>,
     /// Directed inter-agent / inter-app pipes (#286). Keyed by `pipe_id`,
     /// value is the `(sender_pane_id, target_pane_id)` pair the host scopes
     /// `PipeMessage` deliveries to. This is the sole JSON-pipe delivery path:
@@ -315,7 +315,7 @@ pub struct PlexiApp {
     /// Hot-reload watcher set (#83). Owns one notify watcher per pane that
     /// opted-in via manifest `[app] watch = true` (workspace-local only).
     /// `hot_reload_rx` is drained each frame; pending requests trigger a
-    /// `reload_pane` call which replaces the `ProcessApp` inside the
+    /// `reload_pane` call which relaunches the WASM runtime inside the
     /// existing `AppPane` envelope.
     pub(crate) hot_reload: crate::host::hot_reload::HotReloadWatcher,
     pub(crate) hot_reload_rx: std::sync::mpsc::Receiver<crate::host::hot_reload::ReloadRequest>,
@@ -330,7 +330,6 @@ pub struct PlexiApp {
     pub(crate) registry_reload_rx: Option<std::sync::mpsc::Receiver<()>>,
     /// Watched panes scheduled for crash-restart. Value is the earliest `Instant` at
     /// which the restart fires — giving the developer ~2s to read the crash overlay.
-    pub(crate) pending_crash_restarts: HashMap<PaneId, std::time::Instant>,
     /// Spatial-grid minimap overlay state. Controls visibility, fade timer,
     /// and the `Cmd+Shift+M` override-visible flag.
     pub(crate) minimap: crate::render::minimap::MinimapState,
@@ -456,9 +455,7 @@ fn handle_socket_line(
 
 fn spawn_socket_listener(
     tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
-    subscribe_tx: std::sync::mpsc::Sender<
-        crate::host::event_subscriptions::HostSubscribeRequest,
-    >,
+    subscribe_tx: std::sync::mpsc::Sender<crate::host::event_subscriptions::HostSubscribeRequest>,
     publish_tx: std::sync::mpsc::Sender<crate::host::event_subscriptions::HostPublishRequest>,
     egui_ctx: egui::Context,
 ) {
@@ -502,9 +499,7 @@ fn spawn_socket_listener(
 fn handle_socket_connection(
     stream: std::os::unix::net::UnixStream,
     tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
-    subscribe_tx: std::sync::mpsc::Sender<
-        crate::host::event_subscriptions::HostSubscribeRequest,
-    >,
+    subscribe_tx: std::sync::mpsc::Sender<crate::host::event_subscriptions::HostSubscribeRequest>,
     publish_tx: std::sync::mpsc::Sender<crate::host::event_subscriptions::HostPublishRequest>,
     egui_ctx: egui::Context,
 ) {
@@ -567,9 +562,7 @@ fn handle_events_subscribe(
     mut write_half: std::os::unix::net::UnixStream,
     remaining: std::io::Lines<std::io::BufReader<std::os::unix::net::UnixStream>>,
     val: serde_json::Value,
-    subscribe_tx: &std::sync::mpsc::Sender<
-        crate::host::event_subscriptions::HostSubscribeRequest,
-    >,
+    subscribe_tx: &std::sync::mpsc::Sender<crate::host::event_subscriptions::HostSubscribeRequest>,
     egui_ctx: &egui::Context,
 ) {
     use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
@@ -725,7 +718,10 @@ fn handle_events_list(mut write_half: std::os::unix::net::UnixStream, val: &serd
         .lock()
         .unwrap()
         .all_declared_streams();
-    log::info!("events: list requested ({} stream(s) declared)", streams.len());
+    log::info!(
+        "events: list requested ({} stream(s) declared)",
+        streams.len()
+    );
     if json_mode {
         let arr: Vec<serde_json::Value> = streams
             .iter()
@@ -762,7 +758,11 @@ fn handle_events_publish(
     use std::time::Duration;
 
     let reply_err = |mut w: std::os::unix::net::UnixStream, message: String| {
-        let _ = writeln!(w, "{}", serde_json::json!({"type": "error", "message": message}));
+        let _ = writeln!(
+            w,
+            "{}",
+            serde_json::json!({"type": "error", "message": message})
+        );
         let _ = w.flush();
     };
 
@@ -798,14 +798,21 @@ fn handle_events_publish(
                 summary: val["summary"].as_str().unwrap_or_default().to_string(),
                 resource_id: val["resource_id"].as_str().unwrap_or_default().to_string(),
                 resource_scope: val["resource_scope"].as_str().map(String::from),
-                revision_after: val["revision_after"].as_str().unwrap_or_default().to_string(),
+                revision_after: val["revision_after"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
                 payload: val.get("payload").filter(|v| !v.is_null()).cloned(),
                 state_ref: val["state_ref"].as_str().map(String::from),
                 revision_before: val["revision_before"].as_str().map(String::from),
                 rollback_token: val["rollback_token"].as_str().map(String::from),
                 changed_resources: val["changed_resources"]
                     .as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 suggested_trigger: serde_json::from_value(val["suggested_trigger"].clone()).ok(),
             };
@@ -826,7 +833,10 @@ fn handle_events_publish(
         reply: reply_tx,
     };
     if publish_tx.send(req).is_err() {
-        reply_err(write_half, "host not accepting publish requests".to_string());
+        reply_err(
+            write_half,
+            "host not accepting publish requests".to_string(),
+        );
         return;
     }
     egui_ctx.request_repaint();
@@ -999,12 +1009,10 @@ impl PlexiApp {
 
         let (pane_ipc_tx, pane_ipc_rx) =
             std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
-        let (event_subscribe_tx, event_subscribe_rx) = std::sync::mpsc::channel::<
-            crate::host::event_subscriptions::HostSubscribeRequest,
-        >();
-        let (event_publish_tx, event_publish_rx) = std::sync::mpsc::channel::<
-            crate::host::event_subscriptions::HostPublishRequest,
-        >();
+        let (event_subscribe_tx, event_subscribe_rx) =
+            std::sync::mpsc::channel::<crate::host::event_subscriptions::HostSubscribeRequest>();
+        let (event_publish_tx, event_publish_rx) =
+            std::sync::mpsc::channel::<crate::host::event_subscriptions::HostPublishRequest>();
         spawn_socket_listener(
             pane_ipc_tx,
             event_subscribe_tx.clone(),
@@ -1100,30 +1108,6 @@ impl PlexiApp {
                             crate::release::log_feature_blocked(
                                 crate::release::ReleaseFeature::Assistant,
                             );
-                        }
-                        if pane_entry.is_none() {
-                            if let Some(process) = registry.launch_process(app_type, &app_cwd, &[])
-                            {
-                                pane_entry =
-                                    Some(Pane::App(Box::new(crate::host::pane::AppPane {
-                                        pip_status: None,
-                                        id: saved_pane.id,
-                                        permissions: process.permissions.clone(),
-                                        runtime: crate::host::pane::AppRuntime::Process(Box::new(
-                                            process,
-                                        )),
-                                        workspace_root: app_cwd,
-                                        manifest_id: app_type.to_string(),
-                                        name: app_type.to_string(),
-                                        pane_group: registry.group_for(app_type),
-                                        linked_pane_id: None,
-                                        overlay_replaced: None,
-                                        hidden: false,
-                                        agent: None,
-                                        slots: std::collections::HashMap::new(),
-                                        semantic_state: Default::default(),
-                                    })));
-                            }
                         }
                     }
 
@@ -1334,7 +1318,6 @@ impl PlexiApp {
                     config_reload_rx: cfg_reload_rx.take(),
                     _registry_watcher: reg_watcher.take(),
                     registry_reload_rx: reg_reload_rx.take(),
-                    pending_crash_restarts: HashMap::new(),
                     minimap: crate::render::minimap::MinimapState::with_visible(window_count >= 2),
                     last_page_x_per_row: HashMap::new(),
                     context_active_window: ws.context_active_window,
@@ -1359,8 +1342,7 @@ impl PlexiApp {
                     pending_raw_wasm_launches: std::collections::VecDeque::new(),
                     last_logged_focus: None,
                     focus_started_at: None,
-                    focus_journal_path: crate::config::config_dir()
-                        .join("focus-journal.jsonl"),
+                    focus_journal_path: crate::config::config_dir().join("focus-journal.jsonl"),
                     last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
                     agent_host: crate::agent::AgentHost::production(config.ai),
@@ -1582,7 +1564,6 @@ impl PlexiApp {
             config_reload_rx: cfg_reload_rx.take(),
             _registry_watcher: default_reg_watcher.take(),
             registry_reload_rx: default_reg_reload_rx.take(),
-            pending_crash_restarts: HashMap::new(),
             minimap: crate::render::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
@@ -1676,12 +1657,10 @@ impl PlexiApp {
         let features = crate::features::FeatureFlags::from_config(&config);
         let (pane_ipc_tx, pane_ipc_rx) =
             std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
-        let (_event_subscribe_tx, event_subscribe_rx) = std::sync::mpsc::channel::<
-            crate::host::event_subscriptions::HostSubscribeRequest,
-        >();
-        let (_event_publish_tx, event_publish_rx) = std::sync::mpsc::channel::<
-            crate::host::event_subscriptions::HostPublishRequest,
-        >();
+        let (_event_subscribe_tx, event_subscribe_rx) =
+            std::sync::mpsc::channel::<crate::host::event_subscriptions::HostSubscribeRequest>();
+        let (_event_publish_tx, event_publish_rx) =
+            std::sync::mpsc::channel::<crate::host::event_subscriptions::HostPublishRequest>();
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &crate::config::config_dir(),
             std::env::current_dir().unwrap_or_default(),
@@ -1805,7 +1784,6 @@ impl PlexiApp {
                 config_reload_rx: None,
                 _registry_watcher: None,
                 registry_reload_rx: None,
-                pending_crash_restarts: HashMap::new(),
                 minimap: crate::render::minimap::MinimapState::new(),
                 last_page_x_per_row: HashMap::new(),
                 context_active_window: HashMap::new(),
@@ -1842,11 +1820,36 @@ impl PlexiApp {
         )
     }
 
-    /// Add a minimal `ProcessApp` pane directly to window 0 for unit tests.
+    /// Add a minimal builtin pane directly to window 0 for unit tests.
     /// Returns `(tile_id, pane_id)` — `tile_id` is suitable for `focused_pane` assignments.
     #[cfg(test)]
     pub(crate) fn add_test_pane(&mut self) -> (egui_tiles::TileId, u64) {
-        self.add_app_pane_in_window(0, "test")
+        let pane_id = self.host.alloc_pane_id();
+        let cwd = std::path::PathBuf::from("/tmp");
+        let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+            pip_status: None,
+            id: pane_id,
+            permissions: crate::app::permissions::AppPermissions::builtin(),
+            runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
+                crate::file_browser::FileBrowserApp::new(cwd.clone()),
+            )),
+            workspace_root: cwd,
+            manifest_id: "test".to_string(),
+            name: "test".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+            hidden: false,
+            agent: None,
+            slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
+        }));
+        self.windows[0].panes.insert(pane_id, pane);
+        let tile_id = self.windows[0].tree.tiles.insert_pane(pane_id);
+        if self.windows[0].tree.root().is_none() {
+            self.windows[0].tree.root = Some(tile_id);
+        }
+        (tile_id, pane_id)
     }
 
     /// Inject an app pane running `type_id` into window `win_idx` (test-only).
@@ -1871,28 +1874,20 @@ impl PlexiApp {
         &mut self,
         win_idx: usize,
         manifest_id: &str,
-        runtime_type_id: &str,
+        _runtime_type_id: &str,
     ) -> (egui_tiles::TileId, u64) {
-        use crate::app::permissions::AppPermissions;
-        use crate::host::pane::{AppPane, AppRuntime};
-        use crate::process_app::ProcessApp;
-
-        // Use a simple incrementing id; start high to avoid collisions with HostHarness ids.
-        static NEXT_PANE_ID: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(10000);
-        let pane_id = NEXT_PANE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        let (mut process_app, _draw_tx) =
-            ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
-        process_app.type_id = runtime_type_id.to_string();
-        let app_pane = AppPane {
+        let pane_id = self.host.alloc_pane_id();
+        let cwd = std::path::PathBuf::from("/tmp");
+        let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
             pip_status: None,
             id: pane_id,
-            runtime: AppRuntime::Process(Box::new(process_app)),
-            workspace_root: std::env::temp_dir(),
-            permissions: AppPermissions::builtin(),
+            permissions: crate::app::permissions::AppPermissions::builtin(),
+            runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
+                crate::file_browser::FileBrowserApp::new(cwd.clone()),
+            )),
+            workspace_root: cwd,
             manifest_id: manifest_id.to_string(),
-            name: "Test App".to_string(),
+            name: manifest_id.to_string(),
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
@@ -1900,14 +1895,11 @@ impl PlexiApp {
             agent: None,
             slots: std::collections::HashMap::new(),
             semantic_state: Default::default(),
-        };
-
-        let win = &mut self.windows[win_idx];
-        win.panes
-            .insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
-        let tile_id = win.tree.tiles.insert_pane(pane_id);
-        if win.tree.root.is_none() {
-            win.tree.root = Some(tile_id);
+        }));
+        self.windows[win_idx].panes.insert(pane_id, pane);
+        let tile_id = self.windows[win_idx].tree.tiles.insert_pane(pane_id);
+        if self.windows[win_idx].tree.root().is_none() {
+            self.windows[win_idx].tree.root = Some(tile_id);
         }
         (tile_id, pane_id)
     }
@@ -2091,10 +2083,9 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
         | AppCommand::RunInLinkedTerminal { .. }
         | AppCommand::InsertPathToken { .. }
         | AppCommand::OpenArtifact { .. } => true,
-        AppCommand::AssistantHostTool { name, .. } => !matches!(
-            name.as_str(),
-            "host.panes.list" | "host.panes.state"
-        ),
+        AppCommand::AssistantHostTool { name, .. } => {
+            !matches!(name.as_str(), "host.panes.list" | "host.panes.state")
+        }
         AppCommand::DeliverNotifyAction { host_action, .. } => host_action
             .as_deref()
             .map(|a| a.starts_with("pane_focus:"))
@@ -2958,7 +2949,7 @@ impl eframe::App for PlexiApp {
                     // Subscribe both sides + record the pair so subsequent
                     // `DeliverPipeMessage` for this pipe routes ONLY between
                     // them (#286). The sender already registered the pipe
-                    // locally inside its own ProcessApp; we need to register
+                    // locally inside its own app runtime; we need to register
                     // it on the target so its `has_reader` returns true and
                     // its SDK has a Pipe handle if it sends in reverse.
                     let active = self.active_window;
@@ -3126,13 +3117,7 @@ impl eframe::App for PlexiApp {
                             .panes
                             .get(&pid)
                             .and_then(|p| p.as_app())
-                            .map(|a| match &a.runtime {
-                                crate::host::pane::AppRuntime::Process(pa) => {
-                                    pa.type_id == originator_type_id
-                                }
-                                crate::host::pane::AppRuntime::Builtin(_) => false,
-                                crate::host::pane::AppRuntime::Wasm(_) => false,
-                            })
+                            .map(|a| a.manifest_id == originator_type_id)
                             .unwrap_or(false);
                         if matches {
                             if let Some(pane) = self.windows[active].panes.get_mut(&pid) {
@@ -3856,7 +3841,7 @@ impl eframe::App for PlexiApp {
         }
 
         // Hot reload (#83): drain any pending file-watcher reload requests.
-        // Each `ReloadRequest` causes the matching pane's ProcessApp to be
+        // Each `ReloadRequest` causes the matching pane's WASM runtime to be
         // dropped (sending Shutdown + reaping the child) and replaced with
         // a fresh subprocess. Idempotent if the pane was closed since.
         self.drain_hot_reload_requests();
@@ -4078,6 +4063,7 @@ fn key_str_to_pty_bytes(key: &str) -> Vec<u8> {
 }
 
 /// Parse a key string into a (key_name, Modifiers) pair for PGAP app panes.
+#[cfg(test)]
 fn parse_key_str_to_event(key: &str) -> (String, crate::app_protocol::Modifiers) {
     let mut parts: Vec<&str> = key.split('+').collect();
     let key_part = parts.pop().unwrap_or(key);
@@ -4104,8 +4090,9 @@ fn parse_key_str_to_event(key: &str) -> (String, crate::app_protocol::Modifiers)
         "plus" => "plus".to_string(),
         "equals" => "equals".to_string(),
         "minus" => "minus".to_string(),
-        "f1" | "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11"
-        | "f12" => key_part.to_lowercase(),
+        "f1" | "f2" | "f3" | "f4" | "f5" | "f6" | "f7" | "f8" | "f9" | "f10" | "f11" | "f12" => {
+            key_part.to_lowercase()
+        }
         _ => {
             // SDK KeyEvent.key is lowercase for app panes.
             if key_part.chars().count() == 1 {
@@ -4201,6 +4188,13 @@ pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
             events.push(egui::Event::Text(t));
         }
     }
+    events.push(egui::Event::Key {
+        key: egui_key,
+        physical_key: None,
+        pressed: false,
+        repeat: false,
+        modifiers,
+    });
     Some(egui::RawInput {
         events,
         modifiers,
@@ -4233,32 +4227,8 @@ fn drive_native_pane_key(
 /// process-app registry to register against (terminals — should never reach
 /// this path; logged at the call site).
 fn register_directed_pipe_on_target(pane: &mut crate::host::pane::Pane, pipe_id: &str) -> bool {
-    use crate::host::typed_pipes::PipeDirection;
-    let registry = match pane {
-        crate::host::pane::Pane::App(app) => match &app.runtime {
-            crate::host::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
-            crate::host::pane::AppRuntime::Builtin(_) => None,
-            crate::host::pane::AppRuntime::Wasm(_) => None,
-        },
-        crate::host::pane::Pane::Terminal(_) | crate::host::pane::Pane::Portal(_) => None,
-    };
-    let Some(registry) = registry else {
-        return false;
-    };
-    let result = registry
-        .lock()
-        .unwrap()
-        .open_json(pipe_id.to_string(), PipeDirection::Duplex);
-    match result {
-        Ok(()) => true,
-        // Already open is acceptable — agents may have called `pipe_open` or
-        // received a prior directed pipe with the same id; treat as success.
-        Err(crate::host::typed_pipes::PipeError::AlreadyOpen(_)) => true,
-        Err(e) => {
-            log::warn!("register_directed_pipe_on_target: open_json failed: {e}");
-            false
-        }
-    }
+    let _ = (pane, pipe_id);
+    false
 }
 
 #[cfg(test)]

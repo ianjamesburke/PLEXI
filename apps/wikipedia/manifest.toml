@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Search Wikipedia and browse article summaries."
 entry = "wikipedia.py"
 
+[runtime]
+python_compat = true
+
 [app.capabilities]
 capabilities = ["net.http"]
 allowed_hosts = ["en.wikipedia.org"]

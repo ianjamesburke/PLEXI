@@ -8,12 +8,17 @@ version = "0.1.0"
 description = "GitHub Issues viewer for the workspace repo."
 entry = "main.py"
 
+[runtime]
+python_compat = true
+
 [app.capabilities]
 capabilities = ["net.http"]
-allowed_hosts = ["api.github.com", "github.com"]
+allowed_hosts = ["api.github.com"]
 
 [launch]
 
-# Not a marketplace example: repo/token discovery shells out to `git` and `gh`.
-# Keep [marketplace] absent until those paths are replaced with host-mediated
-# APIs or the hosted review flow can label it as a reviewed native process.
+# Uncomment to publish this app to the marketplace:
+# [marketplace]
+# visibility = "public"   # public | unlisted | private
+# price = "free"          # "free", or a price like "4.99"
+# publisher = "plexi"     # first-party Plexi app

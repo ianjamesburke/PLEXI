@@ -326,7 +326,7 @@ mod tests {
         assert!(state
             .output_json
             .unwrap()
-            .contains("\"runtime\":\"process\""));
+            .contains("\"runtime\":\"builtin\""));
 
         let focused = harness.app.handle_assistant_host_tool(
             "host.panes.focus",

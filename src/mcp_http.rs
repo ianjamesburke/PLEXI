@@ -1,6 +1,6 @@
 //! Shared minimal HTTP/1.1 JSON-RPC transport for Plexi's MCP servers.
 //!
-//! Both the per-app MCP bridge (`process_app::mcp_server`) and the host-level
+//! Both app-scoped tool bridges and the host-level
 //! event MCP server (`app::host_mcp`) speak the same wire protocol: a single
 //! `POST /mcp` request carrying a JSON-RPC body, authenticated with
 //! `Authorization: Bearer <token>`. This module owns the request framing, auth

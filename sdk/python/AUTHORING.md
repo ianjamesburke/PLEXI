@@ -118,6 +118,16 @@ Widget selection rules:
 - **Raw drawing / games:** return `Canvas(...)` and drive state from
   `RenderFrame`.
 
+`Canvas` defaults to `fit="fill"`, the existing SDK behavior: its coordinate
+space fills the allocated pane and may scale differently on each axis. Existing
+apps need no change. Use `fit="contain"` when geometry must keep its source
+aspect ratio; the host centers the canvas and leaves unused space on two sides.
+This is appropriate for square game cells and circles that must remain round.
+
+Timers remain supported for ordinary delayed and periodic work. Animation apps
+should use `SetSchedulerMode("continuous", fps=...)` plus `RenderFrame`; this
+lets the host request a new paint only when the guest commits a frame.
+
 PGAP is L1-only: build declarative L1 trees. L0 is deprecated and its `_l0`
 fallbacks are gone; the `Raw` escape hatch stays.
 
@@ -132,6 +142,8 @@ and reserve `dim()`/`theme.muted` for fills, or text fails contrast.
 
 Keys arrive in `update(event)` as `KeyEvent`. Key strings are lowercase
 canonical — never match `"Enter"` or `"Escape"`.
+`event.pressed` is `True` on key-down and `False` on key-up. Track held keys by
+adding on press and removing on release; do not toggle state on every event.
 
 | Physical key | `event.key` |
 |---|---|

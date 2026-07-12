@@ -218,7 +218,12 @@ impl TypedPipeRegistry {
 
         self.pipes.insert(pipe_id, PipeEntry::Binary(entry));
 
-        Ok(BinaryPipeAllocation { socket_path })
+        let allocation = BinaryPipeAllocation { socket_path };
+        log::info!(
+            "typed_pipes: binary allocation ready at {}",
+            allocation.socket_path
+        );
+        Ok(allocation)
     }
 
     /// Register a JSON pipe. No socket — routing is handled by the PGAP wire.

@@ -37,7 +37,7 @@ def test_render_frame_steps_physics_and_view_has_canvas() -> None:
     assert stepped["ticks"] == 1
     assert stepped["balls"][0]["y"] != start_y
     node = balls.view().to_node()
-    canvas = node["children"][0]
+    canvas = node["children"][1]
     assert canvas["type"] == "canvas"
     assert any(cmd["type"] == "rect" and cmd["fill"] == "#0d0d1a" for cmd in canvas["commands"])
     assert any(cmd["type"] == "circle" and "cx" in cmd and "r" in cmd for cmd in canvas["commands"])

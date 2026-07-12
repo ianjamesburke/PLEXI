@@ -369,6 +369,7 @@ pub fn parse_capability_strings(
 
 /// Result of a permission check.
 #[derive(Debug)]
+#[cfg(test)]
 pub enum PermissionCheck {
     Allowed,
     Denied(String),
@@ -377,6 +378,7 @@ pub enum PermissionCheck {
 // ── v3 check API ──────────────────────────────────────────────────────────────
 
 /// Check whether a specific capability is granted for an app+workspace pair.
+#[cfg(test)]
 pub fn check(perms: &AppPermissions, cap: Capability) -> PermissionCheck {
     if perms.is_builtin {
         return PermissionCheck::Allowed;
@@ -394,6 +396,7 @@ pub fn check(perms: &AppPermissions, cap: Capability) -> PermissionCheck {
 /// Returns true if this capability is permanently blocked for this app.
 /// Callers should check this before adding to pending_prompts — blocked
 /// caps should be auto-denied without showing a modal.
+#[cfg(test)]
 pub fn is_blocked(perms: &AppPermissions, cap: Capability) -> bool {
     !perms.is_builtin && perms.blocked.contains(&cap)
 }

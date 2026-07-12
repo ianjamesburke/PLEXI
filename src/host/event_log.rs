@@ -35,7 +35,7 @@ pub enum HostEvent {
         pane_id: u64,
         timestamp: String,
     },
-    /// A ProcessApp was closed.
+    /// A WASM app runtime was closed.
     AppClosed {
         app_id: String,
         type_id: String,
@@ -351,6 +351,7 @@ pub fn read_recent(path: &std::path::Path, limit: usize) -> Vec<serde_json::Valu
 }
 
 /// Emit a `PipeOpened` event with a host-stamped timestamp.
+#[cfg(test)]
 pub fn emit_pipe_opened(
     from_app: impl Into<String>,
     channel: impl Into<String>,

@@ -1,18 +1,11 @@
-"""Declarative UI primitives returned from an app's ``view()``.
+"""Declarative UI primitives.
 
-Build a tree of ``Component`` objects such as ``Column([AppBar(...), Text(...)])``
-and return it from ``view()``. Components describe what to render; effects from
-``init()`` and ``update(event)`` describe what the host should do. Keep those
-two concepts separate: ``view()`` should read state and return components, not
-change state or request host work.
-
-Normal apps should use these host-rendered components. Games, simulations, and
-custom visualizations can return ``Canvas([...])`` and update state from
-``RenderFrame`` events.
+Apps return a component tree from ``view()``. The host owns layout,
+theme, input, and rendering.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Protocol, Union, cast, runtime_checkable
+from typing import List, Optional, Protocol, Union, runtime_checkable
 
 
 @runtime_checkable
@@ -326,12 +319,7 @@ class Label(Component):
 
 @dataclass
 class Text(Label):
-    """Host-rendered text node for labels, counters, and short body copy.
-
-    ``size`` overrides the default body size. ``bold`` and ``color`` are
-    inherited from ``Label``. Use ``Label`` when you want tone-based body,
-    caption, or hint text; use ``Text`` when matching the SDK v3 wire node.
-    """
+    """SDK v3 inline text node."""
 
     size: Optional[float] = None
     truncate: bool = False
@@ -354,12 +342,6 @@ class Text(Label):
 
 @dataclass
 class Button(Component):
-    """Clickable host-rendered button.
-
-    ``on_click`` is the handler id delivered back as a ``UiAction`` event.
-    Return state/effect changes from ``update(event)`` when that event arrives.
-    """
-
     label: str
     on_click: str
     style: str = "secondary"
@@ -367,7 +349,7 @@ class Button(Component):
     key: str = ""
 
     def measure(self, _avail_w: float) -> float:
-        return 32.0
+        return 28.0
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         fill = theme.accent if self.style == "primary" else theme.surface
@@ -377,38 +359,65 @@ class Button(Component):
     def to_node(self) -> dict:
         return {
             "type": "button",
-            "node_id": self.on_click,
             "label": self.label,
+            "on_click": self.on_click,
             "style": self.style,
             "disabled": self.disabled,
+            "key": self.key,
         }
 
 
-@dataclass
-class ActionBar(Component):
-    """Horizontal row of contextual action buttons."""
+class HStack(Component):
+    def __init__(self, children: list[Component], gap: float = 0.0, grow: bool = False) -> None:
+        if any(not isinstance(child, Component) for child in children):
+            raise TypeError("HStack children must be Component instances")
+        self.children = children
+        self.gap = gap
+        self.grow = grow
 
-    actions: List[Button]
-    gap: float = SPACE_SM
-    key: str = ""
-
-    def __post_init__(self) -> None:
-        self.actions = list(self.actions)
-        for i, action in enumerate(self.actions):
-            if not isinstance(action, Button):
-                raise TypeError(
-                    f"ActionBar actions[{i}] must be a Button, got {type(action).__name__}. "
-                    "Example: ActionBar([Button('Save', 'save', style='primary')])"
-                )
+    def is_grow(self) -> bool:
+        return self.grow
 
     def measure(self, avail_w: float) -> float:
-        return max((action.measure(avail_w) for action in self.actions), default=0.0)
+        return max((child.measure(avail_w) for child in self.children), default=0.0)
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        return None
 
     def to_node(self) -> dict:
-        return {
-            "type": "action_bar",
-            "actions": [action.to_node() for action in self.actions],
-        }
+        return {"type": "stack", "direction": "horizontal", "children": [child.to_node() for child in self.children], "gap": self.gap, "grow": self.grow}
+
+
+class Sized(Component):
+    def __init__(self, child: Component, width: float | None = None, height: float | None = None) -> None:
+        if not isinstance(child, Component):
+            raise TypeError("Sized child must be a Component")
+        self.child = child
+        self.width = width
+        self.height = height
+
+    def is_grow(self) -> bool:
+        return False
+
+    def measure(self, avail_w: float) -> float:
+        return self.height if self.height is not None else self.child.measure(self.width or avail_w)
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self.child.render(ctx, x, y, self.width or w, self.height or h)
+
+    def to_node(self) -> dict:
+        return {"type": "sized", "child": self.child.to_node(), "width": self.width, "height": self.height}
+
+
+class ActionBar(Component):
+    def __init__(self, actions: list[Button]) -> None:
+        for index, action in enumerate(actions):
+            if not isinstance(action, Button):
+                raise TypeError(f"ActionBar actions[{index}] must be a Button")
+        self.actions = actions
+
+    def to_node(self) -> dict:
+        return {"type": "action_bar", "actions": [{"type": "button", "node_id": action.on_click, "label": action.label, "style": action.style, "disabled": action.disabled} for action in self.actions]}
 
 
 @dataclass
@@ -432,8 +441,6 @@ class Spacer(Component):
 
 @dataclass
 class Badge(Component):
-    """Small host-rendered pill label for status, shortcuts, and metadata."""
-
     text: str
     color: str = "neutral"
     tone: "str | None" = None
@@ -458,6 +465,236 @@ class Badge(Component):
 
 
 @dataclass
+class Tooltip(Component):
+    text: str
+    child: Component
+
+    def to_node(self) -> dict:
+        return {"type": "tooltip", "text": self.text, "child": self.child.to_node()}
+
+
+@dataclass
+class Avatar(Component):
+    label: str = ""
+    size: float = 0.0
+
+    def to_node(self) -> dict:
+        return {"type": "avatar", "label": self.label, "size": self.size}
+
+
+@dataclass
+class Icon(Component):
+    name: str
+    size: float = 0.0
+    color: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "icon", "name": self.name, "size": self.size, "color": self.color}
+
+
+@dataclass
+class CodeBlock(Component):
+    code: str
+    language: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "code_block", "code": self.code, "language": self.language}
+
+
+@dataclass
+class Table(Component):
+    columns: list[str]
+    rows: list[list[str]]
+
+    def to_node(self) -> dict:
+        return {"type": "table", "columns": self.columns, "rows": self.rows}
+
+
+@dataclass
+class KeyValue(Component):
+    rows: list[tuple[str, str]]
+
+    def to_node(self) -> dict:
+        return {"type": "key_value", "rows": [
+            {"key": key, "value": value} for key, value in self.rows
+        ]}
+
+
+@dataclass
+class Breadcrumb(Component):
+    items: list[str]
+
+    def to_node(self) -> dict:
+        return {"type": "breadcrumb", "items": self.items}
+
+
+@dataclass
+class Pagination(Component):
+    node_id: str
+    page: int = 0
+    total: int = 0
+
+    def to_node(self) -> dict:
+        return {"type": "pagination", "node_id": self.node_id,
+                "page": self.page, "total": self.total}
+
+
+@dataclass
+class Accordion(Component):
+    node_id: str
+    title: str
+    child: Component
+    open: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "accordion", "node_id": self.node_id, "title": self.title,
+                "open": self.open, "child": self.child.to_node()}
+
+
+@dataclass
+class Checkbox(Component):
+    node_id: str
+    label: str = ""
+    checked: bool = False
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "checkbox", "node_id": self.node_id, "label": self.label,
+                "checked": self.checked, "disabled": self.disabled}
+
+
+@dataclass
+class Radio(Component):
+    node_id: str
+    options: list[str]
+    selected: int = 0
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "radio", "node_id": self.node_id, "options": self.options,
+                "selected": self.selected, "disabled": self.disabled}
+
+
+@dataclass
+class Switch(Component):
+    node_id: str
+    label: str = ""
+    on: bool = False
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "switch", "node_id": self.node_id, "label": self.label,
+                "on": self.on, "disabled": self.disabled}
+
+
+@dataclass
+class Slider(Component):
+    node_id: str
+    value: float = 0.0
+    min: float = 0.0
+    max: float = 1.0
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "slider", "node_id": self.node_id, "value": self.value,
+                "min": self.min, "max": self.max, "disabled": self.disabled}
+
+
+@dataclass
+class Select(Component):
+    node_id: str
+    options: list[str]
+    selected: int = 0
+    placeholder: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "select", "node_id": self.node_id, "options": self.options,
+                "selected": self.selected, "placeholder": self.placeholder}
+
+
+@dataclass
+class DateTimePicker(Component):
+    node_id: str
+    value: str = ""
+    mode: str = "datetime"
+
+    def to_node(self) -> dict:
+        return {"type": "date_time_picker", "node_id": self.node_id,
+                "value": self.value, "mode": self.mode}
+
+
+@dataclass
+class Progress(Component):
+    value: float = 0.0
+    label: str = ""
+    indeterminate: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "progress", "value": self.value, "label": self.label,
+                "indeterminate": self.indeterminate}
+
+
+@dataclass
+class Spinner(Component):
+    label: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "spinner", "label": self.label}
+
+
+@dataclass
+class Banner(Component):
+    text: str
+    tone: str = ""
+    title: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "banner", "text": self.text, "tone": self.tone, "title": self.title}
+
+
+@dataclass
+class TabBar(Component):
+    node_id: str
+    tabs: list[str]
+    active: int = 0
+
+    def to_node(self) -> dict:
+        return {"type": "tabs", "node_id": self.node_id, "tabs": self.tabs,
+                "active": self.active}
+
+
+@dataclass
+class EmptyState(Component):
+    title: str
+    description: str = ""
+    icon: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "empty_state", "title": self.title,
+                "description": self.description, "icon": self.icon}
+
+
+@dataclass
+class Skeleton(Component):
+    rows: int = 3
+    height: float = 0.0
+
+    def to_node(self) -> dict:
+        return {"type": "skeleton", "rows": self.rows, "height": self.height}
+
+
+@dataclass
+class Modal(Component):
+    node_id: str
+    title: str
+    child: Component
+
+    def to_node(self) -> dict:
+        return {"type": "modal", "node_id": self.node_id, "title": self.title,
+                "child": self.child.to_node()}
+
+
+@dataclass
 class Divider(Component):
     """A horizontal 1px rule."""
     color: "str | None" = None
@@ -476,34 +713,21 @@ class Divider(Component):
 
 @dataclass
 class CanvasRect:
-    """Rectangle drawing command for ``Canvas``."""
-
     x: float
     y: float
     width: float
     height: float
     fill: str
     radius: float = 0.0
-    border_color: Optional[str] = None
-    border_width: float = 1.0
-    hit_region: Optional[str] = None
 
     def to_command(self) -> dict:
-        cmd = {"type": "rect", "x": self.x, "y": self.y,
-               "w": self.width, "h": self.height,
-               "fill": self.fill, "radius": self.radius}
-        if self.border_color is not None:
-            cmd["stroke"] = self.border_color
-            cmd["stroke_width"] = self.border_width
-        if self.hit_region is not None:
-            cmd["hit_region"] = self.hit_region
-        return cmd
+        return {"type": "rect", "x": self.x, "y": self.y,
+                "w": self.width, "h": self.height,
+                "fill": self.fill, "radius": self.radius}
 
 
 @dataclass
 class CanvasCircle:
-    """Circle drawing command for ``Canvas``."""
-
     x: float
     y: float
     radius: float
@@ -516,8 +740,6 @@ class CanvasCircle:
 
 @dataclass
 class CanvasLine:
-    """Line drawing command for ``Canvas``."""
-
     x1: float
     y1: float
     x2: float
@@ -533,12 +755,6 @@ class CanvasLine:
 
 @dataclass
 class CanvasText:
-    """Text drawing command for ``Canvas``.
-
-    Coordinates are in the canvas coordinate space. Use component ``Text`` for
-    normal app UI; use ``CanvasText`` only inside a ``Canvas`` command list.
-    """
-
     x: float
     y: float
     text: str
@@ -546,53 +762,13 @@ class CanvasText:
     color: str = "#ffffff"
     bold: bool = False
     align: str = "left_top"
-    hit_region: Optional[str] = None
 
     def to_command(self) -> dict:
-        cmd = {"type": "text", "x": self.x, "y": self.y,
-               "text": self.text, "size": self.size,
-               "color": self.color, "bold": self.bold,
-               "align": self.align, "monospace": False,
-               "max_width": None, "elide": True, "selectable": False}
-        if self.hit_region is not None:
-            cmd["hit_region"] = self.hit_region
-        return cmd
-
-
-@dataclass
-class CanvasButton:
-    """Convenience primitive: a clickable button on a Canvas.
-
-    Decomposes into a CanvasRect + CanvasText with a shared hit_region.
-    Use ``to_commands()`` (plural) to get the list of underlying primitives.
-    """
-
-    x: float
-    y: float
-    width: float
-    height: float
-    label: str
-    region: str
-    fill: Optional[str] = None
-    text_color: Optional[str] = None
-    text_size: float = 13.0
-    bold: bool = False
-    radius: float = 4.0
-    border_color: Optional[str] = None
-    border_width: float = 0.0
-
-    def to_commands(self) -> list:
-        """Decompose into CanvasRect + CanvasText with shared hit_region."""
-        return [
-            CanvasRect(self.x, self.y, self.width, self.height,
-                       fill=self.fill or "#333333", radius=self.radius,
-                       border_color=self.border_color, border_width=self.border_width,
-                       hit_region=self.region),
-            CanvasText(self.x + self.width / 2, self.y + self.height / 2,
-                       self.label, size=self.text_size,
-                       color=self.text_color or "#ffffff", bold=self.bold,
-                       align="center_center", hit_region=self.region),
-        ]
+        return {"type": "text", "x": self.x, "y": self.y,
+                "text": self.text, "size": self.size,
+                "color": self.color, "bold": self.bold,
+                "align": self.align, "monospace": False,
+                "max_width": None, "elide": True, "selectable": False}
 
 
 class Canvas(Component):
@@ -608,14 +784,18 @@ class Canvas(Component):
         width: float = 640.0,
         height: float = 360.0,
         grow: bool = True,
+        fit: str = "fill",
         key: str = "",
     ) -> None:
         if callable(commands):
             raise TypeError("Canvas expects typed canvas commands, not a draw callback")
+        if fit not in ("fill", "contain"):
+            raise ValueError("Canvas fit must be 'fill' or 'contain'")
         self.commands = list(commands or [])
         self.width = width
         self.height = height
         self.grow = grow
+        self.fit = fit
         self.key = key
 
     def measure(self, _avail_w: float) -> float:
@@ -633,15 +813,8 @@ class Canvas(Component):
             "width": self.width,
             "height": self.height,
             "grow": self.grow,
-            "commands": [
-                cmd
-                for c in self.commands
-                for cmd in (
-                    [sub.to_command() for sub in c.to_commands()]
-                    if hasattr(c, "to_commands")
-                    else [c.to_command()]
-                )
-            ],
+            "fit": self.fit,
+            "commands": [c.to_command() for c in self.commands],
         }
 
 
@@ -1057,7 +1230,7 @@ class FooterKeys(Component):
     # `max_width` can't fit everything; very narrow panes may render past
     # this measurement. Apps wanting exact bounded footers should put
     # FooterKeys in a fixed-height region or constrain the shortcut count.
-    ROW_H = CHIP_H + 4.0
+    ROW_H = CHIP_H + 2.0  # reduced from +4.0 — tighter without cramping chips
 
     def measure(self, avail_w: float) -> float:
         if not self.divider:
@@ -1353,9 +1526,15 @@ class Card(Component):
         return total + 2 * self.padding
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        ctx.rect(x, y, w, h, self.background or theme.surface, radius=self.radius)
         border_color = theme.highlight if self.border == "__theme__" else self.border
-        ctx.rect(x, y, w, h, self.background or theme.surface, radius=self.radius,
-                 stroke=border_color or None, stroke_width=1.0)
+        if border_color:
+            # Top + bottom + left + right 1px strokes. Drawn as four thin
+            # rects because `ctx.rect` doesn't support a separate stroke.
+            ctx.rect(x, y, w, 1.0, border_color)
+            ctx.rect(x, y + h - 1.0, w, 1.0, border_color)
+            ctx.rect(x, y, 1.0, h, border_color)
+            ctx.rect(x + w - 1.0, y, 1.0, h, border_color)
         inner_x = x + self.padding
         inner_y = y + self.padding
         inner_w = w - 2 * self.padding
@@ -1375,6 +1554,56 @@ class Card(Component):
                 return None
             children.append(node)
         return {"type": "card", "children": children, "padding": self.padding}
+
+
+@dataclass
+class TextInput(Component):
+    """Layout-aware text input. Place inside a Column like any other child.
+
+    Return it from ``view()`` inside a component tree. After the render pass,
+    read ``.submitted`` to get the text the user submitted (pressed Enter), or
+    ``None`` if nothing was submitted this frame.
+
+    Create once (in ``on_init``) and update ``placeholder`` as needed — the
+    instance is stable across renders so the host can track focus state.
+
+    When ``multiline=True``, Shift+Enter inserts a newline and Enter submits.
+    """
+    id: str
+    placeholder: str = ""
+    height: float = 48.0
+    multiline: bool = False
+    value: Optional[str] = None
+    on_change: str = ""
+    on_submit: str = ""
+    password: bool = False
+
+    _submitted: Optional[str] = field(default=None, init=False, repr=False)
+
+    def measure(self, avail_w: float) -> float:
+        return self.height
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self._submitted = ctx.text_input(self.id, x=x, y=y, w=w,
+                                         placeholder=self.placeholder, h=h,
+                                         multiline=self.multiline,
+                                         value=self.value)
+        self.value = None
+
+    @property
+    def submitted(self) -> Optional[str]:
+        """Text submitted this frame (user pressed Enter), else None."""
+        return self._submitted
+
+    def to_node(self) -> dict:
+        return {
+            "type": "TextInput",
+            "value": self.value or "",
+            "placeholder": self.placeholder,
+            "on_change": self.on_change,
+            "on_submit": self.on_submit,
+            "password": self.password,
+        }
 
 
 @dataclass
@@ -1408,6 +1637,11 @@ class TextEdit(Component):
 
     def measure(self, _avail_w: float) -> float:
         return self.height
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self._submitted = ctx.text_input(self.node_id, x=x, y=y, w=w,
+                                         placeholder=self.placeholder,
+                                         h=h, multiline=self.multiline)
 
     @property
     def submitted(self) -> Optional[str]:
@@ -1513,7 +1747,7 @@ class ChatBubble(Component):
 
 @dataclass
 class Markdown(Component):
-    """Host-rendered markdown block for rich read-only text in component trees."""
+    """Host-rendered markdown block for SDK v3 component trees."""
 
     text: str
     padding: float = SPACE_MD
@@ -1542,7 +1776,7 @@ class SelectList(Component):
 
     def __init__(self, items: List[dict], selected_idx: int = 0) -> None:
         if not isinstance(items, list):
-            raise TypeError(  # pyright: ignore[reportUnreachable]
+            raise TypeError(
                 f"SelectList items must be a list of dicts, got {type(items).__name__}. "
                 "Each dict needs at least a 'name' key: [{\"name\": \"Item 1\"}, ...]"
             )
@@ -1674,7 +1908,7 @@ class SelectList(Component):
 
 @dataclass
 class FormField(Component):
-    """Label + TextEdit row. Create in on_init (stable across renders).
+    """Label + TextInput row. Create in on_init (stable across renders).
 
     Read .submitted after the render pass; it contains the text entered by the
     user when they pressed Enter, or None if no submission this frame.
@@ -1690,7 +1924,7 @@ class FormField(Component):
     BOTTOM_PAD: float = SPACE_LG          # 16px below input before next item
 
     def __post_init__(self) -> None:
-        self._input: TextEdit = TextEdit(self.id, placeholder=self.placeholder, height=self.height)
+        self._input: TextInput = TextInput(self.id, placeholder=self.placeholder, height=self.height)
 
     @property
     def submitted(self) -> Optional[str]:
@@ -1700,16 +1934,12 @@ class FormField(Component):
     def measure(self, avail_w: float) -> float:
         return self.LABEL_H + self.LABEL_GAP + self.height + self.BOTTOM_PAD
 
-    def to_node(self) -> dict:
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         req_suffix = " *" if self.required else ""
-        return cast(dict, Column(
-            [
-                Label(f"{self.label}{req_suffix}", tone="hint"),
-                self._input,
-            ],
-            gap=self.LABEL_GAP,
-            padding=0,
-        ).to_node())
+        ctx.text(x, y, f"{self.label}{req_suffix}",
+                 size=TEXT_HINT, color=theme.muted)
+        input_y = y + self.LABEL_H + self.LABEL_GAP
+        self._input.render(ctx, x, input_y, w, self.height)
 
 
 @dataclass
@@ -1799,87 +2029,6 @@ class Column(Component):
         }
 
 
-@dataclass
-class HStack(Component):
-    """Horizontal flex container. Lays children left-to-right, partitioning
-    remaining width to any grow children (``Canvas(grow=True)``, ``Spacer(grow=True)``)
-    after fixed-width siblings (e.g. a ``Sized`` sidebar) are subtracted.
-
-    Emits a horizontal ``Stack`` node so the host width-partitions exactly like
-    a vertical Column height-partitions.
-    """
-    children: List[Component]
-    gap: float = SPACE_MD
-    grow: bool = False
-    key: str = ""
-
-    def __post_init__(self):
-        self.children = list(self.children)
-        for child in self.children:
-            if not isinstance(child, Component):
-                raise TypeError(
-                    f"HStack children must subclass Component, got {type(child).__name__}. "
-                    "Ad-hoc widget classes missing to_node() will not render."
-                )
-
-    def is_grow(self) -> bool:
-        return self.grow
-
-    def measure(self, avail_w: float) -> float:
-        return max((c.measure(avail_w) for c in self.children), default=0.0)
-
-    def to_node(self) -> "dict | None":
-        children = []
-        for child in self.children:
-            node = child.to_node()
-            if node is None:
-                return None
-            children.append(node)
-        return {
-            "type": "stack",
-            "direction": "horizontal",
-            "children": children,
-            "gap": self.gap,
-        }
-
-
-@dataclass
-class Sized(Component):
-    """Explicit-size wrapper. Constrains ``child`` to an exact ``width`` and/or
-    ``height``. ``None`` on an axis means "inherit available". Primary use: a
-    fixed-width sidebar beside a growing ``Canvas`` inside an ``HStack``.
-    """
-    child: Component
-    width: Optional[float] = None
-    height: Optional[float] = None
-    key: str = ""
-
-    def __post_init__(self):
-        if not isinstance(self.child, Component):
-            raise TypeError(
-                f"Sized child must subclass Component, got {type(self.child).__name__}."
-            )
-
-    def is_grow(self) -> bool:
-        return False
-
-    def measure(self, avail_w: float) -> float:
-        if self.height is not None:
-            return self.height
-        return self.child.measure(self.width if self.width is not None else avail_w)
-
-    def to_node(self) -> "dict | None":
-        node = self.child.to_node()
-        if node is None:
-            return None
-        return {
-            "type": "sized",
-            "width": self.width,
-            "height": self.height,
-            "child": node,
-        }
-
-
 # ── Public render entry point ──────────────────────────────────────────────
 
 
@@ -1893,7 +2042,7 @@ def render_tree(ctx, root: Component, fill: Optional[str] = None) -> None:
     emits a single ``ComponentTree`` command and the host renders it natively.
     """
     if not isinstance(root, Component):
-        raise TypeError(  # pyright: ignore[reportUnreachable]
+        raise TypeError(
             f"ctx.render() expected a Component (e.g. Column, Card), got {type(root).__name__}. "
             "Wrap your UI elements in Column([...]) or another container that subclasses Component."
         )
@@ -1945,9 +2094,14 @@ class InfoTable(Component):
         return self.ROW_H * len(self.rows)
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        # Background + border
         background = self.background or theme.surface
         border = self.border or theme.highlight
-        ctx.rect(x, y, w, h, background, radius=self.radius, stroke=border, stroke_width=1.0)
+        ctx.rect(x, y, w, h, background, radius=self.radius)
+        ctx.rect(x, y, w, 1.0, border)
+        ctx.rect(x, y + h - 1.0, w, 1.0, border)
+        ctx.rect(x, y, 1.0, h, border)
+        ctx.rect(x + w - 1.0, y, 1.0, h, border)
 
         val_x = x + self.PAD_H + self.key_width + self.PAD_H
         val_w = w - self.PAD_H - self.key_width - self.PAD_H * 2
@@ -2225,13 +2379,13 @@ class Grid:
         children: "list[HasToNode]",
         gap: float = 8.0,
     ) -> None:
+        if columns < 1:
+            raise ValueError(f"Grid columns must be >= 1, got {columns}")
         if not isinstance(columns, int):
             raise TypeError(
                 f"Grid columns must be an int, got {type(columns).__name__}. "
                 f"Example: Grid(2, [child1, child2])"
             )
-        if columns < 1:
-            raise ValueError(f"Grid columns must be >= 1, got {columns}")
         for i, child in enumerate(children):
             if not isinstance(child, (dict, HasToNode)):
                 raise TypeError(
@@ -2375,300 +2529,6 @@ class ProgressBar:
         }
 
 
-# ── Native placeholder primitives (PGAP v3.5) ─────────────────────────────
-# Host-rendered vocabulary settled for the WASM era. Each class maps 1:1 to a
-# native ``UiNode`` variant in ``src/protocol/ui_nodes.rs`` and renders through
-# host metrics/chrome. Visual styling is deliberately minimal ("placeholder"):
-# the shape, PGAP encoding, and events are final; the chrome will be expanded.
-
-
-@dataclass
-class Checkbox(Component):
-    """Boolean checkbox. Fires a ``change`` event with the toggled ``checked``."""
-
-    node_id: str
-    label: str = ""
-    checked: bool = False
-    disabled: bool = False
-
-    def to_node(self) -> dict:
-        return {"type": "checkbox", "node_id": self.node_id, "label": self.label,
-                "checked": self.checked, "disabled": self.disabled}
-
-
-@dataclass
-class Radio(Component):
-    """Single-select radio group. Fires ``change`` with the picked index in ``value``."""
-
-    node_id: str
-    options: List[str] = field(default_factory=list)
-    selected: int = 0
-    disabled: bool = False
-
-    def to_node(self) -> dict:
-        return {"type": "radio", "node_id": self.node_id, "options": list(self.options),
-                "selected": self.selected, "disabled": self.disabled}
-
-
-@dataclass
-class Switch(Component):
-    """On/off switch. Fires ``change`` with the toggled ``on`` value."""
-
-    node_id: str
-    label: str = ""
-    on: bool = False
-    disabled: bool = False
-
-    def to_node(self) -> dict:
-        return {"type": "switch", "node_id": self.node_id, "label": self.label,
-                "on": self.on, "disabled": self.disabled}
-
-
-@dataclass
-class Slider(Component):
-    """Horizontal value slider. Clicking the track fires ``change`` with ``value``."""
-
-    node_id: str
-    value: float = 0.0
-    min: float = 0.0
-    max: float = 1.0
-    disabled: bool = False
-
-    def to_node(self) -> dict:
-        return {"type": "slider", "node_id": self.node_id, "value": self.value,
-                "min": self.min, "max": self.max, "disabled": self.disabled}
-
-
-@dataclass
-class Select(Component):
-    """Dropdown/combobox trigger. Clicking fires ``click``; the app owns the popover."""
-
-    node_id: str
-    options: List[str] = field(default_factory=list)
-    selected: int = 0
-    placeholder: str = ""
-
-    def to_node(self) -> dict:
-        return {"type": "select", "node_id": self.node_id, "options": list(self.options),
-                "selected": self.selected, "placeholder": self.placeholder}
-
-
-@dataclass
-class DateTimePicker(Component):
-    """Date/time picker trigger. Clicking fires ``click``; the app owns the popover.
-
-    ``mode`` is ``"date"``, ``"time"``, or ``"datetime"``.
-    """
-
-    node_id: str
-    value: str = ""
-    mode: str = "datetime"
-
-    def to_node(self) -> dict:
-        return {"type": "date_time_picker", "node_id": self.node_id,
-                "value": self.value, "mode": self.mode}
-
-
-@dataclass
-class Progress(Component):
-    """Progress bar. ``value`` is 0.0–1.0; set ``indeterminate`` for unknown work."""
-
-    value: float = 0.0
-    label: str = ""
-    indeterminate: bool = False
-
-    def to_node(self) -> dict:
-        return {"type": "progress", "value": self.value, "label": self.label,
-                "indeterminate": self.indeterminate}
-
-
-@dataclass
-class Spinner(Component):
-    """Loading spinner with an optional caption."""
-
-    label: str = ""
-
-    def to_node(self) -> dict:
-        return {"type": "spinner", "label": self.label}
-
-
-@dataclass
-class Tooltip(Component):
-    """Hover tooltip wrapping a single child component."""
-
-    text: str
-    child: Component
-
-    def to_node(self) -> dict:
-        return {"type": "tooltip", "text": self.text, "child": self.child.to_node()}
-
-
-@dataclass
-class Avatar(Component):
-    """Circular avatar rendering the initials of ``label``."""
-
-    label: str = ""
-    size: float = 0.0
-
-    def to_node(self) -> dict:
-        return {"type": "avatar", "label": self.label, "size": self.size}
-
-
-@dataclass
-class Icon(Component):
-    """Named glyph icon. ``name`` is a semantic key resolved by the host."""
-
-    name: str
-    size: float = 0.0
-    color: str = ""
-
-    def to_node(self) -> dict:
-        return {"type": "icon", "name": self.name, "size": self.size, "color": self.color}
-
-
-@dataclass
-class CodeBlock(Component):
-    """Monospace code block with an optional ``language`` label."""
-
-    code: str
-    language: str = ""
-
-    def to_node(self) -> dict:
-        return {"type": "code_block", "code": self.code, "language": self.language}
-
-
-@dataclass
-class Table(Component):
-    """Static data table with column headers and string cells."""
-
-    columns: List[str] = field(default_factory=list)
-    rows: List[List[str]] = field(default_factory=list)
-
-    def to_node(self) -> dict:
-        return {"type": "table", "columns": list(self.columns),
-                "rows": [[str(c) for c in row] for row in self.rows]}
-
-
-@dataclass
-class Banner(Component):
-    """Inline banner/callout. ``tone`` is info/success/warning/danger."""
-
-    text: str
-    tone: str = "info"
-    title: str = ""
-
-    def to_node(self) -> dict:
-        return {"type": "banner", "text": self.text, "tone": self.tone, "title": self.title}
-
-
-@dataclass
-class KeyValue(Component):
-    """Key/value description list. ``rows`` is a list of ``(key, value)`` pairs."""
-
-    rows: List = field(default_factory=list)
-
-    def to_node(self) -> dict:
-        out = []
-        for row in self.rows:
-            if isinstance(row, dict):
-                out.append({"key": str(row.get("key", "")), "value": str(row.get("value", ""))})
-            elif isinstance(row, (list, tuple)) and len(row) >= 2:
-                out.append({"key": str(row[0]), "value": str(row[1])})
-            elif row is not None:
-                out.append({"key": str(row), "value": ""})
-        return {"type": "key_value", "rows": out}
-
-
-@dataclass
-class Breadcrumb(Component):
-    """Breadcrumb trail; the last item is the current location."""
-
-    items: List[str] = field(default_factory=list)
-
-    def to_node(self) -> dict:
-        return {"type": "breadcrumb", "items": [str(i) for i in self.items]}
-
-
-@dataclass
-class Pagination(Component):
-    """Pagination control. Prev/next fire ``change`` with the new zero-based page in ``value``."""
-
-    node_id: str
-    page: int = 0
-    total: int = 0
-
-    def to_node(self) -> dict:
-        return {"type": "pagination", "node_id": self.node_id,
-                "page": self.page, "total": self.total}
-
-
-@dataclass
-class Accordion(Component):
-    """Disclosure/accordion. The header fires ``click``; ``child`` shows when ``open``."""
-
-    node_id: str
-    title: str
-    child: Component
-    open: bool = False
-
-    def to_node(self) -> dict:
-        return {"type": "accordion", "node_id": self.node_id, "title": self.title,
-                "open": self.open, "child": self.child.to_node()}
-
-
-@dataclass
-class TabBar(Component):
-    """Native tab strip (headers only). Selecting a tab fires ``change`` with the index in ``value``.
-
-    The app renders the active tab's body itself. Distinct from :class:`Tabs`,
-    which decomposes to L0 nodes; ``TabBar`` maps to the native ``tabs`` node.
-    """
-
-    node_id: str
-    tabs: List[str] = field(default_factory=list)
-    active: int = 0
-
-    def to_node(self) -> dict:
-        return {"type": "tabs", "node_id": self.node_id,
-                "tabs": [str(t) for t in self.tabs], "active": self.active}
-
-
-@dataclass
-class EmptyState(Component):
-    """Empty-state placeholder with a title, optional description and icon token."""
-
-    title: str
-    description: str = ""
-    icon: str = ""
-
-    def to_node(self) -> dict:
-        return {"type": "empty_state", "title": self.title,
-                "description": self.description, "icon": self.icon}
-
-
-@dataclass
-class Skeleton(Component):
-    """Skeleton loading placeholder — ``rows`` shimmer bars of the given ``height``."""
-
-    rows: int = 3
-    height: float = 0.0
-
-    def to_node(self) -> dict:
-        return {"type": "skeleton", "rows": self.rows, "height": self.height}
-
-
-@dataclass
-class Modal(Component):
-    """Modal dialog wrapping a child body. The close affordance fires ``click``."""
-
-    node_id: str
-    title: str
-    child: Component
-
-    def to_node(self) -> dict:
-        return {"type": "modal", "node_id": self.node_id, "title": self.title, "child": self.child.to_node()}
-
-
 __all__ = [
     # tokens
     "SPACE_XS", "SPACE_SM", "SPACE_MD", "SPACE_LG", "SPACE_XL",
@@ -2678,11 +2538,11 @@ __all__ = [
     # color constants (dark-mode defaults)
     "BG", "FG", "ACCENT", "SURFACE", "HIGHLIGHT", "MUTED", "GREEN", "RED", "YELLOW",
     # components
-    "Component", "Column", "HStack", "Sized", "Card",
+    "Component", "Column", "Card", "HStack", "Sized", "ActionBar",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
-    "ActionBar", "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
-    "CanvasText", "CanvasButton", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
-    "ListItem", "Row", "TextEdit", "ChatBubble", "Markdown",
+    "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
+    "CanvasText", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
+    "ListItem", "Row", "TextInput", "TextEdit", "ChatBubble", "Markdown",
     "SelectList", "FormField",
     "InfoTable", "ButtonRow",
     # badge primitive
@@ -2695,9 +2555,4 @@ __all__ = [
     "ListRow", "RowChip", "LeadingBadge", "LeadingAvatar", "LeadingIcon",
     # UiNode component tree (PGAP v3.5)
     "Tabs", "Grid", "Toggle", "Clickable", "ProgressBar",
-    # native placeholder primitives (PGAP v3.5)
-    "Checkbox", "Radio", "Switch", "Slider", "Select", "DateTimePicker",
-    "Progress", "Spinner", "Tooltip", "Avatar", "Icon", "CodeBlock", "Table",
-    "Banner", "KeyValue", "Breadcrumb", "Pagination", "Accordion", "TabBar",
-    "EmptyState", "Skeleton", "Modal",
 ]

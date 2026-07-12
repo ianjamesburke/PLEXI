@@ -1831,11 +1831,12 @@ impl HeadlessBackend {
         self.h.with_app(|app| {
             for win in &app.windows {
                 if let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) {
-                    if let AppRuntime::Process(p) = &app_pane.runtime {
+                    if let AppRuntime::Python(p) = &app_pane.runtime {
                         return Some(AppState {
                             pane_id,
-                            lifecycle: format!("{:?}", p.lifecycle.state()).to_lowercase(),
-                            tree: serde_json::to_value(&p.frame).unwrap_or(serde_json::Value::Null),
+                            lifecycle: if p.error().is_some() { "error" } else { "running" }
+                                .to_string(),
+                            tree: serde_json::Value::Null,
                         });
                     }
                     if let AppRuntime::Wasm(w) = &app_pane.runtime {

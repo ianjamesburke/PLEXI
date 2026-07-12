@@ -167,8 +167,7 @@ fn focus_log_heartbeats_for_same_pane_after_threshold() {
 
     app.windows[0].focused_pane = Some(tile_a);
     app.last_logged_focus = Some((win_id, tile_a));
-    let original_start =
-        std::time::Instant::now() - std::time::Duration::from_secs(15 * 60 + 1);
+    let original_start = std::time::Instant::now() - std::time::Duration::from_secs(15 * 60 + 1);
     app.focus_started_at = Some(original_start);
 
     let outcome = app.reconcile_focus_logging(std::time::Duration::from_secs(15 * 60));

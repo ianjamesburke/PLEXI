@@ -26,7 +26,7 @@ static APP_CHROME_INFO_LOGGED: AtomicBool = AtomicBool::new(false);
 /// matching top-level draw-command behavior.
 pub(crate) struct RawNodeCaches<'a> {
     pub(crate) commonmark_cache: &'a mut egui_commonmark::CommonMarkCache,
-    pub(crate) image_cache: &'a mut crate::process_app::image_cache::ImageCache,
+    pub(crate) image_cache: &'a mut crate::protocol_render::image_cache::ImageCache,
     pub(crate) audio_peaks: &'a std::collections::HashMap<String, f32>,
     pub(crate) workspace_root: &'a std::path::Path,
     pub(crate) net_http_granted: bool,
@@ -358,6 +358,7 @@ impl TextEditFocusCtx {
     }
 
     /// Call after each frame to rotate visibility sets.
+    #[cfg(test)]
     pub(crate) fn end_frame(&mut self) {
         std::mem::swap(&mut self.prev_visible, &mut self.current_visible);
         self.current_visible.clear();
@@ -681,7 +682,7 @@ fn render_component_tree_inner(
             // apply to legacy draw commands embedded inside a component tree.
             // (Fresh HashSets are allocation-free until first insert.)
             let mut raw_focus_ctx = TextEditFocusCtx::new();
-            crate::process_app::render::render_draw_commands(
+            crate::protocol_render::render::render_draw_commands(
                 ui,
                 pane_rect,
                 std::slice::from_ref(command.as_ref()),
@@ -752,7 +753,7 @@ fn render_component_tree_inner(
             );
             let mut raw_events: Vec<crate::app_protocol::PlexiEvent> = Vec::new();
             let mut raw_focus_ctx = TextEditFocusCtx::new();
-            crate::process_app::render::render_draw_commands(
+            crate::protocol_render::render::render_draw_commands(
                 ui,
                 rect,
                 commands,
@@ -1167,7 +1168,11 @@ fn render_component_tree_inner(
                         ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
                     let stroke = egui::Stroke::new(
                         1.5,
-                        if *disabled { colors.text_dim } else { colors.border },
+                        if *disabled {
+                            colors.text_dim
+                        } else {
+                            colors.border
+                        },
                     );
                     let fill = if *checked {
                         colors.accent
@@ -1223,7 +1228,11 @@ fn render_component_tree_inner(
                             ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
                         let stroke = egui::Stroke::new(
                             1.5,
-                            if *disabled { colors.text_dim } else { colors.border },
+                            if *disabled {
+                                colors.text_dim
+                            } else {
+                                colors.border
+                            },
                         );
                         ui.painter().circle_stroke(c.center(), 7.0, stroke);
                         if is_sel {
@@ -1265,12 +1274,20 @@ fn render_component_tree_inner(
                     let track_fill = if *on { colors.accent } else { colors.bg_active };
                     ui.painter()
                         .rect_filled(track, egui::CornerRadius::same(9), track_fill);
-                    let knob_x = if *on { track.right() - 9.0 } else { track.left() + 9.0 };
+                    let knob_x = if *on {
+                        track.right() - 9.0
+                    } else {
+                        track.left() + 9.0
+                    };
                     let knob = egui::pos2(knob_x, track.center().y);
                     ui.painter().circle_filled(
                         knob,
                         6.5,
-                        if *disabled { colors.text_dim } else { colors.text_primary },
+                        if *disabled {
+                            colors.text_dim
+                        } else {
+                            colors.text_primary
+                        },
                     );
                     if !label.is_empty() {
                         ui.add_space(style::SPACE_SM);
@@ -1324,7 +1341,11 @@ fn render_component_tree_inner(
             ui.painter().circle_filled(
                 knob,
                 6.0,
-                if *disabled { colors.text_dim } else { colors.text_primary },
+                if *disabled {
+                    colors.text_dim
+                } else {
+                    colors.text_primary
+                },
             );
             if !*disabled && clicked_in(ui, rect) {
                 if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
@@ -1446,10 +1467,8 @@ fn render_component_tree_inner(
                     false,
                 );
             }
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), 8.0),
-                egui::Sense::hover(),
-            );
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), egui::Sense::hover());
             ui.painter()
                 .rect_filled(rect, egui::CornerRadius::same(4), colors.bg_active);
             let frac = if *indeterminate {
@@ -1521,7 +1540,8 @@ fn render_component_tree_inner(
         UiNode::Avatar { label, size } => {
             let d = if *size > 0.0 { *size } else { 32.0 };
             let (rect, _) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::hover());
-            ui.painter().circle_filled(rect.center(), d / 2.0, colors.bg_active);
+            ui.painter()
+                .circle_filled(rect.center(), d / 2.0, colors.bg_active);
             let initials: String = label
                 .split_whitespace()
                 .filter_map(|w| w.chars().next())
@@ -1705,7 +1725,11 @@ fn render_component_tree_inner(
             });
         }
 
-        UiNode::Pagination { node_id, page, total } => {
+        UiNode::Pagination {
+            node_id,
+            page,
+            total,
+        } => {
             let chrome = AppChrome::new(colors);
             ui.horizontal(|ui| {
                 let prev = pagination_chip(ui, colors, "‹");
@@ -1847,7 +1871,11 @@ fn render_component_tree_inner(
         } => {
             let chrome = AppChrome::new(colors);
             ui.vertical_centered(|ui| {
-                let glyph = if icon.is_empty() { "∅" } else { icon.as_str() };
+                let glyph = if icon.is_empty() {
+                    "∅"
+                } else {
+                    icon.as_str()
+                };
                 chrome.text_label(
                     ui,
                     glyph,
@@ -1927,10 +1955,9 @@ fn render_component_tree_inner(
                                 false,
                                 false,
                             );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    chrome.text_label(
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                chrome
+                                    .text_label(
                                         ui,
                                         "✕",
                                         style::TEXT_BODY,
@@ -1940,8 +1967,7 @@ fn render_component_tree_inner(
                                         false,
                                     )
                                     .rect
-                                },
-                            )
+                            })
                             .inner
                         })
                         .inner;
@@ -2200,9 +2226,13 @@ fn vertical_fixed_height(ui: &egui::Ui, node: &UiNode) -> Option<f32> {
         UiNode::Checkbox { .. } | UiNode::Switch { .. } | UiNode::Slider { .. } => Some(20.0),
         UiNode::Select { .. } | UiNode::DateTimePicker { .. } => Some(button_height()),
         UiNode::Spinner { .. } => Some(16.0),
-        UiNode::Progress { label, .. } => {
-            Some(8.0 + if label.is_empty() { 0.0 } else { style::TEXT_CAPTION + 4.0 })
-        }
+        UiNode::Progress { label, .. } => Some(
+            8.0 + if label.is_empty() {
+                0.0
+            } else {
+                style::TEXT_CAPTION + 4.0
+            },
+        ),
         UiNode::Avatar { size, .. } => Some(if *size > 0.0 { *size } else { 32.0 }),
         _ => None,
     }
@@ -2622,7 +2652,7 @@ fn render_stack(
     events
 }
 
-use crate::process_app::render::parse_color;
+use crate::protocol_render::render::parse_color;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

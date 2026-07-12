@@ -4,7 +4,7 @@ import base64
 import importlib
 import json
 from dataclasses import asdict, fields, is_dataclass
-from typing import Any, cast
+from typing import Any
 
 import plexi_sdk as sdk
 
@@ -29,7 +29,6 @@ def call_lifecycle(fn_name: str, json_arg: str) -> str:
 
     if fn_name == "init":
         _set_sdk_state(arg.get("state", {}), in_view=False)
-        _set_sdk_size(arg.get("size", [0.0, 0.0]))
         result = fn(tuple(arg.get("size", [0.0, 0.0])), arg.get("args", []))
         return json.dumps([_encode_effect(e) for e in result])
     if fn_name == "update":
@@ -46,15 +45,6 @@ def call_lifecycle(fn_name: str, json_arg: str) -> str:
             sdk._in_view = False
             _v3_state._in_view = False
     raise ValueError(f"unknown lifecycle function: {fn_name}")
-
-
-def _set_sdk_size(size: Any) -> None:
-    if not isinstance(size, (list, tuple)) or len(size) < 2:
-        return
-    sdk.pane_width = float(size[0] or 0.0)
-    sdk.pane_height = float(size[1] or 0.0)
-    sdk.canvas_width = sdk.pane_width
-    sdk.canvas_height = sdk.pane_height
 
 
 def _set_sdk_state(encoded: dict[str, str], in_view: bool) -> None:
@@ -83,7 +73,7 @@ def _encode_effect(effect: Any) -> dict[str, Any]:
         raise TypeError(f"Unknown effect type: {type(effect).__name__}")
     if getattr(effect_types, type(effect).__name__, None) is not type(effect):
         raise TypeError(f"Unknown effect type: {type(effect).__name__}")
-    payload = _jsonable(asdict(cast(Any, effect)))
+    payload = _jsonable(asdict(effect))
     payload["type"] = type(effect).__name__
     return payload
 
@@ -104,29 +94,14 @@ def _decode_event(payload: dict[str, Any]) -> Any:
     event_type = payload.get("type")
     if not isinstance(event_type, str):
         raise TypeError("event payload missing string 'type'")
-    cls: Any = getattr(event_types, event_type, None)
+    cls = getattr(event_types, event_type, None)
     if cls is None or not is_dataclass(cls):
         raise TypeError(f"Unknown event type: {event_type}")
-    kwargs = {f.name: payload[f.name] for f in fields(cast(Any, cls)) if f.name in payload}
+    kwargs = {f.name: payload[f.name] for f in fields(cls) if f.name in payload}
     if cls is event_types.KeyEvent and isinstance(kwargs.get("modifiers"), dict):
         kwargs["modifiers"] = event_types.Modifiers(**kwargs["modifiers"])
-    if cls is event_types.Resize:
-        _set_sdk_size([kwargs.get("width", 0.0), kwargs.get("height", 0.0)])
-    if cls is event_types.MouseEvent:
-        button = kwargs.get("button")
-        if button == "primary":
-            kwargs["button"] = "left"
-        elif button == "secondary":
-            kwargs["button"] = "right"
     if cls is event_types.SystemStatsResult and isinstance(kwargs.get("stats"), dict):
         kwargs["stats"] = event_types.SystemStats(**kwargs["stats"])
-    if cls is event_types.FileReadResult and isinstance(kwargs.get("content"), list):
-        kwargs["content"] = bytes(kwargs["content"])
-    if cls is event_types.FileListResult and isinstance(kwargs.get("entries"), list):
-        kwargs["entries"] = [
-            event_types.FileListEntry(**entry) if isinstance(entry, dict) else entry
-            for entry in kwargs["entries"]
-        ]
     if cls is event_types.HttpResponse and isinstance(kwargs.get("body"), list):
         kwargs["body"] = bytes(kwargs["body"])
     if cls is event_types.PipeMessage and isinstance(kwargs.get("payload"), dict):
@@ -146,7 +121,7 @@ def _encode_uitree(root: Any) -> dict[str, Any]:
         elif hasattr(node, "to_node"):
             data = node.to_node()
         elif is_dataclass(node):
-            data = asdict(cast(Any, node))
+            data = asdict(node)
             data["type"] = type(node).__name__
         else:
             raise TypeError(f"Unknown UINode type: {type(node).__name__}")
@@ -160,14 +135,44 @@ def _encode_uitree(root: Any) -> dict[str, Any]:
 
 def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, Any]:
     node_type = data.get("type") or data.get("kind")
-    if node_type == "label":
+    if node_type == "pinned":
+        child = data.get("child")
+        if not isinstance(child, dict):
+            raise TypeError("pinned node requires a child object")
+        return _normalize_node_data(child, key, flatten)
+    if node_type == "footer_keys":
+        labels = []
+        for entry in data.get("entries", []):
+            keys = "/".join(str(value) for value in entry.get("keys", []))
+            description = str(entry.get("description", ""))
+            labels.append(f"{keys} {description}".strip())
         return {
             "type": "Text",
+            "text": "    ".join(labels),
+            "size": 11.0,
+            "bold": False,
+            "truncate": True,
+            "align": "start",
+        }
+    if node_type == "label":
+        normalized = {
+            "type": "Text",
             "text": data.get("text", ""),
-            "size": data.get("size"),
             "bold": data.get("bold", False),
             "truncate": data.get("truncate", False),
             "align": data.get("align", "start"),
+        }
+        if data.get("size") is not None:
+            normalized["size"] = data["size"]
+        return normalized
+    if node_type == "markdown":
+        return {
+            "type": "Text",
+            "text": data.get("text", ""),
+            "size": data.get("base_size"),
+            "bold": False,
+            "truncate": False,
+            "align": "start",
         }
     if node_type == "column":
         children = data.get("children", [])
@@ -195,20 +200,20 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
         }
     if node_type == "button":
         return {
-            "type": "button",
-            "node_id": data.get("node_id", data.get("on_click", "")),
+            "type": "Button",
             "label": data.get("label", ""),
+            "on_click": data.get("on_click", ""),
             "style": data.get("style", "secondary"),
             "disabled": data.get("disabled", False),
         }
-    if node_type == "text_edit":
+    if node_type in ("TextInput", "text_input", "text-input"):
         return {
-            "type": "text_edit",
-            "node_id": data.get("node_id", ""),
-            "placeholder": data.get("placeholder", ""),
+            "type": "TextInput",
             "value": data.get("value", ""),
-            "multiline": data.get("multiline", False),
-            "max_length": data.get("max_length", 0),
+            "placeholder": data.get("placeholder", ""),
+            "on_change": data.get("on_change", data.get("on-change", "")),
+            "on_submit": data.get("on_submit", data.get("on-submit", "")),
+            "password": data.get("password", False),
         }
     if node_type == "select_list":
         items = data.get("items", [])
@@ -238,5 +243,14 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "items": child_ids,
             "selected": selected,
             "on_select": data.get("on_select"),
+        }
+    if node_type in ("scroll", "Scroll"):
+        child = data.get("child")
+        if child is None:
+            raise TypeError("scroll node requires a child")
+        return {
+            "type": "Scroll",
+            "child": flatten(child, f"{key}/0"),
+            "horizontal": data.get("horizontal", False),
         }
     return data

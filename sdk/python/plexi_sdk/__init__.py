@@ -1,32 +1,11 @@
-"""Plexi Python SDK v3 for native ProcessApp apps.
+"""Plexi Python SDK.
 
-App modules expose exactly three lifecycle functions:
-
-``init(size, args) -> list``
-    Called once at launch. Return startup effects such as ``SetTitle`` or
-    ``SetState``.
-
-``update(event) -> list``
-    Called for keyboard, mouse, timer, render, and host-result events. Return
-    effects; do not mutate Plexi state directly.
-
-``view() -> Component``
-    Called after state changes to produce the current component tree. Keep it
-    pure: read ``state`` here, but return state-changing effects from
-    ``update``.
-
-Useful entry points:
-``plexi_sdk.effects`` for effect dataclasses,
-``plexi_sdk.events`` for event dataclasses, and
-``plexi_sdk.ui`` for declarative components.
-
-SDK v3 Python apps run as reviewed native processes through ``ProcessApp``.
-Capabilities gate host APIs; they are not a process sandbox. CPython-in-WASM is
-deferred and is not this runtime.
+Apps expose module-level ``init(size, args)``, ``update(event)``, and ``view()``
+functions. The V3AppRuntime drives the event loop: host sends JSON events on
+stdin, app responds with effects and component trees on stdout.
 """
 
-from ._version import __version__ as __version__
-
+__version__ = "3.0.0"
 SDK_ID = f"plexi-sdk-py/{__version__}"
 
 from ._v3_state import StateSnapshot, log, state
@@ -54,12 +33,3 @@ from .ui import (
     TextEdit as TextEdit,
 )
 from ._theme import theme, Theme, AppPalette
-
-_workspace_root: str = ""
-pane_width: float = 0.0
-pane_height: float = 0.0
-canvas_width: float = 0.0
-canvas_height: float = 0.0
-keys_held: set[str] = set()
-_state: StateSnapshot | None = None
-_in_view: bool = False

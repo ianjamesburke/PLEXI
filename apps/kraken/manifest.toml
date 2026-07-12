@@ -1,0 +1,25 @@
+schema_version = 1
+
+[app]
+id = "kraken"
+type = "app"
+name = "Kraken"
+entry = "main.py"
+version = "0.1.0"
+description = "Track market prices from the Kraken public ticker API."
+watch = true
+
+[runtime]
+python_compat = true
+
+[app.capabilities]
+capabilities = ["timer", "net.http"]
+allowed_hosts = ["api.kraken.com"]
+
+[launch]
+
+# Uncomment to publish this app to the marketplace:
+# [marketplace]
+# visibility = "public"   # public | unlisted | private
+# price = "free"          # "free", or a price like "4.99"
+# publisher = "plexi"     # first-party Plexi app

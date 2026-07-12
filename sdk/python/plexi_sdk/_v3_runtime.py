@@ -25,11 +25,34 @@ from plexi_sdk._v3_state import StateSnapshot
 
 
 _LOCK = threading.Lock()
+_EMIT_BATCH: list[dict] | None = None
 
 
 def _emit(obj: dict) -> None:
     with _LOCK:
+        if _EMIT_BATCH is not None:
+            _EMIT_BATCH.append(obj)
+            return
         sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.flush()
+
+
+def _begin_emit_batch() -> None:
+    global _EMIT_BATCH
+    with _LOCK:
+        if _EMIT_BATCH is not None:
+            raise RuntimeError("nested protocol output batch")
+        _EMIT_BATCH = []
+
+
+def _finish_emit_batch() -> None:
+    global _EMIT_BATCH
+    with _LOCK:
+        batch = _EMIT_BATCH
+        _EMIT_BATCH = None
+        if not batch:
+            return
+        sys.stdout.write("".join(json.dumps(obj) + "\n" for obj in batch))
         sys.stdout.flush()
 
 
@@ -53,13 +76,13 @@ class V3AppRuntime:
         self._module = _load_module(app_path)
         self._launch_args = launch_args or []
         self._values: dict = {}
-        self._repeating_timers: dict[int, int] = {}
         self._last_render_time: float | None = None
         self._frame_id = 0
         self._app_id = ""
         self._workspace_root = ""
         self._capabilities: list[str] = []
         self._running = True
+        self._pgap_wire = False
 
     def run(self) -> None:
         while self._running:
@@ -73,7 +96,11 @@ class V3AppRuntime:
                 ev = json.loads(raw)
             except json.JSONDecodeError:
                 continue
-            self._handle(ev)
+            _begin_emit_batch()
+            try:
+                self._handle(ev)
+            finally:
+                _finish_emit_batch()
 
     def _handle(self, ev: dict) -> None:
         t = ev.get("type", "")
@@ -84,36 +111,34 @@ class V3AppRuntime:
             self._handle_render(ev)
         elif t == "key":
             self._handle_key(ev)
+        elif t == "key_events":
+            self._handle_key_events(ev)
         elif t == "timer":
             self._handle_timer(ev)
         elif t == "component_event":
             self._handle_component_event(ev)
+        elif t == "text_submitted":
+            self._handle_text_submitted(ev)
         elif t == "http_response":
             self._handle_http_response(ev)
-        elif t == "file_list_result":
-            self._handle_file_list_result(ev)
         elif t == "file_read_result":
-            self._handle_file_read_result(ev)
+            content = ev.get("content")
+            self._dispatch(events.FileReadResult(
+                content=content.encode("utf-8") if isinstance(content, str) else None,
+                error=ev.get("error"),
+            ))
         elif t == "file_write_result":
-            self._handle_file_write_result(ev)
+            self._dispatch(events.FileWriteResult(error=ev.get("error")))
         elif t == "capability_decision":
             self._handle_capability_decision(ev)
         elif t == "ui_action":
             self._handle_ui_action(ev)
-        elif t == "action":
-            self._handle_action(ev)
-        elif t == "list_select":
-            self._handle_list_select(ev)
-        elif t == "list_activate":
-            self._handle_list_activate(ev)
         elif t == "focus_changed":
             self._handle_focus_changed(ev)
         elif t == "capability_granted":
             self._dispatch(events.CapabilityGranted(name=ev.get("name", "")))
         elif t == "capability_denied":
             self._dispatch(events.CapabilityDenied(name=ev.get("name", "")))
-        elif t == "click":
-            self._handle_click(ev)
         elif t == "resize":
             self._handle_resize(ev)
         elif t == "shutdown":
@@ -130,15 +155,8 @@ class V3AppRuntime:
     def _handle_init(self, ev: dict) -> None:
         self._app_id = ev.get("app_id", "")
         self._workspace_root = ev.get("workspace_root", "")
-        sdk._workspace_root = self._workspace_root
-        w = float(ev.get("width", 0))
-        h = float(ev.get("height", 0))
-        sdk.pane_width = w
-        sdk.pane_height = h
-        sdk.canvas_width = 0.0
-        sdk.canvas_height = 0.0
-        sdk.keys_held = set()
         self._capabilities = ev.get("capabilities", [])
+        self._pgap_wire = ev.get("protocol") == "pgap/3"
 
         from ._theme import theme as _theme
         _theme.update_from(ev.get("theme"))
@@ -150,39 +168,27 @@ class V3AppRuntime:
         _emit({
             "type": "ready",
             "sdk": sdk.SDK_ID,
-            "protocol_version": sdk.PROTOCOL_VERSION,
             "features_used": [],
         })
 
         self._set_state(in_view=False)
-        init_effects = self._module.init(
-            (w, h),
-            self._launch_args,
-        )
+        size = ev.get("size")
+        if not isinstance(size, (list, tuple)) or len(size) != 2:
+            size = [ev.get("width", 0.0), ev.get("height", 0.0)]
+        init_effects = self._module.init(tuple(size), self._launch_args)
         self._apply_effects(init_effects)
 
     def _handle_render(self, ev: dict) -> None:
-        cw = float(ev.get("canvas_width", 0.0))
-        ch = float(ev.get("canvas_height", 0.0))
-        # canvas_width/height are zero on the first frame (no prior render).
-        # Fall back to the pane rect so view() always sees valid dimensions.
-        if cw == 0.0 or ch == 0.0:
-            rect = ev.get("rect") or {}
-            cw = float(rect.get("w", 0.0)) or cw
-            ch = float(rect.get("h", 0.0)) or ch
-        if cw > 0.0 and ch > 0.0:
-            prev_cw, prev_ch = sdk.canvas_width, sdk.canvas_height
-            sdk.canvas_width = cw
-            sdk.canvas_height = ch
-            if (prev_cw == 0.0 or abs(cw - prev_cw) > 1.0 or abs(ch - prev_ch) > 1.0):
-                self._dispatch(
-                    events.Resize(width=sdk.pane_width, height=sdk.pane_height),
-                    schedule_render=False,
-                )
         now = time.monotonic()
         elapsed = 0.0 if self._last_render_time is None else now - self._last_render_time
         self._last_render_time = now
         self._frame_id += 1
+        frame_id = ev.get("frame_id", self._frame_id)
+
+        timer_ids = ev.get("timer_ids", [])
+        if isinstance(timer_ids, list):
+            for timer_id in timer_ids:
+                self._dispatch_timer(timer_id, schedule_render=False)
 
         self._dispatch(
             events.RenderFrame(frame_id=self._frame_id, elapsed=elapsed),
@@ -196,15 +202,29 @@ class V3AppRuntime:
             self._set_state(in_view=False)
 
         if root is not None:
-            node = root.to_node() if hasattr(root, "to_node") else root
-            _emit({"type": "component_tree", "root": node})
+            if self._pgap_wire:
+                root_node = root if isinstance(root, dict) else root.to_node()
+                if not isinstance(root_node, dict):
+                    raise TypeError(
+                        f"Unknown PGAP UINode type: {type(root).__name__}"
+                    )
+                _emit({
+                    "type": "component_tree",
+                    "frame_id": frame_id,
+                    "root": root_node,
+                })
+            else:
+                from ._adapter import _encode_uitree
+                _emit({
+                    "type": "component_tree",
+                    "frame_id": frame_id,
+                    "tree": _encode_uitree(root),
+                })
 
-        frame_id = ev.get("frame_id", self._frame_id)
         _emit({"type": "frame_done", "frame_id": frame_id})
 
-    def _handle_key(self, ev: dict) -> None:
+    def _handle_key(self, ev: dict, *, schedule_render: bool = True) -> None:
         key = _normalize_key(ev.get("key", ""))
-        pressed = ev.get("pressed", True)
         mods = ev.get("modifiers", {})
         modifiers = events.Modifiers(
             ctrl=bool(mods.get("ctrl", False)),
@@ -212,66 +232,50 @@ class V3AppRuntime:
             alt=bool(mods.get("alt", False)),
             meta=bool(mods.get("meta", False)),
         )
-        if pressed:
-            sdk.keys_held.add(key)
-        else:
-            sdk.keys_held.discard(key)
-        self._dispatch(events.KeyEvent(key=key, modifiers=modifiers, pressed=bool(pressed)))
+        self._dispatch(events.KeyEvent(
+            key=key,
+            modifiers=modifiers,
+            pressed=bool(ev.get("pressed", True)),
+        ), schedule_render=schedule_render)
+
+    def _handle_key_events(self, ev: dict) -> None:
+        key_events = ev.get("events", [])
+        if not isinstance(key_events, list):
+            return
+        handled = False
+        for key_event in key_events:
+            if isinstance(key_event, dict):
+                self._handle_key(key_event, schedule_render=False)
+                handled = True
+        if handled:
+            _emit({"type": "schedule_render", "after_ms": 16})
 
     def _handle_timer(self, ev: dict) -> None:
-        timer_id_str = ev.get("timer_id", "")
+        self._dispatch_timer(
+            ev.get("timer_id", ""),
+            schedule_render=self._pgap_wire,
+        )
+
+    def _dispatch_timer(self, timer_id, *, schedule_render: bool) -> None:
         try:
-            parsed_id = int(timer_id_str)
+            parsed_id = int(timer_id)
         except (ValueError, TypeError):
             return
-        self._dispatch(events.TimerFired(id=parsed_id))
-        repeat_ms = self._repeating_timers.get(parsed_id)
-        if repeat_ms is not None:
-            _emit({"type": "set_timer", "timer_id": str(parsed_id), "after_ms": repeat_ms})
+        self._dispatch(
+            events.TimerFired(id=parsed_id),
+            schedule_render=schedule_render,
+        )
 
     def _handle_component_event(self, ev: dict) -> None:
         node_id = ev.get("node_id", "")
         event_type = ev.get("event_type", "")
-        payload = ev.get("payload") or {}
         if event_type == "click" and node_id:
-            self._dispatch(events.UiAction(handler_id=node_id))
-        elif event_type == "change" and node_id:
-            value = payload.get("value", "") if isinstance(payload, dict) else ""
-            self._dispatch(events.UiValueChange(handler_id=node_id, value=value))
-        elif event_type == "submit" and node_id:
-            value = payload.get("value", "") if isinstance(payload, dict) else ""
-            self._dispatch(events.UiValueChange(handler_id=node_id, value=value))
             self._dispatch(events.UiAction(handler_id=node_id))
 
     def _handle_ui_action(self, ev: dict) -> None:
         handler_id = ev.get("handler_id", "")
         if handler_id:
             self._dispatch(events.UiAction(handler_id=handler_id))
-
-    def _handle_action(self, ev: dict) -> None:
-        action = ev.get("action", "")
-        if not action:
-            return
-        args = ev.get("args", [])
-        if not isinstance(args, list):
-            args = []
-        sdk.log.info(f"host action delivered as UiAction handler_id={action} args={len(args)}")
-        self._dispatch(
-            events.UiAction(
-                handler_id=action,
-                args=[str(arg) for arg in args],
-            )
-        )
-
-    def _handle_list_select(self, ev: dict) -> None:
-        list_id = ev.get("id", "")
-        if list_id:
-            self._dispatch(events.ListSelect(id=list_id, index=int(ev.get("index", 0))))
-
-    def _handle_list_activate(self, ev: dict) -> None:
-        list_id = ev.get("id", "")
-        if list_id:
-            self._dispatch(events.ListActivate(id=list_id, index=int(ev.get("index", 0))))
 
     def _handle_focus_changed(self, ev: dict) -> None:
         self._dispatch(events.FocusChanged(
@@ -284,6 +288,12 @@ class V3AppRuntime:
             cwd=ev.get("cwd"),
         ))
 
+    def _handle_text_submitted(self, ev: dict) -> None:
+        tid = ev.get("id", "")
+        value = ev.get("value", "")
+        if tid:
+            self._dispatch(events.UiValueChange(handler_id=tid, value=value))
+
     def _handle_http_response(self, ev: dict) -> None:
         error = ev.get("error")
         if error:
@@ -293,36 +303,6 @@ class V3AppRuntime:
             body = ev.get("body", "").encode("utf-8")
             status = 200
         self._dispatch(events.HttpResponse(status=status, headers=[], body=body))
-
-    def _handle_file_list_result(self, ev: dict) -> None:
-        entries = ev.get("entries")
-        if isinstance(entries, list):
-            entries = [
-                events.FileListEntry(
-                    name=str(item.get("name", "")),
-                    path=str(item.get("path", "")),
-                    is_dir=bool(item.get("is_dir", False)),
-                    size_bytes=item.get("size_bytes"),
-                )
-                for item in entries
-                if isinstance(item, dict)
-            ]
-        else:
-            entries = None
-        self._dispatch(events.FileListResult(entries=entries, error=ev.get("error")))
-
-    def _handle_file_read_result(self, ev: dict) -> None:
-        content = ev.get("content")
-        if isinstance(content, list):
-            content = bytes(content)
-        elif isinstance(content, str):
-            content = content.encode("utf-8")
-        else:
-            content = None
-        self._dispatch(events.FileReadResult(content=content, error=ev.get("error")))
-
-    def _handle_file_write_result(self, ev: dict) -> None:
-        self._dispatch(events.FileWriteResult(error=ev.get("error")))
 
     def _handle_capability_decision(self, ev: dict) -> None:
         granted = ev.get("granted", False)
@@ -334,18 +314,9 @@ class V3AppRuntime:
         else:
             self._dispatch(events.CapabilityDenied(name=capability))
 
-    def _handle_click(self, ev: dict) -> None:
-        x = float(ev.get("x", 0.0))
-        y = float(ev.get("y", 0.0))
-        button = ev.get("button", "primary")
-        region = ev.get("region")
-        self._dispatch(events.MouseEvent(x=x, y=y, button=button, pressed=True, region=region))
-
     def _handle_resize(self, ev: dict) -> None:
         w = float(ev.get("width", 0.0))
         h = float(ev.get("height", 0.0))
-        sdk.pane_width = w
-        sdk.pane_height = h
         self._dispatch(events.Resize(width=w, height=h))
 
     def _dispatch(self, event, *, schedule_render: bool = True) -> None:
@@ -376,20 +347,14 @@ class V3AppRuntime:
                 _emit({"type": "status_summary", "text": effect.text})
             elif isinstance(effect, effects.SetTitle):
                 _emit({"type": "set_title", "title": effect.title})
-            elif isinstance(effect, effects.SetPipStatus):
-                _emit({"type": "set_pip_status", "status": effect.status})
             elif isinstance(effect, effects.SetTimer):
                 _emit({
                     "type": "set_timer",
                     "timer_id": str(effect.id),
                     "after_ms": int(effect.delay_ms),
+                    "repeat": bool(effect.repeat),
                 })
-                if effect.repeat:
-                    self._repeating_timers[int(effect.id)] = int(effect.delay_ms)
-                else:
-                    self._repeating_timers.pop(int(effect.id), None)
             elif isinstance(effect, effects.CancelTimer):
-                self._repeating_timers.pop(int(effect.id), None)
                 _emit({"type": "cancel_timer", "timer_id": str(effect.id)})
             elif isinstance(effect, effects.SetSchedulerMode):
                 payload: dict = {"type": "set_scheduler_mode", "mode": effect.mode}
@@ -408,21 +373,13 @@ class V3AppRuntime:
                 if effect.body is not None:
                     payload["body"] = effect.body.decode("utf-8")
                 _emit(payload)
-            elif isinstance(effect, effects.OpenUrl):
-                _emit({"type": "open_url", "url": effect.url})
-            elif isinstance(effect, effects.FileList):
-                _emit({
-                    "type": "file_list",
-                    "path": effect.path,
-                    "extensions": list(effect.extensions or []),
-                })
             elif isinstance(effect, effects.FileRead):
                 _emit({"type": "file_read", "path": effect.path})
             elif isinstance(effect, effects.FileWrite):
                 _emit({
                     "type": "file_write",
                     "path": effect.path,
-                    "content": list(effect.content),
+                    "content": effect.content.decode("utf-8"),
                 })
             elif isinstance(effect, effects.RequestCapability):
                 _emit({

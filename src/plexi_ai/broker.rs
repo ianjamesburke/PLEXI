@@ -6,7 +6,7 @@
 //! through this module so:
 //!
 //!   1. Tests can replace `LiveAiBroker` with a canned `AiBroker` mock and
-//!      drive `process_app::routing` deterministically (no real LLM).
+//!      drive `host::wasm_pane` deterministically (no real LLM).
 //!   2. Any PGAP app with `ai.query` can reuse the same broker — the turn
 //!      loop is owned by the app, which calls into `LiveAiBroker` over PGAP.
 //!

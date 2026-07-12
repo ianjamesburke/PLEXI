@@ -13,6 +13,16 @@ export RUSTFLAGS := "-D warnings -A float-literal-f32-fallback"
 fetch-python-runtime:
     PYTHON_VERSION={{PYTHON_VERSION}} PYTHON_PBS_DATE={{PYTHON_PBS_DATE}} bash scripts/fetch-python-runtime.sh
 
+# Download the pinned CPython WASI bundle used by SDK v3 python_compat probes.
+# Override cache root with PLEXI_CPYTHON_BUNDLE_DIR=/path/to/wasm-bundles.
+fetch-cpython-bundle:
+    bash scripts/fetch-cpython-bundle.sh
+
+# Build the SDK v3 CPython lifecycle shim POC component and refresh its fixture.
+# If PLEXI_CPYTHON_BUNDLE_DIR is set, also stages the shim beside python.wasm.
+wasm-python-shim:
+    bash scripts/build-wasm-python-shim.sh
+
 dev:
     cargo run
 
@@ -52,6 +62,7 @@ wasm-fixtures:
     cp target/wasm32-wasip1/release/pong.wasm tests/wasm-fixtures/pong.wasm
     cd apps/wasm-poc/counter && cargo component build --release --target wasm32-wasip2
     cp target/wasm32-wasip1/release/counter.wasm tests/wasm-fixtures/counter.wasm
+    bash scripts/build-wasm-python-shim.sh
 
 # Generate an HTML line-coverage report and open it in the browser.
 # Requires: cargo install cargo-llvm-cov && rustup component add llvm-tools-preview

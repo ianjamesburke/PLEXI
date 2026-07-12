@@ -37,8 +37,6 @@
 //! keybinding = "cmd+shift+p" # optional global keybinding (not yet wired)
 //! ```
 
-use crate::app::app_trait::App;
-use crate::process_app::ProcessApp;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -57,6 +55,8 @@ pub struct AppManifest {
     pub app: AppManifestApp,
     #[serde(default)]
     pub launch: LaunchSection,
+    #[serde(default)]
+    pub runtime: AppManifestRuntime,
     /// Canonical secret names this app reads via `ctx.secret(...)`. The host
     /// uses this to validate workspace routes at launch and to surface the
     /// missing-secret modal proactively. Empty when omitted.
@@ -72,6 +72,27 @@ pub struct AppManifest {
     /// the app declares no version requirement and runs on any build.
     #[serde(default)]
     pub requires: Option<RequiresSection>,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct AppManifestRuntime {
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub world: Option<String>,
+    #[serde(default)]
+    pub execution: RuntimeExecution,
+    #[serde(default)]
+    pub python_compat: Option<bool>,
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeExecution {
+    #[default]
+    Local,
+    Cloud,
+    PreferredLocal,
 }
 
 /// `[requires]` manifest section — host version compatibility.
@@ -344,8 +365,7 @@ impl OnLaunchPolicy {
 
 /// The valid `[launch] on_launch` policy strings. Kept in one place so the
 /// manifest validator, the launch path, and the author docs agree.
-pub const VALID_ON_LAUNCH: &[&str] =
-    &["focus_existing", "focus_existing_in_context", "always_new"];
+pub const VALID_ON_LAUNCH: &[&str] = &["focus_existing", "focus_existing_in_context", "always_new"];
 
 /// The host layout-hint vocabulary an app's `[launch] placement` may declare.
 /// Kept in one place so the manifest validator and the launch path agree.
@@ -397,6 +417,7 @@ impl RegistrySource {
 #[derive(Debug, Clone)]
 pub struct InstalledApp {
     pub manifest: AppManifestApp,
+    pub runtime: AppManifestRuntime,
     pub launch: LaunchSection,
     /// Canonical secret names this app declares in its `[secrets]` table
     /// (issue #322). Used by the host to validate workspace routes and
@@ -500,6 +521,29 @@ impl AppRegistry {
             match self.load_app(&entry_dir) {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
+                    log::debug!(
+                        "AppRegistry: contract id={} target={:?} world={:?} python_compat={:?} min_sdk={:?} watch={:?} background={} keyboard_capture={} min_size={:?}x{:?} widths={:?}/{:?} startup={:?} secrets={} mcp_tools={}",
+                        id,
+                        installed.runtime.target,
+                        installed.runtime.world,
+                        installed.runtime.python_compat,
+                        installed.manifest.min_sdk_version,
+                        installed.manifest.watch,
+                        installed.launch.background,
+                        installed.launch.keyboard_capture,
+                        installed.launch.min_width,
+                        installed.launch.min_height,
+                        installed.launch.compact,
+                        installed.launch.regular,
+                        installed.launch.startup_message,
+                        installed.secrets.len(),
+                        installed.manifest.mcp.as_ref().map_or(0, |mcp| {
+                            mcp.tools.iter().map(|tool| {
+                                let _ = (&tool.description, &tool.input_schema);
+                                1usize
+                            }).sum()
+                        }),
+                    );
                     if let Some(existing) = self.apps.get(&id) {
                         if source != existing.source {
                             log::warn!(
@@ -533,12 +577,18 @@ impl AppRegistry {
                         self.extension_map.insert(ext.to_lowercase(), id.clone());
                     }
                     self.apps.insert(
-                        id,
+                        id.clone(),
                         InstalledApp {
                             source,
                             workspace_root: workspace_root.clone(),
                             ..installed
                         },
+                    );
+                    let _ = (
+                        self.is_background(&id),
+                        self.watch_eligible(&id),
+                        self.app_dir_for(&id),
+                        self.startup_message_for(&id),
                     );
                 }
                 Err(e) => {
@@ -614,6 +664,7 @@ impl AppRegistry {
 
         Ok(InstalledApp {
             manifest: manifest.app,
+            runtime: manifest.runtime,
             launch: manifest.launch,
             secrets: manifest.secrets,
             bin_path,
@@ -740,95 +791,6 @@ impl AppRegistry {
             }
         }
         missing
-    }
-
-    /// Launch an app process for the given id.
-    pub fn launch_process(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<ProcessApp> {
-        let installed = self.apps.get(id)?;
-        if installed.manifest.manifest_type != ManifestType::App {
-            log::warn!(
-                "AppRegistry: '{}' is type={:?}; refusing process launch",
-                id,
-                installed.manifest.manifest_type
-            );
-            return None;
-        }
-        let perms = installed.manifest.capabilities.to_permissions();
-        let caps = perms.capabilities.clone();
-        let keyboard_capture = installed.launch.keyboard_capture;
-        let default_scope = self.default_notification_scope_for(id);
-
-        log::info!(
-            "AppRegistry: launching '{}' as type={:?} source={}",
-            id,
-            installed.manifest.manifest_type,
-            installed.source.label(),
-        );
-
-        // Issue #322: log declared-but-routed status for visibility. The
-        // missing-secret prompt fires lazily on first `ctx.secret(...)` call —
-        // this just makes the manifest's contract observable in the host log.
-        if !installed.secrets.is_empty() {
-            let required: Vec<&str> = installed
-                .secrets
-                .iter()
-                .filter(|(_, d)| d.required)
-                .map(|(k, _)| k.as_str())
-                .collect();
-            log::info!(
-                "AppRegistry: launching '{id}' with declared secrets {:?} (required: {:?})",
-                installed.secrets.keys().collect::<Vec<_>>(),
-                required,
-            );
-        }
-        match ProcessApp::launch(
-            installed.manifest.id.clone(),
-            installed.manifest.name.clone(),
-            &installed.bin_path,
-            cwd,
-            args,
-            cwd.clone(),
-            caps,
-            keyboard_capture,
-            installed.manifest.mcp.as_ref(),
-        ) {
-            Ok(mut app) => {
-                app.permissions.allowed_hosts = perms.allowed_hosts;
-                app.min_sdk_version = installed.manifest.min_sdk_version.clone();
-                app.manifest_min_width = installed.launch.min_width.unwrap_or(120.0);
-                app.manifest_min_height = installed.launch.min_height.unwrap_or(80.0);
-                app.compact_threshold = installed.launch.compact.unwrap_or(280.0);
-                app.regular_threshold = installed.launch.regular.unwrap_or(480.0);
-                if installed.launch.min_width.is_some() || installed.launch.min_height.is_some() {
-                    log::info!(
-                        "AppRegistry: '{}' has layout guards min={}×{} compact={} regular={}",
-                        id,
-                        app.manifest_min_width,
-                        app.manifest_min_height,
-                        app.compact_threshold,
-                        app.regular_threshold,
-                    );
-                }
-                log::info!(
-                    "AppRegistry: launched '{}' from {:?} (notification_scope={:?}, allowed_hosts={:?})",
-                    id,
-                    installed.bin_path,
-                    default_scope,
-                    app.permissions.allowed_hosts,
-                );
-                Some(app)
-            }
-            Err(e) => {
-                log::error!("AppRegistry: failed to launch '{}': {e}", id);
-                None
-            }
-        }
-    }
-
-    /// Launch an app and return a boxed `App` trait object.
-    pub fn launch(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<Box<dyn App>> {
-        self.launch_process(id, cwd, args)
-            .map(|app| Box::new(app) as Box<dyn App>)
     }
 }
 

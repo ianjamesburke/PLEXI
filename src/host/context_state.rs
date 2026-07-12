@@ -89,12 +89,7 @@ impl ContextState {
                         (name, status)
                     }
                     crate::host::pane::Pane::App(a) => {
-                        let status_text =
-                            if let crate::host::pane::AppRuntime::Process(pa) = &a.runtime {
-                                pa.status_summary.clone()
-                            } else {
-                                None
-                            };
+                        let status_text: Option<String> = None;
                         let status = match status_text.as_deref() {
                             Some(t) if t.contains("error") || t.contains("Error") => {
                                 has_error = true;

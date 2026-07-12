@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Browse and inspect CSV files through host-scoped file listing."
 entry = "csv_viewer.py"
 
+[runtime]
+python_compat = true
+
 [app.capabilities]
 capabilities = ["fs.read"]
 

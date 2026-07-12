@@ -62,6 +62,7 @@ impl<'a> ModalShell<'a> {
 
     /// Set scrim darkness explicitly (0.0 = none, 1.0 = black). Use for
     /// modals that should dim more or less than the product default.
+    #[cfg(test)]
     pub(crate) fn scrim_strength(mut self, strength: f32) -> Self {
         self.scrim_strength = strength.clamp(0.0, 1.0);
         self

@@ -1245,14 +1245,13 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
 fn test_app_pane(pane_id: u64) -> crate::host::pane::Pane {
     use crate::app::permissions::AppPermissions;
     use crate::host::pane::{AppPane, AppRuntime};
-    use crate::process_app::ProcessApp;
-
     let permissions = AppPermissions::builtin();
-    let (process_app, _draw_tx) = ProcessApp::new_for_test(pane_id, permissions.clone());
     crate::host::pane::Pane::App(Box::new(AppPane {
         pip_status: None,
         id: pane_id,
-        runtime: AppRuntime::Process(Box::new(process_app)),
+        runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+            std::env::temp_dir(),
+        ))),
         workspace_root: std::env::temp_dir(),
         permissions,
         manifest_id: format!("test-{pane_id}"),

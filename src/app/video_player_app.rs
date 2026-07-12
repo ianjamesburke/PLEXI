@@ -196,7 +196,8 @@ impl App for VideoPlayerApp {
             egui::vec2(available.x.max(1.0), viewport_height),
             egui::Sense::hover(),
         );
-        ui.painter().rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
+        ui.painter()
+            .rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
         if let (Some(texture), Some([w, h])) = (&self.frame_texture, self.frame_size) {
             let tex_size = egui::vec2(w as f32, h as f32);
             let scale = (rect.width() / tex_size.x)

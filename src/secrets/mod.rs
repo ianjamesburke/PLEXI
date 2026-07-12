@@ -1,8 +1,12 @@
+#[cfg(test)]
 use log::{error, warn};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::path::Path;
+#[cfg(test)]
 use zeroize::Zeroizing;
 
+#[cfg(test)]
 const SERVICE_NAME: &str = "plexi";
 
 /// A parsed Keychain entry stored under service="plexi".
@@ -21,6 +25,7 @@ pub struct SecretEntry {
 
 /// Build the v3 Keychain account string: "plexi/{workspace_root}/{key}"
 /// Workspace-scoped; app_id is NOT part of the key (secrets are workspace-owned, not app-owned).
+#[cfg(test)]
 fn account_key_scoped(key: &str, workspace_root: &Path) -> String {
     format!("plexi/{}/{}", workspace_root.display(), key)
 }
@@ -35,6 +40,7 @@ fn account_key_scoped(key: &str, workspace_root: &Path) -> String {
 ///
 /// Keychain key format: `plexi/{workspace_root}/{key}`
 #[cfg(target_os = "macos")]
+#[cfg(test)]
 pub fn get_secret_scoped(
     key: &str,
     app_id: &str,
@@ -76,6 +82,7 @@ pub fn get_secret_scoped(
 }
 
 /// Validate workspace_root for secret operations. Returns false and logs an error on failure.
+#[cfg(test)]
 fn validate_workspace_root(workspace_root: &Path, op: &str, app_id: &str, key: &str) -> bool {
     if workspace_root.as_os_str().is_empty() {
         error!(

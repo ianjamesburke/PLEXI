@@ -1,6 +1,6 @@
 //! Canvas Terminal Binding Primitives dispatch (#78).
 //!
-//! The primitives are routed by `process_app::routing::route_command` into
+//! The primitives are routed by `host::wasm_pane::route_command` into
 //! `AppCommand` variants and end up here once the parent `PlexiApp` drains
 //! the deferred queue. Implementation lives in this module rather than
 //! `app/mod.rs` to keep the surface readable — the binding-primitive layer
@@ -370,10 +370,7 @@ impl PlexiApp {
     /// directory it wants browsed.
     fn open_file_browser_at(&mut self, cwd: std::path::PathBuf) {
         use crate::app::app_trait::App;
-        let app: Box<dyn App> = self
-            .registry
-            .launch("file_browser", &cwd, &[])
-            .unwrap_or_else(|| Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone())));
+        let app: Box<dyn App> = Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone()));
         let perms = crate::app::permissions::AppPermissions::builtin();
         self.open_builtin_app_pane(
             app,
