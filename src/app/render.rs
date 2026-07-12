@@ -527,7 +527,7 @@ impl PlexiApp {
                 }
 
                 // Propagate pre-computed notification counts into each app pane so
-                // ProcessApp can render the per-pane chrome badge without
+                // App runtimes can render the per-pane chrome badge without
                 // holding a reference to PlexiApp.
                 for pane in ctx.panes.values_mut() {
                     if let Some(app_pane) = pane.as_app_mut() {
@@ -790,7 +790,7 @@ impl PlexiApp {
                         // Branch on pane type BEFORE the Frame. PGAP app runtimes
                         // paint via `ui.painter()` WITHOUT allocating UI space, so
                         // wrapping them in an `egui::Frame` collapses it to ~16x16
-                        // at the top-left (see src/process_app/mod.rs docs). Mirror
+                        // at the top-left (see src/host/wasm_pane.rs docs). Mirror
                         // the tiling path (tiling.rs pane_ui) for app panes instead:
                         // full-rect background fill + child Ui + app_pane::render,
                         // which also restores the overtake bar and nav-back chrome.
@@ -1103,24 +1103,7 @@ impl PlexiApp {
         // have no text field, so requesting a non-existent ID would leave egui holding a
         // stale focus pointer that interferes with button interactions.
         if matches!(self.focus_stack.last(), Some(FocusLayer::CapabilityModal)) {
-            let has_secret_prompt = {
-                let win = &self.windows[self.active_window];
-                win.focused_pane
-                    .and_then(|tile_id| Self::find_pane_in_tile(&win.tree, tile_id))
-                    .and_then(|pane_id| win.panes.get(&pane_id))
-                    .and_then(|pane| pane.as_app())
-                    .map(|app| {
-                        if let crate::host::pane::AppRuntime::Process(ref proc) = app.runtime {
-                            matches!(
-                                proc.pending_prompts.front(),
-                                Some(crate::process_app::PendingPrompt::Secret { .. })
-                            )
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(false)
-            };
+            let has_secret_prompt = false;
             if has_secret_prompt {
                 log::debug!("capability_modal: re-requesting focus for capability_secret_input post-CentralPanel");
                 ctx.memory_mut(|m| m.request_focus(egui::Id::new("capability_secret_input")));
@@ -1144,8 +1127,7 @@ mod tests {
     #[test]
     fn update_check_not_due_before_interval() {
         let last = std::time::Instant::now();
-        let now =
-            last + crate::cli::updater::CHECK_INTERVAL - std::time::Duration::from_secs(1);
+        let now = last + crate::cli::updater::CHECK_INTERVAL - std::time::Duration::from_secs(1);
 
         assert!(!update_check_due(last, now));
     }

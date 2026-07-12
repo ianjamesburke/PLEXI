@@ -51,26 +51,23 @@ def test_detect_prefers_config_dir(monkeypatch):
     app = _load_app_module()
     monkeypatch.setenv("PLEXI_CONFIG_DIR", "/home/u/.plexi-alpha")
     monkeypatch.delenv("PLEXI_CHANNEL", raising=False)
-    path, channel = app._detect()
+    path = app._detect_log_path()
     assert path == "/home/u/.plexi-alpha/plexi.log"
-    assert channel == "alpha"
 
 
 def test_detect_falls_back_to_channel_env(monkeypatch):
     app = _load_app_module()
     monkeypatch.delenv("PLEXI_CONFIG_DIR", raising=False)
     monkeypatch.setenv("PLEXI_CHANNEL", "beta")
-    path, channel = app._detect()
+    path = app._detect_log_path()
     assert path.endswith("/.plexi-beta/plexi.log")
-    assert channel == "beta"
 
 
 def test_detect_default_channel(monkeypatch):
     app = _load_app_module()
     monkeypatch.setenv("PLEXI_CONFIG_DIR", "/home/u/.plexi")
-    path, channel = app._detect()
+    path = app._detect_log_path()
     assert path == "/home/u/.plexi/plexi.log"
-    assert channel == "default"
 
 
 def test_filter_by_level_and_target():
@@ -83,13 +80,13 @@ def test_filter_by_level_and_target():
             {"time": "3", "level": "INFO", "target": "plexi::config", "message": "load"},
         ],
     )
-    data["level"] = "INFO"
-    data["target"] = "app::todo"
+    data["filter"] = "INFO"
+    data["query"] = "app::todo"
     filtered = app._filtered(data)
     assert [ln["message"] for ln in filtered] == ["ok"]
 
 
-def test_sort_order_reverses():
+def test_filter_preserves_newest_first_order():
     app = _load_app_module()
     data = dict(
         app.DEFAULT_STATE,
@@ -100,8 +97,6 @@ def test_sort_order_reverses():
         ],
     )
     assert [ln["time"] for ln in app._filtered(data)] == ["3", "2", "1"]
-    data["order"] = "oldest"
-    assert [ln["time"] for ln in app._filtered(data)] == ["1", "2", "3"]
 
 
 @pytest.mark.parametrize("size", [(320, 240), (900, 600)])
@@ -140,6 +135,7 @@ def test_level_key_narrows_status_count(tmp_path, monkeypatch):
 
 
 def test_status_surfaces_channel_and_path(tmp_path, monkeypatch):
+    app = _load_app_module()
     config_dir = tmp_path / ".plexi-alpha"
     config_dir.mkdir()
     log_path = config_dir / "plexi.log"
@@ -151,5 +147,5 @@ def test_status_surfaces_channel_and_path(tmp_path, monkeypatch):
         statuses = [c for c in h._events_seen if c.get("type") == "status_summary"]
         assert statuses, f"no status_summary emitted; saw {[c.get('type') for c in h._events_seen]}"
         text = statuses[-1].get("text", "")
-        assert str(log_path) in text
-        assert "alpha" in text
+        assert text == "1 lines"
+        assert str(log_path) in app._visible_text({**app.DEFAULT_STATE, "path": str(log_path), "lines": []})

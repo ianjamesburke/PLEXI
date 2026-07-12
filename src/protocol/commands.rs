@@ -577,10 +577,10 @@ pub enum AppRequest {
     },
     /// Request a workspace-scoped secret. Scoped to Init.workspace_root automatically.
     SecretGet { key: String },
-    /// Read a file through the native ProcessApp host. Requires `fs.read` and
+    /// Read a file through the native WASM app runtime host. Requires `fs.read` and
     /// the resolved path must stay inside the app's workspace root.
     FileRead { path: String },
-    /// List a directory through the native ProcessApp host. Requires `fs.read`
+    /// List a directory through the native WASM app runtime host. Requires `fs.read`
     /// and the resolved path must stay inside the app's workspace root.
     FileList {
         path: String,
@@ -1495,6 +1495,7 @@ pub enum AppEventActor {
 }
 
 impl AppEventActor {
+    #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::User => "user",

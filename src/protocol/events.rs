@@ -123,14 +123,14 @@ pub enum PlexiEvent {
     },
     /// Secret broker response. value is None when denied.
     SecretValue { key: String, value: Option<String> },
-    /// Native ProcessApp file read result.
+    /// Native WASM app runtime file read result.
     FileReadResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         content: Option<Vec<u8>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// Native ProcessApp directory listing result.
+    /// Native WASM app runtime directory listing result.
     FileListResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         entries: Option<Vec<FileListEntry>>,

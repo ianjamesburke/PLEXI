@@ -8,7 +8,7 @@ import random
 
 from plexi_sdk import log
 from plexi_sdk.effects import SetSchedulerMode, SetStatus, SetTitle
-from plexi_sdk.events import RenderFrame
+from plexi_sdk.events import KeyEvent, RenderFrame
 from plexi_sdk.ui import (
     AppBar,
     Canvas,
@@ -84,6 +84,12 @@ def init(size, args) -> list:
 
 
 def update(event) -> list:
+    if isinstance(event, KeyEvent):
+        if event.key in ("+", "plus", "equals"):
+            _sim()["balls"].extend(_initial(1)["balls"])
+        elif event.key in ("-", "minus") and len(_sim()["balls"]) > 1:
+            _sim()["balls"].pop()
+        return []
     if not isinstance(event, RenderFrame):
         return []
     dt = event.elapsed if event.elapsed > 0 else TARGET_DT
@@ -163,7 +169,7 @@ def view():
         [
             AppBar("Balls", f"{count} balls"),
             Canvas(_draw(data), width=CANVAS_W, height=CANVAS_H, grow=True),
-            FooterKeys([("timer", "physics")]),
+            FooterKeys([("+", "add"), ("-", "remove")]),
         ],
         padding=0,
         gap=0,

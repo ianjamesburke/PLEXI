@@ -135,6 +135,25 @@ def _encode_uitree(root: Any) -> dict[str, Any]:
 
 def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, Any]:
     node_type = data.get("type") or data.get("kind")
+    if node_type == "pinned":
+        child = data.get("child")
+        if not isinstance(child, dict):
+            raise TypeError("pinned node requires a child object")
+        return _normalize_node_data(child, key, flatten)
+    if node_type == "footer_keys":
+        labels = []
+        for entry in data.get("entries", []):
+            keys = "/".join(str(value) for value in entry.get("keys", []))
+            description = str(entry.get("description", ""))
+            labels.append(f"{keys} {description}".strip())
+        return {
+            "type": "Text",
+            "text": "    ".join(labels),
+            "size": 11.0,
+            "bold": False,
+            "truncate": True,
+            "align": "start",
+        }
     if node_type == "label":
         return {
             "type": "Text",
@@ -143,6 +162,15 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "bold": data.get("bold", False),
             "truncate": data.get("truncate", False),
             "align": data.get("align", "start"),
+        }
+    if node_type == "markdown":
+        return {
+            "type": "Text",
+            "text": data.get("text", ""),
+            "size": data.get("base_size"),
+            "bold": False,
+            "truncate": False,
+            "align": "start",
         }
     if node_type == "column":
         children = data.get("children", [])

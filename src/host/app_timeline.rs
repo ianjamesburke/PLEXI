@@ -132,6 +132,7 @@ pub struct EventOutcome {
 
 /// Why a rollback request did not proceed.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub enum RollbackError {
     UnknownCheckpoint(String),
     AlreadyRolledBack(String),
@@ -140,6 +141,7 @@ pub enum RollbackError {
     VerifyInFlight(String),
 }
 
+#[cfg(test)]
 impl std::fmt::Display for RollbackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -154,6 +156,7 @@ impl std::fmt::Display for RollbackError {
 /// What the host should send the app to start a rollback: a revision
 /// verification question.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub struct RollbackVerifyRequest {
     pub checkpoint_id: String,
     pub resource_id: String,
@@ -162,6 +165,7 @@ pub struct RollbackVerifyRequest {
 
 /// The host's decision after the app reports its current revision.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(test)]
 pub enum RollbackVerdict {
     /// Revisions match — instruct the app to roll back.
     Apply {
@@ -182,7 +186,7 @@ pub enum RollbackVerdict {
 /// A broker-granted subscription of one actor to one app's event stream(s).
 /// Created only through [`AppTimeline::add_subscription`], which callers must
 /// gate behind a `TargetType::AppEventStream` broker decision (see
-/// `ProcessApp::subscribe_event_stream`).
+/// `WASM app runtime::subscribe_event_stream`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionRecord {
     pub subscription_id: String,
@@ -311,6 +315,7 @@ impl AppTimeline {
     }
 
     /// Declared streams for an app (empty when none declared).
+    #[cfg(test)]
     pub fn declared_streams(&self, app_id: &str) -> Vec<&EventStreamDecl> {
         self.streams
             .get(app_id)
@@ -500,6 +505,7 @@ impl AppTimeline {
     }
 
     /// All recorded events (read-only, oldest first).
+    #[cfg(test)]
     pub fn events(&self) -> &[AppEventRecord] {
         &self.events
     }
@@ -507,11 +513,13 @@ impl AppTimeline {
     // ── Undo timeline ───────────────────────────────────────────────────────
 
     /// All undo checkpoints (read-only, oldest first).
+    #[cfg(test)]
     pub fn checkpoints(&self) -> &[UndoCheckpoint] {
         &self.checkpoints
     }
 
     /// Checkpoints for one app, newest first — the listing API for history UI.
+    #[cfg(test)]
     pub fn checkpoints_for_app(&self, app_id: &str) -> Vec<&UndoCheckpoint> {
         let mut out: Vec<&UndoCheckpoint> = self
             .checkpoints
@@ -525,7 +533,8 @@ impl AppTimeline {
     /// Begin a rollback: transition the checkpoint to `Verifying` and return
     /// the revision-verification question the host must send the app.
     /// Broker gating (`TargetType::UndoCheckpoint`) is the caller's duty —
-    /// see `ProcessApp::request_rollback`.
+    /// see `WASM app runtime::request_rollback`.
+    #[cfg(test)]
     pub fn begin_rollback(
         &mut self,
         checkpoint_id: &str,
@@ -565,6 +574,7 @@ impl AppTimeline {
     /// Resolve the app's answer to a rollback verification. Revision match →
     /// `Apply` (checkpoint marked `RolledBack`); mismatch → `Blocked`
     /// (checkpoint marked `Conflict`).
+    #[cfg(test)]
     pub fn resolve_rollback_verify(
         &mut self,
         checkpoint_id: &str,
@@ -629,6 +639,7 @@ impl AppTimeline {
     }
 
     /// Active subscriptions (read-only).
+    #[cfg(test)]
     pub fn subscriptions(&self) -> &[SubscriptionRecord] {
         &self.subscriptions
     }
@@ -713,7 +724,7 @@ impl AppTimeline {
 
 static GLOBAL_TIMELINE: OnceLock<Arc<Mutex<AppTimeline>>> = OnceLock::new();
 
-/// The host-wide shared timeline. Production `ProcessApp`s all clone this
+/// The host-wide shared timeline. Production `WASM app runtime`s all clone this
 /// handle; tests construct isolated `Arc<Mutex<AppTimeline>>`s instead.
 pub fn global() -> Arc<Mutex<AppTimeline>> {
     Arc::clone(GLOBAL_TIMELINE.get_or_init(|| Arc::new(Mutex::new(AppTimeline::default()))))

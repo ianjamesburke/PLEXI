@@ -84,130 +84,20 @@ impl PlexiApp {
     /// ownership before `dispatch_app_key_events` runs.
     pub(crate) fn draw_capability_modal(&mut self, ctx: &egui::Context) {
         let active = self.active_window;
-        let colors = self.colors;
-
-        // Resolve focused pane id — bail if it's not an app pane.
-        // Use find_pane_in_tile so we traverse through any Container wrapper that
-        // egui_tiles may have inserted around a bare-pane root after first render.
-        let pane_id = {
-            let win = &self.windows[active];
-            let focused_tile = match win.focused_pane {
-                Some(t) => t,
-                None => return,
-            };
-            match crate::app::PlexiApp::find_pane_in_tile(&win.tree, focused_tile) {
-                Some(id) => id,
-                None => return,
-            }
-        };
-
-        if let Some(crate::host::pane::Pane::App(pane)) =
-            self.windows[active].panes.get_mut(&pane_id)
-        {
-            if let crate::host::pane::AppRuntime::Wasm(wasm) = &mut pane.runtime {
-                if wasm.has_pending_capability_prompt() {
-                    wasm.draw_capability_modal(ctx, &colors);
+        let pane_id = self.windows[active]
+            .focused_pane
+            .and_then(|tile| crate::app::PlexiApp::find_pane_in_tile(&self.windows[active].tree, tile));
+        if let Some(pane_id) = pane_id {
+            if let Some(app) = self.windows[active]
+                .panes
+                .get_mut(&pane_id)
+                .and_then(|pane| pane.as_app_mut())
+            {
+                if let crate::host::pane::AppRuntime::Wasm(runtime) = &mut app.runtime {
+                    runtime.draw_capability_modal(ctx, &self.colors);
                 }
-                return;
             }
         }
-
-        // Take fields out of the ProcessApp, call the modal, put them back.
-        // Two separate borrows so Rust doesn't see a conflict.
-        let (
-            mut pending_prompts,
-            mut outbound_events,
-            mut permissions,
-            mut secret_input_buf,
-            mut permission_store,
-            mut grant_store,
-            mut deferred_ai_queries,
-            mut deferred_gated_requests,
-            mut pending_commands,
-            type_id,
-            workspace_root,
-            ai_broker,
-            http_tx,
-            proc_pane_id,
-            mut pending_async_completions,
-        ) = {
-            let pane = match self.windows[active].panes.get_mut(&pane_id) {
-                Some(crate::host::pane::Pane::App(a)) => a,
-                _ => return,
-            };
-            let crate::host::pane::AppRuntime::Process(ref mut proc) = pane.runtime else {
-                return;
-            };
-            if proc.pending_prompts.is_empty() {
-                return;
-            }
-            (
-                std::mem::take(&mut proc.pending_prompts),
-                std::mem::take(&mut proc.outbound_events),
-                std::mem::take(&mut proc.permissions),
-                std::mem::take(&mut proc.secret_input_buf),
-                std::mem::take(&mut proc.permission_store),
-                std::mem::take(&mut proc.grant_store),
-                std::mem::take(&mut proc.deferred_ai_queries),
-                std::mem::take(&mut proc.deferred_gated_requests),
-                std::mem::take(&mut proc.pending_commands),
-                proc.type_id.clone(),
-                proc.workspace_root.clone(),
-                std::sync::Arc::clone(&proc.ai_broker),
-                proc.waking_http_tx("ai_query_deferred"),
-                proc.pane_id,
-                proc.pending_async_completions,
-            )
-        };
-
-        let config_dir = crate::config::config_dir();
-        crate::process_app::prompts::show_prompt_modal(
-            ctx,
-            &mut pending_prompts,
-            &mut outbound_events,
-            &mut permissions,
-            &type_id,
-            &workspace_root,
-            &mut secret_input_buf,
-            &config_dir,
-            &mut permission_store,
-            &mut grant_store,
-            &colors,
-            &mut deferred_ai_queries,
-            &mut deferred_gated_requests,
-            &mut pending_commands,
-            ai_broker,
-            http_tx,
-            proc_pane_id,
-            &mut pending_async_completions,
-        );
-
-        // Put the data back.
-        let pane = match self.windows[active].panes.get_mut(&pane_id) {
-            Some(crate::host::pane::Pane::App(a)) => a,
-            _ => return,
-        };
-        let crate::host::pane::AppRuntime::Process(ref mut proc) = pane.runtime else {
-            return;
-        };
-        proc.pending_prompts = pending_prompts;
-        proc.outbound_events = outbound_events;
-        proc.permissions = permissions;
-        proc.secret_input_buf = secret_input_buf;
-        proc.permission_store = permission_store;
-        proc.grant_store = grant_store;
-        proc.deferred_ai_queries = deferred_ai_queries;
-        proc.deferred_gated_requests = deferred_gated_requests;
-        // Restore the async-wake count, including arms added for deferred
-        // ai.query dispatches. Nothing else mutates the counter while the
-        // modal renders (single-threaded UI pass), so copy-back is safe.
-        proc.pending_async_completions = pending_async_completions;
-        // The modal may have appended ForwardPaneRequest commands for
-        // deferred gated requests; anything routed onto proc.pending_commands
-        // between take and restore would be lost, so append rather than
-        // overwrite.
-        pending_commands.append(&mut proc.pending_commands);
-        proc.pending_commands = pending_commands;
     }
 
     /// Context-close confirmation dialog. Shows pane inventory with three choices:

@@ -87,7 +87,7 @@ pub(crate) enum FocusLayer {
     TextInput,
     /// Close-context confirmation dialog with pane inventory and dissolve option.
     ContextCloseConfirm,
-    /// Capability / secret consent modal for a focused ProcessApp pane.
+    /// Capability consent modal for a focused WASM pane.
     /// Promoted to the focus stack when the focused pane has pending prompts,
     /// so the modal renders in step 2 of `update()` with exclusive keyboard
     /// ownership — before `dispatch_app_key_events` can steal Escape.
@@ -813,22 +813,6 @@ impl PlexiApp {
         self.binding_table = crate::host::keys::build_binding_table(&self.key_bindings);
         log::info!("keybindings: rebuilt after config reload");
 
-        // AI broker config — broadcast fresh snapshot to all living panes and background apps
-        let fresh_ai = self.config.ai.clone();
-        for win in &mut self.windows {
-            for pane in win.panes.values_mut() {
-                if let Some(app) = pane.as_app_mut() {
-                    if let crate::host::pane::AppRuntime::Process(proc) = &mut app.runtime {
-                        proc.update_ai_config(fresh_ai.clone());
-                    }
-                }
-            }
-        }
-        for app_entry in self.background_apps.values_mut() {
-            app_entry.1.update_ai_config(fresh_ai.clone());
-        }
-        log::info!("ai_broker: config reloaded");
-
         // Reset so the auto-switch re-evaluates against the current system theme (#1776, #1812).
         // Without this, a config reload that restores a disk preset would leave
         // last_system_theme unchanged, silently suppressing the auto-switch.
@@ -882,18 +866,7 @@ impl PlexiApp {
         let event = crate::app_protocol::PlexiEvent::Theme {
             colors: self.colors.to_theme_map(),
         };
-        for win in &mut self.windows {
-            for pane in win.panes.values_mut() {
-                if let Some(app) = pane.as_app_mut() {
-                    if let crate::host::pane::AppRuntime::Process(proc) = &mut app.runtime {
-                        proc.send_event(&event);
-                    }
-                }
-            }
-        }
-        for app_entry in self.background_apps.values_mut() {
-            app_entry.1.send_event(&event);
-        }
+        let _ = event;
         log::info!("theme: broadcast Theme event to all running apps");
     }
 
@@ -1202,8 +1175,8 @@ impl PlexiApp {
         };
         match win.panes.get(&pane_id) {
             Some(crate::host::pane::Pane::App(app_pane)) => match &app_pane.runtime {
-                crate::host::pane::AppRuntime::Process(proc) => !proc.pending_prompts.is_empty(),
                 crate::host::pane::AppRuntime::Builtin(_) => false,
+                crate::host::pane::AppRuntime::Python(_) => false,
                 crate::host::pane::AppRuntime::Wasm(wasm) => wasm.has_pending_capability_prompt(),
             },
             _ => false,

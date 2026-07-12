@@ -6,7 +6,7 @@
 //!      [`VideoOpenAck`] carrying the negotiated `width`/`height`/`fps`/
 //!      `duration_ms` plus an opaque `handle_id`. Subsequent operations
 //!      (`set_state`, `close`) take that `handle_id`. The trait lives behind
-//!      `Arc<dyn VideoDecoder>` on each `ProcessApp` instance.
+//!      `Arc<dyn VideoDecoder>` on each `WASM app runtime` instance.
 //!
 //!   2. [`AvfVideoDecoder`] — production decoder. macOS: AVFoundation
 //!      pipeline (`AVURLAsset` → `AVAssetReader` → `AVAssetReaderTrackOutput`
@@ -91,7 +91,7 @@ pub enum VideoError {
 }
 
 /// Opaque video session. Drop tears down the worker thread (mock) or the
-/// AVFoundation player (#346). Owned by `ProcessApp::video_handles`.
+/// AVFoundation player (#346). Owned by `WASM app runtime::video_handles`.
 pub struct VideoHandle {
     pub handle_id: u64,
     pub width: u32,
@@ -881,7 +881,7 @@ fn render_gradient_frame(width: u32, height: u32, frame_index: u64) -> Vec<u8> {
 /// otherwise instantiates the production [`AvfVideoDecoder`] stub.
 ///
 /// Tests inject `Arc::new(MockVideoDecoder::new(cfg))` directly into
-/// `ProcessApp::video_device` and skip the env var altogether.
+/// `WASM app runtime::video_device` and skip the env var altogether.
 #[cfg(not(test))]
 pub fn default_video_device() -> Arc<dyn VideoDecoder> {
     if let Ok(url) = std::env::var("PLEXI_VIDEO") {
@@ -907,7 +907,7 @@ pub fn default_video_device() -> Arc<dyn VideoDecoder> {
 #[cfg(test)]
 pub fn default_video_device() -> Arc<dyn VideoDecoder> {
     // Tests that exercise the routing path inject their own MockVideoDecoder
-    // directly into `ProcessApp::video_device`. The harness factory returns
+    // directly into `WASM app runtime::video_device`. The harness factory returns
     // the production stub so the no-injection path errors loudly with
     // `NotImplemented` rather than silently producing frames.
     Arc::new(AvfVideoDecoder::new())
@@ -1133,7 +1133,7 @@ mod tests {
         // Under `cfg(test)`, the factory always returns the production
         // AvfVideoDecoder — tests that need the mock inject
         // `Arc::new(MockVideoDecoder::new(...))` into
-        // `ProcessApp::video_device` directly. The default decoder rejects
+        // `WASM app runtime::video_device` directly. The default decoder rejects
         // a non-existent file via Decoder/InvalidSource — never NotImplemented
         // (post-#346) on macOS, never panic anywhere.
         let dev = default_video_device();

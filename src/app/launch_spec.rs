@@ -176,10 +176,7 @@ mod tests {
 
         let spec = PaneLaunchSpec::from_spawn_pane(&request).expect("valid launch spec");
 
-        assert_eq!(
-            spec.target,
-            PaneLaunchTarget::Path("/tmp/app.wasm".into())
-        );
+        assert_eq!(spec.target, PaneLaunchTarget::Path("/tmp/app.wasm".into()));
         assert_eq!(spec.args, ["--sample", "96"]);
     }
 

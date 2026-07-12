@@ -1196,7 +1196,9 @@ mod tests {
             "test source must ship; got {paths:?}"
         );
         assert!(
-            !paths.iter().any(|p| p.contains("__pycache__") || p.ends_with(".pyc")),
+            !paths
+                .iter()
+                .any(|p| p.contains("__pycache__") || p.ends_with(".pyc")),
             "compiled bytecode / __pycache__ must never be packaged; got {paths:?}"
         );
     }

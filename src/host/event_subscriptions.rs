@@ -15,7 +15,7 @@
 //!
 //! - [`evaluate_and_record_subscription`] is the single broker-gated path
 //!   that turns a subscribe request into a [`SubscriptionRecord`]. Both the
-//!   per-app `ProcessApp` (with its per-app grant store) and the host-level
+//!   per-app `WASM app runtime` (with its per-app grant store) and the host-level
 //!   [`HostSubscriptionService`] (with the host grant store) call it, so the
 //!   `TargetType::AppEventStream` grant rules live in exactly one place.
 //! - [`HostSubscriptionService`] owns the host grant store + posture loaded
@@ -43,6 +43,7 @@ use crate::host::event_log;
 /// This is the shared seam between the per-app and host subscription paths —
 /// keep the grant semantics here, not duplicated per caller.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn evaluate_and_record_subscription(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
@@ -405,7 +406,11 @@ pub struct HostSubscriptionService {
 impl HostSubscriptionService {
     /// Load the host grant store + posture from `config_dir` and bind the
     /// service to `timeline` (the global timeline in production).
-    pub fn new(config_dir: &Path, workspace_root: PathBuf, timeline: Arc<Mutex<AppTimeline>>) -> Self {
+    pub fn new(
+        config_dir: &Path,
+        workspace_root: PathBuf,
+        timeline: Arc<Mutex<AppTimeline>>,
+    ) -> Self {
         let grant_store = GrantStore::load_or_default(config_dir);
         let posture = PermissionPosture::load_from_config(config_dir);
         log::info!(
@@ -444,7 +449,7 @@ impl HostSubscriptionService {
     /// Derive the trusted subscriber identity for a transport connection from
     /// the host-stamped pane id. CLI/MCP agents are `Agent`-typed; the id is
     /// namespaced by pane so it never collides with the assistant
-    /// (`agent:assistant`) or a `ProcessApp` (its `type_id`). A connection with
+    /// (`agent:assistant`) or a `WASM app runtime` (its `type_id`). A connection with
     /// no pane context (rare) gets a stable anonymous id.
     pub fn resolve_cli_subscriber(from_pane_id: Option<u64>) -> (ActorType, String) {
         let id = match from_pane_id {
@@ -861,7 +866,10 @@ impl HostSubscriptionService {
     /// Whether `app_id` has declared `stream_name`. Used to reject subscribe
     /// requests for undeclared streams before they reach the broker.
     pub fn stream_is_declared(&self, app_id: &str, stream_name: &str) -> bool {
-        self.timeline.lock().unwrap().has_stream(app_id, stream_name)
+        self.timeline
+            .lock()
+            .unwrap()
+            .has_stream(app_id, stream_name)
     }
 }
 
@@ -969,7 +977,10 @@ mod tests {
         event_names: Vec<String>,
         payload_mode: PayloadMode,
         override_id: Option<&str>,
-    ) -> (HostSubscribeRequest, std::sync::mpsc::Receiver<HostSubscribeReply>) {
+    ) -> (
+        HostSubscribeRequest,
+        std::sync::mpsc::Receiver<HostSubscribeReply>,
+    ) {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let req = HostSubscribeRequest {
             publisher_app_id: "event-probe".to_string(),
@@ -991,7 +1002,10 @@ mod tests {
     fn subscribe_request_decoupled(
         delivery_id: &str,
         broker_actor: &str,
-    ) -> (HostSubscribeRequest, std::sync::mpsc::Receiver<HostSubscribeReply>) {
+    ) -> (
+        HostSubscribeRequest,
+        std::sync::mpsc::Receiver<HostSubscribeReply>,
+    ) {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let req = HostSubscribeRequest {
             publisher_app_id: "event-probe".to_string(),
@@ -1020,15 +1034,19 @@ mod tests {
         assert!(svc.classify_subscribe_request(req_a).is_none());
         assert!(svc.classify_subscribe_request(req_b).is_none());
         let (ta, sa) = match rx_a.recv().unwrap() {
-            HostSubscribeReply::Ok { subscriber_type, subscriber_id, .. } => {
-                (subscriber_type, subscriber_id)
-            }
+            HostSubscribeReply::Ok {
+                subscriber_type,
+                subscriber_id,
+                ..
+            } => (subscriber_type, subscriber_id),
             HostSubscribeReply::Err { message } => panic!("subscribe A failed: {message}"),
         };
         let (tb, sb) = match rx_b.recv().unwrap() {
-            HostSubscribeReply::Ok { subscriber_type, subscriber_id, .. } => {
-                (subscriber_type, subscriber_id)
-            }
+            HostSubscribeReply::Ok {
+                subscriber_type,
+                subscriber_id,
+                ..
+            } => (subscriber_type, subscriber_id),
             HostSubscribeReply::Err { message } => panic!("subscribe B failed: {message}"),
         };
         // The reply echoes the unique routing key, not the shared broker actor.
@@ -1108,8 +1126,11 @@ mod tests {
     fn handle_request_honours_override_identity() {
         let timeline = timeline_with_stream();
         let svc = granted_service(Arc::clone(&timeline));
-        let (req, rx) =
-            subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, Some("mcp:host"));
+        let (req, rx) = subscribe_request(
+            vec!["probe.tick".to_string()],
+            PayloadMode::Full,
+            Some("mcp:host"),
+        );
         assert!(svc.classify_subscribe_request(req).is_none());
         match rx.recv().unwrap() {
             HostSubscribeReply::Ok { subscriber_id, .. } => assert_eq!(subscriber_id, "mcp:host"),
@@ -1148,7 +1169,9 @@ mod tests {
         let mut svc =
             HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
         let (req, rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
-        let consent = svc.classify_subscribe_request(req).expect("Ask must park a consent");
+        let consent = svc
+            .classify_subscribe_request(req)
+            .expect("Ask must park a consent");
         svc.resolve_consent(consent, ConsentChoice::Deny, Path::new("/tmp/ws"));
         match rx.recv().unwrap() {
             HostSubscribeReply::Err { message } => assert!(message.contains("denied by user")),
@@ -1169,7 +1192,9 @@ mod tests {
             Arc::clone(&timeline),
         );
         let (req, rx) = subscribe_request(vec!["probe.tick".to_string()], PayloadMode::Full, None);
-        let consent = svc.classify_subscribe_request(req).expect("Ask must park a consent");
+        let consent = svc
+            .classify_subscribe_request(req)
+            .expect("Ask must park a consent");
         svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
         assert!(matches!(rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
 
@@ -1287,8 +1312,11 @@ mod tests {
     fn publish_emit_records_and_host_stamps_actor() {
         let timeline = timeline_with_stream();
         let svc = granted_service(Arc::clone(&timeline));
-        let (req, rx) =
-            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(3))), None);
+        let (req, rx) = publish_request(
+            "event-probe",
+            PublishAction::Emit(Box::new(probe_event(3))),
+            None,
+        );
         assert!(svc.classify_publish_request(req).is_none());
         match rx.recv().unwrap() {
             HostPublishReply::Ok { event_id, .. } => assert_eq!(event_id, Some(1)),
@@ -1361,7 +1389,11 @@ mod tests {
             HostPublishReply::Err { message } => panic!("allow-once should declare: {message}"),
         }
         assert_eq!(
-            timeline.lock().unwrap().declared_streams("declare-probe").len(),
+            timeline
+                .lock()
+                .unwrap()
+                .declared_streams("declare-probe")
+                .len(),
             1
         );
     }
@@ -1372,8 +1404,11 @@ mod tests {
         let timeline = timeline_with_stream();
         let mut svc =
             HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
-        let (req, rx) =
-            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(1))), None);
+        let (req, rx) = publish_request(
+            "event-probe",
+            PublishAction::Emit(Box::new(probe_event(1))),
+            None,
+        );
         let consent = svc
             .classify_publish_request(req)
             .expect("Ask must park a consent");
@@ -1391,10 +1426,16 @@ mod tests {
     fn publish_allow_always_persists_grant() {
         let dir = tempfile::tempdir().unwrap();
         let timeline = timeline_with_stream();
-        let mut svc =
-            HostSubscriptionService::new(dir.path(), PathBuf::from("/tmp/ws"), Arc::clone(&timeline));
-        let (req, rx) =
-            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(1))), None);
+        let mut svc = HostSubscriptionService::new(
+            dir.path(),
+            PathBuf::from("/tmp/ws"),
+            Arc::clone(&timeline),
+        );
+        let (req, rx) = publish_request(
+            "event-probe",
+            PublishAction::Emit(Box::new(probe_event(1))),
+            None,
+        );
         let consent = svc
             .classify_publish_request(req)
             .expect("Ask must park a consent");
@@ -1406,8 +1447,11 @@ mod tests {
             PathBuf::from("/tmp/ws"),
             Arc::clone(&timeline),
         );
-        let (req2, rx2) =
-            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(2))), None);
+        let (req2, rx2) = publish_request(
+            "event-probe",
+            PublishAction::Emit(Box::new(probe_event(2))),
+            None,
+        );
         assert!(
             svc2.classify_publish_request(req2).is_none(),
             "persisted ALWAYS grant must publish inline, not re-prompt"
@@ -1423,8 +1467,11 @@ mod tests {
     fn subscribe_grant_does_not_authorize_publish() {
         let dir = tempfile::tempdir().unwrap();
         let timeline = timeline_with_stream();
-        let mut svc =
-            HostSubscriptionService::new(dir.path(), PathBuf::from("/tmp/ws"), Arc::clone(&timeline));
+        let mut svc = HostSubscriptionService::new(
+            dir.path(),
+            PathBuf::from("/tmp/ws"),
+            Arc::clone(&timeline),
+        );
 
         // Grant a persistent subscribe (read) Allow-Always.
         let (sub_req, sub_rx) =
@@ -1433,7 +1480,10 @@ mod tests {
             .classify_subscribe_request(sub_req)
             .expect("Ask must park a subscribe consent");
         svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
-        assert!(matches!(sub_rx.recv().unwrap(), HostSubscribeReply::Ok { .. }));
+        assert!(matches!(
+            sub_rx.recv().unwrap(),
+            HostSubscribeReply::Ok { .. }
+        ));
 
         // A publish from the same identity must still be gated (Ask → parked),
         // not silently authorized by the read grant.
@@ -1442,8 +1492,11 @@ mod tests {
             PathBuf::from("/tmp/ws"),
             Arc::clone(&timeline),
         );
-        let (pub_req, _pub_rx) =
-            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(1))), None);
+        let (pub_req, _pub_rx) = publish_request(
+            "event-probe",
+            PublishAction::Emit(Box::new(probe_event(1))),
+            None,
+        );
         assert!(
             svc2.classify_publish_request(pub_req).is_some(),
             "a read grant must not authorize a publish"
@@ -1456,17 +1509,26 @@ mod tests {
     fn publish_grant_does_not_authorize_subscribe() {
         let dir = tempfile::tempdir().unwrap();
         let timeline = timeline_with_stream();
-        let mut svc =
-            HostSubscriptionService::new(dir.path(), PathBuf::from("/tmp/ws"), Arc::clone(&timeline));
+        let mut svc = HostSubscriptionService::new(
+            dir.path(),
+            PathBuf::from("/tmp/ws"),
+            Arc::clone(&timeline),
+        );
 
         // Grant a persistent publish (write) Allow-Always.
-        let (pub_req, pub_rx) =
-            publish_request("event-probe", PublishAction::Emit(Box::new(probe_event(1))), None);
+        let (pub_req, pub_rx) = publish_request(
+            "event-probe",
+            PublishAction::Emit(Box::new(probe_event(1))),
+            None,
+        );
         let consent = svc
             .classify_publish_request(pub_req)
             .expect("Ask must park a publish consent");
         svc.resolve_consent(consent, ConsentChoice::AllowAlways, dir.path());
-        assert!(matches!(pub_rx.recv().unwrap(), HostPublishReply::Ok { .. }));
+        assert!(matches!(
+            pub_rx.recv().unwrap(),
+            HostPublishReply::Ok { .. }
+        ));
 
         // A subscribe from the same identity must still be gated (Ask → parked).
         let svc2 = HostSubscriptionService::new(

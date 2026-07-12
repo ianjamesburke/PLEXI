@@ -6,8 +6,6 @@
 // their declared action strings into `RenderResult` so the pane can route them
 // back to the guest. A depth cap guards against malformed/cyclic trees.
 
-use std::collections::HashMap;
-
 use egui::{Color32, RichText};
 
 use crate::ui::style;
@@ -25,6 +23,7 @@ pub struct RenderResult {
     pub actions: Vec<String>,
     /// `(on_change action, new value)` pairs from edited text inputs.
     pub value_changes: Vec<(String, String)>,
+    pub canvas_time: std::time::Duration,
 }
 
 /// Render a view tree, compositing `surface` into the first surface-node
@@ -35,9 +34,8 @@ pub fn render_ui_tree_with_surface(
     colors: &Colors,
     surface: Option<egui::TextureId>,
 ) -> RenderResult {
-    let index: HashMap<u32, &IndexedNode> = tree.nodes.iter().map(|n| (n.id, n)).collect();
     let mut out = RenderResult::default();
-    render_node(ui, &index, tree.root, colors, &mut out, 0, surface);
+    render_node(ui, &tree.nodes, tree.root, colors, &mut out, 0, surface);
     out
 }
 
@@ -63,7 +61,7 @@ fn cross_align(a: Alignment) -> egui::Align {
 
 fn render_node(
     ui: &mut egui::Ui,
-    index: &HashMap<u32, &IndexedNode>,
+    nodes: &[IndexedNode],
     id: u32,
     colors: &Colors,
     out: &mut RenderResult,
@@ -73,7 +71,13 @@ fn render_node(
     if depth > MAX_DEPTH {
         return;
     }
-    let Some(node) = index.get(&id) else { return };
+    let Some(node) = nodes
+        .get(id as usize)
+        .filter(|node| node.id == id)
+        .or_else(|| nodes.iter().find(|node| node.id == id))
+    else {
+        return;
+    };
 
     match &node.data {
         UiNodeData::Empty => {}
@@ -127,7 +131,7 @@ fn render_node(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = r.gap;
                 for child in &r.children {
-                    render_node(ui, index, *child, colors, out, depth + 1, surface);
+                    render_node(ui, nodes, *child, colors, out, depth + 1, surface);
                 }
             });
         }
@@ -136,7 +140,7 @@ fn render_node(
             ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
                 ui.spacing_mut().item_spacing.y = c.gap;
                 for child in &c.children {
-                    render_node(ui, index, *child, colors, out, depth + 1, surface);
+                    render_node(ui, nodes, *child, colors, out, depth + 1, surface);
                 }
             });
         }
@@ -186,7 +190,7 @@ fn render_node(
                         if selected {
                             ui.visuals_mut().override_text_color = Some(colors.accent);
                         }
-                        render_node(ui, index, *item_id, colors, out, depth + 1, surface);
+                        render_node(ui, nodes, *item_id, colors, out, depth + 1, surface);
                     })
                     .response
                     .interact(egui::Sense::click());
@@ -205,7 +209,7 @@ fn render_node(
                 egui::ScrollArea::vertical()
             };
             area.show(ui, |ui| {
-                render_node(ui, index, s.child, colors, out, depth + 1, surface);
+                render_node(ui, nodes, s.child, colors, out, depth + 1, surface);
             });
         }
 
@@ -218,11 +222,12 @@ fn render_node(
                     bottom: p.bottom as i8,
                 })
                 .show(ui, |ui| {
-                    render_node(ui, index, p.child, colors, out, depth + 1, surface);
+                    render_node(ui, nodes, p.child, colors, out, depth + 1, surface);
                 });
         }
 
         UiNodeData::Canvas(c) => {
+            let canvas_started = std::time::Instant::now();
             let width = if c.grow {
                 ui.available_width().max(1.0)
             } else if c.width > 0.0 {
@@ -285,6 +290,7 @@ fn render_node(
                     }
                 }
             }
+            out.canvas_time += canvas_started.elapsed();
         }
 
         UiNodeData::Divider => {

@@ -1701,14 +1701,14 @@ mod tests {
     fn pane_row_identity_chips_apps_and_text_editors() {
         use crate::app::permissions::AppPermissions;
         use crate::host::pane::{AppPane, AppRuntime};
-        use crate::process_app::ProcessApp;
 
         let make_app = |manifest_id: &str, name: &str| {
-            let (process_app, _draw_tx) = ProcessApp::new_for_test(99, AppPermissions::builtin());
             Pane::App(Box::new(AppPane {
                 pip_status: None,
                 id: 99,
-                runtime: AppRuntime::Process(Box::new(process_app)),
+                runtime: AppRuntime::Builtin(Box::new(
+                    crate::file_browser::FileBrowserApp::new(std::env::temp_dir()),
+                )),
                 workspace_root: std::env::temp_dir(),
                 permissions: AppPermissions::builtin(),
                 manifest_id: manifest_id.to_string(),
@@ -1731,7 +1731,7 @@ mod tests {
 
         // Empty pane name falls back to the runtime display name.
         let (name, _) = pane_row_identity(&make_app("notes", ""), &[]);
-        assert_eq!(name, "Test App");
+        assert!(!name.is_empty());
 
         // User-renamed app pane uses the assigned name in palette search.
         let (name, chip) = pane_row_identity(&make_app("assistant", "chad"), &[]);

@@ -92,6 +92,14 @@ class V3AppRuntime:
             self._handle_text_submitted(ev)
         elif t == "http_response":
             self._handle_http_response(ev)
+        elif t == "file_read_result":
+            content = ev.get("content")
+            self._dispatch(events.FileReadResult(
+                content=content.encode("utf-8") if isinstance(content, str) else None,
+                error=ev.get("error"),
+            ))
+        elif t == "file_write_result":
+            self._dispatch(events.FileWriteResult(error=ev.get("error")))
         elif t == "capability_decision":
             self._handle_capability_decision(ev)
         elif t == "ui_action":
@@ -158,8 +166,8 @@ class V3AppRuntime:
             self._set_state(in_view=False)
 
         if root is not None:
-            node = root.to_node() if hasattr(root, "to_node") else root
-            _emit({"type": "component_tree", "root": node})
+            from ._adapter import _encode_uitree
+            _emit({"type": "component_tree", "tree": _encode_uitree(root)})
 
         frame_id = ev.get("frame_id", self._frame_id)
         _emit({"type": "frame_done", "frame_id": frame_id})
@@ -297,6 +305,14 @@ class V3AppRuntime:
                 if effect.body is not None:
                     payload["body"] = effect.body.decode("utf-8")
                 _emit(payload)
+            elif isinstance(effect, effects.FileRead):
+                _emit({"type": "file_read", "path": effect.path})
+            elif isinstance(effect, effects.FileWrite):
+                _emit({
+                    "type": "file_write",
+                    "path": effect.path,
+                    "content": effect.content.decode("utf-8"),
+                })
             elif isinstance(effect, effects.RequestCapability):
                 _emit({
                     "type": "capability_request",

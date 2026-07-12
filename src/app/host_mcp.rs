@@ -1,7 +1,7 @@
 //! Host-level event-subscription MCP server — `stint 0214`.
 //!
 //! The native transport for MCP-aware agents (Claude Code, Codex). Unlike the
-//! per-app MCP bridge (`process_app::mcp_server`), this is a single host-wide
+//! app-scoped tool bridges, this is a single host-wide
 //! server started once at boot. It exposes the same subscription primitive the
 //! `plexi events` CLI wraps, backed by the one host subscription core — CLI and
 //! MCP are transports, not separate event buses.
@@ -249,9 +249,7 @@ fn handle_connection(
             log::info!("host_mcp: tool_call tool={tool_name} peer={peer}");
             let result = match tool_name {
                 "list_event_streams" => tool_list_event_streams(),
-                "subscribe_and_wait" => {
-                    tool_subscribe_and_wait(&arguments, subscribe_tx, egui_ctx)
-                }
+                "subscribe_and_wait" => tool_subscribe_and_wait(&arguments, subscribe_tx, egui_ctx),
                 other => Err(format!("unknown tool: {other}")),
             };
             match result {
@@ -393,7 +391,11 @@ fn tool_subscribe_and_wait(
                 "state_ref": d.state_ref,
                 "created_at": d.created_at,
             });
-            log::info!("host_mcp: subscribe_and_wait delivered event {} from {}", d.event, d.app_id);
+            log::info!(
+                "host_mcp: subscribe_and_wait delivered event {} from {}",
+                d.event,
+                d.app_id
+            );
             serde_json::to_string(&out).map_err(|e| format!("serialize failed: {e}"))
         }
         None => Ok(format!(
@@ -505,7 +507,11 @@ mod tests {
     #[test]
     fn no_auth_returns_401() {
         let (port, _t) = start_test_server(None);
-        let (status, _) = post(port, None, br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+        let (status, _) = post(
+            port,
+            None,
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        );
         assert_eq!(status, 401);
     }
 

@@ -47,6 +47,7 @@ impl SemanticPaneState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn from_process_frame(frame: &serde_json::Value) -> Self {
         let mut nodes = Vec::new();
         let roots = collect_process_semantics(frame, "frame", &mut nodes);
@@ -111,9 +112,7 @@ impl SemanticPaneState {
             .map(|node| {
                 let (role, label, value, children) = match &node.data {
                     UiNodeData::Empty => ("empty", None, None, Vec::new()),
-                    UiNodeData::Text(text) => {
-                        ("text", Some(text.text.clone()), None, Vec::new())
-                    }
+                    UiNodeData::Text(text) => ("text", Some(text.text.clone()), None, Vec::new()),
                     UiNodeData::Button(button) => {
                         ("button", Some(button.label.clone()), None, Vec::new())
                     }
@@ -166,6 +165,12 @@ impl SemanticPaneState {
                         Some(format!("{}x{}", surface.width, surface.height)),
                         Vec::new(),
                     ),
+                    UiNodeData::Canvas(canvas) => (
+                        "canvas",
+                        None,
+                        Some(format!("{}x{}", canvas.width, canvas.height)),
+                        Vec::new(),
+                    ),
                 };
                 SemanticPaneNode {
                     id: node.id.to_string(),
@@ -186,6 +191,7 @@ impl SemanticPaneState {
     }
 }
 
+#[cfg(test)]
 fn collect_process_semantics(
     value: &serde_json::Value,
     path: &str,
@@ -234,12 +240,14 @@ fn collect_process_semantics(
     }
 }
 
-fn process_command_bounds(
-    object: &serde_json::Map<String, serde_json::Value>,
-) -> Option<[f64; 4]> {
+#[cfg(test)]
+fn process_command_bounds(object: &serde_json::Map<String, serde_json::Value>) -> Option<[f64; 4]> {
     let x = object.get("x")?.as_f64()?;
     let y = object.get("y")?.as_f64()?;
-    let width = object.get("w").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+    let width = object
+        .get("w")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
     let height = object
         .get("h")
         .and_then(serde_json::Value::as_f64)
@@ -513,8 +521,8 @@ impl TerminalPane {
 // ---------------------------------------------------------------------------
 
 pub enum AppRuntime {
-    Process(Box<crate::process_app::ProcessApp>),
     Builtin(Box<dyn App>),
+    Python(Box<crate::host::wasm_python::LivePythonPane>),
     /// A sandboxed WASM component app driven by the synchronous effect loop.
     /// Neither a subprocess nor a native in-process builtin — it runs inside a
     /// per-pane `wasmtime::Store`.
@@ -524,8 +532,8 @@ pub enum AppRuntime {
 impl AppRuntime {
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         match self {
-            AppRuntime::Process(app) => app.ui(ui, ctx),
             AppRuntime::Builtin(app) => app.ui(ui, ctx),
+            AppRuntime::Python(app) => app.ui(ui, ctx.colors),
             AppRuntime::Wasm(app) => app.ui(ui, ctx.colors),
         }
     }
@@ -535,64 +543,64 @@ impl AppRuntime {
         input: &egui::InputState,
     ) -> crate::app::app_trait::KeyDisposition {
         match self {
-            AppRuntime::Process(app) => app.handle_key(input),
             AppRuntime::Builtin(app) => app.handle_key(input),
+            AppRuntime::Python(app) => app.handle_key(input),
             AppRuntime::Wasm(app) => app.handle_key(input),
         }
     }
 
     pub fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         match self {
-            AppRuntime::Process(app) => app.take_pending_commands(),
             AppRuntime::Builtin(app) => app.take_pending_commands(),
+            AppRuntime::Python(app) => app.take_pending_commands(),
             AppRuntime::Wasm(_) => vec![],
         }
     }
 
     pub fn keyboard_capture(&self) -> bool {
         match self {
-            AppRuntime::Process(app) => app.keyboard_capture(),
             AppRuntime::Builtin(app) => app.keyboard_capture(),
+            AppRuntime::Python(_) => false,
             AppRuntime::Wasm(_) => false,
         }
     }
 
     pub fn wants_close(&self) -> bool {
         match self {
-            AppRuntime::Process(app) => app.wants_close(),
             AppRuntime::Builtin(app) => app.wants_close(),
+            AppRuntime::Python(app) => app.wants_close(),
             AppRuntime::Wasm(app) => app.wants_close(),
         }
     }
 
     pub fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
         match self {
-            AppRuntime::Process(app) => app.queue_outbound_event(event),
             AppRuntime::Builtin(app) => app.queue_outbound_event(event),
+            AppRuntime::Python(_) => {}
             AppRuntime::Wasm(_) => {}
         }
     }
 
     pub fn sync_cwd(&mut self, new_cwd: &std::path::Path) {
         match self {
-            AppRuntime::Process(app) => app.sync_cwd(new_cwd),
             AppRuntime::Builtin(app) => app.sync_cwd(new_cwd),
+            AppRuntime::Python(_) => {}
             AppRuntime::Wasm(_) => {}
         }
     }
 
     pub fn type_id(&self) -> &'static str {
         match self {
-            AppRuntime::Process(app) => app.type_id(),
             AppRuntime::Builtin(app) => app.type_id(),
+            AppRuntime::Python(_) => "python-wasm",
             AppRuntime::Wasm(_) => "wasm",
         }
     }
 
     pub fn serialize_state(&self) -> Option<serde_json::Value> {
         match self {
-            AppRuntime::Process(app) => app.serialize_state(),
             AppRuntime::Builtin(app) => app.serialize_state(),
+            AppRuntime::Python(_) => None,
             // WASM app state is persisted host-side via the file-backed
             // StateStore, not through workspace JSON.
             AppRuntime::Wasm(_) => None,
@@ -601,8 +609,8 @@ impl AppRuntime {
 
     pub fn display_name(&self) -> String {
         match self {
-            AppRuntime::Process(app) => app.display_name(),
             AppRuntime::Builtin(app) => app.display_name(),
+            AppRuntime::Python(app) => app.display_name(),
             AppRuntime::Wasm(app) => app.display_name(),
         }
     }
@@ -610,8 +618,8 @@ impl AppRuntime {
     /// Seed text for the rename-pane overlay. See [`App::rename_seed`].
     pub fn rename_seed(&self) -> Option<String> {
         match self {
-            AppRuntime::Process(app) => app.rename_seed(),
             AppRuntime::Builtin(app) => app.rename_seed(),
+            AppRuntime::Python(_) => None,
             AppRuntime::Wasm(_) => None,
         }
     }
@@ -619,8 +627,8 @@ impl AppRuntime {
     /// Notify the app that its pane was renamed. See [`App::on_pane_renamed`].
     pub fn on_pane_renamed(&mut self, name: &str) {
         match self {
-            AppRuntime::Process(app) => app.on_pane_renamed(name),
             AppRuntime::Builtin(app) => app.on_pane_renamed(name),
+            AppRuntime::Python(_) => {}
             AppRuntime::Wasm(_) => {}
         }
     }
@@ -628,8 +636,8 @@ impl AppRuntime {
     /// Pump event I/O for a pane not in the active context.
     pub fn background_tick(&mut self) {
         match self {
-            AppRuntime::Process(app) => app.background_tick(),
             AppRuntime::Builtin(app) => app.background_tick(),
+            AppRuntime::Python(_) => {}
             // Timers advance only while the pane renders (visible). Background
             // ticking for off-screen WASM panes is deferred.
             AppRuntime::Wasm(_) => {}
@@ -640,8 +648,8 @@ impl AppRuntime {
     /// would make progress on?
     pub fn needs_background_tick(&self) -> bool {
         match self {
-            AppRuntime::Process(app) => app.needs_background_tick(),
             AppRuntime::Builtin(app) => app.needs_background_tick(),
+            AppRuntime::Python(_) => false,
             AppRuntime::Wasm(_) => false,
         }
     }
@@ -650,8 +658,8 @@ impl AppRuntime {
     /// Always 0 for builtin apps — they manage their own internal navigation.
     pub fn nav_stack_depth(&self) -> usize {
         match self {
-            AppRuntime::Process(app) => app.nav_stack_depth(),
             AppRuntime::Builtin(_) => 0,
+            AppRuntime::Python(_) => 0,
             AppRuntime::Wasm(_) => 0,
         }
     }
@@ -660,8 +668,8 @@ impl AppRuntime {
     /// `None` when the stack is empty (root view — no back arrow shown).
     pub fn nav_top_title(&self) -> Option<&str> {
         match self {
-            AppRuntime::Process(app) => app.nav_top_title(),
             AppRuntime::Builtin(_) => None,
+            AppRuntime::Python(_) => None,
             AppRuntime::Wasm(_) => None,
         }
     }
@@ -670,32 +678,30 @@ impl AppRuntime {
     /// top, or empty string for root). Used to populate `NavBack { view_id }`.
     pub fn nav_back_view_id(&self) -> String {
         match self {
-            AppRuntime::Process(app) => app.nav_back_view_id(),
             AppRuntime::Builtin(_) => String::new(),
+            AppRuntime::Python(_) => String::new(),
             AppRuntime::Wasm(_) => String::new(),
         }
     }
 
     pub(crate) fn set_pending_notification_count(&mut self, count: usize) {
-        if let AppRuntime::Process(app) = self {
-            app.pending_notification_count = count;
-        }
+        let _ = count;
     }
 
     /// Serialize the last-rendered frame (Vec<RenderCommand>) as a JSON array.
     /// Returns `None` for builtin apps (no accessible frame).
     pub(crate) fn frame_json(&self) -> Option<serde_json::Value> {
         match self {
-            AppRuntime::Process(app) => serde_json::to_value(&app.frame).ok(),
             AppRuntime::Builtin(_) => None,
+            AppRuntime::Python(_) => None,
             AppRuntime::Wasm(_) => None,
         }
     }
 
     pub(crate) fn runtime_kind(&self) -> &'static str {
         match self {
-            AppRuntime::Process(_) => "process",
             AppRuntime::Builtin(_) => "builtin",
+            AppRuntime::Python(_) => "python-wasm",
             AppRuntime::Wasm(_) => "wasm",
         }
     }
@@ -731,13 +737,8 @@ pub struct AppPane {
 impl AppPane {
     pub(crate) fn semantic_state(&self) -> SemanticPaneState {
         match &self.runtime {
-            AppRuntime::Process(_) => self
-                .runtime
-                .frame_json()
-                .as_ref()
-                .map(SemanticPaneState::from_process_frame)
-                .unwrap_or_else(|| SemanticPaneState::empty("process")),
             AppRuntime::Builtin(_) => self.semantic_state.clone(),
+            AppRuntime::Python(app) => app.semantic_state(),
             AppRuntime::Wasm(app) => app.semantic_state().clone(),
         }
     }
@@ -758,9 +759,10 @@ mod semantic_state_tests {
 
         assert_eq!(state.schema_version, SEMANTIC_PANE_STATE_SCHEMA_VERSION);
         assert_eq!(state.runtime_kind, "process");
-        assert!(state.nodes.iter().any(|node| {
-            node.role == "text" && node.label.as_deref() == Some("process label")
-        }));
+        assert!(state
+            .nodes
+            .iter()
+            .any(|node| { node.role == "text" && node.label.as_deref() == Some("process label") }));
     }
 
     #[test]

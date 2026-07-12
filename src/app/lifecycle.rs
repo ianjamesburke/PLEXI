@@ -982,7 +982,10 @@ impl PlexiApp {
                                                     format!("{{\"pane_id\":{response_pane_id}}}")
                                                 }
                                                 Err(msg) => {
-                                                    format!("{{\"error\":{}}}", serde_json::json!(msg))
+                                                    format!(
+                                                        "{{\"error\":{}}}",
+                                                        serde_json::json!(msg)
+                                                    )
                                                 }
                                             };
                                             if let Err(e) = std::fs::write(rf, &json) {
@@ -1217,9 +1220,10 @@ impl PlexiApp {
                             .and_then(crate::host::pane::Pane::as_terminal_mut)
                         {
                             Some(term) => {
-                                term.backend.process_command(egui_term::BackendCommand::Write(
-                                    text_with_newlines.into_bytes(),
-                                ));
+                                term.backend
+                                    .process_command(egui_term::BackendCommand::Write(
+                                        text_with_newlines.into_bytes(),
+                                    ));
                                 Ok(())
                             }
                             None => Err(format!("pane {pane_id} changed while routing text")),
@@ -1282,20 +1286,6 @@ impl PlexiApp {
                             Ok(serde_json::json!({"ok": true}))
                         } else if let Some(app_pane) = pane.as_app_mut() {
                             match &mut app_pane.runtime {
-                                crate::host::pane::AppRuntime::Process(_) => {
-                                    let (key_str, modifiers) = super::parse_key_str_to_event(key);
-                                    app_pane.runtime.queue_outbound_event(
-                                        crate::app_protocol::PlexiEvent::Key {
-                                            key: key_str,
-                                            modifiers,
-                                            pressed: true,
-                                        },
-                                    );
-                                    Ok(serde_json::json!({"ok": true}))
-                                }
-                                // Native (builtin/WASM) apps read keys from egui
-                                // InputState, not the PGAP event queue — drive
-                                // their real `handle_key` handler.
                                 runtime => match super::drive_native_pane_key(runtime, key) {
                                     Ok(disposition) => {
                                         let disposition_label = match disposition {
@@ -1454,13 +1444,14 @@ impl PlexiApp {
                                 .unwrap_or(serde_json::Value::Array(vec![]));
                             let semantic = app_pane.semantic_state();
                             let lifecycle = match &app_pane.runtime {
-                                crate::host::pane::AppRuntime::Process(process) => {
-                                    format!("{:?}", process.lifecycle.state()).to_lowercase()
+                                crate::host::pane::AppRuntime::Wasm(wasm) => if wasm.is_running() {
+                                    "running"
+                                } else {
+                                    "exited"
                                 }
-                                crate::host::pane::AppRuntime::Wasm(wasm) => {
-                                    if wasm.is_running() { "running" } else { "exited" }.to_string()
-                                }
+                                .to_string(),
                                 crate::host::pane::AppRuntime::Builtin(_) => "running".to_string(),
+                                crate::host::pane::AppRuntime::Python(_) => "running".to_string(),
                             };
                             log::info!(
                                 "pane_ipc: get_pane_state: pane_id={pane_id} runtime={} schema_version={} node_count={}",
@@ -1938,7 +1929,7 @@ impl PlexiApp {
     /// stored entry (`stored: false`), and the list of running app ids.
     fn handle_list_permissions(&mut self, response_file: &str) {
         use crate::app::permissions::PermissionStore;
-        use crate::host::pane::{AppRuntime, Pane};
+        use crate::host::pane::Pane;
 
         let store = PermissionStore::load_or_default(&self.permission_store_dir);
         let mut rows: Vec<serde_json::Value> = Vec::new();
@@ -1960,29 +1951,26 @@ impl PlexiApp {
         for win in &self.windows {
             for pane in win.panes.values() {
                 let Pane::App(app_pane) = pane else { continue };
-                let AppRuntime::Process(proc) = &app_pane.runtime else {
-                    continue;
-                };
-                running.insert(proc.type_id.clone());
-                let workspace = proc
+                running.insert(app_pane.manifest_id.clone());
+                let workspace = app_pane
                     .workspace_root
                     .canonicalize()
-                    .unwrap_or_else(|_| proc.workspace_root.clone())
+                    .unwrap_or_else(|_| app_pane.workspace_root.clone())
                     .display()
                     .to_string();
-                let live = proc
+                let live = app_pane
                     .permissions
                     .capabilities
                     .iter()
                     .map(|&cap| (cap, "green"))
-                    .chain(proc.permissions.blocked.iter().map(|&cap| (cap, "red")));
+                    .chain(app_pane.permissions.blocked.iter().map(|&cap| (cap, "red")));
                 for (cap, state) in live {
-                    let key = format!("{}::{}::{}", proc.type_id, workspace, cap.as_str());
+                    let key = format!("{}::{}::{}", app_pane.manifest_id, workspace, cap.as_str());
                     if !stored_keys.insert(key) {
                         continue; // already covered by a stored row
                     }
                     rows.push(serde_json::json!({
-                        "app_id": proc.type_id,
+                        "app_id": app_pane.manifest_id,
                         "workspace": workspace,
                         "capability": cap.as_str(),
                         "state": state,
@@ -2020,7 +2008,7 @@ impl PlexiApp {
         response_file: &str,
     ) {
         use crate::app::permissions::{Capability, PermissionState, PermissionStore};
-        use crate::host::pane::{AppRuntime, Pane};
+        use crate::host::pane::Pane;
 
         let outcome: Result<(), String> = (|| {
             let cap = Capability::try_from(capability).map_err(|e| e.to_string())?;
@@ -2036,10 +2024,8 @@ impl PlexiApp {
                             let Pane::App(app_pane) = pane else {
                                 return None;
                             };
-                            let AppRuntime::Process(proc) = &app_pane.runtime else {
-                                return None;
-                            };
-                            (proc.type_id == app_id).then(|| proc.workspace_root.clone())
+                            (app_pane.manifest_id == app_id)
+                                .then(|| app_pane.workspace_root.clone())
                         })
                     })
                     .ok_or_else(|| {
@@ -2071,44 +2057,30 @@ impl PlexiApp {
             for win in &mut self.windows {
                 for pane in win.panes.values_mut() {
                     let Pane::App(app_pane) = pane else { continue };
-                    let AppRuntime::Process(proc) = &mut app_pane.runtime else {
-                        continue;
-                    };
-                    if proc.type_id != app_id {
+                    if app_pane.manifest_id != app_id {
                         continue;
                     }
-                    let proc_ws = proc
+                    let proc_ws = app_pane
                         .workspace_root
                         .canonicalize()
-                        .unwrap_or_else(|_| proc.workspace_root.clone());
+                        .unwrap_or_else(|_| app_pane.workspace_root.clone());
                     if proc_ws != ws_canonical {
                         continue;
                     }
                     match new_state {
                         PermissionState::Green => {
-                            proc.permissions.capabilities.insert(cap);
-                            proc.permissions.blocked.remove(&cap);
+                            app_pane.permissions.capabilities.insert(cap);
+                            app_pane.permissions.blocked.remove(&cap);
                         }
                         PermissionState::Yellow => {
-                            proc.permissions.capabilities.remove(&cap);
-                            proc.permissions.blocked.remove(&cap);
+                            app_pane.permissions.capabilities.remove(&cap);
+                            app_pane.permissions.blocked.remove(&cap);
                         }
                         PermissionState::Red => {
-                            proc.permissions.blocked.insert(cap);
-                            proc.permissions.capabilities.remove(&cap);
+                            app_pane.permissions.blocked.insert(cap);
+                            app_pane.permissions.capabilities.remove(&cap);
                         }
                     }
-                    // Keep the app's in-memory store copy in sync so a later
-                    // save from its own consent flow doesn't resurrect stale
-                    // state, and mirror onto the AppPane copy.
-                    proc.permission_store.set(app_id, &ws, cap, new_state);
-                    proc.grant_store.record_app_capability(
-                        app_id,
-                        &ws,
-                        cap,
-                        crate::broker::Decision::from_permission_state(new_state),
-                    );
-                    app_pane.permissions = proc.permissions.clone();
                     log::info!(
                         "pane_ipc: set_permission: live-updated '{app_id}' pane {} — {} → {}",
                         app_pane.id,

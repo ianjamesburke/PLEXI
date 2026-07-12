@@ -86,7 +86,10 @@ pub struct StateStore {
 
 impl StateStore {
     pub fn ephemeral() -> Self {
-        StateStore { data: HashMap::new(), path: None }
+        StateStore {
+            data: HashMap::new(),
+            path: None,
+        }
     }
 
     /// Open (or create) a persistent store at `path`. Existing contents are
@@ -98,11 +101,16 @@ impl StateStore {
         } else {
             HashMap::new()
         };
-        Ok(StateStore { data, path: Some(path) })
+        Ok(StateStore {
+            data,
+            path: Some(path),
+        })
     }
 
     fn persist(&self) -> Result<(), String> {
-        let Some(path) = &self.path else { return Ok(()) };
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
@@ -125,12 +133,20 @@ impl StateStore {
     }
 
     pub fn list_prefix(&self, prefix: &str) -> Vec<String> {
-        self.data.keys().filter(|k| k.starts_with(prefix)).cloned().collect()
+        self.data
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect()
     }
 
     pub fn snapshot(&self) -> StateSnapshot {
         StateSnapshot {
-            entries: self.data.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            entries: self
+                .data
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         }
     }
 }
@@ -171,7 +187,10 @@ pub struct HostCtx {
 
 impl WasiView for HostCtx {
     fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
     }
 }
 
@@ -241,8 +260,18 @@ impl pipes::Host for HostCtx {
         }
         let handle = self.next_pipe_handle;
         self.next_pipe_handle += 1;
-        self.pipe_handles.insert(handle, PipeBinding { id: id.clone(), binary });
-        log::info!("app::{}: opened {} pipe '{id}' -> handle {handle}", self.app_id, if binary { "binary" } else { "json" });
+        self.pipe_handles.insert(
+            handle,
+            PipeBinding {
+                id: id.clone(),
+                binary,
+            },
+        );
+        log::info!(
+            "app::{}: opened {} pipe '{id}' -> handle {handle}",
+            self.app_id,
+            if binary { "binary" } else { "json" }
+        );
         Ok(handle)
     }
 
@@ -312,7 +341,10 @@ impl audio_rt_control::Host for HostCtx {
         self.audio_streams.next += 1;
         log::info!(
             "app::{}: audio open_output stream {handle} ({} Hz, {} ch, {} frames)",
-            self.app_id, config.sample_rate, config.channels, config.buffer_frames
+            self.app_id,
+            config.sample_rate,
+            config.channels,
+            config.buffer_frames
         );
         self.audio_streams.streams.insert(handle, config);
         Ok(handle)
@@ -326,10 +358,7 @@ impl audio_rt_control::Host for HostCtx {
         Ok(handle)
     }
 
-    fn stream_config(
-        &mut self,
-        handle: u32,
-    ) -> Result<audio_rt_control::AudioConfig, String> {
+    fn stream_config(&mut self, handle: u32) -> Result<audio_rt_control::AudioConfig, String> {
         self.audio_streams
             .streams
             .get(&handle)
@@ -368,7 +397,9 @@ impl audio_rt_control::Host for HostCtx {
 
 impl HostCtx {
     fn gpu_mut(&mut self) -> Result<&mut crate::host::wasm_gpu::GpuDevice, String> {
-        self.gpu.as_mut().ok_or_else(|| "gpu capability not initialized".to_string())
+        self.gpu
+            .as_mut()
+            .ok_or_else(|| "gpu capability not initialized".to_string())
     }
 }
 
@@ -376,7 +407,12 @@ impl gpu::Host for HostCtx {
     fn create_surface_view(&mut self, handle: u64) -> Result<u64, String> {
         self.gpu_mut()?.create_surface_view(handle)
     }
-    fn create_buffer(&mut self, label: String, size: u64, usage: gpu::BufferUsage) -> Result<u64, String> {
+    fn create_buffer(
+        &mut self,
+        label: String,
+        size: u64,
+        usage: gpu::BufferUsage,
+    ) -> Result<u64, String> {
         Ok(self.gpu_mut()?.create_buffer(&label, size, usage))
     }
     fn write_buffer(&mut self, handle: u64, offset: u64, data: Vec<u8>) -> Result<(), String> {
@@ -386,13 +422,17 @@ impl gpu::Host for HostCtx {
         self.gpu_mut()?.read_buffer(handle, offset, size)
     }
     fn destroy_buffer(&mut self, handle: u64) {
-        if let Ok(g) = self.gpu_mut() { g.destroy_buffer(handle); }
+        if let Ok(g) = self.gpu_mut() {
+            g.destroy_buffer(handle);
+        }
     }
     fn create_texture(&mut self, label: String, desc: gpu::TextureDesc) -> Result<u64, String> {
         self.gpu_mut()?.create_texture(&label, desc)
     }
     fn destroy_texture(&mut self, handle: u64) {
-        if let Ok(g) = self.gpu_mut() { g.destroy_texture(handle); }
+        if let Ok(g) = self.gpu_mut() {
+            g.destroy_texture(handle);
+        }
     }
     fn create_render_pipeline(
         &mut self,
@@ -402,17 +442,31 @@ impl gpu::Host for HostCtx {
     ) -> Result<u64, String> {
         self.gpu_mut()?.create_render_pipeline(&label, &wgsl, desc)
     }
-    fn create_compute_pipeline(&mut self, label: String, wgsl: String, entry: String) -> Result<u64, String> {
-        self.gpu_mut()?.create_compute_pipeline(&label, &wgsl, &entry)
+    fn create_compute_pipeline(
+        &mut self,
+        label: String,
+        wgsl: String,
+        entry: String,
+    ) -> Result<u64, String> {
+        self.gpu_mut()?
+            .create_compute_pipeline(&label, &wgsl, &entry)
     }
     fn destroy_pipeline(&mut self, handle: u64) {
-        if let Ok(g) = self.gpu_mut() { g.destroy_pipeline(handle); }
+        if let Ok(g) = self.gpu_mut() {
+            g.destroy_pipeline(handle);
+        }
     }
-    fn create_bind_group(&mut self, pipeline: u64, bindings: Vec<gpu::BindingEntry>) -> Result<u64, String> {
+    fn create_bind_group(
+        &mut self,
+        pipeline: u64,
+        bindings: Vec<gpu::BindingEntry>,
+    ) -> Result<u64, String> {
         self.gpu_mut()?.create_bind_group(pipeline, &bindings)
     }
     fn destroy_bind_group(&mut self, handle: u64) {
-        if let Ok(g) = self.gpu_mut() { g.destroy_bind_group(handle); }
+        if let Ok(g) = self.gpu_mut() {
+            g.destroy_bind_group(handle);
+        }
     }
     fn submit_render_pass(&mut self, pass: gpu::RenderPassDesc) -> Result<(), String> {
         self.gpu_mut()?.submit_render_pass(pass)
@@ -522,9 +576,10 @@ impl WasmApp {
             // have no shared state and fall back to a dedicated device; a
             // missing adapter must fail the load, not surface on first draw.
             Some(match crate::host::wasm_gpu::host_render_state() {
-                Some(rs) => {
-                    crate::host::wasm_gpu::GpuDevice::from_shared(rs.device.clone(), rs.queue.clone())
-                }
+                Some(rs) => crate::host::wasm_gpu::GpuDevice::from_shared(
+                    rs.device.clone(),
+                    rs.queue.clone(),
+                ),
                 None => crate::host::wasm_gpu::GpuDevice::new()
                     .map_err(|e| wasmtime::Error::msg(format!("app::{app_id}: {e}")))?,
             })
@@ -570,7 +625,11 @@ impl WasmApp {
             app_id,
             audio.is_some()
         );
-        Ok(WasmApp { store, lifecycle, audio })
+        Ok(WasmApp {
+            store,
+            lifecycle,
+            audio,
+        })
     }
 
     pub fn init(
@@ -579,7 +638,8 @@ impl WasmApp {
         size: (f32, f32),
         args: &[String],
     ) -> wasmtime::Result<Vec<Effect>> {
-        self.lifecycle.call_init(&mut self.store, snapshot, size, args)
+        self.lifecycle
+            .call_init(&mut self.store, snapshot, size, args)
     }
 
     pub fn update(&mut self, event: &InputEvent) -> wasmtime::Result<Vec<Effect>> {
@@ -647,21 +707,37 @@ impl WasmApp {
     /// handle to deliver to the guest in a `surface-ready` event, or `None` if
     /// the app has no gpu capability.
     pub fn alloc_surface(&mut self, width: u32, height: u32) -> Option<u64> {
-        self.store.data_mut().gpu.as_mut().map(|g| g.alloc_surface(width, height))
+        self.store
+            .data_mut()
+            .gpu
+            .as_mut()
+            .map(|g| g.alloc_surface(width, height))
     }
 
     /// Read a surface texture back to an RGBA image for compositing into egui
     /// (the live leg) or pixel assertions (the gate leg).
     pub fn read_surface(&self, handle: u64) -> Option<image::RgbaImage> {
-        self.store.data().gpu.as_ref().and_then(|g| g.read_texture(handle).ok())
+        self.store
+            .data()
+            .gpu
+            .as_ref()
+            .and_then(|g| g.read_texture(handle).ok())
     }
     /// sRGB view of the surface texture for zero-copy egui compositing.
     pub fn surface_srgb_view(&self, handle: u64) -> Option<wgpu::TextureView> {
-        self.store.data().gpu.as_ref().and_then(|g| g.surface_srgb_view(handle))
+        self.store
+            .data()
+            .gpu
+            .as_ref()
+            .and_then(|g| g.surface_srgb_view(handle))
     }
     /// Surface readbacks performed by this app's device (capture path only).
     pub fn surface_readbacks(&self) -> u64 {
-        self.store.data().gpu.as_ref().map_or(0, |g| g.readback_count())
+        self.store
+            .data()
+            .gpu
+            .as_ref()
+            .map_or(0, |g| g.readback_count())
     }
 }
 
@@ -729,10 +805,15 @@ mod tests {
         let mut ctx = host_ctx_with_pipes();
 
         let h = ctx
-            .open("waveform-out".to_string(), PipeType::Binary, PipeDirection::Out)
+            .open(
+                "waveform-out".to_string(),
+                PipeType::Binary,
+                PipeDirection::Out,
+            )
             .expect("open binary");
         assert!(ctx.is_connected(h), "freshly opened pipe is healthy");
-        ctx.send_binary(h, vec![1, 2, 3, 4]).expect("first frame fits");
+        ctx.send_binary(h, vec![1, 2, 3, 4])
+            .expect("first frame fits");
 
         // No peer is draining the ring, so it fills at capacity; further pushes
         // must return an overrun error — never panic, never block.
@@ -749,7 +830,10 @@ mod tests {
         assert!(ctx.send_json(h, "{}".to_string()).is_err());
         ctx.close(h).expect("close");
         assert!(!ctx.is_connected(h), "closed handle is not connected");
-        assert!(ctx.send_binary(h, vec![0]).is_err(), "send after close errors");
+        assert!(
+            ctx.send_binary(h, vec![0]).is_err(),
+            "send after close errors"
+        );
     }
 
     // A json pipe round-trips through validation: valid json is accepted,
@@ -761,9 +845,13 @@ mod tests {
         let h = ctx
             .open("score".to_string(), PipeType::Json, PipeDirection::Out)
             .expect("open json");
-        ctx.send_json(h, r#"{"score":3}"#.to_string()).expect("valid json");
+        ctx.send_json(h, r#"{"score":3}"#.to_string())
+            .expect("valid json");
         assert!(ctx.send_json(h, "{not json".to_string()).is_err());
-        assert!(ctx.send_binary(h, vec![0]).is_err(), "binary on json pipe errors");
+        assert!(
+            ctx.send_binary(h, vec![0]).is_err(),
+            "binary on json pipe errors"
+        );
         ctx.close(h).expect("close");
     }
 
@@ -782,13 +870,20 @@ mod tests {
             &audio_fixture(),
             StateStore::ephemeral(),
         )?;
-        assert!(app.audio.is_some(), "audio-synth must export audio-rt-process");
+        assert!(
+            app.audio.is_some(),
+            "audio-synth must export audio-rt-process"
+        );
 
         app.init(&empty_snapshot(), (400.0, 300.0), &[])?;
 
         // Before play, the envelope is at zero — output is silent.
         let (silent, _) = app.audio_process_output(0, 512, 2, 48_000, 0)?;
-        assert_eq!(silent.len(), 512 * 2, "interleaved buffer = frames * channels");
+        assert_eq!(
+            silent.len(),
+            512 * 2,
+            "interleaved buffer = frames * channels"
+        );
         assert!(
             silent.iter().all(|&s| s.abs() <= 0.01),
             "stopped synth must be silent"
@@ -803,7 +898,10 @@ mod tests {
             state = next;
             peak = peak.max(samples.iter().fold(0.0, |m, &s| m.max(s.abs())));
         }
-        assert!(peak > 0.01, "playing synth must produce audible samples (peak={peak})");
+        assert!(
+            peak > 0.01,
+            "playing synth must produce audible samples (peak={peak})"
+        );
         Ok(())
     }
 
@@ -859,7 +957,10 @@ mod tests {
                 .chunks_exact(4)
                 .any(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]).abs() > 0.0);
         }
-        assert!(any_nonzero, "playing synth waveform frames must carry non-zero samples");
+        assert!(
+            any_nonzero,
+            "playing synth waveform frames must carry non-zero samples"
+        );
         Ok(())
     }
 
@@ -982,7 +1083,12 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
     fn key(k: &str) -> InputEvent {
         InputEvent::Key(types::KeyEvent {
             key: k.to_string(),
-            modifiers: types::Modifiers { ctrl: false, shift: false, alt: false, meta: false },
+            modifiers: types::Modifiers {
+                ctrl: false,
+                shift: false,
+                alt: false,
+                meta: false,
+            },
             pressed: true,
         })
     }
@@ -1003,11 +1109,8 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
     // with no subprocess.
     #[test]
     fn g3_effect_roundtrip() -> wasmtime::Result<()> {
-        let mut app = WasmApp::load_ephemeral_run(
-            "sysmon-g3",
-            &fixture(),
-            StateStore::ephemeral(),
-        )?;
+        let mut app =
+            WasmApp::load_ephemeral_run("sysmon-g3", &fixture(), StateStore::ephemeral())?;
 
         let startup = app.init(&empty_snapshot(), (400.0, 300.0), &[])?;
         assert!(
@@ -1037,8 +1140,7 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
     // timer at the persisted 5000ms interval.
     #[test]
     fn g5_state_persists_across_reload() -> wasmtime::Result<()> {
-        let path = std::env::temp_dir()
-            .join(format!("plexi-wasm-g5-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!("plexi-wasm-g5-{}.json", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         {

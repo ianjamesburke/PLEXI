@@ -4,20 +4,17 @@
 //!   1. `HostHarness` — runs `PlexiApp` in a headless `egui::Context`. Input
 //!      events are injected via `RawInput`; observable state is extracted into
 //!      `HostSnapshot` after each frame.
-//!   2. Protocol injection — `inject(pane_id, cmd)` feeds `DrawCommand`s
-//!      directly into a `ProcessApp`'s channel so `route_command` executes
-//!      without a subprocess. `effects_drain()` collects `outbound_events`.
+//!   2. Pane/IPC injection for host-model behavior without a display server.
 
 use crate::app::permissions::AppPermissions;
 use crate::app::PlexiApp;
 use crate::app_protocol::{AiMessage, AppRequest, DrawCommand, ModelTier};
 use crate::config::set_test_profile_dir;
 use crate::host::pane::{AppPane, AppRuntime, Pane};
-use crate::process_app::ProcessApp;
 use crate::spatial::tiling::PaneId;
 use egui::RawInput;
 use std::collections::HashMap;
-use std::sync::{atomic::AtomicU64, mpsc::Sender, Arc};
+use std::sync::{atomic::AtomicU64, Arc};
 
 // ─── HostSnapshot ────────────────────────────────────────────────────────────
 
@@ -60,17 +57,17 @@ impl HostSnapshot {
 /// ```rust,no_run
 /// let mut h = HostHarness::new();
 /// let pane = h.add_test_pane();
-/// h.inject(pane, DrawCommand::StatusSummary { text: "hello".into() });
+/// h.inject_ipc(AppRequest::SetPipStatus {
+///     pane_id: pane,
+///     status: crate::app_protocol::PipStatus::Green,
+/// });
 /// h.run_frames(1);
-/// assert!(h.effects_drain(pane).is_empty()); // StatusSummary has no outbound event
 /// ```
 pub struct HostHarness {
     /// The app under test.
     pub app: PlexiApp,
     /// Shared egui context — same instance that `app.ctx` holds.
     ctx: egui::Context,
-    /// Inject channels keyed by pane id. Populated by `add_test_pane`.
-    inject_channels: HashMap<PaneId, Sender<DrawCommand>>,
     /// Next pane id to assign.
     next_pane_id: u64,
     /// IPC sender for injecting AppRequests into the pane_ipc channel.
@@ -95,7 +92,6 @@ impl HostHarness {
         Self {
             app,
             ctx,
-            inject_channels: HashMap::new(),
             next_pane_id: 100,
             ipc_tx,
             last_platform_output: egui::PlatformOutput::default(),
@@ -106,22 +102,23 @@ impl HostHarness {
 
     // ── Pane management ──────────────────────────────────────────────────────
 
-    /// Add a `ProcessApp` pane (not a Terminal) for protocol testing.
+    /// Add a builtin app pane (not a Terminal) for host testing.
     /// The pane has builtin permissions (all capability checks pass).
     pub fn add_test_pane(&mut self) -> PaneId {
         self.add_test_pane_with_permissions(AppPermissions::builtin())
     }
 
-    /// Add a test `ProcessApp` pane with the given permissions.
+    /// Add a test app pane with the given permissions.
     pub fn add_test_pane_with_permissions(&mut self, permissions: AppPermissions) -> PaneId {
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
 
-        let (process_app, draw_tx) = ProcessApp::new_for_test(pane_id, permissions.clone());
         let app_pane = AppPane {
             pip_status: None,
             id: pane_id,
-            runtime: AppRuntime::Process(Box::new(process_app)),
+            runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                std::env::temp_dir(),
+            ))),
             workspace_root: std::env::temp_dir(),
             permissions,
             manifest_id: "test".to_string(),
@@ -142,7 +139,6 @@ impl HostHarness {
             win.tree.root = Some(tile_id);
         }
 
-        self.inject_channels.insert(pane_id, draw_tx);
         pane_id
     }
 
@@ -227,69 +223,10 @@ impl HostHarness {
         self
     }
 
-    // ── Protocol injection ───────────────────────────────────────────────────
-
-    /// Inject a `DrawCommand` into the given pane's channel. The command will
-    /// be processed during the next `run_frames()` call, following the same
-    /// `route_command` path as a real subprocess.
-    pub fn inject(&mut self, pane_id: PaneId, cmd: DrawCommand) -> &mut Self {
-        if let Some(tx) = self.inject_channels.get(&pane_id) {
-            let _ = tx.send(cmd);
-        }
-        self
-    }
-
     /// Inject a `AppRequest` directly into the pane_ipc channel.
     pub fn inject_ipc(&self, cmd: AppRequest) -> &Self {
         let _ = self.ipc_tx.send(cmd);
         self
-    }
-
-    /// Drain and return all `outbound_events` queued by the given pane's
-    /// `ProcessApp` since the last call. These are the `PlexiEvent`s the host
-    /// would normally send back to the subprocess — in tests they're assertions
-    /// that the command was routed and produced a response.
-    pub fn effects_drain(&mut self, pane_id: PaneId) -> Vec<crate::app_protocol::PlexiEvent> {
-        let win = &mut self.app.windows[0];
-        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) else {
-            return vec![];
-        };
-        let AppRuntime::Process(process_app) = &mut app_pane.runtime else {
-            return vec![];
-        };
-        process_app.outbound_events.drain(..).collect()
-    }
-
-    /// Mutable access to a test pane's `ProcessApp`. Panics when the pane id
-    /// does not name a Process app pane — tests should fail loudly there.
-    pub fn process_app_mut(&mut self, pane_id: PaneId) -> &mut ProcessApp {
-        let win = &mut self.app.windows[0];
-        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) else {
-            panic!("pane {pane_id} is not an App pane");
-        };
-        let AppRuntime::Process(process_app) = &mut app_pane.runtime else {
-            panic!("pane {pane_id} is not a Process runtime");
-        };
-        process_app
-    }
-
-    /// Take the latest Render payload queued for a test `ProcessApp`.
-    ///
-    /// Test apps do not spawn the stdin writer thread, so this helper also
-    /// resets `render_in_queue` to simulate that writer consuming the slot.
-    pub fn render_payload_take(&mut self, pane_id: PaneId) -> Option<String> {
-        let win = &mut self.app.windows[0];
-        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) else {
-            return None;
-        };
-        let AppRuntime::Process(process_app) = &mut app_pane.runtime else {
-            return None;
-        };
-        let payload = process_app.render_slot.lock().unwrap().take();
-        process_app
-            .render_in_queue
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        payload
     }
 }
 

@@ -16,9 +16,9 @@ use std::sync::{LazyLock, Mutex};
 /// label via [`RepaintCause::label`] for grep-able log output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepaintCause {
-    /// ProcessApp 100ms idle poll for async responses (per visible pane).
+    /// App-runtime idle poll for async responses (per visible pane).
     AppIdlePoll,
-    /// ProcessApp click forwarding (immediate repaint + awaiting-frame echo).
+    /// App-runtime click forwarding (immediate repaint + awaiting-frame echo).
     AppClick,
     /// App-requested `ScheduleRender { after_ms }`.
     AppScheduleRender,

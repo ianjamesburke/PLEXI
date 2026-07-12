@@ -5,7 +5,7 @@ functions. The V3AppRuntime drives the event loop: host sends JSON events on
 stdin, app responds with effects and component trees on stdout.
 """
 
-__version__ = "4.0.0"
+__version__ = "3.0.0"
 SDK_ID = f"plexi-sdk-py/{__version__}"
 
 from ._v3_state import StateSnapshot, log, state
@@ -21,7 +21,7 @@ from ._constants import (
 )
 from ._types import (
     CapabilityDeniedError, VideoHandle,
-    RectCommand, TextCommand, BadgeCommand, TextInputSpec, ShortcutPair, NotifyOption,
+    RectCommand, TextCommand, BadgeCommand, ShortcutPair, NotifyOption,
 )
 from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, AudioDeviceInfo, AudioDeviceList, PROTOCOL_VERSION
 from .ui import (

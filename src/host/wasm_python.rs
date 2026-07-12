@@ -5,35 +5,196 @@
 //! marshalling. It intentionally does not fall back to the native PGAP
 //! subprocess path when the CPython WASM bundle is unavailable.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::process::Command;
 #[cfg(test)]
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
+use std::thread::JoinHandle;
 
+#[cfg(test)]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use wasmtime::{Engine as WasmtimeEngine, Linker, Module, Store};
+use wasmtime_wasi::cli::{IsTerminal, StdinStream, StdoutStream};
+use wasmtime_wasi::p1::{self, WasiP1Ctx};
+use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
 use crate::app::registry::{AppManifest, RuntimeExecution};
 
 use super::wasm_app::bindings::plexi::platform::types::{
     BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine, CanvasNode,
-    CanvasRect, CanvasText, Color, ColumnNode, FileReadEffect, FileWriteEffect, HttpFetchEffect,
-    IndexedNode, InputEvent, KeyEvent, ListNode, PaddingNode, ProgressBarNode, RowNode, ScrollNode,
-    StateSnapshot, TextInputNode, TextNode, TimerEffect, UiActionEvent, UiNodeData, UiTree,
-    UiValueChangeEvent,
+    CanvasRect, CanvasText, Color, ColumnNode, IndexedNode, ListNode, PaddingNode, ProgressBarNode,
+    RowNode, ScrollNode, TextInputNode, TextNode, UiNodeData, UiTree,
 };
-use super::wasm_app::{Alignment, Effect, Grants, StateStore, WasmApp};
+#[cfg(test)]
+use super::wasm_app::bindings::plexi::platform::types::{
+    FileReadEffect, FileWriteEffect, HttpFetchEffect, InputEvent, KeyEvent, StateSnapshot,
+    TimerEffect, UiActionEvent, UiValueChangeEvent,
+};
+use super::wasm_app::Alignment;
+#[cfg(test)]
+use super::wasm_app::{Effect, Grants, StateStore, WasmApp};
+
+#[derive(Default)]
+struct InputState {
+    bytes: VecDeque<u8>,
+    closed: bool,
+    waker: Option<Waker>,
+}
+
+/// Cloneable WASI stdin whose producer can append bytes after instantiation.
+#[derive(Clone, Default)]
+pub struct AppendableStdin {
+    state: Arc<Mutex<InputState>>,
+}
+
+impl AppendableStdin {
+    pub fn push(&self, bytes: &[u8]) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.bytes.extend(bytes);
+        if let Some(waker) = state.waker.take() {
+            waker.wake();
+        }
+    }
+
+    pub fn push_json_line(&self, value: &Value) -> Result<(), WasmPythonError> {
+        let mut line = serde_json::to_vec(value)
+            .map_err(|error| WasmPythonError::BridgeJson(error.to_string()))?;
+        line.push(b'\n');
+        self.push(&line);
+        Ok(())
+    }
+
+    pub fn close(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.closed = true;
+        if let Some(waker) = state.waker.take() {
+            waker.wake();
+        }
+    }
+}
+
+impl IsTerminal for AppendableStdin {
+    fn is_terminal(&self) -> bool {
+        false
+    }
+}
+
+impl StdinStream for AppendableStdin {
+    fn async_stream(&self) -> Box<dyn AsyncRead + Send + Sync> {
+        Box::new(self.clone())
+    }
+}
+
+impl AsyncRead for AppendableStdin {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.bytes.is_empty() {
+            let count = buf.remaining().min(state.bytes.len());
+            let bytes: Vec<u8> = state.bytes.drain(..count).collect();
+            buf.put_slice(&bytes);
+            return Poll::Ready(Ok(()));
+        }
+        if state.closed {
+            return Poll::Ready(Ok(()));
+        }
+        state.waker = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+#[derive(Default)]
+struct OutputState {
+    bytes: Vec<u8>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    wake_pending: bool,
+}
+
+/// Cloneable WASI output that can be drained without closing the guest stream.
+#[derive(Clone, Default)]
+pub struct DrainableOutput {
+    state: Arc<Mutex<OutputState>>,
+}
+
+impl DrainableOutput {
+    pub fn drain(&self) -> Vec<u8> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.wake_pending = false;
+        std::mem::take(&mut state.bytes)
+    }
+
+    fn set_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).wake = Some(wake);
+    }
+}
+
+impl IsTerminal for DrainableOutput {
+    fn is_terminal(&self) -> bool {
+        false
+    }
+}
+
+impl StdoutStream for DrainableOutput {
+    fn async_stream(&self) -> Box<dyn AsyncWrite + Send + Sync> {
+        Box::new(self.clone())
+    }
+}
+
+impl AsyncWrite for DrainableOutput {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let wake = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.bytes.extend_from_slice(buf);
+            if !state.wake_pending && buf.contains(&b'\n') {
+                state.wake_pending = true;
+                state.wake.clone()
+            } else {
+                None
+            }
+        };
+        if let Some(wake) = wake {
+            wake();
+        }
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
 
 pub const CPYTHON_BUNDLE_VERSION: &str = "3.12.12";
+#[cfg(test)]
 pub const CPYTHON_WASI_SDK_VERSION: &str = "20";
 pub const CPYTHON_BUNDLE_FILE: &str = "cpython-3.12.12/python.wasm";
+#[cfg(test)]
 pub const CPYTHON_SHIM_COMPONENT_FILE: &str = "cpython-3.12.12/plexi-python-shim.wasm";
 pub const CPYTHON_BUNDLE_SHA256: &str =
     "62392f07fee032c22e3aa84be033c07105cd42424e5149058b9f5449a8deb272";
 pub const CPYTHON_BUNDLE_CACHE_ENV: &str = "PLEXI_CPYTHON_BUNDLE_DIR";
+#[cfg(test)]
 pub const CPYTHON_SHIM_COMPONENT_ENV: &str = "PLEXI_CPYTHON_SHIM_COMPONENT";
 pub const FETCH_CPYTHON_BUNDLE_COMMAND: &str = "just fetch-cpython-bundle";
+#[cfg(test)]
 pub const BUILD_CPYTHON_SHIM_COMMAND: &str = "just wasm-python-shim";
 
 #[derive(Debug, Error)]
@@ -60,6 +221,7 @@ pub enum WasmPythonError {
         command: &'static str,
     },
     #[error("CPython lifecycle shim component unavailable at {path}; run: {command}")]
+    #[cfg(test)]
     MissingShimComponent {
         path: PathBuf,
         command: &'static str,
@@ -76,10 +238,13 @@ pub enum WasmPythonError {
         actual: String,
     },
     #[error("raw WASM module ABI mismatch at {path}: {reason}")]
+    #[cfg(test)]
     RawModuleAbiMismatch { path: PathBuf, reason: String },
     #[error("load CPython lifecycle shim component at {path}: {message}")]
+    #[cfg(test)]
     ShimComponentLoadFailure { path: PathBuf, message: String },
     #[error("CPython lifecycle shim call '{function}' failed at {path}: {message}")]
+    #[cfg(test)]
     ShimLifecycleCallFailure {
         path: PathBuf,
         function: &'static str,
@@ -92,6 +257,8 @@ pub enum WasmPythonError {
     },
     #[error("bridge JSON error: {0}")]
     BridgeJson(String),
+    #[error("start CPython WASM runtime: {0}")]
+    RuntimeStart(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +267,10 @@ pub struct PythonLaunchConfig {
     pub app_dir: PathBuf,
     pub entry: PathBuf,
     pub module_name: String,
+    pub launch_args: Vec<String>,
+    pub workspace_root: PathBuf,
+    pub capabilities: Vec<String>,
+    pub allowed_hosts: Vec<String>,
 }
 
 impl PythonLaunchConfig {
@@ -117,9 +288,6 @@ impl PythonLaunchConfig {
                 source,
             })?;
 
-        if manifest.runtime.python_compat != Some(true) {
-            return Ok(None);
-        }
         if manifest.runtime.execution != RuntimeExecution::Local {
             return Err(WasmPythonError::UnsupportedExecution {
                 execution: runtime_execution_label(manifest.runtime.execution),
@@ -145,16 +313,946 @@ impl PythonLaunchConfig {
             app_dir: app_dir.to_path_buf(),
             entry: entry_path,
             module_name,
+            launch_args: Vec::new(),
+            workspace_root: app_dir.to_path_buf(),
+            capabilities: manifest.app.capabilities.capabilities,
+            allowed_hosts: manifest.app.capabilities.allowed_hosts,
         }))
     }
 }
 
+#[cfg(test)]
 pub struct WasmPythonAdapter {
     pub config: PythonLaunchConfig,
     pub cpython_bundle: PathBuf,
     pub cpython_shim_component: PathBuf,
 }
 
+/// A live CPython interpreter. The owning thread retains the Wasmtime store;
+/// lifecycle traffic crosses only the appendable stdin/drainable stdout pair.
+pub struct WasmPythonRuntime {
+    stdin: AppendableStdin,
+    stdout: DrainableOutput,
+    stderr: DrainableOutput,
+    thread: Option<JoinHandle<Result<(), String>>>,
+    partial_stdout: Vec<u8>,
+    last_drain_bytes: usize,
+    last_json_decode_time: std::time::Duration,
+}
+
+impl WasmPythonRuntime {
+    pub fn launch(config: &PythonLaunchConfig) -> Result<Self, WasmPythonError> {
+        let bundle = resolve_default_cpython_bundle()?;
+        let stdlib = bundle
+            .parent()
+            .ok_or_else(|| {
+                WasmPythonError::RuntimeStart("CPython bundle has no parent".to_string())
+            })?
+            .join("Lib");
+        let sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sdk/python");
+        let stdin = AppendableStdin::default();
+        let stdout = DrainableOutput::default();
+        let stderr = DrainableOutput::default();
+        let thread_stdin = stdin.clone();
+        let thread_stdout = stdout.clone();
+        let thread_stderr = stderr.clone();
+        let app_dir = config.app_dir.clone();
+        let entry_name = config
+            .entry
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| WasmPythonError::RuntimeStart("Python entry is not UTF-8".to_string()))?
+            .to_string();
+        let app_id = config.app_id.clone();
+
+        let thread = std::thread::Builder::new()
+            .name(format!("plexi-python-wasm-{app_id}"))
+            .spawn(move || {
+                let engine = WasmtimeEngine::default();
+                let module = Module::from_file(&engine, &bundle).map_err(|e| e.to_string())?;
+                let mut linker = Linker::<WasiP1Ctx>::new(&engine);
+                p1::add_to_linker_sync(&mut linker, |ctx| ctx).map_err(|e| e.to_string())?;
+                let mut builder = WasiCtxBuilder::new();
+                builder
+                    .stdin(thread_stdin)
+                    .stdout(thread_stdout)
+                    .stderr(thread_stderr)
+                    .env("PYTHONPATH", "/sdk:/app")
+                    .args(&[
+                        "python",
+                        "-u",
+                        "-m",
+                        "plexi_sdk._v3_process",
+                        &format!("/app/{entry_name}"),
+                    ]);
+                builder
+                    .preopened_dir(
+                        &stdlib,
+                        "/usr/local/lib/python3.12",
+                        DirPerms::READ,
+                        FilePerms::READ,
+                    )
+                    .map_err(|e| e.to_string())?
+                    .preopened_dir(&sdk, "/sdk", DirPerms::READ, FilePerms::READ)
+                    .map_err(|e| e.to_string())?
+                    .preopened_dir(&app_dir, "/app", DirPerms::READ, FilePerms::READ)
+                    .map_err(|e| e.to_string())?;
+                let mut store = Store::new(&engine, builder.build_p1());
+                let instance = linker
+                    .instantiate(&mut store, &module)
+                    .map_err(|e| e.to_string())?;
+                let start = instance
+                    .get_typed_func::<(), ()>(&mut store, "_start")
+                    .map_err(|e| e.to_string())?;
+                start.call(&mut store, ()).map_err(|e| e.to_string())
+            })
+            .map_err(|e| WasmPythonError::RuntimeStart(e.to_string()))?;
+        log::info!("app::{app_id}: CPython WASM runtime started with read-only SDK and app mounts");
+        Ok(Self {
+            stdin,
+            stdout,
+            stderr,
+            thread: Some(thread),
+            partial_stdout: Vec::new(),
+            last_drain_bytes: 0,
+            last_json_decode_time: std::time::Duration::ZERO,
+        })
+    }
+
+    pub fn send(&self, event: &Value) -> Result<(), WasmPythonError> {
+        self.stdin.push_json_line(event)
+    }
+
+    pub fn drain_messages(&mut self) -> Result<Vec<Value>, WasmPythonError> {
+        let drained = self.stdout.drain();
+        self.last_drain_bytes = drained.len();
+        self.partial_stdout.extend(drained);
+        let mut messages = Vec::new();
+        let decode_started = std::time::Instant::now();
+        while let Some(newline) = self.partial_stdout.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = self.partial_stdout.drain(..=newline).collect();
+            let line = &line[..line.len().saturating_sub(1)];
+            if !line.is_empty() {
+                messages.push(
+                    serde_json::from_slice(line)
+                        .map_err(|e| WasmPythonError::BridgeJson(e.to_string()))?,
+                );
+            }
+        }
+        self.last_json_decode_time = decode_started.elapsed();
+        Ok(messages)
+    }
+
+    pub fn drain_stderr(&self) -> String {
+        String::from_utf8_lossy(&self.stderr.drain()).into_owned()
+    }
+}
+
+impl Drop for WasmPythonRuntime {
+    fn drop(&mut self) {
+        let _ = self.send(&json!({"type": "shutdown"}));
+        self.stdin.close();
+        if let Some(thread) = self.thread.take() {
+            if let Err(error) = thread.join() {
+                log::error!("CPython WASM runtime thread panicked: {error:?}");
+            }
+        }
+    }
+}
+
+pub struct LivePythonPane {
+    config: PythonLaunchConfig,
+    runtime: WasmPythonRuntime,
+    app_id: String,
+    title: Option<String>,
+    tree: Option<UiTree>,
+    initialized: bool,
+    ready: bool,
+    render_in_flight: bool,
+    render_sent_at: Option<std::time::Instant>,
+    next_render_at: std::time::Instant,
+    continuous_scheduler: bool,
+    render_requested: bool,
+    output_waker_installed: bool,
+    frame_id: u64,
+    wants_close: bool,
+    error: Option<String>,
+    timers: std::collections::HashMap<String, std::time::Instant>,
+    repaint_after: std::time::Duration,
+    perf_started_at: std::time::Instant,
+    perf_frames: u64,
+    perf_host_time: std::time::Duration,
+    perf_guest_frames: u64,
+    perf_guest_roundtrip: std::time::Duration,
+    perf_json_decode: std::time::Duration,
+    perf_tree_decode: std::time::Duration,
+    perf_stdout_bytes: usize,
+    perf_ui_render: std::time::Duration,
+    perf_canvas_render: std::time::Duration,
+    persisted_state: serde_json::Map<String, Value>,
+    http_tx: std::sync::mpsc::Sender<(String, crate::host::services::HttpResponse)>,
+    http_rx: std::sync::mpsc::Receiver<(String, crate::host::services::HttpResponse)>,
+    pending_commands: Vec<crate::app::app_trait::AppCommand>,
+}
+
+fn python_state_path(config: &PythonLaunchConfig) -> PathBuf {
+    config
+        .workspace_root
+        .join(".plexi")
+        .join("app_states")
+        .join(format!("{}.json", config.app_id))
+}
+
+fn load_python_state(config: &PythonLaunchConfig) -> serde_json::Map<String, Value> {
+    let path = python_state_path(config);
+    match std::fs::read(&path) {
+        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+            Ok(Value::Object(state)) => state,
+            Ok(_) => {
+                log::warn!(
+                    "app::{}: state {} is not a JSON object",
+                    config.app_id,
+                    path.display()
+                );
+                serde_json::Map::new()
+            }
+            Err(error) => {
+                log::warn!(
+                    "app::{}: parse state {}: {error}",
+                    config.app_id,
+                    path.display()
+                );
+                serde_json::Map::new()
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(error) => {
+            log::warn!(
+                "app::{}: read state {}: {error}",
+                config.app_id,
+                path.display()
+            );
+            serde_json::Map::new()
+        }
+    }
+}
+
+impl LivePythonPane {
+    pub fn launch(config: PythonLaunchConfig) -> Result<Self, WasmPythonError> {
+        let app_id = config.app_id.clone();
+        let persisted_state = load_python_state(&config);
+        let (http_tx, http_rx) = std::sync::mpsc::channel();
+        Ok(Self {
+            runtime: WasmPythonRuntime::launch(&config)?,
+            config,
+            app_id,
+            title: None,
+            tree: None,
+            initialized: false,
+            ready: false,
+            render_in_flight: false,
+            render_sent_at: None,
+            next_render_at: std::time::Instant::now(),
+            continuous_scheduler: false,
+            render_requested: true,
+            output_waker_installed: false,
+            frame_id: 0,
+            wants_close: false,
+            error: None,
+            timers: std::collections::HashMap::new(),
+            repaint_after: std::time::Duration::from_millis(16),
+            perf_started_at: std::time::Instant::now(),
+            perf_frames: 0,
+            perf_host_time: std::time::Duration::ZERO,
+            perf_guest_frames: 0,
+            perf_guest_roundtrip: std::time::Duration::ZERO,
+            perf_json_decode: std::time::Duration::ZERO,
+            perf_tree_decode: std::time::Duration::ZERO,
+            perf_stdout_bytes: 0,
+            perf_ui_render: std::time::Duration::ZERO,
+            perf_canvas_render: std::time::Duration::ZERO,
+            persisted_state,
+            http_tx,
+            http_rx,
+            pending_commands: Vec::new(),
+        })
+    }
+
+    pub fn ui(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
+        let host_frame_started = std::time::Instant::now();
+        if !self.output_waker_installed {
+            let context = ui.ctx().clone();
+            let viewport = ui.ctx().viewport_id();
+            self.runtime
+                .stdout
+                .set_waker(Arc::new(move || context.request_repaint_of(viewport)));
+            self.output_waker_installed = true;
+        }
+        if let Some(error) = &self.error {
+            ui.colored_label(colors.danger, error);
+            return;
+        }
+        if !self.initialized {
+            self.initialized = true;
+            let size = ui.available_size();
+            if let Err(error) = self.runtime.send(&json!({
+                "type": "init", "app_id": self.app_id,
+                "workspace_root": self.config.workspace_root,
+                "capabilities": self.config.capabilities, "state": self.persisted_state, "theme": {},
+                "args": self.config.launch_args,
+                "size": [size.x, size.y]
+            })) {
+                self.error = Some(error.to_string());
+                return;
+            }
+        }
+        self.drain_runtime();
+        if !self.ready {
+            ui.spinner();
+            self.record_render_perf(host_frame_started.elapsed());
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(5));
+            return;
+        }
+        let now = std::time::Instant::now();
+        if should_send_python_render(
+            self.initialized,
+            self.ready,
+            self.render_in_flight,
+            self.continuous_scheduler || self.render_requested,
+            now >= self.next_render_at,
+        ) {
+            self.frame_id += 1;
+            if let Err(error) = self
+                .runtime
+                .send(&json!({"type": "render", "frame_id": self.frame_id}))
+            {
+                self.error = Some(error.to_string());
+                return;
+            }
+            self.render_in_flight = true;
+            self.render_sent_at = Some(std::time::Instant::now());
+            self.render_requested = false;
+            if self.continuous_scheduler {
+                self.next_render_at += self.repaint_after;
+            }
+            self.drain_runtime();
+        }
+        self.fire_due_timers();
+        if let Some(tree) = &self.tree {
+            let render_started = std::time::Instant::now();
+            let result = super::wasm_render::render_ui_tree_with_surface(ui, tree, colors, None);
+            self.perf_ui_render += render_started.elapsed();
+            self.perf_canvas_render += result.canvas_time;
+            for action in result.actions {
+                let _ = self
+                    .runtime
+                    .send(&json!({"type": "ui_action", "handler_id": action}));
+            }
+            for (handler_id, value) in result.value_changes {
+                let _ = self.runtime.send(&json!({
+                    "type": "text_submitted", "id": handler_id, "value": value
+                }));
+            }
+        } else {
+            ui.spinner();
+        }
+        self.record_render_perf(host_frame_started.elapsed());
+        let render_deadline =
+            (self.continuous_scheduler || self.render_requested).then_some(self.next_render_at);
+        let timer_deadline = self.timers.values().copied().min();
+        let next_wake = render_deadline
+            .into_iter()
+            .chain(timer_deadline)
+            .min()
+            .unwrap_or(now + std::time::Duration::from_secs(1));
+        ui.ctx()
+            .request_repaint_after(next_wake.saturating_duration_since(now));
+    }
+
+    fn record_render_perf(&mut self, host_time: std::time::Duration) {
+        self.perf_frames += 1;
+        self.perf_host_time += host_time;
+        let elapsed = self.perf_started_at.elapsed();
+        if elapsed >= std::time::Duration::from_secs(2) {
+            let fps = self.perf_frames as f64 / elapsed.as_secs_f64();
+            let avg_host_ms =
+                self.perf_host_time.as_secs_f64() * 1000.0 / self.perf_frames.max(1) as f64;
+            let guest_fps = self.perf_guest_frames as f64 / elapsed.as_secs_f64();
+            let avg_roundtrip_ms = self.perf_guest_roundtrip.as_secs_f64() * 1000.0
+                / self.perf_guest_frames.max(1) as f64;
+            log::info!(
+                "app::{}: CPython-WASM perf paint_fps={fps:.1} guest_fps={guest_fps:.1} avg_host_ms={avg_host_ms:.2} avg_roundtrip_ms={avg_roundtrip_ms:.2} json_ms={:.2} tree_ms={:.2} ui_ms={:.2} canvas_ms={:.2} stdout_kib={:.1}",
+                self.app_id,
+                self.perf_json_decode.as_secs_f64() * 1000.0,
+                self.perf_tree_decode.as_secs_f64() * 1000.0,
+                self.perf_ui_render.as_secs_f64() * 1000.0,
+                self.perf_canvas_render.as_secs_f64() * 1000.0,
+                self.perf_stdout_bytes as f64 / 1024.0,
+            );
+            self.perf_started_at = std::time::Instant::now();
+            self.perf_frames = 0;
+            self.perf_host_time = std::time::Duration::ZERO;
+            self.perf_guest_frames = 0;
+            self.perf_guest_roundtrip = std::time::Duration::ZERO;
+            self.perf_json_decode = std::time::Duration::ZERO;
+            self.perf_tree_decode = std::time::Duration::ZERO;
+            self.perf_stdout_bytes = 0;
+            self.perf_ui_render = std::time::Duration::ZERO;
+            self.perf_canvas_render = std::time::Duration::ZERO;
+        }
+    }
+
+    fn drain_runtime(&mut self) {
+        while let Ok((request_id, response)) = self.http_rx.try_recv() {
+            let _ = self.runtime.send(&json!({
+                "type": "http_response", "request_id": request_id,
+                "status": response.status, "body": response.body, "error": response.error,
+                "headers": response.response_headers,
+            }));
+        }
+        match self.runtime.drain_messages() {
+            Ok(messages) => {
+                self.perf_stdout_bytes += self.runtime.last_drain_bytes;
+                self.perf_json_decode += self.runtime.last_json_decode_time;
+                for message in messages {
+                    let message_type = message.get("type").and_then(Value::as_str);
+                    log::debug!(
+                        "app::{}: CPython WASM message type={}",
+                        self.app_id,
+                        message_type.unwrap_or("<missing>")
+                    );
+                    match message_type {
+                        Some("ready") => {
+                            self.ready = true;
+                            self.next_render_at = std::time::Instant::now();
+                            log::info!("app::{}: CPython WASM bridge ready", self.app_id);
+                        }
+                        Some("component_tree") => {
+                            if let Some(tree) = message.get("tree") {
+                                let decode_started = std::time::Instant::now();
+                                match decode_ui_tree_value(tree) {
+                                    Ok(tree) => self.tree = Some(tree),
+                                    Err(error) => {
+                                        log::error!(
+                                            "app::{}: decode CPython WASM component tree: {error}",
+                                            self.app_id
+                                        );
+                                        self.error = Some(error.to_string());
+                                    }
+                                }
+                                self.perf_tree_decode += decode_started.elapsed();
+                            }
+                        }
+                        Some("set_title") => {
+                            self.title = message
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        }
+                        Some("set_timer") => {
+                            if let (Some(id), Some(after_ms)) = (
+                                message.get("timer_id").and_then(Value::as_str),
+                                message.get("after_ms").and_then(Value::as_u64),
+                            ) {
+                                self.timers.insert(
+                                    id.to_string(),
+                                    std::time::Instant::now()
+                                        + std::time::Duration::from_millis(after_ms),
+                                );
+                            }
+                        }
+                        Some("cancel_timer") => {
+                            if let Some(id) = message.get("timer_id").and_then(Value::as_str) {
+                                self.timers.remove(id);
+                            }
+                        }
+                        Some("schedule_render") => {
+                            self.render_requested = true;
+                            self.repaint_after = std::time::Duration::from_millis(
+                                message
+                                    .get("after_ms")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(16),
+                            );
+                            self.next_render_at = std::time::Instant::now() + self.repaint_after;
+                        }
+                        Some("set_scheduler_mode") => {
+                            self.continuous_scheduler =
+                                message.get("mode").and_then(Value::as_str) == Some("continuous");
+                            self.repaint_after = scheduler_repaint_after(
+                                message.get("mode").and_then(Value::as_str),
+                                message.get("fps").and_then(Value::as_u64),
+                            );
+                            self.next_render_at = std::time::Instant::now() + self.repaint_after;
+                        }
+                        Some("frame_done") => {
+                            self.render_in_flight = false;
+                            self.perf_guest_frames += 1;
+                            if let Some(sent_at) = self.render_sent_at.take() {
+                                self.perf_guest_roundtrip += sent_at.elapsed();
+                            }
+                        }
+                        Some("close") | Some("close_self") => self.wants_close = true,
+                        Some("save_app_state") => self.save_state(message.get("payload")),
+                        Some("file_read") => self.handle_file_read(&message),
+                        Some("file_write") => self.handle_file_write(&message),
+                        Some("http_request") => self.handle_http_request(&message),
+                        Some("capability_request") => self.handle_capability_request(&message),
+                        Some("log") => log::info!(
+                            "app::{}: {}",
+                            self.app_id,
+                            message
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                        ),
+                        Some("status_summary") => {}
+                        _ => {
+                            if let Some(command) = app_command_from_python_message(&message) {
+                                self.pending_commands.push(command);
+                            } else {
+                                log::warn!(
+                                    "app::{}: unhandled CPython WASM message: {message}",
+                                    self.app_id
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                log::error!("app::{}: drain CPython WASM messages: {error}", self.app_id);
+                self.error = Some(error.to_string());
+            }
+        }
+        let stderr = self.runtime.drain_stderr();
+        if !stderr.trim().is_empty() {
+            log::error!(
+                "app::{} CPython WASM stderr: {}",
+                self.app_id,
+                stderr.trim()
+            );
+        }
+    }
+
+    fn has_capability(&self, capability: &str) -> bool {
+        self.config
+            .capabilities
+            .iter()
+            .any(|item| item == capability)
+    }
+
+    fn workspace_path(&self, raw: &str, for_write: bool) -> Result<PathBuf, String> {
+        let path = Path::new(raw);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err(format!("path escapes workspace: {raw}"));
+        }
+        let root = self.config.workspace_root.canonicalize().map_err(|error| {
+            format!(
+                "canonicalize workspace {}: {error}",
+                self.config.workspace_root.display()
+            )
+        })?;
+        let candidate = self.config.workspace_root.join(path);
+        let resolved = if for_write && !candidate.exists() {
+            let parent = candidate
+                .parent()
+                .ok_or_else(|| "path has no parent".to_string())?;
+            parent
+                .canonicalize()
+                .map(|parent| parent.join(candidate.file_name().unwrap_or_default()))
+        } else {
+            candidate.canonicalize()
+        }
+        .map_err(|error| format!("resolve workspace path {raw}: {error}"))?;
+        if !resolved.starts_with(&root) {
+            return Err(format!("path escapes workspace through symlink: {raw}"));
+        }
+        Ok(resolved)
+    }
+
+    fn handle_file_read(&mut self, message: &Value) {
+        let result = if !self.has_capability("fs.read") {
+            Err("missing capability fs.read".to_string())
+        } else {
+            message
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing path".to_string())
+                .and_then(|path| self.workspace_path(path, false))
+                .and_then(|path| {
+                    std::fs::read_to_string(&path)
+                        .map_err(|error| format!("read {}: {error}", path.display()))
+                })
+        };
+        let response = match result {
+            Ok(content) => json!({"type": "file_read_result", "content": content}),
+            Err(error) => json!({"type": "file_read_result", "error": error}),
+        };
+        let _ = self.runtime.send(&response);
+    }
+
+    fn handle_file_write(&mut self, message: &Value) {
+        let result = if !self.has_capability("fs.write") {
+            Err("missing capability fs.write".to_string())
+        } else {
+            message
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing path".to_string())
+                .and_then(|path| self.workspace_path(path, true))
+                .and_then(|path| {
+                    let content = message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    std::fs::write(&path, content)
+                        .map_err(|error| format!("write {}: {error}", path.display()))
+                })
+        };
+        let response = match result {
+            Ok(()) => json!({"type": "file_write_result"}),
+            Err(error) => json!({"type": "file_write_result", "error": error}),
+        };
+        let _ = self.runtime.send(&response);
+    }
+
+    fn handle_http_request(&mut self, message: &Value) {
+        let request_id = message
+            .get("request_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !self.has_capability("net.http") {
+            let _ = self.runtime.send(&json!({"type": "http_response", "request_id": request_id, "error": "missing capability net.http"}));
+            return;
+        }
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("GET")
+            .to_string();
+        let url = message
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if !http_host_allowed(&url, &self.config.allowed_hosts) {
+            let _ = self.runtime.send(&json!({"type": "http_response", "request_id": request_id, "error": "host is not in manifest allowed_hosts"}));
+            return;
+        }
+        let headers = message
+            .get("headers")
+            .and_then(Value::as_object)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        value.as_str().map(|value| (key.clone(), value.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let body = message
+            .get("body")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let tx = self.http_tx.clone();
+        std::thread::spawn(move || {
+            use crate::host::services::NetService;
+            let response = crate::host::services::UreqNetService::new().http(
+                &method,
+                &url,
+                &headers,
+                body.as_deref(),
+            );
+            if tx.send((request_id, response)).is_err() {
+                log::debug!("CPython WASM HTTP response dropped after pane closed");
+            }
+        });
+    }
+
+    fn handle_capability_request(&mut self, message: &Value) {
+        let capability = message
+            .get("capability")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let granted = self.has_capability(capability);
+        let _ = self.runtime.send(
+            &json!({"type": "capability_decision", "capability": capability, "granted": granted}),
+        );
+    }
+
+    fn save_state(&mut self, payload: Option<&Value>) {
+        let Some(payload) = payload.and_then(Value::as_object) else {
+            return;
+        };
+        self.persisted_state = payload.clone();
+        let path = python_state_path(&self.config);
+        if let Some(parent) = path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                log::error!(
+                    "app::{}: create state dir {}: {error}",
+                    self.app_id,
+                    parent.display()
+                );
+                return;
+            }
+        }
+        match serde_json::to_vec_pretty(payload)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| std::fs::write(&path, bytes))
+        {
+            Ok(()) => log::info!("app::{}: persisted WASM Python state", self.app_id),
+            Err(error) => log::error!(
+                "app::{}: write state {}: {error}",
+                self.app_id,
+                path.display()
+            ),
+        }
+    }
+
+    fn fire_due_timers(&mut self) {
+        let now = std::time::Instant::now();
+        let due: Vec<String> = self
+            .timers
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in due {
+            self.timers.remove(&id);
+            let _ = self.runtime.send(&json!({"type": "timer", "timer_id": id}));
+            self.render_requested = true;
+            self.next_render_at = now + std::time::Duration::from_millis(1);
+        }
+    }
+
+    pub fn handle_key(
+        &mut self,
+        input: &egui::InputState,
+    ) -> crate::app::app_trait::KeyDisposition {
+        for event in &input.events {
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+            {
+                let _ = self.runtime.send(&json!({
+                    "type": "key", "key": python_key_name(*key),
+                    "modifiers": {"ctrl": modifiers.ctrl, "shift": modifiers.shift, "alt": modifiers.alt, "meta": modifiers.mac_cmd || modifiers.command}
+                }));
+                return crate::app::app_trait::KeyDisposition::Consumed;
+            }
+        }
+        crate::app::app_trait::KeyDisposition::Passthrough
+    }
+
+    pub fn wants_close(&self) -> bool {
+        self.wants_close
+    }
+    pub fn take_pending_commands(&mut self) -> Vec<crate::app::app_trait::AppCommand> {
+        std::mem::take(&mut self.pending_commands)
+    }
+    pub fn display_name(&self) -> String {
+        self.title.clone().unwrap_or_else(|| self.app_id.clone())
+    }
+
+    pub(crate) fn semantic_state(&self) -> crate::host::pane::SemanticPaneState {
+        python_semantic_state(self.tree.as_ref())
+    }
+    #[cfg(test)]
+    pub fn has_rendered_tree(&self) -> bool {
+        self.tree.is_some()
+    }
+    #[cfg(test)]
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+    pub fn relaunch(&mut self) -> Result<(), WasmPythonError> {
+        self.runtime = WasmPythonRuntime::launch(&self.config)?;
+        self.tree = None;
+        self.initialized = false;
+        self.ready = false;
+        self.render_in_flight = false;
+        self.render_sent_at = None;
+        self.error = None;
+        self.wants_close = false;
+        self.timers.clear();
+        log::info!("app::{}: relaunched CPython WASM runtime", self.app_id);
+        Ok(())
+    }
+}
+
+fn python_semantic_state(tree: Option<&UiTree>) -> crate::host::pane::SemanticPaneState {
+    let Some(tree) = tree else {
+        return crate::host::pane::SemanticPaneState::empty("python-wasm");
+    };
+    let mut state = crate::host::pane::SemanticPaneState::from_wasm_tree(tree);
+    state.runtime_kind = "python-wasm".to_string();
+    state
+}
+
+fn python_key_name(key: egui::Key) -> String {
+    match key {
+        egui::Key::ArrowDown => "down".to_string(),
+        egui::Key::ArrowUp => "up".to_string(),
+        egui::Key::ArrowLeft => "left".to_string(),
+        egui::Key::ArrowRight => "right".to_string(),
+        egui::Key::Enter => "enter".to_string(),
+        egui::Key::Backspace => "backspace".to_string(),
+        egui::Key::Escape => "escape".to_string(),
+        egui::Key::Space => "space".to_string(),
+        other => format!("{other:?}").to_ascii_lowercase(),
+    }
+}
+
+fn scheduler_repaint_after(mode: Option<&str>, fps: Option<u64>) -> std::time::Duration {
+    match mode {
+        Some("continuous") => {
+            let fps = fps.unwrap_or(60).clamp(1, 240);
+            std::time::Duration::from_nanos(1_000_000_000 / fps)
+        }
+        _ => std::time::Duration::from_millis(16),
+    }
+}
+
+fn should_send_python_render(
+    initialized: bool,
+    ready: bool,
+    render_in_flight: bool,
+    render_requested: bool,
+    deadline_reached: bool,
+) -> bool {
+    initialized && ready && !render_in_flight && render_requested && deadline_reached
+}
+
+fn http_host_allowed(raw_url: &str, allowed_hosts: &[String]) -> bool {
+    if allowed_hosts.is_empty() {
+        return true;
+    }
+    let host = url::Url::parse(raw_url)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
+        });
+    host.as_deref().is_some_and(|host| {
+        allowed_hosts.iter().any(|pattern| {
+            let pattern = pattern.trim().trim_end_matches('.').to_ascii_lowercase();
+            host == pattern || host.ends_with(&format!(".{pattern}"))
+        })
+    })
+}
+
+fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_trait::AppCommand> {
+    use crate::app::app_trait::AppCommand;
+    let text = |key: &str| {
+        message
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    match message.get("type").and_then(Value::as_str)? {
+        "notify" => Some(AppCommand::Notify(text("message"))),
+        "spawn_app" => Some(AppCommand::SpawnApp {
+            type_id: text("app_id"),
+            layout: message
+                .get("layout")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            args: Vec::new(),
+        }),
+        "spawn_pane" => Some(AppCommand::SpawnPane {
+            type_id: text("app_id"),
+            layout: text("layout"),
+            args: Vec::new(),
+            from_pane_id: None,
+            request_id: None,
+            target_context: None,
+        }),
+        "focus_pane" => Some(AppCommand::ForwardPaneRequest {
+            request: crate::app_protocol::AppRequest::FocusPane {
+                pane_id: message
+                    .get("pane_id")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
+            },
+        }),
+        "pipe_send" => Some(AppCommand::DeliverPipeMessage {
+            sender_pane_id: 0,
+            pipe_id: text("pipe_id"),
+            payload: message.get("payload").cloned().unwrap_or(Value::Null),
+        }),
+        "pipe_open_directed" => Some(AppCommand::OpenDirectedPipe {
+            sender_pane_id: 0,
+            pipe_id: text("pipe_id"),
+            target_pane_id: message
+                .get("target_pane_id")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+        }),
+        "run_update" => Some(AppCommand::DeliverRunUpdate {
+            originator_type_id: text("originator_type_id"),
+            event: crate::app_protocol::PlexiEvent::Resume,
+        }),
+        "show_notification" => Some(AppCommand::ShowNotification {
+            notify_id: text("notify_id"),
+            sender_pane_id: 0,
+            source_context_id: 0,
+            level: text("level"),
+            title: text("title"),
+            body: text("body"),
+            kind: crate::app_protocol::NotifyKind::Message,
+            options: Vec::new(),
+            input_prompt: None,
+            required: false,
+            priority: 0,
+            scope: crate::app_protocol::NotifyScope::Global,
+            image_inline: None,
+            image_pipe_id: None,
+            timeout_secs: None,
+            on_dismiss: None,
+        }),
+        "insert_path_token" => Some(AppCommand::InsertPathToken {
+            sender_pane_id: 0,
+            terminal_pane_id: message
+                .get("terminal_pane_id")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            path: text("path"),
+            mode: crate::app_protocol::PathTokenMode::Append,
+        }),
+        "command_preview" => Some(AppCommand::RequestCommandPreview {
+            sender_pane_id: 0,
+            request_id: text("request_id"),
+            terminal_pane_id: message
+                .get("terminal_pane_id")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            command: text("command"),
+        }),
+        "query_context_state" => Some(AppCommand::QueryContextState {
+            sender_pane_id: 0,
+            context_id: message
+                .get("context_id")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
 impl WasmPythonAdapter {
     pub fn prepare_from_manifest(app_dir: &Path) -> Result<Option<Self>, WasmPythonError> {
         let Some(config) = PythonLaunchConfig::from_manifest_file(app_dir)? else {
@@ -240,8 +1338,36 @@ impl WasmPythonAdapter {
 pub fn resolve_default_cpython_bundle() -> Result<PathBuf, WasmPythonError> {
     let cache_dir = std::env::var_os(CPYTHON_BUNDLE_CACHE_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|| crate::config::config_dir().join("wasm-bundles"));
-    resolve_cpython_bundle(cache_dir)
+        .unwrap_or_else(shared_wasm_bundle_dir);
+    match resolve_cpython_bundle(cache_dir.clone()) {
+        Ok(path) => Ok(path),
+        Err(WasmPythonError::MissingBundle { .. }) => {
+            let script =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/fetch-cpython-bundle.sh");
+            log::info!("python_compat: fetching verified CPython WASI bundle");
+            let status = Command::new("bash")
+                .arg(script)
+                .env(CPYTHON_BUNDLE_CACHE_ENV, &cache_dir)
+                .status()
+                .map_err(|source| WasmPythonError::ReadBundle {
+                    path: cache_dir.clone(),
+                    source,
+                })?;
+            if !status.success() {
+                return Err(WasmPythonError::RuntimeStart(
+                    "fetch verified CPython WASI bundle failed".to_string(),
+                ));
+            }
+            resolve_cpython_bundle(cache_dir)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn shared_wasm_bundle_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".plexi/wasm-bundles")
 }
 
 pub fn resolve_cpython_bundle(cache_dir: PathBuf) -> Result<PathBuf, WasmPythonError> {
@@ -279,20 +1405,23 @@ pub fn resolve_cpython_bundle(cache_dir: PathBuf) -> Result<PathBuf, WasmPythonE
     Ok(path)
 }
 
+#[cfg(test)]
 pub fn resolve_default_cpython_shim_component() -> Result<PathBuf, WasmPythonError> {
     if let Some(path) = std::env::var_os(CPYTHON_SHIM_COMPONENT_ENV).map(PathBuf::from) {
         return resolve_cpython_shim_component_path(path);
     }
     let cache_dir = std::env::var_os(CPYTHON_BUNDLE_CACHE_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|| crate::config::config_dir().join("wasm-bundles"));
+        .unwrap_or_else(shared_wasm_bundle_dir);
     resolve_cpython_shim_component(cache_dir)
 }
 
+#[cfg(test)]
 pub fn resolve_cpython_shim_component(cache_dir: PathBuf) -> Result<PathBuf, WasmPythonError> {
     resolve_cpython_shim_component_path(cache_dir.join(CPYTHON_SHIM_COMPONENT_FILE))
 }
 
+#[cfg(test)]
 fn resolve_cpython_shim_component_path(path: PathBuf) -> Result<PathBuf, WasmPythonError> {
     log::info!(
         "python_compat: resolving CPython lifecycle shim component path={}",
@@ -308,11 +1437,13 @@ fn resolve_cpython_shim_component_path(path: PathBuf) -> Result<PathBuf, WasmPyt
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub enum CpythonBundleAbi {
     RawWasiModule,
     LifecycleComponent,
 }
 
+#[cfg(test)]
 pub fn inspect_cpython_bundle_abi(path: &Path) -> Result<CpythonBundleAbi, WasmPythonError> {
     log::info!(
         "python_compat: inspecting CPython WASI bundle abi version={} wasi_sdk={} path={}",
@@ -344,10 +1475,12 @@ fn validate_cpython_bundle_abi(path: &Path) -> Result<(), WasmPythonError> {
     }
 }
 
+#[cfg(test)]
 pub fn probe_cpython_shim_component(path: &Path) -> Result<(), WasmPythonError> {
     probe_lifecycle_component(path, "Python Shim POC")
 }
 
+#[cfg(test)]
 fn probe_lifecycle_component(path: &Path, expected_view_text: &str) -> Result<(), WasmPythonError> {
     let grants = WasmApp::inspect_required_grants(path)
         .map_err(|source| classify_component_load_error(path, source))?;
@@ -392,6 +1525,7 @@ fn probe_lifecycle_component(path: &Path, expected_view_text: &str) -> Result<()
     Ok(())
 }
 
+#[cfg(test)]
 fn classify_component_load_error(path: &Path, source: wasmtime::Error) -> WasmPythonError {
     if is_core_wasm_module(path) {
         return WasmPythonError::RawModuleAbiMismatch {
@@ -407,15 +1541,18 @@ fn classify_component_load_error(path: &Path, source: wasmtime::Error) -> WasmPy
     }
 }
 
+#[cfg(test)]
 fn is_core_wasm_module(path: &Path) -> bool {
     wasmtime::Module::from_file(&wasmtime::Engine::default(), path).is_ok()
 }
 
+#[cfg(test)]
 fn grants_with_state(mut grants: Grants) -> Grants {
     grants.state = true;
     grants
 }
 
+#[cfg(test)]
 fn ui_tree_contains_text(tree: &UiTree, needle: &str) -> bool {
     tree.nodes.iter().any(|node| {
         matches!(
@@ -426,11 +1563,13 @@ fn ui_tree_contains_text(tree: &UiTree, needle: &str) -> bool {
 }
 
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub enum PythonBridgeEffect {
     Host(Effect),
     SetState(Vec<(String, Vec<u8>)>),
 }
 
+#[cfg(test)]
 pub fn init_bridge_arg(snapshot: &StateSnapshot, size: (f32, f32), args: &[String]) -> Value {
     json!({
         "state": encode_state(snapshot),
@@ -439,6 +1578,7 @@ pub fn init_bridge_arg(snapshot: &StateSnapshot, size: (f32, f32), args: &[Strin
     })
 }
 
+#[cfg(test)]
 pub fn update_bridge_arg(
     snapshot: &StateSnapshot,
     event: &InputEvent,
@@ -449,10 +1589,12 @@ pub fn update_bridge_arg(
     }))
 }
 
+#[cfg(test)]
 pub fn view_bridge_arg(snapshot: &StateSnapshot) -> Value {
     json!({ "state": encode_state(snapshot) })
 }
 
+#[cfg(test)]
 pub fn encode_state(snapshot: &StateSnapshot) -> Value {
     let mut out = serde_json::Map::new();
     for (key, bytes) in &snapshot.entries {
@@ -466,6 +1608,7 @@ pub fn encode_state(snapshot: &StateSnapshot) -> Value {
     Value::Object(out)
 }
 
+#[cfg(test)]
 pub fn encode_input_event(event: &InputEvent) -> Result<Value, WasmPythonError> {
     let value = match event {
         InputEvent::Key(KeyEvent {
@@ -514,12 +1657,14 @@ pub fn encode_input_event(event: &InputEvent) -> Result<Value, WasmPythonError> 
     Ok(value)
 }
 
+#[cfg(test)]
 pub fn decode_effects(json_text: &str) -> Result<Vec<PythonBridgeEffect>, WasmPythonError> {
     let values = serde_json::from_str::<Vec<Value>>(json_text)
         .map_err(|e| WasmPythonError::BridgeJson(e.to_string()))?;
     values.into_iter().map(decode_effect).collect()
 }
 
+#[cfg(test)]
 fn decode_effect(value: Value) -> Result<PythonBridgeEffect, WasmPythonError> {
     let kind = value
         .get("type")
@@ -576,6 +1721,7 @@ fn decode_effect(value: Value) -> Result<PythonBridgeEffect, WasmPythonError> {
     }
 }
 
+#[cfg(test)]
 fn decode_set_state(value: Value) -> Result<Vec<(String, Vec<u8>)>, WasmPythonError> {
     let data = value
         .get("data")
@@ -592,10 +1738,15 @@ fn decode_set_state(value: Value) -> Result<Vec<(String, Vec<u8>)>, WasmPythonEr
         .collect()
 }
 
+#[cfg(test)]
 pub fn decode_ui_tree(json_text: &str) -> Result<UiTree, WasmPythonError> {
     let value = serde_json::from_str::<Value>(json_text)
         .map_err(|e| WasmPythonError::BridgeJson(e.to_string()))?;
-    let root = required_u32(&value, "root")?;
+    decode_ui_tree_value(&value)
+}
+
+fn decode_ui_tree_value(value: &Value) -> Result<UiTree, WasmPythonError> {
+    let root = required_u32(value, "root")?;
     let nodes = value
         .get("nodes")
         .and_then(Value::as_array)
@@ -846,7 +1997,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             commands: canvas_commands(value, "commands")?,
         })),
         other => Err(WasmPythonError::BridgeJson(format!(
-            "Unknown UINode type: {other}"
+            "unsupported CPython-WASM UINode type: {other}"
         ))),
     }
 }
@@ -1000,6 +2151,7 @@ fn optional_f32(value: &Value, field: &str) -> Result<Option<f32>, WasmPythonErr
         .transpose()
 }
 
+#[cfg(test)]
 fn bytes_field(value: &Value, field: &str) -> Result<Vec<u8>, WasmPythonError> {
     match value.get(field) {
         Some(Value::String(s)) => Ok(s.as_bytes().to_vec()),
@@ -1022,6 +2174,7 @@ fn bytes_field(value: &Value, field: &str) -> Result<Vec<u8>, WasmPythonError> {
     }
 }
 
+#[cfg(test)]
 fn optional_bytes_field(value: &Value, field: &str) -> Result<Option<Vec<u8>>, WasmPythonError> {
     if matches!(value.get(field), None | Some(Value::Null)) {
         return Ok(None);
@@ -1029,6 +2182,7 @@ fn optional_bytes_field(value: &Value, field: &str) -> Result<Option<Vec<u8>>, W
     bytes_field(value, field).map(Some)
 }
 
+#[cfg(test)]
 fn headers_field(value: &Value, field: &str) -> Result<Vec<(String, String)>, WasmPythonError> {
     match value.get(field) {
         None | Some(Value::Null) => Ok(Vec::new()),
@@ -1095,9 +2249,9 @@ fn u32_list(value: &Value, field: &str) -> Result<Vec<u32>, WasmPythonError> {
 
 fn decode_alignment(value: &str) -> Result<Alignment, WasmPythonError> {
     match value {
-        "start" => Ok(Alignment::Start),
-        "center" => Ok(Alignment::Center),
-        "end" => Ok(Alignment::End),
+        "start" | "left_top" | "left_center" | "left_bottom" => Ok(Alignment::Start),
+        "center" | "center_top" | "center_center" | "center_bottom" => Ok(Alignment::Center),
+        "end" | "right_top" | "right_center" | "right_bottom" => Ok(Alignment::End),
         "stretch" => Ok(Alignment::Stretch),
         other => Err(WasmPythonError::BridgeJson(format!(
             "unknown alignment: {other}"
@@ -1143,7 +2297,175 @@ mod tests {
     use super::*;
     use crate::host::wasm_app::bindings::plexi::platform::types::HttpResponse;
     use crate::host::wasm_app::Modifiers;
+    use std::sync::Arc;
+    use std::task::{Context, Wake, Waker};
     use tempfile::tempdir;
+    use wasmtime::{Engine, Linker, Module, Store};
+    use wasmtime_wasi::p1::{self, WasiP1Ctx};
+    use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
+    use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
+
+    struct NoopWake;
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    #[test]
+    fn python_keys_use_sdk_lowercase_names() {
+        assert_eq!(python_key_name(egui::Key::ArrowDown), "down");
+        assert_eq!(python_key_name(egui::Key::Escape), "escape");
+    }
+
+    #[test]
+    fn unsupported_sdk_node_is_rejected_explicitly() {
+        let error = decode_node_data(&json!({"type": "Accordion"})).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported CPython-WASM UINode type: Accordion"));
+    }
+
+    #[test]
+    fn manifest_http_hosts_allow_exact_and_subdomains_only() {
+        let hosts = vec!["api.example.com".to_string()];
+        assert!(http_host_allowed("https://api.example.com/v1", &hosts));
+        assert!(http_host_allowed("https://x.api.example.com/v1", &hosts));
+        assert!(!http_host_allowed(
+            "https://api.example.com.evil.test",
+            &hosts
+        ));
+        assert!(!http_host_allowed("file:///tmp/secret", &hosts));
+    }
+
+    #[test]
+    fn continuous_scheduler_preserves_sixty_fps_budget() {
+        let interval = scheduler_repaint_after(Some("continuous"), Some(60));
+        assert!(interval <= std::time::Duration::from_nanos(16_666_667));
+        assert!(interval >= std::time::Duration::from_nanos(16_666_666));
+    }
+
+    #[test]
+    fn render_waits_for_ready_and_never_queues_behind_in_flight_frame() {
+        assert!(!should_send_python_render(true, false, false, true, true));
+        assert!(should_send_python_render(true, true, false, true, true));
+        assert!(!should_send_python_render(true, true, true, true, true));
+        assert!(!should_send_python_render(true, true, false, true, false));
+        assert!(!should_send_python_render(true, true, false, false, true));
+    }
+
+    #[test]
+    fn appendable_stdin_waits_then_delivers_appended_json_line() {
+        let mut input = AppendableStdin::default();
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        let mut bytes = [0_u8; 64];
+        let mut read = ReadBuf::new(&mut bytes);
+        assert!(Pin::new(&mut input)
+            .poll_read(&mut context, &mut read)
+            .is_pending());
+
+        input
+            .push_json_line(&json!({"type": "render"}))
+            .expect("append JSON");
+        let mut read = ReadBuf::new(&mut bytes);
+        assert!(Pin::new(&mut input)
+            .poll_read(&mut context, &mut read)
+            .is_ready());
+        assert_eq!(read.filled(), b"{\"type\":\"render\"}\n");
+    }
+
+    #[test]
+    fn drainable_output_preserves_stream_across_drains() {
+        let output = DrainableOutput::default();
+        let mut writer = output.clone();
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        assert!(Pin::new(&mut writer)
+            .poll_write(&mut context, b"one\n")
+            .is_ready());
+        assert_eq!(output.drain(), b"one\n");
+        assert!(Pin::new(&mut writer)
+            .poll_write(&mut context, b"two\n")
+            .is_ready());
+        assert_eq!(output.drain(), b"two\n");
+    }
+
+    #[test]
+    fn drainable_output_wakes_host_when_guest_writes() {
+        let output = DrainableOutput::default();
+        let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wake_flag = woke.clone();
+        output.set_waker(Arc::new(move || {
+            wake_flag.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let mut writer = output.clone();
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+
+        assert!(Pin::new(&mut writer)
+            .poll_write(&mut context, b"frame_done\n")
+            .is_ready());
+        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(Pin::new(&mut writer)
+            .poll_write(&mut context, b"another_message\n")
+            .is_ready());
+        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 1);
+        output.drain();
+        assert!(Pin::new(&mut writer)
+            .poll_write(&mut context, b"next_frame\n")
+            .is_ready());
+        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn persistent_cpython_runtime_handles_lifecycle_without_native_python() {
+        let app = tempdir().expect("app dir");
+        std::fs::write(
+            app.path().join("main.py"),
+            "from plexi_sdk.ui import Text\ndef init(size, args): return []\ndef update(event): return []\ndef view(): return Text('wasm-python-live')\n",
+        )
+        .expect("write app");
+        let config = PythonLaunchConfig {
+            app_id: "test.wasm-python".to_string(),
+            app_dir: app.path().to_path_buf(),
+            entry: app.path().join("main.py"),
+            module_name: "main".to_string(),
+            launch_args: Vec::new(),
+            workspace_root: app.path().to_path_buf(),
+            capabilities: Vec::new(),
+            allowed_hosts: Vec::new(),
+        };
+        let mut runtime = WasmPythonRuntime::launch(&config).expect("launch CPython WASM");
+        runtime
+            .send(&json!({
+                "type": "init", "app_id": config.app_id, "workspace_root": "/",
+                "capabilities": [], "state": {}, "theme": {}
+            }))
+            .expect("send init");
+        runtime
+            .send(&json!({"type": "render", "frame_id": 1}))
+            .expect("send render");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut messages = Vec::new();
+        while std::time::Instant::now() < deadline {
+            messages.extend(runtime.drain_messages().expect("valid runtime JSON"));
+            if messages
+                .iter()
+                .any(|message| message.get("type") == Some(&json!("frame_done")))
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            messages.iter().any(|message| {
+                message.get("type") == Some(&json!("component_tree"))
+                    && message.to_string().contains("wasm-python-live")
+            }),
+            "messages={messages:?}; stderr={}",
+            runtime.drain_stderr()
+        );
+    }
 
     fn python_shim_fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/python-shim.wasm")
@@ -1151,6 +2473,53 @@ mod tests {
 
     fn sysmon_fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/sysmon.wasm")
+    }
+
+    #[test]
+    fn cpython_wasi_executes_inside_wasmtime_without_native_python() {
+        let bundle = resolve_default_cpython_bundle().expect("fetched CPython WASI bundle");
+        let engine = Engine::default();
+        let stdlib = bundle.parent().expect("bundle directory").join("Lib");
+        let module = Module::from_file(&engine, bundle).expect("raw CPython WASI module");
+        let mut linker = Linker::<WasiP1Ctx>::new(&engine);
+        p1::add_to_linker_sync(&mut linker, |ctx| ctx).expect("WASI preview1 imports");
+        let stdout = MemoryOutputPipe::new(4096);
+        let stderr = MemoryOutputPipe::new(4096);
+        let mut builder = WasiCtxBuilder::new();
+        builder
+            .preopened_dir(
+                stdlib,
+                "/usr/local/lib/python3.12",
+                DirPerms::READ,
+                FilePerms::READ,
+            )
+            .expect("mount stdlib")
+            .stdout(stdout.clone())
+            .stderr(stderr.clone())
+            .args(&[
+                "python".to_string(),
+                "-c".to_string(),
+                "print('cpython-in-wasmtime')".to_string(),
+            ]);
+        let mut store = Store::new(&engine, builder.build_p1());
+        let instance = linker
+            .instantiate(&mut store, &module)
+            .expect("instantiate CPython WASI");
+        let start = instance
+            .get_typed_func::<(), ()>(&mut store, "_start")
+            .expect("CPython _start");
+
+        if let Err(error) = start.call(&mut store, ()) {
+            panic!(
+                "run CPython in Wasmtime: {error:#}; stderr={}",
+                String::from_utf8_lossy(&stderr.contents())
+            );
+        }
+
+        assert_eq!(
+            String::from_utf8_lossy(&stdout.contents()).trim(),
+            "cpython-in-wasmtime"
+        );
     }
 
     fn tree_text(tree: &UiTree) -> String {
@@ -1467,6 +2836,45 @@ python_compat = true
         assert_eq!(canvas.commands.len(), 2);
         assert!(matches!(canvas.commands[0], CanvasCommand::Rect(_)));
         assert!(matches!(canvas.commands[1], CanvasCommand::Text(_)));
+    }
+
+    #[test]
+    fn python_semantics_expose_decoded_tree_to_pane_state() {
+        let tree = decode_ui_tree(
+            r#"{
+                "root":0,
+                "nodes":[
+                    {"id":0,"key":"0","data":{"type":"Column","children":[1],"gap":0.0}},
+                    {"id":1,"key":"0/title","data":{"type":"Text","text":"Balls"}}
+                ]
+            }"#,
+        )
+        .expect("tree");
+
+        let state = python_semantic_state(Some(&tree));
+        assert_eq!(state.runtime_kind, "python-wasm");
+        assert_eq!(state.roots, ["0"]);
+        assert_eq!(state.nodes.len(), 2);
+        assert_eq!(state.nodes[1].label.as_deref(), Some("Balls"));
+    }
+
+    #[test]
+    fn decoder_accepts_the_complete_sdk_text_alignment_vocabulary() {
+        let cases = [
+            ("left_top", Alignment::Start),
+            ("left_center", Alignment::Start),
+            ("left_bottom", Alignment::Start),
+            ("center_top", Alignment::Center),
+            ("center_center", Alignment::Center),
+            ("center_bottom", Alignment::Center),
+            ("right_top", Alignment::End),
+            ("right_center", Alignment::End),
+            ("right_bottom", Alignment::End),
+        ];
+
+        for (sdk_value, expected) in cases {
+            assert_eq!(decode_alignment(sdk_value).unwrap(), expected);
+        }
     }
 
     #[test]

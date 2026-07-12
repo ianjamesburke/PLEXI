@@ -36,7 +36,10 @@ pub(crate) fn write_checkpoint(path: &Path, entry: &FocusJournalEntry) {
     };
     let tmp = path.with_extension("jsonl.tmp");
     if let Err(e) = std::fs::write(&tmp, format!("{json}\n")) {
-        log::warn!("focus_journal: failed to write tmp checkpoint {:?}: {e}", tmp);
+        log::warn!(
+            "focus_journal: failed to write tmp checkpoint {:?}: {e}",
+            tmp
+        );
         return;
     }
     if let Err(e) = std::fs::rename(&tmp, path) {

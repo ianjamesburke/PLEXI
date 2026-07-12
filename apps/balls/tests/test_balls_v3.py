@@ -8,7 +8,7 @@ import sys
 sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python")
 )
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "dev", "balls"))
 
 from plexi_sdk.events import RenderFrame  # noqa: E402
 
@@ -26,7 +26,7 @@ def test_render_frame_steps_physics_and_view_has_canvas() -> None:
     assert effects == []
     assert stepped["ticks"] == 1
     assert stepped["balls"][0]["y"] != start_y
-    canvas = balls.view().children[1].to_node()
+    canvas = balls.view().to_node()["children"][1]
     assert canvas["type"] == "canvas"
     assert {"type": "rect", "x": 0, "y": 0, "w": balls.CANVAS_W, "h": balls.CANVAS_H,
             "fill": "#0d0d1a", "radius": 0.0} in canvas["commands"]

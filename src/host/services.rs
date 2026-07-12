@@ -91,7 +91,7 @@ pub struct HttpResponse {
 }
 
 /// Host-side HTTP broker. `Send + Sync` so a single handle can be shared across
-/// per-pane `ProcessApp` instances that all call out concurrently.
+/// per-pane WASM runtimes that all call out concurrently.
 pub trait NetService: Send + Sync {
     /// Issue a synchronous HTTP request. Implementations must never panic;
     /// transport errors are returned as `HttpResponse { status: 0, error: Some(..) }`.

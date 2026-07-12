@@ -76,6 +76,7 @@ impl ImageCache {
     ///
     /// On success, the handle resolves via the same channel as src-keyed
     /// requests and appears in `poll()`'s return value.
+    #[cfg(test)]
     pub(crate) fn request_by_handle(&mut self, handle: &str, src: &str, net_http_granted: bool) {
         if self.cache.contains_key(handle) {
             return;

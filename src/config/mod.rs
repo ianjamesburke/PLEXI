@@ -1059,7 +1059,7 @@ pub fn sdk_path_override() -> Option<PathBuf> {
 /// Builds the `PYTHONPATH` value for Python app subprocesses.
 ///
 /// This is the single source for how PYTHONPATH is constructed. Both
-/// `ProcessApp::launch` and the static render path must call this so the
+/// WASM launch and static render paths call this so the
 /// priority is defined in exactly one place:
 ///   `PLEXI_SDK_PATH` override → debug checkout SDK → config-dir SDK → bundle SDK (when present)
 pub fn build_pythonpath(bundle_sdk: Option<&std::path::Path>) -> String {
@@ -1929,7 +1929,6 @@ mod tests {
     fn public_security_docs_do_not_claim_python_sandboxing() {
         for doc in [
             include_str!("../../README.md"),
-            include_str!("../process_app/SECURITY_MODEL.md"),
             include_str!("../../website/src/content/docs/apps.md"),
             include_str!("../../website/src/content/docs/sdk.md"),
             include_str!("../../website/src/content/docs/pgap.md"),

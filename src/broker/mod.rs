@@ -11,6 +11,7 @@
 
 use crate::app::permissions::{Capability, PermissionState, PermissionStore};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -227,6 +228,7 @@ impl PermissionRequest {
     }
 
     /// The PGAP app capability check shape.
+    #[cfg(test)]
     pub fn app_capability(app_id: &str, workspace_root: &Path, cap: Capability) -> Self {
         Self::new(
             ActorType::App,
@@ -594,6 +596,7 @@ impl GrantStore {
     /// Capability sets for an app launch, equivalent to the legacy
     /// `build_permission_sets` but read from generalized records:
     /// `(allowed, denied)` capabilities for this app+workspace.
+    #[cfg(test)]
     pub fn app_capability_sets(
         &self,
         app_id: &str,

@@ -270,8 +270,9 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     let selected_path = dir.path().join("photo.png");
     std::fs::write(&selected_path, b"not decoded in this test").expect("write image");
 
-    let browser: Box<dyn crate::app::app_trait::App> =
-        Box::new(crate::file_browser::FileBrowserApp::new(dir.path().to_path_buf()));
+    let browser: Box<dyn crate::app::app_trait::App> = Box::new(
+        crate::file_browser::FileBrowserApp::new(dir.path().to_path_buf()),
+    );
     app.open_builtin_app_pane(
         browser,
         crate::app::permissions::AppPermissions::builtin(),
@@ -301,7 +302,10 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     );
 
     let viewer_tile = app.windows[0].focused_pane.expect("viewer focused");
-    assert_ne!(viewer_tile, browser_tile, "viewer should open as split sibling");
+    assert_ne!(
+        viewer_tile, browser_tile,
+        "viewer should open as split sibling"
+    );
     let viewer_pane_id = match app.windows[0].tree.tiles.get(viewer_tile) {
         Some(egui_tiles::Tile::Pane(id)) => *id,
         other => panic!("expected viewer pane tile, got {other:?}"),
@@ -573,10 +577,8 @@ fn spawn_pane_seeds_root_in_empty_window() {
         "precondition: window boots with no focused pane"
     );
 
-    let response_file = std::env::temp_dir().join(format!(
-        "plexi_test_seed_root_{}.json",
-        std::process::id()
-    ));
+    let response_file =
+        std::env::temp_dir().join(format!("plexi_test_seed_root_{}.json", std::process::id()));
     let _ = std::fs::remove_file(&response_file);
 
     // Split spawn (not --window), no from_pane_id: falls into the empty-window
@@ -648,8 +650,8 @@ fn spawn_pane_seeds_root_in_empty_window() {
     );
 
     // Response file must report the id of the pane actually created.
-    let raw = std::fs::read_to_string(&response_file)
-        .expect("spawn_pane must write a response file");
+    let raw =
+        std::fs::read_to_string(&response_file).expect("spawn_pane must write a response file");
     let _ = std::fs::remove_file(&response_file);
     let json: serde_json::Value =
         serde_json::from_str(&raw).expect("response file must be valid JSON");

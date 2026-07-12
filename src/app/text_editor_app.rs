@@ -61,7 +61,10 @@ impl FindBar {
         if forward {
             self.current = (self.current + 1) % self.matches.len();
         } else {
-            self.current = self.current.checked_sub(1).unwrap_or(self.matches.len() - 1);
+            self.current = self
+                .current
+                .checked_sub(1)
+                .unwrap_or(self.matches.len() - 1);
         }
     }
 }
@@ -606,7 +609,11 @@ fn spaces_before_cursor(content: &str, char_idx: usize) -> usize {
     // Count trailing spaces (the ones immediately preceding cursor on this line).
     let spaces = before.chars().rev().take_while(|c| *c == ' ').count();
     // Only dedent if those spaces are ALL that's on the line prefix (pure indent).
-    if before.chars().all(|c| c == ' ') { spaces.min(4) } else { 0 }
+    if before.chars().all(|c| c == ' ') {
+        spaces.min(4)
+    } else {
+        0
+    }
 }
 
 /// Returns the leading whitespace (spaces/tabs) of the line that contains
@@ -623,7 +630,13 @@ fn leading_whitespace_at(content: &str, char_idx: usize) -> String {
 fn slugify_title(title: &str) -> String {
     let slug: String = title
         .chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     // Collapse runs of dashes and trim edges.
     let slug = slug
@@ -631,7 +644,11 @@ fn slugify_title(title: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-");
-    if slug.is_empty() { "note".to_string() } else { slug }
+    if slug.is_empty() {
+        "note".to_string()
+    } else {
+        slug
+    }
 }
 
 fn write_note_atomically(path: &Path, bytes: &[u8], durability: Durability) -> std::io::Result<()> {
@@ -823,11 +840,7 @@ impl App for TextEditorApp {
             .find_bar
             .as_ref()
             .and_then(|b| b.matches.get(b.current).copied());
-        let query_len = self
-            .find_bar
-            .as_ref()
-            .map(|b| b.query.len())
-            .unwrap_or(0);
+        let query_len = self.find_bar.as_ref().map(|b| b.query.len()).unwrap_or(0);
 
         let match_bg = colors.warning.gamma_multiply(0.45);
         let current_match_bg = colors.accent.gamma_multiply(0.55);
@@ -910,8 +923,9 @@ impl App for TextEditorApp {
                         .and_then(|s| s.cursor.char_range())
                         .map(|r| r.primary.index);
 
-                    let tab_presses =
-                        ui.input_mut(|i| i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Tab));
+                    let tab_presses = ui.input_mut(|i| {
+                        i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Tab)
+                    });
                     if tab_presses > 0 {
                         if let Some(char_idx) = cursor_char {
                             let byte_idx = char_to_byte(&self.content, char_idx);
@@ -924,11 +938,17 @@ impl App for TextEditorApp {
                             let mut state =
                                 egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
                             let c = egui::text::CCursor::new(new_char_idx);
-                            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
+                            state
+                                .cursor
+                                .set_char_range(Some(egui::text::CCursorRange::one(c)));
                             egui::TextEdit::store_state(ui.ctx(), te_id, state);
                             self.last_edit = Some(Instant::now());
                             self.scroll_to_cursor_pending = true;
-                            log::info!("TextEditorApp: Tab — inserted {} spaces at char {}", indent.len() * tab_presses, char_idx);
+                            log::info!(
+                                "TextEditorApp: Tab — inserted {} spaces at char {}",
+                                indent.len() * tab_presses,
+                                char_idx
+                            );
                         }
                     }
 
@@ -950,11 +970,17 @@ impl App for TextEditorApp {
                             let mut state =
                                 egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
                             let c = egui::text::CCursor::new(new_char_idx);
-                            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
+                            state
+                                .cursor
+                                .set_char_range(Some(egui::text::CCursorRange::one(c)));
                             egui::TextEdit::store_state(ui.ctx(), te_id, state);
                             self.last_edit = Some(Instant::now());
                             self.scroll_to_cursor_pending = true;
-                            log::info!("TextEditorApp: Enter — leading={:?} at char {}", leading, char_idx);
+                            log::info!(
+                                "TextEditorApp: Enter — leading={:?} at char {}",
+                                leading,
+                                char_idx
+                            );
                         }
                     }
 
@@ -976,11 +1002,17 @@ impl App for TextEditorApp {
                                 let mut state =
                                     egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
                                 let c = egui::text::CCursor::new(new_char_idx);
-                                state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
+                                state
+                                    .cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::one(c)));
                                 egui::TextEdit::store_state(ui.ctx(), te_id, state);
                                 self.last_edit = Some(Instant::now());
                                 self.scroll_to_cursor_pending = true;
-                                log::info!("TextEditorApp: smart backspace — removed {} spaces at char {}", spaces, char_idx);
+                                log::info!(
+                                    "TextEditorApp: smart backspace — removed {} spaces at char {}",
+                                    spaces,
+                                    char_idx
+                                );
                             }
                         }
                         // spaces <= 1: don't consume — TextEdit handles the delete normally.

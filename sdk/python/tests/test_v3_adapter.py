@@ -21,7 +21,16 @@ from plexi_sdk.events import (
     PipePayload,
     SystemStatsResult,
 )
-from plexi_sdk.ui import Button, Canvas, CanvasRect, Column, SelectList, Text, TextInput
+from plexi_sdk.ui import (
+    Button,
+    Canvas,
+    CanvasRect,
+    Column,
+    FooterKeys,
+    SelectList,
+    Text,
+    TextInput,
+)
 
 
 def test_effects_encode_dataclass_shape() -> None:
@@ -135,6 +144,19 @@ def test_ui_tree_serializes_canvas_commands() -> None:
             "radius": 2.0,
         }
     ]
+
+
+def test_ui_tree_lowers_pinned_footer_keys_to_supported_text() -> None:
+    tree = _encode_uitree(FooterKeys([("j", "down"), (["g", "G"], "ends")]))
+
+    assert tree["nodes"][0]["data"] == {
+        "type": "Text",
+        "text": "j down    g/G ends",
+        "size": 11.0,
+        "bold": False,
+        "truncate": True,
+        "align": "start",
+    }
 
 
 def test_effects_reject_unknown_dataclass() -> None:

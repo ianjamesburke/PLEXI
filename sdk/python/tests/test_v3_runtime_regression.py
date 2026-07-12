@@ -507,7 +507,7 @@ class TestFrameTiming:
     def test_balls_physics_progresses(self, tmp_path):
         """The balls app physics must actually advance between frames."""
         from plexi_sdk.testing import AppHarness
-        balls_path = REPO_ROOT / "apps" / "balls" / "balls.py"
+        balls_path = REPO_ROOT / "apps" / "dev" / "balls" / "balls.py"
         with AppHarness(balls_path, timeout=3.0) as h:
             cmds1 = h.run(1)
             time.sleep(0.05)

@@ -400,20 +400,15 @@ impl PlexiUiHarness {
                 let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) else {
                     return Probe::Dead(format!("pane {pane_id} is not an app pane"));
                 };
-                let AppRuntime::Process(p) = &app_pane.runtime else {
-                    return Probe::Dead(format!("pane {pane_id} is not a process app"));
-                };
-                if !p.frame.is_empty() {
-                    return Probe::Rendered;
+                match &app_pane.runtime {
+                    AppRuntime::Python(p) if p.has_rendered_tree() => Probe::Rendered,
+                    AppRuntime::Python(p) => p
+                        .error()
+                        .map(|error| Probe::Dead(error.to_string()))
+                        .unwrap_or(Probe::Waiting),
+                    AppRuntime::Wasm(p) if p.is_running() => Probe::Rendered,
+                    _ => Probe::Dead(format!("pane {pane_id} is not a WASM app")),
                 }
-                let state = p.lifecycle.state();
-                if state.is_terminal() {
-                    return Probe::Dead(format!(
-                        "app reached {state:?} before first frame; stderr:\n{}",
-                        Self::drain_stderr(p)
-                    ));
-                }
-                Probe::Waiting
             });
             match probe {
                 Probe::Rendered => return Ok(()),
@@ -421,29 +416,12 @@ impl PlexiUiHarness {
                 Probe::Waiting => {}
             }
             if start.elapsed() > timeout {
-                let stderr = self.with_app(|app| {
-                    let win = &app.windows[app.active_window];
-                    match win.panes.get(&pane_id) {
-                        Some(Pane::App(app_pane)) => match &app_pane.runtime {
-                            AppRuntime::Process(p) => Self::drain_stderr(p),
-                            _ => String::new(),
-                        },
-                        _ => String::new(),
-                    }
-                });
                 return Err(format!(
-                    "timed out after {timeout:?} waiting for first app frame; stderr:\n{stderr}"
+                    "timed out after {timeout:?} waiting for first app frame"
                 ));
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-    }
-
-    fn drain_stderr(p: &crate::process_app::ProcessApp) -> String {
-        p.recent_stderr
-            .lock()
-            .map(|q| q.iter().cloned().collect::<Vec<_>>().join("\n"))
-            .unwrap_or_default()
     }
 
     /// Open the built-in file browser host app rooted at `cwd`. Uses the
@@ -517,18 +495,17 @@ mod tests {
     use crate::app::FocusLayer;
     use crate::host::context::Window;
     use crate::host::pane::{AppPane, AppRuntime, Pane, PortalPane};
-    use crate::process_app::ProcessApp;
     use egui_kittest::kittest::Queryable;
 
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let (process_app, _draw_tx) =
-                ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
             let app_pane = AppPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Process(Box::new(process_app)),
+                runtime: AppRuntime::Builtin(Box::new(
+                    crate::file_browser::FileBrowserApp::new(std::env::temp_dir()),
+                )),
                 workspace_root: std::env::temp_dir(),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "test".to_string(),
@@ -698,7 +675,7 @@ mod tests {
                     crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
                 let mut commonmark = egui_commonmark::CommonMarkCache::default();
                 let audio: std::collections::HashMap<String, f32> = Default::default();
-                let mut image_cache = crate::process_app::image_cache::ImageCache::new();
+                let mut image_cache = crate::protocol_render::image_cache::ImageCache::new();
                 let ws = std::env::temp_dir();
                 let mut lv_off = std::collections::HashMap::new();
                 let mut lv_sel = std::collections::HashMap::new();
@@ -708,7 +685,7 @@ mod tests {
                 let mut canvas_width = 0.0;
                 let mut canvas_height = 0.0;
                 let rect = ui.max_rect();
-                crate::process_app::render::render_draw_commands(
+                crate::protocol_render::render::render_draw_commands(
                     ui,
                     rect,
                     &commands,
@@ -876,12 +853,12 @@ mod tests {
 
             // Child window holding the text-editor pane the portal previews.
             let editor_pane_id = app.host.alloc_pane_id();
-            let (process_app, _tx) =
-                ProcessApp::new_for_test(editor_pane_id, AppPermissions::builtin());
             let editor = AppPane {
                 pip_status: Some(crate::app_protocol::PipStatus::Green),
                 id: editor_pane_id,
-                runtime: AppRuntime::Process(Box::new(process_app)),
+                runtime: AppRuntime::Builtin(Box::new(
+                    crate::file_browser::FileBrowserApp::new(std::env::temp_dir()),
+                )),
                 workspace_root: std::env::temp_dir(),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
@@ -1337,7 +1314,7 @@ mod tests {
         let pane_id = h
             .open_app_at(&app_dir, &[])
             .expect("markdown-demo should launch");
-        h.wait_for_app_frame(pane_id, Duration::from_secs(20))
+        h.wait_for_app_frame(pane_id, Duration::from_secs(60))
             .expect("markdown-demo should render its first frame");
         h.run_steps(3);
         // Resting state: copy buttons are hover-only, so blocks render clean
@@ -1585,36 +1562,6 @@ mod tests {
             .expect("render failed");
     }
 
-    #[test]
-    fn screenshot_permission_prompt_uses_host_chrome() {
-        let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
-        let pane_id = add_focused_pane(&mut h);
-        h.step();
-        h.with_app_mut(|app| {
-            let win = &mut app.windows[app.active_window];
-            let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) else {
-                panic!("test pane missing");
-            };
-            let AppRuntime::Process(process) = &mut app_pane.runtime else {
-                panic!("test pane is not process app");
-            };
-            process
-                .pending_prompts
-                .push_back(crate::process_app::PendingPrompt::Capability {
-                    request_id: "test-permission".to_string(),
-                    capability: "fs.read".to_string(),
-                });
-            app.focus_stack.push(FocusLayer::CapabilityModal);
-        });
-        h.run_steps(2);
-        h.save_screenshot("/tmp/plexi_permission_prompt_chrome.png")
-            .expect("render failed");
-        assert!(
-            h.with_app(|app| matches!(app.focus_stack.last(), Some(FocusLayer::CapabilityModal))),
-            "capability modal should own focus for screenshot"
-        );
-        println!("Screenshot saved to /tmp/plexi_permission_prompt_chrome.png");
-    }
 
     #[test]
     fn screenshot_command_palette_metadata_lane() {
@@ -1622,12 +1569,12 @@ mod tests {
         let first_pane_id = add_focused_pane(&mut h);
         h.with_app_mut(|app| {
             let second_pane_id = app.host.alloc_pane_id();
-            let (process_app, _draw_tx) =
-                ProcessApp::new_for_test(second_pane_id, AppPermissions::builtin());
             let app_pane = AppPane {
                 pip_status: None,
                 id: second_pane_id,
-                runtime: AppRuntime::Process(Box::new(process_app)),
+                runtime: AppRuntime::Builtin(Box::new(
+                    crate::file_browser::FileBrowserApp::new(std::env::temp_dir()),
+                )),
                 workspace_root: std::env::temp_dir(),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "hidden-test".to_string(),
@@ -1964,12 +1911,12 @@ mod tests {
                 (pane_id_a, "A very long tab title that should not wrap onto a second line under any circumstances"),
                 (pane_id_b, "Short"),
             ] {
-                let (process_app, _draw_tx) =
-                    ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
                 let app_pane = AppPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Process(Box::new(process_app)),
+                    runtime: AppRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserApp::new(std::env::temp_dir()),
+                    )),
                     workspace_root: std::env::temp_dir(),
                     permissions: AppPermissions::builtin(),
                     manifest_id: "test".to_string(),

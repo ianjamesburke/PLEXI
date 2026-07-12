@@ -1,7 +1,7 @@
 use egui::{Color32, FontId, Response, RichText, Ui};
 
 use crate::app_protocol::{FooterKeyEntry, SelectListItem};
-use crate::process_app::render::parse_color;
+use crate::protocol_render::render::parse_color;
 use crate::ui::theme::{self, Colors};
 use crate::ui::{button, style};
 

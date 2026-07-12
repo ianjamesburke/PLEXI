@@ -169,6 +169,7 @@ impl HotReloadWatcher {
     }
 
     /// Returns the pane IDs of all actively-watched panes.
+    #[cfg(test)]
     pub fn watched_pane_ids(&self) -> Vec<PaneId> {
         self.watchers.keys().copied().collect()
     }

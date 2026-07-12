@@ -367,6 +367,59 @@ class Button(Component):
         }
 
 
+class HStack(Component):
+    def __init__(self, children: list[Component], gap: float = 0.0, grow: bool = False) -> None:
+        if any(not isinstance(child, Component) for child in children):
+            raise TypeError("HStack children must be Component instances")
+        self.children = children
+        self.gap = gap
+        self.grow = grow
+
+    def is_grow(self) -> bool:
+        return self.grow
+
+    def measure(self, avail_w: float) -> float:
+        return max((child.measure(avail_w) for child in self.children), default=0.0)
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        return None
+
+    def to_node(self) -> dict:
+        return {"type": "stack", "direction": "horizontal", "children": [child.to_node() for child in self.children], "gap": self.gap, "grow": self.grow}
+
+
+class Sized(Component):
+    def __init__(self, child: Component, width: float | None = None, height: float | None = None) -> None:
+        if not isinstance(child, Component):
+            raise TypeError("Sized child must be a Component")
+        self.child = child
+        self.width = width
+        self.height = height
+
+    def is_grow(self) -> bool:
+        return False
+
+    def measure(self, avail_w: float) -> float:
+        return self.height if self.height is not None else self.child.measure(self.width or avail_w)
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self.child.render(ctx, x, y, self.width or w, self.height or h)
+
+    def to_node(self) -> dict:
+        return {"type": "sized", "child": self.child.to_node(), "width": self.width, "height": self.height}
+
+
+class ActionBar(Component):
+    def __init__(self, actions: list[Button]) -> None:
+        for index, action in enumerate(actions):
+            if not isinstance(action, Button):
+                raise TypeError(f"ActionBar actions[{index}] must be a Button")
+        self.actions = actions
+
+    def to_node(self) -> dict:
+        return {"type": "action_bar", "actions": [{"type": "button", "node_id": action.on_click, "label": action.label, "style": action.style, "disabled": action.disabled} for action in self.actions]}
+
+
 @dataclass
 class Spacer(Component):
     """Fixed or flex gap. `grow=True` expands to consume remaining space."""
@@ -409,6 +462,236 @@ class Badge(Component):
     def to_node(self) -> dict:
         return {"type": "badge", "text": self.text,
                 "color": self.color, "key": self.key}
+
+
+@dataclass
+class Tooltip(Component):
+    text: str
+    child: Component
+
+    def to_node(self) -> dict:
+        return {"type": "tooltip", "text": self.text, "child": self.child.to_node()}
+
+
+@dataclass
+class Avatar(Component):
+    label: str = ""
+    size: float = 0.0
+
+    def to_node(self) -> dict:
+        return {"type": "avatar", "label": self.label, "size": self.size}
+
+
+@dataclass
+class Icon(Component):
+    name: str
+    size: float = 0.0
+    color: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "icon", "name": self.name, "size": self.size, "color": self.color}
+
+
+@dataclass
+class CodeBlock(Component):
+    code: str
+    language: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "code_block", "code": self.code, "language": self.language}
+
+
+@dataclass
+class Table(Component):
+    columns: list[str]
+    rows: list[list[str]]
+
+    def to_node(self) -> dict:
+        return {"type": "table", "columns": self.columns, "rows": self.rows}
+
+
+@dataclass
+class KeyValue(Component):
+    rows: list[tuple[str, str]]
+
+    def to_node(self) -> dict:
+        return {"type": "key_value", "rows": [
+            {"key": key, "value": value} for key, value in self.rows
+        ]}
+
+
+@dataclass
+class Breadcrumb(Component):
+    items: list[str]
+
+    def to_node(self) -> dict:
+        return {"type": "breadcrumb", "items": self.items}
+
+
+@dataclass
+class Pagination(Component):
+    node_id: str
+    page: int = 0
+    total: int = 0
+
+    def to_node(self) -> dict:
+        return {"type": "pagination", "node_id": self.node_id,
+                "page": self.page, "total": self.total}
+
+
+@dataclass
+class Accordion(Component):
+    node_id: str
+    title: str
+    child: Component
+    open: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "accordion", "node_id": self.node_id, "title": self.title,
+                "open": self.open, "child": self.child.to_node()}
+
+
+@dataclass
+class Checkbox(Component):
+    node_id: str
+    label: str = ""
+    checked: bool = False
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "checkbox", "node_id": self.node_id, "label": self.label,
+                "checked": self.checked, "disabled": self.disabled}
+
+
+@dataclass
+class Radio(Component):
+    node_id: str
+    options: list[str]
+    selected: int = 0
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "radio", "node_id": self.node_id, "options": self.options,
+                "selected": self.selected, "disabled": self.disabled}
+
+
+@dataclass
+class Switch(Component):
+    node_id: str
+    label: str = ""
+    on: bool = False
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "switch", "node_id": self.node_id, "label": self.label,
+                "on": self.on, "disabled": self.disabled}
+
+
+@dataclass
+class Slider(Component):
+    node_id: str
+    value: float = 0.0
+    min: float = 0.0
+    max: float = 1.0
+    disabled: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "slider", "node_id": self.node_id, "value": self.value,
+                "min": self.min, "max": self.max, "disabled": self.disabled}
+
+
+@dataclass
+class Select(Component):
+    node_id: str
+    options: list[str]
+    selected: int = 0
+    placeholder: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "select", "node_id": self.node_id, "options": self.options,
+                "selected": self.selected, "placeholder": self.placeholder}
+
+
+@dataclass
+class DateTimePicker(Component):
+    node_id: str
+    value: str = ""
+    mode: str = "datetime"
+
+    def to_node(self) -> dict:
+        return {"type": "date_time_picker", "node_id": self.node_id,
+                "value": self.value, "mode": self.mode}
+
+
+@dataclass
+class Progress(Component):
+    value: float = 0.0
+    label: str = ""
+    indeterminate: bool = False
+
+    def to_node(self) -> dict:
+        return {"type": "progress", "value": self.value, "label": self.label,
+                "indeterminate": self.indeterminate}
+
+
+@dataclass
+class Spinner(Component):
+    label: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "spinner", "label": self.label}
+
+
+@dataclass
+class Banner(Component):
+    text: str
+    tone: str = ""
+    title: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "banner", "text": self.text, "tone": self.tone, "title": self.title}
+
+
+@dataclass
+class TabBar(Component):
+    node_id: str
+    tabs: list[str]
+    active: int = 0
+
+    def to_node(self) -> dict:
+        return {"type": "tabs", "node_id": self.node_id, "tabs": self.tabs,
+                "active": self.active}
+
+
+@dataclass
+class EmptyState(Component):
+    title: str
+    description: str = ""
+    icon: str = ""
+
+    def to_node(self) -> dict:
+        return {"type": "empty_state", "title": self.title,
+                "description": self.description, "icon": self.icon}
+
+
+@dataclass
+class Skeleton(Component):
+    rows: int = 3
+    height: float = 0.0
+
+    def to_node(self) -> dict:
+        return {"type": "skeleton", "rows": self.rows, "height": self.height}
+
+
+@dataclass
+class Modal(Component):
+    node_id: str
+    title: str
+    child: Component
+
+    def to_node(self) -> dict:
+        return {"type": "modal", "node_id": self.node_id, "title": self.title,
+                "child": self.child.to_node()}
 
 
 @dataclass
@@ -2250,7 +2533,7 @@ __all__ = [
     # color constants (dark-mode defaults)
     "BG", "FG", "ACCENT", "SURFACE", "HIGHLIGHT", "MUTED", "GREEN", "RED", "YELLOW",
     # components
-    "Component", "Column", "Card",
+    "Component", "Column", "Card", "HStack", "Sized", "ActionBar",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
     "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
     "CanvasText", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
