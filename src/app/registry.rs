@@ -1027,6 +1027,63 @@ mod tests {
     }
 
     #[test]
+    fn wasm_poc_manifests_match_the_current_registry_contract() {
+        // POC artifacts are deliberately gitignored, so this checks the manifest
+        // contract without requiring every component to be built in the test job.
+        // Keep the expected entries alongside the Cargo component output names.
+        let manifests = [
+            (
+                "audio-synth",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/apps/wasm-poc/audio-synth/manifest.toml"
+                )),
+                "target/wasm32-wasip2/release/audio_synth.wasm",
+            ),
+            (
+                "counter",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/apps/wasm-poc/counter/manifest.toml"
+                )),
+                "target/wasm32-wasip2/release/counter.wasm",
+            ),
+            (
+                "pong",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/apps/wasm-poc/pong/manifest.toml"
+                )),
+                "target/wasm32-wasip2/release/pong.wasm",
+            ),
+            (
+                "python-shim",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/apps/wasm-poc/python-shim/manifest.toml"
+                )),
+                "target/wasm32-wasip2/release/python_shim.wasm",
+            ),
+            (
+                "sysmon",
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/apps/wasm-poc/sysmon/manifest.toml"
+                )),
+                "target/wasm32-wasip2/release/sysmon.wasm",
+            ),
+        ];
+
+        for (name, raw, expected_entry) in manifests {
+            let manifest: AppManifest = toml::from_str(raw)
+                .unwrap_or_else(|error| panic!("{name} manifest must parse: {error}"));
+            assert_eq!(manifest.schema_version, MANIFEST_SCHEMA_VERSION, "{name}");
+            assert_eq!(manifest.app.manifest_type, ManifestType::Wasm, "{name}");
+            assert_eq!(manifest.app.entry, expected_entry, "{name}");
+        }
+    }
+
+    #[test]
     fn manifest_with_future_schema_version_refuses() {
         let global = tempfile::tempdir().unwrap();
         let app_dir = global.path().join("future-app");

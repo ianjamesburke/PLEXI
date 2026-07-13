@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Push a version tag to trigger the GitHub Actions release workflow.
+# Push a version tag for source-build updates.
 # Internal helper used by scripts/promote.sh — do not call directly.
 # Use: just promote beta release  OR  just promote main release
 set -euo pipefail
@@ -14,11 +14,11 @@ push_tag() {
     local tree="$1" tag="$2"
     remote_tag=$(git ls-remote --tags origin "refs/tags/$tag" | awk '{print $1}')
     if [[ -n "$remote_tag" ]]; then
-        echo "Tag $tag already on remote — GitHub Actions release already triggered."
+        echo "Tag $tag is already published for source-build updates."
     else
         echo "Pushing tag $tag to origin..."
         git -C "$tree" push origin "$tag"
-        echo "GitHub Actions release workflow triggered for $tag."
+        echo "Published $tag for source-build updates."
     fi
 }
 

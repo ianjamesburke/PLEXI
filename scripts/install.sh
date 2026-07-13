@@ -334,7 +334,7 @@ install_agents() {
 install_agents
 
 # Record the release tag so the updater knows the exact installed version.
-# Priority: env var (set by user-install.sh / self-update) > git tag at HEAD.
+# Priority: env var (set by source update) > git tag at HEAD.
 if [[ -n "${PLEXI_INSTALL_TAG:-}" ]]; then
   echo "$PLEXI_INSTALL_TAG" > "$profile_dir/installed_tag"
   echo "Release tag: $PLEXI_INSTALL_TAG"

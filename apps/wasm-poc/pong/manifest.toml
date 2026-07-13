@@ -1,17 +1,21 @@
-schema_version = "2"
+schema_version = 1
+
+[app]
 id = "com.plexi.pong"
-version = "0.1.0"
+type = "wasm"
 name = "Pong"
-description = "Pong — surface-node POC demonstrating direct GPU rendering inside a Plexi pane."
+entry = "target/wasm32-wasip2/release/pong.wasm"
+version = "0.1.0"
+description = "GPU surface-node POC demonstrating direct rendering inside a Plexi pane."
 
 [runtime]
 target = "wasm32-wasip2"
 execution = "local"
 python_compat = false
 
-[capabilities]
+[app.capabilities]
+capabilities = []
+
+[app.capabilities.wasm]
 required = []
 optional = []
-
-[payment]
-model = "free"
