@@ -1,11 +1,9 @@
-# Real apps/dev/balls PGAP app: spawns the actual Python process through the
-# production launch path. suite = false — spawns a real child process; run
-# with `just scene tests/scenes/balls.toml`.
+# CPython-in-WASM Balls app through the production launch path.
 size = [1280.0, 800.0]
-suite = false
+suite = true
 
 [[steps]]
-open = { kind = "process", path = "apps/dev/balls", as = "balls" }
+open = { kind = "process", path = "apps/balls", as = "balls" }
 
 [[steps]]
 wait_app_frame = { target = "balls", timeout_s = 15.0 }
@@ -14,7 +12,7 @@ wait_app_frame = { target = "balls", timeout_s = 15.0 }
 run_steps = 5
 
 [[steps]]
-assert = { target = "balls", pane_count = 1, lifecycle = "running", tree_contains = "balls" }
+assert = { target = "balls", pane_count = 1, lifecycle = "running", tree_contains = "balls", fit = "fill" }
 
 [[steps]]
 shot = "balls.png"

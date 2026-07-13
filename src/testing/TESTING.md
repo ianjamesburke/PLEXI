@@ -54,6 +54,7 @@ shot = "balls.png"                          # optional; written to the out dir
 | `wait_app_frame = { target = "<handle>", timeout_s = N }` | Wait for a process app's first committed frame. Fails with the app's stderr on crash or timeout. |
 | `run_steps = N` | Advance N harness frames. |
 | `assert = { ... }` | Structured assertions — see below. |
+| `expect = { target = "<handle>", after_key = "left", node_changes = "paddle", timeout_s = 2.0 }` | Deliver input normally and poll semantic state. On input timeout the stable failure code is `input_no_effect`; without input it is a normal eventual assertion. |
 | `assert_label = { target = "<handle>", label = "Settings" }` | Focus a pane and require an exact semantic label inside that pane's rendered rectangle. Use `target = "host"` for the whole accessibility tree. |
 | `shot = "name.png"` | Headless screenshot to the out dir. |
 
@@ -61,7 +62,7 @@ Every `open` step binds one unique symbolic handle. Later pane steps reject miss
 
 ### Assertions
 
-`pane_count`, `window_count`, `context_count`, `portal_count` (across all windows), and `sidebar` assert host state. `exists`, `focused`, `lifecycle`, and `tree_contains` require `target = "<handle>"`; `exists` and `focused` check pane lifecycle/focus while the latter two inspect a process or WASM app's serialized L1 state. Native builtins use `assert_label`. Every present key must match. Prefer handle-scoped assertions in scenes meant for both backends: an installed profile may restore unrelated panes, so absolute global counts are intentionally profile-dependent.
+`pane_count`, `window_count`, `context_count`, `portal_count` (across all windows), and `sidebar` assert host state. `exists`, `focused`, `lifecycle`, and `tree_contains` require `target = "<handle>"`; `fit = "fill"|"contain"` and `aspect = [width, height]` inspect committed canvas semantic bounds. `exists` and `focused` check pane lifecycle/focus while the latter inspect a process or WASM app's serialized L1 state. Native builtins use `assert_label`. Every present key must match. Prefer handle-scoped assertions in scenes meant for both backends: an installed profile may restore unrelated panes, so absolute global counts are intentionally profile-dependent.
 
 ### Running
 
@@ -76,7 +77,7 @@ cargo test --bin plexi scene_suite           # all committed suite scenes
 
 ### SceneReport
 
-Every run writes `<out>/<scene>.json` (`schema_version: 3`). It includes the selected backend and channel, pass/fail per step, resolved real pane ids, host state, teardown result, and the last-opened app state. Successful action details and failures are structured objects; failures carry stable `code` and `message` fields. Prefer state and semantic-label assertions over pixel comparisons. Screenshots remain a human review artifact.
+Every run writes `<out>/<scene>.json` (`schema_version: 4`). It includes the selected backend and channel, pass/fail per step, resolved real pane ids, host state, teardown result, and the last-opened app state. Successful action details and failures are structured objects; failures carry stable `code` and `message` fields. Failed steps include a `failure_bundle` path with the semantic dump, log tail, manifest (including eventual-poll history), and the headless screenshot when available. Prefer state and semantic-label assertions over pixel comparisons. Screenshots remain a human review artifact.
 
 `just scene-live` requires an explicit installed channel, boots that channel's host, drives generic app open/text/key/context switch/context push operations through the public CLI/IPC surface, observes `pane state` and context metadata, and always tears down a runner-owned host. Set `PLEXI_SCENE_ATTACH=1` only to attach deliberately; attached hosts are never stopped by the runner. The outer script writes a runner-only ownership marker, so SIGINT/SIGTERM/HUP cleanup can stop an owned host without touching an attached one. Unsupported live verbs fail with `unsupported_live_verb` rather than silently diverging from headless semantics. Live assertions use bounded eventual polling with a small poll interval and a stable-state barrier, never fixed workflow sleeps.
 
