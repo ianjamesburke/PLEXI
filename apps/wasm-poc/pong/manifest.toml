@@ -4,7 +4,7 @@ schema_version = 1
 id = "com.plexi.pong"
 type = "wasm"
 name = "Pong"
-entry = "target/wasm32-wasip1/release/pong.wasm"
+entry = "../../../target/wasm32-wasip1/release/pong.wasm"
 version = "0.1.0"
 description = "GPU surface-node POC demonstrating direct rendering inside a Plexi pane."
 

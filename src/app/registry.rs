@@ -651,7 +651,7 @@ impl AppRegistry {
             }
         }
 
-        let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
+        let bin_path = resolve_entry(app_dir, &manifest.app.entry, manifest.app.manifest_type)?;
 
         for (name, decl) in &manifest.secrets {
             log::debug!(
@@ -866,10 +866,21 @@ fn resolve_workspace_root_with_channel(start: &Path, channel_dir: &str) -> Optio
 
 /// Resolve the `entry` field from manifest.toml to a path.
 /// Fails fast — no guessing, no fallbacks.
-pub(crate) fn resolve_entry(app_dir: &PathBuf, entry: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_entry(
+    app_dir: &PathBuf,
+    entry: &str,
+    manifest_type: ManifestType,
+) -> Result<PathBuf, String> {
     let path = app_dir.join(entry);
 
     if !path.exists() {
+        if manifest_type == ManifestType::Wasm {
+            return Err(format!(
+                "WASM entry '{entry}' not found in {app_dir:?}; build it first: \
+                 cd {} && cargo component build --release --target wasm32-wasip2",
+                app_dir.display()
+            ));
+        }
         return Err(format!("entry '{entry}' not found in {:?}", app_dir));
     }
 
@@ -1030,9 +1041,9 @@ mod tests {
     fn wasm_poc_manifests_match_the_current_registry_contract() {
         // POC artifacts are deliberately gitignored, so this checks the manifest
         // contract without requiring every component to be built in the test job.
-        // `cargo component build --target wasm32-wasip2` writes the component
-        // artifact under wasm32-wasip1. The wasm32-wasip2 output is its core
-        // module, which the host must not launch as the app component.
+        // The repository Cargo config sends `cargo component build --target
+        // wasm32-wasip2` output to the checkout-level target directory. The
+        // component is wasm32-wasip1; the wasm32-wasip2 file is its core module.
         let manifests = [
             (
                 "audio-synth",
@@ -1040,7 +1051,7 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR"),
                     "/apps/wasm-poc/audio-synth/manifest.toml"
                 )),
-                "target/wasm32-wasip1/release/audio_synth.wasm",
+                "../../../target/wasm32-wasip1/release/audio_synth.wasm",
             ),
             (
                 "counter",
@@ -1048,7 +1059,7 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR"),
                     "/apps/wasm-poc/counter/manifest.toml"
                 )),
-                "target/wasm32-wasip1/release/counter.wasm",
+                "../../../target/wasm32-wasip1/release/counter.wasm",
             ),
             (
                 "pong",
@@ -1056,7 +1067,7 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR"),
                     "/apps/wasm-poc/pong/manifest.toml"
                 )),
-                "target/wasm32-wasip1/release/pong.wasm",
+                "../../../target/wasm32-wasip1/release/pong.wasm",
             ),
             (
                 "python-shim",
@@ -1064,7 +1075,7 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR"),
                     "/apps/wasm-poc/python-shim/manifest.toml"
                 )),
-                "target/wasm32-wasip1/release/python_shim.wasm",
+                "../../../target/wasm32-wasip1/release/python_shim.wasm",
             ),
             (
                 "sysmon",
@@ -1072,9 +1083,17 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR"),
                     "/apps/wasm-poc/sysmon/manifest.toml"
                 )),
-                "target/wasm32-wasip1/release/sysmon.wasm",
+                "../../../target/wasm32-wasip1/release/sysmon.wasm",
             ),
         ];
+
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let cargo_config = fs::read_to_string(repo_root.join(".cargo/config.toml"))
+            .expect("repository Cargo config must be readable");
+        assert!(
+            cargo_config.contains("target-dir = \"target\""),
+            "update the POC entry paths when the shared Cargo target directory changes"
+        );
 
         for (name, raw, expected_entry) in manifests {
             let manifest: AppManifest = toml::from_str(raw)
@@ -1150,6 +1169,20 @@ entry = "run.sh"
             .get("wasm-app")
             .expect("type=wasm manifest should load");
         assert_eq!(entry.manifest.manifest_type, ManifestType::Wasm);
+    }
+
+    #[test]
+    fn missing_wasm_entry_tells_the_author_how_to_build_it() {
+        let app_dir = tempfile::tempdir().unwrap().keep();
+        let error = resolve_entry(
+            &app_dir,
+            "target/wasm32-wasip1/release/example.wasm",
+            ManifestType::Wasm,
+        )
+        .expect_err("missing WASM entry must fail");
+
+        assert!(error.contains("WASM entry"));
+        assert!(error.contains("cargo component build --release --target wasm32-wasip2"));
     }
 
     #[test]
