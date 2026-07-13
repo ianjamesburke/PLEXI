@@ -705,7 +705,11 @@ pub enum AppCmd {
     Inspect ~/.plexi-alpha/plexi.log or ~/.plexi-pr-N/plexi.log for app logs.
 "#)]
     Init {
-        name: String,
+        #[arg(required_unless_present = "wasm")]
+        name: Option<String>,
+        /// Create a Rust WASM component app with the Plexi WASM SDK.
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["name", "lang"])]
+        wasm: Option<String>,
         /// App language/template: `python` (declarative UI), `python_agent`
         /// (agent-loop app), or `rust` (compiled native app).
         #[arg(long, default_value = "python", value_parser = ["python", "python_agent", "rust"])]
@@ -1649,5 +1653,23 @@ mod tests {
         };
         assert!(!open);
         assert!(no_open);
+    }
+
+    #[test]
+    fn app_init_wasm_accepts_name_as_flag_value() {
+        let cli = Cli::try_parse_from(["plexi", "app", "init", "--wasm", "counter"]).unwrap();
+
+        let Some(Commands::App { cmd }) = cli.command else {
+            panic!("expected app command");
+        };
+        let AppCmd::Init {
+            name, wasm, lang, ..
+        } = cmd
+        else {
+            panic!("expected app init command");
+        };
+        assert_eq!(name, None);
+        assert_eq!(wasm.as_deref(), Some("counter"));
+        assert_eq!(lang, "python");
     }
 }

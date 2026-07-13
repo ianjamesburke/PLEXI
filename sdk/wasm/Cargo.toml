@@ -1,0 +1,17 @@
+[package]
+name = "plexi-wasm-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Rust SDK for Plexi WASM component apps"
+license = "MIT"
+repository = "https://github.com/ianjamesburke/plexi"
+
+[dependencies]
+wit-bindgen = "0.41"
+
+[package.metadata.component]
+package = "plexi:app"
+
+[package.metadata.component.target]
+path = "wit"
+world = "plexi-app"
