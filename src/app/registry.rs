@@ -1030,7 +1030,9 @@ mod tests {
     fn wasm_poc_manifests_match_the_current_registry_contract() {
         // POC artifacts are deliberately gitignored, so this checks the manifest
         // contract without requiring every component to be built in the test job.
-        // Keep the expected entries alongside the Cargo component output names.
+        // `cargo component build --target wasm32-wasip2` writes the component
+        // artifact under wasm32-wasip1. The wasm32-wasip2 output is its core
+        // module, which the host must not launch as the app component.
         let manifests = [
             (
                 "audio-synth",
@@ -1038,7 +1040,7 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR"),
                     "/apps/wasm-poc/audio-synth/manifest.toml"
                 )),
-                "target/wasm32-wasip2/release/audio_synth.wasm",
+                "target/wasm32-wasip1/release/audio_synth.wasm",
             ),
             (
                 "counter",
@@ -1046,7 +1048,7 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR"),
                     "/apps/wasm-poc/counter/manifest.toml"
                 )),
-                "target/wasm32-wasip2/release/counter.wasm",
+                "target/wasm32-wasip1/release/counter.wasm",
             ),
             (
                 "pong",
@@ -1054,7 +1056,7 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR"),
                     "/apps/wasm-poc/pong/manifest.toml"
                 )),
-                "target/wasm32-wasip2/release/pong.wasm",
+                "target/wasm32-wasip1/release/pong.wasm",
             ),
             (
                 "python-shim",
@@ -1062,7 +1064,7 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR"),
                     "/apps/wasm-poc/python-shim/manifest.toml"
                 )),
-                "target/wasm32-wasip2/release/python_shim.wasm",
+                "target/wasm32-wasip1/release/python_shim.wasm",
             ),
             (
                 "sysmon",
@@ -1070,7 +1072,7 @@ mod tests {
                     env!("CARGO_MANIFEST_DIR"),
                     "/apps/wasm-poc/sysmon/manifest.toml"
                 )),
-                "target/wasm32-wasip2/release/sysmon.wasm",
+                "target/wasm32-wasip1/release/sysmon.wasm",
             ),
         ];
 
