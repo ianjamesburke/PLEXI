@@ -2201,6 +2201,17 @@ impl AssistantApp {
         self.execute_effects(effects);
     }
 
+    /// Complete a queued `/compact` after the visible status frame. Active
+    /// panes call this from [`App::ui`]; inactive panes use `background_tick`.
+    fn run_pending_compaction(&mut self) -> bool {
+        if !self.compact_pending {
+            return false;
+        }
+        self.compact_pending = false;
+        self.cmd_compact_conversation();
+        true
+    }
+
     fn cmd_export_conversation(&mut self) {
         let audit_path = self.profile_dir.join("audit.jsonl");
         let audit = match std::fs::read_to_string(&audit_path) {
@@ -2701,10 +2712,7 @@ impl App for AssistantApp {
 
     fn background_tick(&mut self) {
         self.pump_turn_io();
-        if self.compact_pending {
-            self.compact_pending = false;
-            self.cmd_compact_conversation();
-        }
+        self.run_pending_compaction();
     }
 
     fn needs_background_tick(&self) -> bool {
@@ -2740,11 +2748,9 @@ impl App for AssistantApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         self.pump_turn_io();
-        if self.model.streaming.in_flight || self.compact_pending {
-            // Keep frames coming while a worker thread streams a turn.
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(50));
-        }
+        // Active panes do not receive `background_tick`; defer until after
+        // this frame draws the status row, then compact before the next frame.
+        let compact_visible_this_frame = self.compact_pending;
         let event = AssistantRenderer::draw(
             ui,
             &mut self.model,
@@ -2760,6 +2766,13 @@ impl App for AssistantApp {
             }
             Some(ComposerEvent::Permission(choice)) => self.resolve_permission(choice),
             None => {}
+        }
+        if compact_visible_this_frame && self.run_pending_compaction() {
+            ui.ctx().request_repaint();
+        }
+        if self.model.streaming.in_flight || self.compact_pending {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
 }
@@ -4626,7 +4639,7 @@ enabled = ["allowed.tool"]
     }
 
     #[test]
-    fn compact_posts_completion_and_preserves_observable_checkpoint_state() {
+    fn active_ui_frame_drains_compaction_and_preserves_observable_checkpoint_state() {
         let ws = tempfile::tempdir().unwrap();
         let mut app = test_app(ws.path());
         for index in 0..7 {
@@ -4635,8 +4648,19 @@ enabled = ["allowed.tool"]
                 .push(model::Turn::now(TurnRole::User, format!("turn {index}")));
         }
         app.model.begin_compaction();
+        app.compact_pending = true;
 
-        app.cmd_compact_conversation();
+        let egui_ctx = egui::Context::default();
+        let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
+        let _ = egui_ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let render_ctx = AppRenderContext {
+                    colors: &colors,
+                    is_focused: true,
+                };
+                App::ui(&mut app, ui, &render_ctx);
+            });
+        });
 
         let model::CompactionState::Completed {
             compacted_turns,
