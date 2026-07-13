@@ -169,9 +169,7 @@ pub fn app_init(
                 println!("  cd {}", app_dir.display());
                 println!("  cargo component build --release --target wasm32-wasip2");
                 println!("  {explicit_host_plexi} app open {}", app_dir.display());
-                println!(
-                    "  SDK docs: https://github.com/ianjamesburke/PLEXI/blob/alpha/sdk/wasm/AUTHORING.md"
-                );
+                println!("  SDK docs: {}", app_dir.join("AUTHORING.md").display());
             } else if lang == "rust" {
                 println!("\nNext steps:");
                 println!("  cd {}", app_dir.display());
@@ -511,13 +509,17 @@ fn scaffold_wasm_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     std::fs::write(
         crate_dir.join("src/lib.rs"),
         format!(
-            "use plexi_wasm_sdk::{{effects, export_app, ui, App, Effect, InputEvent, UiActionEvent, UiTree}};\n\nconst INCREMENT: &str = \"increment\";\n\n#[derive(Default)]\nstruct Counter {{ count: u32 }}\n\nimpl App for Counter {{\n    fn init(&mut self, _context: plexi_wasm_sdk::InitContext) -> Vec<Effect> {{\n        vec![effects::set_title(\"{display}\")]\n    }}\n\n    fn update(&mut self, event: InputEvent) -> Vec<Effect> {{\n        if matches!(event, InputEvent::UiAction(UiActionEvent {{ ref handler_id }}) if handler_id == INCREMENT) {{\n            self.count += 1;\n        }}\n        Vec::new()\n    }}\n\n    fn view(&self) -> UiTree {{\n        let mut tree = ui::Tree::new();\n        let count = tree.text(\"count\", format!(\"Count: {{}}\", self.count));\n        let increment = tree.button(\"increment\", \"Increment\", INCREMENT);\n        let root = tree.column(\"root\", [count, increment]);\n        tree.finish(root)\n    }}\n}}\n\nexport_app!(Counter::default());\n",
+            "use plexi_wasm_sdk::{{effects, export_app, ui, App, Effect, InputEvent, KeyEvent, UiActionEvent, UiTree}};\n\nconst INCREMENT: &str = \"increment\";\n\n#[derive(Default)]\nstruct Counter {{ count: u32 }}\n\nimpl App for Counter {{\n    fn init(&mut self, _context: plexi_wasm_sdk::InitContext) -> Vec<Effect> {{\n        vec![effects::set_title(\"{display}\")]\n    }}\n\n    fn update(&mut self, event: InputEvent) -> Vec<Effect> {{\n        let increment = matches!(event, InputEvent::UiAction(UiActionEvent {{ ref handler_id }}) if handler_id == INCREMENT)\n            || matches!(event, InputEvent::Key(KeyEvent {{ ref key, pressed: true, .. }}) if key == \"enter\" || key == \"space\");\n        if increment {{\n            self.count += 1;\n        }}\n        Vec::new()\n    }}\n\n    fn view(&self) -> UiTree {{\n        let mut tree = ui::Tree::new();\n        let count = tree.text(\"count\", format!(\"Count: {{}}\", self.count));\n        let increment = tree.button(\"increment\", \"Increment\", INCREMENT);\n        let root = tree.column(\"root\", [count, increment]);\n        tree.finish(root)\n    }}\n}}\n\nexport_app!(Counter::default());\n",
             display = to_title_case(name),
         ),
     )?;
     std::fs::write(
         app_dir.join("README.md"),
-        "# Build and open\n\n```sh\ncargo install cargo-component\ncargo component build --release --target wasm32-wasip2\nplexi app open .\n```\n\nThe manifest opens the component at `target/wasm32-wasip1/release/`. Read the [Plexi WASM authoring guide](https://github.com/ianjamesburke/PLEXI/blob/alpha/sdk/wasm/AUTHORING.md) for the SDK reference.\n",
+        "# Build and open\n\n```sh\ncargo install cargo-component\ncargo component build --release --target wasm32-wasip2\nplexi app open .\n```\n\nThe manifest opens the component at `target/wasm32-wasip1/release/`. Click **Increment**, send the `increment` app action, or press Enter/Space while the pane is focused. Read the local [Plexi WASM authoring guide](AUTHORING.md) for the SDK reference.\n",
+    )?;
+    std::fs::write(
+        app_dir.join("AUTHORING.md"),
+        include_str!("../../sdk/wasm/AUTHORING.md"),
     )?;
     std::fs::write(
         app_dir.join(".gitignore"),
@@ -2589,6 +2591,12 @@ mod scaffold_marketplace_tests {
             std::path::Path::new(".plexi-sdk/wit")
         );
         assert!(app_dir.join(".plexi-sdk/plexi-wasm-sdk/src/lib.rs").is_file());
+        let readme = std::fs::read_to_string(app_dir.join("README.md")).unwrap();
+        assert!(readme.contains("[Plexi WASM authoring guide](AUTHORING.md)"));
+        assert!(app_dir.join("AUTHORING.md").is_file());
+        let source = std::fs::read_to_string(app_dir.join("app/src/lib.rs")).unwrap();
+        assert!(source.contains("InputEvent::UiAction"));
+        assert!(source.contains("InputEvent::Key"));
     }
 
     #[test]

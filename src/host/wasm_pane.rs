@@ -366,6 +366,20 @@ impl WasmPane {
         self.queue.push_back(event);
     }
 
+    /// Deliver a semantic action from the host command surface through the
+    /// same guest `update()` path as a rendered button click.
+    pub fn dispatch_ui_action(
+        &mut self,
+        handler_id: impl Into<String>,
+        now_ms: u64,
+    ) -> wasmtime::Result<()> {
+        let handler_id = handler_id.into();
+        log::info!("wasm ui: host action handler '{handler_id}'");
+        self.queue
+            .push_back(InputEvent::UiAction(UiActionEvent { handler_id }));
+        self.drain(now_ms)
+    }
+
     pub fn has_pending_capability_prompt(&self) -> bool {
         !self.pending_capability_prompts.is_empty()
     }
@@ -1273,6 +1287,24 @@ impl LiveWasmPane {
 
     pub fn take_host_effects(&mut self) -> Vec<WasmHostEffect> {
         self.inner.take_host_effects()
+    }
+
+    /// Deliver `plexi app action` to the guest and refresh the cached semantic
+    /// tree immediately so pane-state callers observe the resulting view.
+    pub fn dispatch_ui_action(&mut self, handler_id: impl Into<String>) -> Result<(), String> {
+        if self.pending_init.is_some() {
+            return Err("WASM app has not rendered its initial frame yet".to_string());
+        }
+        self.inner
+            .dispatch_ui_action(handler_id, self.now_ms())
+            .map_err(|e| format!("WASM action failed: {e}"))?;
+        let tree = self
+            .inner
+            .view()
+            .map_err(|e| format!("WASM view after action failed: {e}"))?;
+        self.last_text = collect_tree_text(&tree);
+        self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
+        Ok(())
     }
 
     pub fn complete_host_effect(&mut self, event: InputEvent) {
@@ -2402,6 +2434,19 @@ mod tests {
 
         let text = tree_text(&harness.state_mut().view()?);
         assert!(text.contains("Count: 1"), "guest view after click:\n{text}");
+        Ok(())
+    }
+
+    #[test]
+    fn host_semantic_action_updates_guest_view() -> wasmtime::Result<()> {
+        let mut pane = counter_pane();
+        pane.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), 0, &[])?;
+        assert!(tree_text(&pane.view()?).contains("Count: 0"));
+
+        pane.dispatch_ui_action("increment", 1)?;
+
+        let text = tree_text(&pane.view()?);
+        assert!(text.contains("Count: 1"), "guest view after host action:\n{text}");
         Ok(())
     }
 

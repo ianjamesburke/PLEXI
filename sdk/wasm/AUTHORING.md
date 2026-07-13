@@ -1,6 +1,6 @@
 # Plexi WASM apps
 
-The Rust SDK wraps the `plexi-app` world in [`wit/plexi.wit`](../../wit/plexi.wit). See [the runtime reference](../../docs/wasm-runtime.md) for the host architecture and security model.
+The Rust SDK wraps the `plexi-app` world in [`wit/plexi.wit`](https://github.com/ianjamesburke/PLEXI/blob/alpha/wit/plexi.wit). See [the runtime reference](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/wasm-runtime.md) for the host architecture and security model.
 
 ## Create an app
 
@@ -8,8 +8,12 @@ Install `cargo-component`, then scaffold, build, and open an app:
 
 ```sh
 cargo install cargo-component
-plexi app init --wasm counter
-cd .plexi-alpha/apps/counter
+plexi app init --wasm counter --global
+```
+
+Change to the exact app path printed by `app init`, then run:
+
+```sh
 cargo component build --release --target wasm32-wasip2
 plexi app open .
 ```
@@ -120,5 +124,5 @@ The standard effect IDs are `ai.query`, `clipboard.read`, `clipboard.write`,
 
 The host asks before granting an unknown session capability and returns the
 decision through `update`. Capability names and their host behavior are defined
-in [the runtime reference](../../docs/wasm-runtime.md). Keep the manifest list
+in [the runtime reference](https://github.com/ianjamesburke/PLEXI/blob/alpha/docs/wasm-runtime.md). Keep the manifest list
 limited to effects and imported interfaces the app uses.
