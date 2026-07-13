@@ -500,6 +500,24 @@ impl TerminalBackend {
         result
     }
 
+    /// Derive the bounded `--lines` view from the whole scrollback buffer,
+    /// dropping only trailing blank screen padding before taking the tail.
+    fn capture_last_content_lines(
+        grid: &alacritty_terminal::Grid<alacritty_terminal::term::cell::Cell>,
+        n: usize,
+    ) -> Vec<String> {
+        let total = grid.screen_lines() + grid.history_size();
+        Self::last_content_tail(Self::capture_lines_from_grid(grid, total), n)
+    }
+
+    fn last_content_tail(mut lines: Vec<String>, n: usize) -> Vec<String> {
+        let last_content = lines.iter().rposition(|line| !line.trim().is_empty());
+        lines.truncate(last_content.map_or(0, |index| index + 1));
+        let start = lines.len().saturating_sub(n);
+        lines.drain(..start);
+        lines
+    }
+
     /// Read the last `n` lines from the PTY scrollback buffer.
     ///
     /// Returns a `Vec<String>` of at most `n` entries, ordered oldest → newest.
@@ -510,7 +528,7 @@ impl TerminalBackend {
             return Vec::new();
         }
         let term = self.term.lock();
-        Self::capture_lines_from_grid(term.grid(), n)
+        Self::capture_last_content_lines(term.grid(), n)
     }
 
     /// Read the last `n` lines and the current cursor in one atomic snapshot.
@@ -526,7 +544,7 @@ impl TerminalBackend {
         let total = screen_lines + history_size;
         self.advance_cursor(&grid, total, screen_lines, history_size);
         let lw = self.lines_written.load(Ordering::Relaxed);
-        let captured = Self::capture_lines_from_grid(grid, n);
+        let captured = Self::capture_last_content_lines(grid, n);
         (captured, lw)
     }
 
@@ -1186,3 +1204,16 @@ mod tests {
         );
     }
 }
+    #[test]
+    fn capture_tail_keeps_history_content_when_screen_bottom_is_blank() {
+        let captured = TerminalBackend::last_content_tail(
+            vec![
+                "Codex session output".to_string(),
+                "working…".to_string(),
+                String::new(),
+                String::new(),
+            ],
+            20,
+        );
+        assert_eq!(captured, vec!["Codex session output", "working…"]);
+    }
