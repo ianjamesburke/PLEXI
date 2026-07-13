@@ -18,6 +18,17 @@ pub struct AppRenderContext<'a> {
 
 /// Commands an app can issue back to the system.
 pub enum AppCommand {
+    /// Register the app's v3.7 connector tools with the host broker.
+    ExposeTools {
+        tools: Vec<crate::app_protocol::AiTool>,
+        pane_id: Option<u64>,
+    },
+    /// Resolve a pending v3.7 connector tool call.
+    ToolResult {
+        call_id: String,
+        output_json: Option<String>,
+        error: Option<String>,
+    },
     /// Execute an Assistant host tool against live host state without shelling
     /// out to the CLI. The host replies directly to the blocked model worker.
     AssistantHostTool {

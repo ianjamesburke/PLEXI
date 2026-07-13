@@ -254,6 +254,57 @@ class TestEffects:
         finally:
             proc.kill()
 
+    def test_expose_tools_uses_v37_wire_shape(self, tmp_path):
+        app = self._app_with_init_effects(
+            tmp_path,
+            "ExposeTools([AiTool('csv.describe_table', 'Describe the table', {'type': 'object'}, timeout_ms=1500, read_only=True)])",
+        )
+        proc = _spawn_v3_app(app)
+        try:
+            events = _init_and_render(proc)
+            exposed = _find_events(events, "expose_tools")
+            assert exposed == [{
+                "type": "expose_tools",
+                "tools": [{
+                    "name": "csv.describe_table",
+                    "description": "Describe the table",
+                    "input_schema": {"type": "object"},
+                    "timeout_ms": 1500,
+                    "read_only": True,
+                }],
+            }]
+        finally:
+            proc.kill()
+
+    def test_tool_call_dispatches_and_emits_matching_result(self, tmp_path):
+        app = tmp_path / "tool_app.py"
+        app.write_text(textwrap.dedent("""
+            from plexi_sdk.effects import ToolResult
+            from plexi_sdk.events import ToolCall
+            from plexi_sdk.ui import Text
+
+            def init(size, args): return []
+            def update(event):
+                if isinstance(event, ToolCall):
+                    return [ToolResult(event.call_id, output_json=event.input_json)]
+                return []
+            def view(): return Text("tools")
+        """).lstrip())
+        proc = _spawn_v3_app(app)
+        try:
+            _init_app(proc)
+            _send_event(proc, {
+                "type": "tool_call",
+                "call_id": "call-7",
+                "name": "csv.describe_table",
+                "input_json": '{"rows":3}',
+                "caller_id": "assistant",
+            })
+            events = _collect_until(proc, "schedule_render")
+            assert {"type": "tool_result", "call_id": "call-7", "output_json": '{"rows":3}'} in events
+        finally:
+            proc.kill()
+
 
 # =============================================================================
 # Event dispatch tests: verify each event type reaches update() correctly

@@ -37,15 +37,41 @@ use crate::app_protocol::{AiTool, PlexiEvent};
 
 /// Thin wrapper that lets external code send `PlexiEvent`s into a pane's
 /// stdin channel without exposing the `StdinItem` enum publicly.
-pub(crate) struct AppEventSender {
-    pub(crate) tx: std::sync::mpsc::Sender<String>,
+pub(crate) enum AppEventSender {
+    #[cfg(test)]
+    Channel(std::sync::mpsc::Sender<String>),
+    Python(crate::host::wasm_python::AppendableStdin),
 }
 
 impl AppEventSender {
     pub(crate) fn send_event(&self, event: &PlexiEvent) {
-        if let Ok(mut json) = serde_json::to_string(event) {
-            json.push('\n');
-            let _ = self.tx.send(json);
+        match self {
+            #[cfg(test)]
+            Self::Channel(tx) => {
+                if let Ok(mut json) = serde_json::to_string(event) {
+                    json.push('\n');
+                    let _ = tx.send(json);
+                }
+            }
+            Self::Python(stdin) => {
+                if let PlexiEvent::ToolCall {
+                    call_id,
+                    name,
+                    input_json,
+                    caller_id,
+                } = event
+                {
+                    if let Err(error) = stdin.push_json_line(&serde_json::json!({
+                        "type": "tool_call",
+                        "call_id": call_id,
+                        "name": name,
+                        "input_json": input_json,
+                        "caller_id": caller_id,
+                    })) {
+                        log::error!("tool_dispatch: send ToolCall to Python app: {error}");
+                    }
+                }
+            }
         }
     }
 }
@@ -76,7 +102,6 @@ impl ToolRegistry {
         }
     }
 
-    #[cfg(test)]
     fn register(
         &mut self,
         pane_id: u64,
@@ -188,7 +213,6 @@ fn global_registry() -> &'static Arc<Mutex<ToolRegistry>> {
 
 /// Register (or replace) the tools for `pane_id`. Called by routing when
 /// `DrawCommand::ExposeTools` arrives.
-#[cfg(test)]
 pub(crate) fn register(
     pane_id: u64,
     app_id: String,
@@ -232,7 +256,6 @@ fn pending_calls(
 
 /// Called by `routing.rs` when `DrawCommand::ToolResult` arrives for a pane.
 /// Resolves the pending `call_id` so the blocking broker thread can continue.
-#[cfg(test)]
 pub(crate) fn resolve_pending(call_id: &str, result: ToolCallResult) {
     let tx = pending_calls().lock().unwrap().remove(call_id);
     match tx {
@@ -569,7 +592,7 @@ mod tests {
             1,
             "search-app".to_string(),
             vec![make_tool("search")],
-            AppEventSender { tx },
+            AppEventSender::Channel(tx),
             ws.clone(),
         );
 
@@ -589,14 +612,14 @@ mod tests {
             10,
             "attacker-app".to_string(),
             vec![make_tool("dangerous_tool")],
-            AppEventSender { tx: tx.clone() },
+            AppEventSender::Channel(tx.clone()),
             PathBuf::from("/workspace/attacker"),
         );
         reg.register(
             20,
             "victim-app".to_string(),
             vec![make_tool("safe_tool")],
-            AppEventSender { tx },
+            AppEventSender::Channel(tx),
             PathBuf::from("/workspace/victim"),
         );
 
@@ -626,7 +649,7 @@ mod tests {
             5,
             "app-x".to_string(),
             vec![make_tool("tool_a")],
-            AppEventSender { tx },
+            AppEventSender::Channel(tx),
             ws.clone(),
         );
 
@@ -659,7 +682,7 @@ mod tests {
             999,
             "app-b".to_string(),
             vec![make_tool("secret_tool")],
-            AppEventSender { tx: tx_b },
+            AppEventSender::Channel(tx_b),
             PathBuf::from("/workspace/b"),
         );
 
@@ -704,14 +727,14 @@ mod tests {
             10,
             "app-conflict-1".to_string(),
             vec![make_tool("shared_tool"), make_tool("unique_a")],
-            AppEventSender { tx: tx1 },
+            AppEventSender::Channel(tx1),
             ws.clone(),
         );
         reg.register(
             20,
             "app-conflict-2".to_string(),
             vec![make_tool("shared_tool"), make_tool("unique_b")],
-            AppEventSender { tx: tx2 },
+            AppEventSender::Channel(tx2),
             ws.clone(),
         );
 
@@ -749,7 +772,7 @@ mod tests {
             998,
             "hooks-app".to_string(),
             vec![make_tool("gated_tool")],
-            AppEventSender { tx },
+            AppEventSender::Channel(tx),
             PathBuf::from("/workspace/hooks-test"),
         );
         let mut dispatcher = ToolDispatcher::from_registry(

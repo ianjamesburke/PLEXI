@@ -13,7 +13,12 @@ import pytest
 
 from plexi_sdk.testing import AppHarness
 
-APP = Path(__file__).resolve().parent.parent / "main.py"
+APP_DIR = Path(__file__).resolve().parent.parent
+APP = APP_DIR / "main.py"
+if not APP.exists():
+    # This template is collected as part of the SDK suite before `app init`
+    # copies it into a generated app. Exercise the template app in place.
+    APP = Path(__file__).resolve().parent / "app_init.py"
 
 
 @pytest.mark.parametrize("size", [(300, 200), (800, 600)])

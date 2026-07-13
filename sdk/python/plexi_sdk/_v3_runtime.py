@@ -121,6 +121,13 @@ class V3AppRuntime:
             self._handle_text_submitted(ev)
         elif t == "http_response":
             self._handle_http_response(ev)
+        elif t == "tool_call":
+            self._dispatch(events.ToolCall(
+                call_id=ev.get("call_id", ""),
+                name=ev.get("name", ""),
+                input_json=ev.get("input_json", ""),
+                caller_id=ev.get("caller_id", ""),
+            ))
         elif t == "file_read_result":
             content = ev.get("content")
             self._dispatch(events.FileReadResult(
@@ -389,6 +396,27 @@ class V3AppRuntime:
                 })
             elif isinstance(effect, effects.CloseSelf):
                 _emit({"type": "close_self"})
+            elif isinstance(effect, effects.ExposeTools):
+                _emit({
+                    "type": "expose_tools",
+                    "tools": [
+                        {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "input_schema": tool.input_schema,
+                            "timeout_ms": tool.timeout_ms,
+                            "read_only": tool.read_only,
+                        }
+                        for tool in effect.tools
+                    ],
+                })
+            elif isinstance(effect, effects.ToolResult):
+                payload = {"type": "tool_result", "call_id": effect.call_id}
+                if effect.output_json is not None:
+                    payload["output_json"] = effect.output_json
+                if effect.error is not None:
+                    payload["error"] = effect.error
+                _emit(payload)
         if state_changed:
             self._set_state(in_view=False)
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -51,6 +51,27 @@ class AiQuery:
     model_tier: str
     system: str
     messages: list
+
+
+@dataclass
+class AiTool:
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    timeout_ms: Optional[int] = None
+    read_only: bool = False
+
+
+@dataclass
+class ExposeTools:
+    tools: list[AiTool]
+
+
+@dataclass
+class ToolResult:
+    call_id: str
+    output_json: Optional[str] = None
+    error: Optional[str] = None
 
 
 @dataclass
