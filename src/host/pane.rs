@@ -629,7 +629,11 @@ impl AppRuntime {
         match self {
             AppRuntime::Builtin(app) => app.take_pending_commands(),
             AppRuntime::Python(app) => app.take_pending_commands(),
-            AppRuntime::Wasm(_) => vec![],
+            AppRuntime::Wasm(app) => app
+                .take_host_effects()
+                .into_iter()
+                .map(|effect| AppCommand::WasmHostEffect { pane_id: 0, effect })
+                .collect(),
         }
     }
 

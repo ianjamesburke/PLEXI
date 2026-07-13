@@ -196,6 +196,9 @@ impl PlexiApp {
             let resolved_scope = self.registry.default_notification_scope_for(&type_id);
             for cmd in cmds {
                 match cmd {
+                    AppCommand::WasmHostEffect { effect, .. } => {
+                        deferred.push(AppCommand::WasmHostEffect { pane_id, effect });
+                    }
                     AppCommand::ExposeTools { tools, .. } => {
                         deferred.push(AppCommand::ExposeTools {
                             tools,

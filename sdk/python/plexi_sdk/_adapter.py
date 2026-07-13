@@ -4,7 +4,7 @@ import base64
 import importlib
 import json
 from dataclasses import asdict, fields, is_dataclass
-from typing import Any
+from typing import Any, cast
 
 import plexi_sdk as sdk
 
@@ -42,15 +42,15 @@ def call_lifecycle(fn_name: str, json_arg: str) -> str:
             tree = fn()
             return json.dumps(_encode_uitree(tree))
         finally:
-            sdk._in_view = False
+            setattr(sdk, "_in_view", False)
             _v3_state._in_view = False
     raise ValueError(f"unknown lifecycle function: {fn_name}")
 
 
 def _set_sdk_state(encoded: dict[str, str], in_view: bool) -> None:
     snapshot = _decode_state(encoded)
-    sdk._state = snapshot
-    sdk._in_view = in_view
+    setattr(sdk, "_state", snapshot)
+    setattr(sdk, "_in_view", in_view)
     _v3_state._state = snapshot
     _v3_state._in_view = in_view
 
@@ -73,7 +73,7 @@ def _encode_effect(effect: Any) -> dict[str, Any]:
         raise TypeError(f"Unknown effect type: {type(effect).__name__}")
     if getattr(effect_types, type(effect).__name__, None) is not type(effect):
         raise TypeError(f"Unknown effect type: {type(effect).__name__}")
-    payload = _jsonable(asdict(effect))
+    payload = _jsonable(asdict(cast(Any, effect)))
     payload["type"] = type(effect).__name__
     return payload
 
@@ -97,7 +97,11 @@ def _decode_event(payload: dict[str, Any]) -> Any:
     cls = getattr(event_types, event_type, None)
     if cls is None or not is_dataclass(cls):
         raise TypeError(f"Unknown event type: {event_type}")
-    kwargs = {f.name: payload[f.name] for f in fields(cls) if f.name in payload}
+    kwargs = {
+        f.name: payload[f.name]
+        for f in fields(cast(Any, cls))
+        if f.name in payload
+    }
     if cls is event_types.KeyEvent and isinstance(kwargs.get("modifiers"), dict):
         kwargs["modifiers"] = event_types.Modifiers(**kwargs["modifiers"])
     if cls is event_types.SystemStatsResult and isinstance(kwargs.get("stats"), dict):
@@ -106,7 +110,7 @@ def _decode_event(payload: dict[str, Any]) -> Any:
         kwargs["body"] = bytes(kwargs["body"])
     if cls is event_types.PipeMessage and isinstance(kwargs.get("payload"), dict):
         kwargs["payload"] = event_types.PipePayload(**kwargs["payload"])
-    return cls(**kwargs)
+    return cast(Any, cls)(**kwargs)
 
 
 def _encode_uitree(root: Any) -> dict[str, Any]:
@@ -121,7 +125,7 @@ def _encode_uitree(root: Any) -> dict[str, Any]:
         elif hasattr(node, "to_node"):
             data = node.to_node()
         elif is_dataclass(node):
-            data = asdict(node)
+            data = asdict(cast(Any, node))
             data["type"] = type(node).__name__
         else:
             raise TypeError(f"Unknown UINode type: {type(node).__name__}")

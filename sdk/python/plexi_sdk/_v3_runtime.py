@@ -335,8 +335,8 @@ class V3AppRuntime:
 
     def _set_state(self, in_view: bool) -> None:
         snapshot = StateSnapshot(dict(self._values), {})
-        sdk._state = snapshot
-        sdk._in_view = in_view
+        setattr(sdk, "_state", snapshot)
+        setattr(sdk, "_in_view", in_view)
         _v3_state._state = snapshot
         _v3_state._in_view = in_view
 
