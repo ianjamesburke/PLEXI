@@ -8,7 +8,7 @@
 
 use crate::app::permissions::AppPermissions;
 use crate::app::PlexiApp;
-use crate::app_protocol::{AiMessage, AppRequest, DrawCommand, ModelTier};
+use crate::app_protocol::AppRequest;
 use crate::config::set_test_profile_dir;
 use crate::host::pane::{AppPane, AppRuntime, Pane};
 use crate::spatial::tiling::PaneId;
@@ -169,24 +169,6 @@ impl HostHarness {
         self
     }
 
-    /// Inject a key press on the next frame.
-    pub fn key(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> &mut Self {
-        self.frame(RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1280.0, 800.0),
-            )),
-            events: vec![egui::Event::Key {
-                key,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers,
-            }],
-            ..Default::default()
-        })
-    }
-
     // ── State inspection ─────────────────────────────────────────────────────
 
     /// Snapshot observable state from the app after the last frame.
@@ -228,22 +210,6 @@ impl HostHarness {
         let _ = self.ipc_tx.send(cmd);
         self
     }
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/// Build a minimal `DrawCommand::Host(AppRequest::AiQuery)` for use in routing tests.
-pub fn ai_query(request_id: &str) -> DrawCommand {
-    DrawCommand::Host(AppRequest::AiQuery {
-        request_id: request_id.to_string(),
-        model_tier: ModelTier::Low,
-        system: String::new(),
-        messages: vec![AiMessage {
-            role: "user".to_string(),
-            content: "hello".to_string(),
-        }],
-        tools: vec![],
-    })
 }
 
 #[cfg(test)]

@@ -1705,15 +1705,6 @@ pub(crate) fn cli_open_placement(
         .unwrap_or_else(|| "split_h".to_string())
 }
 
-/// Returns `true` if a binary named `name` exists in any directory on `PATH`.
-/// Used to detect when an installed Plexi app shadows a same-named CLI binary.
-#[cfg(test)]
-fn cli_binary_in_path(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
-        .unwrap_or(false)
-}
-
 /// Build a fresh timestamped note path in `notes/inbox/`. Does not create the file.
 fn new_inbox_note_path() -> PathBuf {
     let filename = format!("note-{}.md", chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f"));

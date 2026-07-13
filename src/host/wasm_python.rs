@@ -234,8 +234,6 @@ pub const CPYTHON_SHIM_COMPONENT_FILE: &str = "cpython-3.12.12/plexi-python-shim
 pub const CPYTHON_BUNDLE_SHA256: &str =
     "62392f07fee032c22e3aa84be033c07105cd42424e5149058b9f5449a8deb272";
 pub const CPYTHON_BUNDLE_CACHE_ENV: &str = "PLEXI_CPYTHON_BUNDLE_DIR";
-#[cfg(test)]
-pub const CPYTHON_SHIM_COMPONENT_ENV: &str = "PLEXI_CPYTHON_SHIM_COMPONENT";
 pub const FETCH_CPYTHON_BUNDLE_COMMAND: &str = "just fetch-cpython-bundle";
 #[cfg(test)]
 pub const BUILD_CPYTHON_SHIM_COMMAND: &str = "just wasm-python-shim";
@@ -379,13 +377,6 @@ impl PythonLaunchConfig {
             allowed_hosts: manifest.app.capabilities.allowed_hosts,
         }))
     }
-}
-
-#[cfg(test)]
-pub struct WasmPythonAdapter {
-    pub config: PythonLaunchConfig,
-    pub cpython_bundle: PathBuf,
-    pub cpython_shim_component: PathBuf,
 }
 
 /// A live CPython interpreter. The owning thread retains the Wasmtime store;
@@ -1600,89 +1591,6 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
     }
 }
 
-#[cfg(test)]
-impl WasmPythonAdapter {
-    pub fn prepare_from_manifest(app_dir: &Path) -> Result<Option<Self>, WasmPythonError> {
-        let Some(config) = PythonLaunchConfig::from_manifest_file(app_dir)? else {
-            return Ok(None);
-        };
-        log::info!(
-            "app::{}: python_compat launch attempt app_dir={} entry={}",
-            config.app_id,
-            config.app_dir.display(),
-            config.entry.display()
-        );
-        let bundle = resolve_default_cpython_bundle()?;
-        match inspect_cpython_bundle_abi(&bundle)? {
-            CpythonBundleAbi::RawWasiModule => log::info!(
-                "app::{}: python_compat CPython bundle is raw WASI; requiring lifecycle shim",
-                config.app_id
-            ),
-            CpythonBundleAbi::LifecycleComponent => log::info!(
-                "app::{}: python_compat CPython bundle already exports lifecycle",
-                config.app_id
-            ),
-        }
-        let shim = resolve_default_cpython_shim_component()?;
-        probe_cpython_shim_component(&shim)?;
-        log::info!(
-            "app::{}: python_compat routed to CPython WASM bundle {} through shim {}",
-            config.app_id,
-            bundle.display(),
-            shim.display()
-        );
-        Ok(Some(Self {
-            config,
-            cpython_bundle: bundle,
-            cpython_shim_component: shim,
-        }))
-    }
-
-    pub fn bridge_contract_probe(
-        &self,
-        size: (f32, f32),
-        args: &[String],
-    ) -> Result<(Value, Value, Value), WasmPythonError> {
-        let snapshot = StateSnapshot {
-            entries: Vec::new(),
-        };
-        log::info!(
-            "app::{}: python_compat bridge prepared module={} bundle={} shim={}",
-            self.config.app_id,
-            self.config.module_name,
-            self.cpython_bundle.display(),
-            self.cpython_shim_component.display()
-        );
-        for effect in decode_effects(
-            r#"[{"type":"SetTitle","title":"probe"},{"type":"SetState","data":{"probe":true}}]"#,
-        )? {
-            match effect {
-                PythonBridgeEffect::Host(host_effect) => {
-                    if !matches!(host_effect, Effect::SetTitle(_)) {
-                        return Err(WasmPythonError::BridgeJson(
-                            "bridge probe expected SetTitle host effect".to_string(),
-                        ));
-                    }
-                }
-                PythonBridgeEffect::SetState(entries) => {
-                    if entries.len() != 1 {
-                        return Err(WasmPythonError::BridgeJson(
-                            "bridge probe expected one SetState entry".to_string(),
-                        ));
-                    }
-                }
-            }
-        }
-        let _ =
-            decode_ui_tree(r#"{"root":0,"nodes":[{"id":0,"key":"0","data":{"type":"Empty"}}]}"#)?;
-        Ok((
-            init_bridge_arg(&snapshot, size, args),
-            update_bridge_arg(&snapshot, &InputEvent::FocusGained)?,
-            view_bridge_arg(&snapshot),
-        ))
-    }
-}
-
 pub fn resolve_default_cpython_bundle() -> Result<PathBuf, WasmPythonError> {
     let cache_dir = std::env::var_os(CPYTHON_BUNDLE_CACHE_ENV)
         .map(PathBuf::from)
@@ -1751,17 +1659,6 @@ pub fn resolve_cpython_bundle(cache_dir: PathBuf) -> Result<PathBuf, WasmPythonE
         });
     }
     Ok(path)
-}
-
-#[cfg(test)]
-pub fn resolve_default_cpython_shim_component() -> Result<PathBuf, WasmPythonError> {
-    if let Some(path) = std::env::var_os(CPYTHON_SHIM_COMPONENT_ENV).map(PathBuf::from) {
-        return resolve_cpython_shim_component_path(path);
-    }
-    let cache_dir = std::env::var_os(CPYTHON_BUNDLE_CACHE_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(shared_wasm_bundle_dir);
-    resolve_cpython_shim_component(cache_dir)
 }
 
 #[cfg(test)]
@@ -3135,15 +3032,6 @@ python_compat = true
 
         assert_eq!(config.module_name, "main");
         assert_eq!(config.app_id, "hello-py");
-
-        let adapter = WasmPythonAdapter {
-            config,
-            cpython_bundle: PathBuf::from("python.wasm"),
-            cpython_shim_component: python_shim_fixture(),
-        };
-        assert!(adapter
-            .cpython_shim_component
-            .ends_with("tests/wasm-fixtures/python-shim.wasm"));
     }
 
     #[test]
