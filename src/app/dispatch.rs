@@ -206,6 +206,12 @@ impl PlexiApp {
                         });
                     }
                     AppCommand::ToolResult { .. } => deferred.push(cmd),
+                    AppCommand::AppEventRequest { request, .. } => {
+                        deferred.push(AppCommand::AppEventRequest {
+                            request,
+                            pane_id: Some(pane_id),
+                        });
+                    }
                     AppCommand::AssistantHostTool {
                         name,
                         input_json,

@@ -1,4 +1,7 @@
-use plexi_wasm_sdk::{effects, ui, Alignment, App, Effect, InputEvent, UiNodeData};
+use plexi_wasm_sdk::{
+    effects, ui, Alignment, App, Effect, InputEvent, SubscribeEventStreamsEffect, ToolDecl,
+    UiNodeData,
+};
 
 #[test]
 fn ui_builder_covers_every_node_variant() {
@@ -50,10 +53,30 @@ fn effect_helpers_cover_host_effects() {
         effects::clipboard_write("hello"),
         effects::notify("Done", "Counter updated"),
         effects::spawn("files"),
+        effects::subscribe_event_streams(SubscribeEventStreamsEffect {
+            request_id: "subscribe-1".into(),
+            app_id: "notes".into(),
+            event_names: vec!["note.saved".into()],
+            payload_mode: "full".into(),
+            trigger_mode: "conversation".into(),
+            resource_id: None,
+        }),
+        effects::unsubscribe_event_streams("unsubscribe-1", "sub-1"),
+        effects::declare_tools(vec![ToolDecl {
+            name: "notes.search".into(),
+            description: "Search notes".into(),
+            input_schema_json: r#"{"type":"object"}"#.into(),
+            output_schema_json: r#"{"type":"object"}"#.into(),
+            timeout_ms: Some(2_000),
+            read_only: true,
+        }]),
+        effects::tool_result("call-1", Some(r#"{"count":1}"#.into()), None),
     ];
 
-    assert_eq!(values.len(), 14);
+    assert_eq!(values.len(), 18);
     assert!(matches!(values[6], Effect::SetTitle(_)));
+    assert!(matches!(values[14], Effect::SubscribeEventStreams(_)));
+    assert!(matches!(values[16], Effect::DeclareTools(_)));
 }
 
 #[derive(Default)]

@@ -150,6 +150,36 @@ pub mod effects {
         Effect::EmitEvent(effect)
     }
     #[must_use]
+    pub fn subscribe_event_streams(effect: SubscribeEventStreamsEffect) -> Effect {
+        Effect::SubscribeEventStreams(effect)
+    }
+    #[must_use]
+    pub fn unsubscribe_event_streams(
+        request_id: impl Into<String>,
+        subscription_id: impl Into<String>,
+    ) -> Effect {
+        Effect::UnsubscribeEventStreams(UnsubscribeEventStreamsEffect {
+            request_id: request_id.into(),
+            subscription_id: subscription_id.into(),
+        })
+    }
+    #[must_use]
+    pub fn declare_tools(tools: Vec<ToolDecl>) -> Effect {
+        Effect::DeclareTools(DeclareToolsEffect { tools })
+    }
+    #[must_use]
+    pub fn tool_result(
+        call_id: impl Into<String>,
+        output_json: Option<String>,
+        error: Option<String>,
+    ) -> Effect {
+        Effect::ToolResult(ToolResultEffect {
+            call_id: call_id.into(),
+            output_json,
+            error,
+        })
+    }
+    #[must_use]
     pub fn set_timer(id: u32, delay_ms: u32, repeat: bool) -> Effect {
         Effect::SetTimer(TimerEffect {
             id,

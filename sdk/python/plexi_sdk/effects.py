@@ -58,6 +58,7 @@ class AiTool:
     name: str
     description: str
     input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
     timeout_ms: Optional[int] = None
     read_only: bool = False
 
@@ -139,3 +140,19 @@ class EmitEvent:
     rollback_token: Optional[str] = None
     changed_resources: list = field(default_factory=list)
     suggested_trigger: Optional[str] = None
+
+
+@dataclass
+class SubscribeEventStreams:
+    request_id: str
+    app_id: str
+    event_names: list[str]
+    payload_mode: str = "full"
+    trigger_mode: str = "conversation"
+    resource_id: Optional[str] = None
+
+
+@dataclass
+class UnsubscribeEventStreams:
+    request_id: str
+    subscription_id: str

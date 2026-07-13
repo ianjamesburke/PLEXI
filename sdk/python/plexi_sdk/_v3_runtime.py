@@ -128,6 +128,42 @@ class V3AppRuntime:
                 input_json=ev.get("input_json", ""),
                 caller_id=ev.get("caller_id", ""),
             ))
+        elif t == "app_events_subscribed":
+            self._dispatch(events.EventSubscriptionResult(
+                request_id=ev.get("request_id", ""),
+                subscription_id=ev.get("subscription_id"),
+                error=ev.get("error"),
+            ))
+        elif t == "app_events_unsubscribed":
+            self._dispatch(events.EventUnsubscriptionResult(
+                request_id=ev.get("request_id", ""),
+                removed=bool(ev.get("removed", False)),
+                error=ev.get("error"),
+            ))
+        elif t == "app_event":
+            payload = ev.get("payload")
+            self._dispatch(events.AppEvent(
+                subscription_id=ev.get("subscription_id", ""),
+                app_id=ev.get("app_id", ""),
+                event=ev.get("event", ""),
+                event_id=int(ev.get("event_id", 0)),
+                resource_id=ev.get("resource_id", ""),
+                trigger_mode=ev.get("trigger_mode", ""),
+                summary=ev.get("summary"),
+                payload_json=json.dumps(payload) if payload is not None else None,
+                state_ref=ev.get("state_ref"),
+                created_at=ev.get("created_at", ""),
+            ))
+        elif t == "declare_event_streams_result":
+            self._dispatch(events.DeclareEventStreamsResult(
+                streams=ev.get("streams"),
+                error=ev.get("error"),
+            ))
+        elif t == "emit_event_result":
+            self._dispatch(events.EmitEventResult(
+                sequence=ev.get("sequence"),
+                error=ev.get("error"),
+            ))
         elif t == "file_read_result":
             content = ev.get("content")
             self._dispatch(events.FileReadResult(
@@ -404,6 +440,7 @@ class V3AppRuntime:
                             "name": tool.name,
                             "description": tool.description,
                             "input_schema": tool.input_schema,
+                            "output_schema": tool.output_schema,
                             "timeout_ms": tool.timeout_ms,
                             "read_only": tool.read_only,
                         }
@@ -417,6 +454,52 @@ class V3AppRuntime:
                 if effect.error is not None:
                     payload["error"] = effect.error
                 _emit(payload)
+            elif isinstance(effect, effects.DeclareEventStreams):
+                _emit({
+                    "type": "declare_event_streams",
+                    "streams": [
+                        {
+                            "name": stream.name,
+                            "schema_json": stream.schema_json,
+                            "description": stream.description,
+                        }
+                        for stream in effect.streams
+                    ],
+                })
+            elif isinstance(effect, effects.EmitEvent):
+                _emit({
+                    "type": "emit_event",
+                    "event": effect.event,
+                    "actor": effect.actor,
+                    "actor_id": effect.actor_id,
+                    "caused_by": effect.caused_by,
+                    "summary": effect.summary,
+                    "resource_id": effect.resource_id,
+                    "resource_scope": effect.resource_scope,
+                    "revision_after": effect.revision_after,
+                    "payload_json": effect.payload_json,
+                    "state_ref": effect.state_ref,
+                    "revision_before": effect.revision_before,
+                    "rollback_token": effect.rollback_token,
+                    "changed_resources": effect.changed_resources,
+                    "suggested_trigger": effect.suggested_trigger,
+                })
+            elif isinstance(effect, effects.SubscribeEventStreams):
+                _emit({
+                    "type": "subscribe_event_streams",
+                    "request_id": effect.request_id,
+                    "app_id": effect.app_id,
+                    "event_names": effect.event_names,
+                    "payload_mode": effect.payload_mode,
+                    "trigger_mode": effect.trigger_mode,
+                    "resource_id": effect.resource_id,
+                })
+            elif isinstance(effect, effects.UnsubscribeEventStreams):
+                _emit({
+                    "type": "unsubscribe_event_streams",
+                    "request_id": effect.request_id,
+                    "subscription_id": effect.subscription_id,
+                })
         if state_changed:
             self._set_state(in_view=False)
 

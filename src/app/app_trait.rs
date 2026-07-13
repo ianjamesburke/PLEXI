@@ -35,6 +35,11 @@ pub enum AppCommand {
         output_json: Option<String>,
         error: Option<String>,
     },
+    /// Route one app-event request through the host-owned timeline and broker.
+    AppEventRequest {
+        request: crate::app_protocol::AppRequest,
+        pane_id: Option<u64>,
+    },
     /// Execute an Assistant host tool against live host state without shelling
     /// out to the CLI. The host replies directly to the blocked model worker.
     AssistantHostTool {

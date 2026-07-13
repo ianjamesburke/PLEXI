@@ -1205,12 +1205,9 @@ mod tests {
             .set("plexi:user:OPENROUTER_API_KEY", "sk-global")
             .unwrap();
 
-        let err = resolve_openrouter_api_key_from_store(
-            "OPENROUTER_API_KEY",
-            Some(ws.path()),
-            &store,
-        )
-        .expect_err("missing explicit route must block global fallback");
+        let err =
+            resolve_openrouter_api_key_from_store("OPENROUTER_API_KEY", Some(ws.path()), &store)
+                .expect_err("missing explicit route must block global fallback");
 
         assert!(err.contains("missing from workspace secret policy"));
     }
@@ -1224,20 +1221,20 @@ mod tests {
         let dir = ws.path().join(crate::config::workspace_channel_dir());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("workspace.toml"), "id = \"ws-invalid\"\n").unwrap();
-        std::fs::write(dir.join("secrets.toml"), "[default]\nOPENROUTER_API_KEY = \"x\"\n")
-            .unwrap();
+        std::fs::write(
+            dir.join("secrets.toml"),
+            "[default]\nOPENROUTER_API_KEY = \"x\"\n",
+        )
+        .unwrap();
 
         let store = InMemoryKeychain::new();
         store
             .set("plexi:user:OPENROUTER_API_KEY", "sk-global")
             .unwrap();
 
-        let err = resolve_openrouter_api_key_from_store(
-            "OPENROUTER_API_KEY",
-            Some(ws.path()),
-            &store,
-        )
-        .expect_err("invalid workspace policy must block global fallback");
+        let err =
+            resolve_openrouter_api_key_from_store("OPENROUTER_API_KEY", Some(ws.path()), &store)
+                .expect_err("invalid workspace policy must block global fallback");
 
         assert!(err.contains("workspace secret policy could not load"));
     }
@@ -1408,6 +1405,7 @@ mod tests {
             name: "echo".to_string(),
             description: "echoes back".to_string(),
             input_schema: serde_json::json!({"type":"object"}),
+            output_schema: serde_json::json!({"type":"object"}),
             timeout_ms: None,
             read_only: false,
         };

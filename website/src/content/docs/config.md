@@ -253,8 +253,8 @@ All fields are optional. Omitting the section uses the official `plexiapp.com` r
 | `registry_url` | string | official `plexiapp | Override the catalog index URL. Default: official `plexiapp.com` index. |
 | `cdn_url` | string | official `plexiapp | Override the package CDN base. Default: official `plexiapp.com` CDN. |
 | `submit_url` | string | — | Publisher submission endpoint. Unset = publishing prepared locally but not uploaded (fails closed with a clear message). |
-| `payment_backend` | string | — | Payment backend selector. Unset / `"none"` = stub (paid installs fail closed). A real provider (e.g. `"stripe"`) slots into `crate::app::marketplace::payment_provider()` keyed on this value. |
-| `account_backend` | string | — | Account/auth backend selector. Unset / `"none"` = stub (login/signup fail closed). A real provider slots into `crate::app::account::account_provider()` keyed on this value. |
+| `account_backend` | string | — | Account/auth backend selector. `"plexi"` enables plexiapp.com accounts; unset / `"none"` = stub (login fails closed). Selects the provider in `crate::app::account::account_provider()`. |
+| `account_url` | string | `crate::app::account::DEFAULT_ACCOUNT_URL` | Override the accounts service base URL. Default: `crate::app::account::DEFAULT_ACCOUNT_URL` (`plexiapp.com`). |
 | `account_email` | string | — | Default email pre-filled by `plexi account login`. Unset = prompt. |
 
 ## Default config.toml
@@ -351,12 +351,11 @@ tips = true
 # Publisher submission endpoint. Unset = `plexi app publish` prepares the package
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
-# Paid-app payment backend. Unset / "none" = paid installs fail closed (no charge
-# possible). A real provider is wired in a future release.
-# payment_backend = "none"
 # Account/auth backend. Unset / "none" = login/signup fail closed. Accounts are
 # only ever needed to publish or buy paid apps — free apps install without one.
 # account_backend = "none"
+# Accounts service host the device-flow login talks to. Defaults to plexiapp.com.
+# account_url     = "https://plexiapp.com"
 # Default email pre-filled by `plexi account login`.
 # account_email   = "you@example.com"
 ```

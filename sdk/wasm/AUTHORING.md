@@ -63,8 +63,13 @@ The `effects` module constructs every effect in the standard app world:
 - `http_fetch(url)` performs a GET and requires a matching network capability.
   The response arrives as `HttpResponse`. Build `HttpFetchEffect` directly for
   other methods, headers, or request bodies.
-- `ai_query(AiQueryEffect)`, `declare_event_streams(Vec<EventStreamDecl>)`, and
-  `emit_event(EmitEventEffect)` expose their full WIT payload records.
+- `ai_query(AiQueryEffect)`, `declare_event_streams(Vec<EventStreamDecl>)`,
+  `emit_event(EmitEventEffect)`, and
+  `subscribe_event_streams(SubscribeEventStreamsEffect)` expose their full WIT
+  payload records. `unsubscribe_event_streams(request_id, subscription_id)`
+  stops a pane-session subscription.
+- `declare_tools(Vec<ToolDecl>)` exposes Assistant-callable tools, and
+  `tool_result(call_id, output_json, error)` completes a matching call.
 - `set_timer(id, delay_ms, repeat)`, `cancel_timer(id)`, and
   `get_system_stats()` return timer and system-stat events through `update`.
 - `set_title`, `set_status`, and `close_self` control the current pane.
@@ -78,6 +83,75 @@ The `effects` module constructs every effect in the standard app world:
   `SpawnEffect` directly when the launch needs a layout or arguments.
 
 Effect results arrive later through `App::update` as `InputEvent` variants. The SDK re-exports the generated WIT records when a helper needs the full payload, such as `AiQueryEffect` or `EmitEventEffect`.
+
+## Event streams
+
+Declare and emit streams owned by the current app, or subscribe to streams
+declared by another app:
+
+```rust
+use plexi_wasm_sdk::{effects, Effect, EventStreamDecl, SubscribeEventStreamsEffect};
+
+fn event_effects() -> Vec<Effect> {
+    vec![
+        effects::declare_event_streams(vec![EventStreamDecl {
+            name: "counter.changed".into(),
+            schema_json: r#"{"type":"object"}"#.into(),
+            description: Some("Counter value changed".into()),
+        }]),
+        effects::subscribe_event_streams(SubscribeEventStreamsEffect {
+            request_id: "subscribe-counter".into(),
+            app_id: "counter".into(),
+            event_names: vec!["counter.changed".into()],
+            payload_mode: "full".into(),
+            trigger_mode: "conversation".into(),
+            resource_id: None,
+        }),
+    ]
+}
+```
+
+`EventSubscriptionResult` returns the subscription ID. Matching events arrive
+as `InputEvent::AppEvent`, including the publisher ID, stream name, host event
+ID, resource ID, and the payload selected by `payload_mode`. Subscriptions are
+session-scoped and disappear when the pane closes. The host permission broker
+may ask the user before allowing a cross-app subscription.
+
+## App tools
+
+Declare the complete tool set during `init`, handle `InputEvent::ToolCall` in
+`update`, and return exactly one result with the matching call ID:
+
+```rust
+use plexi_wasm_sdk::{effects, Effect, InputEvent, ToolDecl};
+
+fn declare_tools() -> Effect {
+    effects::declare_tools(vec![ToolDecl {
+        name: "counter.read".into(),
+        description: "Read the current counter value".into(),
+        input_schema_json: r#"{"type":"object"}"#.into(),
+        output_schema_json: r#"{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"]}"#.into(),
+        timeout_ms: Some(2_000),
+        read_only: true,
+    }])
+}
+
+fn handle_tool(event: InputEvent) -> Vec<Effect> {
+    match event {
+        InputEvent::ToolCall(call) if call.name == "counter.read" => vec![
+            effects::tool_result(call.call_id, Some(r#"{"count":0}"#.into()), None),
+        ],
+        _ => vec![],
+    }
+}
+```
+
+Both schemas are JSON Schema encoded as strings in WIT. Invalid schema JSON is
+rejected at declaration time. `read_only` must be true only when a call cannot
+mutate app or workspace state. The Assistant auto-grants read-only calls unless
+an explicit deny applies. Mutating calls use the normal app-connector permission
+prompt, and denied calls never enter the component. The host audit logs every
+allowed invocation.
 
 ## UI nodes
 

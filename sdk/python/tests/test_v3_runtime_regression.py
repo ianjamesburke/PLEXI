@@ -257,7 +257,7 @@ class TestEffects:
     def test_expose_tools_uses_v37_wire_shape(self, tmp_path):
         app = self._app_with_init_effects(
             tmp_path,
-            "ExposeTools([AiTool('csv.describe_table', 'Describe the table', {'type': 'object'}, timeout_ms=1500, read_only=True)])",
+            "ExposeTools([AiTool('csv.describe_table', 'Describe the table', {'type': 'object'}, {'type': 'object'}, timeout_ms=1500, read_only=True)])",
         )
         proc = _spawn_v3_app(app)
         try:
@@ -269,9 +269,31 @@ class TestEffects:
                     "name": "csv.describe_table",
                     "description": "Describe the table",
                     "input_schema": {"type": "object"},
+                    "output_schema": {"type": "object"},
                     "timeout_ms": 1500,
                     "read_only": True,
                 }],
+            }]
+        finally:
+            proc.kill()
+
+    def test_event_subscription_uses_shared_host_wire_shape(self, tmp_path):
+        app = self._app_with_init_effects(
+            tmp_path,
+            "SubscribeEventStreams('subscribe-1', 'wasm-counter', ['count.changed'])",
+        )
+        proc = _spawn_v3_app(app)
+        try:
+            events = _init_and_render(proc)
+            subscriptions = _find_events(events, "subscribe_event_streams")
+            assert subscriptions == [{
+                "type": "subscribe_event_streams",
+                "request_id": "subscribe-1",
+                "app_id": "wasm-counter",
+                "event_names": ["count.changed"],
+                "payload_mode": "full",
+                "trigger_mode": "conversation",
+                "resource_id": None,
             }]
         finally:
             proc.kill()
@@ -346,6 +368,29 @@ class TestEventDispatch:
             events = _render(proc)
             trees = _find_events(events, "component_tree")
             assert any("events=KeyEvent" in json.dumps(t) for t in trees)
+        finally:
+            proc.kill()
+
+    def test_cross_app_event_reaches_update(self, tmp_path):
+        app = self._app_that_echoes_event_type(tmp_path)
+        proc = _spawn_v3_app(app)
+        try:
+            _init_app(proc)
+            _send_event(proc, {
+                "type": "app_event",
+                "subscription_id": "sub-1",
+                "app_id": "wasm-counter",
+                "event": "count.changed",
+                "event_id": 7,
+                "resource_id": "counter-1",
+                "trigger_mode": "conversation",
+                "summary": "Count changed",
+                "payload": {"count": 2},
+                "created_at": "2026-07-13T00:00:00Z",
+            })
+            events = _render(proc)
+            trees = _find_events(events, "component_tree")
+            assert any("events=AppEvent" in json.dumps(tree) for tree in trees)
         finally:
             proc.kill()
 

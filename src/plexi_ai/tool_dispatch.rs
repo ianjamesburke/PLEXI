@@ -41,17 +41,18 @@ pub(crate) enum AppEventSender {
     #[cfg(test)]
     Channel(std::sync::mpsc::Sender<String>),
     Python(crate::host::wasm_python::AppendableStdin),
+    Wasm(crate::host::wasm_pane::WasmInputSender),
 }
 
 impl AppEventSender {
-    pub(crate) fn send_event(&self, event: &PlexiEvent) {
+    pub(crate) fn send_event(&self, event: &PlexiEvent) -> Result<(), String> {
         match self {
             #[cfg(test)]
             Self::Channel(tx) => {
-                if let Ok(mut json) = serde_json::to_string(event) {
-                    json.push('\n');
-                    let _ = tx.send(json);
-                }
+                let mut json = serde_json::to_string(event).map_err(|error| error.to_string())?;
+                json.push('\n');
+                tx.send(json).map_err(|error| error.to_string())?;
+                Ok(())
             }
             Self::Python(stdin) => {
                 if let PlexiEvent::ToolCall {
@@ -61,16 +62,34 @@ impl AppEventSender {
                     caller_id,
                 } = event
                 {
-                    if let Err(error) = stdin.push_json_line(&serde_json::json!({
-                        "type": "tool_call",
-                        "call_id": call_id,
-                        "name": name,
-                        "input_json": input_json,
-                        "caller_id": caller_id,
-                    })) {
-                        log::error!("tool_dispatch: send ToolCall to Python app: {error}");
-                    }
+                    stdin
+                        .push_json_line(&serde_json::json!({
+                            "type": "tool_call",
+                            "call_id": call_id,
+                            "name": name,
+                            "input_json": input_json,
+                            "caller_id": caller_id,
+                        }))
+                        .map_err(|error| format!("send ToolCall to Python app: {error}"))?;
                 }
+                Ok(())
+            }
+            Self::Wasm(sender) => {
+                let PlexiEvent::ToolCall {
+                    call_id,
+                    name,
+                    input_json,
+                    caller_id,
+                } = event
+                else {
+                    return Err("WASM tool sender only accepts ToolCall events".to_string());
+                };
+                sender.send_tool_call(
+                    call_id.clone(),
+                    name.clone(),
+                    input_json.clone(),
+                    caller_id.clone(),
+                )
             }
         }
     }
@@ -121,7 +140,6 @@ impl ToolRegistry {
         );
     }
 
-    #[cfg(test)]
     fn unregister(&mut self, pane_id: u64) {
         self.entries.remove(&pane_id);
     }
@@ -229,7 +247,6 @@ pub(crate) fn register(
 }
 
 /// Remove all tools for `pane_id`. Called when a pane is closed.
-#[cfg(test)]
 pub(crate) fn unregister(pane_id: u64) {
     global_registry().lock().unwrap().unregister(pane_id);
 }
@@ -507,13 +524,14 @@ impl ToolDispatcher {
         let sent = {
             let registry = global_registry().lock().unwrap();
             if let Some(sender) = registry.sender_for(*pane_id) {
-                sender.send_event(&PlexiEvent::ToolCall {
-                    call_id: call_id.clone(),
-                    name: name.to_string(),
-                    input_json,
-                    caller_id: self.caller_app_id.clone(),
-                });
-                true
+                sender
+                    .send_event(&PlexiEvent::ToolCall {
+                        call_id: call_id.clone(),
+                        name: name.to_string(),
+                        input_json,
+                        caller_id: self.caller_app_id.clone(),
+                    })
+                    .is_ok()
             } else {
                 false
             }
@@ -576,6 +594,7 @@ mod tests {
             name: name.to_string(),
             description: format!("test tool {name}"),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            output_schema: serde_json::json!({"type": "object"}),
             timeout_ms: Some(100),
             read_only: false,
         }
@@ -805,5 +824,94 @@ mod tests {
         );
 
         unregister(998);
+    }
+
+    #[test]
+    fn wasm_provider_receives_tool_call_and_returns_result() {
+        let workspace = PathBuf::from("/workspace/wasm-tools");
+        let (sender, queue) = crate::host::wasm_pane::WasmInputSender::new_for_test();
+        register(
+            997,
+            "wasm-tools".to_string(),
+            vec![make_tool("wasm.echo")],
+            AppEventSender::Wasm(sender),
+            workspace.clone(),
+        );
+        let dispatcher = ToolDispatcher::from_registry(2, "agent:assistant".to_string(), workspace);
+        let worker = std::thread::spawn(move || {
+            dispatcher.dispatch_call(
+                "wasm-call-1".to_string(),
+                "wasm.echo",
+                r#"{"value":7}"#.to_string(),
+            )
+        });
+
+        let event = (0..100)
+            .find_map(|_| {
+                let event = queue.pop();
+                if event.is_none() {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                event
+            })
+            .expect("WASM app must receive ToolCall");
+        let crate::host::wasm_app::InputEvent::ToolCall(call) = event else {
+            panic!("expected ToolCall, got {event:?}");
+        };
+        assert_eq!(call.call_id, "wasm-call-1");
+        assert_eq!(call.name, "wasm.echo");
+        assert_eq!(call.input_json, r#"{"value":7}"#);
+        assert_eq!(call.caller_id, "agent:assistant");
+
+        resolve_pending(
+            &call.call_id,
+            ToolCallResult {
+                output_json: Some(r#"{"value":7}"#.to_string()),
+                error: None,
+            },
+        );
+        let result = worker.join().unwrap();
+        assert_eq!(result.output_json.as_deref(), Some(r#"{"value":7}"#));
+        assert!(result.error.is_none());
+        unregister(997);
+    }
+
+    #[test]
+    fn denied_wasm_tool_call_never_reaches_the_guest() {
+        struct DenyHook;
+        impl ToolCallHooks for DenyHook {
+            fn before_call(&self, _name: &str, _input: &str) -> Result<(), String> {
+                Err("permission_denied: app connector denied".to_string())
+            }
+            fn after_call(&self, _name: &str, _error: Option<&str>) {}
+        }
+
+        let workspace = PathBuf::from("/workspace/wasm-denied");
+        let (sender, queue) = crate::host::wasm_pane::WasmInputSender::new_for_test();
+        register(
+            996,
+            "wasm-denied".to_string(),
+            vec![make_tool("wasm.write")],
+            AppEventSender::Wasm(sender),
+            workspace.clone(),
+        );
+        let mut dispatcher =
+            ToolDispatcher::from_registry(2, "agent:assistant".to_string(), workspace);
+        dispatcher.set_hooks(Arc::new(DenyHook));
+
+        let result = dispatcher.dispatch_call(
+            "wasm-call-denied".to_string(),
+            "wasm.write",
+            "{}".to_string(),
+        );
+        assert_eq!(
+            result.error.as_deref(),
+            Some("permission_denied: app connector denied")
+        );
+        assert!(
+            queue.is_empty(),
+            "denied calls must not enter WASM update()"
+        );
+        unregister(996);
     }
 }

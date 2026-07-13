@@ -114,6 +114,7 @@ def init(size, args):
             name="csv.describe_table",
             description="Describe the current table.",
             input_schema={"type": "object", "properties": {}},
+            output_schema={"type": "object", "properties": {"rows": {"type": "integer"}}},
             read_only=True,
         ),
     ])]
@@ -125,15 +126,27 @@ def update(event):
     return []
 ```
 
-`input_schema` is a JSON Schema object. `ToolCall.input_json` is the JSON
-string supplied by the Assistant. Return `output_json` for success or `error`
-for failure, never both. A declaration replaces the pane's previous tool set,
-so send every current tool when it changes.
+`input_schema` and `output_schema` are JSON Schema objects. `ToolCall.input_json`
+is the JSON string supplied by the Assistant. Return `output_json` matching the
+declared output schema for success or `error` for failure, never both. A
+declaration replaces the pane's previous tool set, so send every current tool
+when it changes.
 
 Set `read_only=True` only for tools that never mutate app or workspace state.
 The Assistant runs read-only tools without a write-grant prompt, while still
 recording every call. Mutating tools prompt for an allow-once or persisted
 narrow grant before they run.
+
+## Cross-app events
+
+Use `DeclareEventStreams` and `EmitEvent` for streams owned by the current app.
+Use `SubscribeEventStreams` with another app's ID and declared stream names to
+receive its events. The subscription result supplies the ID needed by
+`UnsubscribeEventStreams`; matching events arrive as `AppEvent` in `update()`.
+Python and Rust WASM apps share the same host registry, so publishers and
+subscribers can use either runtime. Subscriptions last until unsubscribe or
+the subscriber pane closes. The host permission broker may ask the user before
+allowing a cross-app subscription.
 
 ## UI Components
 

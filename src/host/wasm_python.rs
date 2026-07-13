@@ -1314,27 +1314,23 @@ impl LivePythonPane {
     }
 
     pub fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
-        let crate::app_protocol::PlexiEvent::ToolCall {
-            call_id,
-            name,
-            input_json,
-            caller_id,
-        } = event
-        else {
-            return;
-        };
-        if let Err(error) = self.runtime.send(&json!({
-            "type": "tool_call",
-            "call_id": call_id,
-            "name": name,
-            "input_json": input_json,
-            "caller_id": caller_id,
-        })) {
-            log::error!(
-                "app::{}: queue ToolCall to Python runtime: {error}",
-                self.app_id
-            );
-            self.error = Some(error.to_string());
+        match encode_python_host_event(event) {
+            Ok(value) => {
+                if let Err(error) = self.runtime.send(&value) {
+                    log::error!(
+                        "app::{}: queue host event to Python runtime: {error}",
+                        self.app_id
+                    );
+                    self.error = Some(error.to_string());
+                }
+            }
+            Err(error) => {
+                log::error!(
+                    "app::{}: serialize host event for Python runtime: {error}",
+                    self.app_id
+                );
+                self.error = Some(error.to_string());
+            }
         }
     }
 
@@ -1374,6 +1370,12 @@ impl LivePythonPane {
         log::info!("app::{}: relaunched CPython WASM runtime", self.app_id);
         Ok(())
     }
+}
+
+fn encode_python_host_event(
+    event: crate::app_protocol::PlexiEvent,
+) -> Result<Value, serde_json::Error> {
+    serde_json::to_value(event)
 }
 
 fn python_semantic_state(tree: Option<&PythonUiTree>) -> crate::host::pane::SemanticPaneState {
@@ -1550,6 +1552,124 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
                 .get("error")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+        }),
+        "declare_event_streams" => {
+            let streams = message
+                .get("streams")?
+                .as_array()?
+                .iter()
+                .map(|stream| {
+                    let schema_json = stream.get("schema_json")?.as_str()?;
+                    Some(crate::app_protocol::EventStreamDecl {
+                        name: stream.get("name")?.as_str()?.to_string(),
+                        schema: serde_json::from_str(schema_json).ok()?,
+                        description: stream
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(AppCommand::AppEventRequest {
+                request: crate::app_protocol::AppRequest::DeclareEventStreams { streams },
+                pane_id: None,
+            })
+        }
+        "emit_event" => {
+            let actor =
+                serde_json::from_value(message.get("actor").cloned().unwrap_or(Value::Null))
+                    .ok()?;
+            let suggested_trigger = message
+                .get("suggested_trigger")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .ok()?;
+            let payload = message
+                .get("payload_json")
+                .and_then(Value::as_str)
+                .map(serde_json::from_str)
+                .transpose()
+                .ok()?;
+            Some(AppCommand::AppEventRequest {
+                request: crate::app_protocol::AppRequest::EmitEvent {
+                    event: text("event"),
+                    actor,
+                    actor_id: message
+                        .get("actor_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    caused_by: message
+                        .get("caused_by")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    summary: text("summary"),
+                    resource_id: text("resource_id"),
+                    resource_scope: message
+                        .get("resource_scope")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    revision_after: text("revision_after"),
+                    payload,
+                    state_ref: message
+                        .get("state_ref")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    revision_before: message
+                        .get("revision_before")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    rollback_token: message
+                        .get("rollback_token")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    changed_resources: message
+                        .get("changed_resources")
+                        .and_then(Value::as_array)
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    suggested_trigger,
+                },
+                pane_id: None,
+            })
+        }
+        "subscribe_event_streams" => Some(AppCommand::AppEventRequest {
+            request: crate::app_protocol::AppRequest::SubscribeAppEvents {
+                request_id: text("request_id"),
+                app_id: text("app_id"),
+                event_names: message
+                    .get("event_names")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                payload_mode: serde_json::from_value(message.get("payload_mode")?.clone()).ok()?,
+                trigger_mode: serde_json::from_value(message.get("trigger_mode")?.clone()).ok()?,
+                resource_id: message
+                    .get("resource_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            },
+            pane_id: None,
+        }),
+        "unsubscribe_event_streams" => Some(AppCommand::AppEventRequest {
+            request: crate::app_protocol::AppRequest::UnsubscribeAppEvents {
+                request_id: text("request_id"),
+                subscription_id: text("subscription_id"),
+            },
+            pane_id: None,
         }),
         "notify" => Some(AppCommand::Notify(text("message"))),
         "spawn_app" => Some(AppCommand::SpawnApp {
@@ -2658,6 +2778,79 @@ mod tests {
         assert_eq!(events[0]["pressed"], true);
         assert_eq!(events[1]["key"], "right");
         assert_eq!(events[1]["pressed"], false);
+    }
+
+    #[test]
+    fn python_host_event_wire_delivers_cross_runtime_app_events() {
+        let wire = encode_python_host_event(crate::app_protocol::PlexiEvent::AppEvent {
+            subscription_id: "sub-1".to_string(),
+            app_id: "wasm-counter".to_string(),
+            event: "count.changed".to_string(),
+            event_id: 7,
+            resource_id: "counter-1".to_string(),
+            trigger_mode: crate::app_protocol::TriggerMode::Conversation,
+            summary: Some("Count changed".to_string()),
+            payload: Some(json!({"count": 2})),
+            state_ref: None,
+            created_at: "2026-07-13T00:00:00Z".to_string(),
+        })
+        .unwrap();
+
+        assert_eq!(wire["type"], "app_event");
+        assert_eq!(wire["app_id"], "wasm-counter");
+        assert_eq!(wire["event"], "count.changed");
+        assert_eq!(wire["payload"]["count"], 2);
+    }
+
+    #[test]
+    fn python_event_effects_use_shared_host_requests() {
+        let subscribe = app_command_from_python_message(&json!({
+            "type": "subscribe_event_streams",
+            "request_id": "subscribe-1",
+            "app_id": "wasm-counter",
+            "event_names": ["count.changed"],
+            "payload_mode": "full",
+            "trigger_mode": "conversation",
+            "resource_id": null,
+        }))
+        .expect("subscribe command");
+        assert!(matches!(
+            subscribe,
+            crate::app::app_trait::AppCommand::AppEventRequest {
+                request: crate::app_protocol::AppRequest::SubscribeAppEvents {
+                    request_id,
+                    app_id,
+                    event_names,
+                    ..
+                },
+                ..
+            } if request_id == "subscribe-1"
+                && app_id == "wasm-counter"
+                && event_names == vec!["count.changed".to_string()]
+        ));
+
+        let emit = app_command_from_python_message(&json!({
+            "type": "emit_event",
+            "event": "note.saved",
+            "actor": "app",
+            "summary": "Saved note",
+            "resource_id": "note-1",
+            "revision_after": "rev-2",
+            "payload_json": "{\"title\":\"Hello\"}",
+            "changed_resources": ["note-1"],
+        }))
+        .expect("emit command");
+        assert!(matches!(
+            emit,
+            crate::app::app_trait::AppCommand::AppEventRequest {
+                request: crate::app_protocol::AppRequest::EmitEvent {
+                    event,
+                    payload: Some(payload),
+                    ..
+                },
+                ..
+            } if event == "note.saved" && payload["title"] == "Hello"
+        ));
     }
 
     #[test]

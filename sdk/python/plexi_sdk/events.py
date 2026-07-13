@@ -140,6 +140,34 @@ class ToolCall:
 
 
 @dataclass
+class EventSubscriptionResult:
+    request_id: str
+    subscription_id: Optional[str]
+    error: Optional[str]
+
+
+@dataclass
+class EventUnsubscriptionResult:
+    request_id: str
+    removed: bool
+    error: Optional[str]
+
+
+@dataclass
+class AppEvent:
+    subscription_id: str
+    app_id: str
+    event: str
+    event_id: int
+    resource_id: str
+    trigger_mode: str
+    summary: Optional[str]
+    payload_json: Optional[str]
+    state_ref: Optional[str]
+    created_at: str
+
+
+@dataclass
 class DeclareEventStreamsResult:
     streams: Optional[list]
     error: Optional[str]
