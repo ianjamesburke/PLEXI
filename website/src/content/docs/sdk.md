@@ -14,6 +14,10 @@ Apps expose module-level ``init(size, args)``, ``update(event)``, and ``view()``
 functions. The V3AppRuntime drives the event loop: host sends JSON events on
 stdin, app responds with effects and component trees on stdout.
 
+Python apps are native processes, not sandboxed. Treat third-party Python apps
+like other reviewed native code; capabilities gate Plexi host APIs but do not
+restrict ambient process access.
+
 ## Effects
 
 ### `SetState`
