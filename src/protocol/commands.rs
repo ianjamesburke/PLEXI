@@ -1494,18 +1494,6 @@ pub enum AppEventActor {
     System,
 }
 
-impl AppEventActor {
-    #[cfg(test)]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::User => "user",
-            Self::Agent => "agent",
-            Self::App => "app",
-            Self::System => "system",
-        }
-    }
-}
-
 /// How an event subscription triggers its subscriber
 /// (src/host/app_timeline.rs). Also the vocabulary for an emitting
 /// app's `suggested_trigger` hint.

@@ -438,21 +438,18 @@ impl FileBrowserApp {
     /// resolve identically.
     fn open_file(&mut self, path: &Path) {
         #[cfg(test)]
-        {
-            self.opened_files.push(path.to_path_buf());
-        }
-        #[cfg(not(test))]
-        {
+        self.opened_files.push(path.to_path_buf());
+        if !cfg!(test) {
             log::info!(
                 "file_browser: requesting host open-in-pane for '{}'",
                 path.display()
             );
-            self.pending_cmds.push(AppCommand::OpenArtifact {
-                sender_pane_id: 0, // dispatch.rs stamps the real pane_id
-                path: path.to_string_lossy().to_string(),
-                mode: crate::app_protocol::ArtifactOpenMode::OpenInPane,
-            });
         }
+        self.pending_cmds.push(AppCommand::OpenArtifact {
+            sender_pane_id: 0, // dispatch.rs stamps the real pane_id
+            path: path.to_string_lossy().to_string(),
+            mode: crate::app_protocol::ArtifactOpenMode::OpenInPane,
+        });
     }
 
     /// Explicit cwd handoff (#2145): the ONLY path that writes a `cd` into

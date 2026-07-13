@@ -357,15 +357,6 @@ impl TextEditFocusCtx {
         }
     }
 
-    /// Call after each frame to rotate visibility sets.
-    #[cfg(test)]
-    pub(crate) fn end_frame(&mut self) {
-        std::mem::swap(&mut self.prev_visible, &mut self.current_visible);
-        self.current_visible.clear();
-        self.focus_granted_this_frame = false;
-        self.any_has_focus = false;
-        self.pane_just_focused = false;
-    }
 }
 
 /// Render a `UiNode` tree into the provided egui `Ui`.

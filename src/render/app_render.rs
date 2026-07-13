@@ -439,7 +439,7 @@ fn render_commands_to_png(
     let mut img_cache = crate::protocol_render::image_cache::ImageCache::new();
 
     let full_output = ctx.run(raw_input, |ctx| {
-        let _ = img_cache.poll(ctx);
+        img_cache.poll(ctx);
         let _ = img_cache.has_pending();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)

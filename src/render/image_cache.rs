@@ -1,10 +1,6 @@
 //! Image loading cache for `RenderCommand::Image` (#1144, #1354).
 //!
-//! Supports two loading modes:
-//! - **Src-keyed** (`request` / `request_url`): fire-and-forget, keyed by raw path/URL.
-//! - **Handle-keyed** (`request_by_handle`): async lifecycle keyed by opaque UUID.
-//!   When a handle load completes, `poll()` returns the completed handles so the
-//!   caller can emit `PlexiEvent::ImageLoaded` to the app.
+//! Loads are keyed by their raw path or URL.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -22,14 +18,6 @@ pub(crate) struct ImageCache {
     tx: Sender<(String, Result<egui::ColorImage, String>)>,
     rx: Receiver<(String, Result<egui::ColorImage, String>)>,
     warned: HashSet<String>,
-    /// Keys in `cache` that are opaque handle UUIDs (from `request_by_handle`).
-    /// When these complete, `poll()` includes them in its return value so the
-    /// caller can emit `PlexiEvent::ImageLoaded`. Keys are removed on completion
-    /// to prevent unbounded growth.
-    handle_keys: HashSet<String>,
-    /// Immediate completions for handle requests that failed synchronously
-    /// (e.g. capability denied). Drained by `poll()` alongside channel completions.
-    immediate_completions: Vec<(String, Result<(), String>)>,
 }
 
 /// Fetch a remote URL and decode it as an image. Enforces a 10 MB cap to
@@ -62,49 +50,7 @@ impl ImageCache {
             tx,
             rx,
             warned: HashSet::new(),
-            handle_keys: HashSet::new(),
-            immediate_completions: Vec::new(),
         }
-    }
-
-    /// Request an async image fetch keyed by an opaque handle UUID.
-    /// No-op if the handle is already in the cache.
-    ///
-    /// Requires `net_http_granted`; otherwise records an immediate error
-    /// completion so the caller can emit `PlexiEvent::ImageLoaded` with
-    /// `status = "error"` without waiting for the background thread.
-    ///
-    /// On success, the handle resolves via the same channel as src-keyed
-    /// requests and appears in `poll()`'s return value.
-    #[cfg(test)]
-    pub(crate) fn request_by_handle(&mut self, handle: &str, src: &str, net_http_granted: bool) {
-        if self.cache.contains_key(handle) {
-            return;
-        }
-        if !net_http_granted {
-            log::warn!(
-                "ImageCache: load_image handle={handle} denied — net.http capability required"
-            );
-            self.cache.insert(
-                handle.to_string(),
-                CachedImage::Error("net.http capability required".to_string()),
-            );
-            self.immediate_completions.push((
-                handle.to_string(),
-                Err("capability_denied: net.http not granted".to_string()),
-            ));
-            return;
-        }
-        self.handle_keys.insert(handle.to_string());
-        self.cache.insert(handle.to_string(), CachedImage::Loading);
-        log::info!("ImageCache: load_image handle={handle} src={src}");
-        let handle_key = handle.to_string();
-        let src_str = src.to_string();
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let result = fetch_url_image(&src_str);
-            let _ = tx.send((handle_key, result));
-        });
     }
 
     /// Request a remote URL image fetch keyed by raw src string. No-op if already loading/loaded/errored.
@@ -169,25 +115,13 @@ impl ImageCache {
 
     /// Drain the load channel. Call once per frame before rendering.
     ///
-    /// Returns completed handle loads as `(handle, Ok(()) | Err(message))`.
-    /// The caller should push `PlexiEvent::ImageLoaded` for each.
-    pub(crate) fn poll(&mut self, egui_ctx: &egui::Context) -> Vec<(String, Result<(), String>)> {
-        let mut completed: Vec<(String, Result<(), String>)> =
-            std::mem::take(&mut self.immediate_completions);
-
+    pub(crate) fn poll(&mut self, egui_ctx: &egui::Context) {
         while let Ok((key, result)) = self.rx.try_recv() {
-            // `remove` cleans up the set entry, preventing unbounded growth.
-            let is_handle = self.handle_keys.remove(&key);
             match result {
                 Ok(color_image) => {
                     let handle =
                         egui_ctx.load_texture(&key, color_image, egui::TextureOptions::LINEAR);
-                    if is_handle {
-                        log::info!("ImageCache: handle={key} loaded");
-                        completed.push((key.clone(), Ok(())));
-                    } else {
-                        log::info!("ImageCache: loaded '{key}'");
-                    }
+                    log::info!("ImageCache: loaded '{key}'");
                     self.cache.insert(key, CachedImage::Loaded(handle));
                     crate::platform::frame_diag::note(
                         crate::platform::frame_diag::RepaintCause::ImageCacheCompletion,
@@ -195,10 +129,7 @@ impl ImageCache {
                     egui_ctx.request_repaint();
                 }
                 Err(e) => {
-                    if is_handle {
-                        log::warn!("ImageCache: handle={key} failed: {e}");
-                        completed.push((key.clone(), Err(e.clone())));
-                    } else if !self.warned.contains(&key) {
+                    if !self.warned.contains(&key) {
                         log::warn!("ImageCache: failed to load '{key}': {e}");
                         self.warned.insert(key.clone());
                     }
@@ -210,15 +141,12 @@ impl ImageCache {
                 }
             }
         }
-        completed
     }
 
     pub(crate) fn has_pending(&self) -> bool {
-        !self.immediate_completions.is_empty()
-            || self
-                .cache
-                .values()
-                .any(|entry| matches!(entry, CachedImage::Loading))
+        self.cache
+            .values()
+            .any(|entry| matches!(entry, CachedImage::Loading))
     }
 
     /// Returns the texture handle if the image is loaded; None otherwise.

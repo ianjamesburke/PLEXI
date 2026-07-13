@@ -349,24 +349,3 @@ pub fn read_recent(path: &std::path::Path, limit: usize) -> Vec<serde_json::Valu
     }
     lines.into_iter().collect()
 }
-
-/// Emit a `PipeOpened` event with a host-stamped timestamp.
-#[cfg(test)]
-pub fn emit_pipe_opened(
-    from_app: impl Into<String>,
-    channel: impl Into<String>,
-    mode: impl Into<String>,
-) {
-    let from_app = from_app.into();
-    let channel = channel.into();
-    let mode = mode.into();
-    log::debug!(
-        "event_log: emitting PipeOpened from '{from_app}' channel '{channel}' mode '{mode}'"
-    );
-    emit(HostEvent::PipeOpened {
-        from_app,
-        channel,
-        mode,
-        timestamp: now_timestamp(),
-    });
-}

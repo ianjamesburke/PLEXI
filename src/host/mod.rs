@@ -16,8 +16,6 @@ pub mod keys;
 pub mod launch_failed;
 pub mod model;
 pub mod pane;
-#[cfg(test)]
-pub mod runs;
 pub mod scheduler;
 pub mod services;
 pub mod shell;
