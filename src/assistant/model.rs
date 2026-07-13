@@ -99,6 +99,25 @@ pub struct StreamingState {
     pub partial_reasoning: String,
 }
 
+/// Observable lifecycle for `/compact`. This deliberately records feedback,
+/// not compaction mechanics: raw history and checkpoint format remain owned
+/// by the store layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactionState {
+    Idle,
+    Compacting,
+    Completed {
+        compacted_turns: usize,
+        checkpoint_id: String,
+    },
+}
+
+impl Default for CompactionState {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
 /// Side effects the model requests from the pane shell.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssistantEffect {
@@ -192,6 +211,9 @@ pub struct AssistantModel {
     pub show_thoughts: bool,
     pub active_agent_id: String,
     pub effort_override: Option<ReasoningEffort>,
+    /// `/compact` lifecycle exposed to the renderer and injected into the
+    /// next model turn so the Assistant can answer status questions.
+    pub compaction: CompactionState,
     /// Shell-style composer history cursor over prior user turns. `None`
     /// means normal editing; `Some(0)` is the newest user message.
     history_cursor: Option<usize>,
@@ -214,6 +236,7 @@ impl AssistantModel {
             show_thoughts: false,
             active_agent_id: "default".to_string(),
             effort_override: None,
+            compaction: CompactionState::Idle,
             history_cursor: None,
         }
     }
@@ -230,6 +253,34 @@ impl AssistantModel {
     /// Start a brand-new conversation.
     pub fn fresh() -> Self {
         Self::resume(new_conversation_id(), Vec::new())
+    }
+
+    pub fn begin_compaction(&mut self) {
+        self.compaction = CompactionState::Compacting;
+    }
+
+    pub fn complete_compaction(&mut self, compacted_turns: usize, checkpoint_id: String) {
+        self.compaction = CompactionState::Completed {
+            compacted_turns,
+            checkpoint_id,
+        };
+    }
+
+    pub fn clear_compaction(&mut self) {
+        self.compaction = CompactionState::Idle;
+    }
+
+    pub fn compaction_status(&self) -> String {
+        match &self.compaction {
+            CompactionState::Idle => "No compaction is running.".to_string(),
+            CompactionState::Compacting => "Compaction is in progress.".to_string(),
+            CompactionState::Completed {
+                compacted_turns,
+                checkpoint_id,
+            } => format!(
+                "Compaction completed: {compacted_turns} turns into checkpoint {checkpoint_id}."
+            ),
+        }
     }
 
     /// True while the slash-command picker should be visible.
@@ -491,7 +542,10 @@ impl AssistantModel {
                 }]
             }
             "rewind" => vec![AssistantEffect::RewindConversation(cmd.args.clone())],
-            "compact" => vec![AssistantEffect::CompactConversation],
+            "compact" => {
+                self.begin_compaction();
+                vec![AssistantEffect::CompactConversation]
+            }
             "export" => vec![AssistantEffect::ExportConversation],
             "model" if cmd.args.is_empty() => vec![AssistantEffect::ShowModelSetting],
             "model" => {
@@ -1271,6 +1325,7 @@ mod tests {
             submitted(&mut model, "/compact"),
             vec![AssistantEffect::CompactConversation]
         );
+        assert_eq!(model.compaction, CompactionState::Compacting);
         assert_eq!(
             submitted(&mut model, "/export"),
             vec![AssistantEffect::ExportConversation]

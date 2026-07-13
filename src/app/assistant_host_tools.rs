@@ -1,5 +1,6 @@
 //! Native execution seam for Assistant-owned host tools.
 
+use crate::app::permissions::Capability;
 use crate::plexi_ai::tool_dispatch::ToolCallResult;
 
 use super::PlexiApp;
@@ -138,14 +139,147 @@ impl PlexiApp {
                     Vec::new(),
                     cwd,
                 ) {
-                    Ok(pane_id) => succeeded(
-                        serde_json::json!({"ok": true, "pane_id": pane_id, "type": "terminal"}),
-                    ),
+                    Ok(pane_id) => {
+                        if let Err(error) =
+                            self.assistant_bind_terminal(origin_pane_id, origin_context_id, pane_id)
+                        {
+                            return failed(format!("open_terminal_failed: {error}"));
+                        }
+                        succeeded(
+                            serde_json::json!({"ok": true, "pane_id": pane_id, "type": "terminal"}),
+                        )
+                    }
                     Err(error) => failed(format!("open_terminal_failed: {error}")),
+                }
+            }
+            "host.terminals.run" => {
+                let Some(terminal_pane_id) = parsed
+                    .get("terminal_pane_id")
+                    .and_then(serde_json::Value::as_u64)
+                else {
+                    return failed("invalid_input: terminal_pane_id is required".to_string());
+                };
+                let Some(command) = parsed.get("command").and_then(serde_json::Value::as_str)
+                else {
+                    return failed("invalid_input: command is required".to_string());
+                };
+                if command.trim().is_empty() {
+                    return failed("invalid_input: command must be non-empty".to_string());
+                }
+                if parsed.get("echo").and_then(serde_json::Value::as_bool) != Some(true) {
+                    return failed(
+                        "invalid_input: echo must be true so the human-observed terminal receives Enter"
+                            .to_string(),
+                    );
+                }
+                match self.assistant_run_terminal(
+                    origin_pane_id,
+                    origin_context_id,
+                    terminal_pane_id,
+                    command,
+                ) {
+                    Ok(()) => succeeded(serde_json::json!({
+                        "ok": true,
+                        "terminal_pane_id": terminal_pane_id,
+                        "echo": true,
+                    })),
+                    Err(error) => failed(format!("run_terminal_failed: {error}")),
                 }
             }
             _ => failed(format!("host_tool_unknown: {name}")),
         }
+    }
+
+    /// Bind the Assistant's existing pane to the terminal it just opened.
+    /// `RunInLinkedTerminal` is intentionally link-scoped: the Assistant is a
+    /// built-in app with `terminal.bindings`, while ordinary apps still need
+    /// their manifest capability and their own linked terminal.
+    fn assistant_bind_terminal(
+        &mut self,
+        origin_pane_id: u64,
+        origin_context_id: u64,
+        terminal_pane_id: u64,
+    ) -> Result<(), String> {
+        let window = self
+            .windows
+            .iter_mut()
+            .find(|window| window.context_id == origin_context_id)
+            .ok_or_else(|| format!("origin context {origin_context_id} closed"))?;
+        if !window.panes.contains_key(&terminal_pane_id) {
+            return Err(format!("terminal pane {terminal_pane_id} was not created"));
+        }
+        let Some(app) = window
+            .panes
+            .get_mut(&origin_pane_id)
+            .and_then(crate::host::pane::Pane::as_app_mut)
+        else {
+            return Err(format!("origin pane {origin_pane_id} is not an app pane"));
+        };
+        if !app.permissions.is_builtin
+            && !app
+                .permissions
+                .capabilities
+                .contains(&Capability::TerminalBindings)
+        {
+            return Err("origin app lacks terminal.bindings capability".to_string());
+        }
+        app.linked_pane_id = Some(terminal_pane_id);
+        Ok(())
+    }
+
+    fn assistant_run_terminal(
+        &mut self,
+        origin_pane_id: u64,
+        origin_context_id: u64,
+        terminal_pane_id: u64,
+        command: &str,
+    ) -> Result<(), String> {
+        let active_context = self.windows[self.active_window].context_id;
+        if active_context != origin_context_id {
+            return Err(format!(
+                "terminal context {origin_context_id} is not active (active context {active_context})"
+            ));
+        }
+        let window = self
+            .windows
+            .iter()
+            .find(|window| window.context_id == origin_context_id)
+            .ok_or_else(|| format!("origin context {origin_context_id} closed"))?;
+        let Some(app) = window
+            .panes
+            .get(&origin_pane_id)
+            .and_then(crate::host::pane::Pane::as_app)
+        else {
+            return Err(format!("origin pane {origin_pane_id} is not an app pane"));
+        };
+        if !app.permissions.is_builtin
+            && !app
+                .permissions
+                .capabilities
+                .contains(&Capability::TerminalBindings)
+        {
+            return Err("origin app lacks terminal.bindings capability".to_string());
+        }
+        if app.linked_pane_id != Some(terminal_pane_id) {
+            return Err(format!(
+                "terminal pane {terminal_pane_id} is not the Assistant's linked terminal"
+            ));
+        }
+        if !window.panes.contains_key(&terminal_pane_id) {
+            return Err(format!("terminal pane {terminal_pane_id} not found"));
+        }
+        log::info!(
+            "assistant_host_tool: terminal.bindings inject origin={origin_pane_id} terminal={terminal_pane_id} command={command:?} echo=true"
+        );
+        // Reuse the production DrawCommand execution path; its link check is
+        // the terminal.bindings capability boundary for app-originated input.
+        self.dispatch_run_in_linked_terminal(
+            origin_pane_id,
+            terminal_pane_id,
+            command.to_string(),
+            true,
+        );
+        Ok(())
     }
 
     fn assistant_spawn_pane(
@@ -385,5 +519,44 @@ mod tests {
         );
         assert!(terminal.error.is_none(), "{:?}", terminal.error);
         assert!(harness.pane_count() > after_app);
+        let terminal_id = serde_json::from_str::<serde_json::Value>(
+            terminal.output_json.as_deref().expect("terminal output"),
+        )
+        .unwrap()["pane_id"]
+            .as_u64()
+            .expect("terminal pane id");
+
+        let ran = harness.app.handle_assistant_host_tool(
+            "host.terminals.run",
+            &serde_json::json!({
+                "terminal_pane_id": terminal_id,
+                "command": "echo assistant-terminal-tool",
+                "echo": true,
+            })
+            .to_string(),
+            origin,
+            context,
+        );
+        assert!(ran.error.is_none(), "{:?}", ran.error);
+
+        let hidden_echo = harness.app.handle_assistant_host_tool(
+            "host.terminals.run",
+            &serde_json::json!({
+                "terminal_pane_id": terminal_id,
+                "command": "echo must-be-observed",
+                "echo": false,
+            })
+            .to_string(),
+            origin,
+            context,
+        );
+        assert!(
+            hidden_echo
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("echo must be true")),
+            "{:?}",
+            hidden_echo.error
+        );
     }
 }

@@ -70,8 +70,10 @@ When a delivered event hands you the turn, ACT: if the situation calls for a \
 tool call, make it immediately rather than only describing what you would do. \
 Do not narrate intentions you can carry out — take the action, then report the \
 result. \
-Use the host.panes.*, host.apps.open, and host.terminals.open tools for native \
-pane, app, and terminal operations; never shell out to the plexi CLI.";
+Use the host.panes.*, host.apps.open, host.terminals.open, and host.terminals.run \
+tools for native pane, app, and terminal operations; never shell out to the plexi \
+CLI. When a terminal pane has already been opened or focused, reuse its pane id \
+with host.terminals.run; do not open a redundant terminal. ";
 
 /// Host tool names the Assistant injects into its dispatcher snapshot.
 const HOST_TOOL_SUBSCRIBE: &str = "host.events.subscribe";
@@ -83,6 +85,7 @@ const HOST_TOOL_PANES_FOCUS: &str = "host.panes.focus";
 const HOST_TOOL_PANES_CLOSE: &str = "host.panes.close";
 const HOST_TOOL_APPS_OPEN: &str = "host.apps.open";
 const HOST_TOOL_TERMINALS_OPEN: &str = "host.terminals.open";
+const HOST_TOOL_TERMINALS_RUN: &str = "host.terminals.run";
 
 /// Broker identity for the Assistant: actor id at the permission tiers,
 /// `agent:assistant` as the `ToolDispatcher` caller id (Phase C convention).
@@ -312,6 +315,9 @@ pub struct AssistantApp {
     commonmark_cache: egui_commonmark::CommonMarkCache,
     /// Cached soft-break conversion for committed markdown turns.
     markdown_text_cache: MarkdownTextCache,
+    /// `/compact` yields once so the renderer can show its progress row before
+    /// the existing synchronous storage operation starts.
+    compact_pending: bool,
 }
 
 /// An ask-gated subscribe waiting on the permission sheet.
@@ -432,6 +438,7 @@ impl AssistantApp {
             turn_cancel: CancelToken::new(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             markdown_text_cache: MarkdownTextCache::default(),
+            compact_pending: false,
         };
         // Persist the active id immediately so close-then-reopen resumes
         // this conversation even before the first turn.
@@ -570,7 +577,13 @@ impl AssistantApp {
                 AssistantEffect::RewindConversation(selector) => {
                     self.cmd_rewind_conversation(&selector)
                 }
-                AssistantEffect::CompactConversation => self.cmd_compact_conversation(),
+                AssistantEffect::CompactConversation => {
+                    self.compact_pending = true;
+                    log::info!(
+                        "assistant[{}]: compaction queued; showing progress indicator",
+                        self.model.conversation_id
+                    );
+                }
                 AssistantEffect::ExportConversation => self.cmd_export_conversation(),
                 AssistantEffect::PersistShowThoughts(show) => {
                     if let Err(e) = self.store.set_show_thoughts(show) {
@@ -762,7 +775,10 @@ impl AssistantApp {
             if (!declared_tools.is_empty() && !declared_tools.contains(&tool.name))
                 || (!settings_tools.is_empty() && !settings_tools.contains(&tool.name))
             {
-                log::info!("assistant: host tool '{}' withheld by enabled-tool filter", tool.name);
+                log::info!(
+                    "assistant: host tool '{}' withheld by enabled-tool filter",
+                    tool.name
+                );
                 continue;
             }
             match self.host_tool_decision(&tool) {
@@ -897,6 +913,13 @@ impl AssistantApp {
                 timeout_ms: Some(30_000),
                 read_only: false,
             },
+            AiTool {
+                name: HOST_TOOL_TERMINALS_RUN.into(),
+                description: "Run a command in a terminal pane already opened or focused by the Assistant. The terminal remains human-observed; echo=true submits the command with Enter.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"terminal_pane_id":{"type":"integer"},"command":{"type":"string"},"echo":{"type":"boolean","description":"Must be true; the command is visibly submitted to the terminal."}},"required":["terminal_pane_id","command","echo"]}),
+                timeout_ms: Some(30_000),
+                read_only: false,
+            },
         ]
     }
 
@@ -965,6 +988,14 @@ impl AssistantApp {
     ) {
         if !matches!(tool, HOST_TOOL_SUBSCRIBE | HOST_TOOL_UNSUBSCRIBE) {
             log::info!("assistant: queueing native host tool '{tool}'");
+            if tool == HOST_TOOL_TERMINALS_RUN {
+                self.audit.append(&AuditEvent::now(
+                    "terminal_command",
+                    HOST_TOOL_TERMINALS_RUN,
+                    "requested",
+                    &summarize_input(input_json),
+                ));
+            }
             self.pending_commands.push(AppCommand::AssistantHostTool {
                 name: tool.to_string(),
                 input_json: input_json.to_string(),
@@ -1087,15 +1118,14 @@ impl AssistantApp {
         });
         let concrete_model = agent.model_routes.for_tier(tier).cloned();
         let effort = self.model.effort_override.or(agent.effort);
-        let selected_skill = self
-            .pending_skill
-            .take()
-            .or_else(|| {
-                self.skill_registry
-                    .matching_enabled(&prompt, &agent.skills)
-                    .cloned()
-            });
+        let selected_skill = self.pending_skill.take().or_else(|| {
+            self.skill_registry
+                .matching_enabled(&prompt, &agent.skills)
+                .cloned()
+        });
         let mut system = agent.prompt;
+        system.push_str("\n\nCompaction status: ");
+        system.push_str(&self.model.compaction_status());
         if let Some(skill) = selected_skill {
             log::info!(
                 "assistant[{conversation_id}]: loading {} skill '{}' from {}",
@@ -2109,6 +2139,7 @@ impl AssistantApp {
         const RETAIN_RECENT: usize = 6;
         const SUMMARY_BUDGET_CHARS: usize = 4_096;
         if self.model.turns.len() <= RETAIN_RECENT {
+            self.model.clear_compaction();
             let effects = self
                 .model
                 .push_info("Nothing to compact yet; fewer than seven turns are active.");
@@ -2124,6 +2155,7 @@ impl AssistantApp {
             {
                 Ok(checkpoint) => checkpoint,
                 Err(e) => {
+                    self.model.clear_compaction();
                     log::error!("assistant[{id}]: /compact checkpoint failed: {e}");
                     let effects = self.model.push_error(format!(
                         "Compaction stopped: could not preserve raw history: {e}"
@@ -2145,6 +2177,7 @@ impl AssistantApp {
         )];
         compacted_turns.extend(recent);
         if let Err(e) = self.store.record_compaction(&id, &checkpoint.id, compacted) {
+            self.model.clear_compaction();
             log::error!("assistant[{id}]: failed to record compaction boundary: {e}");
             let effects = self.model.push_error(format!(
                 "Raw checkpoint written, but compaction stopped because boundary metadata failed: {e}"
@@ -2153,13 +2186,30 @@ impl AssistantApp {
             return;
         }
         self.pending_skill = None;
+        self.model
+            .complete_compaction(compacted, checkpoint.id.clone());
         let cancel = self.model.switch_conversation(id.clone(), compacted_turns);
         self.execute_effects(cancel);
         log::info!(
             "assistant[{id}]: compacted {compacted} turn(s) checkpoint={}",
             checkpoint.id
         );
-        self.session_write();
+        let effects = self.model.push_info(format!(
+            "Compacted {compacted} turns into checkpoint `{}`.",
+            checkpoint.id
+        ));
+        self.execute_effects(effects);
+    }
+
+    /// Complete a queued `/compact` after the visible status frame. Active
+    /// panes call this from [`App::ui`]; inactive panes use `background_tick`.
+    fn run_pending_compaction(&mut self) -> bool {
+        if !self.compact_pending {
+            return false;
+        }
+        self.compact_pending = false;
+        self.cmd_compact_conversation();
+        true
     }
 
     fn cmd_export_conversation(&mut self) {
@@ -2352,17 +2402,17 @@ impl AssistantApp {
     }
 
     fn cmd_list_skills(&mut self) {
-        let enabled = self.active_agent().map(|agent| agent.skills.as_slice()).unwrap_or(&[]);
+        let enabled = self
+            .active_agent()
+            .map(|agent| agent.skills.as_slice())
+            .unwrap_or(&[]);
         let visible = self
             .skill_registry
             .all()
             .iter()
             .filter(|skill| enabled.is_empty() || enabled.contains(&skill.name))
             .collect::<Vec<_>>();
-        log::info!(
-            "assistant: /skills — {} installed skill(s)",
-            visible.len()
-        );
+        log::info!("assistant: /skills — {} installed skill(s)", visible.len());
         let text = if visible.is_empty() {
             "No skills are installed for this channel or workspace.".to_string()
         } else {
@@ -2383,7 +2433,10 @@ impl AssistantApp {
     }
 
     fn cmd_invoke_skill(&mut self, name: &str, args: &str) {
-        let enabled = self.active_agent().map(|agent| agent.skills.as_slice()).unwrap_or(&[]);
+        let enabled = self
+            .active_agent()
+            .map(|agent| agent.skills.as_slice())
+            .unwrap_or(&[]);
         if !enabled.is_empty() && !enabled.iter().any(|skill| skill == name) {
             let effects = self.model.push_error(format!(
                 "Skill `/{name}` is not enabled for agent `{}`.",
@@ -2659,10 +2712,11 @@ impl App for AssistantApp {
 
     fn background_tick(&mut self) {
         self.pump_turn_io();
+        self.run_pending_compaction();
     }
 
     fn needs_background_tick(&self) -> bool {
-        self.model.streaming.in_flight || !self.pending_commands.is_empty()
+        self.model.streaming.in_flight || self.compact_pending || !self.pending_commands.is_empty()
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
@@ -2694,11 +2748,9 @@ impl App for AssistantApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         self.pump_turn_io();
-        if self.model.streaming.in_flight {
-            // Keep frames coming while a worker thread streams a turn.
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(50));
-        }
+        // Active panes do not receive `background_tick`; defer until after
+        // this frame draws the status row, then compact before the next frame.
+        let compact_visible_this_frame = self.compact_pending;
         let event = AssistantRenderer::draw(
             ui,
             &mut self.model,
@@ -2714,6 +2766,13 @@ impl App for AssistantApp {
             }
             Some(ComposerEvent::Permission(choice)) => self.resolve_permission(choice),
             None => {}
+        }
+        if compact_visible_this_frame && self.run_pending_compaction() {
+            ui.ctx().request_repaint();
+        }
+        if self.model.streaming.in_flight || self.compact_pending {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
 }
@@ -2886,7 +2945,10 @@ enabled = ["allowed.tool"]
 
         let seen = broker.seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0].system, "Writer system prompt");
+        assert_eq!(
+            seen[0].system,
+            "Writer system prompt\n\nCompaction status: No compaction is running."
+        );
         assert_eq!(seen[0].model_tier, ModelTier::Medium);
         assert_eq!(
             seen[0].concrete_model.as_ref().unwrap().model,
@@ -3316,6 +3378,7 @@ enabled = ["allowed.tool"]
         app.model.composer = "/compact".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
+        App::background_tick(&mut app);
         assert!(app.model.turns[0].text.contains("Compacted context"));
         assert!(app.model.turns[0].text.contains("beginning-intent"));
         assert!(app.model.turns[0].text.contains("ending-intent"));
@@ -4573,6 +4636,45 @@ enabled = ["allowed.tool"]
             commands.as_slice(),
             [AppCommand::AssistantHostTool { name, .. }] if name == HOST_TOOL_PANES_LIST
         ));
+    }
+
+    #[test]
+    fn active_ui_frame_drains_compaction_and_preserves_observable_checkpoint_state() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        for index in 0..7 {
+            app.model
+                .turns
+                .push(model::Turn::now(TurnRole::User, format!("turn {index}")));
+        }
+        app.model.begin_compaction();
+        app.compact_pending = true;
+
+        let egui_ctx = egui::Context::default();
+        let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
+        let _ = egui_ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let render_ctx = AppRenderContext {
+                    colors: &colors,
+                    is_focused: true,
+                };
+                App::ui(&mut app, ui, &render_ctx);
+            });
+        });
+
+        let model::CompactionState::Completed {
+            compacted_turns,
+            checkpoint_id,
+        } = &app.model.compaction
+        else {
+            panic!("compaction state must remain observable after completion");
+        };
+        assert_eq!(*compacted_turns, 1);
+        assert!(checkpoint_id.starts_with("checkpoint-"));
+        assert_eq!(
+            app.model.turns.last().unwrap().text,
+            format!("Compacted 1 turns into checkpoint `{checkpoint_id}`.")
+        );
     }
 
     #[test]

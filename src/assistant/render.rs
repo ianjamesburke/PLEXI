@@ -22,7 +22,7 @@ use crate::ui::style;
 use crate::ui::theme::Colors;
 
 use super::commands;
-use super::model::{AssistantModel, PermissionChoice, ToolStatus, TurnRole};
+use super::model::{AssistantModel, CompactionState, PermissionChoice, ToolStatus, TurnRole};
 
 /// What the composer asked the pane shell to do this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,6 +288,15 @@ impl AssistantRenderer {
                 }
                 for active in &model.active_tools {
                     Self::draw_active_tool_row(ui, colors, &active.tool);
+                }
+                if matches!(model.compaction, CompactionState::Compacting) {
+                    ui.label(
+                        RichText::new("⟳ compacting…")
+                            .size(style::TEXT_CAPTION)
+                            .monospace()
+                            .color(colors.accent),
+                    );
+                    ui.add_space(style::SPACE_SM);
                 }
                 if model.streaming.in_flight {
                     ui.push_id("streaming", |ui| {
