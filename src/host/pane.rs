@@ -661,6 +661,36 @@ impl AppRuntime {
         }
     }
 
+    /// Deliver the CLI/host semantic action contract to every app runtime.
+    pub fn send_app_action(
+        &mut self,
+        action: String,
+        args: Vec<String>,
+    ) -> Result<(), String> {
+        match self {
+            AppRuntime::Wasm(app) => {
+                if !args.is_empty() {
+                    return Err("WASM UI actions do not accept positional arguments".to_string());
+                }
+                app.dispatch_ui_action(action)
+            }
+            AppRuntime::Builtin(app) => {
+                app.queue_outbound_event(crate::app_protocol::PlexiEvent::Action {
+                    action,
+                    args,
+                });
+                Ok(())
+            }
+            AppRuntime::Python(app) => {
+                app.queue_outbound_event(crate::app_protocol::PlexiEvent::Action {
+                    action,
+                    args,
+                });
+                Ok(())
+            }
+        }
+    }
+
     pub(crate) fn python_tool_event_sender(
         &self,
     ) -> Option<crate::host::wasm_python::AppendableStdin> {

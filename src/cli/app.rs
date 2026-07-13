@@ -108,6 +108,7 @@ pub fn app_init(
     // unlisted value never reaches here. The explicit arms keep the mapping
     // total so a newly added language can't silently fall back to Python.
     let result = match lang {
+        "wasm" => scaffold_wasm_app(&app_dir, name),
         "rust" => scaffold_rust_app(&app_dir, name),
         "python_agent" => scaffold_agent_python_app(&app_dir, name),
         "python" => scaffold_python_app(&app_dir, name),
@@ -120,7 +121,7 @@ pub fn app_init(
 
     match result {
         Ok(()) => {
-            if lang != "rust" {
+            if !matches!(lang, "rust" | "wasm") {
                 match crate::app::python_env::ensure_app_venv(name, &app_dir, &[]) {
                     Ok(python) => {
                         println!("  Python venv: {}", python.display());
@@ -163,7 +164,13 @@ pub fn app_init(
             let (channel, profile_dir) = current_scaffold_channel();
             let explicit_plexi = explicit_plexi_command(&channel);
             let explicit_host_plexi = explicit_host_plexi_command(&channel, &profile_dir);
-            if lang == "rust" {
+            if lang == "wasm" {
+                println!("\nNext steps:");
+                println!("  cd {}", app_dir.display());
+                println!("  cargo component build --release --target wasm32-wasip2");
+                println!("  {explicit_host_plexi} app open {}", app_dir.display());
+                println!("  SDK docs: {}", app_dir.join("AUTHORING.md").display());
+            } else if lang == "rust" {
                 println!("\nNext steps:");
                 println!("  cd {}", app_dir.display());
                 println!("  cargo build --release");
@@ -475,6 +482,82 @@ fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
         display = to_title_case(name),
     ))?;
 
+    Ok(())
+}
+
+fn scaffold_wasm_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
+    let crate_name = name.replace('-', "_");
+    std::fs::write(
+        app_dir.join("manifest.toml"),
+        format!(
+            "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"wasm\"\nname = \"{display}\"\nentry = \"target/wasm32-wasip1/release/{crate_name}.wasm\"\nversion = \"0.1.0\"\ndescription = \"A Plexi WASM app\"\n\n[app.capabilities]\ncapabilities = []\n\n[app.capabilities.wasm]\nrequired = []\noptional = []\n\n[launch]\n",
+            display = to_title_case(name),
+        ),
+    )?;
+    std::fs::write(
+        app_dir.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"app\"]\nresolver = \"2\"\n",
+    )?;
+    let crate_dir = app_dir.join("app");
+    std::fs::create_dir_all(crate_dir.join("src"))?;
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nplexi-wasm-sdk = {{ path = \"../.plexi-sdk/plexi-wasm-sdk\" }}\n\n[package.metadata.component]\npackage = \"plexi:{crate_name}\"\n\n[package.metadata.component.target]\npath = \"../wit\"\nworld = \"plexi-app\"\n",
+        ),
+    )?;
+    std::fs::write(
+        crate_dir.join("src/lib.rs"),
+        format!(
+            "use plexi_wasm_sdk::{{effects, export_app, ui, App, Effect, InputEvent, KeyEvent, UiActionEvent, UiTree}};\n\nconst INCREMENT: &str = \"increment\";\n\n#[derive(Default)]\nstruct Counter {{ count: u32 }}\n\nimpl App for Counter {{\n    fn init(&mut self, _context: plexi_wasm_sdk::InitContext) -> Vec<Effect> {{\n        vec![effects::set_title(\"{display}\")]\n    }}\n\n    fn update(&mut self, event: InputEvent) -> Vec<Effect> {{\n        let increment = matches!(event, InputEvent::UiAction(UiActionEvent {{ ref handler_id }}) if handler_id == INCREMENT)\n            || matches!(event, InputEvent::Key(KeyEvent {{ ref key, pressed: true, .. }}) if key == \"enter\" || key == \"space\");\n        if increment {{\n            self.count += 1;\n        }}\n        Vec::new()\n    }}\n\n    fn view(&self) -> UiTree {{\n        let mut tree = ui::Tree::new();\n        let count = tree.text(\"count\", format!(\"Count: {{}}\", self.count));\n        let increment = tree.button(\"increment\", \"Increment\", INCREMENT);\n        let root = tree.column(\"root\", [count, increment]);\n        tree.finish(root)\n    }}\n}}\n\nexport_app!(Counter::default());\n",
+            display = to_title_case(name),
+        ),
+    )?;
+    std::fs::write(
+        app_dir.join("README.md"),
+        "# Build and open\n\n```sh\ncargo install cargo-component\ncargo component build --release --target wasm32-wasip2\nplexi app open .\n```\n\nThe manifest opens the component at `target/wasm32-wasip1/release/`. Click **Increment**, send the `increment` app action, or press Enter/Space while the pane is focused. Read the local [Plexi WASM authoring guide](AUTHORING.md) for the SDK reference.\n",
+    )?;
+    std::fs::write(
+        app_dir.join("AUTHORING.md"),
+        include_str!("../../sdk/wasm/AUTHORING.md"),
+    )?;
+    std::fs::write(
+        app_dir.join(".gitignore"),
+        "/target/\n**/src/bindings.rs\n",
+    )?;
+
+    let embedded = app_dir.join(".plexi-sdk");
+    let embedded_sdk = embedded.join("plexi-wasm-sdk");
+    std::fs::create_dir_all(embedded_sdk.join("src"))?;
+    std::fs::create_dir_all(embedded.join("wit"))?;
+    std::fs::write(
+        embedded.join("wit/plexi.wit"),
+        include_str!("../../wit/plexi.wit"),
+    )?;
+    std::fs::write(
+        embedded_sdk.join("Cargo.toml"),
+        include_str!("../../sdk/wasm/Cargo.toml"),
+    )?;
+    std::fs::write(
+        embedded_sdk.join("src/lib.rs"),
+        include_str!("../../sdk/wasm/src/lib.rs"),
+    )?;
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(".plexi-sdk/wit", app_dir.join("wit"))?;
+        std::os::unix::fs::symlink("../wit", embedded_sdk.join("wit"))?;
+    }
+    #[cfg(windows)]
+    {
+        std::fs::create_dir_all(app_dir.join("wit"))?;
+        std::fs::write(app_dir.join("wit/plexi.wit"), include_str!("../../wit/plexi.wit"))?;
+        std::fs::create_dir_all(embedded_sdk.join("wit"))?;
+        std::fs::write(embedded_sdk.join("wit/plexi.wit"), include_str!("../../wit/plexi.wit"))?;
+    }
+    log::info!(
+        "app_init: created self-contained wasm scaffold path={} entry=target/wasm32-wasip1/release/{crate_name}.wasm",
+        app_dir.display(),
+    );
     Ok(())
 }
 
@@ -2484,6 +2567,36 @@ mod scaffold_marketplace_tests {
     #[test]
     fn stable_rust_scaffold_omits_marketplace_placeholder() {
         assert_no_placeholder(&manifest_for(scaffold_rust_app));
+    }
+
+    #[test]
+    fn wasm_scaffold_has_component_workspace_manifest_and_wit_link() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_dir = temp.path().join("my-counter");
+        std::fs::create_dir(&app_dir).unwrap();
+
+        scaffold_wasm_app(&app_dir, "my-counter").unwrap();
+
+        let manifest: toml::Value =
+            toml::from_str(&std::fs::read_to_string(app_dir.join("manifest.toml")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["app"]["type"].as_str(), Some("wasm"));
+        assert_eq!(
+            manifest["app"]["entry"].as_str(),
+            Some("target/wasm32-wasip1/release/my_counter.wasm")
+        );
+        assert!(app_dir.join("app/src/lib.rs").is_file());
+        assert_eq!(
+            std::fs::read_link(app_dir.join("wit")).unwrap(),
+            std::path::Path::new(".plexi-sdk/wit")
+        );
+        assert!(app_dir.join(".plexi-sdk/plexi-wasm-sdk/src/lib.rs").is_file());
+        let readme = std::fs::read_to_string(app_dir.join("README.md")).unwrap();
+        assert!(readme.contains("[Plexi WASM authoring guide](AUTHORING.md)"));
+        assert!(app_dir.join("AUTHORING.md").is_file());
+        let source = std::fs::read_to_string(app_dir.join("app/src/lib.rs")).unwrap();
+        assert!(source.contains("InputEvent::UiAction"));
+        assert!(source.contains("InputEvent::Key"));
     }
 
     #[test]

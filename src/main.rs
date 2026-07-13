@@ -499,14 +499,15 @@ fn main() -> eframe::Result {
                             }
                             AppCmd::Init {
                                 name,
+                                wasm,
                                 lang,
                                 global,
                                 open,
                                 no_open,
                                 from: from_pane_id,
                             } => std::process::exit(cli::app_init(
-                                &name,
-                                &lang,
+                                wasm.as_deref().or(name.as_deref()).unwrap_or_default(),
+                                if wasm.is_some() { "wasm" } else { &lang },
                                 global,
                                 open && !no_open,
                                 from_pane_id,

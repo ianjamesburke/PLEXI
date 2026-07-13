@@ -1508,13 +1508,9 @@ impl PlexiApp {
                     }
                     Some(pane) => {
                         if let Some(app_pane) = pane.as_app_mut() {
-                            app_pane.runtime.queue_outbound_event(
-                                crate::app_protocol::PlexiEvent::Action {
-                                    action: action.clone(),
-                                    args: args.clone(),
-                                },
-                            );
-                            Ok(())
+                            app_pane
+                                .runtime
+                                .send_app_action(action.clone(), args.clone())
                         } else {
                             log::warn!(
                                 "pane_ipc: send_app_action: pane_id={pane_id} is not an app pane"

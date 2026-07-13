@@ -1,5 +1,5 @@
 [workspace]
-members = ["tools/gen_schema", "tools/gen_cli_docs", "tools/gen_config_docs", "sdk/rust"]
+members = ["tools/gen_schema", "tools/gen_cli_docs", "tools/gen_config_docs", "sdk/rust", "sdk/wasm"]
 exclude = ["apps/wasm-poc"]
 resolver = "2"
 
