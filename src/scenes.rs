@@ -2299,6 +2299,18 @@ mod tests {
     }
 
     #[test]
+    fn geometry_fit_rejects_contain_for_committed_fill_canvas() {
+        let tree = serde_json::json!({"semantic":{"nodes":[{"role":"canvas","value":"1280x720 fit=fill","canvas_commands":[]}]}});
+        let spec = AssertSpec {
+            fit: Some("contain".to_string()),
+            ..Default::default()
+        };
+        let mut failures = Vec::new();
+        geometry_failures(&spec, &tree, &mut failures);
+        assert_eq!(failures, vec!["fit: expected contain, got fill"]);
+    }
+
+    #[test]
     fn generic_scene_steps_parse_with_typed_targets() {
         let raw = r#"
             [[steps]]
