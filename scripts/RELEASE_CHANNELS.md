@@ -104,16 +104,17 @@ running instance. Binary-local behavior, such as config paths, workspace paths,
 update/install behavior, and release gates, comes from whichever binary the
 shim executes.
 
-## Public Release Lanes
+## Release Tags
 
-Three lanes publish GitHub releases. Each is a tag push handled by
-`.github/workflows/release.yml`, which classifies the tag and marks prereleases.
+Three lanes publish source-build tags. The updater resolves these tags, checks
+out the selected commit, and builds it locally. `.github/workflows/release.yml`
+records tag metadata for that lookup. It does not publish binary assets.
 
-| Lane | Tag scheme | GitHub release | Branch tagged from |
-|---|---|---|---|
-| Alpha | `vX.Y.Z-alpha.N` | prerelease | `alpha` |
-| Beta | `vX.Y.Z-beta.N` | prerelease | `alpha` |
-| Stable | `vX.Y.Z` | latest | `main` |
+| Lane | Tag scheme | Branch tagged from |
+|---|---|---|
+| Alpha | `vX.Y.Z-alpha.N` | `alpha` |
+| Beta | `vX.Y.Z-beta.N` | `alpha` |
+| Stable | `vX.Y.Z` | `main` |
 
 The base `X.Y.Z` is the current `Cargo.toml` version. Prerelease tags do **not**
 bump `Cargo.toml` or touch the changelog — they pin a commit on `alpha` for
@@ -136,8 +137,8 @@ Standard release batch:
 
 ```sh
 just bump                          # bump Cargo.toml, write CHANGELOG, commit + tag locally
-just promote beta release          # alpha→beta + cut vX.Y.Z-beta.N tag + trigger CI
-just promote main release          # beta→main + cut vX.Y.Z tag + trigger CI
+just promote beta release          # alpha→beta + publish vX.Y.Z-beta.N source-build tag
+just promote main release          # beta→main + publish vX.Y.Z source-build tag
 ```
 
 Promote code only (no CI tag, test locally first):
@@ -166,7 +167,7 @@ it.
 | `plexi-beta` | beta + stable |
 | `plexi-alpha`, `plexi-pr-*` | alpha + beta + stable |
 
-`plexi update` lists all releases (not just `/latest`), filters by the running
+`plexi update` lists all published tags (not just `/latest`), filters by the running
 binary's channel, picks the highest SemVer candidate newer than the current
 version, checks out that exact tag in `~/.plexi-src`, and rebuilds. The install
 target channel is always the running binary's channel — updating `plexi-alpha`
@@ -174,14 +175,3 @@ to a stable tag still installs as `alpha`.
 
 Do not use `plexi-beta update` to test unreleased alpha work — beta never
 accepts alpha tags.
-
-## User Install by Channel
-
-```sh
-curl -fsSL https://plexiapp.com/install | sh                          # stable, prebuilt
-curl -fsSL https://plexiapp.com/install | sh -s -- --channel beta     # beta, source build
-curl -fsSL https://plexiapp.com/install | sh -s -- --channel alpha    # alpha, source build
-```
-
-Prerelease channels have no prebuilt assets, so they build from source and
-require Rust (https://rustup.rs) and Xcode command line tools.

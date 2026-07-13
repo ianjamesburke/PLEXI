@@ -3,7 +3,7 @@
 # Usage: promote.sh [beta|main] [install] [release]
 #   No argument: auto-detects current branch and prompts for confirmation.
 #   install: build and install the target channel after promoting.
-#   release: cut and push a prerelease tag (beta) or stable tag (main) to trigger CI.
+#   release: cut and push a prerelease tag (beta) or stable tag (main) for source-build updates.
 #
 # Run `just bump` on alpha before promoting if you haven't already.
 set -euo pipefail
@@ -145,7 +145,7 @@ if [[ "$to" == "beta" ]]; then
         echo "Cutting $tag on alpha..."
         git -C "$ALPHA_TREE" tag "$tag"
         git -C "$ALPHA_TREE" push origin "$tag"
-        echo "GitHub Actions release workflow triggered for $tag."
+        echo "Published $tag for source-build updates."
     fi
 
     if [[ "$do_install" == "install" || "$do_install" == "true" ]]; then
@@ -189,10 +189,10 @@ if [[ "$do_release" == "release" || "$do_release" == "true" ]]; then
         echo "Creating tag v$version at main HEAD..."
         git -C "$MAIN_TREE" tag "v$version"
     fi
-    echo "Pushing tag v$version → triggers release CI..."
+    echo "Publishing tag v$version for source-build updates..."
     git -C "$MAIN_TREE" push origin "v$version" --force
 else
-    echo "Code promoted to main. Run 'just promote main release' to tag and trigger CI."
+    echo "Code promoted to main. Run 'just promote main release' to publish its source-build tag."
 fi
 
 if [[ "$do_install" == "install" || "$do_install" == "true" ]]; then

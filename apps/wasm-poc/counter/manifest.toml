@@ -4,7 +4,7 @@ schema_version = 1
 id = "com.plexi.counter"
 type = "wasm"
 name = "Counter"
-entry = "target/wasm32-wasip1/release/counter.wasm"
+entry = "../../../target/wasm32-wasip1/release/counter.wasm"
 version = "0.1.0"
 description = "Counter POC for typed WASM UI actions."
 
