@@ -84,8 +84,8 @@ fields is in `sdk.md` (Effects section). The common ones:
 
 <!-- drift-check:effects -->
 `SetState`, `PersistState`, `SetTitle`, `SetStatus`, `SetTimer`, `CancelTimer`,
-`SetSchedulerMode`, `SetMouseTracking`, `FileRead`, `FileList`, `FileWrite`,
-`HttpFetch`, `OpenUrl`, `AiQuery`, `AiMessage`, `CloseSelf`, `RequestCapability`,
+`SetSchedulerMode`, `FileRead`, `FileWrite`, `HttpFetch`, `AiQuery`, `AiMessage`,
+`CloseSelf`, `RequestCapability`,
 `GetSystemStats`
 <!-- /drift-check:effects -->
 

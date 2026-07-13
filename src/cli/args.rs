@@ -671,7 +671,7 @@ pub enum AppCmd {
 
   Effects:
     SetTitle, SetStatus, SetTimer, SetSchedulerMode, SetState, PersistState,
-    HttpFetch, OpenUrl, AiQuery, FileRead, FileWrite, CloseSelf
+    HttpFetch, AiQuery, FileRead, FileWrite, CloseSelf
     Logging is not an effect: call log.debug/info/warn/error from plexi_sdk.
 
   Generated files:
