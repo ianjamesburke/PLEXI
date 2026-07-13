@@ -18,6 +18,12 @@ pub struct AppRenderContext<'a> {
 
 /// Commands an app can issue back to the system.
 pub enum AppCommand {
+    /// A capability-gated effect returned by a WASM component. The app model
+    /// executes it through the same host services that native apps use.
+    WasmHostEffect {
+        pane_id: u64,
+        effect: crate::host::wasm_pane::WasmHostEffect,
+    },
     /// Register the app's v3.7 connector tools with the host broker.
     ExposeTools {
         tools: Vec<crate::app_protocol::AiTool>,

@@ -1609,6 +1609,30 @@ impl PlexiApp {
             .find_map(|(idx, win)| win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile)))
     }
 
+    fn complete_wasm_host_effect(
+        &mut self,
+        pane_id: crate::spatial::tiling::PaneId,
+        event: crate::host::wasm_app::InputEvent,
+    ) {
+        let Some((window_index, _)) = self.find_pane_in_any_window(pane_id) else {
+            log::warn!("wasm effect: source pane {pane_id} closed before result delivery");
+            return;
+        };
+        let Some(app) = self.windows[window_index]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(crate::host::pane::Pane::as_app_mut)
+        else {
+            log::warn!("wasm effect: source pane {pane_id} is no longer an app");
+            return;
+        };
+        if let crate::host::pane::AppRuntime::Wasm(wasm) = &mut app.runtime {
+            wasm.complete_host_effect(event);
+        } else {
+            log::warn!("wasm effect: source pane {pane_id} is no longer a WASM app");
+        }
+    }
+
     /// Set focused pane in a specific window.
     /// Use this everywhere instead of `self.windows[i].focused_pane = Some(...)` directly
     /// so that the grep pattern `windows[active].focused_pane = ` has zero matches outside tests.
@@ -2077,6 +2101,9 @@ impl PlexiApp {
 fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
     use crate::app::app_trait::AppCommand;
     match cmd {
+        AppCommand::WasmHostEffect { effect, .. } => {
+            matches!(effect, crate::host::wasm_pane::WasmHostEffect::Spawn { .. })
+        }
         AppCommand::SpawnApp { .. }
         | AppCommand::SpawnPane { .. }
         | AppCommand::RequestLinkedTerminal { .. }
@@ -2097,6 +2124,7 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
 fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static str {
     use crate::app::app_trait::AppCommand;
     match cmd {
+        AppCommand::WasmHostEffect { .. } => "WasmHostEffect",
         AppCommand::SpawnApp { .. } => "SpawnApp",
         AppCommand::SpawnPane { .. } => "SpawnPane",
         AppCommand::RequestLinkedTerminal { .. } => "RequestLinkedTerminal",
@@ -2343,6 +2371,87 @@ impl eframe::App for PlexiApp {
                 continue;
             }
             match cmd {
+                AppCommand::WasmHostEffect { pane_id, effect } => {
+                    use crate::host::wasm_app::InputEvent;
+                    use crate::host::wasm_pane::WasmHostEffect;
+
+                    let source_window_index = self
+                        .find_pane_in_any_window(pane_id)
+                        .map(|(window_index, _)| window_index);
+                    let event = match effect {
+                        WasmHostEffect::ClipboardRead => {
+                            let result = arboard::Clipboard::new()
+                                .and_then(|mut clipboard| clipboard.get_text())
+                                .map(Some)
+                                .map_err(|error| error.to_string());
+                            log::info!(
+                                "wasm effect: clipboard-read pane_id={pane_id} ok={}",
+                                result.is_ok()
+                            );
+                            InputEvent::ClipboardReadResult(result)
+                        }
+                        WasmHostEffect::ClipboardWrite { text } => {
+                            ctx.copy_text(text);
+                            log::info!("wasm effect: clipboard-write pane_id={pane_id}");
+                            InputEvent::ClipboardWriteResult(Ok(()))
+                        }
+                        WasmHostEffect::Notify { title, body, icon } => {
+                            if let Some(window_index) = source_window_index {
+                                let source_context_id = self.windows[window_index].context_id;
+                                let source_window_id = self.windows[window_index].window_id;
+                                let notify_id = format!("wasm:{pane_id}:{}", uuid::Uuid::new_v4());
+                                self.pending_notifications.push(PendingNotification {
+                                    notify_id,
+                                    sender_pane_id: pane_id,
+                                    source_context_id,
+                                    source_window_id,
+                                    scope: crate::app_protocol::NotifyScope::Context,
+                                    level: "info".to_string(),
+                                    title,
+                                    body,
+                                    kind: crate::app_protocol::NotifyKind::Message,
+                                    options: vec![],
+                                    input_prompt: None,
+                                    required: false,
+                                    priority: 0,
+                                    image_inline: None,
+                                    image_pipe_id: None,
+                                    response_file: None,
+                                    timeout_secs: None,
+                                    on_dismiss: None,
+                                    enqueued_at: std::time::Instant::now(),
+                                    tombstoned: false,
+                                    deliver_after: None,
+                                });
+                                log::info!(
+                                    "wasm effect: notify pane_id={pane_id} context_id={source_context_id} icon={icon:?}"
+                                );
+                                InputEvent::NotifyResult(Ok(()))
+                            } else {
+                                let error = format!("source pane {pane_id} is closed");
+                                log::warn!("wasm effect: notify failed: {error}");
+                                InputEvent::NotifyResult(Err(error))
+                            }
+                        }
+                        WasmHostEffect::Spawn {
+                            app_id,
+                            layout,
+                            args,
+                        } => {
+                            let predicted_pane_id = self.host.next_pane_id();
+                            let result = self
+                                .launch_app_by_id_with_layout(&app_id, layout, &args, None)
+                                .map(|existing| existing.unwrap_or(predicted_pane_id))
+                                .map_err(|error| error.to_string());
+                            log::info!(
+                                "wasm effect: spawn pane_id={pane_id} app_id={app_id} ok={}",
+                                result.is_ok()
+                            );
+                            InputEvent::SpawnResult(result)
+                        }
+                    };
+                    self.complete_wasm_host_effect(pane_id, event);
+                }
                 AppCommand::ExposeTools {
                     tools,
                     pane_id: Some(pane_id),

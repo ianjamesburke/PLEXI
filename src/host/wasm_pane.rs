@@ -47,6 +47,26 @@ struct SurfaceState {
     height: u32,
 }
 
+/// A WASM effect that requires the live host rather than the pane-local effect
+/// loop. `PlexiApp` drains these and returns the corresponding WIT input event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WasmHostEffect {
+    ClipboardRead,
+    ClipboardWrite {
+        text: String,
+    },
+    Notify {
+        title: String,
+        body: String,
+        icon: Option<String>,
+    },
+    Spawn {
+        app_id: String,
+        layout: Option<String>,
+        args: Vec<String>,
+    },
+}
+
 /// Source of system metrics for the `get-system-stats` effect. Production uses
 /// a sysinfo-backed implementation; tests use a fake with fixed values.
 pub trait SystemStatsSource: Send {
@@ -234,6 +254,7 @@ pub struct WasmPane {
     pane_id: u64,
     http_tx: Sender<InputEvent>,
     http_rx: Receiver<InputEvent>,
+    pending_host_effects: VecDeque<WasmHostEffect>,
 }
 
 impl WasmPane {
@@ -262,6 +283,7 @@ impl WasmPane {
             pane_id: 0,
             http_tx,
             http_rx,
+            pending_host_effects: VecDeque::new(),
         }
     }
 
@@ -597,6 +619,14 @@ impl WasmPane {
         self.pending_status.take()
     }
 
+    pub fn take_host_effects(&mut self) -> Vec<WasmHostEffect> {
+        self.pending_host_effects.drain(..).collect()
+    }
+
+    pub fn complete_host_effect(&mut self, event: InputEvent) {
+        self.queue.push_back(event);
+    }
+
     fn fire_timers(&mut self, now_ms: u64) {
         let mut fired: Vec<u32> = Vec::new();
         self.timers.retain_mut(|t| {
@@ -698,6 +728,57 @@ impl WasmPane {
                 let result = self.emit_event(req);
                 self.queue.push_back(InputEvent::EmitEventResult(result));
             }
+            Effect::ClipboardRead => {
+                self.queue_host_effect("clipboard.read", WasmHostEffect::ClipboardRead, |err| {
+                    InputEvent::ClipboardReadResult(Err(err))
+                })
+            }
+            Effect::ClipboardWrite(text) => self.queue_host_effect(
+                "clipboard.write",
+                WasmHostEffect::ClipboardWrite { text },
+                |err| InputEvent::ClipboardWriteResult(Err(err)),
+            ),
+            Effect::Notify(req) => self.queue_host_effect(
+                "notify",
+                WasmHostEffect::Notify {
+                    title: req.title,
+                    body: req.body,
+                    icon: req.icon,
+                },
+                |err| InputEvent::NotifyResult(Err(err)),
+            ),
+            Effect::Spawn(req) => self.queue_host_effect(
+                "spawn.app",
+                WasmHostEffect::Spawn {
+                    app_id: req.app_id,
+                    layout: req.layout,
+                    args: req.args,
+                },
+                |err| InputEvent::SpawnResult(Err(err)),
+            ),
+        }
+    }
+
+    fn queue_host_effect(
+        &mut self,
+        capability_id: &str,
+        effect: WasmHostEffect,
+        denied: impl FnOnce(String) -> InputEvent,
+    ) {
+        if self.has_session_grant(capability_id) {
+            log::info!(
+                "wasm effect: app_id={} capability={} effect={effect:?}",
+                self.app.app_id(),
+                capability_id
+            );
+            self.pending_host_effects.push_back(effect);
+        } else {
+            log::info!(
+                "wasm effect: denied app_id={} capability={capability_id}",
+                self.app.app_id()
+            );
+            self.queue
+                .push_back(denied(format!("capability '{capability_id}' is required")));
         }
     }
 
@@ -735,6 +816,11 @@ impl WasmPane {
             self.access.grant_fs_write_root(PathBuf::from(path));
         } else if let Some(host) = capability_id.strip_prefix("net:fetch:") {
             self.access.grant_net_host(host);
+        } else if matches!(
+            capability_id,
+            "clipboard.read" | "clipboard.write" | "notify" | "spawn.app"
+        ) {
+            log::info!("wasm capability: session grant enabled {capability_id}");
         } else {
             log::info!(
                 "wasm capability: session grant recorded without runtime access for unknown capability '{capability_id}'"
@@ -1185,6 +1271,14 @@ impl LiveWasmPane {
         self.inner.set_pane_id(pane_id);
     }
 
+    pub fn take_host_effects(&mut self) -> Vec<WasmHostEffect> {
+        self.inner.take_host_effects()
+    }
+
+    pub fn complete_host_effect(&mut self, event: InputEvent) {
+        self.inner.complete_host_effect(event);
+    }
+
     pub fn draw_capability_modal(&mut self, ctx: &egui::Context, colors: &Colors) {
         let Some(prompt) = self.inner.pending_capability_prompt() else {
             return;
@@ -1579,7 +1673,8 @@ fn translate_key_event(event: &egui::Event) -> Option<KeyEvent> {
 #[cfg(test)]
 mod tests {
     use super::super::wasm_app::bindings::plexi::platform::types::{
-        AiMessage as WitAiMessage, EventStreamDecl as WitEventStreamDecl,
+        AiMessage as WitAiMessage, EventStreamDecl as WitEventStreamDecl, NotificationEffect,
+        SpawnEffect,
     };
     use super::*;
     use crate::host::services::HttpResponse as HostHttpResponse;
@@ -1688,6 +1783,97 @@ mod tests {
 
     fn request_capability(capability_id: impl Into<String>) -> Effect {
         Effect::RequestCapability(capability_id.into())
+    }
+
+    #[test]
+    fn protected_effects_require_a_grant_then_leave_for_the_live_host() {
+        let mut p = pane(0.0);
+
+        p.exec(Effect::ClipboardRead, 0);
+        assert!(p.take_host_effects().is_empty());
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::ClipboardReadResult(Err(_))
+        ));
+
+        p.exec(Effect::ClipboardWrite("secret".to_string()), 0);
+        assert!(p.take_host_effects().is_empty());
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::ClipboardWriteResult(Err(_))
+        ));
+
+        grant_capability(&mut p, "clipboard.read");
+        p.exec(Effect::ClipboardRead, 0);
+        assert_eq!(p.take_host_effects(), vec![WasmHostEffect::ClipboardRead]);
+        p.complete_host_effect(InputEvent::ClipboardReadResult(Ok(Some(
+            "copied".to_string(),
+        ))));
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::ClipboardReadResult(Ok(Some(text))) if text == "copied"
+        ));
+
+        grant_capability(&mut p, "clipboard.write");
+        p.exec(Effect::ClipboardWrite("secret".to_string()), 0);
+        assert_eq!(
+            p.take_host_effects(),
+            vec![WasmHostEffect::ClipboardWrite {
+                text: "secret".to_string()
+            }]
+        );
+
+        p.complete_host_effect(InputEvent::ClipboardWriteResult(Ok(())));
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::ClipboardWriteResult(Ok(()))
+        ));
+    }
+
+    #[test]
+    fn notify_and_spawn_round_trip_through_live_host_effect_queue() {
+        let mut p = pane(0.0);
+        grant_capability(&mut p, "notify");
+        grant_capability(&mut p, "spawn.app");
+
+        p.exec(
+            Effect::Notify(NotificationEffect {
+                title: "Saved".to_string(),
+                body: "Document saved".to_string(),
+                icon: Some("check".to_string()),
+            }),
+            0,
+        );
+        p.exec(
+            Effect::Spawn(SpawnEffect {
+                app_id: "com.plexi.counter".to_string(),
+                layout: Some("split_h".to_string()),
+                args: vec!["--demo".to_string()],
+            }),
+            0,
+        );
+        assert_eq!(
+            p.take_host_effects(),
+            vec![
+                WasmHostEffect::Notify {
+                    title: "Saved".to_string(),
+                    body: "Document saved".to_string(),
+                    icon: Some("check".to_string()),
+                },
+                WasmHostEffect::Spawn {
+                    app_id: "com.plexi.counter".to_string(),
+                    layout: Some("split_h".to_string()),
+                    args: vec!["--demo".to_string()],
+                },
+            ]
+        );
+        p.complete_host_effect(InputEvent::NotifyResult(Ok(())));
+        p.complete_host_effect(InputEvent::SpawnResult(Ok(42)));
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::NotifyResult(Ok(()))
+        ));
+        assert!(matches!(pop_event(&mut p), InputEvent::SpawnResult(Ok(42))));
     }
 
     fn grant_capability(p: &mut WasmPane, capability_id: &str) {

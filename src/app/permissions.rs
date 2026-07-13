@@ -838,6 +838,10 @@ pub fn wasm_capability_requires_consent(capability_id: &str) -> bool {
         || capability_id.starts_with("audio:record:")
         || capability_id == "spawn-child"
         || capability_id.starts_with("spawn-child:")
+        || capability_id == "spawn.app"
+        || capability_id == "clipboard.read"
+        || capability_id == "clipboard.write"
+        || capability_id == "notify"
         || capability_id == "open-pane"
         || capability_id.starts_with("open-pane:")
 }
@@ -855,13 +859,17 @@ pub fn validate_wasm_capability_id(capability_id: &str) -> Result<(), String> {
         || capability_id.starts_with("audio:record:")
         || capability_id == "spawn-child"
         || capability_id.starts_with("spawn-child:")
+        || capability_id == "spawn.app"
+        || capability_id == "clipboard.read"
+        || capability_id == "clipboard.write"
+        || capability_id == "notify"
         || capability_id == "open-pane"
         || capability_id.starts_with("open-pane:")
     {
         Ok(())
     } else {
         Err(format!(
-            "unknown raw WASM capability '{capability_id}' — expected ai.query, state:read-write, pipe.open, gpu.render, audio.playback, fs:read:<path>, fs:write:<path>, net:fetch:<host>, audio:record, spawn-child, or open-pane"
+            "unknown raw WASM capability '{capability_id}' — expected ai.query, state:read-write, pipe.open, gpu.render, audio.playback, fs:read:<path>, fs:write:<path>, net:fetch:<host>, audio:record, spawn-child, spawn.app, clipboard.read, clipboard.write, notify, or open-pane"
         ))
     }
 }
@@ -887,6 +895,14 @@ pub fn wasm_capability_description(capability_id: &str) -> &'static str {
         "Capture microphone audio"
     } else if capability_id == "spawn-child" || capability_id.starts_with("spawn-child:") {
         "Spawn a child process"
+    } else if capability_id == "spawn.app" {
+        "Open another app in a pane"
+    } else if capability_id == "clipboard.read" {
+        "Read text from the clipboard"
+    } else if capability_id == "clipboard.write" {
+        "Write text to the clipboard"
+    } else if capability_id == "notify" {
+        "Post a host notification"
     } else if capability_id == "open-pane" || capability_id.starts_with("open-pane:") {
         "Open a new pane"
     } else {
@@ -1605,6 +1621,10 @@ mod tests {
             "net:fetch:api.github.com",
             "audio:record",
             "spawn-child",
+            "spawn.app",
+            "clipboard.read",
+            "clipboard.write",
+            "notify",
             "open-pane",
         ] {
             validate_wasm_capability_id(capability_id)

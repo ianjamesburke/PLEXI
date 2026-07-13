@@ -136,6 +136,10 @@ interface types {
         ai-response(ai-response-event),
         declare-event-streams-result(result<list<string>, string>),
         emit-event-result(result<u64, string>),
+        clipboard-read-result(result<option<string>, string>),
+        clipboard-write-result(result<_, string>),
+        notify-result(result<_, string>),
+        spawn-result(result<u64, string>),
 
         // GPU surface lifecycle
         surface-ready(surface-event),
@@ -208,6 +212,18 @@ interface types {
         repeat: bool,
     }
 
+    record notification-effect {
+        title: string,
+        body: string,
+        icon: option<string>,
+    }
+
+    record spawn-effect {
+        app-id: string,
+        layout: option<string>,
+        args: list<string>,
+    }
+
     variant effect {
         file-read(file-read-effect),
         file-write(file-write-effect),
@@ -222,6 +238,10 @@ interface types {
         set-status(string),
         close-self,
         request-capability(string),
+        clipboard-read,
+        clipboard-write(string),
+        notify(notification-effect),
+        spawn(spawn-effect),
     }
 
     // ── UI node tree (arena — avoids WIT recursive types) ─────────────────────
