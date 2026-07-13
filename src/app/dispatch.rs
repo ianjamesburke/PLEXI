@@ -196,6 +196,13 @@ impl PlexiApp {
             let resolved_scope = self.registry.default_notification_scope_for(&type_id);
             for cmd in cmds {
                 match cmd {
+                    AppCommand::ExposeTools { tools, .. } => {
+                        deferred.push(AppCommand::ExposeTools {
+                            tools,
+                            pane_id: Some(pane_id),
+                        });
+                    }
+                    AppCommand::ToolResult { .. } => deferred.push(cmd),
                     AppCommand::AssistantHostTool {
                         name,
                         input_json,

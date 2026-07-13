@@ -194,10 +194,7 @@ impl SemanticPaneState {
         }
     }
 
-    pub(crate) fn expose_canvas_commands(
-        &mut self,
-        tree: &crate::host::wasm_app::UiTree,
-    ) {
+    pub(crate) fn expose_canvas_commands(&mut self, tree: &crate::host::wasm_app::UiTree) {
         use crate::host::wasm_app::UiNodeData;
 
         for (state_node, tree_node) in self.nodes.iter_mut().zip(&tree.nodes) {
@@ -655,8 +652,17 @@ impl AppRuntime {
     pub fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
         match self {
             AppRuntime::Builtin(app) => app.queue_outbound_event(event),
-            AppRuntime::Python(_) => {}
+            AppRuntime::Python(app) => app.queue_outbound_event(event),
             AppRuntime::Wasm(_) => {}
+        }
+    }
+
+    pub(crate) fn python_tool_event_sender(
+        &self,
+    ) -> Option<crate::host::wasm_python::AppendableStdin> {
+        match self {
+            AppRuntime::Python(app) => Some(app.tool_event_sender()),
+            AppRuntime::Builtin(_) | AppRuntime::Wasm(_) => None,
         }
     }
 

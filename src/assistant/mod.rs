@@ -3040,7 +3040,7 @@ enabled = ["allowed.tool"]
             9200,
             "csv".to_string(),
             vec![ro_tool, rw_tool],
-            AppEventSender { tx },
+            AppEventSender::Channel(tx),
             ws.path().to_path_buf(),
         );
         // No grants seeded — read-only tool must be auto-allowed; mutating
@@ -3074,7 +3074,7 @@ enabled = ["allowed.tool"]
                 timeout_ms: None,
                 read_only: true,
             }],
-            AppEventSender { tx },
+            AppEventSender::Channel(tx),
             ws.path().to_path_buf(),
         );
         // Explicit deny must still win even though the tool is read-only.
@@ -3111,7 +3111,7 @@ enabled = ["allowed.tool"]
                 timeout_ms: None,
                 read_only: true,
             }],
-            AppEventSender { tx },
+            AppEventSender::Channel(tx),
             ws.path().to_path_buf(),
         );
 
@@ -3153,7 +3153,7 @@ enabled = ["allowed.tool"]
                     read_only: false,
                 },
             ],
-            AppEventSender { tx },
+            AppEventSender::Channel(tx),
             ws.path().to_path_buf(),
         );
         seed_grant(&mut app, "app.csv.write_cell", Decision::Allow);
@@ -3217,7 +3217,7 @@ enabled = ["allowed.tool"]
                     read_only: false,
                 },
             ],
-            AppEventSender { tx },
+            AppEventSender::Channel(tx),
             ws.path().to_path_buf(),
         );
         app.model.composer = "/apps".to_string();
@@ -3422,7 +3422,7 @@ enabled = ["allowed.tool"]
             pane_id,
             "test-app".to_string(),
             tools,
-            AppEventSender { tx },
+            AppEventSender::Channel(tx),
             ws,
         );
         std::thread::spawn(move || {

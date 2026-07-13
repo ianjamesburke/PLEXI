@@ -95,6 +95,46 @@ use it only when a key must survive an app restart. There are no `LogInfo` /
 `LogWarn` / `LogError` effects — logging goes through the `log` module (below).
 Network fetches use `HttpFetch`, not `HttpRequest`.
 
+## App Tools
+
+Apps can expose tools to the Assistant with `ExposeTools`. Declare the full
+set in `init()`. When the Assistant calls one, `update()` receives a
+`ToolCall`; return one `ToolResult` with the matching `call_id`.
+
+```python
+import json
+
+from plexi_sdk.effects import AiTool, ExposeTools, ToolResult
+from plexi_sdk.events import ToolCall
+
+
+def init(size, args):
+    return [ExposeTools([
+        AiTool(
+            name="csv.describe_table",
+            description="Describe the current table.",
+            input_schema={"type": "object", "properties": {}},
+            read_only=True,
+        ),
+    ])]
+
+
+def update(event):
+    if isinstance(event, ToolCall) and event.name == "csv.describe_table":
+        return [ToolResult(event.call_id, output_json=json.dumps({"rows": 42}))]
+    return []
+```
+
+`input_schema` is a JSON Schema object. `ToolCall.input_json` is the JSON
+string supplied by the Assistant. Return `output_json` for success or `error`
+for failure, never both. A declaration replaces the pane's previous tool set,
+so send every current tool when it changes.
+
+Set `read_only=True` only for tools that never mutate app or workspace state.
+The Assistant runs read-only tools without a write-grant prompt, while still
+recording every call. Mutating tools prompt for an allow-once or persisted
+narrow grant before they run.
+
 ## UI Components
 
 Import from `plexi_sdk.ui`. Read `sdk.md` (UI Components section) for the full

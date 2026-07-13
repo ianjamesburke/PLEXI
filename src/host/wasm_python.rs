@@ -1312,6 +1312,35 @@ impl LivePythonPane {
     pub fn wants_close(&self) -> bool {
         self.wants_close
     }
+
+    pub fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+        let crate::app_protocol::PlexiEvent::ToolCall {
+            call_id,
+            name,
+            input_json,
+            caller_id,
+        } = event
+        else {
+            return;
+        };
+        if let Err(error) = self.runtime.send(&json!({
+            "type": "tool_call",
+            "call_id": call_id,
+            "name": name,
+            "input_json": input_json,
+            "caller_id": caller_id,
+        })) {
+            log::error!(
+                "app::{}: queue ToolCall to Python runtime: {error}",
+                self.app_id
+            );
+            self.error = Some(error.to_string());
+        }
+    }
+
+    pub(crate) fn tool_event_sender(&self) -> crate::host::wasm_python::AppendableStdin {
+        self.runtime.stdin.clone()
+    }
     pub fn take_pending_commands(&mut self) -> Vec<crate::app::app_trait::AppCommand> {
         std::mem::take(&mut self.pending_commands)
     }
@@ -1364,7 +1393,10 @@ fn python_semantic_state(tree: Option<&PythonUiTree>) -> crate::host::pane::Sema
                 super::wasm_render::CanvasFit::Fill => "fill",
                 super::wasm_render::CanvasFit::Contain => "contain",
             };
-            node.value = Some(format!("{} fit={fit}", node.value.as_deref().unwrap_or("canvas")));
+            node.value = Some(format!(
+                "{} fit={fit}",
+                node.value.as_deref().unwrap_or("canvas")
+            ));
         }
     }
     state
@@ -1502,6 +1534,23 @@ fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_tr
             .to_string()
     };
     match message.get("type").and_then(Value::as_str)? {
+        "expose_tools" => serde_json::from_value(message.get("tools")?.clone())
+            .ok()
+            .map(|tools| AppCommand::ExposeTools {
+                tools,
+                pane_id: None,
+            }),
+        "tool_result" => Some(AppCommand::ToolResult {
+            call_id: text("call_id"),
+            output_json: message
+                .get("output_json")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            error: message
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }),
         "notify" => Some(AppCommand::Notify(text("message"))),
         "spawn_app" => Some(AppCommand::SpawnApp {
             type_id: text("app_id"),
@@ -2014,7 +2063,10 @@ fn decode_python_ui_tree_value(value: &Value) -> Result<PythonUiTree, WasmPython
         let Some(data) = node.get("data") else {
             continue;
         };
-        if !matches!(data.get("type").and_then(Value::as_str), Some("Canvas" | "canvas")) {
+        if !matches!(
+            data.get("type").and_then(Value::as_str),
+            Some("Canvas" | "canvas")
+        ) {
             continue;
         }
         let id = required_u32(node, "id")?;
@@ -2681,10 +2733,12 @@ mod tests {
         let now = std::time::Instant::now();
         let mut scheduler = PythonFrameScheduler::new(now);
         let frame_id = scheduler.poll_render(now).expect("first frame");
-        let pending_tree = decode_python_ui_tree_value(&serde_json::from_str(
-            r#"{"root":0,"nodes":[{"id":0,"key":"0","data":{"type":"Text","text":"new"}}]}"#,
+        let pending_tree = decode_python_ui_tree_value(
+            &serde_json::from_str(
+                r#"{"root":0,"nodes":[{"id":0,"key":"0","data":{"type":"Text","text":"new"}}]}"#,
+            )
+            .expect("valid JSON"),
         )
-        .expect("valid JSON"))
         .expect("pending tree");
         let mut pending = HashMap::from([(frame_id, pending_tree)]);
         let mut visible = None;

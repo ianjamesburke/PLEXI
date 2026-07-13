@@ -2343,6 +2343,44 @@ impl eframe::App for PlexiApp {
                 continue;
             }
             match cmd {
+                AppCommand::ExposeTools {
+                    tools,
+                    pane_id: Some(pane_id),
+                } => {
+                    let provider = self.windows.iter().find_map(|window| {
+                        window.panes.get(&pane_id).and_then(|pane| {
+                            pane.as_app().and_then(|app| {
+                                app.runtime.python_tool_event_sender().map(|stdin| {
+                                    (app.manifest_id.clone(), app.workspace_root.clone(), stdin)
+                                })
+                            })
+                        })
+                    });
+                    if let Some((app_id, workspace_root, stdin)) = provider {
+                        crate::plexi_ai::tool_dispatch::register(
+                            pane_id,
+                            app_id,
+                            tools,
+                            crate::plexi_ai::tool_dispatch::AppEventSender::Python(stdin),
+                            workspace_root,
+                        );
+                    } else {
+                        log::warn!(
+                            "tool_dispatch: ignore ExposeTools from non-Python pane {pane_id}"
+                        );
+                    }
+                }
+                AppCommand::ExposeTools { pane_id: None, .. } => {
+                    log::warn!("tool_dispatch: ExposeTools missing source pane")
+                }
+                AppCommand::ToolResult {
+                    call_id,
+                    output_json,
+                    error,
+                } => crate::plexi_ai::tool_dispatch::resolve_pending(
+                    &call_id,
+                    crate::plexi_ai::tool_dispatch::ToolCallResult { output_json, error },
+                ),
                 AppCommand::AssistantHostTool {
                     name,
                     input_json,

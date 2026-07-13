@@ -132,6 +132,14 @@ class AiResponse:
 
 
 @dataclass
+class ToolCall:
+    call_id: str
+    name: str
+    input_json: str
+    caller_id: str
+
+
+@dataclass
 class DeclareEventStreamsResult:
     streams: Optional[list]
     error: Optional[str]

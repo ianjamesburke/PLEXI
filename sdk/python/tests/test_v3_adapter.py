@@ -13,13 +13,14 @@ from plexi_sdk import _v3_state
 from plexi_sdk import state
 from plexi_sdk._adapter import _decode_event, _encode_effect, _encode_uitree
 from plexi_sdk._adapter import call_lifecycle, load_app
-from plexi_sdk.effects import HttpFetch, SetState, SetTitle
+from plexi_sdk.effects import AiTool, ExposeTools, HttpFetch, SetState, SetTitle, ToolResult
 from plexi_sdk.events import (
     HttpResponse,
     KeyEvent,
     PipeMessage,
     PipePayload,
     SystemStatsResult,
+    ToolCall,
 )
 from plexi_sdk.ui import (
     Button,
@@ -46,6 +47,50 @@ def test_effects_encode_http_fetch_bytes_as_json_list() -> None:
         "headers": {},
         "body": [111, 107],
     }
+
+
+def test_tool_effects_encode_rust_wire_shape() -> None:
+    tool = AiTool(
+        name="csv.describe_table",
+        description="Describe the current table.",
+        input_schema={"type": "object", "properties": {}},
+        timeout_ms=1_500,
+        read_only=True,
+    )
+
+    assert _encode_effect(ExposeTools([tool])) == {
+        "type": "ExposeTools",
+        "tools": [{
+            "name": "csv.describe_table",
+            "description": "Describe the current table.",
+            "input_schema": {"type": "object", "properties": {}},
+            "timeout_ms": 1_500,
+            "read_only": True,
+        }],
+    }
+    assert _encode_effect(ToolResult("call-7", output_json='{"rows":3}')) == {
+        "type": "ToolResult",
+        "call_id": "call-7",
+        "output_json": '{"rows":3}',
+        "error": None,
+    }
+
+
+def test_events_decode_tool_call_rust_wire_shape() -> None:
+    event = _decode_event({
+        "type": "ToolCall",
+        "call_id": "call-7",
+        "name": "csv.describe_table",
+        "input_json": "{}",
+        "caller_id": "assistant",
+    })
+
+    assert event == ToolCall(
+        call_id="call-7",
+        name="csv.describe_table",
+        input_json="{}",
+        caller_id="assistant",
+    )
 
 
 def test_events_decode_key_event_with_modifiers() -> None:
