@@ -650,7 +650,9 @@ impl WasmPane {
     }
 
     /// Read the current surface texture back to an RGBA image, if a surface is
-    /// allocated. Used to composite into egui (live) and assert pixels (gates).
+    /// allocated. Test-only: pixel assertions in gate tests. Live composition
+    /// never blocks the UI thread on a synchronous readback.
+    #[cfg(test)]
     pub fn read_surface(&self) -> Option<image::RgbaImage> {
         let s = self.surface.as_ref()?;
         self.app.read_surface(s.handle)
@@ -670,6 +672,22 @@ impl WasmPane {
     /// Surface readbacks performed by this pane's device (capture path only).
     pub fn surface_readbacks(&self) -> u64 {
         self.app.surface_readbacks()
+    }
+
+    /// Queue a nonblocking copy of the live surface for the dedicated-device
+    /// fallback (no shared render state to composite into directly).
+    pub fn request_surface_readback(&mut self) -> Result<(), String> {
+        let handle = self
+            .surface
+            .as_ref()
+            .ok_or_else(|| "no surface allocated".to_string())?
+            .handle;
+        self.app.request_surface_readback(handle)
+    }
+
+    /// Drain the newest completed dedicated-device surface frame, if ready.
+    pub fn take_surface_readback(&mut self) -> Option<Result<image::RgbaImage, String>> {
+        self.app.take_surface_readback()
     }
 
     pub fn view(&mut self) -> wasmtime::Result<UiTree> {
@@ -1764,24 +1782,44 @@ impl LiveWasmPane {
                     }
                     self.surface_id
                 }
-                // Fallback: no shared device, so read the surface back and
-                // re-upload it as an egui texture (the slow legacy path).
+                // Fallback: no shared device. Keep an N-buffered async readback
+                // ring in flight so the UI thread never blocks on `poll(Wait)`:
+                // queue this frame's copy, then upload whichever previous copy
+                // has finished. The texture lags by at most a couple of frames
+                // instead of stalling until the current one completes.
                 None => {
-                    if let Some(img) = self.inner.read_surface() {
-                        let color = egui::ColorImage::from_rgba_unmultiplied(
-                            [w as usize, h as usize],
-                            img.as_raw(),
+                    if let Err(e) = self.inner.request_surface_readback() {
+                        log::warn!(
+                            "wasm present: async surface readback request failed for {}: {e}",
+                            self.spawn_name
                         );
-                        match &mut self.fallback_tex {
-                            Some(tex) => tex.set(color, egui::TextureOptions::LINEAR),
-                            none => {
-                                *none = Some(ui.ctx().load_texture(
-                                    format!("wasm-surface-{}", self.spawn_name),
-                                    color,
-                                    egui::TextureOptions::LINEAR,
-                                ));
+                    }
+                    match self.inner.take_surface_readback() {
+                        Some(Ok(img)) => {
+                            let color = egui::ColorImage::from_rgba_unmultiplied(
+                                [w as usize, h as usize],
+                                img.as_raw(),
+                            );
+                            match &mut self.fallback_tex {
+                                Some(tex) => tex.set(color, egui::TextureOptions::LINEAR),
+                                none => {
+                                    *none = Some(ui.ctx().load_texture(
+                                        format!("wasm-surface-{}", self.spawn_name),
+                                        color,
+                                        egui::TextureOptions::LINEAR,
+                                    ));
+                                }
                             }
                         }
+                        Some(Err(e)) => {
+                            log::warn!(
+                                "wasm present: async surface readback failed for {}: {e}",
+                                self.spawn_name
+                            );
+                        }
+                        // Nothing completed yet this frame; keep showing the
+                        // most recently uploaded texture rather than stalling.
+                        None => {}
                     }
                     self.fallback_tex.as_ref().map(|t| t.id())
                 }
@@ -3009,6 +3047,43 @@ mod tests {
             p.surface_readbacks() - before,
             1,
             "capture readback must be on-demand and isolated from the present path"
+        );
+        Ok(())
+    }
+
+    // ── Perf gate: dedicated-device fallback stays off the UI thread ─────────
+    //
+    // The async ring's whole purpose is to keep the non-shared-device fallback
+    // from blocking the UI thread on `poll(Wait)`. This locks a generous
+    // wall-clock ceiling on the request -> completion round trip at the pane's
+    // default 480x360 size so a regression back to synchronous readback gets
+    // caught before it lands.
+    #[test]
+    fn perf_gate_async_readback_within_budget() -> wasmtime::Result<()> {
+        let mut p = pong_pane();
+        p.init(&StateSnapshot { entries: vec![] }, (480.0, 360.0), 0, &[])?;
+        let (w, h) = p.surface_size().expect("surface allocated after init");
+
+        const THRESHOLD: std::time::Duration = std::time::Duration::from_millis(50);
+        let start = Instant::now();
+        p.request_surface_readback()
+            .expect("queue async surface readback");
+        let img = loop {
+            if let Some(result) = p.take_surface_readback() {
+                break result.expect("async surface readback succeeds");
+            }
+            assert!(
+                start.elapsed() < THRESHOLD,
+                "async surface readback exceeded {THRESHOLD:?} budget at {w}x{h}"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(img.width(), w);
+        assert_eq!(img.height(), h);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < THRESHOLD,
+            "async surface readback took {elapsed:?}, budget {THRESHOLD:?} at {w}x{h}"
         );
         Ok(())
     }
