@@ -758,7 +758,7 @@ impl PlexiApp {
 
     pub(crate) fn notification_modal_handle_key(
         &mut self,
-        ctx: &egui::Context,
+        input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         use crate::app_protocol::NotifyKind;
         let shortcuts_blocked = self
@@ -772,14 +772,13 @@ impl PlexiApp {
             .map(|n| matches!(n.kind, NotifyKind::Input))
             .unwrap_or(true);
 
-        let (h_pressed, l_pressed) = ctx.input_mut(|i| {
-            if shortcuts_blocked || !i.modifiers.is_none() {
-                return (false, false);
-            }
-            let h = i.consume_key(egui::Modifiers::NONE, egui::Key::H);
-            let l = i.consume_key(egui::Modifiers::NONE, egui::Key::L);
+        let (h_pressed, l_pressed) = if shortcuts_blocked || !input.modifiers().is_none() {
+            (false, false)
+        } else {
+            let h = input.consume_key(egui::Modifiers::NONE, egui::Key::H);
+            let l = input.consume_key(egui::Modifiers::NONE, egui::Key::L);
             (h, l)
-        });
+        };
 
         if h_pressed {
             log::info!("notification cycle: prev (H)");

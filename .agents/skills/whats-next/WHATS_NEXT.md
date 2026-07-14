@@ -6,17 +6,17 @@
 
 ---
 
-## Current State (2026-07-11, Assistant feature chain + full scene loop landed)
+## Current State (2026-07-11, dogfooding audit lands 15 assistant/UX tasks)
 
-`alpha` is at `ae73660e`: the Assistant feature chain through conversation history, skills, and native host tools (`0225`, `0226`, `0228`, `0229`) is landed. The shared headless/live testing stack and its full-host coverage audit (`0362`, `0363`, `0364`, `0361`) are also landed. Details live in `docs/DEVLOG.md`.
+`alpha` is at `56b994dc`: workspace saves are atomic (`0367`), CLI commands route by binary channel (`0365`), and the Assistant E2E harness with local/cheap-model verification (`0359`) is landed. Details in `docs/DEVLOG.md`.
 
-**Free v1 finish line is now effectively complete.** The last tracked P1 gap (`0349`) is merged. Remaining gap: production hosted-registry install smoke after deploying alpha — not yet a stint task.
+**Free v1 finish line: one verification pass remains.** `0358` (P1, small) — production hosted-registry install smoke from a clean machine after deploying alpha. It is the only tracked Epoch 1 gap.
 
-**Critical constraint — the Polar AUP wall.** Polar is a merchant of record for **first-party** digital products only; its AUP **bars the marketplace model** (third-party sellers collecting with payouts owed back). Epoch 3 is split: Plexi can sell **its own** apps + the AI Pro subscription on Polar now (`0355`, done); paying outside publishers their 85% needs a different rail (Stripe Connect / etc.) and is deferred to `0352`.
+**Dogfooding verdict (three live sessions, 2026-07-11):** the assistant-as-operator story has a load-bearing hole — the host's v3.7 tool protocol (`ExposeTools`/`AiTool`, landed in `0227`) was never wrapped in the Python SDK, so **zero apps can expose connector tools** (`0369`, P1). The assistant also cannot type into a terminal it opens (`0376`, P1), has no internet fetch (`0381`), can't target an existing pane (`0374`), and has no answer for "do you take MCP connectors?" (`0382`, scope task). Permission modal and assistant-UX papercuts round out the batch (`0372`/`0373`/`0375`/`0377`/`0378`/`0379`/`0380`).
 
-**First-party sales are code-complete, dark behind `SALES_ENABLED`.** `0356` (new, P1) is the single ops runbook to go live: production Polar org, product creation (`ensure-ai-pro` + `set-app`), private Railway artifact bucket, webhook registration, confirm legal live, flip the switch, real smoke purchase+refund. Pure provisioning, no code.
+**Commercial launch deferred post-v2 (decision 2026-07-11):** Ian is the sole publisher for now and no sales ship at launch. `0344`/`0352`/`0353`/`0356` moved to backlog, tagged `post-v2`. No code stubs needed — sales are already dark behind `SALES_ENABLED=false` and the publish/package seams (`publisher` field, `PublishClient`) are landed. Polar AUP constraint unchanged: first-party MoR only; third-party payouts need `0352`'s rail decision when the marketplace opens.
 
-Other open PRs affecting priority reading:
+Open PRs affecting priority reading:
 
 - `#2353` open: toolbar button focus-steal fix (external branch).
 - `#2323` draft: WASM SDK v3 platform POCs (`0285`/`0287` lane).
@@ -25,7 +25,7 @@ Other open PRs affecting priority reading:
 - `#2282` open: collapsible subcontexts (`0241`), failed build check.
 - `#1604` open: Windows port (external branch).
 
-Not real yet: first-party sales live (needs `0356` provisioning), production hosted-registry install smoke after alpha deploy, managed `ai.query` backend (`0323`), and the third-party publisher economy (`0344`/`0352`/`0353`).
+Not real yet: first-party sales live (`0356`), production registry install smoke (`0358`), app connector tools reachable from any app (`0369`), managed `ai.query` backend (`0323`), third-party publisher economy (`0344`/`0352`/`0353`).
 
 ---
 
@@ -33,40 +33,46 @@ Not real yet: first-party sales live (needs `0356` provisioning), production hos
 
 Every epoch feeds the next; the whole line points at `NORTH_STAR.md` ("the last app you'll ever need" — a portable, ownable computing environment where the marketplace is how it gets apps and makes money). Tasks are indented under the outcome they serve; nested tasks are blocked by their parent.
 
-### Epoch 1 — Land v1 (now) — effectively done
+### Epoch 1 — Land v1 (now) — one verification pass from done
 
 A stranger installs, an agent builds an app first try, a free reviewed app installs from the hosted registry.
 
-- First-user surface is landed (onboarding, website, registry go-live, palette scroll, app-builder DX, exemplar apps, SDK coverage, hosted Core catalog, native pane-key driving, agent pip color, explorer native media viewers `0349`). Detail in `docs/DEVLOG.md`.
-- **Missing tracked gap:** production hosted-registry smoke after deploy from alpha. Create a stint if it can't fold into release verification.
+- First-user surface is landed; detail in `docs/DEVLOG.md`.
+- `0358` production hosted-registry install smoke after alpha deploy — the last tracked gap, and the release gate.
 
 ### Epoch 2 — Intelligence (NORTH_STAR Phase 3; runs parallel to Epoch 3)
 
 The host Assistant becomes the workspace operator: typed host tools behind the permission broker, named agent personas, skills, app connectors.
 
-- Agent registry, model routing, settings scopes, conversation history, skills, and native host tools are landed (`0225`, `0226`, `0228`, `0229`).
-- `0359` adds deterministic Assistant orchestration traces and verifies the shipped loop against local and cheap cloud models.
+- Registry/routing/settings/history/skills/host-tools/E2E-harness are landed (`0225`–`0229`, `0359`).
+- **The connector-tool chain — the epoch's current spine:**
+  - `0369` Python SDK wrapper for `ExposeTools`/`AiTool`/`ToolResult` — unblocks every app exposing tools
+    - `0370` calculator exposes its operations as tools (first real connector)
+    - `0371` connector-tools POC app under `apps/dev/`
+  - `0382` scope: MCP servers as assistant tool sources (design decision, likely rides the `0369` connector path)
+- **Assistant operator gaps (each independently shippable):**
+  - `0376` terminal send-input tool (wraps existing `RunInLinkedTerminal`) — makes "run a command" real
+  - `0381` internet fetch tool (wraps existing `HttpRequest`/`net.http`)
+  - `0374` pane-targeting for `host.apps.open`/`host.panes.open`
+  - `0380` slash-command output visible to the assistant
+- **Assistant/permission UX (trust surface for everything above):**
+  - `0377` permission modal keyboard nav; `0378` modal responsive sizing
+  - `0373` interactive permissions manager (replaces `/revoke <target_id>`)
+  - `0372` `/model` interactive picker; `0375` `/compact` progress/success feedback
 
 ### Testing foundation: shared headless/live vocabulary
 
 Agents can drive and verify the host through one scene language. Generic verbs and symbolic handles, normalized Process/native/WASM semantics, the installed-host backend, and the full-host coverage audit are landed (`0362`, `0363`, `0364`, `0361`).
 
-### Epoch 3 — Commercial launch (Track B)
+### Epoch 3 — Commercial launch (Track B) — deferred post-v2 (decision 2026-07-11)
 
-The registry brokers money; never a dependency for running installed apps. Spec: `docs/marketplace-monetization.md` (`0315`, done). **Constraint (2026-07-10): Polar's AUP bars the third-party-marketplace model; Polar is first-party MoR only.** The path splits:
+The registry brokers money; never a dependency for running installed apps. Spec: `docs/marketplace-monetization.md` (`0315`, done). **Constraint (2026-07-10): Polar's AUP bars the third-party-marketplace model; Polar is first-party MoR only.**
 
-**Buy-side foundation — landed (0339/0347/0325 merged this session).**
+**Decision (2026-07-11): Ian is the only publisher for now; no sales at launch.** The whole money surface is deferred post-v2 — no code stubs required: first-party sales are already code-complete behind `SALES_ENABLED=false` (`website/src/server/env.ts`), the package envelope already carries `publisher`, and `PublishClient`/`Submission` (`src/app/marketplace.rs`) already serve the first-party publish path. The door is open; nothing in the free path references the deferred work.
 
-**First-party monetization — landed (`0355`, #2374 merged).** Polar product seam under Plexi's org + AI Pro wiring + operator CLI; `#2370`'s fixtures replaced with real sandbox-recorded order/subscription shapes (never-mock gap closed). **Remaining to go live:** `0356` (new, P1) — provision Polar org/product-ids/webhook-secret + private Railway bucket, confirm legal live, then flip `SALES_ENABLED` (ops, not a code task).
-  - `0322` host account-gated paid downloads — unblocks once `0339` lands
-    - `0341` marketplace app + paywall handoff
-  - `0354` verify AI Pro subscription gates on *active status*, not row presence
-  - `0323` Plexi-managed `ai.query` backend (recurring-revenue surface)
-
-**Third-party publisher economy (deferred until opening the marketplace to outside publishers):**
-- `0352` publisher payout rail (Stripe-Connect-vs-etc **decision**) + onboarding + tax — the gate for everything below
-  - `0344` publisher submission pipeline + review queue; its third-party Polar product creation is blocked on `0352`
-  - `0353` refund/chargeback clawback from publisher balance
+- Buy-side foundation + first-party monetization code: landed (`0339`/`0347`/`0325`/`0355`).
+- Backlogged post-v2: `0356` (sales go-live ops), `0352` (payout-rail decision) → `0344` (third-party submission pipeline), `0353` (clawback).
+- Still active (door-keeping code + recurring-revenue groundwork): `0322` paid-download host gating → `0341` marketplace app + paywall; `0354` subscription active-status gating; `0323` managed `ai.query` backend.
 
 ### Epoch 4 — The Platform (WASM, mobile, hosted)
 
@@ -91,11 +97,14 @@ Maintenance (input debt, hygiene, polish) deliberately does not appear here — 
 ## Priority Stack (flat view)
 
 P0: none.
-P1: `0356` (ops: go-live provisioning), `0241` (open PR needs fixing), `0285` (draft PR), `0322` (paid-download host gating), `0344`, `0341`*.
-P2 and below: `0354` (subscription active-gating), `0352`, `0353`, `0323`, `0317`, `0295`, `0297`, `0360` (P3, deactivate noise), `0357` (P3, sudo noise), plus the backlog in `stint list`.
+P1: `0358` (release gate: production install smoke), `0369` (SDK connector-tool wrapper — Epoch 2 chain head), `0376` (assistant terminal input), `0285` (draft PR), `0341`*, `0286`* (deep-blocked: `0344` now backlog), `0287`*.
+P2: `0322`, `0354`, `0323`, `0317`, `0295`, `0297`, `0374`, `0375`, `0377`, `0381`, `0368`, `0370`*, plus backlog.
+P3 and below: `0371`*, `0372`, `0373`, `0378`, `0379`, `0380`, `0382`, `0310`, `0318`, `0357`, `0360`, `0366`, post-v2 money cluster (`0344`, `0352`, `0353`, `0356`), plus backlog in `stint list`.
 (* = blocked; see the Arc for what unblocks them.)
 
-**Next recommended task:** `0356`, the production provisioning runbook that takes first-party sales live.
+**v1 release gate (decision 2026-07-11):** `0369` → `0376` → `0377` → `0358`. The first three close the assistant's broken-promise gaps (advertised capabilities that don't work: connector tools unreachable, no terminal input, mouse-only permission modal); `0358` runs last so the install smoke validates the build containing them. Everything else in the `0368`–`0382` dogfooding batch is post-v1 polish.
+
+**Next recommended task:** `0369` — SDK connector-tool wrapper, head of the release-gate chain.
 
 ---
 
@@ -110,6 +119,7 @@ P2 and below: `0354` (subscription active-gating), `0352`, `0353`, `0323`, `0317
 | `docs/marketplace-monetization.md` | Monetization + anti-fork model; the payout-rail decision (`0352`) records here |
 | `docs/package-envelope.md` | App/agent/skill package envelope spec (`0325`) |
 | `docs/workspace-env-secrets.md` | Shared resolver contract for secrets |
+| `docs/assistant-host-app.md` | Assistant spec: connectors, permissions, slash commands |
 | `docs/wasm-runtime.md` | WASM runtime spec |
 | `sdk/python/SDK_V3.md` | SDK v3 API reference |
 | `src/testing/TESTING.md` | Test infra reference |
@@ -119,5 +129,3 @@ P2 and below: `0354` (subscription active-gating), `0352`, `0353`, `0323`, `0317
 ## How To Update This File
 
 Run `/whats-next` at the start of any session -- it re-runs `stint list` + open-PR check and rewrites the Arc + Priority Stack. `/merge-pr` runs the same routine after every merge. Landed-work history goes to `docs/DEVLOG.md` (append a dated entry), never accumulates here. Sprints are retired: do not create sprint files or `sprint:` fields; new work slots into the Arc under the outcome it serves, with `blocked_by` wiring. Always update stint tasks first when new work is discovered.
-</content>
-</invoke>

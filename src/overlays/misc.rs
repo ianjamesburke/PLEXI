@@ -775,35 +775,35 @@ impl PlexiApp {
 
     pub(crate) fn rename_pane_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_rename_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_description_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn text_input_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn command_palette_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
     }

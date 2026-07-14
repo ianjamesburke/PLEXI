@@ -6,6 +6,10 @@ or `/merge-pr` trims the orientation file; do not rewrite old entries.
 
 ---
 
+## 2026-07-11 — Durability + channel-routing fixes; assistant dogfooding audit
+
+`0367` made workspace saves atomic and durable (#2384); `0365` routed CLI commands by binary channel (#2385). Same evening, three live dogfooding sessions against the alpha assistant produced a 15-task audit batch (`0368`–`0382`): the headline finding is that the host-side v3.7 tool protocol (`ExposeTools`/`AiTool`, stint 0227) was never wrapped in the Python SDK, so zero apps can expose connector tools; the assistant also lacks terminal-input, internet, and pane-targeting tools, and the permission modal lacks keyboard support. Full detail on each task.
+
 ## 2026-07-11: Assistant E2E and affordable-model verification
 
 `0359` added a deterministic, non-egui Assistant harness around the real `AssistantApp` effect path and gated tool dispatcher. Tests script model/tool outcomes and capture typed events for agent and model selection, skills offered and activated, calls and JSON arguments, permission decisions, tool results, native host effects, results observed by the model, and final outcomes. Assertions reject missing, repeated, reordered, unexpected, or wrong-argument calls. Connector result injection fails before dispatch because connector success requires a registered app; HostHarness owns that integration layer.
