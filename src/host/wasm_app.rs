@@ -714,14 +714,36 @@ impl WasmApp {
             .map(|g| g.alloc_surface(width, height))
     }
 
-    /// Read a surface texture back to an RGBA image for compositing into egui
-    /// (the live leg) or pixel assertions (the gate leg).
+    /// Read a surface texture back to an RGBA image for pixel assertions.
+    /// Test-only: live composition never blocks the UI thread on a synchronous
+    /// readback — see `request_surface_readback`/`take_surface_readback`.
+    #[cfg(test)]
     pub fn read_surface(&self, handle: u64) -> Option<image::RgbaImage> {
         self.store
             .data()
             .gpu
             .as_ref()
             .and_then(|g| g.read_texture(handle).ok())
+    }
+
+    /// Start a nonblocking copy of a surface for the dedicated-device fallback.
+    /// Live panes on the host render device use `surface_srgb_view` instead.
+    pub fn request_surface_readback(&mut self, handle: u64) -> Result<(), String> {
+        self.store
+            .data_mut()
+            .gpu
+            .as_mut()
+            .ok_or_else(|| "gpu capability not granted".to_string())?
+            .request_surface_readback(handle)
+    }
+
+    /// Take the newest completed dedicated-device surface readback.
+    pub fn take_surface_readback(&mut self) -> Option<Result<image::RgbaImage, String>> {
+        self.store
+            .data_mut()
+            .gpu
+            .as_mut()
+            .and_then(|g| g.take_surface_readback())
     }
     /// sRGB view of the surface texture for zero-copy egui compositing.
     pub fn surface_srgb_view(&self, handle: u64) -> Option<wgpu::TextureView> {

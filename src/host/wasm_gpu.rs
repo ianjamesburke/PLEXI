@@ -20,7 +20,9 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::OnceLock;
+#[cfg(test)]
 use std::time::Instant;
 
 use crate::host::wasm_app::bindings::plexi::platform::gpu as wit;
@@ -55,6 +57,173 @@ struct GpuPipeline {
     compute: Option<wgpu::ComputePipeline>,
 }
 
+/// Number of GPU copies that may be in flight for a non-shared surface.
+/// Three buffers let the renderer display the newest completed frame while the
+/// GPU is writing the next two; it never needs to wait for the current frame.
+const SURFACE_READBACK_RING: usize = 3;
+
+struct AsyncReadbackSlot {
+    buffer: wgpu::Buffer,
+    busy: bool,
+}
+
+struct AsyncReadbackComplete {
+    slot: usize,
+    image: Result<image::RgbaImage, String>,
+}
+
+/// Nonblocking surface readback for the rare non-shared-device path.
+///
+/// `map_async` is issued from the UI thread, but the blocking `Maintain::Wait`
+/// poll and row packing run on a worker. The UI only drains completed images;
+/// if every staging buffer is busy it keeps displaying the most recent frame.
+struct AsyncSurfaceReadbackRing {
+    slots: Vec<AsyncReadbackSlot>,
+    width: u32,
+    height: u32,
+    padded_bytes_per_row: u32,
+    next_slot: usize,
+    completed_tx: Sender<AsyncReadbackComplete>,
+    completed_rx: Receiver<AsyncReadbackComplete>,
+}
+
+impl AsyncSurfaceReadbackRing {
+    fn new() -> Self {
+        let (completed_tx, completed_rx) = mpsc::channel();
+        Self {
+            slots: Vec::new(),
+            width: 0,
+            height: 0,
+            padded_bytes_per_row: 0,
+            next_slot: 0,
+            completed_tx,
+            completed_rx,
+        }
+    }
+
+    fn ensure_size(&mut self, device: &wgpu::Device, width: u32, height: u32) -> bool {
+        if self.width == width && self.height == height && !self.slots.is_empty() {
+            return true;
+        }
+        if self.slots.iter().any(|slot| slot.busy) {
+            // Preserve in-flight buffers until their workers finish. A resize
+            // gets picked up on the next frame instead of blocking the UI.
+            return false;
+        }
+        let padded_bytes_per_row = width.saturating_mul(4).div_ceil(256) * 256;
+        let size = padded_bytes_per_row as u64 * height as u64;
+        self.slots = (0..SURFACE_READBACK_RING)
+            .map(|_index| AsyncReadbackSlot {
+                buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("plexi-surface-readback-ring"),
+                    size,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+                busy: false,
+            })
+            .collect();
+        self.width = width;
+        self.height = height;
+        self.padded_bytes_per_row = padded_bytes_per_row;
+        self.next_slot = 0;
+        log::info!(
+            "wasm gpu: allocated async readback ring buffers={} size={}x{} padded_row={}",
+            SURFACE_READBACK_RING,
+            width,
+            height,
+            padded_bytes_per_row,
+        );
+        true
+    }
+
+    fn submit(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) {
+        if !self.ensure_size(device, width, height) {
+            return;
+        }
+        let Some(slot_index) = (0..self.slots.len())
+            .map(|offset| (self.next_slot + offset) % self.slots.len())
+            .find(|&index| !self.slots[index].busy)
+        else {
+            return;
+        };
+        self.next_slot = (slot_index + 1) % self.slots.len();
+        let slot = &mut self.slots[slot_index];
+        slot.busy = true;
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("plexi-async-surface-readback"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &slot.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+
+        let (mapped_tx, mapped_rx) = mpsc::channel();
+        slot.buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+            let _ = mapped_tx.send(result.map_err(|err| err.to_string()));
+        });
+        let worker_device = device.clone();
+        let worker_buffer = slot.buffer.clone();
+        let completed_tx = self.completed_tx.clone();
+        let padded_bytes_per_row = self.padded_bytes_per_row;
+        std::thread::spawn(move || {
+            worker_device.poll(wgpu::Maintain::Wait);
+            let image = match mapped_rx.recv() {
+                Ok(Ok(())) => {
+                    let mapped = worker_buffer.slice(..).get_mapped_range();
+                    let packed = pack_rgba_rows(&mapped, width, height, padded_bytes_per_row);
+                    drop(mapped);
+                    worker_buffer.unmap();
+                    packed
+                }
+                Ok(Err(err)) => Err(format!("async surface map failed: {err}")),
+                Err(err) => Err(format!("async surface map callback closed: {err}")),
+            };
+            let _ = completed_tx.send(AsyncReadbackComplete {
+                slot: slot_index,
+                image,
+            });
+        });
+    }
+
+    fn take_latest(&mut self) -> Option<Result<image::RgbaImage, String>> {
+        let mut latest = None;
+        while let Ok(completed) = self.completed_rx.try_recv() {
+            if let Some(slot) = self.slots.get_mut(completed.slot) {
+                slot.busy = false;
+            }
+            latest = Some(completed.image);
+        }
+        latest
+    }
+}
+
 /// Owns a wgpu device and the opaque-handle registries the `gpu` import refers
 /// to. One per app with the gpu capability granted; lives inside `HostCtx`.
 pub struct GpuDevice {
@@ -70,6 +239,9 @@ pub struct GpuDevice {
     /// this at zero; only the capture path (`read_texture`) increments it. The
     /// perf gate reads this per-device count so it is isolated from other tests.
     readbacks: AtomicU64,
+    /// Dedicated-device surface presentation uses this bounded asynchronous ring
+    /// instead of synchronously polling the GPU on the UI thread.
+    async_surface_readbacks: AsyncSurfaceReadbackRing,
 }
 
 impl GpuDevice {
@@ -115,6 +287,7 @@ impl GpuDevice {
             pipelines: HashMap::new(),
             bind_groups: HashMap::new(),
             readbacks: AtomicU64::new(0),
+            async_surface_readbacks: AsyncSurfaceReadbackRing::new(),
         }
     }
 
@@ -167,7 +340,10 @@ impl GpuDevice {
     }
 
     /// Read a texture (typically a surface) back to a tightly-packed RGBA8
-    /// image for compositing or pixel assertions. Errors for non-RGBA8 formats.
+    /// image for pixel assertions. Test-only: live composition uses the
+    /// zero-copy shared-device path or the async readback ring, never this
+    /// synchronous UI-thread-blocking call.
+    #[cfg(test)]
     pub fn read_texture(&self, handle: u64) -> Result<image::RgbaImage, String> {
         self.readbacks.fetch_add(1, Ordering::Relaxed);
         let tex = self.textures.get(&handle).ok_or("unknown texture handle")?;
@@ -259,6 +435,27 @@ impl GpuDevice {
             format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
             ..Default::default()
         }))
+    }
+
+    /// Queue a surface copy into the nonblocking staging ring. Completion is
+    /// obtained with [`Self::take_surface_readback`]; neither method waits for
+    /// GPU work on the caller thread.
+    pub fn request_surface_readback(&mut self, handle: u64) -> Result<(), String> {
+        let tex = self.textures.get(&handle).ok_or("unknown texture handle")?;
+        if !matches!(
+            tex.format,
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
+        ) {
+            return Err("async readback only supports rgba8 surfaces".to_string());
+        }
+        self.async_surface_readbacks
+            .submit(&self.device, &self.queue, &tex.texture, tex.width, tex.height);
+        Ok(())
+    }
+
+    /// Return the newest completed asynchronous surface frame, if one is ready.
+    pub fn take_surface_readback(&mut self) -> Option<Result<image::RgbaImage, String>> {
+        self.async_surface_readbacks.take_latest()
     }
 
     // ── WIT-facing operations ────────────────────────────────────────────────
