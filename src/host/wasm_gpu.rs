@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::OnceLock;
+#[cfg(test)]
 use std::time::Instant;
 
 use crate::host::wasm_app::bindings::plexi::platform::gpu as wit;
