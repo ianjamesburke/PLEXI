@@ -118,7 +118,7 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn notes_picker_handle_key(&mut self, ctx: &egui::Context) {
+    pub(crate) fn notes_picker_handle_key(&mut self, input: &mut crate::app::input_router::PlexiInput) {
         let visible = self.notes_picker_filtered().len();
 
         #[derive(Clone, Copy)]
@@ -131,27 +131,25 @@ impl PlexiApp {
             OpenNew,
         }
 
-        let action = ctx.input_mut(|i| {
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-                Some(PickerKey::Escape)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
-                Some(PickerKey::Enter)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                || i.consume_key(egui::Modifiers::COMMAND, egui::Key::J)
-            {
-                Some(PickerKey::Down)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-                || i.consume_key(egui::Modifiers::COMMAND, egui::Key::K)
-            {
-                Some(PickerKey::Up)
-            } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
-                Some(PickerKey::OpenNew)
-            } else if i.consume_key(egui::Modifiers::COMMAND, egui::Key::Backspace) {
-                Some(PickerKey::Delete)
-            } else {
-                None
-            }
-        });
+        let action = if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            Some(PickerKey::Escape)
+        } else if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+            Some(PickerKey::Enter)
+        } else if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+            || input.consume_key(egui::Modifiers::COMMAND, egui::Key::J)
+        {
+            Some(PickerKey::Down)
+        } else if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+            || input.consume_key(egui::Modifiers::COMMAND, egui::Key::K)
+        {
+            Some(PickerKey::Up)
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::S) {
+            Some(PickerKey::OpenNew)
+        } else if input.consume_key(egui::Modifiers::COMMAND, egui::Key::Backspace) {
+            Some(PickerKey::Delete)
+        } else {
+            None
+        };
         match action {
             Some(PickerKey::Escape) => {
                 if self.notes_picker_query.is_empty() {

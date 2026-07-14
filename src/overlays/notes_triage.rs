@@ -32,7 +32,11 @@ impl PlexiApp {
 
     /// Handle keyboard input for the triage overlay. Must surrender egui focus
     /// so the TextEdit in the modal does not reclaim it.
-    pub(crate) fn notes_triage_handle_key(&mut self, ctx: &egui::Context) {
+    pub(crate) fn notes_triage_handle_key(
+        &mut self,
+        ctx: &egui::Context,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) {
         ctx.memory_mut(|m| {
             if let Some(id) = m.focused() {
                 m.surrender_focus(id);
@@ -55,46 +59,42 @@ impl PlexiApp {
             Action(u8),
         }
 
-        let action = ctx.input_mut(|i| {
-            if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-                Some(TriageKey::Close)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::S) {
-                Some(TriageKey::Keep)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::D)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::X)
-            {
-                Some(TriageKey::Trash)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::H)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
-            {
-                Some(TriageKey::Prev)
-            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::L)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::N)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
-            {
-                Some(TriageKey::Next)
-            } else {
-                // Check digit keys 1–9 for actions.
-                let digits = [
-                    (egui::Key::Num1, 1u8),
-                    (egui::Key::Num2, 2),
-                    (egui::Key::Num3, 3),
-                    (egui::Key::Num4, 4),
-                    (egui::Key::Num5, 5),
-                    (egui::Key::Num6, 6),
-                    (egui::Key::Num7, 7),
-                    (egui::Key::Num8, 8),
-                    (egui::Key::Num9, 9),
-                ];
-                for (key, digit) in digits {
-                    if i.consume_key(egui::Modifiers::NONE, key) {
-                        return Some(TriageKey::Action(digit));
-                    }
-                }
-                None
-            }
-        });
+        let action = if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            Some(TriageKey::Close)
+        } else if input.consume_key(egui::Modifiers::NONE, egui::Key::S) {
+            Some(TriageKey::Keep)
+        } else if input.consume_key(egui::Modifiers::NONE, egui::Key::D)
+            || input.consume_key(egui::Modifiers::NONE, egui::Key::X)
+        {
+            Some(TriageKey::Trash)
+        } else if input.consume_key(egui::Modifiers::NONE, egui::Key::H)
+            || input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
+        {
+            Some(TriageKey::Prev)
+        } else if input.consume_key(egui::Modifiers::NONE, egui::Key::L)
+            || input.consume_key(egui::Modifiers::NONE, egui::Key::N)
+            || input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+            || input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
+        {
+            Some(TriageKey::Next)
+        } else {
+            // Check digit keys 1–9 for actions.
+            let digits = [
+                (egui::Key::Num1, 1u8),
+                (egui::Key::Num2, 2),
+                (egui::Key::Num3, 3),
+                (egui::Key::Num4, 4),
+                (egui::Key::Num5, 5),
+                (egui::Key::Num6, 6),
+                (egui::Key::Num7, 7),
+                (egui::Key::Num8, 8),
+                (egui::Key::Num9, 9),
+            ];
+            digits
+                .into_iter()
+                .find(|(key, _)| input.consume_key(egui::Modifiers::NONE, *key))
+                .map(|(_, digit)| TriageKey::Action(digit))
+        };
 
         match action {
             Some(TriageKey::Close) => {

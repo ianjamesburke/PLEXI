@@ -775,7 +775,8 @@ fn notification_modal_handle_key_returns_consumed() {
     let mut h = HostHarness::new();
     h.app.push_focus_layer(FocusLayer::NotificationModal);
     let ctx = h.app.ctx.clone();
-    let disposition = h.app.notification_modal_handle_key(&ctx);
+    let mut input = crate::app::input_router::PlexiInput::take_from(&ctx);
+    let disposition = h.app.notification_modal_handle_key(&mut input);
     assert_eq!(
         disposition,
         KeyDisposition::Consumed,

@@ -616,41 +616,6 @@ fn modifier_count(m: &egui::Modifiers) -> u32 {
     m.command as u32 + m.shift as u32 + m.ctrl as u32 + m.alt as u32
 }
 
-/// Consume the first matching key event that is NOT a key-repeat.
-/// Returns `true` if one was found and consumed.
-fn consume_key_no_repeat(
-    input: &mut egui::InputState,
-    modifiers: egui::Modifiers,
-    key: egui::Key,
-) -> bool {
-    let mut found = false;
-    input.events.retain(|event| {
-        if found {
-            return true;
-        }
-        if let egui::Event::Key {
-            key: ev_key,
-            pressed: true,
-            repeat: false,
-            modifiers: ev_mod,
-            ..
-        } = event
-        {
-            if *ev_key == key
-                && (!modifiers.command || ev_mod.command)
-                && (!modifiers.shift || ev_mod.shift)
-                && (!modifiers.ctrl || ev_mod.ctrl)
-                && (!modifiers.alt || ev_mod.alt)
-            {
-                found = true;
-                return false; // consume by dropping
-            }
-        }
-        true
-    });
-    found
-}
-
 // egui::Modifiers::COMMAND sets mac_cmd=false, but macOS runtime input always
 // sets mac_cmd=true when Cmd is held. Raw == comparison fails on macOS.
 // Compare only the four logical fields to avoid this platform mismatch.
@@ -1166,8 +1131,15 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 ///   Each overlay's `*_handle_key` method owns its own key contract and runs before this function.
 /// `shortcuts_overlay_open` — the shortcuts overlay is open; suppresses CloseApp (Escape)
 ///   so the overlay can own Escape for dismissal.
+///
+/// `input` is a [`crate::app::input_router::PlexiInput`] buffer already taken
+/// out of `ctx` for this frame (stint 0240's ownership-transfer router).
+/// `poll_actions` is the outer, always-first consumer — the global hotkey
+/// allowlist runs before any [`crate::app::FocusLayer`] on the focus stack
+/// sees an event, so a global shortcut can never be shadowed by overlay/app
+/// render order.
 pub fn poll_actions(
-    ctx: &egui::Context,
+    input: &mut crate::app::input_router::PlexiInput,
     table: &[BindingEntry],
     app_active: bool,
     keyboard_capture_active: bool,
@@ -1176,63 +1148,61 @@ pub fn poll_actions(
 ) -> Vec<Action> {
     let mut actions = Vec::new();
 
-    ctx.input_mut(|input| {
-        for entry in table {
-            match entry.context {
-                BindingContext::Global => {
-                    // Always checked — no suppression.
-                }
-                BindingContext::Normal => {
-                    if keyboard_capture_active || overlay_open {
-                        continue;
-                    }
-                }
-                BindingContext::AppActive => {
-                    if !app_active || keyboard_capture_active || overlay_open {
-                        continue;
-                    }
-                    // Escape is suppressed when the shortcuts overlay is open so the overlay
-                    // can own it for dismissal.
-                    if matches!(entry.action, Action::CloseApp) && shortcuts_overlay_open {
-                        continue;
-                    }
+    for entry in table {
+        match entry.context {
+            BindingContext::Global => {
+                // Always checked — no suppression.
+            }
+            BindingContext::Normal => {
+                if keyboard_capture_active || overlay_open {
+                    continue;
                 }
             }
-
-            if entry.exact && !modifiers_match_exact(&input.modifiers, &entry.modifiers) {
-                continue;
-            }
-
-            let triggered = if entry.no_repeat {
-                consume_key_no_repeat(input, entry.modifiers, entry.key)
-            } else {
-                input.consume_key(entry.modifiers, entry.key)
-            };
-            if triggered {
-                actions.push(entry.action.clone());
-            }
-        }
-
-        // Switch context (Cmd+1 through Cmd+9) — hardcoded loop; not individual table entries.
-        if !(keyboard_capture_active || overlay_open) {
-            let num_keys = [
-                egui::Key::Num1,
-                egui::Key::Num2,
-                egui::Key::Num3,
-                egui::Key::Num4,
-                egui::Key::Num5,
-                egui::Key::Num6,
-                egui::Key::Num7,
-                egui::Key::Num8,
-                egui::Key::Num9,
-            ];
-            for (i, key) in num_keys.into_iter().enumerate() {
-                if input.consume_key(egui::Modifiers::COMMAND, key) {
-                    actions.push(Action::SwitchContext(i));
+            BindingContext::AppActive => {
+                if !app_active || keyboard_capture_active || overlay_open {
+                    continue;
+                }
+                // Escape is suppressed when the shortcuts overlay is open so the overlay
+                // can own it for dismissal.
+                if matches!(entry.action, Action::CloseApp) && shortcuts_overlay_open {
+                    continue;
                 }
             }
         }
-    });
+
+        if entry.exact && !modifiers_match_exact(&input.modifiers(), &entry.modifiers) {
+            continue;
+        }
+
+        let triggered = if entry.no_repeat {
+            input.consume_key_no_repeat(entry.modifiers, entry.key)
+        } else {
+            input.consume_key(entry.modifiers, entry.key)
+        };
+        if triggered {
+            actions.push(entry.action.clone());
+        }
+    }
+
+    // Switch context (Cmd+1 through Cmd+9) — hardcoded loop; not individual table entries.
+    if !(keyboard_capture_active || overlay_open) {
+        let num_keys = [
+            egui::Key::Num1,
+            egui::Key::Num2,
+            egui::Key::Num3,
+            egui::Key::Num4,
+            egui::Key::Num5,
+            egui::Key::Num6,
+            egui::Key::Num7,
+            egui::Key::Num8,
+            egui::Key::Num9,
+        ];
+        for (i, key) in num_keys.into_iter().enumerate() {
+            if input.consume_key(egui::Modifiers::COMMAND, key) {
+                actions.push(Action::SwitchContext(i));
+            }
+        }
+    }
 
     actions
 }
@@ -1255,8 +1225,9 @@ mod tests {
         });
         let mut actions = Vec::new();
         let _ = ctx.run(raw, |ctx| {
+            let mut input = crate::app::input_router::PlexiInput::take_from(ctx);
             actions = poll_actions(
-                ctx, &table, /* app_active */ true, /* keyboard_capture */ false,
+                &mut input, &table, /* app_active */ true, /* keyboard_capture */ false,
                 /* overlay_open */ false, /* shortcuts_overlay_open */ false,
             );
         });

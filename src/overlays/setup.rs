@@ -362,7 +362,7 @@ impl PlexiApp {
 impl PlexiApp {
     pub(crate) fn cli_setup_prompt_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
     }

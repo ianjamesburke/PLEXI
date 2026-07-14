@@ -54,18 +54,64 @@ impl FocusSegmentReason {
     }
 }
 
+/// Identity for a single owner on `PlexiApp.focus_stack` (stint 0240).
+///
+/// This is intentionally a thin trait over the `FocusLayer` enum rather than
+/// `Box<dyn FocusOwner>` trait objects. A genuine per-owner trait-object
+/// design (each overlay holding its own state behind `handle_input`/`render`
+/// methods) would require extracting every overlay's fields out of `PlexiApp`
+/// (e.g. `rename_buffer`, `text_overlay`, `pending_notifications`,
+/// `pending_event_consents`, `pending_raw_wasm_launches` — 15 pieces of
+/// ambient state, several shared across overlays) into independent structs.
+/// That is a much larger, higher-risk redesign than this stint's scope, and
+/// the existing `focus_stack.last()` match arms in `src/app/mod.rs` already
+/// give every overlay a single, uniform push/pop/dispatch contract. The enum
+/// stack is kept as the dispatch key; `FocusOwner` exists so overlay identity
+/// has one shared, named contract instead of being implicit in match arms.
+pub(crate) trait FocusOwner {
+    /// Stable name for logging and test assertions.
+    fn name(&self) -> &'static str;
+}
+
+impl FocusOwner for FocusLayer {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::NotificationModal => "NotificationModal",
+            Self::ConfirmClose => "ConfirmClose",
+            Self::CommandPalette => "CommandPalette",
+            Self::RenamePane => "RenamePane",
+            Self::ContextRename => "ContextRename",
+            Self::ContextDescription => "ContextDescription",
+            Self::QuickNote => "QuickNote",
+            Self::CliSetupPrompt => "CliSetupPrompt",
+            Self::TextInput => "TextInput",
+            Self::ContextCloseConfirm => "ContextCloseConfirm",
+            Self::CapabilityModal => "CapabilityModal",
+            Self::EventConsent => "EventConsent",
+            Self::RawWasmReview => "RawWasmReview",
+            Self::NotesPicker => "NotesPicker",
+            Self::NotesTriage => "NotesTriage",
+        }
+    }
+}
+
 /// Which layer currently owns keyboard input.
 ///
-/// The top of `PlexiApp.focus_stack` is the active layer. When a non-`Pane`
-/// layer is on top, keyboard `Event::Key` and `Event::Text` events are drained
-/// from `ctx.input` each frame *after* the owning overlay has rendered, so
-/// panes and other passive readers see an empty event buffer. Global
-/// keybinds (Cmd+Q, Cmd+W, Cmd+Shift+A) are handled in `keys::poll_actions`
-/// which runs before the drain and is always live.
+/// The top of `PlexiApp.focus_stack` is the active [`FocusOwner`]. When a
+/// non-`Pane` layer is on top, `input_captured_by_overlay()` is `true` for the
+/// rest of the frame: `dispatch_app_key_events` does not run, and the owning
+/// layer's `*_handle_key` method (called before its `draw_*` render call —
+/// see `update()`) gets first access to the frame's keyboard input. Global
+/// keybinds (Cmd+Q, Cmd+W, Cmd+Shift+A) are handled in `keys::poll_actions`,
+/// which always runs regardless of what owns the stack (see
+/// `src/app/input_router.rs`).
 ///
-/// New overlays should push their layer on open and pop on close to inherit
-/// input capture. All keyboard-owning overlays live here: notification modal,
-/// confirm-close, command palette, run palette, and rename-pane.
+/// Every layer is pushed/popped through the single `reconcile_focus_layer` /
+/// `reconcile_promoted_focus_layer` helpers below — one uniform pattern for
+/// every overlay, whether its visibility is a plain boolean (`ConfirmClose`,
+/// `CommandPalette`, ...) or a re-promotable queue-backed layer that must
+/// jump back to the top even if buried (`CapabilityModal`, `EventConsent`,
+/// `RawWasmReview`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FocusLayer {
     NotificationModal,
@@ -341,6 +387,42 @@ impl PlexiApp {
         FocusLogOutcome::Heartbeat
     }
 
+    /// Returns `(app_active, keyboard_capture_active)` for the pane focused in
+    /// the active window. `app_active` is true whenever the focused pane is
+    /// running an app surface at all; `keyboard_capture_active` mirrors that
+    /// pane's own declared `App::keyboard_capture()` (e.g. file-browser
+    /// rename/quick-look mode, a CLI-backed app's Form view) — an advisory
+    /// policy flag `keys::poll_actions` reads to suppress global shortcuts
+    /// while the app owns text input. This is intentionally separate from
+    /// `focus_stack`/`FocusLayer`: overlay layers are exclusive (they block
+    /// `dispatch_app_key_events` entirely), while app-declared capture must
+    /// NOT block the app from still receiving its own keys — folding the two
+    /// into one stack would make an app go deaf on the frame it starts
+    /// capturing. Deduplicates what was previously an inline block
+    /// re-computed at the `poll_actions` call site.
+    pub(crate) fn focused_app_capture_state(&self) -> (bool, bool) {
+        let context = &self.windows[self.active_window];
+        let focused_pane = context.focused_pane.and_then(|tile_id| {
+            if let Some(egui_tiles::Tile::Pane(pane_id)) = context.tree.tiles.get(tile_id) {
+                context.panes.get(pane_id)
+            } else {
+                None
+            }
+        });
+        let active = focused_pane
+            .map(|pane| pane.as_app().is_some())
+            .unwrap_or(false);
+        let capture = if active {
+            focused_pane
+                .and_then(|p| p.as_app())
+                .map(|a| a.runtime.keyboard_capture())
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        (active, capture)
+    }
+
     /// Returns `true` when the current top focus layer is a non-critical modal
     /// that QuickNote (Cmd+0) is allowed to dismiss and replace.
     ///
@@ -418,6 +500,39 @@ impl PlexiApp {
     pub(crate) fn pop_focus_layer(&mut self, layer: &FocusLayer) {
         if self.focus_stack.last() == Some(layer) {
             self.focus_stack.pop();
+        }
+    }
+
+    /// Shared reconciliation for a plain boolean-backed focus layer: push it
+    /// when `should_own` becomes true and it isn't already in the stack, pop
+    /// it (via `retain`, so a stale entry buried under something else is still
+    /// removed) when `should_own` goes false. Every non-promoting `sync_*`
+    /// function is a one-line call to this — see `FocusLayer` doc comment for
+    /// why this replaces 11 near-identical bodies instead of dyn dispatch.
+    fn reconcile_focus_layer(&mut self, layer: FocusLayer, should_own: bool) {
+        let has_layer = self.focus_stack.contains(&layer);
+        if should_own && !has_layer {
+            self.push_focus_layer(layer);
+        } else if !should_own && has_layer {
+            log::info!("focus: {} layer removed by sync (retain)", layer.name());
+            self.focus_stack.retain(|l| *l != layer);
+        }
+    }
+
+    /// Shared reconciliation for a "promoted" focus layer: a queue-backed
+    /// overlay (capability prompts, event consents, raw-wasm review) that
+    /// must jump back to the top of the stack even if another layer pushed on
+    /// top of it while it was buried, not just toggle membership.
+    fn reconcile_promoted_focus_layer(&mut self, layer: FocusLayer, should_own: bool) {
+        let has_layer = self.focus_stack.contains(&layer);
+        let is_top = self.focus_stack.last() == Some(&layer);
+        if should_own && !is_top {
+            self.focus_stack.retain(|l| *l != layer);
+            log::info!("focus: {} promoted to top", layer.name());
+            self.push_focus_layer(layer);
+        } else if !should_own && has_layer {
+            log::info!("focus: {} layer released", layer.name());
+            self.focus_stack.retain(|l| *l != layer);
         }
     }
 
@@ -875,26 +990,14 @@ impl PlexiApp {
     /// toggled from multiple paths, and the focus stack must follow it
     /// deterministically each frame.
     pub(crate) fn sync_confirm_close_focus(&mut self) {
-        let should_own = self.pending_close;
-        let has_layer = self.focus_stack.contains(&FocusLayer::ConfirmClose);
-        if should_own && !has_layer {
-            self.push_focus_layer(FocusLayer::ConfirmClose);
-        } else if !should_own && has_layer {
-            log::info!("focus: ConfirmClose layer removed by sync (retain)");
-            self.focus_stack.retain(|l| *l != FocusLayer::ConfirmClose);
-        }
+        self.reconcile_focus_layer(FocusLayer::ConfirmClose, self.pending_close);
     }
 
     pub(crate) fn sync_context_close_focus(&mut self) {
-        let should_own = self.pending_context_close.is_some();
-        let has_layer = self.focus_stack.contains(&FocusLayer::ContextCloseConfirm);
-        if should_own && !has_layer {
-            self.push_focus_layer(FocusLayer::ContextCloseConfirm);
-        } else if !should_own && has_layer {
-            log::info!("focus: ContextCloseConfirm layer removed by sync (retain)");
-            self.focus_stack
-                .retain(|l| *l != FocusLayer::ContextCloseConfirm);
-        }
+        self.reconcile_focus_layer(
+            FocusLayer::ContextCloseConfirm,
+            self.pending_context_close.is_some(),
+        );
     }
 
     /// Returns the `context_id` of the child context if the focused pane is a Portal tile.
@@ -967,44 +1070,20 @@ impl PlexiApp {
     }
 
     pub(crate) fn sync_notification_modal_focus(&mut self) {
-        let should_own = self.show_notification_modal;
-        let has_layer = self.focus_stack.contains(&FocusLayer::NotificationModal);
-        if should_own && !has_layer {
-            self.push_focus_layer(FocusLayer::NotificationModal);
-        } else if !should_own && has_layer {
-            log::info!("focus: NotificationModal layer removed by sync (retain)");
-            self.focus_stack
-                .retain(|l| *l != FocusLayer::NotificationModal);
-        }
+        self.reconcile_focus_layer(FocusLayer::NotificationModal, self.show_notification_modal);
     }
 
     pub(crate) fn sync_cli_setup_prompt_focus(&mut self) {
-        let should_own = self.show_cli_setup_prompt;
-        let has_layer = self.focus_stack.contains(&FocusLayer::CliSetupPrompt);
-        if should_own && !has_layer {
-            log::info!("cli_setup: focus captured by CliSetupPrompt layer");
-            self.push_focus_layer(FocusLayer::CliSetupPrompt);
-        } else if !should_own && has_layer {
-            log::info!("cli_setup: CliSetupPrompt focus layer released");
-            // Use retain rather than pop_focus_layer so stale entries are removed
-            // even if another layer was pushed on top (e.g. via rapid state change).
-            self.focus_stack
-                .retain(|l| *l != FocusLayer::CliSetupPrompt);
-        }
+        self.reconcile_focus_layer(FocusLayer::CliSetupPrompt, self.show_cli_setup_prompt);
     }
 
     /// Reconcile the command-palette focus layer with `show_command_palette`.
     /// Same pattern as the notification modal: boolean visibility flag is the
     /// source of truth, focus stack follows it deterministically each frame.
     pub(crate) fn sync_command_palette_focus(&mut self) {
-        let should_own = self.show_command_palette;
-        let has_layer = self.focus_stack.contains(&FocusLayer::CommandPalette);
-        if should_own && !has_layer {
-            self.push_focus_layer(FocusLayer::CommandPalette);
-        } else if !should_own && has_layer {
-            log::info!("focus: CommandPalette layer removed by sync (retain)");
-            self.focus_stack
-                .retain(|l| *l != FocusLayer::CommandPalette);
+        let was_owned = self.focus_stack.contains(&FocusLayer::CommandPalette);
+        self.reconcile_focus_layer(FocusLayer::CommandPalette, self.show_command_palette);
+        if was_owned && !self.show_command_palette {
             // Explicitly surrender egui focus from palette_search so AccessKit
             // doesn't hold a stale focused node ID after the widget is gone.
             self.ctx.memory_mut(|m| {
@@ -1069,14 +1148,7 @@ impl PlexiApp {
 
     /// Reconcile the rename-pane focus layer with `renaming_pane`.
     pub(crate) fn sync_rename_pane_focus(&mut self) {
-        let should_own = self.renaming_pane.is_some();
-        let has_layer = self.focus_stack.contains(&FocusLayer::RenamePane);
-        if should_own && !has_layer {
-            self.push_focus_layer(FocusLayer::RenamePane);
-        } else if !should_own && has_layer {
-            log::info!("focus: RenamePane layer removed by sync (retain)");
-            self.focus_stack.retain(|l| *l != FocusLayer::RenamePane);
-        }
+        self.reconcile_focus_layer(FocusLayer::RenamePane, self.renaming_pane.is_some());
     }
 
     /// Reconcile the context-rename focus layer. Active when `renaming_window`
@@ -1084,25 +1156,12 @@ impl PlexiApp {
     /// never renders, so we promote the rename to a modal overlay instead.
     pub(crate) fn sync_context_rename_focus(&mut self) {
         let should_own = self.renaming_window.is_some() && !self.sidebar_visible;
-        let has_layer = self.focus_stack.contains(&FocusLayer::ContextRename);
-        if should_own && !has_layer {
-            self.push_focus_layer(FocusLayer::ContextRename);
-        } else if !should_own && has_layer {
-            log::info!("focus: ContextRename layer removed by sync (retain)");
-            self.focus_stack.retain(|l| *l != FocusLayer::ContextRename);
-        }
+        self.reconcile_focus_layer(FocusLayer::ContextRename, should_own);
     }
 
     /// Reconcile the text-input overlay focus layer with `text_overlay`.
     pub(crate) fn sync_text_input_focus(&mut self) {
-        let should_own = self.text_overlay.is_some();
-        let has_layer = self.focus_stack.contains(&FocusLayer::TextInput);
-        if should_own && !has_layer {
-            self.push_focus_layer(FocusLayer::TextInput);
-        } else if !should_own && has_layer {
-            log::info!("focus: TextInput layer removed by sync (retain)");
-            self.focus_stack.retain(|l| *l != FocusLayer::TextInput);
-        }
+        self.reconcile_focus_layer(FocusLayer::TextInput, self.text_overlay.is_some());
     }
 
     /// Push/pop `FocusLayer::CapabilityModal` based on whether the focused app
@@ -1111,19 +1170,7 @@ impl PlexiApp {
     /// lag.
     pub(crate) fn sync_capability_modal_focus(&mut self) {
         let should_own = self.focused_pane_has_pending_prompts();
-        let has_layer = self.focus_stack.contains(&FocusLayer::CapabilityModal);
-        let is_top = matches!(self.focus_stack.last(), Some(FocusLayer::CapabilityModal));
-        if should_own && !is_top {
-            // Push to top (re-promoting from buried position if already in stack).
-            self.focus_stack
-                .retain(|l| *l != FocusLayer::CapabilityModal);
-            log::info!("capability_modal: focus captured — pending prompts on focused pane");
-            self.push_focus_layer(FocusLayer::CapabilityModal);
-        } else if !should_own && has_layer {
-            log::info!("capability_modal: focus released — prompt queue drained");
-            self.focus_stack
-                .retain(|l| *l != FocusLayer::CapabilityModal);
-        }
+        self.reconcile_promoted_focus_layer(FocusLayer::CapabilityModal, should_own);
     }
 
     /// Promote/release the host event-consent modal layer to mirror
@@ -1131,30 +1178,12 @@ impl PlexiApp {
     /// keyboard so Enter/Esc resolve it instead of leaking to the focused pane.
     pub(crate) fn sync_event_consent_focus(&mut self) {
         let should_own = !self.pending_event_consents.is_empty();
-        let has_layer = self.focus_stack.contains(&FocusLayer::EventConsent);
-        let is_top = matches!(self.focus_stack.last(), Some(FocusLayer::EventConsent));
-        if should_own && !is_top {
-            self.focus_stack.retain(|l| *l != FocusLayer::EventConsent);
-            log::info!("event_consent: focus captured — subscribe consent awaiting decision");
-            self.push_focus_layer(FocusLayer::EventConsent);
-        } else if !should_own && has_layer {
-            log::info!("event_consent: focus released — consent queue drained");
-            self.focus_stack.retain(|l| *l != FocusLayer::EventConsent);
-        }
+        self.reconcile_promoted_focus_layer(FocusLayer::EventConsent, should_own);
     }
 
     pub(crate) fn sync_raw_wasm_review_focus(&mut self) {
         let should_own = !self.pending_raw_wasm_launches.is_empty();
-        let has_layer = self.focus_stack.contains(&FocusLayer::RawWasmReview);
-        let is_top = matches!(self.focus_stack.last(), Some(FocusLayer::RawWasmReview));
-        if should_own && !is_top {
-            self.focus_stack.retain(|l| *l != FocusLayer::RawWasmReview);
-            log::info!("raw_wasm_review: focus captured - launch review awaiting decision");
-            self.push_focus_layer(FocusLayer::RawWasmReview);
-        } else if !should_own && has_layer {
-            log::info!("raw_wasm_review: focus released - review queue drained");
-            self.focus_stack.retain(|l| *l != FocusLayer::RawWasmReview);
-        }
+        self.reconcile_promoted_focus_layer(FocusLayer::RawWasmReview, should_own);
     }
 
     /// Returns true when the focused app pane has at least one pending prompt.

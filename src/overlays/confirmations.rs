@@ -226,21 +226,21 @@ impl PlexiApp {
 
     pub(crate) fn confirm_close_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_close_confirm_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn capability_modal_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
     }
@@ -325,7 +325,7 @@ impl PlexiApp {
 
     pub(crate) fn event_consent_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
     }
@@ -428,7 +428,7 @@ impl PlexiApp {
 
     pub(crate) fn raw_wasm_review_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        _input: &mut crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
     }
