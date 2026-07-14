@@ -394,6 +394,10 @@ pub struct PlexiApp {
     /// modal; [`FocusLayer::EventConsent`] is promoted while this is non-empty.
     pub(crate) pending_event_consents:
         std::collections::VecDeque<crate::host::event_subscriptions::PendingEventConsent>,
+    /// App-runtime subscriptions waiting for the shared broker to answer.
+    /// Immediate Allow/Deny replies and deferred consent replies use the same
+    /// channel so Python and Rust WASM receive an identical result event.
+    pending_app_subscription_replies: Vec<PendingAppSubscriptionReply>,
     /// Raw `.wasm` path launches waiting for explicit link-time import review.
     pub(crate) pending_raw_wasm_launches: std::collections::VecDeque<PendingRawWasmLaunch>,
     /// Last (window_id, tile_id) pair that was logged as a FocusChanged event.
@@ -417,6 +421,12 @@ pub struct PlexiApp {
     /// the active workspace's `agents/` dir; ticked once per frame in
     /// `update()` to consume agent event deliveries and finished turns.
     pub(crate) agent_host: crate::agent::AgentHost,
+}
+
+struct PendingAppSubscriptionReply {
+    pane_id: u64,
+    request_id: String,
+    receiver: std::sync::mpsc::Receiver<crate::host::event_subscriptions::HostSubscribeReply>,
 }
 
 #[cfg(test)]
@@ -596,9 +606,11 @@ fn handle_events_subscribe(
         resource_id,
         from_pane_id,
         subscriber_override: None,
+        subscriber_type_override: None,
         // CLI identity (`pane:N`) is already stable and unique per pane, so the
         // broker actor is the routing id itself — no decoupling needed.
         broker_actor_override: None,
+        workspace_root_override: None,
         reply: reply_tx,
     };
     if subscribe_tx.send(req).is_err() {
@@ -1339,6 +1351,7 @@ impl PlexiApp {
                     event_subscribe_rx,
                     event_publish_rx,
                     pending_event_consents: std::collections::VecDeque::new(),
+                    pending_app_subscription_replies: Vec::new(),
                     pending_raw_wasm_launches: std::collections::VecDeque::new(),
                     last_logged_focus: None,
                     focus_started_at: None,
@@ -1585,6 +1598,7 @@ impl PlexiApp {
             event_subscribe_rx,
             event_publish_rx,
             pending_event_consents: std::collections::VecDeque::new(),
+            pending_app_subscription_replies: Vec::new(),
             pending_raw_wasm_launches: std::collections::VecDeque::new(),
             last_logged_focus: None,
             focus_started_at: None,
@@ -1630,6 +1644,166 @@ impl PlexiApp {
             wasm.complete_host_effect(event);
         } else {
             log::warn!("wasm effect: source pane {pane_id} is no longer a WASM app");
+        }
+    }
+
+    fn queue_event_to_app_pane_anywhere(
+        &mut self,
+        pane_id: crate::spatial::tiling::PaneId,
+        event: crate::app_protocol::PlexiEvent,
+    ) {
+        let Some((window_index, _)) = self.find_pane_in_any_window(pane_id) else {
+            log::warn!("app event: target pane {pane_id} closed before delivery");
+            crate::host::app_timeline::global()
+                .lock()
+                .unwrap()
+                .clear_subscriber(
+                    crate::broker::ActorType::App,
+                    &crate::host::event_subscriptions::app_subscriber_id(pane_id),
+                );
+            return;
+        };
+        let Some(app) = self.windows[window_index]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(crate::host::pane::Pane::as_app_mut)
+        else {
+            log::warn!("app event: target pane {pane_id} is no longer an app");
+            return;
+        };
+        app.runtime.queue_outbound_event(event);
+    }
+
+    fn deliver_app_event_subscriptions(&mut self) {
+        let pane_ids: Vec<u64> = self
+            .windows
+            .iter()
+            .flat_map(|window| {
+                window
+                    .panes
+                    .iter()
+                    .filter_map(|(pane_id, pane)| pane.as_app().is_some().then_some(*pane_id))
+            })
+            .collect();
+        let timeline = crate::host::app_timeline::global();
+        for pane_id in pane_ids {
+            let deliveries = timeline.lock().unwrap().take_deliveries_for(
+                crate::broker::ActorType::App,
+                &crate::host::event_subscriptions::app_subscriber_id(pane_id),
+            );
+            for delivery in deliveries {
+                log::info!(
+                    "app events: deliver subscription={} publisher={} stream={} to pane={pane_id}",
+                    delivery.subscription_id,
+                    delivery.app_id,
+                    delivery.event
+                );
+                self.queue_event_to_app_pane_anywhere(
+                    pane_id,
+                    crate::app_protocol::PlexiEvent::AppEvent {
+                        subscription_id: delivery.subscription_id,
+                        app_id: delivery.app_id,
+                        event: delivery.event,
+                        event_id: delivery.event_id,
+                        resource_id: delivery.resource_id,
+                        trigger_mode: delivery.trigger_mode,
+                        summary: delivery.summary,
+                        payload: delivery.payload,
+                        state_ref: delivery.state_ref,
+                        created_at: delivery.created_at,
+                    },
+                );
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn begin_app_event_subscription(
+        &mut self,
+        pane_id: u64,
+        request_id: String,
+        publisher_app_id: String,
+        event_names: Vec<String>,
+        payload_mode: crate::app_protocol::PayloadMode,
+        trigger_mode: crate::app_protocol::TriggerMode,
+        resource_id: Option<String>,
+    ) {
+        let Some((subscriber_app_id, workspace_root)) = self.windows.iter().find_map(|window| {
+            window.panes.get(&pane_id).and_then(|pane| {
+                pane.as_app()
+                    .map(|app| (app.manifest_id.clone(), app.workspace_root.clone()))
+            })
+        }) else {
+            log::warn!("app events: subscriber pane {pane_id} is closed");
+            return;
+        };
+        let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+        let request = crate::host::event_subscriptions::HostSubscribeRequest {
+            publisher_app_id,
+            event_names,
+            payload_mode,
+            trigger_mode,
+            resource_id,
+            from_pane_id: Some(pane_id),
+            subscriber_override: Some(crate::host::event_subscriptions::app_subscriber_id(pane_id)),
+            subscriber_type_override: Some(crate::broker::ActorType::App),
+            broker_actor_override: Some(subscriber_app_id),
+            workspace_root_override: Some(workspace_root),
+            reply,
+        };
+        self.host_subscriptions.reload(&crate::config::config_dir());
+        if let Some(consent) = self.host_subscriptions.classify_subscribe_request(request) {
+            self.pending_event_consents.push_back(consent);
+        }
+        self.pending_app_subscription_replies
+            .push(PendingAppSubscriptionReply {
+                pane_id,
+                request_id,
+                receiver,
+            });
+        log::info!("app events: brokered subscription queued for pane={pane_id}");
+    }
+
+    fn drain_app_subscription_replies(&mut self) {
+        let mut completed = Vec::new();
+        let mut deliveries = Vec::new();
+        for (index, pending) in self.pending_app_subscription_replies.iter().enumerate() {
+            let response = match pending.receiver.try_recv() {
+                Ok(crate::host::event_subscriptions::HostSubscribeReply::Ok {
+                    subscription_id,
+                    ..
+                }) => Some(crate::app_protocol::PlexiEvent::AppEventsSubscribed {
+                    request_id: pending.request_id.clone(),
+                    subscription_id: Some(subscription_id),
+                    error: None,
+                }),
+                Ok(crate::host::event_subscriptions::HostSubscribeReply::Err { message }) => {
+                    Some(crate::app_protocol::PlexiEvent::AppEventsSubscribed {
+                        request_id: pending.request_id.clone(),
+                        subscription_id: None,
+                        error: Some(message),
+                    })
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    log::warn!(
+                        "app events: broker reply disconnected for pane={}",
+                        pending.pane_id
+                    );
+                    completed.push(index);
+                    None
+                }
+            };
+            if let Some(response) = response {
+                completed.push(index);
+                deliveries.push((pending.pane_id, response));
+            }
+        }
+        for index in completed.into_iter().rev() {
+            self.pending_app_subscription_replies.swap_remove(index);
+        }
+        for (pane_id, response) in deliveries {
+            self.queue_event_to_app_pane_anywhere(pane_id, response);
         }
     }
 
@@ -1832,6 +2006,7 @@ impl PlexiApp {
                 event_subscribe_rx,
                 event_publish_rx,
                 pending_event_consents: std::collections::VecDeque::new(),
+                pending_app_subscription_replies: Vec::new(),
                 pending_raw_wasm_launches: std::collections::VecDeque::new(),
                 last_logged_focus: None,
                 focus_started_at: None,
@@ -2181,6 +2356,8 @@ impl eframe::App for PlexiApp {
             }
         }
         self.update_preamble(ctx);
+        self.drain_app_subscription_replies();
+        self.deliver_app_event_subscriptions();
 
         // Host agent runtime (Phase C): consume queued event deliveries and
         // finished agent turns. Cheap no-op when nothing is pending. While a
@@ -2388,12 +2565,12 @@ impl eframe::App for PlexiApp {
                                 "wasm effect: clipboard-read pane_id={pane_id} ok={}",
                                 result.is_ok()
                             );
-                            InputEvent::ClipboardReadResult(result)
+                            Some(InputEvent::ClipboardReadResult(result))
                         }
                         WasmHostEffect::ClipboardWrite { text } => {
                             ctx.copy_text(text);
                             log::info!("wasm effect: clipboard-write pane_id={pane_id}");
-                            InputEvent::ClipboardWriteResult(Ok(()))
+                            Some(InputEvent::ClipboardWriteResult(Ok(())))
                         }
                         WasmHostEffect::Notify { title, body, icon } => {
                             if let Some(window_index) = source_window_index {
@@ -2426,11 +2603,11 @@ impl eframe::App for PlexiApp {
                                 log::info!(
                                     "wasm effect: notify pane_id={pane_id} context_id={source_context_id} icon={icon:?}"
                                 );
-                                InputEvent::NotifyResult(Ok(()))
+                                Some(InputEvent::NotifyResult(Ok(())))
                             } else {
                                 let error = format!("source pane {pane_id} is closed");
                                 log::warn!("wasm effect: notify failed: {error}");
-                                InputEvent::NotifyResult(Err(error))
+                                Some(InputEvent::NotifyResult(Err(error)))
                             }
                         }
                         WasmHostEffect::Spawn {
@@ -2447,10 +2624,99 @@ impl eframe::App for PlexiApp {
                                 "wasm effect: spawn pane_id={pane_id} app_id={app_id} ok={}",
                                 result.is_ok()
                             );
-                            InputEvent::SpawnResult(result)
+                            Some(InputEvent::SpawnResult(result))
+                        }
+                        WasmHostEffect::SubscribeEvents {
+                            request_id,
+                            app_id,
+                            event_names,
+                            payload_mode,
+                            trigger_mode,
+                            resource_id,
+                        } => {
+                            self.begin_app_event_subscription(
+                                pane_id,
+                                request_id,
+                                app_id,
+                                event_names,
+                                payload_mode,
+                                trigger_mode,
+                                resource_id,
+                            );
+                            None
+                        }
+                        WasmHostEffect::UnsubscribeEvents {
+                            request_id,
+                            subscription_id,
+                        } => {
+                            let result = crate::host::app_timeline::global()
+                                .lock()
+                                .unwrap()
+                                .remove_subscription_for(
+                                    crate::broker::ActorType::App,
+                                    &crate::host::event_subscriptions::app_subscriber_id(pane_id),
+                                    &subscription_id,
+                                );
+                            let (removed, error) = match result {
+                                Ok(removed) => (removed, None),
+                                Err(error) => (false, Some(error)),
+                            };
+                            Some(InputEvent::EventUnsubscriptionResult(
+                                crate::host::wasm_app::bindings::plexi::platform::types::EventUnsubscriptionResultEvent {
+                                    request_id,
+                                    removed,
+                                    error,
+                                },
+                            ))
+                        }
+                        WasmHostEffect::DeclareTools { tools } => {
+                            let names = tools.iter().map(|tool| tool.name.clone()).collect();
+                            let provider = self.windows.iter().find_map(|window| {
+                                window.panes.get(&pane_id).and_then(|pane| {
+                                    pane.as_app().and_then(|app| {
+                                        app.runtime.tool_event_sender(ctx.clone()).map(|sender| {
+                                            (
+                                                app.manifest_id.clone(),
+                                                app.workspace_root.clone(),
+                                                sender,
+                                            )
+                                        })
+                                    })
+                                })
+                            });
+                            if let Some((app_id, workspace_root, sender)) = provider {
+                                crate::plexi_ai::tool_dispatch::register(
+                                    pane_id,
+                                    app_id,
+                                    tools,
+                                    sender,
+                                    workspace_root,
+                                );
+                                Some(InputEvent::DeclareToolsResult(Ok(names)))
+                            } else {
+                                Some(InputEvent::DeclareToolsResult(Err(format!(
+                                    "source pane {pane_id} is closed"
+                                ))))
+                            }
+                        }
+                        WasmHostEffect::ToolResult {
+                            call_id,
+                            output_json,
+                            error,
+                        } => {
+                            crate::plexi_ai::tool_dispatch::resolve_pending(
+                                &call_id,
+                                crate::plexi_ai::tool_dispatch::ToolCallResult {
+                                    output_json,
+                                    error,
+                                },
+                            );
+                            None
                         }
                     };
-                    self.complete_wasm_host_effect(pane_id, event);
+                    if let Some(event) = event {
+                        self.complete_wasm_host_effect(pane_id, event);
+                    }
                 }
                 AppCommand::ExposeTools {
                     tools,
@@ -2459,23 +2725,23 @@ impl eframe::App for PlexiApp {
                     let provider = self.windows.iter().find_map(|window| {
                         window.panes.get(&pane_id).and_then(|pane| {
                             pane.as_app().and_then(|app| {
-                                app.runtime.python_tool_event_sender().map(|stdin| {
-                                    (app.manifest_id.clone(), app.workspace_root.clone(), stdin)
+                                app.runtime.tool_event_sender(ctx.clone()).map(|sender| {
+                                    (app.manifest_id.clone(), app.workspace_root.clone(), sender)
                                 })
                             })
                         })
                     });
-                    if let Some((app_id, workspace_root, stdin)) = provider {
+                    if let Some((app_id, workspace_root, sender)) = provider {
                         crate::plexi_ai::tool_dispatch::register(
                             pane_id,
                             app_id,
                             tools,
-                            crate::plexi_ai::tool_dispatch::AppEventSender::Python(stdin),
+                            sender,
                             workspace_root,
                         );
                     } else {
                         log::warn!(
-                            "tool_dispatch: ignore ExposeTools from non-Python pane {pane_id}"
+                            "tool_dispatch: ignore ExposeTools from unsupported pane {pane_id}"
                         );
                     }
                 }
@@ -2490,6 +2756,147 @@ impl eframe::App for PlexiApp {
                     &call_id,
                     crate::plexi_ai::tool_dispatch::ToolCallResult { output_json, error },
                 ),
+                AppCommand::AppEventRequest {
+                    request,
+                    pane_id: Some(pane_id),
+                } => {
+                    let app_id = self.windows.iter().find_map(|window| {
+                        window
+                            .panes
+                            .get(&pane_id)
+                            .and_then(|pane| pane.as_app())
+                            .map(|app| app.manifest_id.clone())
+                    });
+                    let Some(app_id) = app_id else {
+                        log::warn!("app events: source pane {pane_id} is closed");
+                        continue;
+                    };
+                    let response = match request {
+                        crate::app_protocol::AppRequest::DeclareEventStreams { streams } => {
+                            match crate::host::app_timeline::global()
+                                .lock()
+                                .unwrap()
+                                .declare_streams(&app_id, streams)
+                            {
+                                Ok(streams) => {
+                                    crate::app_protocol::PlexiEvent::DeclareEventStreamsResult {
+                                        streams: Some(streams),
+                                        error: None,
+                                    }
+                                }
+                                Err(error) => {
+                                    crate::app_protocol::PlexiEvent::DeclareEventStreamsResult {
+                                        streams: None,
+                                        error: Some(error),
+                                    }
+                                }
+                            }
+                        }
+                        crate::app_protocol::AppRequest::EmitEvent {
+                            event,
+                            actor,
+                            actor_id,
+                            caused_by,
+                            summary,
+                            resource_id,
+                            resource_scope,
+                            revision_after,
+                            payload,
+                            state_ref,
+                            revision_before,
+                            rollback_token,
+                            changed_resources,
+                            suggested_trigger,
+                        } => {
+                            let emitted = crate::host::app_timeline::EmittedEvent {
+                                event,
+                                actor,
+                                actor_id,
+                                caused_by,
+                                summary,
+                                resource_id,
+                                resource_scope,
+                                revision_after,
+                                payload,
+                                state_ref,
+                                revision_before,
+                                rollback_token,
+                                changed_resources,
+                                suggested_trigger,
+                            };
+                            match crate::host::app_timeline::global()
+                                .lock()
+                                .unwrap()
+                                .record_event(&app_id, pane_id, emitted)
+                            {
+                                Ok(outcome) => crate::app_protocol::PlexiEvent::EmitEventResult {
+                                    sequence: Some(outcome.event_id),
+                                    error: None,
+                                },
+                                Err(error) => crate::app_protocol::PlexiEvent::EmitEventResult {
+                                    sequence: None,
+                                    error: Some(error),
+                                },
+                            }
+                        }
+                        crate::app_protocol::AppRequest::SubscribeAppEvents {
+                            request_id,
+                            app_id: publisher_app_id,
+                            event_names,
+                            payload_mode,
+                            trigger_mode,
+                            resource_id,
+                        } => {
+                            self.begin_app_event_subscription(
+                                pane_id,
+                                request_id,
+                                publisher_app_id,
+                                event_names,
+                                payload_mode,
+                                trigger_mode,
+                                resource_id,
+                            );
+                            continue;
+                        }
+                        crate::app_protocol::AppRequest::UnsubscribeAppEvents {
+                            request_id,
+                            subscription_id,
+                        } => {
+                            let result = crate::host::app_timeline::global()
+                                .lock()
+                                .unwrap()
+                                .remove_subscription_for(
+                                    crate::broker::ActorType::App,
+                                    &crate::host::event_subscriptions::app_subscriber_id(pane_id),
+                                    &subscription_id,
+                                );
+                            match result {
+                                Ok(removed) => {
+                                    crate::app_protocol::PlexiEvent::AppEventsUnsubscribed {
+                                        request_id,
+                                        removed,
+                                        error: None,
+                                    }
+                                }
+                                Err(error) => {
+                                    crate::app_protocol::PlexiEvent::AppEventsUnsubscribed {
+                                        request_id,
+                                        removed: false,
+                                        error: Some(error),
+                                    }
+                                }
+                            }
+                        }
+                        other => {
+                            log::warn!("app events: unsupported app request {other:?}");
+                            continue;
+                        }
+                    };
+                    self.queue_event_to_app_pane_anywhere(pane_id, response);
+                }
+                AppCommand::AppEventRequest { pane_id: None, .. } => {
+                    log::warn!("app events: request missing source pane")
+                }
                 AppCommand::AssistantHostTool {
                     name,
                     input_json,

@@ -62,6 +62,10 @@ restrict ambient process access.
 
 ### `EmitEvent`
 
+### `SubscribeEventStreams`
+
+### `UnsubscribeEventStreams`
+
 ## Events
 
 ### `Modifiers`
@@ -101,6 +105,12 @@ restrict ambient process access.
 ### `AiResponse`
 
 ### `ToolCall`
+
+### `EventSubscriptionResult`
+
+### `EventUnsubscriptionResult`
+
+### `AppEvent`
 
 ### `DeclareEventStreamsResult`
 

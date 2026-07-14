@@ -689,6 +689,28 @@ impl AppTimeline {
         removed
     }
 
+    /// Remove one subscription only when it belongs to the requesting actor.
+    pub fn remove_subscription_for(
+        &mut self,
+        subscriber_type: ActorType,
+        subscriber_id: &str,
+        subscription_id: &str,
+    ) -> Result<bool, String> {
+        let Some(owner) = self
+            .subscriptions
+            .iter()
+            .find(|subscription| subscription.subscription_id == subscription_id)
+        else {
+            return Ok(false);
+        };
+        if owner.subscriber_type != subscriber_type || owner.subscriber_id != subscriber_id {
+            return Err(format!(
+                "subscription '{subscription_id}' is owned by another actor"
+            ));
+        }
+        Ok(self.remove_subscription(subscription_id))
+    }
+
     // ── Delivery queue (Phase C seam) ───────────────────────────────────────
 
     /// Take all queued deliveries addressed to one subscriber. Subscriber
@@ -1049,5 +1071,88 @@ mod tests {
         assert!(!t.remove_subscription("sub-1"));
         let out = t.record_event("chess", 1, emitted("move.played")).unwrap();
         assert_eq!(out.deliveries_queued, 0);
+    }
+
+    #[test]
+    fn remove_subscription_requires_matching_owner() {
+        let mut timeline = timeline_with_stream();
+        timeline.add_subscription(subscription(
+            PayloadMode::Summary,
+            TriggerMode::Conversation,
+        ));
+
+        let denied = timeline.remove_subscription_for(ActorType::App, "other", "sub-1");
+        assert!(denied.is_err());
+        assert_eq!(timeline.subscriptions().len(), 1);
+
+        let removed = timeline
+            .remove_subscription_for(ActorType::Agent, "chess-opponent", "sub-1")
+            .unwrap();
+        assert!(removed);
+        assert!(timeline.subscriptions().is_empty());
+    }
+
+    #[test]
+    fn app_subscriptions_deliver_across_python_and_wasm_publishers() {
+        let mut timeline = AppTimeline::default();
+        timeline
+            .declare_streams("python-notes", vec![decl("note.saved")])
+            .unwrap();
+        timeline
+            .declare_streams("wasm-counter", vec![decl("count.changed")])
+            .unwrap();
+
+        let mut wasm_subscriber = subscription(PayloadMode::Full, TriggerMode::Conversation);
+        wasm_subscriber.subscription_id = "wasm-sub".to_string();
+        wasm_subscriber.subscriber_type = ActorType::App;
+        wasm_subscriber.subscriber_id = "app-pane:41".to_string();
+        wasm_subscriber.app_id = "python-notes".to_string();
+        wasm_subscriber.event_names = vec!["note.saved".to_string()];
+        timeline.add_subscription(wasm_subscriber);
+
+        let mut python_subscriber = subscription(PayloadMode::Full, TriggerMode::Conversation);
+        python_subscriber.subscription_id = "python-sub".to_string();
+        python_subscriber.subscriber_type = ActorType::App;
+        python_subscriber.subscriber_id = "app-pane:42".to_string();
+        python_subscriber.app_id = "wasm-counter".to_string();
+        python_subscriber.event_names = vec!["count.changed".to_string()];
+        timeline.add_subscription(python_subscriber);
+
+        let mut python_event = emitted("note.saved");
+        python_event.resource_id = "note-1".to_string();
+        assert_eq!(
+            timeline
+                .record_event("python-notes", 11, python_event)
+                .unwrap()
+                .deliveries_queued,
+            1
+        );
+        let wasm_delivery = timeline.take_deliveries_for(ActorType::App, "app-pane:41");
+        assert_eq!(wasm_delivery.len(), 1);
+        assert_eq!(wasm_delivery[0].event, "note.saved");
+
+        let mut wasm_event = emitted("count.changed");
+        wasm_event.resource_id = "counter-1".to_string();
+        assert_eq!(
+            timeline
+                .record_event("wasm-counter", 12, wasm_event)
+                .unwrap()
+                .deliveries_queued,
+            1
+        );
+        let python_delivery = timeline.take_deliveries_for(ActorType::App, "app-pane:42");
+        assert_eq!(python_delivery.len(), 1);
+        assert_eq!(python_delivery[0].event, "count.changed");
+
+        assert!(timeline
+            .remove_subscription_for(ActorType::App, "app-pane:41", "wasm-sub")
+            .unwrap());
+        assert_eq!(
+            timeline
+                .record_event("python-notes", 11, emitted("note.saved"))
+                .unwrap()
+                .deliveries_queued,
+            0
+        );
     }
 }

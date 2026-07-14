@@ -38,6 +38,7 @@
             "name": {
               "type": "string"
             },
+            "output_schema": true,
             "read_only": {
               "description": "When true, this tool only reads state and never mutates it. The\nassistant grants read-only tools automatically without a permission\nprompt; the broker still records every call in the audit trail.",
               "type": "boolean"
@@ -55,7 +56,8 @@
           "required": [
             "name",
             "description",
-            "input_schema"
+            "input_schema",
+            "output_schema"
           ],
           "type": "object"
         },
@@ -402,7 +404,7 @@
           "type": "object"
         },
         {
-          "description": "Read a file through the native ProcessApp host. Requires `fs.read` and\nthe resolved path must stay inside the app's workspace root.",
+          "description": "Read a file through the native WASM app runtime host. Requires `fs.read` and\nthe resolved path must stay inside the app's workspace root.",
           "properties": {
             "path": {
               "type": "string"
@@ -419,7 +421,7 @@
           "type": "object"
         },
         {
-          "description": "List a directory through the native ProcessApp host. Requires `fs.read`\nand the resolved path must stay inside the app's workspace root.",
+          "description": "List a directory through the native WASM app runtime host. Requires `fs.read`\nand the resolved path must stay inside the app's workspace root.",
           "properties": {
             "extensions": {
               "default": [],
@@ -1359,7 +1361,7 @@
           "type": "object"
         },
         {
-          "description": "Query the last-rendered UI state of a pane. Sent by `plexi pane state`.\nFor app panes: host writes a JSON object with a `frame` array of RenderCommands.\nFor terminal panes: host writes a simple status object.\nHost writes `{\"error\":\"...\"}` if the pane is not found.",
+          "description": "Query the last-rendered UI state of a pane. Sent by `plexi pane state`.\nFor app panes: host writes a versioned `semantic` tree for every runtime.\nProcess panes also retain the compatible `frame` RenderCommand array.\nFor terminal panes: host writes a simple status object.\nHost writes `{\"error\":\"...\"}` if the pane is not found.",
           "properties": {
             "pane_id": {
               "format": "uint64",
@@ -2560,8 +2562,11 @@
           "type": "object"
         },
         {
-          "description": "Remove a subscription previously created by `SubscribeAppEvents`.\nOnly the subscriber that owns it may remove it. Fire-and-forget.",
+          "description": "Remove a subscription previously created by `SubscribeAppEvents`.\nOnly the subscriber that owns it may remove it.",
           "properties": {
+            "request_id": {
+              "type": "string"
+            },
             "subscription_id": {
               "type": "string"
             },
@@ -2572,6 +2577,7 @@
           },
           "required": [
             "type",
+            "request_id",
             "subscription_id"
           ],
           "type": "object"
@@ -3575,7 +3581,7 @@
           "type": "object"
         },
         {
-          "description": "Native ProcessApp file read result.",
+          "description": "Native WASM app runtime file read result.",
           "properties": {
             "content": {
               "items": {
@@ -3606,7 +3612,7 @@
           "type": "object"
         },
         {
-          "description": "Native ProcessApp directory listing result.",
+          "description": "Native WASM app runtime directory listing result.",
           "properties": {
             "entries": {
               "items": {
@@ -4832,6 +4838,88 @@
           "required": [
             "type",
             "request_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to `AppRequest::DeclareEventStreams`.",
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "streams": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "declare_event_streams_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to `AppRequest::EmitEvent`.",
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sequence": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "emit_event_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to `AppRequest::UnsubscribeAppEvents`.",
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "removed": {
+              "type": "boolean"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "app_events_unsubscribed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "removed"
           ],
           "type": "object"
         },

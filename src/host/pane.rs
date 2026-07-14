@@ -657,16 +657,12 @@ impl AppRuntime {
         match self {
             AppRuntime::Builtin(app) => app.queue_outbound_event(event),
             AppRuntime::Python(app) => app.queue_outbound_event(event),
-            AppRuntime::Wasm(_) => {}
+            AppRuntime::Wasm(app) => app.queue_outbound_event(event),
         }
     }
 
     /// Deliver the CLI/host semantic action contract to every app runtime.
-    pub fn send_app_action(
-        &mut self,
-        action: String,
-        args: Vec<String>,
-    ) -> Result<(), String> {
+    pub fn send_app_action(&mut self, action: String, args: Vec<String>) -> Result<(), String> {
         match self {
             AppRuntime::Wasm(app) => {
                 if !args.is_empty() {
@@ -675,28 +671,28 @@ impl AppRuntime {
                 app.dispatch_ui_action(action)
             }
             AppRuntime::Builtin(app) => {
-                app.queue_outbound_event(crate::app_protocol::PlexiEvent::Action {
-                    action,
-                    args,
-                });
+                app.queue_outbound_event(crate::app_protocol::PlexiEvent::Action { action, args });
                 Ok(())
             }
             AppRuntime::Python(app) => {
-                app.queue_outbound_event(crate::app_protocol::PlexiEvent::Action {
-                    action,
-                    args,
-                });
+                app.queue_outbound_event(crate::app_protocol::PlexiEvent::Action { action, args });
                 Ok(())
             }
         }
     }
 
-    pub(crate) fn python_tool_event_sender(
+    pub(crate) fn tool_event_sender(
         &self,
-    ) -> Option<crate::host::wasm_python::AppendableStdin> {
+        repaint: egui::Context,
+    ) -> Option<crate::plexi_ai::tool_dispatch::AppEventSender> {
         match self {
-            AppRuntime::Python(app) => Some(app.tool_event_sender()),
-            AppRuntime::Builtin(_) | AppRuntime::Wasm(_) => None,
+            AppRuntime::Python(app) => Some(
+                crate::plexi_ai::tool_dispatch::AppEventSender::Python(app.tool_event_sender()),
+            ),
+            AppRuntime::Wasm(app) => Some(crate::plexi_ai::tool_dispatch::AppEventSender::Wasm(
+                app.input_sender(repaint),
+            )),
+            AppRuntime::Builtin(_) => None,
         }
     }
 
@@ -757,9 +753,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Builtin(app) => app.background_tick(),
             AppRuntime::Python(_) => {}
-            // Timers advance only while the pane renders (visible). Background
-            // ticking for off-screen WASM panes is deferred.
-            AppRuntime::Wasm(_) => {}
+            AppRuntime::Wasm(app) => app.background_tick(),
         }
     }
 
@@ -769,7 +763,7 @@ impl AppRuntime {
         match self {
             AppRuntime::Builtin(app) => app.needs_background_tick(),
             AppRuntime::Python(_) => false,
-            AppRuntime::Wasm(_) => false,
+            AppRuntime::Wasm(app) => app.needs_background_tick(),
         }
     }
 
@@ -860,6 +854,34 @@ impl AppPane {
             AppRuntime::Python(app) => app.semantic_state(),
             AppRuntime::Wasm(app) => app.semantic_state().clone(),
         }
+    }
+}
+
+impl Drop for AppPane {
+    fn drop(&mut self) {
+        // Overlay apps reuse the replaced pane's id. Restoring the boxed pane
+        // must preserve that pane's connector and subscription registrations.
+        if self.overlay_replaced.is_some() {
+            log::info!(
+                "app pane: dropped overlay pane={} without clearing restored pane registrations",
+                self.id
+            );
+            return;
+        }
+        crate::plexi_ai::tool_dispatch::unregister(self.id);
+        let (subscriptions, deliveries) = crate::host::app_timeline::global()
+            .lock()
+            .unwrap()
+            .clear_subscriber(
+                crate::broker::ActorType::App,
+                &crate::host::event_subscriptions::app_subscriber_id(self.id),
+            );
+        log::info!(
+            "app pane: dropped pane={} and cleared connector tools, {} event subscription(s), {} queued delivery(ies)",
+            self.id,
+            subscriptions,
+            deliveries
+        );
     }
 }
 

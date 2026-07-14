@@ -497,6 +497,30 @@ pub enum PlexiEvent {
         error: Option<String>,
     },
 
+    /// Response to `AppRequest::DeclareEventStreams`.
+    DeclareEventStreamsResult {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        streams: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
+    /// Response to `AppRequest::EmitEvent`.
+    EmitEventResult {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sequence: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
+    /// Response to `AppRequest::UnsubscribeAppEvents`.
+    AppEventsUnsubscribed {
+        request_id: String,
+        removed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
     /// One subscribed app event, delivered to the subscriber pane. Content
     /// beyond the event identity is shaped by the subscription's
     /// `payload_mode`; `trigger_mode` tells the subscriber (Phase C: the

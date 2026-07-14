@@ -52,11 +52,12 @@ pub struct AiMessage {
 
 /// Tool definition for the tool-use turn loop (#398).
 /// Apps declare callable tools via `DrawCommand::ExposeTools`.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
 pub struct AiTool {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    pub output_schema: serde_json::Value,
     /// Maximum milliseconds to wait for this tool's response. Defaults to 30s
     /// when absent. The broker uses this to bound `ToolCall` round-trips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,4 +131,39 @@ pub fn default_compact_threshold() -> f32 {
 }
 pub fn default_regular_threshold() -> f32 {
     480.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AiTool;
+
+    #[test]
+    fn ai_tool_wire_requires_typed_input_and_output_schemas() {
+        let tool = AiTool {
+            name: "counter.read".to_string(),
+            description: "Read the counter".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"count": {"type": "integer"}},
+                "required": ["count"]
+            }),
+            timeout_ms: Some(2_000),
+            read_only: true,
+        };
+        let wire = serde_json::to_value(&tool).unwrap();
+        assert_eq!(wire["input_schema"]["type"], "object");
+        assert_eq!(
+            wire["output_schema"]["properties"]["count"]["type"],
+            "integer"
+        );
+        assert_eq!(serde_json::from_value::<AiTool>(wire).unwrap(), tool);
+
+        let missing_output = serde_json::json!({
+            "name": "counter.read",
+            "description": "Read the counter",
+            "input_schema": {"type": "object"}
+        });
+        assert!(serde_json::from_value::<AiTool>(missing_output).is_err());
+    }
 }

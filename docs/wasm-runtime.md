@@ -17,13 +17,28 @@ The current worlds are `plexi-app`, `plexi-gpu-app`, `plexi-audio-app`, and `ple
 The host executes these WIT effects:
 
 - `get-system-stats`, `set-timer`, `cancel-timer`, `set-title`, `set-status`, and `close-self`
-- `file-read`, `file-write`, `http-fetch`, `ai-query`, `declare-event-streams`, and `emit-event`
+- `file-read`, `file-write`, `http-fetch`, `ai-query`, `declare-event-streams`, `emit-event`, `subscribe-event-streams`, and `unsubscribe-event-streams`
+- `declare-tools` and `tool-result`
 - `clipboard-read`, `clipboard-write`, `notify`, and `spawn`
 - `request-capability`
 
 Effects that need a response return it through the matching `input-event` result variant. `clipboard-read`, `clipboard-write`, `notify`, and `spawn` return `clipboard-*-result`, `notify-result`, and `spawn-result` after the host action completes.
 
 `notify` posts a context-scoped host notification. Its optional icon is descriptive metadata; it does not load an image or grant file access. `spawn` opens a manifest-registered app with the requested layout and argv. It does not create a process or bypass app registry policy.
+
+Apps subscribe to declared streams by publisher app ID and stream name. Matching
+events enter the subscriber's `update` loop as `app-event`, regardless of
+whether the publisher or subscriber is a Rust WASM component or a Python app.
+Subscriptions last for the pane session and are removed when the subscriber
+unsubscribes or closes. Cross-app reads pass through the unified event-stream
+permission broker before the host records the subscription.
+
+`declare-tools` registers a running component's typed tools in the same app
+connector registry as Python apps. Assistant calls arrive as `tool-call`; the
+component answers with `tool-result`. The Assistant permission broker filters
+tool visibility and gates calls before they reach the component. Read-only
+tools auto-grant unless an explicit deny applies; mutating tools require the
+normal app-connector grant. Every invocation is audit logged.
 
 ### Capabilities
 

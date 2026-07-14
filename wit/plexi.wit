@@ -83,6 +83,38 @@ interface types {
         error: option<string>,
     }
 
+    record app-event-event {
+        subscription-id: string,
+        app-id: string,
+        event: string,
+        event-id: u64,
+        resource-id: string,
+        trigger-mode: string,
+        summary: option<string>,
+        payload-json: option<string>,
+        state-ref: option<string>,
+        created-at: string,
+    }
+
+    record event-subscription-result-event {
+        request-id: string,
+        subscription-id: option<string>,
+        error: option<string>,
+    }
+
+    record event-unsubscription-result-event {
+        request-id: string,
+        removed: bool,
+        error: option<string>,
+    }
+
+    record tool-call-event {
+        call-id: string,
+        name: string,
+        input-json: string,
+        caller-id: string,
+    }
+
     record system-stats {
         cpu-usage-pct: f32,
         memory-used-bytes: u64,
@@ -136,6 +168,11 @@ interface types {
         ai-response(ai-response-event),
         declare-event-streams-result(result<list<string>, string>),
         emit-event-result(result<u64, string>),
+        event-subscription-result(event-subscription-result-event),
+        event-unsubscription-result(event-unsubscription-result-event),
+        app-event(app-event-event),
+        tool-call(tool-call-event),
+        declare-tools-result(result<list<string>, string>),
         clipboard-read-result(result<option<string>, string>),
         clipboard-write-result(result<_, string>),
         notify-result(result<_, string>),
@@ -206,6 +243,39 @@ interface types {
         suggested-trigger: option<string>,
     }
 
+    record subscribe-event-streams-effect {
+        request-id: string,
+        app-id: string,
+        event-names: list<string>,
+        payload-mode: string,
+        trigger-mode: string,
+        resource-id: option<string>,
+    }
+
+    record unsubscribe-event-streams-effect {
+        request-id: string,
+        subscription-id: string,
+    }
+
+    record tool-decl {
+        name: string,
+        description: string,
+        input-schema-json: string,
+        output-schema-json: string,
+        timeout-ms: option<u64>,
+        read-only: bool,
+    }
+
+    record declare-tools-effect {
+        tools: list<tool-decl>,
+    }
+
+    record tool-result-effect {
+        call-id: string,
+        output-json: option<string>,
+        error: option<string>,
+    }
+
     record timer-effect {
         id: u32,
         delay-ms: u32,
@@ -231,6 +301,10 @@ interface types {
         ai-query(ai-query-effect),
         declare-event-streams(declare-event-streams-effect),
         emit-event(emit-event-effect),
+        subscribe-event-streams(subscribe-event-streams-effect),
+        unsubscribe-event-streams(unsubscribe-event-streams-effect),
+        declare-tools(declare-tools-effect),
+        tool-result(tool-result-effect),
         set-timer(timer-effect),
         cancel-timer(u32),
         get-system-stats,

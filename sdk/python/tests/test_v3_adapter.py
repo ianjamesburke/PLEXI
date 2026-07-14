@@ -13,7 +13,16 @@ from plexi_sdk import _v3_state
 from plexi_sdk import state
 from plexi_sdk._adapter import _decode_event, _encode_effect, _encode_uitree
 from plexi_sdk._adapter import call_lifecycle, load_app
-from plexi_sdk.effects import AiTool, ExposeTools, HttpFetch, SetState, SetTitle, ToolResult
+from plexi_sdk.effects import (
+    AiTool,
+    ExposeTools,
+    HttpFetch,
+    SetState,
+    SetTitle,
+    SubscribeEventStreams,
+    ToolResult,
+    UnsubscribeEventStreams,
+)
 from plexi_sdk.events import (
     HttpResponse,
     KeyEvent,
@@ -54,6 +63,7 @@ def test_tool_effects_encode_rust_wire_shape() -> None:
         name="csv.describe_table",
         description="Describe the current table.",
         input_schema={"type": "object", "properties": {}},
+        output_schema={"type": "object", "properties": {"rows": {"type": "integer"}}},
         timeout_ms=1_500,
         read_only=True,
     )
@@ -64,9 +74,31 @@ def test_tool_effects_encode_rust_wire_shape() -> None:
             "name": "csv.describe_table",
             "description": "Describe the current table.",
             "input_schema": {"type": "object", "properties": {}},
+            "output_schema": {"type": "object", "properties": {"rows": {"type": "integer"}}},
             "timeout_ms": 1_500,
             "read_only": True,
         }],
+    }
+
+
+def test_subscription_effects_encode_rust_wire_shape() -> None:
+    assert _encode_effect(SubscribeEventStreams(
+        request_id="subscribe-1",
+        app_id="notes",
+        event_names=["note.saved"],
+    )) == {
+        "type": "SubscribeEventStreams",
+        "request_id": "subscribe-1",
+        "app_id": "notes",
+        "event_names": ["note.saved"],
+        "payload_mode": "full",
+        "trigger_mode": "conversation",
+        "resource_id": None,
+    }
+    assert _encode_effect(UnsubscribeEventStreams("unsubscribe-1", "sub-1")) == {
+        "type": "UnsubscribeEventStreams",
+        "request_id": "unsubscribe-1",
+        "subscription_id": "sub-1",
     }
     assert _encode_effect(ToolResult("call-7", output_json='{"rows":3}')) == {
         "type": "ToolResult",

@@ -97,12 +97,12 @@ compat), G9 (cloud), G10 (402 payment) are explicitly deferred to follow-on miss
   for scoped `fs:read:<path>`, `fs:write:<path>`, and `net:fetch:<host>`
   strings. Remembered install/package grants now live in Lane F; Lane D remains
   the session enforcement layer.
-- **Lane E — agentic surface (`ai-query` + app events): DONE.** WIT now
+- **Lane E — agentic surface (`ai-query`, app events, and tools): DONE.** WIT now
   exposes `ai-query`, `ai-stream-chunk`, `ai-response`,
-  `declare-event-streams`, and `emit-event`; `WasmPane` gates AI on the
-  session `ai.query` grant, dispatches through the injected `AiBroker` on a
-  worker, and routes event declarations/emits into `AppTimeline`. Tools and
-  WASM subscribe/delivery imports remain future work.
+  event declaration/emission/subscription, and typed tool declaration/results.
+  `WasmPane` gates AI on the session `ai.query` grant, dispatches through the
+  injected `AiBroker`, routes cross-runtime events through `AppTimeline`, and
+  exposes component tools through the shared connector permission broker.
 - **Lane F — manifest-backed WASM apps + remembered scoped grants: DONE for current surfaces.**
   `[app] type = "wasm"` manifests now load through the registry/path launch
   surfaces, use persistent per-app/per-workspace WASM state, derive explicit

@@ -1449,8 +1449,11 @@ pub enum AppRequest {
     },
 
     /// Remove a subscription previously created by `SubscribeAppEvents`.
-    /// Only the subscriber that owns it may remove it. Fire-and-forget.
-    UnsubscribeAppEvents { subscription_id: String },
+    /// Only the subscriber that owns it may remove it.
+    UnsubscribeAppEvents {
+        request_id: String,
+        subscription_id: String,
+    },
 
     /// List undo checkpoints from the host undo timeline, newest first.
     /// `app_id` filters to one app; `None` = this app's own checkpoints.

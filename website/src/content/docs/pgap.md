@@ -75,7 +75,7 @@ Request a workspace-scoped secret. Scoped to Init.workspace_root automatically.
 
 ### `file_read`
 
-Read a file through the native ProcessApp host. Requires `fs.read` and the resolved path must stay inside the app's w...
+Read a file through the native WASM app runtime host. Requires `fs.read` and the resolved path must stay inside the a...
 
 **Capability:** `fs.read`
 
@@ -85,7 +85,7 @@ Read a file through the native ProcessApp host. Requires `fs.read` and the resol
 
 ### `file_list`
 
-List a directory through the native ProcessApp host. Requires `fs.read` and the resolved path must stay inside the ap...
+List a directory through the native WASM app runtime host. Requires `fs.read` and the resolved path must stay inside ...
 
 **Capability:** `fs.read`
 
@@ -411,7 +411,7 @@ Read the last N lines from a terminal pane's PTY scrollback buffer. Sent by `ple
 
 ### `get_pane_state`
 
-Query the last-rendered UI state of a pane. Sent by `plexi pane state`. For app panes: host writes a JSON object with...
+Query the last-rendered UI state of a pane. Sent by `plexi pane state`. For app panes: host writes a versioned `seman...
 
 | Field | Type | Required |
 |-------|------|----------|
@@ -856,10 +856,11 @@ Subscribe this pane to another app's declared event streams. Gated through the u
 
 ### `unsubscribe_app_events`
 
-Remove a subscription previously created by `SubscribeAppEvents`. Only the subscriber that owns it may remove it. Fir...
+Remove a subscription previously created by `SubscribeAppEvents`. Only the subscriber that owns it may remove it.
 
 | Field | Type | Required |
 |-------|------|----------|
+| `request_id` | `string` | yes |
 | `subscription_id` | `string` | yes |
 
 ### `list_undo_checkpoints`
@@ -1026,7 +1027,7 @@ Secret broker response. value is None when denied.
 
 ### `file_read_result`
 
-Native ProcessApp file read result.
+Native WASM app runtime file read result.
 
 | Field | Type | Required |
 |-------|------|----------|
@@ -1035,7 +1036,7 @@ Native ProcessApp file read result.
 
 ### `file_list_result`
 
-Native ProcessApp directory listing result.
+Native WASM app runtime directory listing result.
 
 | Field | Type | Required |
 |-------|------|----------|
@@ -1504,6 +1505,34 @@ Response to `AppRequest::SubscribeAppEvents`. Exactly one of `subscription_id` /
 | `error` | `string?` | no |
 | `request_id` | `string` | yes |
 | `subscription_id` | `string?` | no |
+
+### `declare_event_streams_result`
+
+Response to `AppRequest::DeclareEventStreams`.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `error` | `string?` | no |
+| `streams` | `array?` | no |
+
+### `emit_event_result`
+
+Response to `AppRequest::EmitEvent`.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `error` | `string?` | no |
+| `sequence` | `integer?` | no |
+
+### `app_events_unsubscribed`
+
+Response to `AppRequest::UnsubscribeAppEvents`.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `error` | `string?` | no |
+| `removed` | `boolean` | yes |
+| `request_id` | `string` | yes |
 
 ### `app_event`
 

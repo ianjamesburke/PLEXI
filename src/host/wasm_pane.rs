@@ -30,9 +30,11 @@ use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, LiveAiBroker};
 use crate::ui::theme::Colors;
 
 use super::wasm_app::bindings::plexi::platform::types::{
-    AiQueryEffect, AiResponseEvent, AiStreamChunkEvent, DeclareEventStreamsEffect, EmitEventEffect,
-    FileReadEffect, FileWriteEffect, HttpFetchEffect, HttpResponse as WitHttpResponse,
-    UiActionEvent, UiValueChangeEvent,
+    AiQueryEffect, AiResponseEvent, AiStreamChunkEvent, AppEventEvent, DeclareEventStreamsEffect,
+    DeclareToolsEffect, EmitEventEffect, EventSubscriptionResultEvent,
+    EventUnsubscriptionResultEvent, FileReadEffect, FileWriteEffect, HttpFetchEffect,
+    HttpResponse as WitHttpResponse, SubscribeEventStreamsEffect, ToolCallEvent, ToolResultEffect,
+    UiActionEvent, UiValueChangeEvent, UnsubscribeEventStreamsEffect,
 };
 use super::wasm_app::{
     Effect, InputEvent, KeyEvent, Modifiers, StateSnapshot, SurfaceEvent, SystemStats, UiNodeData,
@@ -65,6 +67,71 @@ pub enum WasmHostEffect {
         layout: Option<String>,
         args: Vec<String>,
     },
+    SubscribeEvents {
+        request_id: String,
+        app_id: String,
+        event_names: Vec<String>,
+        payload_mode: crate::app_protocol::PayloadMode,
+        trigger_mode: crate::app_protocol::TriggerMode,
+        resource_id: Option<String>,
+    },
+    UnsubscribeEvents {
+        request_id: String,
+        subscription_id: String,
+    },
+    DeclareTools {
+        tools: Vec<crate::app_protocol::AiTool>,
+    },
+    ToolResult {
+        call_id: String,
+        output_json: Option<String>,
+        error: Option<String>,
+    },
+}
+
+#[derive(Clone)]
+pub(crate) struct WasmInputSender {
+    queue: Arc<ArrayQueue<InputEvent>>,
+    repaint: Option<egui::Context>,
+}
+
+impl WasmInputSender {
+    fn send(&self, event: InputEvent) -> Result<(), String> {
+        self.queue
+            .push(event)
+            .map_err(|_| "WASM input queue is full".to_string())?;
+        if let Some(ctx) = &self.repaint {
+            ctx.request_repaint();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn send_tool_call(
+        &self,
+        call_id: String,
+        name: String,
+        input_json: String,
+        caller_id: String,
+    ) -> Result<(), String> {
+        self.send(InputEvent::ToolCall(ToolCallEvent {
+            call_id,
+            name,
+            input_json,
+            caller_id,
+        }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> (Self, Arc<ArrayQueue<InputEvent>>) {
+        let queue = Arc::new(ArrayQueue::new(16));
+        (
+            Self {
+                queue: Arc::clone(&queue),
+                repaint: None,
+            },
+            queue,
+        )
+    }
 }
 
 /// Source of system metrics for the `get-system-stats` effect. Production uses
@@ -255,6 +322,7 @@ pub struct WasmPane {
     http_tx: Sender<InputEvent>,
     http_rx: Receiver<InputEvent>,
     pending_host_effects: VecDeque<WasmHostEffect>,
+    external_inputs: Arc<ArrayQueue<InputEvent>>,
 }
 
 impl WasmPane {
@@ -284,6 +352,7 @@ impl WasmPane {
             http_tx,
             http_rx,
             pending_host_effects: VecDeque::new(),
+            external_inputs: Arc::new(ArrayQueue::new(256)),
         }
     }
 
@@ -364,6 +433,27 @@ impl WasmPane {
     /// Enqueue an external input event for the next `tick`.
     pub fn push_input(&mut self, event: InputEvent) {
         self.queue.push_back(event);
+    }
+
+    pub(crate) fn input_sender(&self, repaint: egui::Context) -> WasmInputSender {
+        WasmInputSender {
+            queue: Arc::clone(&self.external_inputs),
+            repaint: Some(repaint),
+        }
+    }
+
+    fn collect_external_inputs(&mut self) {
+        while let Some(event) = self.external_inputs.pop() {
+            self.queue.push_back(event);
+        }
+    }
+
+    fn has_external_inputs(&self) -> bool {
+        !self.external_inputs.is_empty()
+    }
+
+    fn has_pending_inputs(&self) -> bool {
+        !self.queue.is_empty() || self.has_external_inputs()
     }
 
     /// Deliver a semantic action from the host command surface through the
@@ -457,6 +547,7 @@ impl WasmPane {
     /// Fire any due timers and drain the input queue. `now_ms` is monotonic
     /// elapsed milliseconds since the pane started.
     pub fn tick(&mut self, now_ms: u64) -> wasmtime::Result<()> {
+        self.collect_external_inputs();
         self.collect_http_results();
         self.fire_timers(now_ms);
         self.drain(now_ms)?;
@@ -742,6 +833,10 @@ impl WasmPane {
                 let result = self.emit_event(req);
                 self.queue.push_back(InputEvent::EmitEventResult(result));
             }
+            Effect::SubscribeEventStreams(req) => self.subscribe_event_streams(req),
+            Effect::UnsubscribeEventStreams(req) => self.unsubscribe_event_streams(req),
+            Effect::DeclareTools(req) => self.declare_tools(req),
+            Effect::ToolResult(req) => self.tool_result(req),
             Effect::ClipboardRead => {
                 self.queue_host_effect("clipboard.read", WasmHostEffect::ClipboardRead, |err| {
                     InputEvent::ClipboardReadResult(Err(err))
@@ -1034,6 +1129,105 @@ impl WasmPane {
         Ok(outcome.event_id)
     }
 
+    fn subscribe_event_streams(&mut self, req: SubscribeEventStreamsEffect) {
+        let payload_mode = parse_payload_mode(&req.payload_mode);
+        let trigger_mode = parse_trigger_mode(&req.trigger_mode);
+        match (payload_mode, trigger_mode) {
+            (Ok(payload_mode), Ok(trigger_mode)) => {
+                log::info!(
+                    "wasm events: subscribe app_id={} publisher={} streams={:?}",
+                    self.app.app_id(),
+                    req.app_id,
+                    req.event_names
+                );
+                self.pending_host_effects
+                    .push_back(WasmHostEffect::SubscribeEvents {
+                        request_id: req.request_id,
+                        app_id: req.app_id,
+                        event_names: req.event_names,
+                        payload_mode,
+                        trigger_mode,
+                        resource_id: req.resource_id,
+                    });
+            }
+            (Err(error), _) | (_, Err(error)) => {
+                self.queue.push_back(InputEvent::EventSubscriptionResult(
+                    EventSubscriptionResultEvent {
+                        request_id: req.request_id,
+                        subscription_id: None,
+                        error: Some(error),
+                    },
+                ));
+            }
+        }
+    }
+
+    fn unsubscribe_event_streams(&mut self, req: UnsubscribeEventStreamsEffect) {
+        log::info!(
+            "wasm events: unsubscribe app_id={} subscription={}",
+            self.app.app_id(),
+            req.subscription_id
+        );
+        self.pending_host_effects
+            .push_back(WasmHostEffect::UnsubscribeEvents {
+                request_id: req.request_id,
+                subscription_id: req.subscription_id,
+            });
+    }
+
+    fn declare_tools(&mut self, req: DeclareToolsEffect) {
+        let parsed = req
+            .tools
+            .into_iter()
+            .map(|tool| {
+                let input_schema =
+                    serde_json::from_str(&tool.input_schema_json).map_err(|error| {
+                        format!("tool '{}': invalid input schema: {error}", tool.name)
+                    })?;
+                let output_schema =
+                    serde_json::from_str(&tool.output_schema_json).map_err(|error| {
+                        format!("tool '{}': invalid output schema: {error}", tool.name)
+                    })?;
+                Ok(crate::app_protocol::AiTool {
+                    name: tool.name,
+                    description: tool.description,
+                    input_schema,
+                    output_schema,
+                    timeout_ms: tool.timeout_ms,
+                    read_only: tool.read_only,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>();
+        match parsed {
+            Ok(tools) => {
+                log::info!(
+                    "wasm tools: app_id={} declared {} tool(s)",
+                    self.app.app_id(),
+                    tools.len()
+                );
+                self.pending_host_effects
+                    .push_back(WasmHostEffect::DeclareTools { tools });
+            }
+            Err(error) => self
+                .queue
+                .push_back(InputEvent::DeclareToolsResult(Err(error))),
+        }
+    }
+
+    fn tool_result(&mut self, req: ToolResultEffect) {
+        log::info!(
+            "wasm tools: app_id={} completed call_id={}",
+            self.app.app_id(),
+            req.call_id
+        );
+        self.pending_host_effects
+            .push_back(WasmHostEffect::ToolResult {
+                call_id: req.call_id,
+                output_json: req.output_json,
+                error: req.error,
+            });
+    }
+
     fn scoped_path(
         &self,
         access: FsAccess,
@@ -1166,6 +1360,16 @@ fn parse_trigger_mode(raw: &str) -> Result<TriggerMode, String> {
     }
 }
 
+fn parse_payload_mode(raw: &str) -> Result<crate::app_protocol::PayloadMode, String> {
+    match raw {
+        "off" | "Off" => Ok(crate::app_protocol::PayloadMode::Off),
+        "summary" | "Summary" => Ok(crate::app_protocol::PayloadMode::Summary),
+        "full" | "Full" => Ok(crate::app_protocol::PayloadMode::Full),
+        "state_ref" | "StateRef" => Ok(crate::app_protocol::PayloadMode::StateRef),
+        other => Err(format!("invalid payload mode: {other}")),
+    }
+}
+
 // ─── Live adapter ───────────────────────────────────────────────────────────
 //
 // `LiveWasmPane` bridges the time-injected, headless [`WasmPane`] to the host's
@@ -1287,6 +1491,96 @@ impl LiveWasmPane {
 
     pub fn take_host_effects(&mut self) -> Vec<WasmHostEffect> {
         self.inner.take_host_effects()
+    }
+
+    pub(crate) fn input_sender(&self, repaint: egui::Context) -> WasmInputSender {
+        self.inner.input_sender(repaint)
+    }
+
+    pub(crate) fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
+        let event = match event {
+            crate::app_protocol::PlexiEvent::AppEventsSubscribed {
+                request_id,
+                subscription_id,
+                error,
+            } => InputEvent::EventSubscriptionResult(EventSubscriptionResultEvent {
+                request_id,
+                subscription_id,
+                error,
+            }),
+            crate::app_protocol::PlexiEvent::AppEventsUnsubscribed {
+                request_id,
+                removed,
+                error,
+            } => InputEvent::EventUnsubscriptionResult(EventUnsubscriptionResultEvent {
+                request_id,
+                removed,
+                error,
+            }),
+            crate::app_protocol::PlexiEvent::AppEvent {
+                subscription_id,
+                app_id,
+                event,
+                event_id,
+                resource_id,
+                trigger_mode,
+                summary,
+                payload,
+                state_ref,
+                created_at,
+            } => InputEvent::AppEvent(AppEventEvent {
+                subscription_id,
+                app_id,
+                event,
+                event_id,
+                resource_id,
+                trigger_mode: format!("{trigger_mode:?}").to_ascii_lowercase(),
+                summary,
+                payload_json: payload.map(|value| value.to_string()),
+                state_ref,
+                created_at,
+            }),
+            crate::app_protocol::PlexiEvent::DeclareEventStreamsResult { streams, error } => {
+                InputEvent::DeclareEventStreamsResult(match (streams, error) {
+                    (Some(streams), None) => Ok(streams),
+                    (_, Some(error)) => Err(error),
+                    _ => Err("declare event streams returned no result".to_string()),
+                })
+            }
+            crate::app_protocol::PlexiEvent::EmitEventResult { sequence, error } => {
+                InputEvent::EmitEventResult(match (sequence, error) {
+                    (Some(sequence), None) => Ok(sequence),
+                    (_, Some(error)) => Err(error),
+                    _ => Err("emit event returned no result".to_string()),
+                })
+            }
+            other => {
+                log::warn!("wasm input: unsupported host event {other:?}");
+                return;
+            }
+        };
+        self.inner.push_input(event);
+    }
+
+    pub(crate) fn background_tick(&mut self) {
+        if self.pending_init.is_some() {
+            return;
+        }
+        if let Err(error) = self.inner.tick(self.now_ms()) {
+            self.fail("background step", error);
+            return;
+        }
+        match self.inner.view() {
+            Ok(tree) => {
+                self.last_text = collect_tree_text(&tree);
+                self.semantic_state = crate::host::pane::SemanticPaneState::from_wasm_tree(&tree);
+            }
+            Err(error) => self.fail("background view", error),
+        }
+    }
+
+    pub(crate) fn needs_background_tick(&self) -> bool {
+        self.inner.has_pending_inputs()
     }
 
     /// Deliver `plexi app action` to the guest and refresh the cached semantic
@@ -1757,6 +2051,20 @@ mod tests {
         )
         .expect("load counter");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
+    }
+
+    #[test]
+    fn queued_host_event_marks_inactive_wasm_pane_ready_to_tick() {
+        let mut pane = counter_pane();
+        assert!(!pane.has_pending_inputs());
+        pane.complete_host_effect(InputEvent::EventUnsubscriptionResult(
+            EventUnsubscriptionResultEvent {
+                request_id: "unsub-1".to_string(),
+                removed: true,
+                error: None,
+            },
+        ));
+        assert!(pane.has_pending_inputs());
     }
 
     fn key(k: &str) -> InputEvent {
@@ -2406,6 +2714,127 @@ mod tests {
         assert!(timeline.lock().unwrap().events().is_empty());
     }
 
+    #[test]
+    fn subscribe_and_unsubscribe_effects_cross_the_host_boundary() {
+        let mut p = pane(0.0);
+        p.exec(
+            Effect::SubscribeEventStreams(SubscribeEventStreamsEffect {
+                request_id: "subscribe-1".to_string(),
+                app_id: "python-notes".to_string(),
+                event_names: vec!["note.saved".to_string()],
+                payload_mode: "full".to_string(),
+                trigger_mode: "conversation".to_string(),
+                resource_id: Some("note-1".to_string()),
+            }),
+            0,
+        );
+        assert_eq!(
+            p.take_host_effects(),
+            vec![WasmHostEffect::SubscribeEvents {
+                request_id: "subscribe-1".to_string(),
+                app_id: "python-notes".to_string(),
+                event_names: vec!["note.saved".to_string()],
+                payload_mode: crate::app_protocol::PayloadMode::Full,
+                trigger_mode: crate::app_protocol::TriggerMode::Conversation,
+                resource_id: Some("note-1".to_string()),
+            }]
+        );
+
+        p.exec(
+            Effect::UnsubscribeEventStreams(UnsubscribeEventStreamsEffect {
+                request_id: "unsubscribe-1".to_string(),
+                subscription_id: "sub-1".to_string(),
+            }),
+            0,
+        );
+        assert_eq!(
+            p.take_host_effects(),
+            vec![WasmHostEffect::UnsubscribeEvents {
+                request_id: "unsubscribe-1".to_string(),
+                subscription_id: "sub-1".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn subscribed_host_event_enters_wasm_update_queue() {
+        let mut live = LiveWasmPane::new(
+            pane(0.0),
+            "sysmon",
+            StateSnapshot { entries: vec![] },
+            vec![],
+        );
+        live.queue_outbound_event(crate::app_protocol::PlexiEvent::AppEvent {
+            subscription_id: "sub-1".to_string(),
+            app_id: "python-notes".to_string(),
+            event: "note.saved".to_string(),
+            event_id: 9,
+            resource_id: "note-1".to_string(),
+            trigger_mode: crate::app_protocol::TriggerMode::Conversation,
+            summary: Some("Saved note".to_string()),
+            payload: Some(serde_json::json!({"title": "Hello"})),
+            state_ref: None,
+            created_at: "2026-07-13T00:00:00Z".to_string(),
+        });
+
+        let event = live.inner.queue.pop_front().expect("queued AppEvent");
+        let InputEvent::AppEvent(event) = event else {
+            panic!("expected AppEvent, got {event:?}");
+        };
+        assert_eq!(event.subscription_id, "sub-1");
+        assert_eq!(event.app_id, "python-notes");
+        assert_eq!(event.event, "note.saved");
+        assert_eq!(event.payload_json.as_deref(), Some(r#"{"title":"Hello"}"#));
+    }
+
+    #[test]
+    fn tool_declarations_require_both_json_schemas() {
+        let mut p = pane(0.0);
+        p.exec(
+            Effect::DeclareTools(DeclareToolsEffect {
+                tools: vec![
+                    super::super::wasm_app::bindings::plexi::platform::types::ToolDecl {
+                        name: "notes.search".to_string(),
+                        description: "Search notes".to_string(),
+                        input_schema_json: r#"{"type":"object"}"#.to_string(),
+                        output_schema_json: r#"{"type":"array"}"#.to_string(),
+                        timeout_ms: Some(2_000),
+                        read_only: true,
+                    },
+                ],
+            }),
+            0,
+        );
+        let effects = p.take_host_effects();
+        let WasmHostEffect::DeclareTools { tools } = &effects[0] else {
+            panic!("expected DeclareTools, got {:?}", effects[0]);
+        };
+        assert_eq!(tools[0].name, "notes.search");
+        assert_eq!(tools[0].input_schema["type"], "object");
+        assert_eq!(tools[0].output_schema["type"], "array");
+        assert!(tools[0].read_only);
+
+        p.exec(
+            Effect::DeclareTools(DeclareToolsEffect {
+                tools: vec![
+                    super::super::wasm_app::bindings::plexi::platform::types::ToolDecl {
+                        name: "bad".to_string(),
+                        description: "Bad schema".to_string(),
+                        input_schema_json: "not-json".to_string(),
+                        output_schema_json: r#"{"type":"object"}"#.to_string(),
+                        timeout_ms: None,
+                        read_only: false,
+                    },
+                ],
+            }),
+            0,
+        );
+        assert!(matches!(
+            pop_event(&mut p),
+            InputEvent::DeclareToolsResult(Err(error)) if error.contains("invalid input schema")
+        ));
+    }
+
     // Lane B: typed-node interactions collected by the renderer are fed back
     // into the guest update loop, so a button click changes the next view.
     #[test]
@@ -2446,7 +2875,10 @@ mod tests {
         pane.dispatch_ui_action("increment", 1)?;
 
         let text = tree_text(&pane.view()?);
-        assert!(text.contains("Count: 1"), "guest view after host action:\n{text}");
+        assert!(
+            text.contains("Count: 1"),
+            "guest view after host action:\n{text}"
+        );
         Ok(())
     }
 

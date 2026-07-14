@@ -13,15 +13,12 @@
 //! Allow-Always granted on a read prompt never authorizes an emit, nor the
 //! reverse.
 //!
-//! - [`evaluate_and_record_subscription`] is the single broker-gated path
-//!   that turns a subscribe request into a [`SubscriptionRecord`]. Both the
-//!   per-app `WASM app runtime` (with its per-app grant store) and the host-level
-//!   [`HostSubscriptionService`] (with the host grant store) call it, so the
-//!   `TargetType::AppEventStream` grant rules live in exactly one place.
-//! - [`HostSubscriptionService`] owns the host grant store + posture loaded
-//!   from the profile dir and the global timeline handle. It serves non-app
-//!   subscribers (CLI agents, host MCP clients) whose identity is derived
-//!   from trusted host state, never spoofed from CLI arguments.
+//! - [`HostSubscriptionService`] is the single broker-gated path that turns a
+//!   subscribe request into a [`SubscriptionRecord`]. Python and Rust WASM app
+//!   runtimes use it alongside CLI and host MCP transports.
+//! - The service owns the host grant store, posture, and global timeline. Every
+//!   caller supplies a host-stamped delivery identity; app runtimes also supply
+//!   their host-known app identity and workspace for authorization.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::SyncSender;
@@ -35,13 +32,18 @@ use crate::broker::{
 use crate::host::app_timeline::{AppTimeline, EmittedEvent, SubscriptionRecord};
 use crate::host::event_log;
 
+pub fn app_subscriber_id(pane_id: u64) -> String {
+    format!("app-pane:{pane_id}")
+}
+
 /// Evaluate broker grants for a subscription and, on a unanimous `Allow`,
 /// record it in `timeline`. One `TargetType::AppEventStream` evaluation per
 /// event name (`"<app_id>::<event>"`, or `"<app_id>::*"` for all streams);
 /// the strictest non-allow decision short-circuits and nothing is recorded.
 ///
-/// This is the shared seam between the per-app and host subscription paths —
-/// keep the grant semantics here, not duplicated per caller.
+/// Retained as a focused policy test seam. Production callers use
+/// [`HostSubscriptionService::classify_subscribe_request`] so `Ask` decisions
+/// can enter the shared consent UI.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub fn evaluate_and_record_subscription(
@@ -252,6 +254,9 @@ pub struct HostSubscribeRequest {
     /// per concurrent waiter (e.g. the host MCP server mints `mcp:host:<uuid>`),
     /// never sourced from an untrusted client argument.
     pub subscriber_override: Option<String>,
+    /// Host-stamped actor type for non-CLI subscribers. App runtimes set this
+    /// to `App`; transports leave it unset and resolve as `Agent`.
+    pub subscriber_type_override: Option<ActorType>,
     /// Transport-supplied *authorization identity*: the stable actor id the
     /// broker checks grants against, decoupled from the per-call routing key
     /// above (#2290). When `None`, the broker actor is the routing id itself
@@ -259,6 +264,9 @@ pub struct HostSubscribeRequest {
     /// host MCP server sets this to the stable `mcp:host` so one "Always" grant
     /// covers every concurrent connection.
     pub broker_actor_override: Option<String>,
+    /// Workspace used for broker posture evaluation. App runtimes supply their
+    /// own workspace; transports use the service's active workspace.
+    pub workspace_root_override: Option<PathBuf>,
     pub reply: SyncSender<HostSubscribeReply>,
 }
 
@@ -477,7 +485,10 @@ impl HostSubscriptionService {
         req: HostSubscribeRequest,
     ) -> Option<PendingEventConsent> {
         let (subscriber_type, subscriber_id) = match &req.subscriber_override {
-            Some(id) => (ActorType::Agent, id.clone()),
+            Some(id) => (
+                req.subscriber_type_override.unwrap_or(ActorType::Agent),
+                id.clone(),
+            ),
             None => Self::resolve_cli_subscriber(req.from_pane_id),
         };
         // Authorization identity: the stable actor the broker grants are keyed
@@ -508,7 +519,9 @@ impl HostSubscriptionService {
         let decision = evaluate_subscription(
             &self.grant_store,
             self.posture.as_ref(),
-            &self.workspace_root,
+            req.workspace_root_override
+                .as_deref()
+                .unwrap_or(&self.workspace_root),
             &req.publisher_app_id,
             subscriber_type,
             &broker_actor_id,
@@ -973,6 +986,46 @@ mod tests {
         HostSubscriptionService::new_for_test(store, timeline)
     }
 
+    #[test]
+    fn app_subscription_uses_app_actor_for_broker_and_pane_for_delivery() {
+        let timeline = timeline_with_stream();
+        let mut store = GrantStore::default();
+        let mut grant = allow_grant("notes-app", "event-probe::probe.tick");
+        grant.actor_type = ActorType::App;
+        store.record(grant);
+        let service = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
+        let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+        let request = HostSubscribeRequest {
+            publisher_app_id: "event-probe".to_string(),
+            event_names: vec!["probe.tick".to_string()],
+            payload_mode: PayloadMode::Full,
+            trigger_mode: TriggerMode::Conversation,
+            resource_id: None,
+            from_pane_id: Some(41),
+            subscriber_override: Some(app_subscriber_id(41)),
+            subscriber_type_override: Some(ActorType::App),
+            broker_actor_override: Some("notes-app".to_string()),
+            workspace_root_override: Some(PathBuf::from("/workspace/notes")),
+            reply,
+        };
+
+        assert!(service.classify_subscribe_request(request).is_none());
+        let HostSubscribeReply::Ok {
+            subscriber_type,
+            subscriber_id,
+            ..
+        } = receiver.recv().unwrap()
+        else {
+            panic!("app subscription should be allowed");
+        };
+        assert_eq!(subscriber_type, ActorType::App);
+        assert_eq!(subscriber_id, "app-pane:41");
+        let timeline = timeline.lock().unwrap();
+        let subscription = &timeline.subscriptions()[0];
+        assert_eq!(subscription.subscriber_type, ActorType::App);
+        assert_eq!(subscription.subscriber_id, "app-pane:41");
+    }
+
     fn subscribe_request(
         event_names: Vec<String>,
         payload_mode: PayloadMode,
@@ -990,7 +1043,9 @@ mod tests {
             resource_id: None,
             from_pane_id: Some(7),
             subscriber_override: override_id.map(String::from),
+            subscriber_type_override: None,
             broker_actor_override: None,
+            workspace_root_override: None,
             reply: tx,
         };
         (req, rx)
@@ -1015,7 +1070,9 @@ mod tests {
             resource_id: None,
             from_pane_id: None,
             subscriber_override: Some(delivery_id.to_string()),
+            subscriber_type_override: None,
             broker_actor_override: Some(broker_actor.to_string()),
+            workspace_root_override: None,
             reply: tx,
         };
         (req, rx)

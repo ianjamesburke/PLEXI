@@ -336,7 +336,9 @@ fn tool_subscribe_and_wait(
         resource_id: None,
         from_pane_id: None,
         subscriber_override: Some(delivery_id),
+        subscriber_type_override: None,
         broker_actor_override: Some(MCP_SUBSCRIBER_ID.to_string()),
+        workspace_root_override: None,
         reply: reply_tx,
     };
     subscribe_tx
