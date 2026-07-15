@@ -289,7 +289,7 @@ fn render_node(
                 ui.available_width().max(1.0)
             };
             let height = if c.grow {
-                ui.available_height().max(c.height)
+                ui.available_height().max(1.0)
             } else {
                 c.height
             };
@@ -385,6 +385,7 @@ fn render_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::wasm_app::bindings::plexi::platform::types::CanvasNode;
     use crate::host::wasm_app::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmApp};
     use std::path::PathBuf;
 
@@ -416,6 +417,58 @@ mod tests {
         assert_eq!(origin, container.min);
         assert!((sx - 300.0 / 640.0).abs() < f32::EPSILON);
         assert!((sy - 700.0 / 360.0).abs() < f32::EPSILON);
+    }
+
+    // Stint 0390: a grow canvas's height must track the pane like its width
+    // does, not stay floored at the app's declared height. Shrinking the pane
+    // below the declared height previously left the canvas rect taller than
+    // the pane, painting content below the visible edge.
+    #[test]
+    fn grow_canvas_height_tracks_pane_when_shrunk_below_declared_height() {
+        let declared_height = 360.0;
+        let pane_height = 100.0;
+
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![IndexedNode {
+                id: 0,
+                key: String::new(),
+                data: UiNodeData::Canvas(CanvasNode {
+                    width: 0.0,
+                    height: declared_height,
+                    grow: true,
+                    commands: vec![],
+                }),
+            }],
+        };
+
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+
+        let mut raw_input = egui::RawInput::default();
+        raw_input.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(200.0, pane_height),
+        ));
+
+        let mut allocated_height = 0.0f32;
+        let _ = ctx.run(raw_input, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None);
+                    allocated_height = ui.min_rect().height();
+                });
+        });
+
+        assert!(
+            allocated_height <= pane_height + 1.0,
+            "grow canvas allocated {allocated_height}px tall in a {pane_height}px pane, \
+             declared height was {declared_height}px"
+        );
     }
 
     // G4 foundation: a real sysmon view tree (after delivering stats) renders
