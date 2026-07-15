@@ -1897,6 +1897,74 @@ mod tests {
         );
     }
 
+    /// Regression (stint 0387 follow-up): the inline sidebar context-rename
+    /// TextEdit must receive typed characters even while a terminal pane is the
+    /// focused tile. The terminal-input ownership transfer
+    /// (`take_focused_terminal_input`) runs before the render pass and, before
+    /// the fix, stole every Key/Text event out of `ctx` whenever the focused
+    /// tile was a terminal — starving the sidebar rename box (which is not a
+    /// focus layer when the sidebar is visible). With the fix, the steal is
+    /// gated on egui keyboard focus, so the box (which holds egui focus) keeps
+    /// its keystrokes.
+    #[test]
+    fn sidebar_inline_rename_receives_text_with_focused_terminal() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+
+        // Need a real focused terminal pane. Seed an app pane, then split — the
+        // split spawns a real TerminalPane and focuses it.
+        add_focused_pane(&mut h);
+        h.step();
+        h.with_app_mut(|app| app.split_focused(true, None, false, false, None));
+        h.run_steps(2);
+
+        let focused_is_terminal = h.with_app(|app| {
+            let win = &app.windows[app.active_window];
+            win.focused_pane
+                .and_then(|t| match win.tree.tiles.get(t) {
+                    Some(egui_tiles::Tile::Pane(pid)) => win.panes.get(pid),
+                    _ => None,
+                })
+                .map(|p| matches!(p, Pane::Terminal(_)))
+                .unwrap_or(false)
+        });
+        assert!(
+            focused_is_terminal,
+            "focused pane must be a real terminal for this regression to be meaningful"
+        );
+
+        // Enter inline sidebar rename: sidebar visible → sync_context_rename_focus
+        // leaves should_own=false, so NO ContextRename focus layer is pushed and
+        // the inline TextEdit (not an overlay) owns keyboard input.
+        h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            let ctx_idx = app.router.active_idx();
+            app.rename_buffer.clear();
+            app.renaming_window = Some(ctx_idx);
+        });
+        // Let the TextEdit mount and grab egui focus (terminal surrenders focus
+        // via suppress_focus while renaming_window is set).
+        h.run_steps(3);
+
+        // Type into the rename box.
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("x".to_string()));
+        h.step();
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("y".to_string()));
+        h.step();
+
+        let buffer = h.with_app(|app| app.rename_buffer.clone());
+        assert_eq!(
+            buffer, "xy",
+            "inline sidebar rename box must receive typed characters even while a terminal is the focused tile"
+        );
+    }
+
     /// Regression: tab titles with long names must stay on a single line and show
     /// a trailing ellipsis rather than wrapping or overflowing the tab bar rect.
     #[test]

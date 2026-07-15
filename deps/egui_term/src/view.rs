@@ -28,6 +28,20 @@ use alacritty_terminal::grid::Dimensions;
 
 const EGUI_TERM_WIDGET_ID_PREFIX: &str = "egui_term::instance::";
 
+/// Deterministic egui widget id for a terminal instance, keyed by the unique
+/// backend/pane id (`TerminalBackend::id`). Computed the same way on both sides:
+/// the terminal widget interacts under this id (see [`TerminalView::ui`]), and
+/// the Plexi host recomputes it to check whether the focused terminal actually
+/// owns egui keyboard focus before taking the frame's input for it (stint 0387
+/// regression fix). Because `backend_id` is globally unique and there is a
+/// single render site per terminal, a hierarchy-independent `Id::new` is
+/// collision-free and reconstructable outside the render tree — unlike
+/// `Ui::make_persistent_id`, which folds in the parent id and cannot be
+/// recomputed by the host.
+pub fn terminal_widget_id(backend_id: u64) -> Id {
+    Id::new(format!("{EGUI_TERM_WIDGET_ID_PREFIX}{backend_id}"))
+}
+
 #[derive(Debug, Clone)]
 enum InputAction {
     BackendCall(BackendCommand),
@@ -133,8 +147,15 @@ pub struct TerminalView<'a> {
 
 impl Widget for TerminalView<'_> {
     fn ui(self, ui: &mut egui::Ui) -> Response {
-        let (layout, painter) =
-            ui.allocate_painter(self.size, egui::Sense::click());
+        // Interact under the deterministic `widget_id` (not `allocate_painter`'s
+        // auto id) so egui keyboard focus is held under an id the host can
+        // recompute via `terminal_widget_id` (stint 0387). This mirrors
+        // `allocate_painter` (allocate space → interact → clip painter), only
+        // with our own id for the interaction.
+        let (_auto_id, rect) = ui.allocate_space(self.size);
+        let layout = ui.interact(rect, self.widget_id, egui::Sense::click());
+        let clip_rect = ui.clip_rect().intersect(rect);
+        let painter = ui.painter().with_clip_rect(clip_rect);
 
         let widget_id = self.widget_id;
         let mut state = ui.memory(|m| {
@@ -155,10 +176,7 @@ impl Widget for TerminalView<'_> {
 
 impl<'a> TerminalView<'a> {
     pub fn new(ui: &mut egui::Ui, backend: &'a mut TerminalBackend) -> Self {
-        let widget_id = ui.make_persistent_id(format!(
-            "{}{}",
-            EGUI_TERM_WIDGET_ID_PREFIX, backend.id
-        ));
+        let widget_id = terminal_widget_id(backend.id);
 
         Self {
             widget_id,

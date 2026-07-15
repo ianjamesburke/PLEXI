@@ -68,6 +68,15 @@ impl PlexiApp {
     /// This is a read of focus state only; it never mutates `active_window` or
     /// `focused_pane` to steer the lookup (repo trap: don't switch global state
     /// to thread data through a function).
+    ///
+    /// Invariant (stint 0387 regression fix): the steal only fires when the
+    /// focused terminal actually owns egui keyboard focus. If any *other* egui
+    /// widget holds keyboard focus this frame — e.g. the inline sidebar
+    /// context-rename `TextEdit`, which is not a focus layer while the sidebar
+    /// is visible, or any future inline editor — this returns `None` so those
+    /// keystrokes stay in `ctx` for that widget. The terminal surrenders egui
+    /// focus in that situation via `render`'s `suppress_focus` path, so
+    /// `memory.focused()` names the other widget rather than the terminal.
     pub(super) fn take_focused_terminal_input(
         &mut self,
         ctx: &egui::Context,
@@ -92,6 +101,16 @@ impl PlexiApp {
         // "[process exited]" view auto-closes on the next keypress, which it now
         // reads from this buffer).
         self.windows[active].panes.get(&pane_id)?.as_terminal()?;
+
+        // Gate the steal on egui keyboard focus: if another widget owns focus
+        // (its id differs from this terminal's deterministic widget id), the
+        // frame's keyboard belongs to that widget — leave `ctx` untouched so it
+        // receives the keys. See the doc comment's invariant.
+        if let Some(focused_id) = ctx.memory(|m| m.focused()) {
+            if focused_id != egui_term::terminal_widget_id(pane_id) {
+                return None;
+            }
+        }
 
         let router = crate::app::input_router::PlexiInput::take_from(ctx);
         let (keyboard_events, modifiers) = router.into_events_and_modifiers();
