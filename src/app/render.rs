@@ -1,6 +1,6 @@
 //! Rendering helpers extracted from the main `eframe::App::update()` loop.
 
-use super::{ClickFlash, FocusLayer, PlexiApp};
+use super::{ClickFlash, FocusKind, PlexiApp};
 use crate::app_protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
 use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
@@ -1039,7 +1039,7 @@ impl PlexiApp {
 
         // Command palette, run palette, rename-pane overlay, notification
         // modal, and confirm-close are all drawn by the early input-capture
-        // path at the top of `update()` — they own a `FocusLayer` and render
+        // path at the top of `update()` — they own a `FocusKind` and render
         // their own keystrokes before the drain. Drawing again here would
         // double-dispatch Enter/Escape after keys have been drained.
         // Quit confirmation overlay
@@ -1075,7 +1075,7 @@ impl PlexiApp {
 
         // Same pattern: QuickNote compose mode needs re-focus every frame so
         // pane TextInput widgets rendered in CentralPanel can't steal it.
-        if matches!(self.focus_stack.last(), Some(FocusLayer::QuickNote)) {
+        if matches!(self.focus_stack.last(), Some(FocusKind::QuickNote)) {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("quick_note_text")));
         }
 
@@ -1098,7 +1098,7 @@ impl PlexiApp {
         // Capability/secret modal: only re-request for Secret prompts — Capability prompts
         // have no text field, so requesting a non-existent ID would leave egui holding a
         // stale focus pointer that interferes with button interactions.
-        if matches!(self.focus_stack.last(), Some(FocusLayer::CapabilityModal)) {
+        if matches!(self.focus_stack.last(), Some(FocusKind::CapabilityModal)) {
             let has_secret_prompt = false;
             if has_secret_prompt {
                 log::debug!("capability_modal: re-requesting focus for capability_secret_input post-CentralPanel");

@@ -1,7 +1,7 @@
 //! Notes inbox triage overlay. Currently has no UI entry point — the `t`
 //! binding in the notes picker was removed pending a triage rework; the
 //! overlay is kept alive (and smoke-tested) by pushing
-//! `FocusLayer::NotesTriage` directly.
+//! `FocusKind::NotesTriage` directly.
 //!
 //! Shows inbox notes one at a time. Key bindings:
 //!   h / ←          — previous note
@@ -11,7 +11,7 @@
 //!   1–9            — run configured action, then trash and advance
 //!   Esc            — back to the notes picker
 
-use crate::app::{FocusLayer, PlexiApp};
+use crate::app::{FocusKind, PlexiApp};
 use crate::notes::{InboxNote, TriageAction};
 use crate::ui::style;
 use crate::ui::{
@@ -24,8 +24,8 @@ impl PlexiApp {
     /// advancing past the last note). The picker re-scans, so the inbox
     /// section reflects what triage just moved.
     fn notes_triage_back_to_picker(&mut self) {
-        self.pop_focus_layer(&FocusLayer::NotesTriage);
-        if !self.focus_stack.contains(&FocusLayer::NotesPicker) {
+        self.pop_focus_layer(&FocusKind::NotesTriage);
+        if !self.focus_stack.contains(&FocusKind::NotesPicker) {
             self.open_notes_picker();
         }
     }
@@ -453,13 +453,13 @@ mod tests {
         let mut app = test_app();
         app.notes_triage_notes = vec![inbox_note("only")];
         app.notes_triage_index = 0;
-        app.push_focus_layer(FocusLayer::NotesTriage);
+        app.push_focus_layer(FocusKind::NotesTriage);
 
         // Removing the last note must land back on the picker, not just close.
         app.notes_triage_advance();
 
-        assert!(!app.focus_stack.contains(&FocusLayer::NotesTriage));
-        assert!(app.focus_stack.contains(&FocusLayer::NotesPicker));
+        assert!(!app.focus_stack.contains(&FocusKind::NotesTriage));
+        assert!(app.focus_stack.contains(&FocusKind::NotesPicker));
     }
 
     #[test]
@@ -467,12 +467,12 @@ mod tests {
         let mut app = test_app();
         app.notes_triage_notes = vec![inbox_note("a"), inbox_note("b")];
         app.notes_triage_index = 0;
-        app.push_focus_layer(FocusLayer::NotesTriage);
+        app.push_focus_layer(FocusKind::NotesTriage);
 
         app.notes_triage_advance();
 
-        assert!(app.focus_stack.contains(&FocusLayer::NotesTriage));
-        assert!(!app.focus_stack.contains(&FocusLayer::NotesPicker));
+        assert!(app.focus_stack.contains(&FocusKind::NotesTriage));
+        assert!(!app.focus_stack.contains(&FocusKind::NotesPicker));
         assert_eq!(app.notes_triage_notes.len(), 1);
         assert_eq!(app.notes_triage_index, 0);
     }
@@ -480,16 +480,16 @@ mod tests {
     #[test]
     fn triage_back_to_picker_does_not_double_push_picker_layer() {
         let mut app = test_app();
-        app.push_focus_layer(FocusLayer::NotesPicker);
-        app.push_focus_layer(FocusLayer::NotesTriage);
+        app.push_focus_layer(FocusKind::NotesPicker);
+        app.push_focus_layer(FocusKind::NotesTriage);
 
         app.notes_triage_back_to_picker();
 
-        assert!(!app.focus_stack.contains(&FocusLayer::NotesTriage));
+        assert!(!app.focus_stack.contains(&FocusKind::NotesTriage));
         assert_eq!(
             app.focus_stack
                 .iter()
-                .filter(|l| **l == FocusLayer::NotesPicker)
+                .filter(|l| **l == FocusKind::NotesPicker)
                 .count(),
             1
         );

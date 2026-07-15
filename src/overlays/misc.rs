@@ -543,7 +543,7 @@ impl PlexiApp {
         };
 
         // Consume Enter/Escape at the context level so they cannot bleed into
-        // the focused pane this frame. Pairs with `FocusLayer::RenamePane` —
+        // the focused pane this frame. Pairs with `FocusKind::RenamePane` —
         // the overlay owns its own commit/cancel keys.
         let (commit, cancel) = ctx.input_mut(|i| {
             let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
@@ -700,7 +700,7 @@ impl PlexiApp {
             Some(idx) if idx < self.router.len() => idx,
             _ => {
                 self.editing_description = None;
-                self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
+                self.pop_focus_layer(&crate::app::FocusKind::ContextDescription);
                 return;
             }
         };
@@ -757,7 +757,7 @@ impl PlexiApp {
             log::info!("context_description: edit cancelled ctx_idx={ctx_idx}");
             self.editing_description = None;
             self.description_focus_requested = false;
-            self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
+            self.pop_focus_layer(&crate::app::FocusKind::ContextDescription);
         } else if commit {
             let new_desc = self.description_buffer.trim().to_string();
             self.router.get_mut(ctx_idx).description = if new_desc.is_empty() {
@@ -767,7 +767,7 @@ impl PlexiApp {
             };
             self.editing_description = None;
             self.description_focus_requested = false;
-            self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
+            self.pop_focus_layer(&crate::app::FocusKind::ContextDescription);
             self.save_workspace();
             log::info!("context_description: updated ctx_idx={ctx_idx}");
         }

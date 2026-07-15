@@ -296,7 +296,7 @@ fn split_with_new_pane_pushes_focus_history() {
 }
 
 /// Regression guard for #1110: setting renaming_pane + sync_rename_pane_focus()
-/// must push FocusLayer::RenamePane in the same call so input_captured_by_overlay()
+/// must push FocusKind::RenamePane in the same call so input_captured_by_overlay()
 /// is accurate immediately — not deferred to the next frame.
 #[test]
 fn rename_pane_focus_layer_syncs_immediately() {
@@ -313,8 +313,8 @@ fn rename_pane_focus_layer_syncs_immediately() {
 
     assert_eq!(
         h.app.focus_stack.last(),
-        Some(&FocusLayer::RenamePane),
-        "FocusLayer::RenamePane must be on the stack after sync"
+        Some(&FocusKind::RenamePane),
+        "FocusKind::RenamePane must be on the stack after sync"
     );
     assert!(
         h.app.input_captured_by_overlay(),

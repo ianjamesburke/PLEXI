@@ -9,7 +9,7 @@
 //!   Esc — close (or exit search/rename mode first)
 
 use crate::app::text_editor_app::note_path_identity;
-use crate::app::{FocusLayer, PlexiApp};
+use crate::app::{FocusKind, PlexiApp};
 use crate::ui::style;
 use crate::ui::{
     hints::{HintBar, HintGroup},
@@ -102,7 +102,7 @@ impl PlexiApp {
                 "notes_picker: refusing to delete open note in pane {existing_pane_id} — close it first"
             );
             self.set_window_focused_pane(active, existing_tile_id);
-            self.pop_focus_layer(&FocusLayer::NotesPicker);
+            self.pop_focus_layer(&FocusKind::NotesPicker);
             return;
         }
 
@@ -153,7 +153,7 @@ impl PlexiApp {
         match action {
             Some(PickerKey::Escape) => {
                 if self.notes_picker_query.is_empty() {
-                    self.pop_focus_layer(&FocusLayer::NotesPicker);
+                    self.pop_focus_layer(&FocusKind::NotesPicker);
                 } else {
                     self.notes_picker_query.clear();
                     self.notes_picker_selected = 0;
@@ -191,7 +191,7 @@ impl PlexiApp {
             log::info!("notes_picker: already open in pane {existing_pane_id}, focusing");
             self.set_window_focused_pane(active, existing_tile_id);
             emit_note_opened(&path);
-            self.pop_focus_layer(&FocusLayer::NotesPicker);
+            self.pop_focus_layer(&FocusKind::NotesPicker);
             return;
         }
         // Reuse the focused pane only when it's already a text-editor;
@@ -216,7 +216,7 @@ impl PlexiApp {
                         emit_note_opened(&path);
                     }
                 }
-                self.pop_focus_layer(&FocusLayer::NotesPicker);
+                self.pop_focus_layer(&FocusKind::NotesPicker);
             }
             None => {
                 log::info!(
@@ -241,7 +241,7 @@ impl PlexiApp {
         {
             emit_note_opened(&path);
         }
-        self.pop_focus_layer(&FocusLayer::NotesPicker);
+        self.pop_focus_layer(&FocusKind::NotesPicker);
     }
 
     pub(crate) fn draw_notes_picker(&mut self, ctx: &egui::Context) {
@@ -370,7 +370,7 @@ impl PlexiApp {
         // Dismiss on click outside the modal (processed after picker Area so it
         // doesn't fire when clicking inside the modal itself).
         if modal_response.dismissed {
-            self.pop_focus_layer(&FocusLayer::NotesPicker);
+            self.pop_focus_layer(&FocusKind::NotesPicker);
         }
     }
 }
@@ -455,7 +455,7 @@ mod tests {
         app.windows[0].focused_pane = Some(focused_tile);
         app.notes_picker_entries = vec![picker_entry(note_path.clone(), "note")];
         app.notes_picker_selected = 0;
-        app.push_focus_layer(FocusLayer::NotesPicker);
+        app.push_focus_layer(FocusKind::NotesPicker);
 
         app.notes_picker_open_selected();
 
@@ -475,7 +475,7 @@ mod tests {
             state_path(&focused_state),
             other_path.to_string_lossy().to_string()
         );
-        assert!(!app.focus_stack.contains(&FocusLayer::NotesPicker));
+        assert!(!app.focus_stack.contains(&FocusKind::NotesPicker));
     }
 
     #[test]
@@ -497,7 +497,7 @@ mod tests {
         app.windows[0].focused_pane = Some(focused_tile);
         app.notes_picker_entries = vec![picker_entry(alias_path, "note")];
         app.notes_picker_selected = 0;
-        app.push_focus_layer(FocusLayer::NotesPicker);
+        app.push_focus_layer(FocusKind::NotesPicker);
 
         app.notes_picker_open_selected();
 
@@ -506,7 +506,7 @@ mod tests {
             app.find_open_text_editor_tile(0, &note_path),
             Some((existing_tile, existing_pane))
         );
-        assert!(!app.focus_stack.contains(&FocusLayer::NotesPicker));
+        assert!(!app.focus_stack.contains(&FocusKind::NotesPicker));
 
         let focused_state = app.windows[0]
             .panes
@@ -537,14 +537,14 @@ mod tests {
         app.windows[0].focused_pane = Some(focused_tile);
         app.notes_picker_entries = vec![picker_entry(note_path.clone(), "keep")];
         app.notes_picker_selected = 0;
-        app.push_focus_layer(FocusLayer::NotesPicker);
+        app.push_focus_layer(FocusKind::NotesPicker);
 
         app.notes_picker_delete_entry(0);
 
         assert_eq!(app.windows[0].focused_pane, Some(existing_tile));
         assert_eq!(app.notes_picker_entries.len(), 1);
         assert!(note_path.exists());
-        assert!(!app.focus_stack.contains(&FocusLayer::NotesPicker));
+        assert!(!app.focus_stack.contains(&FocusKind::NotesPicker));
 
         let _ = std::fs::remove_file(&note_path);
     }

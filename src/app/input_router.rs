@@ -14,7 +14,7 @@
 //! Every keyboard consumer now routes through this buffer (stint 0387):
 //!   1. `keys::poll_actions` — the global hotkey allowlist. Always the outer,
 //!      first consumer of the frame; claims Cmd+Q/W/P etc.
-//!   2. The top [`crate::app::FocusLayer`] overlay's `*_handle_key`, when an
+//!   2. The top [`crate::app::FocusKind`] overlay's `*_handle_key`, when an
 //!      overlay owns input.
 //!   3. `dispatch_app_key_events` — the focused app pane's `App::handle_key`,
 //!      which reads this buffer directly (see [`PlexiInput::events`] /

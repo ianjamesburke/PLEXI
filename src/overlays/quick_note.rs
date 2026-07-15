@@ -9,7 +9,7 @@ impl PlexiApp {
         // Consume Esc to close.
         let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         if esc {
-            self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+            self.pop_focus_layer(&crate::app::FocusKind::QuickNote);
             self.quick_note_text.clear();
             log::info!("QuickNote: modal dismissed");
             return;
@@ -76,7 +76,7 @@ impl PlexiApp {
         if commit && !self.quick_note_text.trim().is_empty() {
             let text = self.quick_note_text.clone();
             if self.commit_quick_note_to_inbox(&text) {
-                self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                self.pop_focus_layer(&crate::app::FocusKind::QuickNote);
                 self.quick_note_text.clear();
                 log::info!("QuickNote: committed to inbox");
             }
@@ -124,7 +124,7 @@ impl PlexiApp {
                 }
             });
         if response.dismissed {
-            self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+            self.pop_focus_layer(&crate::app::FocusKind::QuickNote);
             self.quick_note_text.clear();
             log::info!("QuickNote: modal dismissed via click-away");
         }

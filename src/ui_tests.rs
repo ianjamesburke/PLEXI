@@ -492,7 +492,7 @@ impl PlexiUiHarness {
 mod tests {
     use super::*;
     use crate::app::permissions::AppPermissions;
-    use crate::app::FocusLayer;
+    use crate::app::FocusKind;
     use crate::host::context::Window;
     use crate::host::pane::{AppPane, AppRuntime, Pane, PortalPane};
     use egui_kittest::kittest::Queryable;
@@ -748,7 +748,7 @@ mod tests {
         let queued = h.with_app(|app| app.pending_raw_wasm_launches.len());
         assert_eq!(queued, 1, "raw .wasm path launch should queue one review");
         let has_review_focus =
-            h.with_app(|app| matches!(app.focus_stack.last(), Some(FocusLayer::RawWasmReview)));
+            h.with_app(|app| matches!(app.focus_stack.last(), Some(FocusKind::RawWasmReview)));
         assert!(has_review_focus, "raw WASM review should own focus");
         let has_wasm = h.with_app(|app| {
             app.windows[app.active_window]
@@ -1070,7 +1070,7 @@ mod tests {
         h.with_app(|app| {
             assert!(app
                 .focus_stack
-                .contains(&crate::app::FocusLayer::NotesPicker));
+                .contains(&crate::app::FocusKind::NotesPicker));
         });
         // ListRow titles are painted as galleys (not accessible labels);
         // assert on the section headers, which are real ui.label widgets.
@@ -1223,14 +1223,14 @@ mod tests {
             }];
             app.notes_triage_actions = Vec::new();
             app.notes_triage_index = 0;
-            app.push_focus_layer(crate::app::FocusLayer::NotesTriage);
+            app.push_focus_layer(crate::app::FocusKind::NotesTriage);
         });
         // Two steps for the egui Area sizing pass (see picker smoke test).
         h.run_steps(2);
         h.with_app(|app| {
             assert!(app
                 .focus_stack
-                .contains(&crate::app::FocusLayer::NotesTriage));
+                .contains(&crate::app::FocusKind::NotesTriage));
         });
         h.harness().get_by_label("Inbox Triage (1/1)");
         h.harness().get_by_label("triage me");
@@ -1242,10 +1242,10 @@ mod tests {
         h.with_app(|app| {
             assert!(!app
                 .focus_stack
-                .contains(&crate::app::FocusLayer::NotesTriage));
+                .contains(&crate::app::FocusKind::NotesTriage));
             assert!(app
                 .focus_stack
-                .contains(&crate::app::FocusLayer::NotesPicker));
+                .contains(&crate::app::FocusKind::NotesPicker));
         });
     }
 
@@ -1829,7 +1829,7 @@ mod tests {
             let ctx_idx = app.router.active_idx();
             app.rename_buffer = "My Project".to_string();
             app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusLayer::ContextRename);
+            app.focus_stack.push(FocusKind::ContextRename);
         });
 
         // Queue Enter for the next frame — processed by draw_rename_context_overlay.
@@ -1857,7 +1857,7 @@ mod tests {
             let ctx_idx = app.router.active_idx();
             app.rename_buffer = "Discarded Name".to_string();
             app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusLayer::ContextRename);
+            app.focus_stack.push(FocusKind::ContextRename);
         });
 
         h.harness().press_key(egui::Key::Escape);
@@ -1884,7 +1884,7 @@ mod tests {
             let ctx_idx = app.router.active_idx();
             app.rename_buffer = "   ".to_string(); // whitespace-only trims to empty
             app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusLayer::ContextRename);
+            app.focus_stack.push(FocusKind::ContextRename);
         });
 
         h.harness().press_key(egui::Key::Enter);
