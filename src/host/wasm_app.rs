@@ -781,6 +781,10 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/audio-synth.wasm")
     }
 
+    fn pong_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/pong.wasm")
+    }
+
     fn empty_snapshot() -> StateSnapshot {
         StateSnapshot { entries: vec![] }
     }
@@ -798,6 +802,66 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    // Stint 0386: pong is compiled against the `plexi-gpu-app` world, which
+    // unconditionally imports `pipes` and `gpu`. Ground truth is the compiled
+    // component's actual imports (dead-code elimination strips anything the
+    // guest never calls, e.g. pong never touches host-state), not the WIT
+    // world text.
+    #[test]
+    fn inspect_required_grants_maps_component_imports_for_pong() -> wasmtime::Result<()> {
+        let grants = WasmApp::inspect_required_grants(&pong_fixture())?;
+
+        assert_eq!(
+            grants.capability_ids(),
+            vec!["pipe.open".to_string(), "gpu.render".to_string()]
+        );
+        Ok(())
+    }
+
+    // Stint 0386: the manifest-backed launch path (`open_installed_wasm_app_pane`)
+    // derives `Grants` strictly from `apps/wasm-poc/pong/manifest.toml`'s
+    // declared `capabilities` list, then links the component against those
+    // grants. Before the fix, `capabilities = []` meant `pipes`/`gpu` were
+    // never linked, and wasmtime failed at instantiation with an unresolved
+    // import. Parse the real manifest and reproduce that exact derivation to
+    // prove the declared capabilities now satisfy the compiled binary's
+    // actual required imports end to end.
+    #[test]
+    fn pong_manifest_capabilities_satisfy_compiled_component_imports() -> wasmtime::Result<()> {
+        use crate::app::permissions::{parse_capability_strings, Capability};
+        use crate::app::registry::AppManifest;
+
+        let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("apps/wasm-poc/pong/manifest.toml");
+        let manifest_text = std::fs::read_to_string(&manifest_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
+        let manifest: AppManifest =
+            toml::from_str(&manifest_text).expect("pong manifest.toml parses");
+
+        let declared_caps =
+            parse_capability_strings(&manifest.app.capabilities.capabilities)
+                .expect("pong manifest declares only known capabilities");
+
+        let grants = Grants {
+            state: true,
+            pipes: declared_caps.contains(&Capability::PipeOpen),
+            gpu: declared_caps.contains(&Capability::GpuRender),
+            audio: declared_caps.contains(&Capability::AudioPlayback),
+        };
+        assert!(
+            grants.pipes && grants.gpu,
+            "pong manifest must declare pipe.open and gpu.render"
+        );
+
+        WasmApp::load_with_grants(
+            "com.plexi.pong",
+            &pong_fixture(),
+            StateStore::ephemeral(),
+            grants,
+        )
+        .map(|_| ())
     }
 
     fn host_ctx_with_pipes() -> HostCtx {
