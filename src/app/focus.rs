@@ -54,66 +54,29 @@ impl FocusSegmentReason {
     }
 }
 
-/// Identity for a single owner on `PlexiApp.focus_stack` (stint 0240).
+/// Stable identity for a single overlay on `PlexiApp.focus_stack`.
 ///
-/// This is intentionally a thin trait over the `FocusLayer` enum rather than
-/// `Box<dyn FocusOwner>` trait objects. A genuine per-owner trait-object
-/// design (each overlay holding its own state behind `handle_input`/`render`
-/// methods) would require extracting every overlay's fields out of `PlexiApp`
-/// (e.g. `rename_buffer`, `text_overlay`, `pending_notifications`,
-/// `pending_event_consents`, `pending_raw_wasm_launches` — 15 pieces of
-/// ambient state, several shared across overlays) into independent structs.
-/// That is a much larger, higher-risk redesign than this stint's scope, and
-/// the existing `focus_stack.last()` match arms in `src/app/mod.rs` already
-/// give every overlay a single, uniform push/pop/dispatch contract. The enum
-/// stack is kept as the dispatch key; `FocusOwner` exists so overlay identity
-/// has one shared, named contract instead of being implicit in match arms.
-pub(crate) trait FocusOwner {
-    /// Stable name for logging and test assertions.
-    fn name(&self) -> &'static str;
-}
-
-impl FocusOwner for FocusLayer {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::NotificationModal => "NotificationModal",
-            Self::ConfirmClose => "ConfirmClose",
-            Self::CommandPalette => "CommandPalette",
-            Self::RenamePane => "RenamePane",
-            Self::ContextRename => "ContextRename",
-            Self::ContextDescription => "ContextDescription",
-            Self::QuickNote => "QuickNote",
-            Self::CliSetupPrompt => "CliSetupPrompt",
-            Self::TextInput => "TextInput",
-            Self::ContextCloseConfirm => "ContextCloseConfirm",
-            Self::CapabilityModal => "CapabilityModal",
-            Self::EventConsent => "EventConsent",
-            Self::RawWasmReview => "RawWasmReview",
-            Self::NotesPicker => "NotesPicker",
-            Self::NotesTriage => "NotesTriage",
-        }
-    }
-}
-
-/// Which layer currently owns keyboard input.
+/// This is a **fieldless discriminant used purely for identity** — membership
+/// tests (`focus_stack` contains/last), promotion ordering, and log labels.
+/// It is NOT a state-bearing dispatch enum (the enum it replaced was matched
+/// on 15 arms to route keyboard + render): keyboard handling and rendering now
+/// dispatch through the [`FocusOwner`]
+/// trait. `FocusKind::owner()` maps a kind to its `&'static dyn FocusOwner`,
+/// and the two dispatch sites in `update()` call `handle_key`/`draw` on that
+/// token instead of matching 15 arms. Every overlay's working state stays on
+/// `PlexiApp`, where the per-frame reconcile-from-flags helpers
+/// (`reconcile_focus_layer` / `reconcile_promoted_focus_layer`) read the
+/// boolean/Option flag that decides ownership *before* the owner is pushed —
+/// so that state cannot move into the owner without duplicating it.
 ///
-/// The top of `PlexiApp.focus_stack` is the active [`FocusOwner`]. When a
-/// non-`Pane` layer is on top, `input_captured_by_overlay()` is `true` for the
-/// rest of the frame: `dispatch_app_key_events` does not run, and the owning
-/// layer's `*_handle_key` method (called before its `draw_*` render call —
-/// see `update()`) gets first access to the frame's keyboard input. Global
-/// keybinds (Cmd+Q, Cmd+W, Cmd+Shift+A) are handled in `keys::poll_actions`,
-/// which always runs regardless of what owns the stack (see
+/// When any kind is on top, `input_captured_by_overlay()` is `true` for the
+/// rest of the frame: `dispatch_app_key_events` does not run, and the top
+/// owner's `handle_key` (called before its `draw`) gets first access to the
+/// frame's keyboard input. Global keybinds (Cmd+Q, Cmd+W, Cmd+Shift+A) are
+/// handled in `keys::poll_actions`, which always runs (see
 /// `src/app/input_router.rs`).
-///
-/// Every layer is pushed/popped through the single `reconcile_focus_layer` /
-/// `reconcile_promoted_focus_layer` helpers below — one uniform pattern for
-/// every overlay, whether its visibility is a plain boolean (`ConfirmClose`,
-/// `CommandPalette`, ...) or a re-promotable queue-backed layer that must
-/// jump back to the top even if buried (`CapabilityModal`, `EventConsent`,
-/// `RawWasmReview`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum FocusLayer {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FocusKind {
     NotificationModal,
     ConfirmClose,
     CommandPalette,
@@ -150,6 +113,200 @@ pub(crate) enum FocusLayer {
     NotesPicker,
     /// Notes inbox triage overlay: shows inbox notes one at a time for keep/trash/action.
     NotesTriage,
+}
+
+impl FocusKind {
+    /// Stable name for logging and test assertions.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::NotificationModal => "NotificationModal",
+            Self::ConfirmClose => "ConfirmClose",
+            Self::CommandPalette => "CommandPalette",
+            Self::RenamePane => "RenamePane",
+            Self::ContextRename => "ContextRename",
+            Self::ContextDescription => "ContextDescription",
+            Self::QuickNote => "QuickNote",
+            Self::CliSetupPrompt => "CliSetupPrompt",
+            Self::TextInput => "TextInput",
+            Self::ContextCloseConfirm => "ContextCloseConfirm",
+            Self::CapabilityModal => "CapabilityModal",
+            Self::EventConsent => "EventConsent",
+            Self::RawWasmReview => "RawWasmReview",
+            Self::NotesPicker => "NotesPicker",
+            Self::NotesTriage => "NotesTriage",
+        }
+    }
+
+    /// Map this identity to its stateless [`FocusOwner`] token. The token
+    /// carries no data — it only names which `PlexiApp` overlay methods this
+    /// frame's keyboard/render dispatch should call.
+    pub(crate) fn owner(self) -> &'static dyn FocusOwner {
+        match self {
+            Self::NotificationModal => &NotificationModalOwner,
+            Self::ConfirmClose => &ConfirmCloseOwner,
+            Self::CommandPalette => &CommandPaletteOwner,
+            Self::RenamePane => &RenamePaneOwner,
+            Self::ContextRename => &ContextRenameOwner,
+            Self::ContextDescription => &ContextDescriptionOwner,
+            Self::QuickNote => &QuickNoteOwner,
+            Self::CliSetupPrompt => &CliSetupPromptOwner,
+            Self::TextInput => &TextInputOwner,
+            Self::ContextCloseConfirm => &ContextCloseConfirmOwner,
+            Self::CapabilityModal => &CapabilityModalOwner,
+            Self::EventConsent => &EventConsentOwner,
+            Self::RawWasmReview => &RawWasmReviewOwner,
+            Self::NotesPicker => &NotesPickerOwner,
+            Self::NotesTriage => &NotesTriageOwner,
+        }
+    }
+}
+
+/// One overlay's keyboard + render contract. The top of `PlexiApp.focus_stack`
+/// names the active owner via its [`FocusKind`]; `FocusKind::owner()` maps it
+/// to the corresponding `&'static dyn FocusOwner`, and `update()` dispatches
+/// this frame's keyboard input and the overlay render through these methods
+/// instead of two 15-arm matches.
+///
+/// Owners are stateless unit structs: every overlay's working state (buffers,
+/// queues, `ContextCloseState`, ...) stays on `PlexiApp`, which the trait
+/// methods reach through the `&mut PlexiApp` parameter. This is a deliberate
+/// consequence of the reconcile-from-flags model — the flag that decides
+/// whether an overlay owns focus is read on `PlexiApp` every frame *before* the
+/// owner is pushed, so the state cannot live inside the owner without being
+/// duplicated. Extracting it would require inverting that model (owner owns the
+/// state, no per-frame reconcile), a larger redesign out of this stint's scope.
+pub(crate) trait FocusOwner {
+    /// Handle this frame's owned keyboard input, before any render pass. `ctx`
+    /// is only read by `NotesTriage` (to surrender egui widget focus before it
+    /// reads keys); the other owners ignore it.
+    fn handle_key(
+        &self,
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::app_trait::KeyDisposition;
+
+    /// Render the overlay (visual only — key reads already happened in
+    /// `handle_key`). Returns any commands the render produced; only the
+    /// notification modal emits any, the rest return an empty vec.
+    fn draw(
+        &self,
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+    ) -> Vec<crate::app::app_trait::AppCommand>;
+}
+
+/// Define the stateless owner tokens whose `handle_key` returns a
+/// `KeyDisposition` and whose `draw` produces no commands — the common shape
+/// for 12 of the 15 overlays. The three exceptions (notification modal's
+/// command-returning draw; NotesPicker / NotesTriage's forced `Passthrough`,
+/// and NotesTriage's extra `ctx`) are written out by hand below.
+macro_rules! focus_owner_tokens {
+    ($( $kind:ident => $token:ident { key: $key_fn:ident, draw: $draw_fn:ident } ),* $(,)?) => {
+        $(
+            pub(crate) struct $token;
+            impl FocusOwner for $token {
+                fn handle_key(
+                    &self,
+                    app: &mut PlexiApp,
+                    _ctx: &egui::Context,
+                    input: &mut crate::app::input_router::PlexiInput,
+                ) -> crate::app::app_trait::KeyDisposition {
+                    app.$key_fn(input)
+                }
+                fn draw(
+                    &self,
+                    app: &mut PlexiApp,
+                    ctx: &egui::Context,
+                ) -> Vec<crate::app::app_trait::AppCommand> {
+                    app.$draw_fn(ctx);
+                    Vec::new()
+                }
+            }
+        )*
+    };
+}
+
+focus_owner_tokens! {
+    ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
+    CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },
+    RenamePane => RenamePaneOwner { key: rename_pane_handle_key, draw: draw_rename_pane_overlay },
+    ContextRename => ContextRenameOwner { key: context_rename_handle_key, draw: draw_rename_context_overlay },
+    ContextDescription => ContextDescriptionOwner { key: context_description_handle_key, draw: draw_edit_description_overlay },
+    QuickNote => QuickNoteOwner { key: quick_note_handle_key, draw: draw_quick_note_modal },
+    CliSetupPrompt => CliSetupPromptOwner { key: cli_setup_prompt_handle_key, draw: draw_cli_setup_modal },
+    TextInput => TextInputOwner { key: text_input_handle_key, draw: draw_text_input_overlay },
+    ContextCloseConfirm => ContextCloseConfirmOwner { key: context_close_confirm_handle_key, draw: draw_context_close_confirm },
+    CapabilityModal => CapabilityModalOwner { key: capability_modal_handle_key, draw: draw_capability_modal },
+    EventConsent => EventConsentOwner { key: event_consent_handle_key, draw: draw_event_consent_modal },
+    RawWasmReview => RawWasmReviewOwner { key: raw_wasm_review_handle_key, draw: draw_raw_wasm_review_modal },
+}
+
+/// Notification modal — the only overlay whose render produces commands
+/// (`DeliverNotifyAction`, routed back to the originating pane).
+pub(crate) struct NotificationModalOwner;
+impl FocusOwner for NotificationModalOwner {
+    fn handle_key(
+        &self,
+        app: &mut PlexiApp,
+        _ctx: &egui::Context,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::app_trait::KeyDisposition {
+        app.notification_modal_handle_key(input)
+    }
+    fn draw(
+        &self,
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+    ) -> Vec<crate::app::app_trait::AppCommand> {
+        app.draw_notification_modal(ctx)
+    }
+}
+
+/// Notes picker — its handler drives selection but never claims the key, so the
+/// key still reaches the focused text-editor pane (forced `Passthrough`).
+pub(crate) struct NotesPickerOwner;
+impl FocusOwner for NotesPickerOwner {
+    fn handle_key(
+        &self,
+        app: &mut PlexiApp,
+        _ctx: &egui::Context,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::app_trait::KeyDisposition {
+        app.notes_picker_handle_key(input);
+        crate::app::app_trait::KeyDisposition::Passthrough
+    }
+    fn draw(
+        &self,
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+    ) -> Vec<crate::app::app_trait::AppCommand> {
+        app.draw_notes_picker(ctx);
+        Vec::new()
+    }
+}
+
+/// Notes triage — like the picker, forces `Passthrough`, and its handler needs
+/// `ctx` to surrender egui widget focus before reading keys.
+pub(crate) struct NotesTriageOwner;
+impl FocusOwner for NotesTriageOwner {
+    fn handle_key(
+        &self,
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::app_trait::KeyDisposition {
+        app.notes_triage_handle_key(ctx, input);
+        crate::app::app_trait::KeyDisposition::Passthrough
+    }
+    fn draw(
+        &self,
+        app: &mut PlexiApp,
+        ctx: &egui::Context,
+    ) -> Vec<crate::app::app_trait::AppCommand> {
+        app.draw_notes_triage(ctx);
+        Vec::new()
+    }
 }
 
 /// A single pane entry shown in the context-close confirmation dialog.
@@ -394,7 +551,7 @@ impl PlexiApp {
     /// rename/quick-look mode, a CLI-backed app's Form view) — an advisory
     /// policy flag `keys::poll_actions` reads to suppress global shortcuts
     /// while the app owns text input. This is intentionally separate from
-    /// `focus_stack`/`FocusLayer`: overlay layers are exclusive (they block
+    /// `focus_stack`/`FocusKind`: overlay layers are exclusive (they block
     /// `dispatch_app_key_events` entirely), while app-declared capture must
     /// NOT block the app from still receiving its own keys — folding the two
     /// into one stack would make an app go deaf on the frame it starts
@@ -433,7 +590,7 @@ impl PlexiApp {
     pub(crate) fn is_quick_note_preemptable(&self) -> bool {
         matches!(
             self.focus_stack.last(),
-            Some(FocusLayer::NotificationModal) | Some(FocusLayer::CommandPalette)
+            Some(FocusKind::NotificationModal) | Some(FocusKind::CommandPalette)
         )
     }
 
@@ -441,17 +598,17 @@ impl PlexiApp {
     /// Only call after `is_quick_note_preemptable()` returns `true`.
     pub(crate) fn dismiss_preemptable_modal(&mut self) {
         match self.focus_stack.last().cloned() {
-            Some(FocusLayer::NotificationModal) => {
+            Some(FocusKind::NotificationModal) => {
                 log::info!("quick_note: dismissing NotificationModal to open QuickNote");
                 self.show_notification_modal = false;
                 self.focus_stack
-                    .retain(|l| *l != FocusLayer::NotificationModal);
+                    .retain(|l| *l != FocusKind::NotificationModal);
             }
-            Some(FocusLayer::CommandPalette) => {
+            Some(FocusKind::CommandPalette) => {
                 log::info!("quick_note: dismissing CommandPalette to open QuickNote");
                 self.show_command_palette = false;
                 self.focus_stack
-                    .retain(|l| *l != FocusLayer::CommandPalette);
+                    .retain(|l| *l != FocusKind::CommandPalette);
                 self.ctx.memory_mut(|m| {
                     let palette_id = egui::Id::new("palette_search");
                     if m.focused() == Some(palette_id) {
@@ -469,27 +626,27 @@ impl PlexiApp {
     pub(crate) fn input_captured_by_overlay(&self) -> bool {
         matches!(
             self.focus_stack.last(),
-            Some(FocusLayer::NotificationModal)
-                | Some(FocusLayer::ConfirmClose)
-                | Some(FocusLayer::CommandPalette)
-                | Some(FocusLayer::RenamePane)
-                | Some(FocusLayer::ContextRename)
-                | Some(FocusLayer::ContextDescription)
-                | Some(FocusLayer::QuickNote)
-                | Some(FocusLayer::CliSetupPrompt)
-                | Some(FocusLayer::TextInput)
-                | Some(FocusLayer::ContextCloseConfirm)
-                | Some(FocusLayer::CapabilityModal)
-                | Some(FocusLayer::EventConsent)
-                | Some(FocusLayer::RawWasmReview)
-                | Some(FocusLayer::NotesPicker)
-                | Some(FocusLayer::NotesTriage)
+            Some(FocusKind::NotificationModal)
+                | Some(FocusKind::ConfirmClose)
+                | Some(FocusKind::CommandPalette)
+                | Some(FocusKind::RenamePane)
+                | Some(FocusKind::ContextRename)
+                | Some(FocusKind::ContextDescription)
+                | Some(FocusKind::QuickNote)
+                | Some(FocusKind::CliSetupPrompt)
+                | Some(FocusKind::TextInput)
+                | Some(FocusKind::ContextCloseConfirm)
+                | Some(FocusKind::CapabilityModal)
+                | Some(FocusKind::EventConsent)
+                | Some(FocusKind::RawWasmReview)
+                | Some(FocusKind::NotesPicker)
+                | Some(FocusKind::NotesTriage)
         )
     }
 
     /// Push a focus layer. Idempotent — if the same layer is already on top,
     /// it's a no-op. Callers should pair with `pop_focus_layer`.
-    pub(crate) fn push_focus_layer(&mut self, layer: FocusLayer) {
+    pub(crate) fn push_focus_layer(&mut self, layer: FocusKind) {
         if self.focus_stack.last() != Some(&layer) {
             self.focus_stack.push(layer);
         }
@@ -497,7 +654,7 @@ impl PlexiApp {
 
     /// Pop the given layer if it's currently on top. No-op otherwise; this
     /// prevents out-of-order pops from corrupting the stack.
-    pub(crate) fn pop_focus_layer(&mut self, layer: &FocusLayer) {
+    pub(crate) fn pop_focus_layer(&mut self, layer: &FocusKind) {
         if self.focus_stack.last() == Some(layer) {
             self.focus_stack.pop();
         }
@@ -507,9 +664,9 @@ impl PlexiApp {
     /// when `should_own` becomes true and it isn't already in the stack, pop
     /// it (via `retain`, so a stale entry buried under something else is still
     /// removed) when `should_own` goes false. Every non-promoting `sync_*`
-    /// function is a one-line call to this — see `FocusLayer` doc comment for
+    /// function is a one-line call to this — see `FocusKind` doc comment for
     /// why this replaces 11 near-identical bodies instead of dyn dispatch.
-    fn reconcile_focus_layer(&mut self, layer: FocusLayer, should_own: bool) {
+    fn reconcile_focus_layer(&mut self, layer: FocusKind, should_own: bool) {
         let has_layer = self.focus_stack.contains(&layer);
         if should_own && !has_layer {
             self.push_focus_layer(layer);
@@ -523,7 +680,7 @@ impl PlexiApp {
     /// overlay (capability prompts, event consents, raw-wasm review) that
     /// must jump back to the top of the stack even if another layer pushed on
     /// top of it while it was buried, not just toggle membership.
-    fn reconcile_promoted_focus_layer(&mut self, layer: FocusLayer, should_own: bool) {
+    fn reconcile_promoted_focus_layer(&mut self, layer: FocusKind, should_own: bool) {
         let has_layer = self.focus_stack.contains(&layer);
         let is_top = self.focus_stack.last() == Some(&layer);
         if should_own && !is_top {
@@ -990,12 +1147,12 @@ impl PlexiApp {
     /// toggled from multiple paths, and the focus stack must follow it
     /// deterministically each frame.
     pub(crate) fn sync_confirm_close_focus(&mut self) {
-        self.reconcile_focus_layer(FocusLayer::ConfirmClose, self.pending_close);
+        self.reconcile_focus_layer(FocusKind::ConfirmClose, self.pending_close);
     }
 
     pub(crate) fn sync_context_close_focus(&mut self) {
         self.reconcile_focus_layer(
-            FocusLayer::ContextCloseConfirm,
+            FocusKind::ContextCloseConfirm,
             self.pending_context_close.is_some(),
         );
     }
@@ -1070,19 +1227,19 @@ impl PlexiApp {
     }
 
     pub(crate) fn sync_notification_modal_focus(&mut self) {
-        self.reconcile_focus_layer(FocusLayer::NotificationModal, self.show_notification_modal);
+        self.reconcile_focus_layer(FocusKind::NotificationModal, self.show_notification_modal);
     }
 
     pub(crate) fn sync_cli_setup_prompt_focus(&mut self) {
-        self.reconcile_focus_layer(FocusLayer::CliSetupPrompt, self.show_cli_setup_prompt);
+        self.reconcile_focus_layer(FocusKind::CliSetupPrompt, self.show_cli_setup_prompt);
     }
 
     /// Reconcile the command-palette focus layer with `show_command_palette`.
     /// Same pattern as the notification modal: boolean visibility flag is the
     /// source of truth, focus stack follows it deterministically each frame.
     pub(crate) fn sync_command_palette_focus(&mut self) {
-        let was_owned = self.focus_stack.contains(&FocusLayer::CommandPalette);
-        self.reconcile_focus_layer(FocusLayer::CommandPalette, self.show_command_palette);
+        let was_owned = self.focus_stack.contains(&FocusKind::CommandPalette);
+        self.reconcile_focus_layer(FocusKind::CommandPalette, self.show_command_palette);
         if was_owned && !self.show_command_palette {
             // Explicitly surrender egui focus from palette_search so AccessKit
             // doesn't hold a stale focused node ID after the widget is gone.
@@ -1148,7 +1305,7 @@ impl PlexiApp {
 
     /// Reconcile the rename-pane focus layer with `renaming_pane`.
     pub(crate) fn sync_rename_pane_focus(&mut self) {
-        self.reconcile_focus_layer(FocusLayer::RenamePane, self.renaming_pane.is_some());
+        self.reconcile_focus_layer(FocusKind::RenamePane, self.renaming_pane.is_some());
     }
 
     /// Reconcile the context-rename focus layer. Active when `renaming_window`
@@ -1156,21 +1313,21 @@ impl PlexiApp {
     /// never renders, so we promote the rename to a modal overlay instead.
     pub(crate) fn sync_context_rename_focus(&mut self) {
         let should_own = self.renaming_window.is_some() && !self.sidebar_visible;
-        self.reconcile_focus_layer(FocusLayer::ContextRename, should_own);
+        self.reconcile_focus_layer(FocusKind::ContextRename, should_own);
     }
 
     /// Reconcile the text-input overlay focus layer with `text_overlay`.
     pub(crate) fn sync_text_input_focus(&mut self) {
-        self.reconcile_focus_layer(FocusLayer::TextInput, self.text_overlay.is_some());
+        self.reconcile_focus_layer(FocusKind::TextInput, self.text_overlay.is_some());
     }
 
-    /// Push/pop `FocusLayer::CapabilityModal` based on whether the focused app
+    /// Push/pop `FocusKind::CapabilityModal` based on whether the focused app
     /// pane has pending prompts. Called every frame (both before and after the
     /// overlay render block) so the layer tracks prompt state without polling
     /// lag.
     pub(crate) fn sync_capability_modal_focus(&mut self) {
         let should_own = self.focused_pane_has_pending_prompts();
-        self.reconcile_promoted_focus_layer(FocusLayer::CapabilityModal, should_own);
+        self.reconcile_promoted_focus_layer(FocusKind::CapabilityModal, should_own);
     }
 
     /// Promote/release the host event-consent modal layer to mirror
@@ -1178,12 +1335,12 @@ impl PlexiApp {
     /// keyboard so Enter/Esc resolve it instead of leaking to the focused pane.
     pub(crate) fn sync_event_consent_focus(&mut self) {
         let should_own = !self.pending_event_consents.is_empty();
-        self.reconcile_promoted_focus_layer(FocusLayer::EventConsent, should_own);
+        self.reconcile_promoted_focus_layer(FocusKind::EventConsent, should_own);
     }
 
     pub(crate) fn sync_raw_wasm_review_focus(&mut self) {
         let should_own = !self.pending_raw_wasm_launches.is_empty();
-        self.reconcile_promoted_focus_layer(FocusLayer::RawWasmReview, should_own);
+        self.reconcile_promoted_focus_layer(FocusKind::RawWasmReview, should_own);
     }
 
     /// Returns true when the focused app pane has at least one pending prompt.

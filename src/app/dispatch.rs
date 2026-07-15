@@ -10,10 +10,16 @@ impl PlexiApp {
     /// happens separately via [`drain_all_app_commands`] so background
     /// apps can surface notifications and other commands while the
     /// focused pane is something else (or while a modal holds focus).
-    pub(super) fn dispatch_app_key_events(&mut self, ctx: &egui::Context) {
+    pub(super) fn dispatch_app_key_events(
+        &mut self,
+        ctx: &egui::Context,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) {
         // Block key delivery when the OS has focus elsewhere. `active_window` is not
         // cleared on blur, so without this guard keys route to the last-active pane
         // even while a different app (or Plexi window) owns the keyboard.
+        // `viewport().focused` is window-focus state, not an event, so it is
+        // untouched by the router's `take_from` — read it from `ctx` directly.
         if !ctx.input(|i| i.viewport().focused.unwrap_or(true)) {
             return;
         }
@@ -33,17 +39,102 @@ impl PlexiApp {
         let Some(app_pane) = pane.as_app_mut() else {
             return;
         };
-        // Capture whether the app consumed the key. If it did, also consume
-        // Escape from the InputState so poll_actions can't re-fire CloseApp
-        // for keys the app already handled (e.g. Escape exiting search mode
-        // in the file browser rather than closing the pane).
-        let disposition = ctx.input(|i| app_pane.runtime.handle_key(i));
+        // The app classifies keys from the frame's ownership-transfer buffer
+        // (stint 0387) rather than a second read of `ctx`. If it consumed the
+        // key, also claim Escape/ArrowUp out of the buffer so `poll_actions`
+        // (which takes the same buffer later this frame) can't re-fire CloseApp
+        // for keys the app already handled — e.g. Escape exiting search mode in
+        // the file browser rather than closing the pane, or ArrowUp recalling a
+        // prior message in the assistant.
+        let disposition = app_pane.runtime.handle_key(input);
         if disposition == crate::app::app_trait::KeyDisposition::Consumed {
-            ctx.input_mut(|i| {
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
-            });
+            input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
         }
+    }
+
+    /// If the focused pane in the active window is a terminal and no overlay
+    /// owns keyboard input, take this frame's input-intent events out of `ctx`
+    /// and return them for the focused terminal (stint 0387). The caller threads
+    /// the result into `render_panels` → the tiling behavior → the focused
+    /// `TerminalView`, so the events reach the terminal without egui's
+    /// render-time widget machinery getting a chance to consume them first.
+    ///
+    /// Returns `None` (leaving `ctx` untouched) when an overlay owns input, when
+    /// the OS window is unfocused, or when the focused pane is not a terminal —
+    /// in those cases nothing takes ownership and the normal ctx/render path
+    /// handles keyboard.
+    ///
+    /// This is a read of focus state only; it never mutates `active_window` or
+    /// `focused_pane` to steer the lookup (repo trap: don't switch global state
+    /// to thread data through a function).
+    ///
+    /// Invariant (stint 0387 regression fix): the steal only fires when the
+    /// focused terminal actually owns egui keyboard focus. If any *other* egui
+    /// widget holds keyboard focus this frame — e.g. the inline sidebar
+    /// context-rename `TextEdit`, which is not a focus layer while the sidebar
+    /// is visible, or any future inline editor — this returns `None` so those
+    /// keystrokes stay in `ctx` for that widget. The terminal surrenders egui
+    /// focus in that situation via `render`'s `suppress_focus` path, so
+    /// `memory.focused()` names the other widget rather than the terminal.
+    pub(super) fn take_focused_terminal_input(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> Option<crate::render::terminal_pane::TerminalInput> {
+        if self.input_captured_by_overlay() {
+            return None;
+        }
+        // Same OS-focus guard as `dispatch_app_key_events`: don't route keys to
+        // the last-active pane while another window owns the keyboard.
+        if !ctx.input(|i| i.viewport().focused.unwrap_or(true)) {
+            return None;
+        }
+        let active = self.active_window;
+        let focused_tile = self.windows[active].focused_pane?;
+        let egui_tiles::Tile::Pane(pane_id) =
+            self.windows[active].tree.tiles.get(focused_tile)?
+        else {
+            return None;
+        };
+        let pane_id = *pane_id;
+        // Focused pane must be a terminal (including an exited one — its
+        // "[process exited]" view auto-closes on the next keypress, which it now
+        // reads from this buffer).
+        self.windows[active].panes.get(&pane_id)?.as_terminal()?;
+
+        // Gate the steal on egui keyboard focus: if another widget owns focus
+        // (its id differs from this terminal's deterministic widget id), the
+        // frame's keyboard belongs to that widget — leave `ctx` untouched so it
+        // receives the keys. See the doc comment's invariant.
+        if let Some(focused_id) = ctx.memory(|m| m.focused()) {
+            if focused_id != egui_term::terminal_widget_id(pane_id) {
+                return None;
+            }
+        }
+
+        let router = crate::app::input_router::PlexiInput::take_from(ctx);
+        let (keyboard_events, modifiers) = router.into_events_and_modifiers();
+
+        // Feature instrumentation (stint 0387): confirm the structural handoff
+        // delivered Cmd+A (egui's built-in select-all, the bug's signature) to
+        // the terminal rather than letting a widget swallow it. Targeted — only
+        // fires on the select-all chord, never per keystroke.
+        if keyboard_events.iter().any(|e| {
+            matches!(
+                e,
+                egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. }
+                    if m.command
+            )
+        }) {
+            log::info!(
+                "terminal_input: routed Cmd+A (select-all) to focused terminal pane_id={pane_id} via ownership transfer"
+            );
+        }
+
+        Some(crate::render::terminal_pane::TerminalInput {
+            keyboard_events,
+            modifiers,
+        })
     }
 
     /// True when any non-active-context pane or parked background app has

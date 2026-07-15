@@ -393,6 +393,16 @@ pub struct PlexiBehavior<'a> {
     pub pane_gap: f32,
     /// Resolved pane title bar font size (from config, default 11.0).
     pub pane_title_font_size: f32,
+    /// Keyboard input the host took from `ctx` before the render pass, destined
+    /// for the focused terminal pane (stint 0387). Consumed (via `take`) by the
+    /// pane whose `is_focused` is true, so egui's render-time widget machinery
+    /// can't swallow a key (Cmd+A) first. `None` when the focused pane is not a
+    /// terminal (or an overlay owns input).
+    pub focused_terminal_input: Option<crate::render::terminal_pane::TerminalInput>,
+    /// This frame's modifier state, used to build the empty [`TerminalInput`]
+    /// for unfocused terminals (which still need current modifiers for pointer
+    /// link-hover and mouse reporting).
+    pub frame_modifiers: egui::Modifiers,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -498,6 +508,21 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
+            // The focused terminal consumes the host-supplied keyboard buffer;
+            // every other terminal gets an empty one (pointer/wheel only).
+            let terminal_input = if is_focused {
+                self.focused_terminal_input.take().unwrap_or_else(|| {
+                    render::terminal_pane::TerminalInput {
+                        keyboard_events: Vec::new(),
+                        modifiers: self.frame_modifiers,
+                    }
+                })
+            } else {
+                render::terminal_pane::TerminalInput {
+                    keyboard_events: Vec::new(),
+                    modifiers: self.frame_modifiers,
+                }
+            };
             let (close_exited, tab_action) = render::terminal_pane::render(
                 &mut terminal_ui,
                 terminal,
@@ -512,6 +537,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 &tab_activities,
                 self.workspace_root.as_deref(),
                 self.pane_title_font_size,
+                terminal_input,
             );
             if close_exited {
                 self.close_exited = Some(tile_id);

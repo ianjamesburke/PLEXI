@@ -1578,7 +1578,7 @@ impl PlexiApp {
         }
     }
 
-    /// Open the quick note modal: capture context and push FocusLayer::QuickNote.
+    /// Open the quick note modal: capture context and push FocusKind::QuickNote.
     pub(crate) fn open_quick_note_modal(&mut self) {
         let active = self.active_window;
         let cwd = self.windows[active]
@@ -1593,7 +1593,7 @@ impl PlexiApp {
             workspace_root,
             context_root,
         };
-        self.push_focus_layer(crate::app::FocusLayer::QuickNote);
+        self.push_focus_layer(crate::app::FocusKind::QuickNote);
         log::info!(
             "QuickNote: modal opened — cwd={}, workspace={:?}",
             self.quick_note_ctx.cwd.display(),

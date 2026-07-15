@@ -1135,7 +1135,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 /// `input` is a [`crate::app::input_router::PlexiInput`] buffer already taken
 /// out of `ctx` for this frame (stint 0240's ownership-transfer router).
 /// `poll_actions` is the outer, always-first consumer — the global hotkey
-/// allowlist runs before any [`crate::app::FocusLayer`] on the focus stack
+/// allowlist runs before any [`crate::app::FocusKind`] on the focus stack
 /// sees an event, so a global shortcut can never be shadowed by overlay/app
 /// render order.
 pub fn poll_actions(

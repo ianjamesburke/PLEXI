@@ -143,8 +143,8 @@ fn elide_path_leading(ui: &egui::Ui, path: &str, font_id: egui::FontId, max_widt
     ELLIPSIS.to_string()
 }
 
-fn key_pressed_no_repeat(input: &egui::InputState, key: egui::Key) -> bool {
-    input.events.iter().any(
+fn key_pressed_no_repeat(input: &crate::app::input_router::PlexiInput, key: egui::Key) -> bool {
+    input.events().iter().any(
         |e| matches!(e, egui::Event::Key { key: k, pressed: true, repeat: false, .. } if *k == key),
     )
 }
@@ -152,34 +152,34 @@ fn key_pressed_no_repeat(input: &egui::InputState, key: egui::Key) -> bool {
 // in_search gates all letter keys so that j/k/h/l/s/r/slash fall through
 // to AppendText instead of firing navigation/action commands while the user
 // is typing a query. Arrow keys, Enter, Escape, and Backspace always work.
-fn classify_key(input: &egui::InputState, in_search: bool) -> Option<FileBrowserAction> {
-    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::A) {
+fn classify_key(input: &crate::app::input_router::PlexiInput, in_search: bool) -> Option<FileBrowserAction> {
+    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::A) {
         return Some(FileBrowserAction::SelectAll);
     }
-    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::N) {
+    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::N) {
         return Some(FileBrowserAction::NewFolder);
     }
-    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::R) {
+    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::R) {
         return Some(FileBrowserAction::Rename);
     }
-    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::C) {
+    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::C) {
         return Some(FileBrowserAction::Copy);
     }
-    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::X) {
+    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::X) {
         return Some(FileBrowserAction::Cut);
     }
-    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::V) {
+    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::V) {
         return Some(FileBrowserAction::Paste);
     }
     // Cmd+D and Cmd+Shift+D are host split chords. Do not bind them inside
     // File Browser unless the full shortcut map is reviewed.
-    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::Backspace) {
+    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::Backspace) {
         return Some(FileBrowserAction::MoveToTrash);
     }
-    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::O) {
+    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::O) {
         return Some(FileBrowserAction::OpenWithDefault);
     }
-    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::Enter) {
+    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::Enter) {
         return Some(FileBrowserAction::Reveal);
     }
     if key_pressed_no_repeat(input, egui::Key::Escape) {
@@ -189,12 +189,12 @@ fn classify_key(input: &egui::InputState, in_search: bool) -> Option<FileBrowser
         return Some(FileBrowserAction::Backspace);
     }
     if input.key_pressed(egui::Key::ArrowDown)
-        || (!in_search && input.key_pressed(egui::Key::J) && !input.modifiers.any())
+        || (!in_search && input.key_pressed(egui::Key::J) && !input.modifiers().any())
     {
         return Some(FileBrowserAction::SelectNext);
     }
     if input.key_pressed(egui::Key::ArrowUp)
-        || (!in_search && input.key_pressed(egui::Key::K) && !input.modifiers.any())
+        || (!in_search && input.key_pressed(egui::Key::K) && !input.modifiers().any())
     {
         return Some(FileBrowserAction::SelectPrev);
     }
@@ -210,39 +210,39 @@ fn classify_key(input: &egui::InputState, in_search: bool) -> Option<FileBrowser
     if input.key_pressed(egui::Key::PageUp) {
         return Some(FileBrowserAction::PageUp);
     }
-    if !input.modifiers.command
+    if !input.modifiers().command
         && (key_pressed_no_repeat(input, egui::Key::Enter)
             || key_pressed_no_repeat(input, egui::Key::ArrowRight)
             || (!in_search && key_pressed_no_repeat(input, egui::Key::L)))
     {
         return Some(FileBrowserAction::Activate);
     }
-    if !input.modifiers.command
+    if !input.modifiers().command
         && (key_pressed_no_repeat(input, egui::Key::ArrowLeft)
             || (!in_search && key_pressed_no_repeat(input, egui::Key::H)))
     {
         return Some(FileBrowserAction::NavigateUp);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::Slash) && !input.modifiers.command {
+    if !in_search && key_pressed_no_repeat(input, egui::Key::Slash) && !input.modifiers().command {
         return Some(FileBrowserAction::EnterSearch);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers.any() {
+    if !in_search && key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers().any() {
         return Some(FileBrowserAction::ToggleSort);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::I) && !input.modifiers.any() {
+    if !in_search && key_pressed_no_repeat(input, egui::Key::I) && !input.modifiers().any() {
         return Some(FileBrowserAction::ToggleInspector);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::Space) && !input.modifiers.any() {
+    if !in_search && key_pressed_no_repeat(input, egui::Key::Space) && !input.modifiers().any() {
         return Some(FileBrowserAction::ToggleQuickLook);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::R) && !input.modifiers.any() {
+    if !in_search && key_pressed_no_repeat(input, egui::Key::R) && !input.modifiers().any() {
         return Some(FileBrowserAction::Refresh);
     }
-    if !in_search && key_pressed_no_repeat(input, egui::Key::T) && !input.modifiers.any() {
+    if !in_search && key_pressed_no_repeat(input, egui::Key::T) && !input.modifiers().any() {
         return Some(FileBrowserAction::CdTerminalAndClose);
     }
     let mut text = String::new();
-    for event in &input.events {
+    for event in input.events() {
         if let egui::Event::Text(t) = event {
             text.push_str(t);
         }
@@ -2150,7 +2150,10 @@ impl App for FileBrowserApp {
         self.draw_rename_modal(ui.ctx(), colors);
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> crate::app::app_trait::KeyDisposition {
+    fn handle_key(
+        &mut self,
+        input: &crate::app::input_router::PlexiInput,
+    ) -> crate::app::app_trait::KeyDisposition {
         use crate::app::app_trait::KeyDisposition;
         let mode = if self.in_search {
             Mode::Search
@@ -2290,7 +2293,7 @@ impl App for FileBrowserApp {
             (Mode::Normal, Some(FileBrowserAction::SelectNext)) => {
                 let last = self.entries.len().saturating_sub(1);
                 let next = (self.selected + 1).min(last);
-                if input.modifiers.shift {
+                if input.modifiers().shift {
                     self.extend_selection_to(next);
                 } else {
                     self.set_single_selection(next);
@@ -2300,7 +2303,7 @@ impl App for FileBrowserApp {
             }
             (Mode::Normal, Some(FileBrowserAction::SelectPrev)) => {
                 let prev = self.selected.saturating_sub(1);
-                if input.modifiers.shift {
+                if input.modifiers().shift {
                     self.extend_selection_to(prev);
                 } else {
                     self.set_single_selection(prev);
@@ -2480,9 +2483,8 @@ mod tests {
         };
         let mut consumed = false;
         let _ = ctx.run(raw, |ctx| {
-            ctx.input(|i| {
-                consumed = app.handle_key(i) == KeyDisposition::Consumed;
-            });
+            let input = crate::app::input_router::PlexiInput::take_from(ctx);
+            consumed = app.handle_key(&input) == KeyDisposition::Consumed;
         });
         consumed
     }
@@ -2785,9 +2787,8 @@ mod tests {
         // key_pressed_no_repeat returns false when no events are present.
         let ctx = egui::Context::default();
         let _ = ctx.run(RawInput::default(), |ctx| {
-            ctx.input(|i| {
-                assert!(!super::key_pressed_no_repeat(i, Key::ArrowRight));
-            });
+            let input = crate::app::input_router::PlexiInput::take_from(ctx);
+            assert!(!super::key_pressed_no_repeat(&input, Key::ArrowRight));
         });
     }
 
@@ -2801,9 +2802,8 @@ mod tests {
             ..Default::default()
         };
         let _ = ctx.run(raw, |ctx| {
-            ctx.input(|i| {
-                assert!(super::key_pressed_no_repeat(i, Key::ArrowRight));
-            });
+            let input = crate::app::input_router::PlexiInput::take_from(ctx);
+            assert!(super::key_pressed_no_repeat(&input, Key::ArrowRight));
         });
     }
 
@@ -2991,9 +2991,8 @@ mod tests {
         let ctx = egui::Context::default();
         let mut consumed = false;
         let _ = ctx.run(raw, |ctx| {
-            ctx.input(|i| {
-                consumed = app.handle_key(i) == crate::app::app_trait::KeyDisposition::Consumed;
-            });
+            let input = crate::app::input_router::PlexiInput::take_from(ctx);
+            consumed = app.handle_key(&input) == crate::app::app_trait::KeyDisposition::Consumed;
         });
 
         assert!(consumed, "injected Enter must be consumed by the app");

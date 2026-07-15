@@ -492,7 +492,7 @@ impl PlexiUiHarness {
 mod tests {
     use super::*;
     use crate::app::permissions::AppPermissions;
-    use crate::app::FocusLayer;
+    use crate::app::FocusKind;
     use crate::host::context::Window;
     use crate::host::pane::{AppPane, AppRuntime, Pane, PortalPane};
     use egui_kittest::kittest::Queryable;
@@ -748,7 +748,7 @@ mod tests {
         let queued = h.with_app(|app| app.pending_raw_wasm_launches.len());
         assert_eq!(queued, 1, "raw .wasm path launch should queue one review");
         let has_review_focus =
-            h.with_app(|app| matches!(app.focus_stack.last(), Some(FocusLayer::RawWasmReview)));
+            h.with_app(|app| matches!(app.focus_stack.last(), Some(FocusKind::RawWasmReview)));
         assert!(has_review_focus, "raw WASM review should own focus");
         let has_wasm = h.with_app(|app| {
             app.windows[app.active_window]
@@ -1070,7 +1070,7 @@ mod tests {
         h.with_app(|app| {
             assert!(app
                 .focus_stack
-                .contains(&crate::app::FocusLayer::NotesPicker));
+                .contains(&crate::app::FocusKind::NotesPicker));
         });
         // ListRow titles are painted as galleys (not accessible labels);
         // assert on the section headers, which are real ui.label widgets.
@@ -1223,14 +1223,14 @@ mod tests {
             }];
             app.notes_triage_actions = Vec::new();
             app.notes_triage_index = 0;
-            app.push_focus_layer(crate::app::FocusLayer::NotesTriage);
+            app.push_focus_layer(crate::app::FocusKind::NotesTriage);
         });
         // Two steps for the egui Area sizing pass (see picker smoke test).
         h.run_steps(2);
         h.with_app(|app| {
             assert!(app
                 .focus_stack
-                .contains(&crate::app::FocusLayer::NotesTriage));
+                .contains(&crate::app::FocusKind::NotesTriage));
         });
         h.harness().get_by_label("Inbox Triage (1/1)");
         h.harness().get_by_label("triage me");
@@ -1242,10 +1242,10 @@ mod tests {
         h.with_app(|app| {
             assert!(!app
                 .focus_stack
-                .contains(&crate::app::FocusLayer::NotesTriage));
+                .contains(&crate::app::FocusKind::NotesTriage));
             assert!(app
                 .focus_stack
-                .contains(&crate::app::FocusLayer::NotesPicker));
+                .contains(&crate::app::FocusKind::NotesPicker));
         });
     }
 
@@ -1829,7 +1829,7 @@ mod tests {
             let ctx_idx = app.router.active_idx();
             app.rename_buffer = "My Project".to_string();
             app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusLayer::ContextRename);
+            app.focus_stack.push(FocusKind::ContextRename);
         });
 
         // Queue Enter for the next frame — processed by draw_rename_context_overlay.
@@ -1857,7 +1857,7 @@ mod tests {
             let ctx_idx = app.router.active_idx();
             app.rename_buffer = "Discarded Name".to_string();
             app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusLayer::ContextRename);
+            app.focus_stack.push(FocusKind::ContextRename);
         });
 
         h.harness().press_key(egui::Key::Escape);
@@ -1884,7 +1884,7 @@ mod tests {
             let ctx_idx = app.router.active_idx();
             app.rename_buffer = "   ".to_string(); // whitespace-only trims to empty
             app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusLayer::ContextRename);
+            app.focus_stack.push(FocusKind::ContextRename);
         });
 
         h.harness().press_key(egui::Key::Enter);
@@ -1894,6 +1894,74 @@ mod tests {
         assert_eq!(
             name, original_name,
             "whitespace-only rename must be discarded"
+        );
+    }
+
+    /// Regression (stint 0387 follow-up): the inline sidebar context-rename
+    /// TextEdit must receive typed characters even while a terminal pane is the
+    /// focused tile. The terminal-input ownership transfer
+    /// (`take_focused_terminal_input`) runs before the render pass and, before
+    /// the fix, stole every Key/Text event out of `ctx` whenever the focused
+    /// tile was a terminal — starving the sidebar rename box (which is not a
+    /// focus layer when the sidebar is visible). With the fix, the steal is
+    /// gated on egui keyboard focus, so the box (which holds egui focus) keeps
+    /// its keystrokes.
+    #[test]
+    fn sidebar_inline_rename_receives_text_with_focused_terminal() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+
+        // Need a real focused terminal pane. Seed an app pane, then split — the
+        // split spawns a real TerminalPane and focuses it.
+        add_focused_pane(&mut h);
+        h.step();
+        h.with_app_mut(|app| app.split_focused(true, None, false, false, None));
+        h.run_steps(2);
+
+        let focused_is_terminal = h.with_app(|app| {
+            let win = &app.windows[app.active_window];
+            win.focused_pane
+                .and_then(|t| match win.tree.tiles.get(t) {
+                    Some(egui_tiles::Tile::Pane(pid)) => win.panes.get(pid),
+                    _ => None,
+                })
+                .map(|p| matches!(p, Pane::Terminal(_)))
+                .unwrap_or(false)
+        });
+        assert!(
+            focused_is_terminal,
+            "focused pane must be a real terminal for this regression to be meaningful"
+        );
+
+        // Enter inline sidebar rename: sidebar visible → sync_context_rename_focus
+        // leaves should_own=false, so NO ContextRename focus layer is pushed and
+        // the inline TextEdit (not an overlay) owns keyboard input.
+        h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            let ctx_idx = app.router.active_idx();
+            app.rename_buffer.clear();
+            app.renaming_window = Some(ctx_idx);
+        });
+        // Let the TextEdit mount and grab egui focus (terminal surrenders focus
+        // via suppress_focus while renaming_window is set).
+        h.run_steps(3);
+
+        // Type into the rename box.
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("x".to_string()));
+        h.step();
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("y".to_string()));
+        h.step();
+
+        let buffer = h.with_app(|app| app.rename_buffer.clone());
+        assert_eq!(
+            buffer, "xy",
+            "inline sidebar rename box must receive typed characters even while a terminal is the focused tile"
         );
     }
 

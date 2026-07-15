@@ -458,17 +458,17 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
 // ── QuickNote preemption tests (#1626) ────────────────────────────────────
 
 /// #1626: Cmd+0 with a NotificationModal on the focus stack must dismiss the
-/// modal and push FocusLayer::QuickNote to the top.
+/// modal and push FocusKind::QuickNote to the top.
 #[test]
 fn quicknote_preempts_notification_modal() {
     let mut h = HostHarness::new();
     h.add_test_pane();
 
     // Simulate a NotificationModal being open.
-    h.app.push_focus_layer(FocusLayer::NotificationModal);
+    h.app.push_focus_layer(FocusKind::NotificationModal);
     assert_eq!(
         h.app.focus_stack.last(),
-        Some(&FocusLayer::NotificationModal),
+        Some(&FocusKind::NotificationModal),
         "NotificationModal must be on top before preemption"
     );
     assert!(
@@ -481,19 +481,19 @@ fn quicknote_preempts_notification_modal() {
 
     assert_eq!(
         h.app.focus_stack.last(),
-        Some(&FocusLayer::QuickNote),
+        Some(&FocusKind::QuickNote),
         "QuickNote must be on top after preemption"
     );
 }
 
 /// #1626: Cmd+0 with CommandPalette on the focus stack must dismiss the
-/// palette and push FocusLayer::QuickNote to the top.
+/// palette and push FocusKind::QuickNote to the top.
 #[test]
 fn quicknote_preempts_command_palette() {
     let mut h = HostHarness::new();
     h.add_test_pane();
 
-    h.app.push_focus_layer(FocusLayer::CommandPalette);
+    h.app.push_focus_layer(FocusKind::CommandPalette);
     assert!(
         h.app.is_quick_note_preemptable(),
         "CommandPalette must be preemptable"
@@ -504,7 +504,7 @@ fn quicknote_preempts_command_palette() {
 
     assert_eq!(
         h.app.focus_stack.last(),
-        Some(&FocusLayer::QuickNote),
+        Some(&FocusKind::QuickNote),
         "QuickNote must be on top after preempting CommandPalette"
     );
 }
@@ -515,7 +515,7 @@ fn quicknote_does_not_preempt_confirm_close() {
     let mut h = HostHarness::new();
     h.add_test_pane();
 
-    h.app.push_focus_layer(FocusLayer::ConfirmClose);
+    h.app.push_focus_layer(FocusKind::ConfirmClose);
     assert!(
         !h.app.is_quick_note_preemptable(),
         "ConfirmClose must NOT be preemptable"
@@ -528,7 +528,7 @@ fn quicknote_does_not_preempt_capability_modal() {
     let mut h = HostHarness::new();
     h.add_test_pane();
 
-    h.app.push_focus_layer(FocusLayer::CapabilityModal);
+    h.app.push_focus_layer(FocusKind::CapabilityModal);
     assert!(
         !h.app.is_quick_note_preemptable(),
         "CapabilityModal must NOT be preemptable"
@@ -541,7 +541,7 @@ fn quicknote_does_not_preempt_context_close_confirm() {
     let mut h = HostHarness::new();
     h.add_test_pane();
 
-    h.app.push_focus_layer(FocusLayer::ContextCloseConfirm);
+    h.app.push_focus_layer(FocusKind::ContextCloseConfirm);
     assert!(
         !h.app.is_quick_note_preemptable(),
         "ContextCloseConfirm must NOT be preemptable"

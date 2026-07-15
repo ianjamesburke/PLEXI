@@ -98,7 +98,7 @@ impl crate::app::app_trait::App for TextInputProbe {
 
     fn handle_key(
         &mut self,
-        input: &egui::InputState,
+        input: &crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         if input.key_pressed(egui::Key::Enter) {
             self.enter_handled = true;
@@ -209,6 +209,55 @@ fn consumed_native_key_is_not_replayed_into_render_input() {
     assert_eq!(state["enter_rendered"], false);
 }
 
+
+/// Stint 0387: a real keyboard event injected via `RawInput` must reach the
+/// focused app pane's `handle_key` through the migrated `PlexiInput`
+/// ownership-transfer router in `dispatch_app_key_events` — not just the
+/// synthesized `plexi pane key` IPC path. Proves the app-dispatch migration is
+/// wired into the live frame, reading the frame's owned buffer.
+#[test]
+fn raw_key_event_reaches_focused_app_via_router() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::<TextInputProbe>::default(),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.focus_pane(pane_id);
+    h.run_frames(2);
+
+    // Drive a genuine Enter key event through a real frame's RawInput.
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events: vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
+
+    let state = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state())
+        .expect("probe state after Enter");
+    assert_eq!(
+        state["enter_handled"], true,
+        "RawInput Enter must reach handle_key through the ownership router"
+    );
+}
 
 #[test]
 fn pane_slots_write_read_list_delete() {
@@ -771,9 +820,9 @@ fn palette_close_surrenders_focus_before_pane_close() {
 #[test]
 fn notification_modal_handle_key_returns_consumed() {
     use crate::app::app_trait::KeyDisposition;
-    use crate::app::FocusLayer;
+    use crate::app::FocusKind;
     let mut h = HostHarness::new();
-    h.app.push_focus_layer(FocusLayer::NotificationModal);
+    h.app.push_focus_layer(FocusKind::NotificationModal);
     let ctx = h.app.ctx.clone();
     let mut input = crate::app::input_router::PlexiInput::take_from(&ctx);
     let disposition = h.app.notification_modal_handle_key(&mut input);
@@ -831,7 +880,7 @@ fn cwd_for_welcome_tab_falls_back_to_window_path_when_no_root() {
 
 #[test]
 fn buried_stale_focus_layer_is_removed_by_sync() {
-    use crate::app::FocusLayer;
+    use crate::app::FocusKind;
 
     let mut h = HostHarness::new();
 
@@ -839,7 +888,7 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     h.app.pending_close = true;
     h.app.sync_confirm_close_focus();
     assert!(
-        h.app.focus_stack.contains(&FocusLayer::ConfirmClose),
+        h.app.focus_stack.contains(&FocusKind::ConfirmClose),
         "ConfirmClose must be pushed when pending_close is true"
     );
 
@@ -848,11 +897,11 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     h.app.sync_command_palette_focus();
     assert_eq!(
         h.app.focus_stack.last(),
-        Some(&FocusLayer::CommandPalette),
+        Some(&FocusKind::CommandPalette),
         "CommandPalette must be at the top after its source state becomes true"
     );
     assert!(
-        h.app.focus_stack.contains(&FocusLayer::ConfirmClose),
+        h.app.focus_stack.contains(&FocusKind::ConfirmClose),
         "ConfirmClose must still be in the stack (buried beneath CommandPalette)"
     );
 
@@ -861,14 +910,14 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     h.app.sync_confirm_close_focus();
 
     assert!(
-        !h.app.focus_stack.contains(&FocusLayer::ConfirmClose),
+        !h.app.focus_stack.contains(&FocusKind::ConfirmClose),
         "ConfirmClose must be removed from the stack even though CommandPalette was on top. \
          If this fails, sync_confirm_close_focus used pop_focus_layer (top-only) instead of retain."
     );
 
     // The layer that was on top must still be present — we only removed ConfirmClose.
     assert!(
-        h.app.focus_stack.contains(&FocusLayer::CommandPalette),
+        h.app.focus_stack.contains(&FocusKind::CommandPalette),
         "CommandPalette must remain in the stack after removing the buried ConfirmClose layer"
     );
 }
@@ -888,7 +937,7 @@ fn quick_note_paste_inserts_into_note_text() {
     let mut h = HostHarness::new();
 
     // Open QuickNote.
-    h.app.push_focus_layer(crate::app::FocusLayer::QuickNote);
+    h.app.push_focus_layer(crate::app::FocusKind::QuickNote);
 
     // Run two idle frames so the overlay and focus fully settle.
     h.run_frames(2);
@@ -916,7 +965,7 @@ fn quick_note_paste_inserts_into_note_text() {
 fn quick_note_paste_consumed_from_queue() {
     let mut h = HostHarness::new();
 
-    h.app.push_focus_layer(crate::app::FocusLayer::QuickNote);
+    h.app.push_focus_layer(crate::app::FocusKind::QuickNote);
     h.run_frames(2);
 
     // Inject paste + a non-input event that must survive.
@@ -983,12 +1032,12 @@ fn command_palette_text_field_registry_wins_after_central_panel_steal() {
 /// re-claim focus for `rename_pane_input` before the frame ends.
 #[test]
 fn rename_pane_overlay_focus_wins_after_central_panel_steal() {
-    use crate::app::FocusLayer;
+    use crate::app::FocusKind;
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
     h.app.renaming_pane = Some(pane);
     h.app.rename_buffer = "test name".to_string();
-    h.app.push_focus_layer(FocusLayer::RenamePane);
+    h.app.push_focus_layer(FocusKind::RenamePane);
     // Frame 1: one-shot fires, focus = rename_pane_input.
     h.run_frames(1);
     // Simulate CentralPanel pane widget stealing focus.
@@ -1006,12 +1055,12 @@ fn rename_pane_overlay_focus_wins_after_central_panel_steal() {
 /// must retain egui focus after CentralPanel renders.
 #[test]
 fn context_rename_overlay_focus_wins_after_central_panel_steal() {
-    use crate::app::FocusLayer;
+    use crate::app::FocusKind;
     let mut h = HostHarness::new();
     h.app.renaming_window = Some(0);
     h.app.rename_buffer = "new context".to_string();
     h.app.sidebar_visible = false;
-    h.app.push_focus_layer(FocusLayer::ContextRename);
+    h.app.push_focus_layer(FocusKind::ContextRename);
     h.run_frames(1);
     steal_focus(&h);
     h.run_frames(1);
@@ -1026,11 +1075,11 @@ fn context_rename_overlay_focus_wins_after_central_panel_steal() {
 /// after CentralPanel renders.
 #[test]
 fn edit_description_overlay_focus_wins_after_central_panel_steal() {
-    use crate::app::FocusLayer;
+    use crate::app::FocusKind;
     let mut h = HostHarness::new();
     h.app.editing_description = Some(0);
     h.app.description_buffer = "my description".to_string();
-    h.app.push_focus_layer(FocusLayer::ContextDescription);
+    h.app.push_focus_layer(FocusKind::ContextDescription);
     h.run_frames(1);
     steal_focus(&h);
     h.run_frames(1);
@@ -1045,7 +1094,7 @@ fn edit_description_overlay_focus_wins_after_central_panel_steal() {
 /// egui focus after CentralPanel renders.
 #[test]
 fn text_input_overlay_focus_wins_after_central_panel_steal() {
-    use crate::app::{FocusLayer, OverlayTarget, TextInputOverlay};
+    use crate::app::{FocusKind, OverlayTarget, TextInputOverlay};
     let mut h = HostHarness::new();
     h.app.text_overlay = Some((
         TextInputOverlay {
@@ -1056,7 +1105,7 @@ fn text_input_overlay_focus_wins_after_central_panel_steal() {
         },
         OverlayTarget::ContextRoot(0),
     ));
-    h.app.push_focus_layer(FocusLayer::TextInput);
+    h.app.push_focus_layer(FocusKind::TextInput);
     h.run_frames(1);
     steal_focus(&h);
     h.run_frames(1);

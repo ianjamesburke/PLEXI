@@ -33,7 +33,7 @@ pub mod video_player_app;
 #[cfg(test)]
 pub(crate) use focus::FocusLogOutcome;
 pub(crate) use focus::{
-    ContextCloseState, FocusLayer, FocusSegmentReason, PendingRawWasmLaunch,
+    ContextCloseState, FocusKind, FocusSegmentReason, PendingRawWasmLaunch,
     FOCUS_HEARTBEAT_INTERVAL,
 };
 pub(crate) use notification_image::NotificationImageState;
@@ -285,8 +285,8 @@ pub struct PlexiApp {
     pub(crate) notifications_interrupt_threshold: u32,
     /// Input-focus stack. Top layer receives keyboard input; panes see an
     /// empty event buffer while a non-`Pane` layer is on top. See the
-    /// `FocusLayer` docs for the invariant.
-    pub(crate) focus_stack: Vec<FocusLayer>,
+    /// `FocusKind` docs for the invariant.
+    pub(crate) focus_stack: Vec<FocusKind>,
     /// Pane focus history for Cmd+[ time-travel. Each entry is (window_id, tile_id)
     /// captured just before a focus change. Capped at 100; oldest evicted from front.
     pub(crate) focus_history_depth: usize,
@@ -392,7 +392,7 @@ pub struct PlexiApp {
         std::sync::mpsc::Receiver<crate::host::event_subscriptions::HostPublishRequest>,
     /// Subscribe or publish requests the broker answered with `Ask`, parked for an explicit
     /// user decision. The front entry is surfaced as the host event-consent
-    /// modal; [`FocusLayer::EventConsent`] is promoted while this is non-empty.
+    /// modal; [`FocusKind::EventConsent`] is promoted while this is non-empty.
     pub(crate) pending_event_consents:
         std::collections::VecDeque<crate::host::event_subscriptions::PendingEventConsent>,
     /// App-runtime subscriptions waiting for the shared broker to answer.
@@ -2377,7 +2377,7 @@ impl eframe::App for PlexiApp {
         let mut early_modal_cmds: Vec<crate::app::app_trait::AppCommand> = Vec::new();
         let overlay_key_disposition = if self.input_captured_by_overlay() {
             // Ownership-transfer (stint 0240): take this frame's input-intent
-            // events out of `ctx` once, hand them to the top `FocusLayer`
+            // events out of `ctx` once, hand them to the top `FocusKind`
             // below, then give back whatever it didn't claim before rendering
             // — see `src/app/input_router.rs`.
             let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
@@ -2398,50 +2398,11 @@ impl eframe::App for PlexiApp {
                 router_input.give_back(ctx);
                 crate::app::app_trait::KeyDisposition::Consumed
             } else {
-                // Step 1: run the overlay's handle_key (consumes its owned key events
-                // from this frame's ownership-transfer buffer, before any render).
-                let disposition = match self.focus_stack.last() {
-                    Some(FocusLayer::NotificationModal) => {
-                        self.notification_modal_handle_key(&mut router_input)
-                    }
-                    Some(FocusLayer::ConfirmClose) => {
-                        self.confirm_close_handle_key(&mut router_input)
-                    }
-                    Some(FocusLayer::CommandPalette) => {
-                        self.command_palette_handle_key(&mut router_input)
-                    }
-                    Some(FocusLayer::RenamePane) => self.rename_pane_handle_key(&mut router_input),
-                    Some(FocusLayer::ContextRename) => {
-                        self.context_rename_handle_key(&mut router_input)
-                    }
-                    Some(FocusLayer::ContextDescription) => {
-                        self.context_description_handle_key(&mut router_input)
-                    }
-                    Some(FocusLayer::QuickNote) => self.quick_note_handle_key(&mut router_input),
-                    Some(FocusLayer::CliSetupPrompt) => {
-                        self.cli_setup_prompt_handle_key(&mut router_input)
-                    }
-                    Some(FocusLayer::TextInput) => self.text_input_handle_key(&mut router_input),
-                    Some(FocusLayer::ContextCloseConfirm) => {
-                        self.context_close_confirm_handle_key(&mut router_input)
-                    }
-                    Some(FocusLayer::CapabilityModal) => {
-                        self.capability_modal_handle_key(&mut router_input)
-                    }
-                    Some(FocusLayer::EventConsent) => {
-                        self.event_consent_handle_key(&mut router_input)
-                    }
-                    Some(FocusLayer::RawWasmReview) => {
-                        self.raw_wasm_review_handle_key(&mut router_input)
-                    }
-                    Some(FocusLayer::NotesPicker) => {
-                        self.notes_picker_handle_key(&mut router_input);
-                        crate::app::app_trait::KeyDisposition::Passthrough
-                    }
-                    Some(FocusLayer::NotesTriage) => {
-                        self.notes_triage_handle_key(ctx, &mut router_input);
-                        crate::app::app_trait::KeyDisposition::Passthrough
-                    }
+                // Step 1: run the top overlay's handle_key through the
+                // `FocusOwner` trait (consumes its owned key events from this
+                // frame's ownership-transfer buffer, before any render).
+                let disposition = match self.focus_stack.last().copied() {
+                    Some(kind) => kind.owner().handle_key(self, ctx, &mut router_input),
                     None => crate::app::app_trait::KeyDisposition::Passthrough,
                 };
                 // Give back whatever this overlay didn't claim so the render
@@ -2449,54 +2410,15 @@ impl eframe::App for PlexiApp {
                 // still sees it — this refactor transfers ownership for the
                 // *first* consumer each frame, not for the whole frame.
                 router_input.give_back(ctx);
-                // Step 2: render the overlay (visual only — key reads already done above).
-                match self.focus_stack.last().cloned() {
-                    Some(FocusLayer::NotificationModal) => {
-                        early_modal_cmds = self.draw_notification_modal(ctx);
-                    }
-                    Some(FocusLayer::ConfirmClose) => {
-                        self.draw_confirm_close(ctx);
-                    }
-                    Some(FocusLayer::CommandPalette) => {
-                        self.draw_command_palette(ctx);
-                    }
-                    Some(FocusLayer::RenamePane) => {
-                        self.draw_rename_pane_overlay(ctx);
-                    }
-                    Some(FocusLayer::ContextRename) => {
-                        self.draw_rename_context_overlay(ctx);
-                    }
-                    Some(FocusLayer::ContextDescription) => {
-                        self.draw_edit_description_overlay(ctx);
-                    }
-                    Some(FocusLayer::QuickNote) => {
-                        self.draw_quick_note_modal(ctx);
-                    }
-                    Some(FocusLayer::CliSetupPrompt) => {
-                        self.draw_cli_setup_modal(ctx);
-                    }
-                    Some(FocusLayer::TextInput) => {
-                        self.draw_text_input_overlay(ctx);
-                    }
-                    Some(FocusLayer::ContextCloseConfirm) => {
-                        self.draw_context_close_confirm(ctx);
-                    }
-                    Some(FocusLayer::CapabilityModal) => {
-                        self.draw_capability_modal(ctx);
-                    }
-                    Some(FocusLayer::EventConsent) => {
-                        self.draw_event_consent_modal(ctx);
-                    }
-                    Some(FocusLayer::RawWasmReview) => {
-                        self.draw_raw_wasm_review_modal(ctx);
-                    }
-                    Some(FocusLayer::NotesPicker) => {
-                        self.draw_notes_picker(ctx);
-                    }
-                    Some(FocusLayer::NotesTriage) => {
-                        self.draw_notes_triage(ctx);
-                    }
-                    None => {}
+                // Step 2: render the top overlay (visual only — key reads
+                // already done above). `handle_key` may have popped or replaced
+                // the top layer (NotesPicker/QuickNote/ContextDescription
+                // self-close), so re-read the current top rather than reusing
+                // the kind dispatched above. Only the notification modal's
+                // `draw` returns commands; every other owner returns an empty
+                // vec, leaving `early_modal_cmds` empty as before.
+                if let Some(kind) = self.focus_stack.last().copied() {
+                    early_modal_cmds = kind.owner().draw(self, ctx);
                 }
                 // The overlay may have self-closed (notification queue drained,
                 // confirm-close confirmed/cancelled, palette picked an entry,
@@ -2527,7 +2449,14 @@ impl eframe::App for PlexiApp {
         if overlay_key_disposition == crate::app::app_trait::KeyDisposition::Passthrough
             && !self.input_captured_by_overlay()
         {
-            self.dispatch_app_key_events(ctx);
+            // Ownership-transfer (stint 0387): take this frame's input-intent
+            // events out of `ctx`, hand them to the focused app pane's
+            // `handle_key`, then give back whatever it didn't claim so the
+            // pane's own render pass (a focused `TextEdit`) still sees typed
+            // text. Mirrors the overlay and `poll_actions` router pairs.
+            let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
+            self.dispatch_app_key_events(ctx, &mut router_input);
+            router_input.give_back(ctx);
         }
         // Drain every app pane's pending_commands every frame — including
         // while a modal holds focus. Background apps emitting notifications
@@ -4493,7 +4422,16 @@ impl eframe::App for PlexiApp {
             }
         }
 
-        self.render_panels(ctx);
+        // Ownership-transfer (stint 0387): if the focused pane is a terminal
+        // and no overlay owns input, take this frame's keyboard events out of
+        // `ctx` *before* the render pass and hand them to that terminal. Doing
+        // this before `render_panels` is what prevents egui's own render-time
+        // widget machinery (allocate_painter's built-in Cmd+A select-all) from
+        // swallowing a key before the terminal processes it. `poll_actions`
+        // above already claimed global hotkeys from the same buffer, so the
+        // terminal only ever sees what the global allowlist left behind.
+        let focused_terminal_input = self.take_focused_terminal_input(ctx);
+        self.render_panels(ctx, focused_terminal_input);
 
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.
@@ -4585,7 +4523,7 @@ impl PlexiApp {
         self.notes_picker_entries = entries;
         self.notes_picker_selected = 0;
         self.notes_picker_query.clear();
-        self.push_focus_layer(FocusLayer::NotesPicker);
+        self.push_focus_layer(FocusKind::NotesPicker);
         // Surrender egui keyboard focus from the active TextEdit so the picker
         // receives j/k and other navigation keys immediately on the first frame.
         self.ctx.memory_mut(|m| {
@@ -4788,13 +4726,15 @@ fn drive_native_pane_key(
 ) -> Result<app_trait::KeyDisposition, String> {
     let raw = key_str_to_egui_raw_input(key)
         .ok_or_else(|| format!("key {key:?} does not map to a native app key event"))?;
-    // Throwaway context: the cheapest way to build a well-formed InputState.
+    // Throwaway context: the cheapest way to build a well-formed input buffer.
     // handle_key only reads input — it never paints — so no fonts/render
-    // setup is needed.
+    // setup is needed. Route through the same `PlexiInput` ownership buffer the
+    // live frame uses so `pane key` exercises the production keyboard path.
     let ctx = egui::Context::default();
     let mut disposition = app_trait::KeyDisposition::Passthrough;
     let _ = ctx.run(raw, |ctx| {
-        ctx.input(|i| disposition = runtime.handle_key(i));
+        let input = crate::app::input_router::PlexiInput::take_from(ctx);
+        disposition = runtime.handle_key(&input);
     });
     Ok(disposition)
 }

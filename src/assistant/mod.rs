@@ -2729,12 +2729,12 @@ impl App for AssistantApp {
         self.model.streaming.in_flight || self.compact_pending || !self.pending_commands.is_empty()
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
+    fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         if input.key_pressed(egui::Key::Escape) && self.model.streaming.in_flight {
             self.interrupt_in_flight_turn();
             return KeyDisposition::Consumed;
         }
-        if !input.modifiers.any()
+        if !input.modifiers().any()
             && input.key_pressed(egui::Key::ArrowUp)
             && self.model.recall_previous_user_message()
         {

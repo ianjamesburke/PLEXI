@@ -24,6 +24,19 @@ use std::time::{Duration, Instant};
 const TAB_PIP_RADIUS: f32 = 4.0;
 const TAB_PIP_MARGIN: f32 = 7.0;
 
+/// Host-supplied, frame-scoped keyboard input for one terminal pane
+/// (stint 0387). Built in `PlexiApp::update` by taking the frame's
+/// `PlexiInput` ownership buffer *before* the render pass and threaded down to
+/// the focused terminal so egui's render-time widget machinery can't swallow a
+/// key (e.g. Cmd+A) first. The focused pane receives the taken events;
+/// unfocused panes receive an empty `keyboard_events` list (they only need
+/// pointer/wheel, which stays on the ctx path).
+#[derive(Default)]
+pub struct TerminalInput {
+    pub keyboard_events: Vec<egui::Event>,
+    pub modifiers: egui::Modifiers,
+}
+
 const OUTSIDE_WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const TERMINAL_GLYPH_PADDING_X: f32 = 2.0;
 static LOG_TERMINAL_GLYPH_PADDING: Once = Once::new();
@@ -46,6 +59,7 @@ pub fn render(
     tab_activities: &HashMap<PaneId, AgentState>,
     workspace_root: Option<&Path>,
     pane_title_font_size: f32,
+    input: TerminalInput,
 ) -> (bool, Option<(TileId, TabBarAction)>) {
     if terminal.exited {
         let rect = ui.max_rect();
@@ -55,12 +69,14 @@ pub fn render(
                 ui.colored_label(colors.text_dim, "[process exited]");
             });
         });
+        // Auto-close on any keypress. Keyboard events were taken out of `ctx`
+        // before the render pass (stint 0387), so read them from the
+        // host-supplied buffer rather than `ui.input()`.
         let close = is_focused
-            && ui.input(|i| {
-                i.events
-                    .iter()
-                    .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))
-            });
+            && input
+                .keyboard_events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }));
         return (close, None);
     }
 
@@ -90,7 +106,8 @@ pub fn render(
         .set_theme(theme.clone())
         .set_font(theme::terminal_font(font_size))
         .set_padding(Vec2::new(TERMINAL_GLYPH_PADDING_X, 0.0))
-        .set_size(Vec2::new(ui.available_width(), ui.available_height()));
+        .set_size(Vec2::new(ui.available_width(), ui.available_height()))
+        .with_input(input.keyboard_events, input.modifiers);
     ui.add(view);
 
     (false, tab_action)

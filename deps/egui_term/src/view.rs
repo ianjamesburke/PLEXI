@@ -28,6 +28,20 @@ use alacritty_terminal::grid::Dimensions;
 
 const EGUI_TERM_WIDGET_ID_PREFIX: &str = "egui_term::instance::";
 
+/// Deterministic egui widget id for a terminal instance, keyed by the unique
+/// backend/pane id (`TerminalBackend::id`). Computed the same way on both sides:
+/// the terminal widget interacts under this id (see [`TerminalView::ui`]), and
+/// the Plexi host recomputes it to check whether the focused terminal actually
+/// owns egui keyboard focus before taking the frame's input for it (stint 0387
+/// regression fix). Because `backend_id` is globally unique and there is a
+/// single render site per terminal, a hierarchy-independent `Id::new` is
+/// collision-free and reconstructable outside the render tree — unlike
+/// `Ui::make_persistent_id`, which folds in the parent id and cannot be
+/// recomputed by the host.
+pub fn terminal_widget_id(backend_id: u64) -> Id {
+    Id::new(format!("{EGUI_TERM_WIDGET_ID_PREFIX}{backend_id}"))
+}
+
 #[derive(Debug, Clone)]
 enum InputAction {
     BackendCall(BackendCommand),
@@ -102,6 +116,19 @@ impl Default for TerminalViewState {
     }
 }
 
+/// Host-supplied, frame-scoped keyboard input for a terminal (stint 0387).
+///
+/// The Plexi host takes these events out of egui's shared input queue *before*
+/// the render pass and hands them here via [`TerminalView::with_input`], so
+/// egui's own render-time widget machinery (e.g. `allocate_painter`'s built-in
+/// Cmd+A select-all) can no longer consume a key before the terminal processes
+/// it. Only keyboard-intent events belong here (`Key`/`Text`/`Copy`/`Cut`/
+/// `Paste`); pointer and wheel events stay on the normal egui/ctx path.
+pub struct SuppliedInput {
+    pub events: Vec<egui::Event>,
+    pub modifiers: egui::Modifiers,
+}
+
 pub struct TerminalView<'a> {
     widget_id: Id,
     has_focus: bool,
@@ -111,12 +138,24 @@ pub struct TerminalView<'a> {
     font: TerminalFont,
     theme: TerminalTheme,
     bindings_layout: BindingsLayout,
+    /// Keyboard input supplied by the host for this frame. `None` until the
+    /// host calls [`Self::with_input`]; when absent the terminal processes no
+    /// keyboard events (it never falls back to reading `ctx` for keys — that
+    /// silent fallback is exactly the Cmd+A-steal bug this design removes).
+    supplied_input: Option<SuppliedInput>,
 }
 
 impl Widget for TerminalView<'_> {
     fn ui(self, ui: &mut egui::Ui) -> Response {
-        let (layout, painter) =
-            ui.allocate_painter(self.size, egui::Sense::click());
+        // Interact under the deterministic `widget_id` (not `allocate_painter`'s
+        // auto id) so egui keyboard focus is held under an id the host can
+        // recompute via `terminal_widget_id` (stint 0387). This mirrors
+        // `allocate_painter` (allocate space → interact → clip painter), only
+        // with our own id for the interaction.
+        let (_auto_id, rect) = ui.allocate_space(self.size);
+        let layout = ui.interact(rect, self.widget_id, egui::Sense::click());
+        let clip_rect = ui.clip_rect().intersect(rect);
+        let painter = ui.painter().with_clip_rect(clip_rect);
 
         let widget_id = self.widget_id;
         let mut state = ui.memory(|m| {
@@ -137,10 +176,7 @@ impl Widget for TerminalView<'_> {
 
 impl<'a> TerminalView<'a> {
     pub fn new(ui: &mut egui::Ui, backend: &'a mut TerminalBackend) -> Self {
-        let widget_id = ui.make_persistent_id(format!(
-            "{}{}",
-            EGUI_TERM_WIDGET_ID_PREFIX, backend.id
-        ));
+        let widget_id = terminal_widget_id(backend.id);
 
         Self {
             widget_id,
@@ -151,7 +187,22 @@ impl<'a> TerminalView<'a> {
             font: TerminalFont::default(),
             theme: TerminalTheme::default(),
             bindings_layout: BindingsLayout::new(),
+            supplied_input: None,
         }
+    }
+
+    /// Supply this frame's keyboard input from the host's ownership-transfer
+    /// buffer (stint 0387). Focused terminals receive the frame's taken events;
+    /// unfocused terminals receive an empty event list (they only need
+    /// pointer/wheel, which stays on the ctx path). See [`SuppliedInput`].
+    #[inline]
+    pub fn with_input(
+        mut self,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> Self {
+        self.supplied_input = Some(SuppliedInput { events, modifiers });
+        self
     }
 
     #[inline]
@@ -213,7 +264,7 @@ impl<'a> TerminalView<'a> {
     }
 
     fn process_input(
-        self,
+        mut self,
         layout: &Response,
         state: &mut TerminalViewState,
     ) -> Self {
@@ -226,20 +277,20 @@ impl<'a> TerminalView<'a> {
             return self;
         }
 
-        let modifiers = layout.ctx.input(|i| i.modifiers);
-        let events = layout.ctx.input(|i| i.events.clone());
-        // Temporary diagnostic
-        for event in &events {
-            if let egui::Event::Key {
-                key: egui::Key::A,
-                pressed: true,
-                modifiers: m,
-                ..
-            } = event
-            {
-                log::info!("[diag-term] Key::A in terminal events: cmd={} shift={} has_focus={}", m.command, m.shift, has_focus);
-            }
-        }
+        // Keyboard/text/copy/paste events come from the host-supplied
+        // ownership buffer (stint 0387), never from `ctx` — so egui's own
+        // render-time widget machinery can't swallow a key (e.g. Cmd+A) before
+        // the terminal sees it. Pointer + wheel events stay on the normal
+        // ctx path and are appended after the supplied keyboard events. When no
+        // input was supplied the terminal simply processes no keyboard this
+        // frame (no silent ctx fallback).
+        let supplied = self.supplied_input.take();
+        let modifiers = supplied
+            .as_ref()
+            .map(|s| s.modifiers)
+            .unwrap_or_else(|| layout.ctx.input(|i| i.modifiers));
+        let mut events = supplied.map(|s| s.events).unwrap_or_default();
+        events.extend(layout.ctx.input(|i| i.events.clone()));
         for event in events {
             let mut input_actions = vec![];
 
