@@ -14,7 +14,7 @@ execution = "local"
 python_compat = false
 
 [app.capabilities]
-capabilities = []
+capabilities = ["gpu.render", "pipe.open"]
 
 [app.capabilities.wasm]
 required = []
