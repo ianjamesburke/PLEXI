@@ -703,10 +703,10 @@ impl App for TextEditorApp {
         false
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
+    fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         // Cmd+F: open find bar (or re-focus if already open).
         if input.key_pressed(egui::Key::F)
-            && input.modifiers.matches_logically(egui::Modifiers::COMMAND)
+            && input.modifiers().matches_logically(egui::Modifiers::COMMAND)
         {
             log::info!("TextEditorApp: Cmd+F — opening find bar");
             match &mut self.find_bar {
@@ -729,7 +729,7 @@ impl App for TextEditorApp {
             }
             // Enter: next match. Shift+Enter: previous match.
             if input.key_pressed(egui::Key::Enter) {
-                let forward = !input.modifiers.shift;
+                let forward = !input.modifiers().shift;
                 bar.advance(forward);
                 return KeyDisposition::Consumed;
             }

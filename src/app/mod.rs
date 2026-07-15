@@ -2527,7 +2527,14 @@ impl eframe::App for PlexiApp {
         if overlay_key_disposition == crate::app::app_trait::KeyDisposition::Passthrough
             && !self.input_captured_by_overlay()
         {
-            self.dispatch_app_key_events(ctx);
+            // Ownership-transfer (stint 0387): take this frame's input-intent
+            // events out of `ctx`, hand them to the focused app pane's
+            // `handle_key`, then give back whatever it didn't claim so the
+            // pane's own render pass (a focused `TextEdit`) still sees typed
+            // text. Mirrors the overlay and `poll_actions` router pairs.
+            let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
+            self.dispatch_app_key_events(ctx, &mut router_input);
+            router_input.give_back(ctx);
         }
         // Drain every app pane's pending_commands every frame — including
         // while a modal holds focus. Background apps emitting notifications
@@ -4493,7 +4500,16 @@ impl eframe::App for PlexiApp {
             }
         }
 
-        self.render_panels(ctx);
+        // Ownership-transfer (stint 0387): if the focused pane is a terminal
+        // and no overlay owns input, take this frame's keyboard events out of
+        // `ctx` *before* the render pass and hand them to that terminal. Doing
+        // this before `render_panels` is what prevents egui's own render-time
+        // widget machinery (allocate_painter's built-in Cmd+A select-all) from
+        // swallowing a key before the terminal processes it. `poll_actions`
+        // above already claimed global hotkeys from the same buffer, so the
+        // terminal only ever sees what the global allowlist left behind.
+        let focused_terminal_input = self.take_focused_terminal_input(ctx);
+        self.render_panels(ctx, focused_terminal_input);
 
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.
@@ -4788,13 +4804,15 @@ fn drive_native_pane_key(
 ) -> Result<app_trait::KeyDisposition, String> {
     let raw = key_str_to_egui_raw_input(key)
         .ok_or_else(|| format!("key {key:?} does not map to a native app key event"))?;
-    // Throwaway context: the cheapest way to build a well-formed InputState.
+    // Throwaway context: the cheapest way to build a well-formed input buffer.
     // handle_key only reads input — it never paints — so no fonts/render
-    // setup is needed.
+    // setup is needed. Route through the same `PlexiInput` ownership buffer the
+    // live frame uses so `pane key` exercises the production keyboard path.
     let ctx = egui::Context::default();
     let mut disposition = app_trait::KeyDisposition::Passthrough;
     let _ = ctx.run(raw, |ctx| {
-        ctx.input(|i| disposition = runtime.handle_key(i));
+        let input = crate::app::input_router::PlexiInput::take_from(ctx);
+        disposition = runtime.handle_key(&input);
     });
     Ok(disposition)
 }

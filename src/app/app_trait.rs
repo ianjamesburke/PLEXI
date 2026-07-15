@@ -232,9 +232,14 @@ pub trait App: Send {
     /// Render the app into the given Ui region.
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>);
 
-    /// Handle raw key input before it reaches the terminal.
+    /// Handle raw key input before the app's own render pass.
     /// Return `Consumed` to prevent downstream handlers from seeing the event.
-    fn handle_key(&mut self, _input: &egui::InputState) -> KeyDisposition {
+    ///
+    /// Reads from the frame's [`crate::app::input_router::PlexiInput`] ownership
+    /// buffer (via `input.key_pressed(..)` / `input.events()` /
+    /// `input.modifiers()`) rather than `ctx.input()`, so an app and the global
+    /// hotkey allowlist can never both claim the same key.
+    fn handle_key(&mut self, _input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         KeyDisposition::Passthrough
     }
 

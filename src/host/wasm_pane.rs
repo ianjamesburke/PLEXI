@@ -1905,9 +1905,9 @@ impl LiveWasmPane {
     /// press and release edges are forwarded so apps can track held state (a game
     /// paddle, a key being held down); OS auto-repeat is collapsed and Cmd-chords
     /// are reserved for host shortcuts. See [`translate_key_event`].
-    pub fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
+    pub fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         let mut consumed = false;
-        for event in &input.events {
+        for event in input.events() {
             match event {
                 egui::Event::Key { .. } => {
                     if let Some(ke) = translate_key_event(event) {

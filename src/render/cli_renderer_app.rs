@@ -736,7 +736,7 @@ impl App for CliRendererApp {
         matches!(self.view, View::Form)
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
+    fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         match &self.view {
             View::List => {
                 let commands = self.commands_at_path();
@@ -755,7 +755,7 @@ impl App for CliRendererApp {
                 }
                 // Cmd+Enter is the host pane-zoom toggle (src/host/keys.rs) — let
                 // it pass through; plain Enter opens the selected command.
-                if input.key_pressed(egui::Key::Enter) && !input.modifiers.command {
+                if input.key_pressed(egui::Key::Enter) && !input.modifiers().command {
                     self.navigate_into(self.selected);
                     return KeyDisposition::Consumed;
                 }
@@ -774,7 +774,7 @@ impl App for CliRendererApp {
                 // Enter has no in-field meaning to compete with). Cmd+Enter is
                 // reserved for the host pane-zoom toggle (src/host/keys.rs), so
                 // let it pass through instead of running.
-                if input.key_pressed(egui::Key::Enter) && !input.modifiers.command {
+                if input.key_pressed(egui::Key::Enter) && !input.modifiers().command {
                     self.execute();
                     return KeyDisposition::Consumed;
                 }
@@ -1036,7 +1036,8 @@ mod tests {
                 ..Default::default()
             },
             |ctx| {
-                ctx.input(|i| disposition = app.handle_key(i));
+                let input = crate::app::input_router::PlexiInput::take_from(ctx);
+                disposition = app.handle_key(&input);
             },
         );
         disposition

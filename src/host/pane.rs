@@ -616,7 +616,7 @@ impl AppRuntime {
 
     pub fn handle_key(
         &mut self,
-        input: &egui::InputState,
+        input: &crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         match self {
             AppRuntime::Builtin(app) => app.handle_key(input),

@@ -102,6 +102,19 @@ impl Default for TerminalViewState {
     }
 }
 
+/// Host-supplied, frame-scoped keyboard input for a terminal (stint 0387).
+///
+/// The Plexi host takes these events out of egui's shared input queue *before*
+/// the render pass and hands them here via [`TerminalView::with_input`], so
+/// egui's own render-time widget machinery (e.g. `allocate_painter`'s built-in
+/// Cmd+A select-all) can no longer consume a key before the terminal processes
+/// it. Only keyboard-intent events belong here (`Key`/`Text`/`Copy`/`Cut`/
+/// `Paste`); pointer and wheel events stay on the normal egui/ctx path.
+pub struct SuppliedInput {
+    pub events: Vec<egui::Event>,
+    pub modifiers: egui::Modifiers,
+}
+
 pub struct TerminalView<'a> {
     widget_id: Id,
     has_focus: bool,
@@ -111,6 +124,11 @@ pub struct TerminalView<'a> {
     font: TerminalFont,
     theme: TerminalTheme,
     bindings_layout: BindingsLayout,
+    /// Keyboard input supplied by the host for this frame. `None` until the
+    /// host calls [`Self::with_input`]; when absent the terminal processes no
+    /// keyboard events (it never falls back to reading `ctx` for keys — that
+    /// silent fallback is exactly the Cmd+A-steal bug this design removes).
+    supplied_input: Option<SuppliedInput>,
 }
 
 impl Widget for TerminalView<'_> {
@@ -151,7 +169,22 @@ impl<'a> TerminalView<'a> {
             font: TerminalFont::default(),
             theme: TerminalTheme::default(),
             bindings_layout: BindingsLayout::new(),
+            supplied_input: None,
         }
+    }
+
+    /// Supply this frame's keyboard input from the host's ownership-transfer
+    /// buffer (stint 0387). Focused terminals receive the frame's taken events;
+    /// unfocused terminals receive an empty event list (they only need
+    /// pointer/wheel, which stays on the ctx path). See [`SuppliedInput`].
+    #[inline]
+    pub fn with_input(
+        mut self,
+        events: Vec<egui::Event>,
+        modifiers: egui::Modifiers,
+    ) -> Self {
+        self.supplied_input = Some(SuppliedInput { events, modifiers });
+        self
     }
 
     #[inline]
@@ -213,7 +246,7 @@ impl<'a> TerminalView<'a> {
     }
 
     fn process_input(
-        self,
+        mut self,
         layout: &Response,
         state: &mut TerminalViewState,
     ) -> Self {
@@ -226,20 +259,20 @@ impl<'a> TerminalView<'a> {
             return self;
         }
 
-        let modifiers = layout.ctx.input(|i| i.modifiers);
-        let events = layout.ctx.input(|i| i.events.clone());
-        // Temporary diagnostic
-        for event in &events {
-            if let egui::Event::Key {
-                key: egui::Key::A,
-                pressed: true,
-                modifiers: m,
-                ..
-            } = event
-            {
-                log::info!("[diag-term] Key::A in terminal events: cmd={} shift={} has_focus={}", m.command, m.shift, has_focus);
-            }
-        }
+        // Keyboard/text/copy/paste events come from the host-supplied
+        // ownership buffer (stint 0387), never from `ctx` — so egui's own
+        // render-time widget machinery can't swallow a key (e.g. Cmd+A) before
+        // the terminal sees it. Pointer + wheel events stay on the normal
+        // ctx path and are appended after the supplied keyboard events. When no
+        // input was supplied the terminal simply processes no keyboard this
+        // frame (no silent ctx fallback).
+        let supplied = self.supplied_input.take();
+        let modifiers = supplied
+            .as_ref()
+            .map(|s| s.modifiers)
+            .unwrap_or_else(|| layout.ctx.input(|i| i.modifiers));
+        let mut events = supplied.map(|s| s.events).unwrap_or_default();
+        events.extend(layout.ctx.input(|i| i.events.clone()));
         for event in events {
             let mut input_actions = vec![];
 

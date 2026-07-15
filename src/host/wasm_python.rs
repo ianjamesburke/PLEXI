@@ -1295,9 +1295,9 @@ impl LivePythonPane {
 
     pub fn handle_key(
         &mut self,
-        input: &egui::InputState,
+        input: &crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
-        let events = python_key_events(&input.events);
+        let events = python_key_events(input.events());
         if events.is_empty() {
             crate::app::app_trait::KeyDisposition::Passthrough
         } else {

@@ -301,7 +301,10 @@ impl App for SecretsApp {
         self.terminal_inject = terminal_inject;
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> crate::app::app_trait::KeyDisposition {
+    fn handle_key(
+        &mut self,
+        input: &crate::app::input_router::PlexiInput,
+    ) -> crate::app::app_trait::KeyDisposition {
         use crate::app::app_trait::KeyDisposition;
         if self.mode == Mode::Adding {
             if input.key_pressed(egui::Key::Escape) {
@@ -317,7 +320,7 @@ impl App for SecretsApp {
             return KeyDisposition::Consumed;
         }
 
-        if input.modifiers.command || input.modifiers.alt {
+        if input.modifiers().command || input.modifiers().alt {
             return KeyDisposition::Passthrough;
         }
 

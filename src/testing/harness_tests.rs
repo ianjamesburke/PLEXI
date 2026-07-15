@@ -98,7 +98,7 @@ impl crate::app::app_trait::App for TextInputProbe {
 
     fn handle_key(
         &mut self,
-        input: &egui::InputState,
+        input: &crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         if input.key_pressed(egui::Key::Enter) {
             self.enter_handled = true;
@@ -209,6 +209,55 @@ fn consumed_native_key_is_not_replayed_into_render_input() {
     assert_eq!(state["enter_rendered"], false);
 }
 
+
+/// Stint 0387: a real keyboard event injected via `RawInput` must reach the
+/// focused app pane's `handle_key` through the migrated `PlexiInput`
+/// ownership-transfer router in `dispatch_app_key_events` — not just the
+/// synthesized `plexi pane key` IPC path. Proves the app-dispatch migration is
+/// wired into the live frame, reading the frame's owned buffer.
+#[test]
+fn raw_key_event_reaches_focused_app_via_router() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::<TextInputProbe>::default(),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.focus_pane(pane_id);
+    h.run_frames(2);
+
+    // Drive a genuine Enter key event through a real frame's RawInput.
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events: vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
+
+    let state = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state())
+        .expect("probe state after Enter");
+    assert_eq!(
+        state["enter_handled"], true,
+        "RawInput Enter must reach handle_key through the ownership router"
+    );
+}
 
 #[test]
 fn pane_slots_write_read_list_delete() {
