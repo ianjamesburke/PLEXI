@@ -1471,6 +1471,63 @@ mod core_pack_tests {
         }
     }
 
+    /// Drift guard (stint 0391/0393): every `local:` entry in a bundled pack
+    /// must resolve to a real directory under `apps/` (recursively — pack
+    /// entries may point at `apps/examples/<id>` etc, not just top-level
+    /// `apps/<id>`) whose `manifest.toml` id matches the pack entry id. A
+    /// pack entry that names an app which exists nowhere on disk fails
+    /// silently at install time otherwise (stint 0393: `packs/examples.toml`
+    /// carried four such phantom entries for two weeks before anyone
+    /// installed on a fresh profile and hit the failure).
+    fn assert_pack_entry_resolves_to_bundled_app(entry: &PackApp, pack_label: &str) {
+        let spec = parse_source_spec(&entry.source).unwrap_or_else(|e| {
+            panic!("{pack_label} entry '{}' has invalid source: {e}", entry.id)
+        });
+        let name = match spec {
+            SourceSpec::Local(n) => n,
+            SourceSpec::Git(_) => return, // git: sources are not bundled; nothing to check on disk.
+        };
+        assert_eq!(
+            name, entry.id,
+            "{pack_label} entry id '{}' must match its local: source name '{name}'",
+            entry.id
+        );
+        let dir = find_embedded_app_dir(&name).unwrap_or_else(|| {
+            panic!("{pack_label} app '{name}' has no directory under apps/ (checked recursively)")
+        });
+        let manifest_text = dir
+            .get_file(format!("{}/manifest.toml", dir.path().display()))
+            .and_then(|f| f.contents_utf8())
+            .unwrap_or_else(|| panic!("{pack_label} app '{name}' has no manifest.toml"));
+        let manifest: AppManifest = toml::from_str(manifest_text)
+            .unwrap_or_else(|e| panic!("{pack_label} app '{name}' manifest invalid: {e}"));
+        assert_eq!(
+            manifest.app.id, entry.id,
+            "{pack_label} app '{name}' manifest id '{}' must match pack id '{}'",
+            manifest.app.id, entry.id
+        );
+    }
+
+    /// Find a directory named `name` anywhere under the embedded `apps/`
+    /// tree (not just top-level). `include_dir::Dir::get_dir` only matches
+    /// an exact relative path, so a bare id like `"coding-agent"` would miss
+    /// `apps/examples/coding-agent` — this walks every directory to find it
+    /// by its final path component instead.
+    fn find_embedded_app_dir<'a>(name: &str) -> Option<&'a include_dir::Dir<'a>> {
+        fn walk<'a>(dir: &'a include_dir::Dir<'a>, name: &str) -> Option<&'a include_dir::Dir<'a>> {
+            for sub in dir.dirs() {
+                if sub.path().file_name().and_then(|n| n.to_str()) == Some(name) {
+                    return Some(sub);
+                }
+                if let Some(found) = walk(sub, name) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        walk(&EMBEDDED_APPS, name)
+    }
+
     /// Drift guard (stint 0296): `packs/core.toml` is the single source of
     /// truth for the maintained/core app set. Every entry must resolve to a
     /// bundled app directory whose manifest id matches, and the installer must
@@ -1481,35 +1538,7 @@ mod core_pack_tests {
         assert!(!pack.apps.is_empty(), "core pack must list at least one app");
 
         for entry in &pack.apps {
-            // Maintained apps ship from the embedded tree via `local:<id>`.
-            let spec = parse_source_spec(&entry.source)
-                .unwrap_or_else(|e| panic!("core entry '{}' has invalid source: {e}", entry.id));
-            let name = match spec {
-                SourceSpec::Local(n) => n,
-                SourceSpec::Git(_) => panic!(
-                    "core entry '{}' must use a local: source (maintained apps ship bundled), got '{}'",
-                    entry.id, entry.source
-                ),
-            };
-            assert_eq!(
-                name, entry.id,
-                "core entry id '{}' must match its local: source name '{name}'",
-                entry.id
-            );
-            let dir = EMBEDDED_APPS
-                .get_dir(&name)
-                .unwrap_or_else(|| panic!("core app '{name}' has no directory under apps/"));
-            let manifest_text = dir
-                .get_file(format!("{name}/manifest.toml"))
-                .and_then(|f| f.contents_utf8())
-                .unwrap_or_else(|| panic!("core app '{name}' has no manifest.toml"));
-            let manifest: AppManifest = toml::from_str(manifest_text)
-                .unwrap_or_else(|e| panic!("core app '{name}' manifest invalid: {e}"));
-            assert_eq!(
-                manifest.app.id, entry.id,
-                "core app '{name}' manifest id '{}' must match pack id '{}'",
-                manifest.app.id, entry.id
-            );
+            assert_pack_entry_resolves_to_bundled_app(entry, "core pack");
         }
 
         // The maintained set lives ONLY in packs/core.toml. install.sh must
@@ -1523,6 +1552,23 @@ mod core_pack_tests {
                 "install.sh hardcodes '{needle}' — the maintained app list must come \
                  only from packs/core.toml, not be enumerated in the installer"
             );
+        }
+    }
+
+    /// Drift guard (stint 0393): every `packs/*.toml` entry must name an app
+    /// that actually exists on disk. `packs/examples.toml` previously carried
+    /// four phantom entries (`typing-tutor`, `mind-map`, `gh-projects`,
+    /// `calendar`) that named apps existing nowhere in the repo — silent
+    /// until the moment a fresh profile tried to install them.
+    #[test]
+    fn examples_pack_entries_exist_on_disk() {
+        let pack = Pack::from_toml_str(EXAMPLES_PACK_TOML).expect("examples pack must parse");
+        assert!(
+            !pack.apps.is_empty(),
+            "examples pack must list at least one app"
+        );
+        for entry in &pack.apps {
+            assert_pack_entry_resolves_to_bundled_app(entry, "examples pack");
         }
     }
 
