@@ -2,13 +2,13 @@ schema_version = 1
 reseed = "always"
 
 [[app]]
-id      = "logs"
-source  = "local:logs"
+id      = "sudoku"
+source  = "local:sudoku"
 version = "bundled"
 
 [[app]]
-id      = "stats"
-source  = "local:stats"
+id      = "logs"
+source  = "local:logs"
 version = "bundled"
 
 [[app]]
@@ -22,6 +22,11 @@ source  = "local:calc"
 version = "bundled"
 
 [[app]]
-id      = "permissions"
-source  = "local:permissions"
+id      = "balls"
+source  = "local:balls"
+version = "bundled"
+
+[[app]]
+id      = "snake"
+source  = "local:snake"
 version = "bundled"
