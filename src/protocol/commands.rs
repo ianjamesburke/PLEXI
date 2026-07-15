@@ -1,521 +1,6 @@
 use super::primitives::*;
-use super::ui_nodes::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-/// A child inside a layout tree — either a nested layout node or a leaf draw command.
-///
-/// Leaf commands must be host-measured primitives (`Badge`, `Text`, `KeyChip`).
-/// The `x` and `y` fields on leaf commands are ignored — positions come from taffy.
-///
-/// `JsonSchema` is implemented manually to avoid schemars recursion issues
-/// (RenderCommand → LayoutChild → RenderCommand).
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum LayoutChild {
-    /// A nested layout node.
-    Node {
-        direction: LayoutDirection,
-        children: Vec<LayoutChild>,
-        #[serde(default)]
-        gap: f32,
-    },
-    /// A leaf draw command positioned by taffy.
-    Leaf { command: Box<RenderCommand> },
-}
-
-// Manual JsonSchema impl to avoid schemars recursion (RenderCommand ↔ LayoutChild).
-impl schemars::JsonSchema for LayoutChild {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "LayoutChild".into()
-    }
-    fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({})
-    }
-}
-
-// ── Commands sent FROM the app TO Plexi ──────────────────────────────────────
-
-/// Closed vocabulary for text anchor alignment.
-/// Values match egui's `Align2` naming convention: `{h}_{v}`.
-#[derive(
-    Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum TextAlign {
-    LeftTop,
-    CenterTop,
-    RightTop,
-    LeftCenter,
-    CenterCenter,
-    RightCenter,
-    LeftBottom,
-    CenterBottom,
-    RightBottom,
-}
-
-impl Default for TextAlign {
-    fn default() -> Self {
-        Self::LeftTop
-    }
-}
-
-/// Direction for a linear gradient fill.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
-pub enum GradientDir {
-    #[serde(rename = "h")]
-    Horizontal,
-    #[serde(rename = "v")]
-    Vertical,
-}
-
-impl Default for GradientDir {
-    fn default() -> Self {
-        Self::Horizontal
-    }
-}
-
-/// Horizontal alignment for a `Shortcuts` row within its `max_width`.
-/// Defaults to `Center` so app footers read as centered without extra work.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
-pub enum ShortcutsAlign {
-    #[serde(rename = "left")]
-    Left,
-    #[serde(rename = "center")]
-    Center,
-}
-
-impl Default for ShortcutsAlign {
-    fn default() -> Self {
-        Self::Center
-    }
-}
-
-/// Linear gradient fill descriptor for `Rect`. Replaces the solid fill when present.
-///
-/// Corner radius is not applied to the mesh — the gradient rect has sharp corners.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-pub struct Gradient {
-    pub from: String,
-    pub to: String,
-    #[serde(default)]
-    pub dir: GradientDir,
-}
-
-/// Render primitives — go to `pending_frame` → drawn to screen.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum RenderCommand {
-    /// Push a clip rect onto the host's clip stack.
-    ///
-    /// The effective clip rect is the intersection of the new rect with the
-    /// current top of the stack (or the pane rect if the stack is empty).
-    /// All subsequent draw commands are clipped to this intersection until
-    /// a matching `PopClip` rebalances the stack.
-    ///
-    /// Imbalanced push/pop is a hard error logged at `warn` level. The host
-    /// resets to zero depth at frame end so a bug in one app cannot corrupt
-    /// subsequent frames.
-    PushClip { x: f32, y: f32, w: f32, h: f32 },
-
-    /// Pop the most recently pushed clip rect from the stack.
-    ///
-    /// If the stack is already empty, logs a `warn` and is a no-op.
-    PopClip,
-
-    /// Fill a rectangle.
-    ///
-    /// Optional styling (all default to "no effect"):
-    /// - `stroke` / `stroke_width`: outline with the given hex color and pixel width.
-    /// - `glow_color` / `glow_radius`: soft halo painted behind the fill.
-    /// - `gradient`: linear fill (`from`/`to` hex, `dir` "h" or "v") that replaces the solid fill.
-    ///   Corner radius is not applied to the gradient mesh (it is always sharp-cornered).
-    Rect {
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        fill: String,
-        #[serde(default)]
-        radius: f32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        stroke: Option<String>,
-        #[serde(default = "default_stroke_width")]
-        stroke_width: f32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        glow_color: Option<String>,
-        #[serde(default)]
-        glow_radius: f32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        gradient: Option<Gradient>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        hit_region: Option<String>,
-    },
-    /// Draw text at a position.
-    ///
-    /// `align` controls how the `(x, y)` point maps to the text box.
-    /// Valid values (horizontal_vertical): `left_top` (default), `center_top`,
-    /// `right_top`, `left_center`, `center_center`, `right_center`,
-    /// `left_bottom`, `center_bottom`, `right_bottom`.
-    ///
-    /// Centering uses the host's real font metrics, which matters for small
-    /// badges / buttons where a 0.1em difference is visible. Prefer `center_center`
-    /// for anything inside a fixed-size container.
-    ///
-    /// `max_width` — when `Some(w)`, the text is clipped at `w` pixels.
-    /// `elide` — when `true`, a `…` is appended at the clip point; when
-    ///           `false`, the text is hard-clipped with no marker.
-    /// `selectable` — when `true`, the host renders this text as a
-    ///                selectable egui label so the user can drag-select
-    ///                inside it and Cmd+C copies the selection. When
-    ///                `false` (default for pre-#200 callers), the text
-    ///                paints via the painter and cannot be selected.
-    ///                Required field — no `serde(default)`. Apps must
-    ///                set it explicitly; omitting it fails deserialisation.
-    Text {
-        x: f32,
-        y: f32,
-        text: String,
-        size: f32,
-        color: String,
-        #[serde(default)]
-        monospace: bool,
-        #[serde(default)]
-        bold: bool,
-        #[serde(default)]
-        align: TextAlign,
-        max_width: Option<f32>,
-        elide: bool,
-        selectable: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_lines: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        hit_region: Option<String>,
-    },
-    /// Draw a line segment.
-    Line {
-        x1: f32,
-        y1: f32,
-        x2: f32,
-        y2: f32,
-        color: String,
-        #[serde(default = "default_stroke_width")]
-        width: f32,
-    },
-    /// Draw a filled circle. Alpha is supported via 8-digit hex fill (#rrggbbaa).
-    ///
-    /// Optional styling: `stroke`/`stroke_width` outline the circle; `glow_color`/`glow_radius`
-    /// paint a soft halo behind the fill using concentric rings with linear alpha falloff.
-    Circle {
-        cx: f32,
-        cy: f32,
-        r: f32,
-        fill: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        stroke: Option<String>,
-        #[serde(default = "default_stroke_width")]
-        stroke_width: f32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        glow_color: Option<String>,
-        #[serde(default)]
-        glow_radius: f32,
-    },
-
-    /// Draw a filled arc / pie slice.
-    /// `start_angle` and `end_angle` are in radians, measured clockwise from the right (east).
-    /// A full circle is 0.0 to std::f32::consts::TAU.
-    Arc {
-        cx: f32,
-        cy: f32,
-        r: f32,
-        start_angle: f32,
-        end_angle: f32,
-        fill: String,
-    },
-
-    /// Draw a stroked arc ring (hollow donut arc). Distinct from `Arc` (filled pie).
-    ///
-    /// `start_angle` / `end_angle` in radians, clockwise from east — same convention as `Arc`.
-    /// `color` is the stroke hex color (supports 8-digit `#rrggbbaa` alpha).
-    /// `stroke_width` defaults to 2.0 pixels.
-    ArcRing {
-        cx: f32,
-        cy: f32,
-        r: f32,
-        start_angle: f32,
-        end_angle: f32,
-        color: String,
-        #[serde(default = "default_arc_ring_width")]
-        stroke_width: f32,
-    },
-
-    /// High-level scrollable list — host handles layout and scrolling.
-    List {
-        #[serde(default)]
-        x: f32,
-        #[serde(default)]
-        y: f32,
-        #[serde(default)]
-        w: f32,
-        #[serde(default)]
-        h: f32,
-        items: Vec<ListItem>,
-        selected: usize,
-        #[serde(default)]
-        item_height: f32,
-    },
-
-    /// Host-native scrollable list with j/k navigation, typed row slots,
-    /// and built-in loading/error/empty states.
-    /// Host emits `PlexiEvent::ListSelect` / `PlexiEvent::ListActivate` for callbacks.
-    ListView {
-        id: String,
-        #[serde(default)]
-        x: f32,
-        #[serde(default)]
-        y: f32,
-        /// 0.0 = full pane width
-        #[serde(default)]
-        w: f32,
-        /// 0.0 = remaining pane height below y
-        #[serde(default)]
-        h: f32,
-        items: Vec<ListViewItem>,
-        #[serde(default)]
-        selected: usize,
-        #[serde(default)]
-        loading: bool,
-        #[serde(default)]
-        error: Option<String>,
-    },
-
-    // ── Host-measured layout primitives ──────────────────────────────────
-    //
-    // These commands delegate text measurement and pill geometry entirely to
-    // the host. The SDK emits intent; the host measures with real egui font
-    // metrics and renders. No Python-side width estimation.
-    /// Host-rendered pill badge. The host measures the label with real font
-    /// metrics, sizes the pill (text_w + padding), and centres the text
-    /// both horizontally and vertically. No width math in the SDK.
-    ///
-    /// `x`      — left edge of the badge.
-    /// `y`      — vertical centre (the badge is drawn centred on this y).
-    /// `label`  — text to display inside the pill.
-    /// `fill`   — pill background colour (hex).
-    /// `fg`     — text colour (hex).
-    /// `font_size` — label font size in pt.
-    /// `radius` — pill corner radius. Use a large value (e.g. font_size) for
-    ///            a fully-rounded pill, or RADIUS_SM (4.0) for tag chips.
-    Badge {
-        x: f32,
-        y: f32,
-        label: String,
-        fill: String,
-        fg: String,
-        font_size: f32,
-        radius: f32,
-    },
-
-    /// Host-rendered keycap chip. The host measures the label with real
-    /// monospace font metrics, sizes the chip, and centres the text inside.
-    ///
-    /// `x`         — left edge of the chip (top-left, matching ctx.text).
-    /// `y`         — top edge of the chip.
-    /// `label`     — key label (e.g. "⌘", "[", "Enter").
-    /// `font_size` — label font size in pt.
-    KeyChip {
-        x: f32,
-        y: f32,
-        label: String,
-        font_size: f32,
-    },
-
-    /// A horizontal row of keycap chips. The host flows them left-to-right
-    /// with a fixed 2px gap between chips, sizes each chip from real font
-    /// metrics, and places an optional trailing description label after the
-    /// last chip.
-    ///
-    /// `x`, `y`      — top-left origin of the row.
-    /// `keys`        — ordered list of key labels to render as chips.
-    /// `description` — optional label rendered after the last chip.
-    /// `font_size`   — applies to all chips and the description.
-    KeyChipRow {
-        x: f32,
-        y: f32,
-        keys: Vec<String>,
-        description: Option<String>,
-        font_size: f32,
-    },
-
-    /// A multi-group shortcut row. The host owns all layout — chip widths
-    /// from real font metrics, flow horizontally with configurable inter-
-    /// group gap, wrap to a new line when the next group would exceed
-    /// `max_width`. Returns nothing; correct by construction.
-    ///
-    /// `x`, `y`      — top-left origin.
-    /// `max_width`   — wrap budget. Wrap to a new line when the next group
-    ///                 would exceed it. Caller passes the available pane
-    ///                 width minus its own padding.
-    /// `pairs`       — ordered list of `(chip-labels, description)` groups.
-    ///                 Each pair renders as one or more chips followed by
-    ///                 the description text.
-    /// `font_size`   — applies to all chips and descriptions.
-    Shortcuts {
-        x: f32,
-        y: f32,
-        max_width: f32,
-        pairs: Vec<ShortcutPair>,
-        font_size: f32,
-        #[serde(default)]
-        align: ShortcutsAlign,
-    },
-
-    /// Multiple text segments rendered horizontally with host-measured layout.
-    /// The host measures each segment with real font metrics and flows them
-    /// left-to-right with configurable gap spacing.
-    ///
-    /// `x`, `y`  — origin of the text row.
-    /// `items`   — list of text segments, each with text, color, size, monospace.
-    /// `gap`     — spacing between items in pixels.
-    /// `align`   — anchor alignment, e.g. `left_center` to center items on the y-axis.
-    TextRow {
-        x: f32,
-        y: f32,
-        items: Vec<TextRowItem>,
-        gap: f32,
-        #[serde(default)]
-        align: TextAlign,
-    },
-
-    /// Render markdown text using the host's `egui_commonmark` renderer.
-    ///
-    /// The host creates a child `Ui` at `(x, y)` with width `w` and renders
-    /// the markdown with proper formatting (bold, italic, code blocks, etc.).
-    /// `base_size` controls the body font size; `color` sets the default text
-    /// colour.
-    Markdown {
-        x: f32,
-        y: f32,
-        w: f32,
-        text: String,
-        base_size: f32,
-        color: String,
-    },
-
-    /// Draw an image from a workspace-scoped path or data URL.
-    Image {
-        src: String,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        /// One of: "contain" | "cover" | "fill". Default: "contain".
-        #[serde(default = "default_image_fit")]
-        fit: String,
-    },
-
-    /// Circular clipped image. `src` accepts a load_image handle (UUID) or local path.
-    /// `cx`, `cy` are the circle centre in pane-local coordinates.
-    /// `radius` is the circle radius in logical pixels.
-    Avatar {
-        src: String,
-        cx: f32,
-        cy: f32,
-        radius: f32,
-    },
-
-    /// Animated shimmer placeholder rect for loading states.
-    /// The host drives a subtle pulsing animation at ~20fps using request_repaint_after.
-    Skeleton {
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        #[serde(default = "default_skeleton_radius")]
-        radius: f32,
-    },
-
-    /// Render an amplitude meter reading from a binary pipe.
-    AudioMeter { rect: Rect, pipe_id: String },
-
-    // ── Host-managed scroll regions (#446) ───────────────────────────────
-    /// Begin a host-managed vertical scroll region.
-    ///
-    /// All draw commands between this and the matching `EndScroll` are clipped
-    /// to the viewport rect `(x, y, w, h)`. The host tracks the scroll offset
-    /// for `id` across frames and emits `PlexiEvent::ScrollOffset { id, offset_y }`
-    /// whenever the user scrolls (mouse wheel / drag). The app translates its
-    /// content coordinates by `offset_y` before emitting draw commands.
-    ///
-    /// `content_height` is the total virtual height of the scrollable content
-    /// in logical pixels. The host uses this to size the scrollbar thumb.
-    ///
-    /// `id` must be stable across frames — use a meaningful string (e.g. the
-    /// region name) rather than a counter that may change.
-    BeginScroll {
-        id: String,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
-        content_height: f32,
-    },
-
-    /// Close the most recently opened scroll region.
-    ///
-    /// Must be balanced with a preceding `BeginScroll`. Imbalanced pairs are
-    /// logged at `warn` level and the stack is reset at frame end.
-    EndScroll,
-
-    /// Declarative flex layout tree. The host resolves all positions using
-    /// taffy (flexbox) and real egui font metrics before painting.
-    ///
-    /// `x`, `y` — pane-relative top-left anchor of the layout tree.
-    /// `direction` — flex direction of the root node.
-    /// `children` — the layout tree children.
-    /// `gap` — space between children in the root node (pixels).
-    Layout {
-        x: f32,
-        y: f32,
-        direction: LayoutDirection,
-        children: Vec<LayoutChild>,
-        #[serde(default)]
-        gap: f32,
-    },
-
-    /// Responsive layout — host picks the matching tier based on available rect aspect ratio.
-    ///
-    /// Tiers are evaluated in order. First match wins. The aspect condition is one of:
-    /// - `"landscape"` — width > height
-    /// - `"portrait"` — height > width
-    /// - `"square"` — within ~20% ratio (0.83..1.2), or used as a fallback
-    ///
-    /// The winning tier's layout tree is rendered through the existing taffy pipeline.
-    Responsive {
-        x: f32,
-        y: f32,
-        tiers: Vec<ResponsiveTier>,
-    },
-
-    /// Component tree — host renders via render_component_tree(). Added in PGAP v3.5.
-    /// Host logs a warning and drops if it doesn't know this variant.
-    ComponentTree { root: UiNode },
-}
-
-/// A single tier in a responsive layout. Contains an aspect-ratio condition
-/// and the layout tree to render when that condition matches.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-pub struct ResponsiveTier {
-    /// One of: "landscape", "portrait", "square"
-    pub aspect: String,
-    /// Flex direction for this tier's root node.
-    pub direction: LayoutDirection,
-    /// Children of this tier's layout tree.
-    pub children: Vec<LayoutChild>,
-    /// Gap between children in pixels.
-    #[serde(default)]
-    pub gap: f32,
-}
 
 /// Agent state reported by a hook script.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
@@ -1057,7 +542,7 @@ pub enum AppRequest {
     /// All fields are required — no `serde(default)`. `tools` may be empty;
     /// non-empty `tools` causes the broker to dispatch through a tool loop
     /// (#399) — the AI can call tools on any pane that exposed them via
-    /// `DrawCommand::ExposeTools`.
+    /// `AppRequest::ExposeTools`.
     AiQuery {
         request_id: String,
         model_tier: ModelTier,
@@ -1187,7 +672,7 @@ pub enum AppRequest {
     CancelTimer { timer_id: String },
     /// Async image fetch brokered through the host. Requires `net.http` capability.
     /// Host fetches `src`, caches under `handle`, and emits `PlexiEvent::ImageLoaded`
-    /// when done. App then renders via `DrawCommand::Image { src: handle, .. }`.
+    /// when done.
     LoadImage { handle: String, src: String },
 
     // ── Canvas Terminal Binding Primitives (#78) ─────────────────────────
@@ -1540,112 +1025,7 @@ pub struct EventStreamDecl {
     pub description: Option<String>,
 }
 
-/// Inline-handled commands (processed directly in `ui()` or `background_tick()`).
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ControlCommand {
-    /// SDK ready handshake. Sent once by the app after receiving Init.
-    /// Host captures sdk and features_used; the message is otherwise a no-op.
-    Ready {
-        #[serde(default)]
-        sdk: String,
-        /// Wire protocol version the app was built against (e.g. `"pgap/3"`).
-        /// Lets the host know which protocol features the app may use. Empty
-        /// when an older SDK omits it.
-        #[serde(default)]
-        protocol_version: String,
-        #[serde(default)]
-        features_used: Vec<String>,
-    },
-    /// End of frame. Host renders everything queued since last FrameDone.
-    FrameDone {
-        /// Must match the frame_id from the triggering Render event.
-        frame_id: u64,
-    },
-    /// Forward a log message into Plexi's logger (tagged with app_id).
-    Log {
-        /// One of: "error" | "warn" | "info" | "debug"
-        level: String,
-        message: String,
-    },
-    /// Terminal SDK failure with traceback text. Sent before the app exits
-    /// nonzero so the host never has to infer Python hook failures from EOF.
-    FatalError { message: String, traceback: String },
-    /// Ask the host to trigger a new Render event after `after_ms` milliseconds.
-    /// Intended for game loops and animations — emit once per frame to sustain a
-    /// tick rate without relying on egui's unconditional repaint cadence.
-    /// Apps that do not emit this will still repaint on keyboard/inject events.
-    ScheduleRender { after_ms: u32 },
-    /// Declare app render cadence so the host owns recurring animation ticks.
-    /// `mode="idle"` disables recurring renders, `mode="scheduled"` means the
-    /// app will emit ScheduleRender manually, and `mode="continuous"` asks the
-    /// host to render at `fps`.
-    SetSchedulerMode {
-        mode: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        fps: Option<u32>,
-    },
-    /// Write `text` to the OS clipboard.
-    ///
-    /// Routed through `egui::Context::copy_text`, which handles platform-
-    /// specific clipboard backends (NSPasteboard / X11 / Wayland / Win32).
-    /// Synchronous from the app's perspective — no acknowledgement event.
-    /// No capability flag required: clipboard write is low-risk and the
-    /// app already controls when it fires (key handler, button, etc.).
-    CopyToClipboard { text: String },
-    /// Request a one-shot text measurement. The host measures `text` at
-    /// `font_size` with the proportional font and replies immediately with
-    /// `PlexiEvent::TextMeasured { request_id, width, height }`.
-    ///
-    /// Use this only when layout genuinely depends on measured text width
-    /// (e.g. flowing multiple badges horizontally). Avoid on hot render paths.
-    MeasureText {
-        request_id: String,
-        text: String,
-        font_size: f32,
-        #[serde(default)]
-        monospace: bool,
-    },
-    /// Measure the height of `text` wrapped at `max_width` using real host font metrics.
-    /// If `max_lines` is Some(n), clamps the measurement to n rows.
-    /// Replies with `PlexiEvent::TextWrappedMeasured { request_id, height }`.
-    MeasureTextWrapped {
-        request_id: String,
-        text: String,
-        font_size: f32,
-        max_width: f32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_lines: Option<u32>,
-    },
-    /// Override the manifest-declared minimum size at runtime.
-    /// Stored by the host and used as the live effective minimum from this
-    /// point forward, superseding the manifest `[launch]` values.
-    SetMinSize { width: f32, height: f32 },
-    /// Request the host to close this app's pane gracefully.
-    /// The host closes the pane on the next frame via the wants_close path.
-    /// Use instead of sys.exit() to avoid triggering crash-restart on watched panes.
-    CloseSelf,
-    /// Set the display name (tab title) of this app's own pane.
-    /// Emitted by the SDK v3 runtime when the app calls `emit.set_title(title)`.
-    SetTitle { title: String },
-}
-
-/// Top-level wire type. The `type` field is globally unique across all three
-/// inner enums, so `#[serde(untagged)]` deserializes unambiguously.
-/// The JSON `{"type":"rect",...}` still works; `{"type":"ai_query",...}` still works.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-#[serde(untagged)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "DrawCommand is a transient per-message wire decode (parsed, routed, dropped within a frame), never stored in bulk; boxing AppRequest would add a heap allocation per host request and force deref rewrites at 80+ match sites"
-)]
-pub enum DrawCommand {
-    Render(RenderCommand),
-    Host(AppRequest),
-    Control(ControlCommand),
-}
-
-/// Replace-vs-append behaviour for `DrawCommand::InsertPathToken`.
+/// Replace-vs-append behaviour for `AppRequest::InsertPathToken`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PathTokenMode {
@@ -1656,7 +1036,7 @@ pub enum PathTokenMode {
     Append,
 }
 
-/// Routing target for `DrawCommand::OpenArtifact`.
+/// Routing target for `AppRequest::OpenArtifact`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactOpenMode {
@@ -1667,23 +1047,6 @@ pub enum ArtifactOpenMode {
     RevealInFinder,
     /// `open <path>` — Launch Services default app.
     OpenWithDefault,
-}
-
-/// One text segment inside a `DrawCommand::TextRow`.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-pub struct TextRowItem {
-    pub text: String,
-    pub color: String,
-    pub size: f32,
-    pub monospace: bool,
-}
-
-/// One group inside a `DrawCommand::Shortcuts`. Renders as `keys` chips
-/// followed by `description` text.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-pub struct ShortcutPair {
-    pub keys: Vec<String>,
-    pub description: String,
 }
 
 /// Visibility scope for a notification.
@@ -1781,113 +1144,20 @@ pub fn is_reserved_shortcut(key: &str) -> bool {
     matches!(c.to_ascii_lowercase(), 'j' | 'k' | 'h' | 'l') || c.is_ascii_digit() && c != '0'
 }
 
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-pub struct ListItem {
-    pub label: String,
-    #[serde(default)]
-    pub secondary: Option<String>,
-    #[serde(default)]
-    pub icon: Option<String>, // reserved for future use
-    #[serde(default)]
-    pub is_dir: bool,
-}
-
-/// Leading slot for a ListView row.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-#[serde(tag = "variant", rename_all = "snake_case")]
-pub enum ListViewLeading {
-    Badge { label: String, color: String },
-    Avatar { handle: String },
-    Icon { name: String },
-    None,
-}
-
-/// One chip label on a ListView row.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-pub struct ListViewChip {
-    pub label: String,
-    pub color: String,
-}
-
-/// A generic typed row for a ListView.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-pub struct ListViewRowDescriptor {
-    pub id: String,
-    #[serde(default)]
-    pub leading: Option<ListViewLeading>,
-    pub primary: String,
-    #[serde(default)]
-    pub secondary: Option<String>,
-    #[serde(default)]
-    pub chips: Vec<ListViewChip>,
-    #[serde(default)]
-    pub trailing: Option<String>,
-}
-
-/// An item inside a ListView — either a typed row or a custom cell.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ListViewItem {
-    Row(ListViewRowDescriptor),
-    CustomCell {
-        id: String,
-        #[serde(default = "default_custom_cell_height")]
-        height_hint: f32,
-    },
-}
-
-impl ListViewItem {
-    pub const ROW_H_BASE: f32 = 40.0;
-    pub const ROW_H_WITH_SEC: f32 = 56.0;
-
-    pub fn height(&self) -> f32 {
-        match self {
-            ListViewItem::Row(r) => {
-                if r.secondary.is_some() {
-                    Self::ROW_H_WITH_SEC
-                } else {
-                    Self::ROW_H_BASE
-                }
-            }
-            ListViewItem::CustomCell { height_hint, .. } => *height_hint,
-        }
-    }
-}
-
 fn one() -> u64 {
     1
-}
-
-fn default_custom_cell_height() -> f32 {
-    40.0
 }
 
 fn is_false(b: &bool) -> bool {
     !*b
 }
 
-fn default_stroke_width() -> f32 {
-    1.0
-}
-
-fn default_arc_ring_width() -> f32 {
-    2.0
-}
-
 fn default_http_method() -> String {
     "GET".to_string()
 }
 
-fn default_image_fit() -> String {
-    "contain".to_string()
-}
-
 fn default_volume() -> f32 {
     1.0
-}
-
-fn default_skeleton_radius() -> f32 {
-    4.0
 }
 
 #[cfg(test)]
@@ -1918,49 +1188,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn copy_to_clipboard_round_trips_serde() {
-        let json = r#"{"type":"copy_to_clipboard","text":"snippet"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Control(ControlCommand::CopyToClipboard { text }) => {
-                assert_eq!(text, "snippet")
-            }
-            other => panic!("expected CopyToClipboard, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&cmd).expect("serialise");
-        assert!(
-            serialised.contains(r#""type":"copy_to_clipboard""#),
-            "wire tag missing: {serialised}"
-        );
-    }
 
-    #[test]
-    fn text_drawcommand_with_selectable_round_trips() {
-        let json = r##"{"type":"text","x":1.0,"y":2.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"left_top","max_width":null,"elide":true,"selectable":true}"##;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::Text {
-                text, selectable, ..
-            }) => {
-                assert_eq!(text, "hi");
-                assert!(*selectable, "selectable should be true");
-            }
-            other => panic!("expected Text, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&cmd).expect("serialise");
-        assert!(
-            serialised.contains(r#""selectable":true"#),
-            "selectable flag missing on wire: {serialised}"
-        );
-    }
 
     #[test]
     fn text_drawcommand_missing_selectable_fails_deserialise() {
         // No `selectable` field — must fail because the field is required
         // (no `#[serde(default)]` on it).
         let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"x","size":14.0,"color":"#fff","max_width":null,"elide":true}"##;
-        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        let result: Result<AppRequest, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
             "deserialise should fail without `selectable` field"
@@ -1974,15 +1209,15 @@ mod tests {
     #[test]
     fn ai_query_drawcommand_round_trips_serde() {
         let json = r#"{"type":"ai_query","request_id":"req-1","model_tier":"medium","system":"You are helpful.","messages":[{"role":"user","content":"hi"}],"tools":[]}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::AiQuery {
+            AppRequest::AiQuery {
                 request_id,
                 model_tier,
                 system,
                 messages,
                 tools,
-            }) => {
+            } => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(*model_tier, ModelTier::Medium);
                 assert_eq!(system, "You are helpful.");
@@ -2061,7 +1296,7 @@ mod tests {
         // (no `#[serde(default)]` on it).
         let json =
             r#"{"type":"ai_query","request_id":"r","model_tier":"low","system":"","messages":[]}"#;
-        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        let result: Result<AppRequest, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
             "deserialise should fail without `tools` field"
@@ -2075,9 +1310,9 @@ mod tests {
     #[test]
     fn list_audio_devices_drawcommand_round_trips_serde() {
         let json = r#"{"type":"list_audio_devices","request_id":"req-9"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::ListAudioDevices { request_id }) => {
+            AppRequest::ListAudioDevices { request_id } => {
                 assert_eq!(request_id, "req-9");
             }
             other => panic!("expected ListAudioDevices, got {other:?}"),
@@ -2124,9 +1359,9 @@ mod tests {
     #[test]
     fn list_midi_devices_drawcommand_round_trips_serde() {
         let json = r#"{"type":"list_midi_devices","request_id":"req-m1"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::ListMidiDevices { request_id }) => {
+            AppRequest::ListMidiDevices { request_id } => {
                 assert_eq!(request_id, "req-m1");
             }
             other => panic!("expected ListMidiDevices, got {other:?}"),
@@ -2172,9 +1407,9 @@ mod tests {
         // array of numbers — the human-readable shape (no base64) keeps the
         // wire debuggable and side-steps SDK plumbing for binary payloads.
         let json = r#"{"type":"send_midi","port_id":"123","bytes":[144,60,100]}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::SendMidi { port_id, bytes }) => {
+            AppRequest::SendMidi { port_id, bytes } => {
                 assert_eq!(port_id, "123");
                 assert_eq!(bytes, &vec![0x90u8, 0x3C, 0x64]);
             }
@@ -2189,7 +1424,7 @@ mod tests {
         // Required-field discipline: dropping `bytes` fails deserialisation.
         let bad = r#"{"type":"send_midi","port_id":"123"}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required `bytes` field"
         );
     }
@@ -2198,12 +1433,12 @@ mod tests {
     fn pipe_open_directed_drawcommand_round_trips_serde() {
         let json =
             r#"{"type":"pipe_open_directed","pipe_id":"coord-to-worker","target_pane_id":42}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::PipeOpenDirected {
+            AppRequest::PipeOpenDirected {
                 pipe_id,
                 target_pane_id,
-            }) => {
+            } => {
                 assert_eq!(pipe_id, "coord-to-worker");
                 assert_eq!(*target_pane_id, 42);
             }
@@ -2224,7 +1459,7 @@ mod tests {
     fn pipe_open_directed_missing_target_pane_id_fails_deserialise() {
         // No `target_pane_id` — must fail. Required.
         let json = r#"{"type":"pipe_open_directed","pipe_id":"x"}"#;
-        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        let result: Result<AppRequest, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
             "deserialise should fail without `target_pane_id` field"
@@ -2237,18 +1472,18 @@ mod tests {
         // `device_id` is the only optional field.
         let bad = r#"{"type":"audio_capture","pipe_id":"mic","device_id":null}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required sample_rate/buffer_size"
         );
         let good = r#"{"type":"audio_capture","pipe_id":"mic","device_id":null,"sample_rate":48000,"buffer_size":512}"#;
-        let cmd: DrawCommand = serde_json::from_str(good).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(good).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::AudioCapture {
+            AppRequest::AudioCapture {
                 pipe_id,
                 device_id,
                 sample_rate,
                 buffer_size,
-            }) => {
+            } => {
                 assert_eq!(pipe_id, "mic");
                 assert!(device_id.is_none());
                 assert_eq!(*sample_rate, 48_000);
@@ -2266,13 +1501,13 @@ mod tests {
     #[test]
     fn open_video_drawcommand_round_trips_serde() {
         let json = r#"{"type":"open_video","request_id":"req-1","source":"mock://gradient","pipe_id":"video-stream"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::OpenVideo {
+            AppRequest::OpenVideo {
                 request_id,
                 source,
                 pipe_id,
-            }) => {
+            } => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(source, "mock://gradient");
                 assert_eq!(pipe_id, "video-stream");
@@ -2288,17 +1523,17 @@ mod tests {
         // Required-field discipline — dropping any field fails.
         let bad = r#"{"type":"open_video","source":"mock://gradient","pipe_id":"video-stream"}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required `request_id`"
         );
         let bad = r#"{"type":"open_video","request_id":"r","pipe_id":"p"}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required `source`"
         );
         let bad = r#"{"type":"open_video","request_id":"r","source":"mock://x"}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required `pipe_id`"
         );
     }
@@ -2306,9 +1541,9 @@ mod tests {
     #[test]
     fn set_video_state_drawcommand_round_trips_serde() {
         let play_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"play"}}"#;
-        let cmd: DrawCommand = serde_json::from_str(play_json).expect("deserialise play");
+        let cmd: AppRequest = serde_json::from_str(play_json).expect("deserialise play");
         match &cmd {
-            DrawCommand::Host(AppRequest::SetVideoState { handle_id, state }) => {
+            AppRequest::SetVideoState { handle_id, state } => {
                 assert_eq!(*handle_id, 7);
                 assert_eq!(*state, crate::media::video::VideoState::Play);
             }
@@ -2321,16 +1556,16 @@ mod tests {
         );
 
         let pause_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"pause"}}"#;
-        let cmd: DrawCommand = serde_json::from_str(pause_json).expect("deserialise pause");
-        if let DrawCommand::Host(AppRequest::SetVideoState { state, .. }) = &cmd {
+        let cmd: AppRequest = serde_json::from_str(pause_json).expect("deserialise pause");
+        if let AppRequest::SetVideoState { state, .. } = &cmd {
             assert_eq!(*state, crate::media::video::VideoState::Pause);
         } else {
             panic!("expected SetVideoState pause, got {cmd:?}");
         }
 
         let seek_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"seek","position_ms":1500}}"#;
-        let cmd: DrawCommand = serde_json::from_str(seek_json).expect("deserialise seek");
-        if let DrawCommand::Host(AppRequest::SetVideoState { state, .. }) = &cmd {
+        let cmd: AppRequest = serde_json::from_str(seek_json).expect("deserialise seek");
+        if let AppRequest::SetVideoState { state, .. } = &cmd {
             assert_eq!(
                 *state,
                 crate::media::video::VideoState::Seek { position_ms: 1500 }
@@ -2343,14 +1578,14 @@ mod tests {
     #[test]
     fn close_video_drawcommand_round_trips_serde() {
         let json = r#"{"type":"close_video","handle_id":42}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::CloseVideo { handle_id }) => assert_eq!(*handle_id, 42),
+            AppRequest::CloseVideo { handle_id } => assert_eq!(*handle_id, 42),
             other => panic!("expected CloseVideo, got {other:?}"),
         }
         let bad = r#"{"type":"close_video"}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required `handle_id`"
         );
     }
@@ -2398,13 +1633,13 @@ mod tests {
     #[test]
     fn request_linked_terminal_drawcommand_round_trips_serde() {
         let json = r#"{"type":"request_linked_terminal","request_id":"req-1","cwd":"/tmp/foo","label":"bindings demo"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::RequestLinkedTerminal {
+            AppRequest::RequestLinkedTerminal {
                 request_id,
                 cwd,
                 label,
-            }) => {
+            } => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(cwd.as_deref(), Some("/tmp/foo"));
                 assert_eq!(label.as_deref(), Some("bindings demo"));
@@ -2420,16 +1655,16 @@ mod tests {
         // Required-field discipline — no `serde(default)` on `request_id`.
         let bad = r#"{"type":"request_linked_terminal","cwd":null,"label":null}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required `request_id`"
         );
 
         // Optional fields: explicit null deserialises to None.
         let null_json =
             r#"{"type":"request_linked_terminal","request_id":"r2","cwd":null,"label":null}"#;
-        let cmd: DrawCommand = serde_json::from_str(null_json).expect("deserialise null");
+        let cmd: AppRequest = serde_json::from_str(null_json).expect("deserialise null");
         match &cmd {
-            DrawCommand::Host(AppRequest::RequestLinkedTerminal { cwd, label, .. }) => {
+            AppRequest::RequestLinkedTerminal { cwd, label, .. } => {
                 assert!(cwd.is_none());
                 assert!(label.is_none());
             }
@@ -2466,13 +1701,13 @@ mod tests {
     #[test]
     fn run_in_linked_terminal_round_trips_serde() {
         let json = r#"{"type":"run_in_linked_terminal","terminal_pane_id":42,"command":"ls -la","echo":true}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::RunInLinkedTerminal {
+            AppRequest::RunInLinkedTerminal {
                 terminal_pane_id,
                 command,
                 echo,
-            }) => {
+            } => {
                 assert_eq!(*terminal_pane_id, 42);
                 assert_eq!(command, "ls -la");
                 assert!(*echo);
@@ -2488,7 +1723,7 @@ mod tests {
         // Required-field discipline — `echo` has no default.
         let bad = r#"{"type":"run_in_linked_terminal","terminal_pane_id":1,"command":"ls"}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required `echo`"
         );
     }
@@ -2497,13 +1732,13 @@ mod tests {
     fn insert_path_token_mode_enum_serde() {
         let replace_json =
             r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/x","mode":"replace"}"#;
-        let cmd: DrawCommand = serde_json::from_str(replace_json).expect("deserialise replace");
+        let cmd: AppRequest = serde_json::from_str(replace_json).expect("deserialise replace");
         match &cmd {
-            DrawCommand::Host(AppRequest::InsertPathToken {
+            AppRequest::InsertPathToken {
                 mode,
                 path,
                 terminal_pane_id,
-            }) => {
+            } => {
                 assert_eq!(*mode, PathTokenMode::Replace);
                 assert_eq!(path, "/tmp/x");
                 assert_eq!(*terminal_pane_id, 7);
@@ -2513,8 +1748,8 @@ mod tests {
 
         let append_json =
             r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/y","mode":"append"}"#;
-        let cmd: DrawCommand = serde_json::from_str(append_json).expect("deserialise append");
-        if let DrawCommand::Host(AppRequest::InsertPathToken { mode, .. }) = &cmd {
+        let cmd: AppRequest = serde_json::from_str(append_json).expect("deserialise append");
+        if let AppRequest::InsertPathToken { mode, .. } = &cmd {
             assert_eq!(*mode, PathTokenMode::Append);
         } else {
             panic!("expected InsertPathToken, got {cmd:?}");
@@ -2531,7 +1766,7 @@ mod tests {
         let bad =
             r#"{"type":"insert_path_token","terminal_pane_id":1,"path":"/x","mode":"INSERT"}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "unknown mode must fail to deserialise"
         );
     }
@@ -2539,13 +1774,13 @@ mod tests {
     #[test]
     fn request_command_preview_round_trips_serde() {
         let json = r#"{"type":"request_command_preview","request_id":"req-9","terminal_pane_id":3,"command":"rm -rf .git"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::RequestCommandPreview {
+            AppRequest::RequestCommandPreview {
                 request_id,
                 terminal_pane_id,
                 command,
-            }) => {
+            } => {
                 assert_eq!(request_id, "req-9");
                 assert_eq!(*terminal_pane_id, 3);
                 assert_eq!(command, "rm -rf .git");
@@ -2578,9 +1813,9 @@ mod tests {
         ];
         for (wire, expected) in cases {
             let json = format!(r#"{{"type":"open_artifact","path":"/tmp/x","mode":"{wire}"}}"#);
-            let cmd: DrawCommand = serde_json::from_str(&json).expect("deserialise");
+            let cmd: AppRequest = serde_json::from_str(&json).expect("deserialise");
             match &cmd {
-                DrawCommand::Host(AppRequest::OpenArtifact { path, mode }) => {
+                AppRequest::OpenArtifact { path, mode } => {
                     assert_eq!(path, "/tmp/x");
                     assert_eq!(*mode, expected, "wire {wire} → {expected:?}");
                 }
@@ -2589,10 +1824,10 @@ mod tests {
         }
 
         // Round-trip serialise → snake_case on the wire.
-        let cmd = DrawCommand::Host(AppRequest::OpenArtifact {
+        let cmd = AppRequest::OpenArtifact {
             path: "/tmp/x".to_string(),
             mode: ArtifactOpenMode::RevealInFinder,
-        });
+        };
         let serialised = serde_json::to_string(&cmd).expect("serialise");
         assert!(
             serialised.contains(r#""mode":"reveal_in_finder""#),
@@ -2629,16 +1864,16 @@ mod tests {
         // (the structured `payload` from issue #74), and an optional
         // single-char hotkey (`shortcut`, the `key` from issue #74).
         let json = r#"{"type":"notify","level":"info","title":"Pick","body":"choose","kind":"choice","options":[{"label":"A","value":"sidebar","shortcut":"1"},{"label":"B","value":"fullwidth","shortcut":"2"}],"priority":100}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::Notify {
+            AppRequest::Notify {
                 kind,
                 options,
                 priority,
                 image_inline,
                 image_pipe_id,
                 ..
-            }) => {
+            } => {
                 assert_eq!(*kind, NotifyKind::Choice);
                 assert_eq!(options.len(), 2);
                 assert_eq!(options[0].value, "sidebar");
@@ -2673,13 +1908,13 @@ mod tests {
         // attempt to decode + render; tiny or invalid images render a
         // placeholder, never crash.
         let json = r#"{"type":"notify","level":"info","title":"Pic","body":"see image","kind":"message","priority":50,"image_inline":{"mime":"image/png","base64":"AAAA"}}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::Notify {
+            AppRequest::Notify {
                 image_inline,
                 image_pipe_id,
                 ..
-            }) => {
+            } => {
                 let img = image_inline.as_ref().expect("inline image present");
                 assert_eq!(img.mime, "image/png");
                 assert_eq!(img.base64, "AAAA");
@@ -2703,13 +1938,13 @@ mod tests {
     #[test]
     fn notify_with_image_pipe_id_round_trips_serde() {
         let json = r#"{"type":"notify","level":"info","title":"Pic","body":"piped","kind":"message","priority":50,"image_pipe_id":"render-out"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::Notify {
+            AppRequest::Notify {
                 image_pipe_id,
                 image_inline,
                 ..
-            }) => {
+            } => {
                 assert_eq!(image_pipe_id.as_deref(), Some("render-out"));
                 assert!(image_inline.is_none());
             }
@@ -2722,13 +1957,13 @@ mod tests {
         // Existing apps that never set image fields must continue to work.
         // Missing `image_inline` / `image_pipe_id` deserialise as None.
         let json = r#"{"type":"notify","level":"info","title":"Plain","body":"no image","kind":"message","priority":50}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match cmd {
-            DrawCommand::Host(AppRequest::Notify {
+            AppRequest::Notify {
                 image_inline,
                 image_pipe_id,
                 ..
-            }) => {
+            } => {
                 assert!(image_inline.is_none());
                 assert!(image_pipe_id.is_none());
             }
@@ -2759,14 +1994,14 @@ mod tests {
     #[test]
     fn stream_process_drawcommand_round_trips_serde() {
         let json = r#"{"type":"stream_process","correlation_id":"cid-1","terminal_pane_id":42,"command":"ls -la","channel":"stdout"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::StreamProcess {
+            AppRequest::StreamProcess {
                 correlation_id,
                 terminal_pane_id,
                 command,
                 channel,
-            }) => {
+            } => {
                 assert_eq!(correlation_id, "cid-1");
                 assert_eq!(*terminal_pane_id, 42);
                 assert_eq!(command, "ls -la");
@@ -2783,7 +2018,7 @@ mod tests {
         let bad =
             r#"{"type":"stream_process","terminal_pane_id":42,"command":"ls","channel":"stdout"}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required `correlation_id`"
         );
     }
@@ -2791,9 +2026,9 @@ mod tests {
     #[test]
     fn cancel_process_drawcommand_round_trips_serde() {
         let json = r#"{"type":"cancel_process","correlation_id":"cid-2"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::CancelProcess { correlation_id }) => {
+            AppRequest::CancelProcess { correlation_id } => {
                 assert_eq!(correlation_id, "cid-2");
             }
             other => panic!("expected CancelProcess, got {other:?}"),
@@ -2806,7 +2041,7 @@ mod tests {
 
         let bad = r#"{"type":"cancel_process"}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required `correlation_id`"
         );
     }
@@ -2877,13 +2112,13 @@ mod tests {
     #[test]
     fn test_notify_timeout_fields() {
         let json = r#"{"type":"notify","level":"info","title":"T","body":"B","priority":50,"timeout_secs":30,"on_dismiss":"user_ignored"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match cmd {
-            DrawCommand::Host(AppRequest::Notify {
+            AppRequest::Notify {
                 timeout_secs,
                 on_dismiss,
                 ..
-            }) => {
+            } => {
                 assert_eq!(timeout_secs, Some(30));
                 assert_eq!(on_dismiss.as_deref(), Some("user_ignored"));
             }
@@ -2894,13 +2129,13 @@ mod tests {
     #[test]
     fn test_notify_timeout_fields_default() {
         let json = r#"{"type":"notify","level":"info","title":"T","body":"B","priority":50}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match cmd {
-            DrawCommand::Host(AppRequest::Notify {
+            AppRequest::Notify {
                 timeout_secs,
                 on_dismiss,
                 ..
-            }) => {
+            } => {
                 assert!(timeout_secs.is_none());
                 assert!(on_dismiss.is_none());
             }
@@ -2911,26 +2146,26 @@ mod tests {
     #[test]
     fn set_pane_title_deserializes() {
         let json = r#"{"type":"set_pane_title","pane_id":42,"name":"my label"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).unwrap();
+        let cmd: AppRequest = serde_json::from_str(json).unwrap();
         assert!(matches!(
             cmd,
-            DrawCommand::Host(AppRequest::SetPaneTitle { pane_id: 42, .. })
+            AppRequest::SetPaneTitle { pane_id: 42, .. }
         ));
     }
 
     #[test]
     fn spawn_pane_drawcommand_round_trips_serde() {
         let json = r#"{"type":"spawn_pane","type_id":"snake","layout":"split_v","args":["--foo"]}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::SpawnPane {
+            AppRequest::SpawnPane {
                 type_id,
                 layout,
                 args,
                 from_pane_id,
                 request_id,
                 ..
-            }) => {
+            } => {
                 assert_eq!(type_id, "snake");
                 assert_eq!(layout.as_deref(), Some("split_v"));
                 assert_eq!(args, &["--foo"]);
@@ -2947,15 +2182,15 @@ mod tests {
 
         // defaults: layout is None (absent from wire), args to []
         let minimal = r#"{"type":"spawn_pane","type_id":"snake"}"#;
-        let cmd2: DrawCommand = serde_json::from_str(minimal).expect("deserialise minimal");
+        let cmd2: AppRequest = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
-            DrawCommand::Host(AppRequest::SpawnPane {
+            AppRequest::SpawnPane {
                 layout,
                 args,
                 from_pane_id,
                 request_id,
                 ..
-            }) => {
+            } => {
                 assert!(layout.is_none(), "absent layout must deserialise to None");
                 assert!(args.is_empty());
                 assert!(from_pane_id.is_none());
@@ -3014,13 +2249,13 @@ mod tests {
     #[test]
     fn spawn_pane_with_new_fields_round_trips_serde() {
         let json = r#"{"type":"spawn_pane","type_id":"snake","layout":"split_v","from_pane_id":42,"request_id":"req-1"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::SpawnPane {
+            AppRequest::SpawnPane {
                 from_pane_id,
                 request_id,
                 ..
-            }) => {
+            } => {
                 assert_eq!(*from_pane_id, Some(42u64));
                 assert_eq!(request_id.as_deref(), Some("req-1"));
             }
@@ -3040,9 +2275,9 @@ mod tests {
     #[test]
     fn spawn_pane_no_focus_round_trips_serde() {
         let json = r#"{"type":"spawn_pane","type_id":"terminal","no_focus":true}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::SpawnPane { no_focus, .. }) => {
+            AppRequest::SpawnPane { no_focus, .. } => {
                 assert!(*no_focus, "no_focus should be true");
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3055,10 +2290,10 @@ mod tests {
 
         // default (false) should be omitted from serialised output
         let json_default = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_default: DrawCommand =
+        let cmd_default: AppRequest =
             serde_json::from_str(json_default).expect("deserialise default");
         match &cmd_default {
-            DrawCommand::Host(AppRequest::SpawnPane { no_focus, .. }) => {
+            AppRequest::SpawnPane { no_focus, .. } => {
                 assert!(!*no_focus, "no_focus should default to false");
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3074,9 +2309,9 @@ mod tests {
     fn spawn_pane_with_workspace_root_round_trips_serde() {
         let json =
             r#"{"type":"spawn_pane","type_id":"terminal","workspace_root":"/tmp/github-repo"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::SpawnPane { workspace_root, .. }) => {
+            AppRequest::SpawnPane { workspace_root, .. } => {
                 assert_eq!(workspace_root.as_deref(), Some("/tmp/github-repo"));
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3089,10 +2324,10 @@ mod tests {
 
         // None should be omitted from serialised output.
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: DrawCommand =
+        let cmd_absent: AppRequest =
             serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
-            DrawCommand::Host(AppRequest::SpawnPane { workspace_root, .. }) => {
+            AppRequest::SpawnPane { workspace_root, .. } => {
                 assert!(
                     workspace_root.is_none(),
                     "absent workspace_root must deserialise to None"
@@ -3110,9 +2345,9 @@ mod tests {
     #[test]
     fn spawn_pane_name_round_trips_serde() {
         let json = r#"{"type":"spawn_pane","type_id":"terminal","name":"dev server"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::SpawnPane { name, .. }) => {
+            AppRequest::SpawnPane { name, .. } => {
                 assert_eq!(name.as_deref(), Some("dev server"));
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3124,10 +2359,10 @@ mod tests {
         );
 
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: DrawCommand =
+        let cmd_absent: AppRequest =
             serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
-            DrawCommand::Host(AppRequest::SpawnPane { name, .. }) => {
+            AppRequest::SpawnPane { name, .. } => {
                 assert!(name.is_none(), "absent name must deserialise to None");
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3225,13 +2460,13 @@ mod tests {
     fn key_pane_drawcommand_round_trips_serde() {
         let json =
             r#"{"type":"key_pane","pane_id":42,"key":"enter","response_file":"result.json"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::KeyPane {
+            AppRequest::KeyPane {
                 pane_id,
                 key,
                 response_file,
-            }) => {
+            } => {
                 assert_eq!(*pane_id, 42);
                 assert_eq!(key, "enter");
                 assert_eq!(response_file.as_deref(), Some("result.json"));
@@ -3246,9 +2481,9 @@ mod tests {
 
         // Optional field: response_file absent → None
         let minimal = r#"{"type":"key_pane","pane_id":1,"key":"h"}"#;
-        let cmd2: DrawCommand = serde_json::from_str(minimal).expect("deserialise minimal");
+        let cmd2: AppRequest = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
-            DrawCommand::Host(AppRequest::KeyPane { response_file, .. }) => {
+            AppRequest::KeyPane { response_file, .. } => {
                 assert!(
                     response_file.is_none(),
                     "absent response_file must deserialise to None"
@@ -3260,7 +2495,7 @@ mod tests {
         // Required-field discipline: missing key field must fail
         let bad = r#"{"type":"key_pane","pane_id":1}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required key field"
         );
     }
@@ -3269,15 +2504,15 @@ mod tests {
     fn capture_pane_command_round_trips_serde() {
         let json =
             r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::CapturePane {
+            AppRequest::CapturePane {
                 pane_id,
                 lines,
                 response_file,
                 full_output,
                 from_cursor,
-            }) => {
+            } => {
                 assert_eq!(*pane_id, 7);
                 assert_eq!(*lines, 20);
                 assert_eq!(response_file, "capture.json");
@@ -3298,10 +2533,10 @@ mod tests {
 
         // full_output=true should round-trip
         let json_full = r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json","full_output":true}"#;
-        let cmd_full: DrawCommand =
+        let cmd_full: AppRequest =
             serde_json::from_str(json_full).expect("deserialise full_output");
         match &cmd_full {
-            DrawCommand::Host(AppRequest::CapturePane { full_output, .. }) => {
+            AppRequest::CapturePane { full_output, .. } => {
                 assert!(*full_output, "full_output should be true when set");
             }
             other => panic!("expected CapturePane, got {other:?}"),
@@ -3309,24 +2544,24 @@ mod tests {
 
         // from_cursor should round-trip
         let json_cursor = r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json","from_cursor":42}"#;
-        let cmd_cursor: DrawCommand =
+        let cmd_cursor: AppRequest =
             serde_json::from_str(json_cursor).expect("deserialise from_cursor");
         match &cmd_cursor {
-            DrawCommand::Host(AppRequest::CapturePane { from_cursor, .. }) => {
+            AppRequest::CapturePane { from_cursor, .. } => {
                 assert_eq!(*from_cursor, Some(42), "from_cursor should be Some(42)");
             }
             other => panic!("expected CapturePane, got {other:?}"),
         }
         // from_cursor absent → None
-        let cmd_no_cursor: DrawCommand = serde_json::from_str(json).expect("deserialise no cursor");
+        let cmd_no_cursor: AppRequest = serde_json::from_str(json).expect("deserialise no cursor");
         match &cmd_no_cursor {
-            DrawCommand::Host(AppRequest::CapturePane { from_cursor, .. }) => {
+            AppRequest::CapturePane { from_cursor, .. } => {
                 assert!(from_cursor.is_none(), "from_cursor should default to None");
             }
             other => panic!("expected CapturePane, got {other:?}"),
         }
         // from_cursor=0 should be omitted from wire format
-        let cmd_zero: DrawCommand = serde_json::from_str(
+        let cmd_zero: AppRequest = serde_json::from_str(
             r#"{"type":"capture_pane","pane_id":7,"lines":5,"response_file":"f.json"}"#,
         )
         .unwrap();
@@ -3339,74 +2574,30 @@ mod tests {
         // Missing required fields must fail
         let bad = r#"{"type":"capture_pane","pane_id":1}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without lines and response_file"
         );
     }
 
-    #[test]
-    fn layout_command_round_trips_serde() {
-        let json = r##"{"type":"layout","x":10.0,"y":20.0,"direction":"row","gap":6.0,"children":[{"type":"leaf","command":{"type":"badge","x":0.0,"y":0.0,"label":"4 files","fill":"#89b4fa","fg":"#1e1e2e","font_size":11.0,"radius":8.0}},{"type":"leaf","command":{"type":"text","x":0.0,"y":0.0,"text":"modified","size":12.0,"color":"#cdd6f4","monospace":false,"bold":false,"align":"left_top","elide":false,"selectable":false}}]}"##;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise layout command");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::Layout {
-                direction,
-                children,
-                gap,
-                ..
-            }) => {
-                assert!(matches!(direction, LayoutDirection::Row));
-                assert_eq!(children.len(), 2);
-                assert!((gap - 6.0).abs() < 0.01);
-            }
-            other => panic!("expected Layout, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&cmd).expect("serialise");
-        assert!(
-            serialised.contains(r#""type":"layout""#),
-            "wire tag missing: {serialised}"
-        );
-    }
 
-    #[test]
-    fn set_min_size_round_trips_serde() {
-        let json = r#"{"type":"set_min_size","width":200.0,"height":100.0}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).unwrap();
-        match cmd {
-            DrawCommand::Control(ControlCommand::SetMinSize { width, height }) => {
-                assert_eq!(width, 200.0);
-                assert_eq!(height, 100.0);
-            }
-            other => panic!("expected SetMinSize, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&DrawCommand::Control(ControlCommand::SetMinSize {
-            width: 200.0,
-            height: 100.0,
-        }))
-        .unwrap();
-        assert!(
-            serialised.contains(r#""type":"set_min_size""#),
-            "got: {serialised}"
-        );
-    }
 
     #[test]
     fn set_context_description_round_trips_serde() {
         let json = r#"{"type":"set_context_description","description":"Main project workspace"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::SetContextDescription {
+            AppRequest::SetContextDescription {
                 description,
                 context_id,
-            }) => {
+            } => {
                 assert_eq!(description, "Main project workspace");
                 assert_eq!(*context_id, None, "context_id defaults to None");
             }
             other => panic!("expected SetContextDescription, got {other:?}"),
         }
         let targeted = r#"{"type":"set_context_description","description":"d","context_id":7}"#;
-        match serde_json::from_str::<DrawCommand>(targeted).expect("deserialise targeted") {
-            DrawCommand::Host(AppRequest::SetContextDescription { context_id, .. }) => {
+        match serde_json::from_str::<AppRequest>(targeted).expect("deserialise targeted") {
+            AppRequest::SetContextDescription { context_id, .. } => {
                 assert_eq!(context_id, Some(7));
             }
             other => panic!("expected SetContextDescription, got {other:?}"),
@@ -3419,7 +2610,7 @@ mod tests {
 
         let bad = r#"{"type":"set_context_description"}"#;
         assert!(
-            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required description field"
         );
     }
@@ -3461,239 +2652,36 @@ mod tests {
         assert!(result.is_err(), "must fail without required height field");
     }
 
-    #[test]
-    fn measure_text_wrapped_command_round_trips_serde() {
-        let json = r#"{"type":"measure_text_wrapped","request_id":"req-mw-1","text":"hello world","font_size":14.0,"max_width":300.0,"max_lines":3}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Control(ControlCommand::MeasureTextWrapped {
-                request_id,
-                text,
-                font_size,
-                max_width,
-                max_lines,
-            }) => {
-                assert_eq!(request_id, "req-mw-1");
-                assert_eq!(text, "hello world");
-                assert!((font_size - 14.0).abs() < 0.001);
-                assert!((max_width - 300.0).abs() < 0.001);
-                assert_eq!(*max_lines, Some(3));
-            }
-            other => panic!("expected MeasureTextWrapped, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&cmd).expect("serialise");
-        assert!(
-            serialised.contains(r#""type":"measure_text_wrapped""#),
-            "wire tag missing: {serialised}"
-        );
-    }
 
-    #[test]
-    fn measure_text_wrapped_without_max_lines_round_trips_serde() {
-        let json = r#"{"type":"measure_text_wrapped","request_id":"req-mw-2","text":"hi","font_size":12.0,"max_width":200.0}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Control(ControlCommand::MeasureTextWrapped { max_lines, .. }) => {
-                assert_eq!(*max_lines, None, "max_lines should be absent");
-            }
-            other => panic!("expected MeasureTextWrapped, got {other:?}"),
-        }
-    }
 
     #[test]
     fn measure_text_wrapped_missing_required_field_fails_deserialise() {
         // No `max_width` field — required, must fail.
         let json =
             r#"{"type":"measure_text_wrapped","request_id":"r","text":"hi","font_size":12.0}"#;
-        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        let result: Result<AppRequest, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
             "must fail without required max_width field"
         );
     }
 
-    #[test]
-    fn avatar_render_command_round_trips_serde() {
-        let json = r#"{"type":"avatar","src":"abc-handle","cx":24.0,"cy":36.0,"radius":20.0}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::Avatar {
-                src,
-                cx,
-                cy,
-                radius,
-            }) => {
-                assert_eq!(src, "abc-handle");
-                assert!((cx - 24.0).abs() < 0.001);
-                assert!((cy - 36.0).abs() < 0.001);
-                assert!((radius - 20.0).abs() < 0.001);
-            }
-            other => panic!("expected Avatar, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&cmd).expect("serialise");
-        assert!(
-            serialised.contains(r#""type":"avatar""#),
-            "wire tag missing: {serialised}"
-        );
-        assert!(
-            serialised.contains(r#""src":"abc-handle""#),
-            "src missing: {serialised}"
-        );
-    }
 
     #[test]
     fn avatar_missing_required_field_fails_deserialise() {
         // No `radius` — required, must fail.
         let json = r#"{"type":"avatar","src":"h","cx":0.0,"cy":0.0}"#;
-        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        let result: Result<AppRequest, _> = serde_json::from_str(json);
         assert!(result.is_err(), "must fail without required radius field");
     }
 
-    #[test]
-    fn skeleton_render_command_round_trips_serde() {
-        let json = r#"{"type":"skeleton","x":10.0,"y":20.0,"w":200.0,"h":16.0}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::Skeleton { x, y, w, h, radius }) => {
-                assert!((x - 10.0).abs() < 0.001);
-                assert!((y - 20.0).abs() < 0.001);
-                assert!((w - 200.0).abs() < 0.001);
-                assert!((h - 16.0).abs() < 0.001);
-                assert!((radius - 4.0).abs() < 0.001, "default radius should be 4.0");
-            }
-            other => panic!("expected Skeleton, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&cmd).expect("serialise");
-        assert!(
-            serialised.contains(r#""type":"skeleton""#),
-            "wire tag missing: {serialised}"
-        );
-    }
 
-    #[test]
-    fn skeleton_with_explicit_radius_round_trips_serde() {
-        let json = r#"{"type":"skeleton","x":0.0,"y":0.0,"w":100.0,"h":8.0,"radius":8.0}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::Skeleton { radius, .. }) => {
-                assert!((radius - 8.0).abs() < 0.001);
-            }
-            other => panic!("expected Skeleton, got {other:?}"),
-        }
-    }
 
-    #[test]
-    fn text_max_lines_present_round_trips_serde() {
-        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hello","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"left_top","max_width":null,"elide":false,"selectable":false,"max_lines":3}"##;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::Text {
-                max_lines, text, ..
-            }) => {
-                assert_eq!(*max_lines, Some(3));
-                assert_eq!(text, "hello");
-            }
-            other => panic!("expected Text, got {other:?}"),
-        }
-    }
 
-    #[test]
-    fn text_max_lines_absent_deserialises_to_none() {
-        // max_lines is #[serde(default)] so absence → None, not an error.
-        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"left_top","max_width":null,"elide":false,"selectable":false}"##;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::Text { max_lines, .. }) => {
-                assert_eq!(*max_lines, None, "absent max_lines should be None");
-            }
-            other => panic!("expected Text, got {other:?}"),
-        }
-    }
 
-    #[test]
-    fn list_view_command_round_trips_serde() {
-        let json = r#"{"type":"list_view","id":"feed","x":0.0,"y":48.0,"w":0.0,"h":0.0,"items":[{"type":"row","id":"r1","primary":"Hello","secondary":null,"leading":{"variant":"none"},"chips":[],"trailing":null}],"selected":0,"loading":false,"error":null}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::ListView {
-                id,
-                selected,
-                loading,
-                error,
-                items,
-                ..
-            }) => {
-                assert_eq!(id, "feed");
-                assert_eq!(*selected, 0);
-                assert!(!loading);
-                assert!(error.is_none());
-                assert_eq!(items.len(), 1);
-            }
-            other => panic!("expected ListView, got {other:?}"),
-        }
-        let serialised = serde_json::to_string(&cmd).expect("serialise");
-        assert!(
-            serialised.contains(r#""type":"list_view""#),
-            "wire tag missing: {serialised}"
-        );
-        assert!(
-            serialised.contains(r#""id":"feed""#),
-            "id missing: {serialised}"
-        );
-    }
 
-    #[test]
-    fn list_view_loading_state_round_trips_serde() {
-        let json = r#"{"type":"list_view","id":"issues","x":0.0,"y":0.0,"w":0.0,"h":0.0,"items":[],"selected":0,"loading":true,"error":null}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::ListView { loading, error, .. }) => {
-                assert!(loading, "loading should be true");
-                assert!(error.is_none());
-            }
-            other => panic!("expected ListView, got {other:?}"),
-        }
-    }
 
-    #[test]
-    fn list_view_error_state_round_trips_serde() {
-        let json = r#"{"type":"list_view","id":"issues","x":0.0,"y":0.0,"w":0.0,"h":0.0,"items":[],"selected":0,"loading":false,"error":"network timeout"}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::ListView { error, .. }) => {
-                assert_eq!(error.as_deref(), Some("network timeout"));
-            }
-            other => panic!("expected ListView, got {other:?}"),
-        }
-    }
 
-    #[test]
-    fn list_view_row_badge_leading_round_trips_serde() {
-        let json = r##"{"type":"list_view","id":"issues","x":0.0,"y":0.0,"w":0.0,"h":0.0,"items":[{"type":"row","id":"r1","primary":"Fix bug","secondary":"subtitle","leading":{"variant":"badge","label":"#42","color":"accent"},"chips":[{"label":"P1","color":"red"}],"trailing":"3m ago"}],"selected":0,"loading":false,"error":null}"##;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
-        match &cmd {
-            DrawCommand::Render(RenderCommand::ListView { items, .. }) => {
-                assert_eq!(items.len(), 1);
-                match &items[0] {
-                    ListViewItem::Row(row) => {
-                        assert_eq!(row.primary, "Fix bug");
-                        assert_eq!(row.secondary.as_deref(), Some("subtitle"));
-                        assert_eq!(row.chips.len(), 1);
-                        assert_eq!(row.trailing.as_deref(), Some("3m ago"));
-                        match &row.leading {
-                            Some(ListViewLeading::Badge { label, color }) => {
-                                assert_eq!(label, "#42");
-                                assert_eq!(color, "accent");
-                            }
-                            other => panic!("expected Badge leading, got {other:?}"),
-                        }
-                    }
-                    other => panic!("expected Row item, got {other:?}"),
-                }
-            }
-            other => panic!("expected ListView, got {other:?}"),
-        }
-    }
 
     #[test]
     fn list_select_event_round_trips_serde() {
@@ -3732,82 +2720,8 @@ mod tests {
 }
 
 #[cfg(test)]
-mod ui_node_tests {
-    use super::*;
+mod component_event_tests {
     use crate::protocol::events::PlexiEvent;
-
-    #[test]
-    fn stack_with_text_child_serializes_correctly() {
-        let node = UiNode::Stack {
-            direction: StackDirection::Vertical,
-            children: vec![UiNode::Text {
-                text: "hello".into(),
-                size: 0.0,
-                color: String::new(),
-                bold: false,
-                monospace: false,
-            }],
-            gap: 0.0,
-            padding: UiPadding::default(),
-        };
-        let json = serde_json::to_string(&node).expect("serialize");
-        assert!(
-            json.contains(r#""type":"stack""#),
-            "stack tag missing: {json}"
-        );
-        assert!(
-            json.contains(r#""type":"text""#),
-            "text tag missing: {json}"
-        );
-        assert!(
-            json.contains(r#""text":"hello""#),
-            "text content missing: {json}"
-        );
-    }
-
-    #[test]
-    fn draw_command_render_component_tree_deserializes() {
-        let root = UiNode::Text {
-            text: "hi".into(),
-            size: 14.0,
-            color: "#fff".into(),
-            bold: false,
-            monospace: false,
-        };
-        let root_json = serde_json::to_string(&root).expect("serialize root");
-        let json = format!(r#"{{"type":"component_tree","root":{root_json}}}"#);
-        let cmd: DrawCommand = serde_json::from_str(&json).expect("deserialize DrawCommand");
-        match cmd {
-            DrawCommand::Render(RenderCommand::ComponentTree { root: r }) => match r {
-                UiNode::Text { text, .. } => assert_eq!(text, "hi"),
-                other => panic!("expected Text root, got {other:?}"),
-            },
-            other => panic!("expected ComponentTree, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn draw_command_render_component_tree_canvas_deserializes() {
-        let json = r##"{"type":"component_tree","root":{"type":"canvas","width":640.0,"height":360.0,"grow":true,"commands":[{"type":"rect","x":0.0,"y":0.0,"w":640.0,"h":360.0,"fill":"#000000","radius":0.0},{"type":"circle","cx":10.0,"cy":20.0,"r":5.0,"fill":"#ffffff"}]}}"##;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialize DrawCommand");
-        match cmd {
-            DrawCommand::Render(RenderCommand::ComponentTree { root }) => match root {
-                UiNode::Canvas {
-                    commands,
-                    width,
-                    height,
-                    grow,
-                } => {
-                    assert_eq!(width, 640.0);
-                    assert_eq!(height, 360.0);
-                    assert!(grow);
-                    assert_eq!(commands.len(), 2);
-                }
-                other => panic!("expected Canvas root, got {other:?}"),
-            },
-            other => panic!("expected ComponentTree, got {other:?}"),
-        }
-    }
 
     #[test]
     fn component_event_serializes_correctly() {
@@ -3850,23 +2764,6 @@ mod ui_node_tests {
             json2.contains(r#""value""#),
             "payload Some case must include value: {json2}"
         );
-    }
-
-    #[test]
-    fn surface_node_round_trips_serde() {
-        // Surface is reserved for the GPU surface layer (A2). Verify it serializes
-        // and deserializes correctly so the variant is exercised and not silently dead.
-        let node = UiNode::Surface {
-            id: "canvas".into(),
-        };
-        let json = serde_json::to_string(&node).expect("serialize");
-        assert!(json.contains(r#""type":"surface""#), "surface tag: {json}");
-        assert!(json.contains(r#""id":"canvas""#), "id missing: {json}");
-        let round_tripped: UiNode = serde_json::from_str(&json).expect("deserialize");
-        match round_tripped {
-            UiNode::Surface { id } => assert_eq!(id, "canvas"),
-            other => panic!("expected Surface, got {other:?}"),
-        }
     }
 }
 
@@ -3983,81 +2880,6 @@ mod ai_stream_chunk_tests {
         };
         let json = serde_json::to_string(&text_chunk).expect("serialize");
         assert!(!json.contains("reasoning"), "None must be omitted: {json}");
-    }
-
-    #[test]
-    fn l1_app_bar_round_trips_serde() {
-        let json = r#"{"type":"app_bar","title":"Todo","subtitle":"3 items"}"#;
-        let node: UiNode = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(
-            node,
-            UiNode::AppBar {
-                title: "Todo".into(),
-                subtitle: "3 items".into()
-            }
-        );
-    }
-
-    #[test]
-    fn l1_footer_keys_round_trips_serde() {
-        let json = r#"{"type":"footer_keys","entries":[{"keys":["j","k"],"description":"scroll"}],"divider":true}"#;
-        let node: UiNode = serde_json::from_str(json).expect("deserialize");
-        match node {
-            UiNode::FooterKeys { entries, divider } => {
-                assert_eq!(entries.len(), 1);
-                assert_eq!(entries[0].keys, vec!["j", "k"]);
-                assert_eq!(entries[0].description, "scroll");
-                assert!(divider);
-            }
-            other => panic!("expected FooterKeys, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn l1_action_bar_round_trips_serde() {
-        let json = r#"{"type":"action_bar","actions":[{"type":"button","node_id":"save","label":"Save","style":"primary"}]}"#;
-        let node: UiNode = serde_json::from_str(json).expect("deserialize");
-        match node {
-            UiNode::ActionBar { actions } => {
-                assert_eq!(actions.len(), 1);
-                assert!(matches!(actions[0], UiNode::Button { .. }));
-            }
-            other => panic!("expected ActionBar, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn l1_select_list_round_trips_serde() {
-        let json = r#"{"type":"select_list","items":[{"name":"Item 1"},{"name":"Item 2","description":"details"}],"selected_idx":1}"#;
-        let node: UiNode = serde_json::from_str(json).expect("deserialize");
-        match node {
-            UiNode::SelectList {
-                items,
-                selected_idx,
-            } => {
-                assert_eq!(items.len(), 2);
-                assert_eq!(items[0].name, "Item 1");
-                assert_eq!(items[1].description, "details");
-                assert_eq!(selected_idx, 1);
-            }
-            other => panic!("expected SelectList, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn l1_full_tree_from_sdk_deserializes() {
-        let json = r#"{"type":"component_tree","root":{"type":"column","children":[{"type":"app_bar","title":"Todo","subtitle":""},{"type":"section","title":"Items"},{"type":"select_list","items":[{"name":"Buy milk"}],"selected_idx":0},{"type":"action_bar","actions":[{"type":"button","node_id":"save","label":"Save"}]},{"type":"pinned","edge":"bottom","child":{"type":"footer_keys","entries":[{"keys":["space"],"description":"toggle"}],"divider":true}}],"gap":12.0,"padding_top":0.0,"padding":0.0}}"#;
-        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialize");
-        match cmd {
-            DrawCommand::Render(RenderCommand::ComponentTree { root }) => {
-                if let UiNode::Column { children, .. } = &root {
-                    assert_eq!(children.len(), 5);
-                } else {
-                    panic!("expected Column root, got {root:?}");
-                }
-            }
-            other => panic!("expected ComponentTree, got {other:?}"),
-        }
     }
 
     /// Wire-format round-trip for GetPreviousPaneInfo.

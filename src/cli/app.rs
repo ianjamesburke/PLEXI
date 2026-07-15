@@ -1468,7 +1468,9 @@ pub fn app_render(
     // A path is detected by prefix (./  ../  /) or by existing as a directory.
     // Path: more than one component (./foo, ../foo, /abs/path) OR an existing directory.
     // Using components() instead of prefix checks is portable across platforms.
-    let (app_id, app_bin, python_dependencies) = if std::path::Path::new(app).components().count()
+    let (app_id, app_dir, app_bin, capabilities, allowed_hosts) = if std::path::Path::new(app)
+        .components()
+        .count()
         > 1
         || std::path::Path::new(app).is_dir()
     {
@@ -1525,17 +1527,32 @@ pub fn app_render(
             return 1;
         }
         log::info!("app_render[{}]: loaded from path '{app}'", manifest.app.id);
-        (manifest.app.id, entry, manifest.app.dependencies)
+        (
+            manifest.app.id,
+            app_dir,
+            entry,
+            manifest.app.capabilities.capabilities,
+            manifest.app.capabilities.allowed_hosts,
+        )
     } else {
         // ID-based: registry lookup
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let registry = crate::app::registry::AppRegistry::load(&cwd);
         match registry.list().into_iter().find(|a| a.manifest.id == app) {
-            Some(a) => (
-                a.manifest.id.clone(),
-                a.bin_path.clone(),
-                a.manifest.dependencies.clone(),
-            ),
+            Some(a) => {
+                let app_dir = a
+                    .bin_path
+                    .parent()
+                    .map(std::path::Path::to_path_buf)
+                    .unwrap_or_else(|| a.bin_path.clone());
+                (
+                    a.manifest.id.clone(),
+                    app_dir,
+                    a.bin_path.clone(),
+                    a.manifest.capabilities.capabilities.clone(),
+                    a.manifest.capabilities.allowed_hosts.clone(),
+                )
+            }
             None => {
                 eprintln!(
                     "error: app '{app}' not found — run `plexi app list` to see installed apps"
@@ -1545,15 +1562,38 @@ pub fn app_render(
         }
     };
 
+    if app_bin.extension().and_then(|ext| ext.to_str()) != Some("py") {
+        eprintln!(
+            "error: '{}' is not a Python entry — plexi app render only drives SDK v3 Python apps (CPython-in-WASM)",
+            app_bin.display()
+        );
+        return 1;
+    }
+    let launch_config = crate::cli::app_check::python_launch_config_from_parts(
+        &app_id,
+        &app_dir,
+        &app_bin,
+        &capabilities,
+        &allowed_hosts,
+    );
+    let tree = match crate::host::wasm_python::run_headless_frame(
+        &launch_config,
+        (width as f32, height as f32),
+        seed_state,
+    ) {
+        Ok(tree) => tree,
+        Err(e) => {
+            eprintln!("error: render failed: {e}");
+            return 1;
+        }
+    };
+
     if png {
         // PNG mode: rasterize and write binary
-        let png_bytes = match crate::render::app_render::render_app_to_png(
-            &app_id,
-            &app_bin,
-            width,
-            height,
-            seed_state,
-            &python_dependencies,
+        let png_bytes = match crate::host::wasm_render::render_ui_tree_to_png(
+            &tree,
+            width as f32,
+            height as f32,
         ) {
             Ok(b) => b,
             Err(e) => {
@@ -1583,18 +1623,12 @@ pub fn app_render(
             }
         }
     } else {
-        // JSON mode (default): return raw frame commands
-        let json = match crate::render::app_render::render_app_to_json(
-            &app_id,
-            &app_bin,
-            width,
-            height,
-            seed_state,
-            &python_dependencies,
-        ) {
+        // JSON mode (default): return the semantic UI-node tree
+        let json = match serde_json::to_string_pretty(&crate::cli::app_check::ui_tree_to_json(&tree))
+        {
             Ok(j) => j,
             Err(e) => {
-                eprintln!("error: render failed: {e}");
+                eprintln!("error: could not serialize frame: {e}");
                 return 1;
             }
         };

@@ -106,15 +106,6 @@ pub enum MouseButton {
     Secondary,
 }
 
-/// Direction of a flex layout node.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
-pub enum LayoutDirection {
-    Row,
-    Column,
-    Stack,
-}
-
 /// Output channel selector for `DrawCommand::StreamProcess`.
 /// v1: `structured` emits the same bytes as `stdout`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]

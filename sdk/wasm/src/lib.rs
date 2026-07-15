@@ -414,7 +414,13 @@ pub mod ui {
             self.push(key, UiNodeData::Divider)
         }
         pub fn space(&mut self, key: impl Into<String>, amount: f32) -> u32 {
-            self.push(key, UiNodeData::Space(amount))
+            self.push(
+                key,
+                UiNodeData::Space(SpaceNode {
+                    size: amount,
+                    grow: false,
+                }),
+            )
         }
         pub fn surface(
             &mut self,

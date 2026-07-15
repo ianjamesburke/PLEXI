@@ -681,13 +681,16 @@ class TestWireFormat:
         """).lstrip())
         return app
 
-    def test_pgap_protocol_emits_render_command_component_tree(self, tmp_path):
+    def test_pgap_protocol_field_is_ignored_emits_indexed_component_tree(self, tmp_path):
+        """Stint 0389: the `protocol` init field no longer selects an encoder —
+        the runtime always emits the WIT arena shape, matching what the live
+        host (wasm_python.rs) parses."""
         proc = _spawn_v3_app(self._text_app(tmp_path))
         try:
             _init_app(proc)
             events = _render(proc)
             tree = _find_events(events, "component_tree")[0]
-            assert "root" in tree and "tree" not in tree
+            assert "tree" in tree and "root" not in tree
             assert tree["frame_id"] == 1
         finally:
             proc.kill()
@@ -818,25 +821,16 @@ class TestTimers:
             timers = _find_events(all_events, "set_timer")
             assert any(t.get("timer_id") == "1" for t in timers)
 
-            # Fire the timer
-            _send_event(proc, {"type": "timer", "timer_id": "1"})
-            events = _render(proc, frame_id=2)
-            # The host owns the fixed cadence after the initial registration.
+            # The host drives timer firing via `timer_ids` on the render
+            # event (matching the live host, wasm_python.rs) rather than a
+            # standalone "timer" message the guest schedules a re-render for.
+            events = _render(proc, frame_id=2, timer_ids=["1"])
             rearms = _find_events(events, "set_timer")
             assert not rearms
-            assert len(_find_events(events, "schedule_render")) == 1
-        finally:
-            proc.kill()
-
-        wasm_proc = _spawn_v3_app(app)
-        try:
-            _init_app(wasm_proc, protocol=None)
-            _render(wasm_proc, frame_id=1)
-            events = _render(wasm_proc, frame_id=2, timer_ids=["1"])
             assert not _find_events(events, "schedule_render")
             assert "fires=1" in json.dumps(events)
         finally:
-            wasm_proc.kill()
+            proc.kill()
 
 
 # =============================================================================

@@ -12,8 +12,10 @@ use std::collections::HashMap;
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
-use super::wasm_app::bindings::plexi::platform::types::CanvasCommand;
+use super::wasm_app::bindings::plexi::platform::types::{CanvasCommand, FooterKeysNode, PinnedEdge};
 use super::wasm_app::{Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, UiNodeData, UiTree};
+
+use crate::render::app_chrome::{self, AppChrome};
 
 const MAX_DEPTH: u32 = 256;
 
@@ -66,6 +68,35 @@ pub fn render_ui_tree_with_canvas_fits(
     out
 }
 
+/// Headless render of a `UiTree` to PNG bytes via `egui_kittest`'s wgpu
+/// offscreen backend — the same rasterization path `PlexiUiHarness` uses for
+/// screenshot tests, reused here for `plexi app render --png` /
+/// `plexi app check --png-dir` so the CLI renders exactly what the live host
+/// would paint instead of hand-rolling a second rasterizer for widget chrome
+/// (buttons, fonts, footer key chips) that has no flat-primitive form.
+pub fn render_ui_tree_to_png(tree: &UiTree, width: f32, height: f32) -> Result<Vec<u8>, String> {
+    let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::load());
+    let tree = tree.clone();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::Vec2::new(width, height))
+        .build(move |ctx| {
+            crate::ui::theme::setup_fonts(ctx);
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None);
+                });
+        });
+    harness.run();
+    let img = harness
+        .render()
+        .map_err(|e| format!("offscreen render failed: {e}"))?;
+    let mut bytes = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .map_err(|e| format!("PNG encode failed: {e}"))?;
+    Ok(bytes)
+}
+
 fn rgba(c: &Color) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a)
 }
@@ -111,6 +142,33 @@ fn cross_align(a: Alignment) -> egui::Align {
     }
 }
 
+fn find_node(nodes: &[IndexedNode], id: u32) -> Option<&IndexedNode> {
+    nodes
+        .get(id as usize)
+        .filter(|node| node.id == id)
+        .or_else(|| nodes.iter().find(|node| node.id == id))
+}
+
+/// If `child_id` is a `Pinned{edge: Bottom}` wrapper around a `FooterKeys` node,
+/// or is itself a bare trailing `FooterKeys` node, return the id to render and
+/// its footer data. Used by `Column` to reserve a flush-bottom footer slot,
+/// mirroring the legacy renderer's bottom-pin partition (components.rs
+/// `render_stack`'s `StackDirection::Vertical` branch).
+fn column_bottom_pin(nodes: &[IndexedNode], child_id: u32) -> Option<(u32, &FooterKeysNode)> {
+    let node = find_node(nodes, child_id)?;
+    match &node.data {
+        UiNodeData::Pinned(p) if p.edge == PinnedEdge::Bottom => {
+            let inner = find_node(nodes, p.child)?;
+            match &inner.data {
+                UiNodeData::FooterKeys(f) => Some((p.child, f)),
+                _ => None,
+            }
+        }
+        UiNodeData::FooterKeys(f) => Some((child_id, f)),
+        _ => None,
+    }
+}
+
 fn render_node(
     ui: &mut egui::Ui,
     nodes: &[IndexedNode],
@@ -124,11 +182,7 @@ fn render_node(
     if depth > MAX_DEPTH {
         return;
     }
-    let Some(node) = nodes
-        .get(id as usize)
-        .filter(|node| node.id == id)
-        .or_else(|| nodes.iter().find(|node| node.id == id))
-    else {
+    let Some(node) = find_node(nodes, id) else {
         return;
     };
 
@@ -190,12 +244,50 @@ fn render_node(
         }
 
         UiNodeData::Column(c) => {
-            ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
-                ui.spacing_mut().item_spacing.y = c.gap;
-                for child in &c.children {
-                    render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits);
-                }
-            });
+            let footer = c
+                .children
+                .last()
+                .copied()
+                .and_then(|last_id| column_bottom_pin(nodes, last_id));
+            if let Some((footer_id, footer_data)) = footer {
+                let footer_h =
+                    app_chrome::footer_keys_height(ui, &footer_data.entries, footer_data.divider);
+                let stack_size = egui::vec2(ui.available_width(), ui.available_height());
+                let (stack_rect, _) = ui.allocate_exact_size(stack_size, egui::Sense::hover());
+                let body_h = (stack_rect.height() - footer_h).max(0.0);
+                let body_rect =
+                    egui::Rect::from_min_size(stack_rect.min, egui::vec2(stack_rect.width(), body_h));
+
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body_rect), |ui| {
+                    ui.set_clip_rect(body_rect);
+                    ui.set_min_height(body_h);
+                    ui.set_max_height(body_h);
+                    ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
+                        ui.spacing_mut().item_spacing.y = c.gap;
+                        for &child in &c.children[..c.children.len() - 1] {
+                            render_node(ui, nodes, child, colors, out, depth + 1, surface, canvas_fits);
+                        }
+                    });
+                });
+
+                let footer_rect = egui::Rect::from_min_size(
+                    egui::pos2(stack_rect.min.x, stack_rect.max.y - footer_h),
+                    egui::vec2(stack_rect.width(), footer_h),
+                );
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
+                    ui.set_clip_rect(footer_rect);
+                    ui.set_min_height(footer_h);
+                    ui.set_max_height(footer_h);
+                    render_node(ui, nodes, footer_id, colors, out, depth + 1, surface, canvas_fits);
+                });
+            } else {
+                ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
+                    ui.spacing_mut().item_spacing.y = c.gap;
+                    for child in &c.children {
+                        render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits);
+                    }
+                });
+            }
         }
 
         UiNodeData::ProgressBar(p) => {
@@ -345,8 +437,13 @@ fn render_node(
             ui.separator();
         }
 
-        UiNodeData::Space(px) => {
-            ui.add_space(*px);
+        UiNodeData::Space(s) => {
+            let amount = if s.grow {
+                ui.available_height().max(0.0)
+            } else {
+                s.size
+            };
+            ui.add_space(amount);
         }
 
         // GPU surface: composite the guest's render (read back into an egui
@@ -378,6 +475,54 @@ fn render_node(
                     );
                 }
             }
+        }
+
+        UiNodeData::AppBar(a) => {
+            AppChrome::new(colors).paint_app_bar(ui, &a.title, &a.subtitle);
+        }
+
+        UiNodeData::FooterKeys(f) => {
+            AppChrome::new(colors).paint_footer_keys(ui, &f.entries, f.divider);
+        }
+
+        // Bottom-pinned nodes are partitioned and rendered by the enclosing
+        // `Column` (see `column_bottom_pin`). When `Pinned` appears outside a
+        // `Column` (e.g. at the tree root), render its child inline.
+        UiNodeData::Pinned(p) => {
+            render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits);
+        }
+
+        UiNodeData::Spinner(sp) => {
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                let t = ui.input(|i| i.time) as f32;
+                ui.ctx().request_repaint();
+                let angle = t * 4.0;
+                let center = rect.center();
+                for k in 0..8 {
+                    let a = angle + k as f32 * std::f32::consts::TAU / 8.0;
+                    let alpha = (k as f32 / 8.0 * 200.0) as u8 + 40;
+                    let p = center + egui::vec2(a.cos(), a.sin()) * 6.0;
+                    ui.painter().circle_filled(
+                        p,
+                        1.6,
+                        colors.accent.linear_multiply(alpha as f32 / 255.0),
+                    );
+                }
+                if !sp.label.is_empty() {
+                    ui.add_space(style::SPACE_SM);
+                    AppChrome::new(colors).text_label(
+                        ui,
+                        &sp.label,
+                        style::TEXT_CAPTION,
+                        colors.text_dim,
+                        false,
+                        false,
+                        false,
+                    );
+                }
+            });
         }
     }
 }

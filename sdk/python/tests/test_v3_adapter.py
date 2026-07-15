@@ -245,16 +245,24 @@ def test_canvas_contain_fit_is_explicit_and_validated() -> None:
         Canvas([], fit="stretch")
 
 
-def test_ui_tree_lowers_pinned_footer_keys_to_supported_text() -> None:
+def test_ui_tree_passes_pinned_footer_keys_through_as_wit_nodes() -> None:
+    """Stint 0389: pinned/footer_keys are live WIT node kinds — the SDK must
+    pass them through (flattening the pinned child into the arena) rather
+    than downgrading to a flattened Text node."""
     tree = _encode_uitree(FooterKeys([("j", "down"), (["g", "G"], "ends")]))
 
-    assert tree["nodes"][0]["data"] == {
-        "type": "Text",
-        "text": "j down    g/G ends",
-        "size": 11.0,
-        "bold": False,
-        "truncate": True,
-        "align": "start",
+    root = tree["nodes"][tree["root"]]
+    assert root["data"]["type"] == "Pinned"
+    assert root["data"]["edge"] == "bottom"
+
+    child = tree["nodes"][root["data"]["child"]]
+    assert child["data"] == {
+        "type": "FooterKeys",
+        "entries": [
+            {"keys": ["j"], "description": "down"},
+            {"keys": ["g", "G"], "description": "ends"},
+        ],
+        "divider": True,
     }
 
 

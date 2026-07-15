@@ -29,9 +29,10 @@ use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 use crate::app::registry::{AppManifest, RuntimeExecution};
 
 use super::wasm_app::bindings::plexi::platform::types::{
-    BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine, CanvasNode,
-    CanvasRect, CanvasText, Color, ColumnNode, IndexedNode, ListNode, PaddingNode, ProgressBarNode,
-    RowNode, ScrollNode, TextInputNode, TextNode, UiNodeData, UiTree,
+    AppBarNode, BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine,
+    CanvasNode, CanvasRect, CanvasText, Color, ColumnNode, FooterKeyEntry, FooterKeysNode,
+    IndexedNode, ListNode, PaddingNode, PinnedEdge, PinnedNode, ProgressBarNode, RowNode,
+    ScrollNode, SpaceNode, SpinnerNode, TextInputNode, TextNode, UiNodeData, UiTree,
 };
 #[cfg(test)]
 use super::wasm_app::bindings::plexi::platform::types::{
@@ -506,6 +507,112 @@ impl Drop for WasmPythonRuntime {
             if let Err(error) = thread.join() {
                 log::error!("CPython WASM runtime thread panicked: {error:?}");
             }
+        }
+    }
+}
+
+const HEADLESS_DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// One-shot headless run of a CPython-in-WASM app through the exact same
+/// runtime the live host uses (`WasmPythonRuntime` running
+/// `plexi_sdk._v3_process`) — for `plexi app check` / `plexi app render`.
+/// Boots, waits for `ready`, sends one `render`, and returns the decoded
+/// `UiTree`. Unlike the deleted native-subprocess checker, there is no
+/// separate wire protocol to drift from what the live host executes.
+pub fn run_headless_frame(
+    config: &PythonLaunchConfig,
+    size: (f32, f32),
+    seed_state: Option<Value>,
+) -> Result<UiTree, WasmPythonError> {
+    let mut session = HeadlessPythonSession::launch(config, size, seed_state)?;
+    session.render_frame(1)
+}
+
+/// Render once, send a `ui_action` for `handler_id`, render again. Returns
+/// `(before, after)`.
+pub fn run_headless_ui_action_round_trip(
+    config: &PythonLaunchConfig,
+    size: (f32, f32),
+    seed_state: Option<Value>,
+    handler_id: &str,
+) -> Result<(UiTree, UiTree), WasmPythonError> {
+    let mut session = HeadlessPythonSession::launch(config, size, seed_state)?;
+    let before = session.render_frame(1)?;
+    session
+        .runtime
+        .send(&json!({"type": "ui_action", "handler_id": handler_id}))?;
+    let after = session.render_frame(2)?;
+    Ok((before, after))
+}
+
+struct HeadlessPythonSession {
+    runtime: WasmPythonRuntime,
+}
+
+impl HeadlessPythonSession {
+    fn launch(
+        config: &PythonLaunchConfig,
+        size: (f32, f32),
+        seed_state: Option<Value>,
+    ) -> Result<Self, WasmPythonError> {
+        let runtime = WasmPythonRuntime::launch(config)?;
+        runtime.send(&json!({
+            "type": "init",
+            "app_id": config.app_id,
+            "workspace_root": config.workspace_root,
+            "capabilities": config.capabilities,
+            "state": seed_state,
+            "theme": {},
+            "args": config.launch_args,
+            "size": [size.0, size.1],
+        }))?;
+        let mut session = Self { runtime };
+        session.wait_for(|message| {
+            message.get("type").and_then(Value::as_str) == Some("ready")
+        })?;
+        Ok(session)
+    }
+
+    fn render_frame(&mut self, frame_id: u64) -> Result<UiTree, WasmPythonError> {
+        self.runtime
+            .send(&python_render_event(frame_id, Vec::new()))?;
+        let mut tree_json = None;
+        self.wait_for(|message| {
+            if message.get("type").and_then(Value::as_str) == Some("component_tree") {
+                if let Some(raw) = message.get("tree") {
+                    tree_json = Some(raw.clone());
+                }
+            }
+            message.get("type").and_then(Value::as_str) == Some("frame_done")
+        })?;
+        let raw = tree_json.ok_or_else(|| {
+            WasmPythonError::BridgeJson(
+                "app emitted frame_done with no component_tree".to_string(),
+            )
+        })?;
+        decode_ui_tree_value(&raw)
+    }
+
+    fn wait_for(&mut self, mut matches: impl FnMut(&Value) -> bool) -> Result<(), WasmPythonError> {
+        let deadline = std::time::Instant::now() + HEADLESS_DEFAULT_TIMEOUT;
+        loop {
+            for message in self.runtime.drain_messages()? {
+                if matches(&message) {
+                    return Ok(());
+                }
+            }
+            if std::time::Instant::now() > deadline {
+                let stderr = self.runtime.drain_stderr();
+                return Err(WasmPythonError::BridgeJson(format!(
+                    "timed out waiting for app response after {HEADLESS_DEFAULT_TIMEOUT:?}{}",
+                    if stderr.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n  stderr:\n{stderr}")
+                    }
+                )));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
 }
@@ -2306,16 +2413,46 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                     .unwrap_or("start"),
             )?,
         })),
-        "AppBar" | "app_bar" | "app-bar" => Ok(UiNodeData::Text(TextNode {
-            text: match value.get("subtitle").and_then(Value::as_str) {
-                Some("") | None => required_string(value, "title")?,
-                Some(subtitle) => format!("{} {}", required_string(value, "title")?, subtitle),
-            },
-            size: Some(16.0),
-            bold: true,
-            color: None,
-            truncate: true,
-            align: Alignment::Start,
+        "AppBar" | "app_bar" | "app-bar" => Ok(UiNodeData::AppBar(AppBarNode {
+            title: required_string(value, "title")?,
+            subtitle: value
+                .get("subtitle")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        })),
+        "FooterKeys" | "footer_keys" | "footer-keys" => {
+            Ok(UiNodeData::FooterKeys(FooterKeysNode {
+                entries: value
+                    .get("entries")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        WasmPythonError::BridgeJson("missing array field 'entries'".to_string())
+                    })?
+                    .iter()
+                    .map(decode_footer_key_entry)
+                    .collect::<Result<Vec<_>, _>>()?,
+                divider: value
+                    .get("divider")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+            }))
+        }
+        "Pinned" | "pinned" => Ok(UiNodeData::Pinned(PinnedNode {
+            edge: decode_pinned_edge(
+                value
+                    .get("edge")
+                    .and_then(Value::as_str)
+                    .unwrap_or("bottom"),
+            )?,
+            child: required_u32(value, "child")?,
+        })),
+        "Spinner" | "spinner" => Ok(UiNodeData::Spinner(SpinnerNode {
+            label: value
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
         })),
         "Column" | "column" => Ok(UiNodeData::Column(ColumnNode {
             children: u32_list(value, "children")?,
@@ -2382,9 +2519,10 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
         })),
         "Divider" | "divider" => Ok(UiNodeData::Divider),
-        "Space" | "spacer" => Ok(UiNodeData::Space(
-            optional_f32(value, "size")?.unwrap_or(0.0),
-        )),
+        "Space" | "spacer" => Ok(UiNodeData::Space(SpaceNode {
+            size: optional_f32(value, "size")?.unwrap_or(0.0),
+            grow: value.get("grow").and_then(Value::as_bool).unwrap_or(false),
+        })),
         "ProgressBar" | "progress_bar" | "progress-bar" => {
             Ok(UiNodeData::ProgressBar(ProgressBarNode {
                 value: optional_f32(value, "value")?.unwrap_or(0.0),
@@ -2718,6 +2856,40 @@ fn decode_button_style(value: &str) -> Result<ButtonStyle, WasmPythonError> {
         "ghost" => Ok(ButtonStyle::Ghost),
         other => Err(WasmPythonError::BridgeJson(format!(
             "unknown button style: {other}"
+        ))),
+    }
+}
+
+fn decode_footer_key_entry(value: &Value) -> Result<FooterKeyEntry, WasmPythonError> {
+    let keys = value
+        .get("keys")
+        .and_then(Value::as_array)
+        .ok_or_else(|| WasmPythonError::BridgeJson("missing array field 'keys'".to_string()))?
+        .iter()
+        .map(|k| {
+            k.as_str().map(str::to_string).ok_or_else(|| {
+                WasmPythonError::BridgeJson("footer key entry 'keys' must be strings".to_string())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(FooterKeyEntry {
+        keys,
+        description: value
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
+fn decode_pinned_edge(value: &str) -> Result<PinnedEdge, WasmPythonError> {
+    match value {
+        "bottom" => Ok(PinnedEdge::Bottom),
+        "top" => Ok(PinnedEdge::Top),
+        "left" => Ok(PinnedEdge::Left),
+        "right" => Ok(PinnedEdge::Right),
+        other => Err(WasmPythonError::BridgeJson(format!(
+            "unknown pinned edge: {other}"
         ))),
     }
 }
@@ -3728,10 +3900,12 @@ python_compat = true
 
     #[test]
     fn native_python_bridge_decodes_kraken_view() {
+        // Stint 0389: `AppBar` decodes to its own live `UiNodeData::AppBar`
+        // node now, not a downgraded `Text` node containing the title.
         let view = native_python_app_view("kraken", "main");
 
         assert!(view.nodes.iter().any(
-            |node| matches!(&node.data, UiNodeData::Text(text) if text.text.contains("Kraken"))
+            |node| matches!(&node.data, UiNodeData::AppBar(bar) if bar.title.contains("Kraken"))
         ));
     }
 

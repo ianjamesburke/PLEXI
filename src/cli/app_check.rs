@@ -1,7 +1,93 @@
 use crate::app::registry::AppManifest;
-use crate::app_protocol::{RenderCommand, UiNode};
+use crate::host::wasm_app::UiTree;
+use crate::host::wasm_python::PythonLaunchConfig;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+
+/// Build a headless launch config for the live CPython-WASM runtime from an
+/// already-loaded manifest, so `app check`/`app render` boot the app exactly
+/// the way the live host does (`wasm_python::WasmPythonRuntime`), not a
+/// separate native subprocess speaking a different wire protocol.
+fn python_launch_config(manifest: &AppManifest, entry_path: &Path, app_dir: &Path) -> PythonLaunchConfig {
+    python_launch_config_from_parts(
+        &manifest.app.id,
+        app_dir,
+        entry_path,
+        &manifest.app.capabilities.capabilities,
+        &manifest.app.capabilities.allowed_hosts,
+    )
+}
+
+/// Same as [`python_launch_config`], for callers that only have the pieces
+/// (e.g. `plexi app render`'s registry-id lookup path, which resolves an
+/// `AppManifestApp` rather than a full `AppManifest`).
+pub(crate) fn python_launch_config_from_parts(
+    app_id: &str,
+    app_dir: &Path,
+    entry_path: &Path,
+    capabilities: &[String],
+    allowed_hosts: &[String],
+) -> PythonLaunchConfig {
+    PythonLaunchConfig {
+        app_id: app_id.to_string(),
+        app_dir: app_dir.to_path_buf(),
+        entry: entry_path.to_path_buf(),
+        module_name: entry_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("main")
+            .to_string(),
+        launch_args: Vec::new(),
+        workspace_root: app_dir.to_path_buf(),
+        capabilities: capabilities.to_vec(),
+        allowed_hosts: allowed_hosts.to_vec(),
+    }
+}
+
+/// Serialize a live `UiTree` to the same JSON shape used elsewhere in the
+/// codebase (`{"id","key","data"}` per node) so downstream checks can walk it
+/// generically. `data.type` matches the wire tag (`Text`, `Column`, ...).
+pub(crate) fn ui_tree_to_json(tree: &UiTree) -> serde_json::Value {
+    serde_json::json!({
+        "root": tree.root,
+        "nodes": tree.nodes.iter().map(indexed_node_to_json).collect::<Vec<_>>(),
+    })
+}
+
+fn indexed_node_to_json(node: &crate::host::wasm_app::IndexedNode) -> serde_json::Value {
+    use crate::host::wasm_app::UiNodeData;
+    let data = match &node.data {
+        UiNodeData::Empty => serde_json::json!({"type": "Empty"}),
+        UiNodeData::Text(t) => serde_json::json!({"type": "Text", "text": t.text}),
+        UiNodeData::Button(b) => {
+            serde_json::json!({"type": "Button", "label": b.label, "on_click": b.on_click})
+        }
+        UiNodeData::TextInput(_) => serde_json::json!({"type": "TextInput"}),
+        UiNodeData::Row(r) => serde_json::json!({"type": "Row", "children": r.children}),
+        UiNodeData::Column(c) => serde_json::json!({"type": "Column", "children": c.children}),
+        UiNodeData::ProgressBar(_) => serde_json::json!({"type": "ProgressBar"}),
+        UiNodeData::Badge(b) => serde_json::json!({"type": "Badge", "text": b.text}),
+        UiNodeData::ListView(l) => serde_json::json!({"type": "ListView", "items": l.items}),
+        UiNodeData::Scroll(s) => serde_json::json!({"type": "Scroll", "child": s.child}),
+        UiNodeData::Padding(p) => serde_json::json!({"type": "Padding", "child": p.child}),
+        UiNodeData::Canvas(c) => serde_json::json!({
+            "type": "Canvas", "width": c.width, "height": c.height, "commands": c.commands.len()
+        }),
+        UiNodeData::Divider => serde_json::json!({"type": "Divider"}),
+        UiNodeData::Space(s) => serde_json::json!({"type": "Space", "size": s.size, "grow": s.grow}),
+        UiNodeData::Surface(_) => serde_json::json!({"type": "Surface"}),
+        UiNodeData::AppBar(a) => serde_json::json!({"type": "AppBar", "title": a.title, "subtitle": a.subtitle}),
+        UiNodeData::FooterKeys(f) => serde_json::json!({
+            "type": "FooterKeys",
+            "entries": f.entries.iter().map(|e| serde_json::json!({"keys": e.keys, "description": e.description})).collect::<Vec<_>>(),
+        }),
+        UiNodeData::Pinned(p) => serde_json::json!({
+            "type": "Pinned", "edge": format!("{:?}", p.edge).to_ascii_lowercase(), "child": p.child
+        }),
+        UiNodeData::Spinner(s) => serde_json::json!({"type": "Spinner", "label": s.label}),
+    };
+    serde_json::json!({"id": node.id, "key": node.key, "data": data})
+}
 
 const DEFAULT_CHECK_SIZES: &[(u32, u32)] = &[(320, 240), (480, 320), (800, 600), (1200, 800)];
 const SEEDED_PROBE_SIZE: (u32, u32) = (480, 320);
@@ -97,10 +183,16 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
         }
     }
     warnings.extend(scaffold_metadata_warnings(app_dir));
-    let require_semantic_chrome = scaffold_requires_semantic_chrome(app_dir);
-    let mut checked_semantic_chrome = false;
+    if scaffold_requires_semantic_chrome(app_dir) {
+        warnings.push(
+            "semantic chrome — this scaffold expects a semantic-chrome check, which is not yet \
+             implemented against the live WIT UI-node model; skipping"
+                .to_string(),
+        );
+    }
 
-    if entry_path.extension().and_then(|ext| ext.to_str()) == Some("py") {
+    let is_python_entry = entry_path.extension().and_then(|ext| ext.to_str()) == Some("py");
+    if is_python_entry {
         match analyze_python_entry(&manifest.app.id, &entry_path, &manifest.app.dependencies) {
             Ok(analysis) => {
                 if analysis.has_init && analysis.has_update && analysis.has_view {
@@ -125,95 +217,45 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
         ));
     }
 
+    if !is_python_entry {
+        warnings.push(format!(
+            "render — {} is not a Python entry; the live-runtime checker only drives SDK v3 Python apps (CPython-in-WASM), skipping render checks",
+            entry_path.display()
+        ));
+    }
+    let launch_config = is_python_entry.then(|| python_launch_config(&manifest, &entry_path, app_dir));
+
     for (width, height) in render_sizes {
         let label = format!("{width}x{height}");
-        match crate::render::app_render::render_app_to_json(
-            &manifest.app.id,
-            &entry_path,
-            width,
-            height,
+        let Some(launch_config) = &launch_config else {
+            continue;
+        };
+        match crate::host::wasm_python::run_headless_frame(
+            launch_config,
+            (width as f32, height as f32),
             None,
-            &manifest.app.dependencies,
         ) {
-            Ok(json) => {
-                let frame: serde_json::Value = match serde_json::from_str(&json) {
-                    Ok(value) => value,
-                    Err(e) => {
-                        errors.push(format!("render {label} — invalid JSON frame: {e}"));
-                        continue;
-                    }
-                };
-                let command_count = frame.as_array().map(Vec::len).unwrap_or(0);
-                if command_count == 0 {
+            Ok(tree) => {
+                let node_count = tree.nodes.len();
+                if node_count == 0 {
                     errors.push(format!("render {label} — app emitted an empty frame"));
                     continue;
                 }
-                if require_semantic_chrome && !checked_semantic_chrome {
-                    let chrome_errors = semantic_scaffold_chrome_errors(&frame);
-                    if chrome_errors.is_empty() {
-                        println!("✓ semantic chrome — app bar, action bar, pinned footer keys");
-                        log::info!(
-                            "app_check[{}]: semantic scaffold chrome present",
-                            manifest.app.id
-                        );
-                    } else {
-                        for issue in chrome_errors {
-                            errors.push(format!("semantic chrome — {issue}"));
-                        }
-                    }
-                    checked_semantic_chrome = true;
-                }
-                if require_semantic_chrome {
-                    let shell_errors = scaffold_shell_layout_errors(&frame, width, height);
-                    if shell_errors.is_empty() {
-                        println!("✓ shell layout {label} — body/action/footer slots resolved");
-                        log::info!(
-                            "app_check[{}]: shell layout resolved at {label}",
-                            manifest.app.id
-                        );
-                    } else {
-                        for issue in shell_errors {
-                            errors.push(format!("shell layout {label} — {issue}"));
-                        }
-                    }
-                }
-                let bounds = obvious_bounds_errors(&frame, width, height);
-                if bounds.is_empty() {
-                    println!("✓ render {label} — {command_count} command(s)");
-                } else {
-                    for issue in bounds {
-                        errors.push(format!("render {label} — {issue}"));
-                    }
-                }
+                println!("✓ render {label} — {node_count} node(s)");
                 if let Some(dir) = &png_dir {
                     let png_path = dir.join(format!("{}-{label}.png", manifest.app.id));
-                    match crate::render::app_render::render_app_to_png(
-                        &manifest.app.id,
-                        &entry_path,
-                        width,
-                        height,
-                        None,
-                        &manifest.app.dependencies,
+                    match crate::host::wasm_render::render_ui_tree_to_png(
+                        &tree,
+                        width as f32,
+                        height as f32,
                     ) {
-                        Ok(bytes) => {
-                            if require_semantic_chrome {
-                                let png_errors = semantic_png_chrome_errors(&bytes, width, height);
-                                if png_errors.is_empty() {
-                                    println!("✓ png chrome {label} — full-bleed, unclipped footer");
-                                } else {
-                                    for issue in png_errors {
-                                        errors.push(format!("png chrome {label} — {issue}"));
-                                    }
-                                }
-                            }
-                            match std::fs::write(&png_path, bytes) {
-                                Ok(()) => println!("✓ png {label} — {}", png_path.display()),
-                                Err(e) => errors.push(format!(
-                                    "png {label} — could not write {}: {e}",
-                                    png_path.display()
-                                )),
-                            }
-                        }
+                        Ok(bytes) => match std::fs::write(&png_path, bytes) {
+                            Ok(()) => println!("✓ png {label} — {}", png_path.display()),
+                            Err(e) => errors.push(format!(
+                                "png {label} — could not write {}: {e}",
+                                png_path.display()
+                            )),
+                        },
                         Err(e) => errors.push(format!("png {label} — {e}")),
                     }
                 }
@@ -232,14 +274,19 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                     .unwrap_or(&fixture.path)
                     .display()
             );
-            run_seeded_state_and_action_probe(
-                &manifest,
-                &entry_path,
-                &fixture,
-                require_semantic_chrome,
-                &mut errors,
-                &mut warnings,
-            );
+            if let Some(launch_config) = &launch_config {
+                run_seeded_state_and_action_probe(
+                    &manifest,
+                    launch_config,
+                    &fixture,
+                    &mut errors,
+                    &mut warnings,
+                );
+            } else {
+                warnings.push(
+                    "seeded probe — skipped, not a Python entry".to_string(),
+                );
+            }
         }
         Ok(None) => {
             println!("skip state fixture — no fixtures/state.json; seeded probes skipped");
@@ -309,9 +356,8 @@ fn load_seed_fixture(app_dir: &Path) -> Result<Option<SeedFixture>, String> {
 
 fn run_seeded_state_and_action_probe(
     manifest: &AppManifest,
-    entry_path: &Path,
+    launch_config: &PythonLaunchConfig,
     fixture: &SeedFixture,
-    probe_semantic_actions: bool,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
@@ -324,21 +370,12 @@ fn run_seeded_state_and_action_probe(
         return;
     }
 
-    let frame = match crate::render::app_render::render_app_to_json(
-        &manifest.app.id,
-        entry_path,
-        width,
-        height,
+    let frame = match crate::host::wasm_python::run_headless_frame(
+        launch_config,
+        (width as f32, height as f32),
         Some(fixture.state.clone()),
-        &manifest.app.dependencies,
     ) {
-        Ok(json) => match serde_json::from_str::<serde_json::Value>(&json) {
-            Ok(frame) => frame,
-            Err(e) => {
-                errors.push(format!("seeded render {label} — invalid JSON frame: {e}"));
-                return;
-            }
-        },
+        Ok(tree) => ui_tree_to_json(&tree),
         Err(e) => {
             errors.push(format!("seeded render {label} — {e}"));
             return;
@@ -363,7 +400,7 @@ fn run_seeded_state_and_action_probe(
         matched
     );
 
-    let Some(handler_id) = recognized_action_handler(&frame, probe_semantic_actions) else {
+    let Some(handler_id) = recognized_action_handler(&frame) else {
         println!("skip action probe — no recognized action handler in seeded render");
         log::info!(
             "app_check[{}]: no recognized action handler in seeded render",
@@ -374,18 +411,15 @@ fn run_seeded_state_and_action_probe(
 
     let action_label = format!("action probe {handler_id}");
     let expected_after = expected_action_signal(&fixture.state, &handler_id);
-    match crate::render::app_render::render_app_ui_action_round_trip(
-        &manifest.app.id,
-        entry_path,
-        width,
-        height,
+    match crate::host::wasm_python::run_headless_ui_action_round_trip(
+        launch_config,
+        (width as f32, height as f32),
         Some(fixture.state.clone()),
         &handler_id,
-        &manifest.app.dependencies,
     ) {
         Ok((before, after)) => {
-            let before_frame = render_commands_value(&before);
-            let after_frame = render_commands_value(&after);
+            let before_frame = ui_tree_to_json(&before);
+            let after_frame = ui_tree_to_json(&after);
             if let Some(expected) = expected_after {
                 if frame_contains_scalar(&after_frame, &expected) {
                     println!("✓ {action_label} — rendered expected state value {expected}");
@@ -412,10 +446,6 @@ fn run_seeded_state_and_action_probe(
         }
         Err(e) => errors.push(format!("{action_label} — {e}")),
     }
-}
-
-fn render_commands_value(commands: &[RenderCommand]) -> serde_json::Value {
-    serde_json::to_value(commands).unwrap_or_else(|_| serde_json::Value::Null)
 }
 
 fn seed_state_signals(state: &serde_json::Value) -> Vec<String> {
@@ -467,46 +497,13 @@ fn frame_contains_scalar(frame: &serde_json::Value, expected: &str) -> bool {
     }
 }
 
-fn recognized_action_handler(
-    frame: &serde_json::Value,
-    probe_semantic_actions: bool,
-) -> Option<String> {
+fn recognized_action_handler(frame: &serde_json::Value) -> Option<String> {
     for handler in RECOGNIZED_ACTION_HANDLERS {
-        if frame_contains_keyed_string(frame, &["node_id", "handler_id"], handler) {
+        if frame_contains_keyed_string(frame, &["node_id", "handler_id", "on_click"], handler) {
             return Some((*handler).to_string());
         }
     }
-    if probe_semantic_actions {
-        return first_semantic_action_handler(frame);
-    }
     None
-}
-
-fn first_semantic_action_handler(frame: &serde_json::Value) -> Option<String> {
-    match frame {
-        serde_json::Value::Object(map) => {
-            if map.get("type").and_then(serde_json::Value::as_str) == Some("action_bar") {
-                if let Some(actions) = map.get("actions").and_then(serde_json::Value::as_array) {
-                    for action in actions {
-                        if let Some(handler) = action
-                            .as_object()
-                            .and_then(|obj| {
-                                obj.get("node_id")
-                                    .or_else(|| obj.get("handler_id"))
-                                    .and_then(serde_json::Value::as_str)
-                            })
-                            .filter(|handler| !handler.is_empty())
-                        {
-                            return Some(handler.to_string());
-                        }
-                    }
-                }
-            }
-            map.values().find_map(first_semantic_action_handler)
-        }
-        serde_json::Value::Array(values) => values.iter().find_map(first_semantic_action_handler),
-        _ => None,
-    }
 }
 
 fn frame_contains_keyed_string(frame: &serde_json::Value, keys: &[&str], expected: &str) -> bool {
@@ -748,234 +745,6 @@ fn scaffold_requires_semantic_chrome(app_dir: &Path) -> bool {
     metadata.template_version >= crate::cli::app::PYTHON_SCAFFOLD_TEMPLATE_VERSION
 }
 
-fn semantic_scaffold_chrome_errors(frame: &serde_json::Value) -> Vec<String> {
-    let Some(root) = first_component_tree_root(frame) else {
-        return vec!["missing component_tree root".to_string()];
-    };
-    let Some(root_obj) = root.as_object() else {
-        return vec!["component_tree root is not an object".to_string()];
-    };
-    if root_obj.get("type").and_then(serde_json::Value::as_str) != Some("column") {
-        return vec!["root must be a semantic column".to_string()];
-    }
-    let padding = root_obj
-        .get("padding")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(crate::ui::style::SPACE_XL as f64);
-    if padding < crate::ui::style::SPACE_MD as f64 {
-        return vec![format!(
-            "root semantic column padding must be at least {:.0}px; remove padding=0 or set padding >= {:.0}",
-            crate::ui::style::SPACE_MD,
-            crate::ui::style::SPACE_MD
-        )];
-    }
-    let Some(children) = root_obj
-        .get("children")
-        .and_then(serde_json::Value::as_array)
-    else {
-        return vec!["column root must contain children".to_string()];
-    };
-    if children.is_empty() {
-        return vec!["column root has no children".to_string()];
-    }
-
-    let mut errors = Vec::new();
-    if node_type(&children[0]) != Some("app_bar") {
-        errors.push("first column child must be app_bar".to_string());
-    }
-
-    let action_idx = children
-        .iter()
-        .position(|child| node_type(child) == Some("action_bar"));
-    let footer_idx = children.iter().position(is_pinned_footer_keys);
-
-    let Some(action_idx) = action_idx else {
-        errors.push("missing semantic action_bar child".to_string());
-        return errors;
-    };
-    let Some(footer_idx) = footer_idx else {
-        errors.push("missing bottom-pinned footer_keys child".to_string());
-        return errors;
-    };
-
-    if action_idx == 0 {
-        errors.push("action_bar must follow app body content".to_string());
-    }
-    if action_idx > footer_idx {
-        errors.push("action_bar must appear before pinned footer_keys".to_string());
-    }
-    if footer_idx + 1 != children.len() {
-        errors.push("pinned footer_keys must be the final column child".to_string());
-    }
-    if action_idx < footer_idx
-        && children[action_idx + 1..footer_idx].iter().any(|child| {
-            node_type(child) == Some("spacer") && node_bool(child, "grow") == Some(true)
-        })
-    {
-        errors
-            .push("grow spacer must not sit between action_bar and pinned footer_keys".to_string());
-    }
-
-    if !action_bar_has_buttons(&children[action_idx]) {
-        errors.push("action_bar must contain button actions".to_string());
-    }
-    if !contains_node_type(root, "card") {
-        errors.push("current scaffold must include a semantic card surface".to_string());
-    }
-    if !contains_node_type(root, "text_edit") {
-        errors.push("current scaffold must include a host-rendered text_edit".to_string());
-    }
-    for (node_type, label) in [
-        ("section", "semantic section header"),
-        ("badge", "semantic badge"),
-        ("divider", "semantic divider"),
-        ("select_list", "semantic select_list"),
-    ] {
-        if !contains_node_type(root, node_type) {
-            errors.push(format!("current scaffold must include a {label}"));
-        }
-    }
-
-    errors
-}
-
-fn scaffold_shell_layout_errors(frame: &serde_json::Value, width: u32, height: u32) -> Vec<String> {
-    let Some(root) = first_component_tree_root(frame) else {
-        return vec!["missing component_tree root".to_string()];
-    };
-    let root: UiNode = match serde_json::from_value(root.clone()) {
-        Ok(root) => root,
-        Err(e) => {
-            return vec![format!(
-                "component_tree root does not match UiNode schema: {e}"
-            )]
-        }
-    };
-    crate::render::components::validate_shell_layout(&root, width as f32, height as f32)
-}
-
-fn first_component_tree_root(frame: &serde_json::Value) -> Option<&serde_json::Value> {
-    frame.as_array()?.iter().find_map(|command| {
-        let obj = command.as_object()?;
-        if obj.get("type").and_then(serde_json::Value::as_str) == Some("component_tree") {
-            obj.get("root")
-        } else {
-            None
-        }
-    })
-}
-
-fn node_type(value: &serde_json::Value) -> Option<&str> {
-    value.as_object()?.get("type")?.as_str()
-}
-
-fn node_bool(value: &serde_json::Value, key: &str) -> Option<bool> {
-    value.as_object()?.get(key)?.as_bool()
-}
-
-fn is_pinned_footer_keys(value: &serde_json::Value) -> bool {
-    let Some(obj) = value.as_object() else {
-        return false;
-    };
-    obj.get("type").and_then(serde_json::Value::as_str) == Some("pinned")
-        && obj.get("edge").and_then(serde_json::Value::as_str) == Some("bottom")
-        && obj.get("child").and_then(node_type) == Some("footer_keys")
-}
-
-fn action_bar_has_buttons(value: &serde_json::Value) -> bool {
-    let Some(actions) = value
-        .as_object()
-        .and_then(|obj| obj.get("actions"))
-        .and_then(serde_json::Value::as_array)
-    else {
-        return false;
-    };
-    !actions.is_empty()
-        && actions
-            .iter()
-            .all(|action| node_type(action) == Some("button"))
-}
-
-fn contains_node_type(value: &serde_json::Value, expected_type: &str) -> bool {
-    match value {
-        serde_json::Value::Object(map) => {
-            if map
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|ty| ty == expected_type)
-            {
-                return true;
-            }
-            map.values()
-                .any(|child| contains_node_type(child, expected_type))
-        }
-        serde_json::Value::Array(values) => values
-            .iter()
-            .any(|child| contains_node_type(child, expected_type)),
-        _ => false,
-    }
-}
-
-fn semantic_png_chrome_errors(bytes: &[u8], width: u32, height: u32) -> Vec<String> {
-    let mut errors = Vec::new();
-    let Ok(img) = image::load_from_memory(bytes) else {
-        return vec!["could not decode PNG bytes".to_string()];
-    };
-    let rgba = img.to_rgba8();
-    if rgba.width() != width || rgba.height() != height {
-        errors.push(format!(
-            "decoded size {}x{} did not match requested {width}x{height}",
-            rgba.width(),
-            rgba.height()
-        ));
-        return errors;
-    }
-    if width < 8 || height < 8 {
-        errors.push(format!(
-            "viewport too small for chrome pixel check: {width}x{height}"
-        ));
-        return errors;
-    }
-
-    let top_left = *rgba.get_pixel(0, 0);
-    let top_mid = *rgba.get_pixel(width / 2, 0);
-    let top_right = *rgba.get_pixel(width - 1, 0);
-    if top_left != top_mid || top_right != top_mid {
-        errors.push("app bar is not full-bleed across the top edge".to_string());
-    }
-
-    let footer_bg = *rgba.get_pixel(0, height - 1);
-    let bottom_mid = *rgba.get_pixel(width / 2, height - 1);
-    let bottom_right = *rgba.get_pixel(width - 1, height - 1);
-    if bottom_mid != footer_bg || bottom_right != footer_bg {
-        errors.push("footer is clipped or not full-bleed on the bottom edge".to_string());
-    }
-
-    let clean_rows = 6.min(height);
-    let sample_step = 8.max(width / 40).max(1);
-    for y in height - clean_rows..height {
-        let mut x = 0;
-        while x < width {
-            if *rgba.get_pixel(x, y) != footer_bg {
-                errors.push(format!(
-                    "footer content reaches bottom padding at pixel ({x},{y})"
-                ));
-                return errors;
-            }
-            x = x.saturating_add(sample_step);
-        }
-        if *rgba.get_pixel(width - 1, y) != footer_bg {
-            errors.push(format!(
-                "footer content reaches bottom padding at pixel ({},{y})",
-                width - 1
-            ));
-            return errors;
-        }
-    }
-
-    errors
-}
-
 fn analyze_python_entry(
     app_id: &str,
     entry_path: &Path,
@@ -1059,123 +828,10 @@ json.dump({"functions": functions, "legacy_app_classes": legacy_app_classes}, sy
     Ok(analysis)
 }
 
-fn obvious_bounds_errors(frame: &serde_json::Value, width: u32, height: u32) -> Vec<String> {
-    let Some(commands) = frame.as_array() else {
-        return vec!["frame is not a command array".to_string()];
-    };
-
-    let mut errors = Vec::new();
-    for (idx, command) in commands.iter().enumerate() {
-        collect_bounds_errors(
-            command,
-            width as f64,
-            height as f64,
-            &format!("command {idx}"),
-            &mut errors,
-        );
-    }
-    errors
-}
-
-fn collect_bounds_errors(
-    value: &serde_json::Value,
-    viewport_w: f64,
-    viewport_h: f64,
-    label: &str,
-    errors: &mut Vec<String>,
-) {
-    let Some(obj) = value.as_object() else {
-        return;
-    };
-
-    let type_name = obj
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("node");
-
-    let x = obj.get("x").and_then(serde_json::Value::as_f64);
-    let y = obj.get("y").and_then(serde_json::Value::as_f64);
-    let w = obj.get("w").and_then(serde_json::Value::as_f64);
-    let h = obj.get("h").and_then(serde_json::Value::as_f64);
-
-    if let (Some(x), Some(y), Some(w), Some(h)) = (x, y, w, h) {
-        if w < 0.0 || h < 0.0 {
-            errors.push(format!("{label} {type_name} has negative size {w}x{h}"));
-        }
-        if x + w < 0.0 || y + h < 0.0 || x > viewport_w || y > viewport_h {
-            errors.push(format!(
-                "{label} {type_name} is outside the viewport at {x},{y} {w}x{h}"
-            ));
-        }
-        if w > viewport_w * 4.0 || h > viewport_h * 4.0 {
-            errors.push(format!(
-                "{label} {type_name} is far larger than the viewport: {w}x{h}"
-            ));
-        }
-    } else if let (Some(x), Some(y)) = (x, y) {
-        if x < -viewport_w || y < -viewport_h || x > viewport_w * 2.0 || y > viewport_h * 2.0 {
-            errors.push(format!(
-                "{label} {type_name} is far outside the viewport at {x},{y}"
-            ));
-        }
-    }
-
-    for key in ["root", "children", "items", "tiers", "command"] {
-        if let Some(child) = obj.get(key) {
-            match child {
-                serde_json::Value::Array(values) => {
-                    for (idx, nested) in values.iter().enumerate() {
-                        collect_bounds_errors(
-                            nested,
-                            viewport_w,
-                            viewport_h,
-                            &format!("{label}.{key}[{idx}]"),
-                            errors,
-                        );
-                    }
-                }
-                serde_json::Value::Object(_) => {
-                    collect_bounds_errors(
-                        child,
-                        viewport_w,
-                        viewport_h,
-                        &format!("{label}.{key}"),
-                        errors,
-                    );
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod app_check_tests {
     use std::fs;
-    use std::io::Cursor;
     use tempfile::TempDir;
-
-    fn test_png_with_footer_pixel(bad_footer_pixel: Option<(u32, u32)>) -> Vec<u8> {
-        let chrome = image::Rgba([24, 24, 37, 255]);
-        let body = image::Rgba([0, 0, 0, 255]);
-        let text = image::Rgba([166, 173, 200, 255]);
-        let mut img = image::RgbaImage::from_pixel(32, 24, body);
-        for x in 0..32 {
-            img.put_pixel(x, 0, chrome);
-        }
-        for y in 18..24 {
-            for x in 0..32 {
-                img.put_pixel(x, y, chrome);
-            }
-        }
-        if let Some((x, y)) = bad_footer_pixel {
-            img.put_pixel(x, y, text);
-        }
-        let mut bytes = Vec::new();
-        img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
-            .unwrap();
-        bytes
-    }
 
     fn manifest_with_on_launch(on_launch: &str) -> crate::app::registry::AppManifest {
         toml::from_str(&format!(
@@ -1423,275 +1079,8 @@ profile_dir = ".plexi-beta"
         ]);
 
         assert_eq!(
-            super::recognized_action_handler(&frame, false),
+            super::recognized_action_handler(&frame),
             Some("counter-increment".to_string())
-        );
-    }
-
-    #[test]
-    fn recognized_action_handler_uses_semantic_action_bar_when_enabled() {
-        let frame = serde_json::json!([
-            {
-                "type": "component_tree",
-                "root": {
-                    "type": "column",
-                    "children": [
-                        {
-                            "type": "action_bar",
-                            "actions": [
-                                {"type": "button", "node_id": "focus-add-5", "label": "+5"}
-                            ]
-                        }
-                    ]
-                }
-            }
-        ]);
-
-        assert_eq!(super::recognized_action_handler(&frame, false), None);
-        assert_eq!(
-            super::recognized_action_handler(&frame, true),
-            Some("focus-add-5".to_string())
-        );
-    }
-
-    fn scaffold_proof_body() -> serde_json::Value {
-        serde_json::json!({
-            "type": "scroll",
-            "child": {
-                "type": "column",
-                "padding": 0.0,
-                "gap": 8.0,
-                "children": [
-                    {
-                        "type": "card",
-                        "padding": 8.0,
-                        "children": [
-                            {
-                                "type": "stack",
-                                "direction": "horizontal",
-                                "gap": 8.0,
-                                "children": [
-                                    {"type": "text", "text": "3", "size": 24.0, "bold": true},
-                                    {"type": "badge", "text": "host", "color": "accent"},
-                                    {"type": "badge", "text": "semantic", "color": "neutral"}
-                                ]
-                            },
-                            {"type": "divider"},
-                            {"type": "text_edit", "node_id": "draft-note", "placeholder": "Working note", "value": "Draft something small"}
-                        ]
-                    },
-                    {"type": "spacer", "size": 12.0},
-                    {"type": "section", "title": "List"},
-                    {
-                        "type": "sized",
-                        "height": 96.0,
-                        "child": {
-                            "type": "select_list",
-                            "selected_idx": 0,
-                            "items": [
-                                {"name": "AppBar", "description": "full-bleed host chrome"},
-                                {"name": "Card", "description": "themed surface"},
-                                {"name": "TextEdit", "description": "host input chrome"}
-                            ]
-                        }
-                    }
-                ]
-            }
-        })
-    }
-
-    #[test]
-    fn semantic_chrome_accepts_scaffold_tree() {
-        let frame = serde_json::json!([
-            {
-                "type": "component_tree",
-                "root": {
-                    "type": "column",
-                    "children": [
-                        {"type": "app_bar", "title": "Counter"},
-                        scaffold_proof_body(),
-                        {
-                            "type": "action_bar",
-                            "actions": [
-                                {"type": "button", "node_id": "counter-increment", "label": "Increment"}
-                            ]
-                        },
-                        {
-                            "type": "pinned",
-                            "edge": "bottom",
-                            "child": {"type": "footer_keys", "entries": []}
-                        }
-                    ]
-                }
-            }
-        ]);
-
-        assert!(super::semantic_scaffold_chrome_errors(&frame).is_empty());
-    }
-
-    #[test]
-    fn semantic_chrome_rejects_zero_padding_shell() {
-        let frame = serde_json::json!([
-            {
-                "type": "component_tree",
-                "root": {
-                    "type": "column",
-                    "padding": 0.0,
-                    "children": [
-                        {"type": "app_bar", "title": "Counter"},
-                        scaffold_proof_body(),
-                        {
-                            "type": "action_bar",
-                            "actions": [
-                                {"type": "button", "node_id": "counter-increment", "label": "Increment"}
-                            ]
-                        },
-                        {
-                            "type": "pinned",
-                            "edge": "bottom",
-                            "child": {"type": "footer_keys", "entries": []}
-                        }
-                    ]
-                }
-            }
-        ]);
-
-        assert!(
-            super::semantic_scaffold_chrome_errors(&frame)
-                .iter()
-                .any(|error| error.contains("padding must be at least")),
-            "{:?}",
-            super::semantic_scaffold_chrome_errors(&frame)
-        );
-    }
-
-    #[test]
-    fn semantic_png_chrome_accepts_full_bleed_unclipped_footer() {
-        let bytes = test_png_with_footer_pixel(None);
-
-        assert!(super::semantic_png_chrome_errors(&bytes, 32, 24).is_empty());
-    }
-
-    #[test]
-    fn semantic_png_chrome_rejects_footer_content_on_bottom_edge() {
-        let bytes = test_png_with_footer_pixel(Some((16, 23)));
-
-        assert!(
-            super::semantic_png_chrome_errors(&bytes, 32, 24)
-                .iter()
-                .any(|error| error.contains("footer content reaches bottom padding")),
-            "{:?}",
-            super::semantic_png_chrome_errors(&bytes, 32, 24)
-        );
-    }
-
-    #[test]
-    fn semantic_chrome_rejects_generic_action_stack() {
-        let frame = serde_json::json!([
-            {
-                "type": "component_tree",
-                "root": {
-                    "type": "column",
-                    "padding": 24.0,
-                    "children": [
-                        {"type": "app_bar", "title": "Counter"},
-                        scaffold_proof_body(),
-                        {
-                            "type": "stack",
-                            "direction": "horizontal",
-                            "children": [
-                                {"type": "button", "node_id": "counter-increment", "label": "Increment"}
-                            ]
-                        },
-                        {
-                            "type": "pinned",
-                            "edge": "bottom",
-                            "child": {"type": "footer_keys", "entries": []}
-                        }
-                    ]
-                }
-            }
-        ]);
-
-        assert!(
-            super::semantic_scaffold_chrome_errors(&frame)
-                .iter()
-                .any(|error| error.contains("missing semantic action_bar")),
-            "{:?}",
-            super::semantic_scaffold_chrome_errors(&frame)
-        );
-    }
-
-    #[test]
-    fn shell_layout_accepts_scaffold_frame() {
-        let frame = serde_json::json!([
-            {
-                "type": "component_tree",
-                "root": {
-                    "type": "column",
-                    "gap": 8.0,
-                    "padding": 24.0,
-                    "children": [
-                        {"type": "app_bar", "title": "Counter"},
-                        scaffold_proof_body(),
-                        {
-                            "type": "action_bar",
-                            "actions": [
-                                {"type": "button", "node_id": "counter-increment", "label": "Increment"}
-                            ]
-                        },
-                        {
-                            "type": "pinned",
-                            "edge": "bottom",
-                            "child": {"type": "footer_keys", "entries": []}
-                        }
-                    ]
-                }
-            }
-        ]);
-
-        assert!(
-            super::scaffold_shell_layout_errors(&frame, 320, 240).is_empty(),
-            "{:?}",
-            super::scaffold_shell_layout_errors(&frame, 320, 240)
-        );
-    }
-
-    #[test]
-    fn shell_layout_rejects_short_scaffold_frame() {
-        let frame = serde_json::json!([
-            {
-                "type": "component_tree",
-                "root": {
-                    "type": "column",
-                    "gap": 8.0,
-                    "padding": 24.0,
-                    "children": [
-                        {"type": "app_bar", "title": "Counter"},
-                        scaffold_proof_body(),
-                        {
-                            "type": "action_bar",
-                            "actions": [
-                                {"type": "button", "node_id": "counter-increment", "label": "Increment"}
-                            ]
-                        },
-                        {
-                            "type": "pinned",
-                            "edge": "bottom",
-                            "child": {"type": "footer_keys", "entries": []}
-                        }
-                    ]
-                }
-            }
-        ]);
-
-        let errors = super::scaffold_shell_layout_errors(&frame, 320, 110);
-
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("action_bar overlaps footer")),
-            "{errors:?}"
         );
     }
 

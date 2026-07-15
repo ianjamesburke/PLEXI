@@ -103,7 +103,6 @@ pub const PANE_ID_GHOST_ALPHA: u8 = 55;
 // Python SDK constants in plexi_sdk/ui.py so both sides agree on pill size.
 pub const BADGE_PAD_H: f32 = 8.0; // horizontal padding (text-to-edge each side)
 pub const BADGE_PAD_V: f32 = 3.0; // vertical padding (text-to-edge each side)
-pub const BADGE_MIN_W: f32 = 32.0; // floor width; prevents single-char scrunch
 
 // ── App protocol — KeyChip geometry ──────────────────────────────────────
 // Padding tokens for the host-rendered KeyChip / KeyChipRow DrawCommands.

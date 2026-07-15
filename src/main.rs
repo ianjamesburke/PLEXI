@@ -23,7 +23,6 @@ mod overlays;
 mod pane_ops;
 mod platform;
 mod plexi_ai;
-mod protocol_render;
 mod protocol;
 mod release;
 mod render;

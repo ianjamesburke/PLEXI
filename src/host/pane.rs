@@ -159,9 +159,12 @@ impl SemanticPaneState {
                         ("padding", None, None, vec![padding.child.to_string()])
                     }
                     UiNodeData::Divider => ("divider", None, None, Vec::new()),
-                    UiNodeData::Space(space) => {
-                        ("space", None, Some(space.to_string()), Vec::new())
-                    }
+                    UiNodeData::Space(space) => (
+                        "space",
+                        None,
+                        Some(format!("{}{}", space.size, if space.grow { "+grow" } else { "" })),
+                        Vec::new(),
+                    ),
                     UiNodeData::Surface(surface) => (
                         "surface",
                         None,
@@ -172,6 +175,30 @@ impl SemanticPaneState {
                         "canvas",
                         None,
                         Some(format!("{}x{}", canvas.width, canvas.height)),
+                        Vec::new(),
+                    ),
+                    UiNodeData::AppBar(app_bar) => (
+                        "app_bar",
+                        Some(app_bar.title.clone()),
+                        (!app_bar.subtitle.is_empty()).then(|| app_bar.subtitle.clone()),
+                        Vec::new(),
+                    ),
+                    UiNodeData::FooterKeys(footer_keys) => (
+                        "footer_keys",
+                        None,
+                        Some(format!("{} entries", footer_keys.entries.len())),
+                        Vec::new(),
+                    ),
+                    UiNodeData::Pinned(pinned) => (
+                        "pinned",
+                        None,
+                        Some(format!("{:?}", pinned.edge).to_ascii_lowercase()),
+                        vec![pinned.child.to_string()],
+                    ),
+                    UiNodeData::Spinner(spinner) => (
+                        "spinner",
+                        (!spinner.label.is_empty()).then(|| spinner.label.clone()),
+                        None,
                         Vec::new(),
                     ),
                 };
