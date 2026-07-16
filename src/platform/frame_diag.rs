@@ -39,8 +39,6 @@ pub enum RepaintCause {
     EdgePulse,
     /// CRT feature effect (~60fps while enabled).
     CrtEffect,
-    /// Image cache load completion (background thread).
-    ImageCacheCompletion,
     /// 100ms poll while a file drag hovers the window.
     FileDragPoll,
     /// 100ms widget pulse/poll animations (copy feedback, quick-note loading).
@@ -52,7 +50,7 @@ pub enum RepaintCause {
 }
 
 /// All variants, in declaration order. Indexes into [`COUNTERS`].
-const ALL_CAUSES: [RepaintCause; 16] = [
+const ALL_CAUSES: [RepaintCause; 15] = [
     RepaintCause::AppIdlePoll,
     RepaintCause::AppClick,
     RepaintCause::AppScheduleRender,
@@ -64,7 +62,6 @@ const ALL_CAUSES: [RepaintCause; 16] = [
     RepaintCause::PaneSwapAnim,
     RepaintCause::EdgePulse,
     RepaintCause::CrtEffect,
-    RepaintCause::ImageCacheCompletion,
     RepaintCause::FileDragPoll,
     RepaintCause::WidgetPulse,
     RepaintCause::QuitConfirm,
@@ -88,7 +85,6 @@ impl RepaintCause {
             RepaintCause::PaneSwapAnim => "pane_swap_anim",
             RepaintCause::EdgePulse => "edge_pulse",
             RepaintCause::CrtEffect => "crt_effect",
-            RepaintCause::ImageCacheCompletion => "image_cache_completion",
             RepaintCause::FileDragPoll => "file_drag_poll",
             RepaintCause::WidgetPulse => "widget_pulse",
             RepaintCause::QuitConfirm => "quit_confirm",

@@ -44,12 +44,6 @@ fn add_test_pane_appears_in_snapshot() {
 /// the render loop at the display refresh rate (uncapped when occluded).
 /// An idle, settled frame must not request an immediate repaint.
 
-
-
-
-
-
-
 #[test]
 fn two_test_panes_have_distinct_ids() {
     let mut h = HostHarness::new();
@@ -77,6 +71,44 @@ struct TextInputProbe {
     enter_handled: bool,
     enter_rendered: bool,
     consume_enter: bool,
+}
+
+#[derive(Default)]
+struct KeyBurstProbe {
+    received: Vec<String>,
+}
+
+impl crate::app::app_trait::App for KeyBurstProbe {
+    fn type_id(&self) -> &'static str {
+        "key-burst-probe"
+    }
+
+    fn display_name(&self) -> String {
+        "Key Burst Probe".to_string()
+    }
+
+    fn ui(&mut self, _ui: &mut egui::Ui, _ctx: &crate::app::app_trait::AppRenderContext<'_>) {}
+
+    fn handle_key(
+        &mut self,
+        input: &crate::app::input_router::PlexiInput,
+    ) -> crate::app::app_trait::KeyDisposition {
+        for event in input.events() {
+            if let egui::Event::Key {
+                key, pressed: true, ..
+            } = event
+            {
+                let name = format!("{key:?}").to_ascii_lowercase();
+                let name = name.strip_prefix("arrow").unwrap_or(&name).to_string();
+                self.received.push(name);
+            }
+        }
+        crate::app::app_trait::KeyDisposition::Consumed
+    }
+
+    fn serialize_state(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "received": self.received }))
+    }
 }
 
 impl crate::app::app_trait::App for TextInputProbe {
@@ -209,6 +241,41 @@ fn consumed_native_key_is_not_replayed_into_render_input() {
     assert_eq!(state["enter_rendered"], false);
 }
 
+#[test]
+fn rapid_pane_key_burst_delivers_every_press_in_order() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::<KeyBurstProbe>::default(),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.run_frames(2);
+
+    let intended = [
+        "right", "down", "left", "up", "right", "right", "down", "left",
+    ];
+    for (index, key) in intended.iter().enumerate() {
+        h.inject_ipc(AppRequest::KeyPane {
+            pane_id,
+            key: (*key).to_string(),
+            response_file: Some(temp_response(tmp.path(), &format!("rapid-key-{index}"))),
+        });
+    }
+    h.run_frames(1);
+
+    let state = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state())
+        .expect("burst probe state");
+    assert_eq!(state["received"], serde_json::json!(intended));
+}
 
 /// Stint 0387: a real keyboard event injected via `RawInput` must reach the
 /// focused app pane's `handle_key` through the migrated `PlexiInput`
@@ -696,8 +763,6 @@ fn workspace_clean_slots_removes_unregistered_files_for_reused_pane_ids() {
 /// Regression guard for PR #392: `push_nav` and `pop_nav` commands must be
 /// processed so the host nav stack tracks depth correctly.
 
-
-
 #[test]
 fn set_pane_title_unknown_pane_id_does_not_panic() {
     // Injects SetPaneTitle for a pane_id that doesn't exist.
@@ -1121,13 +1186,6 @@ fn text_input_overlay_focus_wins_after_central_panel_steal() {
 /// stable `capability_secret_input` Id so the post-CentralPanel block can
 /// target it by name.
 
-
-
-
-
-
-
-
 #[test]
 fn portal_context_state_refreshes_when_child_context_changes() {
     let mut h = HostHarness::new();
@@ -1303,9 +1361,9 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
             .panes
             .get(&pane_id)
             .and_then(Pane::as_app)
-            .is_some_and(|pane| {
-                matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree())
-            });
+            .is_some_and(
+                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+            );
         if rendered {
             break;
         }
@@ -1347,7 +1405,13 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
     let click_y = local_origin_y + target_canvas_y * scale;
 
     let response_file = temp_response(tmp.path(), "click-pane");
-    h.inject_click(pane_id, click_x, click_y, "left", Some(response_file.clone()));
+    h.inject_click(
+        pane_id,
+        click_x,
+        click_y,
+        "left",
+        Some(response_file.clone()),
+    );
     h.run_frames(1);
 
     let response = read_json_response(&response_file);
