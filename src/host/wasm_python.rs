@@ -1530,6 +1530,16 @@ fn python_key_name(key: egui::Key) -> String {
         egui::Key::Backspace => "backspace".to_string(),
         egui::Key::Escape => "escape".to_string(),
         egui::Key::Space => "space".to_string(),
+        egui::Key::Num0 => "0".to_string(),
+        egui::Key::Num1 => "1".to_string(),
+        egui::Key::Num2 => "2".to_string(),
+        egui::Key::Num3 => "3".to_string(),
+        egui::Key::Num4 => "4".to_string(),
+        egui::Key::Num5 => "5".to_string(),
+        egui::Key::Num6 => "6".to_string(),
+        egui::Key::Num7 => "7".to_string(),
+        egui::Key::Num8 => "8".to_string(),
+        egui::Key::Num9 => "9".to_string(),
         other => format!("{other:?}").to_ascii_lowercase(),
     }
 }
@@ -2946,6 +2956,28 @@ mod tests {
     fn python_keys_use_sdk_lowercase_names() {
         assert_eq!(python_key_name(egui::Key::ArrowDown), "down");
         assert_eq!(python_key_name(egui::Key::Escape), "escape");
+        assert_eq!(python_key_name(egui::Key::Enter), "enter");
+    }
+
+    #[test]
+    fn python_key_name_maps_digit_keys_to_plain_digits() {
+        assert_eq!(python_key_name(egui::Key::Num0), "0");
+        assert_eq!(python_key_name(egui::Key::Num1), "1");
+        assert_eq!(python_key_name(egui::Key::Num2), "2");
+        assert_eq!(python_key_name(egui::Key::Num3), "3");
+        assert_eq!(python_key_name(egui::Key::Num4), "4");
+        assert_eq!(python_key_name(egui::Key::Num5), "5");
+        assert_eq!(python_key_name(egui::Key::Num6), "6");
+        assert_eq!(python_key_name(egui::Key::Num7), "7");
+        assert_eq!(python_key_name(egui::Key::Num8), "8");
+        assert_eq!(python_key_name(egui::Key::Num9), "9");
+    }
+
+    #[test]
+    fn python_key_name_fallback_matches_documented_punctuation_names() {
+        assert_eq!(python_key_name(egui::Key::Plus), "plus");
+        assert_eq!(python_key_name(egui::Key::Minus), "minus");
+        assert_eq!(python_key_name(egui::Key::Equals), "equals");
     }
 
     #[test]

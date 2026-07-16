@@ -200,13 +200,14 @@ adding on press and removing on release; do not toggle state on every event.
 
 | Physical key | `event.key` |
 |---|---|
-| Enter / Return | `"return"` |
+| Enter / Return | `"enter"` |
 | Escape | `"escape"` |
 | Backspace | `"backspace"` |
 | Space | `"space"` |
 | Arrow keys | `"up"` / `"down"` / `"left"` / `"right"` |
 | Tab | `"tab"` |
 | Letters | `"a"`–`"z"` (lowercase) |
+| Digits (main row or numpad) | `"0"`–`"9"` |
 | Plus / Minus / Equals | `"plus"` / `"minus"` / `"equals"` |
 | Function keys | `"f1"`–`"f12"` |
 
