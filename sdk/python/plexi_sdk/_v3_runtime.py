@@ -112,6 +112,8 @@ class V3AppRuntime:
             self._handle_key(ev)
         elif t == "key_events":
             self._handle_key_events(ev)
+        elif t == "mouse":
+            self._handle_mouse(ev)
         elif t == "timer":
             self._handle_timer(ev)
         elif t == "component_event":
@@ -278,6 +280,16 @@ class V3AppRuntime:
                 handled = True
         if handled:
             _emit({"type": "schedule_render", "after_ms": 16})
+
+    def _handle_mouse(self, ev: dict) -> None:
+        self._dispatch(events.MouseEvent(
+            x=float(ev.get("x", 0.0)),
+            y=float(ev.get("y", 0.0)),
+            button=ev.get("button"),
+            pressed=bool(ev.get("pressed", False)),
+            scroll_x=float(ev.get("scroll_x", 0.0)),
+            scroll_y=float(ev.get("scroll_y", 0.0)),
+        ))
 
     def _handle_timer(self, ev: dict) -> None:
         self._dispatch_timer(
