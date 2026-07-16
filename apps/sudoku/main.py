@@ -272,7 +272,7 @@ def _key(d, event):
             return [SetState({"diff_idx": (idx - 1) % 3})]
         if key in ("down", "j"):
             return [SetState({"diff_idx": (idx + 1) % 3})]
-        if key in ("return", "space"):
+        if key in ("enter", "space"):
             new = _new_game(DIFFICULTIES[idx])
             return [SetState(new), SetStatus(f"{DIFFICULTIES[idx].title()} — 00:00")]
         if key == "1":
