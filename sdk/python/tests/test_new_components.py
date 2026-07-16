@@ -20,19 +20,17 @@ class _TextNode:
 # ── Tabs ───────────────────────────────────────────────────────────────────
 
 
-def test_tabs_to_node_returns_stack() -> None:
+def test_tabs_to_node_returns_column() -> None:
     a = _TextNode("Panel A")
     b = _TextNode("Panel B")
     tabs = Tabs([("Tab 1", a), ("Tab 2", b)], active=0)
     node = tabs.to_node()
     assert isinstance(node, dict)
-    assert node["type"] == "stack"
-    assert node["direction"] == "vertical"
+    assert node["type"] == "column"
     # Must have at least the tab bar and the active content
     assert len(node["children"]) == 2
     tab_bar = node["children"][0]
-    assert tab_bar["type"] == "stack"
-    assert tab_bar["direction"] == "horizontal"
+    assert tab_bar["type"] == "row"
     assert len(tab_bar["children"]) == 2
 
 
@@ -45,21 +43,22 @@ def test_tabs_active_tab_content_is_correct() -> None:
     assert active_content["text"] == "Panel B"
 
 
-def test_tabs_empty_produces_stack() -> None:
+def test_tabs_empty_produces_column() -> None:
     node = Tabs([]).to_node()
-    assert node["type"] == "stack"
+    assert node["type"] == "column"
     # Only the tab bar; no content child
-    assert node["children"][0]["type"] == "stack"
+    assert node["children"][0]["type"] == "row"
 
 
-def test_tabs_active_button_is_bold() -> None:
+def test_tabs_active_button_is_primary_style() -> None:
     a = _TextNode("A")
     b = _TextNode("B")
     tabs = Tabs([("First", a), ("Second", b)], active=0)
     node = tabs.to_node()
     tab_buttons = node["children"][0]["children"]
-    assert tab_buttons[0]["child"]["bold"] is True
-    assert tab_buttons[1]["child"]["bold"] is False
+    assert tab_buttons[0]["type"] == "button"
+    assert tab_buttons[0]["style"] == "primary"
+    assert tab_buttons[1]["style"] == "secondary"
 
 
 # ── Grid ───────────────────────────────────────────────────────────────────
@@ -68,14 +67,12 @@ def test_tabs_active_button_is_bold() -> None:
 def test_grid_2col_has_correct_rows() -> None:
     items = [_TextNode(str(i)) for i in range(4)]
     node = Grid(2, items).to_node()
-    assert node["type"] == "stack"
-    assert node["direction"] == "vertical"
+    assert node["type"] == "column"
     # 4 items / 2 columns = 2 rows
     assert len(node["children"]) == 2
-    # Each row is a horizontal stack with 2 children
+    # Each row is a row node with 2 children
     for row in node["children"]:
-        assert row["type"] == "stack"
-        assert row["direction"] == "horizontal"
+        assert row["type"] == "row"
         assert len(row["children"]) == 2
 
 
@@ -105,21 +102,25 @@ def test_grid_single_column() -> None:
 # ── Toggle ─────────────────────────────────────────────────────────────────
 
 
-def test_toggle_to_node_has_node_id() -> None:
+def test_toggle_with_label_wraps_button_in_row() -> None:
     toggle = Toggle("dark_mode", value=True, label="Dark mode")
     node = toggle.to_node()
     assert isinstance(node, dict)
-    assert node.get("node_id") == "dark_mode"
+    assert node["type"] == "row"
+    label_node, state_button = node["children"]
+    assert label_node == {"type": "text", "text": "Dark mode"}
+    assert state_button["on_click"] == "dark_mode"
 
 
-def test_toggle_on_click_is_true() -> None:
+def test_toggle_without_label_is_bare_button() -> None:
     node = Toggle("t", value=False).to_node()
-    assert node["on_click"] is True
+    assert node["type"] == "button"
+    assert node["on_click"] == "t"
 
 
-def test_toggle_type_is_interactive() -> None:
-    node = Toggle("t", value=False).to_node()
-    assert node["type"] == "interactive"
+def test_toggle_label_reflects_value() -> None:
+    assert Toggle("t", value=True).to_node()["label"] == "on"
+    assert Toggle("t", value=False).to_node()["label"] == "off"
 
 
 # ── Clickable ──────────────────────────────────────────────────────────────
@@ -159,43 +160,23 @@ def test_clickable_on_hover_is_false() -> None:
 
 def test_progress_bar_to_node() -> None:
     node = ProgressBar(0.5, 1.0).to_node()
-    assert isinstance(node, dict)
-    assert node["type"] == "stack"
+    assert node == {"type": "progress-bar", "value": 0.5, "max": 1.0}
 
 
-def test_progress_bar_direction_horizontal() -> None:
+def test_progress_bar_default_max() -> None:
     node = ProgressBar(0.5).to_node()
-    assert node["direction"] == "horizontal"
+    assert node["max"] == 1.0
 
 
-def test_progress_bar_full_has_one_child() -> None:
-    node = ProgressBar(1.0, 1.0).to_node()
-    # 100% filled: empty ratio is 0, so only the filled child
-    assert len(node["children"]) == 1
-    assert node["children"][0]["type"] == "text"
+def test_progress_bar_zero_max_falls_back_to_one() -> None:
+    node = ProgressBar(0.5, max_value=0.0).to_node()
+    assert node["max"] == 1.0
 
 
-def test_progress_bar_zero_has_two_children() -> None:
-    # 0% filled still produces filled (at least 1 char) + empty
-    node = ProgressBar(0.0, 1.0).to_node()
-    assert len(node["children"]) == 2
-
-
-def test_progress_bar_clamps_above_max() -> None:
+def test_progress_bar_passes_raw_value_through() -> None:
+    # The host clamps for rendering; the SDK just forwards value/max.
     node = ProgressBar(2.0, 1.0).to_node()
-    assert len(node["children"]) == 1  # 100%, no empty portion
-
-
-def test_progress_bar_custom_color() -> None:
-    node = ProgressBar(0.5, color="danger").to_node()
-    filled = node["children"][0]
-    assert filled["color"] == "danger"
-
-
-def test_progress_bar_default_color() -> None:
-    node = ProgressBar(0.5).to_node()
-    filled = node["children"][0]
-    assert filled["color"] == "accent"
+    assert node["value"] == 2.0
 
 
 # ── TextEdit ───────────────────────────────────────────────────────────────
@@ -269,3 +250,42 @@ def test_action_bar_to_node_is_semantic_action_bar() -> None:
 def test_action_bar_rejects_non_button_actions() -> None:
     with pytest.raises(TypeError, match="ActionBar actions\\[0\\] must be a Button"):
         ActionBar([TextEdit("not-a-button")])
+
+
+# ── CPython-WASM decoder drift guard ────────────────────────────────────────
+#
+# Mirrors the `match kind { ... }` arms of `decode_node_data` in
+# `src/host/wasm_python.rs` (stint 0402). A widget whose to_node() emits a
+# type outside this set crashes any live CPython-WASM app that uses it with
+# "unsupported CPython-WASM UINode type: <name>" — silent until run live.
+# Keep this set in sync with the Rust match by hand; it is deliberately not
+# derived from the SDK's own output, since that would make the guard
+# tautological.
+_DECODER_SUPPORTED_ROOT_TYPES = {
+    "row", "column", "button", "text", "progress-bar",
+}
+
+
+@pytest.mark.parametrize(
+    "widget_factory",
+    [
+        lambda: Tabs([("Tab 1", _TextNode("Panel A")), ("Tab 2", _TextNode("Panel B"))], active=0),
+        lambda: Tabs([]),
+        lambda: Grid(2, [_TextNode("a"), _TextNode("b"), _TextNode("c")]),
+        lambda: Grid(1, [_TextNode("a")]),
+        lambda: Toggle("dark_mode", value=True),
+        lambda: Toggle("dark_mode", value=True, label="Dark mode"),
+        lambda: ProgressBar(0.5),
+    ],
+    ids=[
+        "tabs", "tabs-empty", "grid", "grid-single-col",
+        "toggle-no-label", "toggle-with-label", "progress_bar",
+    ],
+)
+def test_v3_5_uinode_widgets_emit_decoder_supported_root_type(widget_factory) -> None:
+    node = widget_factory().to_node()
+    assert node["type"] in _DECODER_SUPPORTED_ROOT_TYPES, (
+        f"{node['type']!r} has no CPython-WASM decode arm in "
+        "src/host/wasm_python.rs decode_node_data — this widget will crash "
+        "any live Python-WASM app that renders it"
+    )

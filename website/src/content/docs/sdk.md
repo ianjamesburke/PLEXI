@@ -637,7 +637,8 @@ Example::
 
 On/off toggle switch (L1 sugar).
 
-Renders as an Interactive node with a horizontal stack indicator.
+Renders as a Button whose label carries the on/off state; clicking it
+fires `node_id` as the on_click handler.
 
 Example::
 
@@ -655,14 +656,11 @@ Example::
 
 ### `ProgressBar`
 
-Horizontal progress bar (L0 decomposition).
-
-Decomposes to a horizontal Stack with a filled portion and an empty
-portion sized proportionally to ``value / max_value``.
+Horizontal progress bar backed by the host's native progress-bar node.
 
 Example::
 
-    bar = ProgressBar(0.75, color="accent")
+    bar = ProgressBar(0.75)
     ctx.render_tree(bar.to_node())
 
 ## Testing
