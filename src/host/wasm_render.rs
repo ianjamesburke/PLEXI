@@ -26,6 +26,17 @@ pub enum CanvasFit {
     Contain,
 }
 
+/// A canvas click reported in the app's own declared canvas coordinate
+/// space (post `canvas_transform` inversion), not screen pixels. See
+/// `MouseEvent` in `sdk/python/plexi_sdk/events.py`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CanvasClick {
+    pub x: f32,
+    pub y: f32,
+    pub button: Option<&'static str>,
+    pub pressed: bool,
+}
+
 /// Interactions produced by one render pass, to be translated into guest input.
 #[derive(Default, Debug)]
 pub struct RenderResult {
@@ -33,6 +44,8 @@ pub struct RenderResult {
     pub actions: Vec<String>,
     /// `(on_change action, new value)` pairs from edited text inputs.
     pub value_changes: Vec<(String, String)>,
+    /// Canvas clicks, already inverted into the app's declared canvas space.
+    pub canvas_clicks: Vec<CanvasClick>,
     pub canvas_time: std::time::Duration,
 }
 
@@ -385,13 +398,30 @@ fn render_node(
             } else {
                 c.height
             };
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(width, height.max(1.0)), egui::Sense::hover());
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(width, height.max(1.0)), egui::Sense::click());
             let fit = canvas_fits
                 .and_then(|fits| fits.get(&id))
                 .copied()
                 .unwrap_or_default();
             let (origin, sx, sy) = canvas_transform(rect, c.width, c.height, fit);
+            if resp.clicked() {
+                if let Some(pixel_pos) = resp.interact_pointer_pos() {
+                    let button = if resp.clicked_by(egui::PointerButton::Secondary) {
+                        Some("right")
+                    } else if resp.clicked_by(egui::PointerButton::Middle) {
+                        Some("middle")
+                    } else {
+                        Some("left")
+                    };
+                    out.canvas_clicks.push(CanvasClick {
+                        x: (pixel_pos.x - origin.x) / sx,
+                        y: (pixel_pos.y - origin.y) / sy,
+                        button,
+                        pressed: true,
+                    });
+                }
+            }
             for command in &c.commands {
                 match command {
                     CanvasCommand::Rect(r) => {
@@ -614,6 +644,112 @@ mod tests {
             "grow canvas allocated {allocated_height}px tall in a {pane_height}px pane, \
              declared height was {declared_height}px"
         );
+    }
+
+    // Stint 0397: a click at a known screen pixel inside a scaled `grow`
+    // canvas must arrive as the correct canvas-space coordinate, not the raw
+    // pixel. This is the transform-inversion regression guard — it exercises
+    // the exact `canvas_transform` math the painter uses, inverted.
+    #[test]
+    fn canvas_click_inverts_fit_transform_to_canvas_space() {
+        let declared_width = 360.0;
+        let declared_height = 440.0;
+        let pane_width = 200.0;
+        let pane_height = 400.0;
+
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![IndexedNode {
+                id: 0,
+                key: String::new(),
+                data: UiNodeData::Canvas(CanvasNode {
+                    width: declared_width,
+                    height: declared_height,
+                    grow: true,
+                    commands: vec![],
+                }),
+            }],
+        };
+        let mut fits = HashMap::new();
+        fits.insert(0, CanvasFit::Contain);
+
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+
+        // sx = sy = 200/360 = 5/9; origin.y = 200 - (440 * 5/9)/2 = 700/9.
+        // A click at screen pixel (50, 100) inverts to canvas space (90, 40).
+        let click_px = egui::pos2(50.0, 100.0);
+        let screen_rect =
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(pane_width, pane_height));
+
+        // Warm-up frame with no input: egui hit-tests a press/release pair
+        // against the *previous* frame's widget rects, so the canvas must
+        // already have been laid out once before a click can resolve.
+        let warmup = egui::RawInput {
+            screen_rect: Some(screen_rect),
+            ..Default::default()
+        };
+        let _ = ctx.run(warmup, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let _ = render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits));
+                });
+        });
+
+        // Move + press + release delivered together as one frame's input,
+        // mirroring the click-simulation pattern proven in `src/ui_tests.rs`
+        // (`PlexiUiHarness` sidebar tests).
+        let click_frame = egui::RawInput {
+            screen_rect: Some(screen_rect),
+            events: vec![
+                egui::Event::PointerMoved(click_px),
+                egui::Event::PointerButton {
+                    pos: click_px,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: click_px,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut captured = RenderResult::default();
+        let _ = ctx.run(click_frame, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    captured =
+                        render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits));
+                });
+        });
+
+        assert_eq!(
+            captured.canvas_clicks.len(),
+            1,
+            "one click at a known pixel should produce exactly one canvas click"
+        );
+        let click = captured.canvas_clicks[0];
+        assert!(
+            (click.x - 90.0).abs() < 0.01,
+            "expected canvas-space x 90.0, got {}",
+            click.x
+        );
+        assert!(
+            (click.y - 40.0).abs() < 0.01,
+            "expected canvas-space y 40.0, got {}",
+            click.y
+        );
+        assert_eq!(click.button, Some("left"));
+        assert!(click.pressed);
     }
 
     // G4 foundation: a real sysmon view tree (after delivering stats) renders

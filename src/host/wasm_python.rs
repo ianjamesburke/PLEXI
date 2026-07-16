@@ -964,6 +964,15 @@ impl LivePythonPane {
                     "type": "text_submitted", "id": handler_id, "value": value
                 }));
             }
+            for click in result.canvas_clicks {
+                let _ = self.runtime.send(&json!({
+                    "type": "mouse",
+                    "x": click.x,
+                    "y": click.y,
+                    "button": click.button,
+                    "pressed": click.pressed,
+                }));
+            }
         } else {
             ui.spinner();
         }
