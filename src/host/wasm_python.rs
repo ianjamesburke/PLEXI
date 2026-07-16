@@ -567,9 +567,7 @@ impl HeadlessPythonSession {
             "size": [size.0, size.1],
         }))?;
         let mut session = Self { runtime };
-        session.wait_for(|message| {
-            message.get("type").and_then(Value::as_str) == Some("ready")
-        })?;
+        session.wait_for(|message| message.get("type").and_then(Value::as_str) == Some("ready"))?;
         Ok(session)
     }
 
@@ -586,9 +584,7 @@ impl HeadlessPythonSession {
             message.get("type").and_then(Value::as_str) == Some("frame_done")
         })?;
         let raw = tree_json.ok_or_else(|| {
-            WasmPythonError::BridgeJson(
-                "app emitted frame_done with no component_tree".to_string(),
-            )
+            WasmPythonError::BridgeJson("app emitted frame_done with no component_tree".to_string())
         })?;
         decode_ui_tree_value(&raw)
     }
@@ -1423,10 +1419,24 @@ impl LivePythonPane {
         if events.is_empty() {
             crate::app::app_trait::KeyDisposition::Passthrough
         } else {
-            let _ = self.runtime.send(&json!({
+            for event in &events {
+                log::info!(
+                    "app::{}: received key at Python host boundary key={} pressed={}",
+                    self.app_id,
+                    event["key"].as_str().unwrap_or("<missing>"),
+                    event["pressed"].as_bool().unwrap_or(false),
+                );
+            }
+            if let Err(error) = self.runtime.send(&json!({
                 "type": "key_events",
                 "events": events,
-            }));
+            })) {
+                log::error!(
+                    "app::{}: send key events to CPython WASM: {error}",
+                    self.app_id
+                );
+                self.error = Some(error.to_string());
+            }
             crate::app::app_trait::KeyDisposition::Consumed
         }
     }

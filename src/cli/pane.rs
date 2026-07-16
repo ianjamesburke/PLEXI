@@ -503,9 +503,8 @@ pub fn pane_info_cli(previous: Option<u64>) -> i32 {
                             return 1;
                         }
                         let mut obj = v;
-                        obj["socket"] = serde_json::Value::String(
-                            socket_path.to_string_lossy().into_owned(),
-                        );
+                        obj["socket"] =
+                            serde_json::Value::String(socket_path.to_string_lossy().into_owned());
                         let channel =
                             crate::config::build_channel().unwrap_or_else(|| "main".to_string());
                         obj["channel"] = serde_json::Value::String(channel);
@@ -629,7 +628,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
         .to_string_lossy()
         .into_owned();
     log::info!(
-        "pane_key:cli: pane_id={pane_id} key_chars={} response_file={response_file:?}",
+        "pane_key:cli: pane_id={pane_id} key={key:?} key_chars={} response_file={response_file:?}",
         key.chars().count()
     );
     let code = send_to_socket(serde_json::json!({

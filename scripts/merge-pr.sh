@@ -7,7 +7,7 @@
 #   scripts/merge-pr.sh rebase <BRANCH>        rebase feature branch on origin/alpha + force-push
 #   scripts/merge-pr.sh squash <PR>            squash-merge only
 #   scripts/merge-pr.sh sync                   reset local alpha to origin/alpha (safe — fails if unexpected commits)
-#   scripts/merge-pr.sh cleanup <PR> <BRANCH>  channel-clean + wtp remove + remote branch delete
+#   scripts/merge-pr.sh cleanup <PR> <BRANCH>  remove all local and remote branch artifacts
 #   scripts/merge-pr.sh close <ISSUE> <PR>     strip pipeline labels + close issue + append ship log
 #   scripts/merge-pr.sh close-stints <PR> <ID...>
 #
@@ -54,11 +54,37 @@ do_sync() {
 do_cleanup() {
     local PR="$1"
     local BRANCH="$2"
+    local WORKTREE_PATH="$ROOT/worktrees/$BRANCH"
     echo "==> Cleaning up PR #$PR artifacts"
     rm -f "test_pr${PR}.py"
     just channel-clean "pr-${PR}" 2>/dev/null || true
-    wtp remove "$BRANCH" --force --with-branch 2>/dev/null || true
-    git push origin --delete "$BRANCH" 2>/dev/null || true
+
+    if git worktree list --porcelain | grep -Fqx "worktree $WORKTREE_PATH"; then
+        git worktree remove --force "$WORKTREE_PATH"
+    fi
+    git worktree prune
+    if [ -e "$WORKTREE_PATH" ]; then
+        echo "ERROR: cleanup left worktree directory: $WORKTREE_PATH" >&2
+        exit 1
+    fi
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+        git branch -D "$BRANCH"
+    fi
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+        echo "ERROR: cleanup left local branch: $BRANCH" >&2
+        exit 1
+    fi
+    if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+        git push origin --delete "$BRANCH"
+    fi
+    if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+        echo "ERROR: cleanup left remote branch: origin/$BRANCH" >&2
+        exit 1
+    fi
+    if git worktree list --porcelain | grep -Fqx "worktree $WORKTREE_PATH"; then
+        echo "ERROR: cleanup left registered worktree: $WORKTREE_PATH" >&2
+        exit 1
+    fi
     echo "==> Reaping finished merged worktrees (clean + fully pushed only)"
     just reap-merged-worktrees 2>/dev/null || true
     echo "==> Sweeping stale worktree build artifacts"
