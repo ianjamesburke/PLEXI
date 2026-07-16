@@ -2325,20 +2325,15 @@ class Tabs:
         for i, (label, _content) in enumerate(self.tabs):
             bold = i == self.active
             tab_buttons.append({
-                "type": "interactive",
-                "node_id": f"tab_{i}",
-                "child": {
-                    "type": "text",
-                    "text": label,
-                    "bold": bold,
-                },
-                "on_click": True,
-                "on_hover": False,
+                "type": "button",
+                "label": label,
+                "on_click": f"tab_{i}",
+                "style": "primary" if bold else "secondary",
+                "disabled": False,
             })
 
         tab_bar: dict = {
-            "type": "stack",
-            "direction": "horizontal",
+            "type": "row",
             "children": tab_buttons,
             "gap": SPACE_SM,
         }
@@ -2354,8 +2349,7 @@ class Tabs:
             children.append(active_content)
 
         return {
-            "type": "stack",
-            "direction": "vertical",
+            "type": "column",
             "children": children,
             "gap": 0.0,
         }
@@ -2405,15 +2399,13 @@ class Grid:
             for child in row_items:
                 row_nodes.append(child.to_node() if hasattr(child, "to_node") else child)
             rows.append({
-                "type": "stack",
-                "direction": "horizontal",
+                "type": "row",
                 "children": row_nodes,
                 "gap": self.gap,
             })
 
         return {
-            "type": "stack",
-            "direction": "vertical",
+            "type": "column",
             "children": rows,
             "gap": self.gap,
         }
@@ -2422,7 +2414,8 @@ class Grid:
 class Toggle:
     """On/off toggle switch (L1 sugar).
 
-    Renders as an Interactive node with a horizontal stack indicator.
+    Renders as a Button whose label carries the on/off state; clicking it
+    fires `node_id` as the on_click handler.
 
     Example::
 
@@ -2436,21 +2429,22 @@ class Toggle:
         self.label = label
 
     def to_node(self) -> dict:
+        state_button: dict = {
+            "type": "button",
+            "label": "on" if self.value else "off",
+            "on_click": self.node_id,
+            "style": "primary" if self.value else "secondary",
+            "disabled": False,
+        }
+        if not self.label:
+            return state_button
         return {
-            "type": "interactive",
-            "node_id": self.node_id,
-            "child": {
-                "type": "stack",
-                "direction": "horizontal",
-                "children": [
-                    {"type": "text", "text": self.label} if self.label else
-                    {"type": "text", "text": ""},
-                    {"type": "text", "text": "on" if self.value else "off"},
-                ],
-                "gap": SPACE_SM,
-            },
-            "on_click": True,
-            "on_hover": False,
+            "type": "row",
+            "children": [
+                {"type": "text", "text": self.label},
+                state_button,
+            ],
+            "gap": SPACE_SM,
         }
 
 
@@ -2480,14 +2474,11 @@ class Clickable:
 
 
 class ProgressBar:
-    """Horizontal progress bar (L0 decomposition).
-
-    Decomposes to a horizontal Stack with a filled portion and an empty
-    portion sized proportionally to ``value / max_value``.
+    """Horizontal progress bar backed by the host's native progress-bar node.
 
     Example::
 
-        bar = ProgressBar(0.75, color="accent")
+        bar = ProgressBar(0.75)
         ctx.render_tree(bar.to_node())
     """
 
@@ -2495,37 +2486,16 @@ class ProgressBar:
         self,
         value: float,
         max_value: float = 1.0,
-        color: str = "",
     ) -> None:
         self.value = value
         self.max_value = max_value
-        self.color = color
 
     def to_node(self) -> dict:
         safe_max = self.max_value if self.max_value > 0 else 1.0
-        ratio = max(0.0, min(1.0, self.value / safe_max))
-        empty_ratio = 1.0 - ratio
-
-        filled: dict = {
-            "type": "text",
-            "text": "█" * max(1, round(ratio * 20)),
-            "color": self.color or "accent",
-        }
-        empty: dict = {
-            "type": "text",
-            "text": "░" * max(0, round(empty_ratio * 20)),
-            "color": "dim",
-        }
-
-        children: list = [filled]
-        if empty_ratio > 0:
-            children.append(empty)
-
         return {
-            "type": "stack",
-            "direction": "horizontal",
-            "children": children,
-            "gap": 0.0,
+            "type": "progress-bar",
+            "value": self.value,
+            "max": safe_max,
         }
 
 

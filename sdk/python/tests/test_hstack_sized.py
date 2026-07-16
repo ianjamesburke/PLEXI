@@ -8,8 +8,7 @@ from plexi_sdk.ui import Canvas, HStack, Sized, Text
 def test_hstack_to_node_horizontal_stack() -> None:
     node = HStack([Text(text="a"), Text(text="b")], gap=12.0).to_node()
     assert node is not None
-    assert node["type"] == "stack"
-    assert node["direction"] == "horizontal"
+    assert node["type"] == "row"
     assert node["gap"] == 12.0
     assert len(node["children"]) == 2
 
