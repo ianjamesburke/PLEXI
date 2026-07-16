@@ -1264,3 +1264,138 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
         "green pip -> Idle (green dot), overriding the Working agent state"
     );
 }
+
+/// Stint 0398: end-to-end counterpart of stint 0397's `canvas_transform`
+/// unit test (`src/host/wasm_render.rs::canvas_click_inverts_fit_transform_to_canvas_space`).
+/// That test drives a raw `UiTree` through the renderer directly; this test
+/// drives a REAL process-app pane through the production `AppRequest::ClickPane`
+/// dispatch — the exact path `plexi pane click` uses — and confirms the app on
+/// the other side of the IPC bridge receives the correctly inverted
+/// canvas-space coordinate for a `fit="contain"` (scaled + letterboxed) canvas.
+///
+/// `apps/dev/canvas-click-probe` renders a bare `Canvas` with no chrome, so
+/// its widget rect equals the pane's own rect — letting the test predict the
+/// canvas-space landing point from the pane rect alone, by hand, with the
+/// same `canvas_transform` formula (declared 360x440, fit=contain) stint
+/// 0397's unit test used.
+#[test]
+fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/canvas-click-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch canvas-click-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching canvas-click-probe");
+
+    // Real subprocess: poll for its first committed render before doing
+    // anything layout-dependent (pane rect resolution, clicking).
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let rendered = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .is_some_and(|pane| {
+                matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree())
+            });
+        if rendered {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "canvas-click-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    // A couple more idle frames so the tile tree's layout settles.
+    h.run_frames(2);
+
+    let (win_idx, tile_id) = h
+        .app
+        .find_pane_in_any_window(pane_id)
+        .expect("pane must be findable in a window");
+    let pane_rect = h.app.windows[win_idx]
+        .tree
+        .tiles
+        .rect(tile_id)
+        .expect("pane must have a known rect after rendering");
+
+    // Mirrors `canvas_transform` (src/host/wasm_render.rs) by hand: the probe
+    // declares a 360x440 canvas with fit="contain" and no chrome, so the
+    // canvas widget rect equals `pane_rect` exactly. Target canvas-space
+    // point (90, 40) — the same target stint 0397's unit test used.
+    let declared_w = 360.0_f32;
+    let declared_h = 440.0_f32;
+    let sx = pane_rect.width() / declared_w;
+    let sy = pane_rect.height() / declared_h;
+    let scale = sx.min(sy);
+    let content_w = declared_w * scale;
+    let content_h = declared_h * scale;
+    let local_origin_x = (pane_rect.width() - content_w) / 2.0;
+    let local_origin_y = (pane_rect.height() - content_h) / 2.0;
+    let target_canvas_x = 90.0_f32;
+    let target_canvas_y = 40.0_f32;
+    let click_x = local_origin_x + target_canvas_x * scale;
+    let click_y = local_origin_y + target_canvas_y * scale;
+
+    let response_file = temp_response(tmp.path(), "click-pane");
+    h.inject_click(pane_id, click_x, click_y, "left", Some(response_file.clone()));
+    h.run_frames(1);
+
+    let response = read_json_response(&response_file);
+    assert_eq!(response["ok"], true, "click dispatch failed: {response:?}");
+
+    // The click's egui-level effect is synchronous, but delivery to the
+    // Python subprocess and its reply round-trip the IPC pipe — poll for the
+    // app's re-render to reflect it.
+    let start = std::time::Instant::now();
+    let mut observed: Option<(f64, f64)> = None;
+    loop {
+        h.run_frames(1);
+        let state = h.app.windows[win_idx]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .map(|pane| pane.semantic_state());
+        if let Some(state) = &state {
+            for node in &state.nodes {
+                for cmd in &node.canvas_commands {
+                    if cmd.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        if let (Some(x), Some(y)) = (
+                            cmd.get("x").and_then(|v| v.as_f64()),
+                            cmd.get("y").and_then(|v| v.as_f64()),
+                        ) {
+                            observed = Some((x, y));
+                        }
+                    }
+                }
+            }
+        }
+        if observed.is_some() {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "app did not report the click's canvas-space coordinate in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    let (got_x, got_y) = observed.expect("click coordinate observed");
+    assert!(
+        (got_x - target_canvas_x as f64).abs() < 0.5,
+        "expected canvas-space x near {target_canvas_x}, got {got_x}"
+    );
+    assert!(
+        (got_y - target_canvas_y as f64).abs() < 0.5,
+        "expected canvas-space y near {target_canvas_y}, got {got_y}"
+    );
+}

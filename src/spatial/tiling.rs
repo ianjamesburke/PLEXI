@@ -403,6 +403,10 @@ pub struct PlexiBehavior<'a> {
     /// for unfocused terminals (which still need current modifiers for pointer
     /// link-hover and mouse reporting).
     pub frame_modifiers: egui::Modifiers,
+    /// Pending `AppRequest::ClickPane` injections, keyed by target pane.
+    /// Consumed (via `remove`) by whichever pane actually renders this frame —
+    /// see `crate::host::pane::PendingPaneClick`.
+    pub pending_pane_clicks: &'a mut HashMap<PaneId, crate::host::pane::PendingPaneClick>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -503,7 +507,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 }
             }
 
-            render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused, has_tabs);
+            let pending_click = self.pending_pane_clicks.remove(pane_id);
+            render::app_pane::render(
+                &mut app_ui,
+                app_pane,
+                &self.colors,
+                is_focused,
+                has_tabs,
+                pending_click,
+            );
         } else if let Some(terminal) = pane.as_terminal_mut() {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);

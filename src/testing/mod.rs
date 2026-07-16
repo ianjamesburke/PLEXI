@@ -210,6 +210,31 @@ impl HostHarness {
         let _ = self.ipc_tx.send(cmd);
         self
     }
+
+    /// Inject a synthetic pointer click at pane-pixel coordinates (origin at
+    /// the pane's top-left), through the real `AppRequest::ClickPane`
+    /// dispatch path — the same host code `plexi pane click` drives. A real
+    /// pointer move + press + release is delivered into the live production
+    /// egui pass, so it exercises the pane's own `canvas_transform`
+    /// inversion, never a parallel resolver. Call `run_frames` afterward to
+    /// let the dispatch (and, for process apps, the async IPC round trip to
+    /// the guest) take effect. `button` is `"left"`, `"right"`, or `"middle"`.
+    pub fn inject_click(
+        &self,
+        pane_id: PaneId,
+        x: f32,
+        y: f32,
+        button: &str,
+        response_file: Option<String>,
+    ) -> &Self {
+        self.inject_ipc(AppRequest::ClickPane {
+            pane_id,
+            x,
+            y,
+            button: Some(button.to_string()),
+            response_file,
+        })
+    }
 }
 
 #[cfg(test)]

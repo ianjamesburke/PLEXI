@@ -793,6 +793,12 @@ fn main() -> eframe::Result {
                             PaneCmd::Key { pane_id, key } => {
                                 std::process::exit(cli::pane_key_cli(pane_id, &key))
                             }
+                            PaneCmd::Click {
+                                pane_id,
+                                x,
+                                y,
+                                button,
+                            } => std::process::exit(cli::pane_click_cli(pane_id, x, y, &button)),
                             PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
                             PaneCmd::Info { previous } => {
                                 std::process::exit(cli::pane_info_cli(previous))

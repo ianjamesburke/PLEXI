@@ -652,6 +652,7 @@ Control panes — list, focus, send input, capture output, and more
 | `info` | Print details about the current pane (or the previously focused pane) as JSON |
 | `capture` | Capture the last N lines of a pane's output as a JSON array |
 | `key` | Send a key press to a pane |
+| `click` | Inject a synthetic pointer click into an app pane, for driving canvas interaction without OS-level automation |
 | `command` | Send a shell command to a terminal pane as if typed from the keyboard |
 | `state` | Return the current UI state of a pane as JSON |
 | `slot` | Manage host-managed named file slots for a pane |
@@ -775,6 +776,21 @@ Example: plexi pane key 42 enter
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id to send the key to (from `plexi pane list`) |
 | `<key>` | string | yes | Key to press |
+
+### `plexi pane click`
+
+Inject a synthetic pointer click into an app pane, for driving canvas interaction without OS-level automation.
+
+Coordinates are PANE PIXELS (origin at the pane's top-left) — the honest primitive, since it exercises the same fit=contain/fit=fill `canvas_transform` inversion a real click goes through. The host injects a real pointer move + press + release into the live egui pass, never a parallel resolver. Only app panes accept clicks today.
+
+Example: plexi pane click 42 120 80
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes | Pane id to click (from `plexi pane list`) |
+| `<x>` | string | yes | X offset in pane pixels from the pane's top-left corner |
+| `<y>` | string | yes | Y offset in pane pixels from the pane's top-left corner |
+| `--button` | string | no | Pointer button: "left", "right", or "middle" Default: `left`. |
 
 ### `plexi pane command`
 

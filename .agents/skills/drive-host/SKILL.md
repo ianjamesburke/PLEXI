@@ -16,7 +16,7 @@ Three testing layers exist. Pick the cheapest one that can observe the behavior 
 
 | Layer | What it exercises | Use when | Reference |
 |---|---|---|---|
-| HostHarness / TOML scenes | HostModel logic + egui render, fully headless | return values, effects, overlay/widget layout, anything a scene can assert | `src/testing/TESTING.md` |
+| HostHarness / TOML scenes | HostModel logic + egui render, fully headless | return values, effects, overlay/widget layout, canvas clicks (`HostHarness::inject_click`, stint 0398), anything a scene can assert | `src/testing/TESTING.md` |
 | AppHarness | one PGAP app subprocess over the protocol, headless PNG | Python app layout, key handling, pixel/no-overlap assertions | `src/testing/TESTING.md` |
 | **drive-host (this skill)** | the installed `.app` binary, headed, real IPC | PTY/terminal interaction, keyboard-capture flows, menus/dock/file-associations, real multi-pane orchestration — behavior only observable in the running bundle | here |
 
@@ -54,8 +54,11 @@ Read the seeded panes, then act on them by explicit id:
 plexi-pr-<N> pane list
 plexi-pr-<N> pane send <pane-id> "git status\n"
 plexi-pr-<N> pane key <pane-id> enter
+plexi-pr-<N> pane click <pane-id> <x> <y> [--button left]
 plexi-pr-<N> pane new "npm run dev" -n dev
 ```
+
+`pane click` (stint 0398) injects a synthetic pointer click at PANE-PIXEL coordinates (origin at the pane's top-left) into an app pane — this is the sanctioned way to drive canvas interaction (games, grids, any `Canvas` node). It is delivered through the pane's real `canvas_transform` inversion (the same math a physical click would hit), not a shortcut. **Never reach for OS-level automation (`osascript`, `cliclick`) to simulate a click** — it trips the macOS Accessibility permission prompt this skill is meant to avoid, and `pane click` covers the same ground through a sanctioned host primitive. Only drag/hover/scroll remain unsupported (press/click only, non-scope of stint 0398).
 
 Every drive command needs the env discipline below. Always target panes by the id from `pane list` — never rely on "current pane" defaults, which read stale `PLEXI_*` vars from the pane you launched this skill in.
 

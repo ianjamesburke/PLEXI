@@ -35,6 +35,7 @@ pub fn render(
     colors: &Colors,
     is_focused: bool,
     suppress_overtake: bool,
+    pending_click: Option<crate::host::pane::PendingPaneClick>,
 ) {
     let has_overtake = app_pane.overlay_replaced.is_some() && !suppress_overtake;
     let nav_title: Option<String> = app_pane.runtime.nav_top_title().map(|t| t.to_owned());
@@ -135,7 +136,7 @@ pub fn render(
     // available_size() and always see the post-chrome budget with no guesswork.
     let ctx = AppRenderContext { colors, is_focused };
     let content_rect = ui.available_rect_before_wrap();
-    app_pane.runtime.ui(ui, &ctx);
+    app_pane.runtime.ui(ui, &ctx, pending_click);
     if matches!(app_pane.runtime, crate::host::pane::AppRuntime::Builtin(_)) {
         if let Some(state) = ui.ctx().viewport(|viewport| {
             viewport

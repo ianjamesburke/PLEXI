@@ -1036,6 +1036,27 @@ pub enum PaneCmd {
         /// Key to press
         key: String,
     },
+    /// Inject a synthetic pointer click into an app pane, for driving canvas
+    /// interaction without OS-level automation.
+    ///
+    /// Coordinates are PANE PIXELS (origin at the pane's top-left) — the honest
+    /// primitive, since it exercises the same fit=contain/fit=fill
+    /// `canvas_transform` inversion a real click goes through. The host
+    /// injects a real pointer move + press + release into the live egui pass,
+    /// never a parallel resolver. Only app panes accept clicks today.
+    ///
+    /// Example: plexi pane click 42 120 80
+    Click {
+        /// Pane id to click (from `plexi pane list`)
+        pane_id: u64,
+        /// X offset in pane pixels from the pane's top-left corner
+        x: f32,
+        /// Y offset in pane pixels from the pane's top-left corner
+        y: f32,
+        /// Pointer button: "left", "right", or "middle"
+        #[arg(long, default_value = "left")]
+        button: String,
+    },
     /// Send a shell command to a terminal pane as if typed from the keyboard.
     ///
     /// Use `--enter` to append a newline so the command is submitted immediately.

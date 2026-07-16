@@ -870,7 +870,12 @@ impl LivePythonPane {
         })
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        colors: &crate::ui::theme::Colors,
+        pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         let host_frame_started = std::time::Instant::now();
         if !self.output_waker_installed {
             let context = ui.ctx().clone();
@@ -951,6 +956,7 @@ impl LivePythonPane {
                 colors,
                 None,
                 Some(&tree.canvas_fits),
+                pending_click,
             );
             self.perf_ui_render += render_started.elapsed();
             self.perf_canvas_render += result.canvas_time;

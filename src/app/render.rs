@@ -424,6 +424,12 @@ impl PlexiApp {
                     .clone()
                     .or_else(|| self.fallback_workspace_root());
 
+                // Detached before `ctx` aliases `self.windows` so both the
+                // tiling behavior below and the zoomed-pane overlay branch
+                // (further down, after `ctx`'s borrow ends) can each remove
+                // this frame's pending click for whichever pane they render.
+                let mut pending_pane_clicks = std::mem::take(&mut self.pending_pane_clicks);
+
                 let ctx = &mut self.windows[self.active_window];
 
                 let zoom_cleared = ctx.reconcile_stale_tiles();
@@ -598,6 +604,7 @@ impl PlexiApp {
                     portal_zoom_request: None,
                     focused_terminal_input: focused_terminal_input.take(),
                     frame_modifiers: ui.input(|i| i.modifiers),
+                    pending_pane_clicks: &mut pending_pane_clicks,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
@@ -803,12 +810,14 @@ impl PlexiApp {
                             if let Some(app_pane) =
                                 ctx.panes.get_mut(&pane_id).and_then(|p| p.as_app_mut())
                             {
+                                let pending_click = pending_pane_clicks.remove(&pane_id);
                                 crate::render::app_pane::render(
                                     &mut app_ui,
                                     app_pane,
                                     &self.colors,
                                     !modal_open,
                                     has_tabs,
+                                    pending_click,
                                 );
                             }
                         } else {

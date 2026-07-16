@@ -422,6 +422,12 @@ pub struct PlexiApp {
     /// the active workspace's `agents/` dir; ticked once per frame in
     /// `update()` to consume agent event deliveries and finished turns.
     pub(crate) agent_host: crate::agent::AgentHost,
+    /// Pending `AppRequest::ClickPane` injections (stint 0398), keyed by
+    /// target pane. Taken and consumed once per frame by whichever render
+    /// path actually paints that pane (tiled or zoomed) — see
+    /// `crate::host::pane::PendingPaneClick`.
+    pub(crate) pending_pane_clicks:
+        HashMap<crate::spatial::tiling::PaneId, crate::host::pane::PendingPaneClick>,
 }
 
 struct PendingAppSubscriptionReply {
@@ -1360,6 +1366,7 @@ impl PlexiApp {
                     last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
                     agent_host: crate::agent::AgentHost::production(config.ai),
+                    pending_pane_clicks: HashMap::new(),
                 };
                 // Reconstruct depth_stack so Cmd+Escape works immediately when
                 // the workspace was saved while viewing a subcontext. The stack
@@ -1607,6 +1614,7 @@ impl PlexiApp {
             last_system_theme: None,
             overlay_held_cmds: Vec::new(),
             agent_host,
+            pending_pane_clicks: HashMap::new(),
         };
         app.apply_context_transition_effects();
         app
@@ -2015,6 +2023,7 @@ impl PlexiApp {
                 last_system_theme: None,
                 overlay_held_cmds: Vec::new(),
                 agent_host: crate::agent::AgentHost::inert(),
+                pending_pane_clicks: HashMap::new(),
             },
             pane_ipc_tx,
         )
