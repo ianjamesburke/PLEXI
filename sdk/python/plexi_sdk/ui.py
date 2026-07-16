@@ -385,7 +385,7 @@ class HStack(Component):
         return None
 
     def to_node(self) -> dict:
-        return {"type": "stack", "direction": "horizontal", "children": [child.to_node() for child in self.children], "gap": self.gap, "grow": self.grow}
+        return {"type": "row", "children": [child.to_node() for child in self.children], "gap": self.gap, "grow": self.grow}
 
 
 class Sized(Component):

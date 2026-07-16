@@ -10,7 +10,7 @@ horizontal Stack correctly.
 from __future__ import annotations
 
 import plexi_sdk as sdk
-from plexi_sdk import log
+from plexi_sdk import log, theme
 from plexi_sdk.effects import SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, Resize, UiAction
 from plexi_sdk.ui import (
@@ -19,9 +19,8 @@ from plexi_sdk.ui import (
     CanvasLine,
     CanvasRect,
     Column,
+    Divider,
     HStack,
-    Section,
-    Sized,
     Text,
 )
 
@@ -84,20 +83,21 @@ def _grid_commands(w, h) -> list:
 
 
 def view():
-    sidebar = Sized(
-        Column(
-            [
-                Section("Sidebar"),
-                Text(text=f"Grid: {_n} x {_n}"),
-                Button(label="Denser (+)", on_click="denser"),
-                Button(label="Sparser (-)", on_click="sparser"),
-            ],
-            padding=12,
-            gap=8,
-        ),
-        width=SIDEBAR_W,
+    # Sidebar renders first so egui's horizontal layout reserves its space
+    # before the grow canvas claims the remainder (no fixed-width wrapper
+    # node exists on the live CPython-WASM decode path — see stint 0394).
+    sidebar = Column(
+        [
+            Text(text="SIDEBAR", size=10.0, color=theme.muted, bold=True),
+            Divider(),
+            Text(text=f"Grid: {_n} x {_n}"),
+            Button(label="Denser (+)", on_click="denser"),
+            Button(label="Sparser (-)", on_click="sparser"),
+        ],
+        padding=12,
+        gap=8,
     )
     w = max(1.0, float(sdk.canvas_width or 480.0) - SIDEBAR_W - 12.0)
     h = max(1.0, float(sdk.canvas_height or 360.0))
     canvas = Canvas(_grid_commands(w, h), width=w, height=h, grow=True)
-    return HStack([canvas, sidebar], gap=12)
+    return HStack([sidebar, canvas], gap=12)
