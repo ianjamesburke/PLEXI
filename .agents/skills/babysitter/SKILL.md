@@ -36,7 +36,7 @@ Exact forms confirmed against the Codex TUI. Use them; don't invent variants.
 
 | Need | Command |
 |---|---|
-| **Is Codex busy or idle?** (source of truth) | `plexi pane list` → find pane → `agent.state` (`working`/`idle`) |
+| **Is the agent busy or idle?** | No single signal is trustworthy — use the "cheap triangle" below. Never gate a decision on one flag. |
 | Pipeline slots (pr#, phase, status, error) | read files under the pane's `slots.*` paths from `pane list` |
 | **Read the last N lines (default read)** | `plexi pane capture <id> --lines 20` |
 | Read full pane buffer (verdict parsing only) | `plexi pane capture <id> --from-cursor 0` |
@@ -65,13 +65,45 @@ Known pre-existing bug (stint 0385): `--from-cursor <N>` deltas can return empty
 
 Append `2>&1 | grep -v "sudo:"` to plexi commands run from your own Bash — the background-updater bug (#2339) spews `sudo:` noise on stderr that otherwise dominates every output.
 
-The **source of truth for whether Codex is busy is `plexi pane list` → the pane's `agent.state`** (`working` = mid-task, `idle` = at prompt / done). Machine-readable progress lives in the pane's **slot files** (`slots.pr`, `slots.pipeline_phase`, `slots.status`, `slots.last_error`, `slots.issue`) — read those files, not scrollback. Use capture for human-readable context, but gate decisions on `agent.state`, never on capture.
+### Reading whether a pane is busy
+
+Screen signals, and what each is actually worth:
+
+| Screen signal | Meaning |
+|---|---|
+| status bar contains `esc to interrupt` | **busy** — a task is running |
+| status bar, un-truncated, with no `esc to interrupt` | **idle** — at prompt / done |
+| status bar ending in `…` | **unknown.** The line is elided; `esc to interrupt` may be present but cut off. Read another signal. |
+| `❯ Press up to edit queued messages` | your prompt is **queued** behind something in-flight; send `escape` ONCE to clear, never `enter` again |
+| `paste again to expand` | a long brief pasted as a collapsed block and was **not submitted**; send `enter` ONCE |
+| a bare `❯` | **nothing.** This is just the empty input line. It is not an idle signal — a bare `❯` appears while the agent is busy too. Do not read it. |
+
+**Neither signal is reliable alone. Both have observed failure modes — always corroborate with a second one.**
+
+| Signal | How it fails |
+|---|---|
+| `agent.state` | Reads `idle` on a genuinely busy pane — observed for minutes with a brief queued behind a stuck `/compact`. Acting on that `idle` is the thrash trap: you conclude ready, re-send, loop. |
+| status bar | **Truncates on narrow panes.** A skinny pane elides it to `⏵⏵ bypass permissions on (shift+tab to · …` — `esc to interrupt` is present but cut off, so grepping for it returns 0 and a busy pane reads as idle. |
+
+**The robust check is the cheap triangle** — run it when a pane's state actually gates a decision:
+
+```
+plexi pane list          # agent.state
+plexi pane capture <id> --lines 16   # status bar AND recent buffer activity
+```
+
+Then judge: a trailing `⏺ Bash(...)` / tool call in the buffer means it is working regardless of what either flag says. If `agent.state` says `working`, believe it — its false-negative mode is claiming *idle*, not claiming busy. If `agent.state` says `idle` **and** the status bar is un-truncated **and** shows no `esc to interrupt` **and** the last buffer line is a completed reply, only then is the pane genuinely idle.
+
+Never grep the status bar for `esc to interrupt` and treat absence as proof of idle without checking whether the line ends in `…`.
+
+Machine-readable progress lives in the pane's **slot files** (`slots.pr`, `slots.pipeline_phase`, `slots.status`, `slots.last_error`, `slots.issue`) — read those files, not scrollback.
 
 ### ANTI-THRASH — never re-fire a command to "confirm" it landed
 
 The failure mode this skill exists to prevent: send a key → capture comes back empty → assume it didn't land → re-send → loop forever. **Banned.**
 
-- Send a prompt/keystroke **once**. To verify it registered, poll `plexi pane list` `agent.state` flipping `idle → working` (or a slot file changing) — **never** by re-sending.
+- Send a prompt/keystroke **once**. To verify it registered, use the cheap triangle above (`agent.state` + status bar + trailing buffer activity) — **never** by re-sending. Corroborate two signals before concluding a pane is idle; each one alone has a known false reading.
+- **One exception, and only one:** if the status bar shows the pane is idle *and* the input line shows `Press up to edit queued messages` or `paste again to expand`, your prompt was typed but never submitted. Send `enter` **once** more. If that still does not take, send `escape` to clear the queue — do not send a third `enter`.
 - If a capture is empty or a cursor is unchanged, that tells you nothing. Do **not** act on it and do **not** repeat the command. Fall back to `pane list` / slot files.
 - If you catch yourself about to run the exact same command a **second** time in a row, STOP. Something is wrong with your read path, not the pane. Re-orient via `pane list`.
 - `sudo: a terminal is required to read the password` lines are the background-updater bug (#2339). They are **noise**, not a command failure — the `plexi` command itself still returned `exit 0`. Never retry because of them.
@@ -115,7 +147,7 @@ For each **batch**, in order:
 
    **Verify, don't trust the worker's self-report.** After the worker replies with a PR number, you run `gh pr checks <PR#>` yourself before spawning the tester. If anything is red, send it straight back to the worker as a bug (same routing as a tester-found bug) — do not spawn the tester against a build with known-red CI.
 
-   Send → `key enter` **once**. Confirm it registered by polling `plexi pane list` until the pane's `agent.state` reads `working` — not by re-sending, not by capture.
+   Send → `key enter` **once**. Confirm it registered by polling the **status bar** (`plexi pane capture <id> --lines 3`) until `esc to interrupt` appears — not by re-sending. A long brief often pastes as a collapsed block (`paste again to expand`) and needs exactly one more `enter` to submit; that is the only sanctioned re-send.
 
 2. **Check in every 15 min — cheaply.** `ScheduleWakeup` `delaySeconds: 900`. On each wake, the default check is **two direct commands, no sub-agent**:
 
@@ -162,11 +194,38 @@ For each **batch**, in order:
    ```
    Instruct the worker to squash-merge to alpha, then re-verify `state == MERGED` and `stint show <ID>` reflects done. **Then have the worker clean up its own worktree** — a bare `gh pr merge --squash` leaves the feature worktree behind (they piled up ~20 deep before this rule). Have it run `just merge-cleanup <PR#> <BRANCH>` (channel-clean + `wtp remove` + remote-branch delete), or at minimum `wtp remove <BRANCH>`, so the merged worktree is gone before the batch boundary. Squash-merge does not update `git branch --merged`, so never rely on that to find stale worktrees later — remove at merge time, here, while you still know the PR/branch.
 
-6. **Recycle panes for the next batch.** Default: `/compact` both panes in place at the batch boundary (send `/compact`, `key enter`, wait for `agent.state` idle) — this keeps the pane's environment while resetting context rot, and proved cheaper than close+respawn across many batches. Close and respawn fresh only when a pane has misbehaved (looping, degraded quality) or hit its usage wall:
+6. **Recycle panes for the next batch — gate on context budget, not vibes.**
+
+   **A worker's context is a budget you are spending.** Every batch it carries (task N, then N+1, then a `/create-stint` research flow…) compounds. An overloaded worker does not announce itself; it silently degrades — it re-reads files it already read, misses instructions buried in a long brief, and reasons from stale earlier tasks. By the time you notice, you have already paid for a bad PR and a wasted tester round.
+
+   **At every batch boundary, check the budget before assigning the next task:**
    ```
-   plexi pane close <worker-id> && plexi pane new -n "worker-<N+1>" ...
+   plexi pane send <id> "/context"
+   sleep 1
+   plexi pane key <id> enter
+   sleep 3
+   plexi pane capture <id> --lines 12
    ```
-   Compact at clean boundaries only — batch merged, or pane about to take an unrelated task. Never mid-fix.
+   Read the utilization percentage, then branch:
+
+   | Context | Action |
+   |---|---|
+   | **< 50%** | Assign the next batch in place. Cheapest path — the pane keeps its environment and warm repo knowledge. |
+   | **50–70%** | `/compact`, then assign. |
+   | **> 70%**, or the next task is unrelated to the last | **Close and respawn.** Do not compact. |
+
+   **Prefer close+respawn over `/compact` whenever the next task is unrelated.** A fresh pane costs ~20s to boot and starts at a clean slate. Compact costs a multi-minute stall, sometimes hangs (see below), and still leaves a lossy summary of work that has nothing to do with the next task. The information the new worker actually needs is *not* the old transcript — it is a good brief. You already hold the distilled state (PR numbers, merge results, decisions, gotchas); put that in the new prompt and throw the scrollback away.
+
+   ```
+   plexi pane close <worker-id>
+   plexi pane new -n "worker-<N+1>"
+   plexi pane command <newid> "c" --enter
+   # then send a self-contained brief carrying forward only what matters
+   ```
+
+   **`/compact` can hang and swallow your next message.** Observed: a `/compact` on an idle worker never released; the follow-up brief sat queued behind it for minutes showing `Press up to edit queued messages`, while `agent.state` still read `idle`. A single `escape` cleared the queue and the brief submitted normally. Never re-send `enter` at a stuck queue — that is the thrash loop. If you compact, confirm it actually finished (status bar clear, no queued-message hint) *before* sending the next brief.
+
+   Recycle at clean boundaries only — batch merged, or pane about to take an unrelated task. Never mid-fix.
 
 ## Usage-window management (Codex's 5-hour limit)
 
