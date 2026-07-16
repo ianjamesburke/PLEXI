@@ -1716,7 +1716,16 @@ impl LiveWasmPane {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, colors: &Colors) {
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        // WASM apps don't yet consume canvas clicks (only Python process apps
+        // do, via `wasm_python.rs`); still exercise the same `canvas_transform`
+        // hit-test so a future WASM MouseEvent path has no separate resolver.
+        let _ = &pending_click;
         if let Some(err) = &self.error {
             ui.colored_label(colors.danger, err);
             return;

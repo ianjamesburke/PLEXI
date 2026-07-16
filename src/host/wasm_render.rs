@@ -57,7 +57,7 @@ pub fn render_ui_tree_with_surface(
     colors: &Colors,
     surface: Option<egui::TextureId>,
 ) -> RenderResult {
-    render_ui_tree_with_canvas_fits(ui, tree, colors, surface, None)
+    render_ui_tree_with_canvas_fits(ui, tree, colors, surface, None, None)
 }
 
 pub fn render_ui_tree_with_canvas_fits(
@@ -66,6 +66,7 @@ pub fn render_ui_tree_with_canvas_fits(
     colors: &Colors,
     surface: Option<egui::TextureId>,
     canvas_fits: Option<&HashMap<u32, CanvasFit>>,
+    pending_click: Option<crate::host::pane::PendingPaneClick>,
 ) -> RenderResult {
     let mut out = RenderResult::default();
     render_node(
@@ -77,6 +78,7 @@ pub fn render_ui_tree_with_canvas_fits(
         0,
         surface,
         canvas_fits,
+        pending_click,
     );
     out
 }
@@ -191,6 +193,7 @@ fn render_node(
     depth: u32,
     surface: Option<egui::TextureId>,
     canvas_fits: Option<&HashMap<u32, CanvasFit>>,
+    pending_click: Option<crate::host::pane::PendingPaneClick>,
 ) {
     if depth > MAX_DEPTH {
         return;
@@ -251,7 +254,7 @@ fn render_node(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = r.gap;
                 for child in &r.children {
-                    render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits);
+                    render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits, pending_click);
                 }
             });
         }
@@ -278,7 +281,7 @@ fn render_node(
                     ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
                         ui.spacing_mut().item_spacing.y = c.gap;
                         for &child in &c.children[..c.children.len() - 1] {
-                            render_node(ui, nodes, child, colors, out, depth + 1, surface, canvas_fits);
+                            render_node(ui, nodes, child, colors, out, depth + 1, surface, canvas_fits, pending_click);
                         }
                     });
                 });
@@ -291,13 +294,13 @@ fn render_node(
                     ui.set_clip_rect(footer_rect);
                     ui.set_min_height(footer_h);
                     ui.set_max_height(footer_h);
-                    render_node(ui, nodes, footer_id, colors, out, depth + 1, surface, canvas_fits);
+                    render_node(ui, nodes, footer_id, colors, out, depth + 1, surface, canvas_fits, pending_click);
                 });
             } else {
                 ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
                     ui.spacing_mut().item_spacing.y = c.gap;
                     for child in &c.children {
-                        render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits);
+                        render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits, pending_click);
                     }
                 });
             }
@@ -348,7 +351,7 @@ fn render_node(
                         if selected {
                             ui.visuals_mut().override_text_color = Some(colors.accent);
                         }
-                        render_node(ui, nodes, *item_id, colors, out, depth + 1, surface, canvas_fits);
+                        render_node(ui, nodes, *item_id, colors, out, depth + 1, surface, canvas_fits, pending_click);
                     })
                     .response
                     .interact(egui::Sense::click());
@@ -367,7 +370,7 @@ fn render_node(
                 egui::ScrollArea::vertical()
             };
             area.show(ui, |ui| {
-                render_node(ui, nodes, s.child, colors, out, depth + 1, surface, canvas_fits);
+                render_node(ui, nodes, s.child, colors, out, depth + 1, surface, canvas_fits, pending_click);
             });
         }
 
@@ -380,7 +383,7 @@ fn render_node(
                     bottom: p.bottom as i8,
                 })
                 .show(ui, |ui| {
-                    render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits);
+                    render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits, pending_click);
                 });
         }
 
@@ -405,9 +408,23 @@ fn render_node(
                 .copied()
                 .unwrap_or_default();
             let (origin, sx, sy) = canvas_transform(rect, c.width, c.height, fit);
-            if resp.clicked() {
-                if let Some(pixel_pos) = resp.interact_pointer_pos() {
-                    let button = if resp.clicked_by(egui::PointerButton::Secondary) {
+            // A real click is detected by egui's own `Sense::click()` (resolved
+            // once per pass, inside `Context::begin_pass`, from that pass's
+            // actual `RawInput` — it cannot be faked by mutating `ctx.input_mut()`
+            // after the pass has started). `plexi pane click`/`HostHarness::
+            // inject_click` deliver a `PendingPaneClick` instead, matched
+            // against this frame's freshly-computed `rect` — the same
+            // honest hit-test a real click would need, just resolved
+            // explicitly rather than via egui's internal interact_widgets.
+            let synthetic = pending_click.filter(|c| rect.contains(c.pos));
+            let pixel_pos = resp
+                .interact_pointer_pos()
+                .or_else(|| synthetic.map(|c| c.pos));
+            if resp.clicked() || synthetic.is_some() {
+                if let Some(pixel_pos) = pixel_pos {
+                    let button = if let Some(c) = synthetic {
+                        Some(c.button)
+                    } else if resp.clicked_by(egui::PointerButton::Secondary) {
                         Some("right")
                     } else if resp.clicked_by(egui::PointerButton::Middle) {
                         Some("middle")
@@ -519,7 +536,7 @@ fn render_node(
         // `Column` (see `column_bottom_pin`). When `Pinned` appears outside a
         // `Column` (e.g. at the tree root), render its child inline.
         UiNodeData::Pinned(p) => {
-            render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits);
+            render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits, pending_click);
         }
 
         UiNodeData::Spinner(sp) => {
@@ -696,7 +713,8 @@ mod tests {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let _ = render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits));
+                    let _ =
+                        render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits), None);
                 });
         });
 
@@ -728,7 +746,7 @@ mod tests {
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
                     captured =
-                        render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits));
+                        render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits), None);
                 });
         });
 

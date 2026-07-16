@@ -418,6 +418,25 @@ pub enum AppRequest {
         response_file: Option<String>,
     },
 
+    /// Deliver a synthetic pointer click to an app pane, in pane-pixel
+    /// coordinates (origin at the pane's top-left). Sent by `plexi pane click`.
+    /// The host injects a real `PointerMoved`+`PointerButton` press/release
+    /// pair into the live production egui pass, so it exercises the exact
+    /// same `canvas_transform` inversion a physical click would — never a
+    /// parallel resolver. Terminal panes reject this (no click semantics
+    /// defined yet). Host writes `{"ok":true}` or `{"error":"..."}` to
+    /// `response_file` when set.
+    ClickPane {
+        pane_id: u64,
+        x: f32,
+        y: f32,
+        /// "left" (default), "right", or "middle".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
+
     /// Read the last N lines from a terminal pane's PTY scrollback buffer.
     /// Sent by `plexi pane capture`. Host writes a JSON array of strings to `response_file`.
     CapturePane {
@@ -2497,6 +2516,58 @@ mod tests {
         assert!(
             serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required key field"
+        );
+    }
+
+    #[test]
+    fn click_pane_command_round_trips_serde() {
+        let json = r#"{"type":"click_pane","pane_id":42,"x":12.5,"y":7.0,"button":"left","response_file":"result.json"}"#;
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            AppRequest::ClickPane {
+                pane_id,
+                x,
+                y,
+                button,
+                response_file,
+            } => {
+                assert_eq!(*pane_id, 42);
+                assert_eq!(*x, 12.5);
+                assert_eq!(*y, 7.0);
+                assert_eq!(button.as_deref(), Some("left"));
+                assert_eq!(response_file.as_deref(), Some("result.json"));
+            }
+            other => panic!("expected ClickPane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"click_pane""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Optional fields: button and response_file absent → None
+        let minimal = r#"{"type":"click_pane","pane_id":1,"x":0.0,"y":0.0}"#;
+        let cmd2: AppRequest = serde_json::from_str(minimal).expect("deserialise minimal");
+        match &cmd2 {
+            AppRequest::ClickPane {
+                button,
+                response_file,
+                ..
+            } => {
+                assert!(button.is_none(), "absent button must deserialise to None");
+                assert!(
+                    response_file.is_none(),
+                    "absent response_file must deserialise to None"
+                );
+            }
+            other => panic!("expected ClickPane, got {other:?}"),
+        }
+
+        // Required-field discipline: missing x/y must fail
+        let bad = r#"{"type":"click_pane","pane_id":1}"#;
+        assert!(
+            serde_json::from_str::<AppRequest>(bad).is_err(),
+            "must fail without required x/y fields"
         );
     }
 

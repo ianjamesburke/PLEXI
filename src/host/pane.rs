@@ -623,6 +623,27 @@ impl TerminalPane {
 // AppPane — dedicated app runtime (process or in-process builtin)
 // ---------------------------------------------------------------------------
 
+/// A pointer click injected by `AppRequest::ClickPane` (`plexi pane click`,
+/// or `HostHarness::inject_click`), queued on `PlexiApp` and consumed by the
+/// canvas render pass for the target pane on the next frame it renders.
+///
+/// egui's own click detection (`Response::clicked()`) resolves
+/// `viewport.interact_widgets` once, inside `Context::begin_pass`, strictly
+/// before host/app code runs — so a click cannot be faked by mutating
+/// `ctx.input_mut()` mid-pass the way `KeyPane` replays keys (key checks
+/// re-scan `InputState.events` live at widget-render time; pointer-click
+/// detection does not). `PendingPaneClick` is delivered instead through the
+/// same call chain a real click's hit-test result would reach —
+/// `render_node`'s Canvas branch — so it still exercises the pane's live
+/// `canvas_transform` inversion for the frame's actual widget rect, just via
+/// an explicit rect-containment check instead of `Sense::click()`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PendingPaneClick {
+    /// Absolute screen position, same space as `egui::Response::interact_pointer_pos()`.
+    pub pos: egui::Pos2,
+    pub button: &'static str,
+}
+
 pub enum AppRuntime {
     Builtin(Box<dyn App>),
     Python(Box<crate::host::wasm_python::LivePythonPane>),
@@ -633,11 +654,16 @@ pub enum AppRuntime {
 }
 
 impl AppRuntime {
-    pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &AppRenderContext<'_>,
+        pending_click: Option<PendingPaneClick>,
+    ) {
         match self {
             AppRuntime::Builtin(app) => app.ui(ui, ctx),
-            AppRuntime::Python(app) => app.ui(ui, ctx.colors),
-            AppRuntime::Wasm(app) => app.ui(ui, ctx.colors),
+            AppRuntime::Python(app) => app.ui(ui, ctx.colors, pending_click),
+            AppRuntime::Wasm(app) => app.ui(ui, ctx.colors, pending_click),
         }
     }
 
