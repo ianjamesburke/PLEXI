@@ -6,9 +6,7 @@ from __future__ import annotations
 import random
 
 import plexi_sdk as sdk
-from plexi_sdk import dim, rgba, state, theme
-
-TRANSPARENT = rgba(0, 0, 0, 0)
+from plexi_sdk import dim, state, theme
 from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import KeyEvent, MouseEvent, Resize, TimerFired
 from plexi_sdk.ui import (
@@ -176,7 +174,9 @@ def _enter_number(d, num):
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────
 
-def init(_size, _args):
+def init(size, _args):
+    sdk.canvas_width, sdk.canvas_height = size
+    sdk.pane_width, sdk.pane_height = size
     missing = {k: v for k, v in _blank().items() if state.get(k) is None}
     effects = [
         SetTitle("Sudoku"),
@@ -198,10 +198,14 @@ def update(event):
         return []
 
     if isinstance(event, Resize):
+        sdk.canvas_width = event.width
+        sdk.canvas_height = event.height
+        sdk.pane_width = event.width
+        sdk.pane_height = event.height
         return []
 
     if isinstance(event, MouseEvent) and event.pressed:
-        return _mouse(d, event.region)
+        return _mouse(d, event.x, event.y)
 
     if isinstance(event, KeyEvent) and event.pressed:
         return _key(d, event)
@@ -210,20 +214,34 @@ def update(event):
 
 # ── Input handlers ─────────────────────────────────────────────────────────
 
-def _mouse(d, region):
-    if not region:
-        return []
+def _mouse(d, x, y):
     if str(d.get("screen")) != "game":
-        if region.startswith("diff-"):
-            diff = DIFFICULTIES[int(region[5:])]
-            return [SetState(_new_game(diff)), SetStatus(f"{diff.title()} — 00:00")]
+        w = sdk.canvas_width or 800.0
+        h = sdk.canvas_height or 600.0
+        for i, (bx, by, bw, bh) in enumerate(_diff_button_rects(w, h)):
+            if bx <= x < bx + bw and by <= y < by + bh:
+                diff = DIFFICULTIES[i]
+                return [SetState(_new_game(diff)), SetStatus(f"{diff.title()} — 00:00")]
         return []
-    if region.startswith("num-"):
-        return _enter_number(d, int(region[4:]))
-    if region.startswith("cell-"):
-        r, c = (int(v) for v in region[5:].split("-"))
+
+    sidebar_w, cell = _compute_layout()
+    pane_w = sdk.canvas_width or sdk.pane_width or 800.0
+    gw = cell * 9
+    pair_w = gw + 12.0 + sidebar_w
+    ox = max(8.0, (pane_w - pair_w) / 2.0)
+    oy = 8.0
+    sx = ox + gw + 12.0
+
+    if ox <= x < ox + gw and oy <= y < oy + gw:
+        r = max(0, min(8, int((y - oy) // cell)))
+        c = max(0, min(8, int((x - ox) // cell)))
         board = d.get("board", [[0] * 9] * 9)
         return [SetState({"sel_r": r, "sel_c": c, "sel_num": board[r][c]})]
+
+    _, num_rects = _draw_sidebar_canvas(d, sx, oy, sidebar_w, cell)
+    for num, bx, by, bw, bh in num_rects:
+        if bx <= x < bx + bw and by <= y < by + bh:
+            return _enter_number(d, num)
     return []
 
 def _key(d, event):
@@ -342,12 +360,13 @@ def view():
         keys = [("1-9", "fill"), ("n", "notes"), ("p", "pause"), ("r", "restart"), ("m", "menu")]
         footer = FooterKeys(keys)
     screen = str(d.get("screen", "menu"))
+    w, h = sdk.canvas_width, sdk.canvas_height
     if screen != "menu":
         # Single canvas for the entire game body: grid + sidebar drawn together.
         # This avoids HStack grow-distribution fighting with fixed-size children.
-        body = Canvas(_draw_game(d), grow=True)
+        body = Canvas(_draw_game(d), width=w, height=h, grow=True)
     else:
-        body = Canvas(_draw_menu(d), grow=True)
+        body = Canvas(_draw_menu(d), width=w, height=h, grow=True)
 
     return Column([
         AppBar("Sudoku"),
@@ -356,7 +375,26 @@ def view():
     ], padding=0, gap=0, grow=True)
 
 
+# ── Shared drawing helpers ─────────────────────────────────────────────────
+
+def _bordered_rect(x, y, w, h, fill, radius=0.0, border_color=None, border_width=0.0):
+    """CanvasRect no longer takes border_color/border_width; draw the border
+    as an outline rect behind an inset fill rect instead."""
+    if not border_color or border_width <= 0:
+        return [CanvasRect(x, y, w, h, fill, radius=radius)]
+    return [
+        CanvasRect(x, y, w, h, border_color, radius=radius),
+        CanvasRect(x + border_width, y + border_width, w - 2 * border_width, h - 2 * border_width,
+                   fill, radius=max(0.0, radius - border_width)),
+    ]
+
 # ── Menu drawing ───────────────────────────────────────────────────────────
+
+def _diff_button_rects(w, h):
+    bw, bh = 220.0, 64.0
+    bx = (w - bw) / 2
+    by_start = h / 2 - 80.0
+    return [(bx, by_start + i * 80.0, bw, bh) for i in range(3)]
 
 def _draw_menu(d):
     w = sdk.canvas_width
@@ -368,20 +406,16 @@ def _draw_menu(d):
     cmds.append(CanvasText(w / 2, title_y, "SUDOKU", size=36.0, color=theme.fg, bold=True, align="center_center"))
     cmds.append(CanvasText(w / 2, title_y + 40.0, "Choose your difficulty", size=13.0, color=theme.muted, align="center_center"))
 
-    bw, bh = 220.0, 64.0
-    bx = (w - bw) / 2
-    by_start = h / 2 - 80.0
     labels = [("Easy", f"{CLUES['easy']} clues"), ("Medium", f"{CLUES['medium']} clues"), ("Hard", f"{CLUES['hard']} clues")]
     tones = [theme.success, theme.warning, theme.danger]
+    rects = _diff_button_rects(w, h)
 
     for i, (label, subtitle) in enumerate(labels):
-        by = by_start + i * 80.0
+        bx, by, bw, bh = rects[i]
         selected = i == diff_idx
         bg = theme.surface if selected else theme.bg
         border = tones[i] if selected else theme.highlight
-        cmds.append(CanvasRect(bx, by, bw, bh, bg, radius=8.0,
-                               border_color=border, border_width=2.0,
-                               hit_region=f"diff-{i}"))
+        cmds.extend(_bordered_rect(bx, by, bw, bh, bg, radius=8.0, border_color=border, border_width=2.0))
         text_color = tones[i] if selected else theme.fg
         cmds.append(CanvasText(bx + bw / 2, by + 22.0, label, size=17.0, color=text_color, bold=selected, align="center_center"))
         cmds.append(CanvasText(bx + bw / 2, by + 44.0, subtitle, size=11.0, color=theme.muted, align="center_center"))
@@ -434,12 +468,14 @@ def _draw_sidebar_canvas(d, sx, oy, sidebar_w, cell):
     section("NUMBERS")
     gap = 5.0
     bw = bh = max(24.0, (sidebar_w - 2 * gap) / 3.0)
+    num_rects = []
     for i in range(9):
         num = i + 1
         col_i = i % 3
         row_i = i // 3
         bx = sx + col_i * (bw + gap)
         by = y + row_i * (bh + gap)
+        num_rects.append((num, bx, by, bw, bh))
         done_num = counts[num - 1] >= 9
         is_sel = num == sel_num and sel_num != 0
         if done_num:
@@ -448,12 +484,10 @@ def _draw_sidebar_canvas(d, sx, oy, sidebar_w, cell):
             bg, text_col, border = theme.highlight, theme.accent, theme.accent
         else:
             bg, text_col, border = theme.surface, theme.fg, theme.highlight
-        cmds.append(CanvasRect(bx, by, bw, bh, bg, radius=4.0,
-                               border_color=border, border_width=1.0,
-                               hit_region=f"num-{num}"))
+        cmds.extend(_bordered_rect(bx, by, bw, bh, bg, radius=4.0, border_color=border, border_width=1.0))
         cmds.append(CanvasText(bx + bw / 2, by + bh / 2, str(num), size=15.0,
                                color=text_col, bold=not done_num, align="center_center"))
-    return cmds
+    return cmds, num_rects
 
 
 def _draw_game(d):
@@ -466,7 +500,8 @@ def _draw_game(d):
     oy = 8.0
     sx = ox + gw + 12.0
 
-    return _draw_grid(d, cell, ox, oy) + _draw_sidebar_canvas(d, sx, oy, sidebar_w, cell)
+    sidebar_cmds, _ = _draw_sidebar_canvas(d, sx, oy, sidebar_w, cell)
+    return _draw_grid(d, cell, ox, oy) + sidebar_cmds
 
 
 def _draw_grid(d, cell=None, ox=6.0, oy=8.0):
@@ -493,12 +528,6 @@ def _draw_grid(d, cell=None, ox=6.0, oy=8.0):
     cmds.append(CanvasRect(ox - 3, oy - 3, gw + 6, gh + 6, theme.bg_darkest, radius=6.0))
     cmds.append(CanvasRect(ox, oy, gw, gh, theme.bg, radius=4.0))
 
-    # Per-cell hit regions
-    for r in range(9):
-        for c in range(9):
-            cmds.append(CanvasRect(ox + c * cell, oy + r * cell, cell, cell,
-                                   TRANSPARENT, hit_region=f"cell-{r}-{c}"))
-
     # Row + col cross highlight only — no box tint.
     if sel_r >= 0 and sel_c >= 0 and not paused and screen == "game":
         cmds.append(CanvasRect(ox, oy + sel_r * cell, gw, cell, theme.surface))
@@ -513,7 +542,7 @@ def _draw_grid(d, cell=None, ox=6.0, oy=8.0):
 
     # Selected cell — highlight fill + muted border, clearly distinct from box tint
     if sel_r >= 0 and sel_c >= 0 and not paused and screen == "game":
-        cmds.append(CanvasRect(
+        cmds.extend(_bordered_rect(
             ox + sel_c * cell + 1, oy + sel_r * cell + 1, cell - 2, cell - 2,
             theme.highlight, radius=3.0,
             border_color=theme.muted, border_width=2.0,

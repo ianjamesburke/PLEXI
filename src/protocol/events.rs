@@ -56,11 +56,13 @@ pub enum PlexiEvent {
         /// Current surface rect the app should draw into.
         rect: Rect,
         /// Actual rendered canvas width from the previous frame's component tree.
-        /// Zero on the first frame (no prior render). SDK exposes as sdk.canvas_width.
+        /// Zero on the first frame (no prior render). Not SDK-exposed; apps that
+        /// need their own size track it themselves via `init(size)` + `Resize`.
         #[serde(default)]
         canvas_width: f32,
         /// Actual rendered canvas height from the previous frame's component tree.
-        /// Zero on the first frame (no prior render). SDK exposes as sdk.canvas_height.
+        /// Zero on the first frame (no prior render). Not SDK-exposed; apps that
+        /// need their own size track it themselves via `init(size)` + `Resize`.
         #[serde(default)]
         canvas_height: f32,
     },

@@ -12,7 +12,7 @@ from __future__ import annotations
 import plexi_sdk as sdk
 from plexi_sdk import log
 from plexi_sdk.effects import SetStatus, SetTitle
-from plexi_sdk.events import KeyEvent, UiAction
+from plexi_sdk.events import KeyEvent, Resize, UiAction
 from plexi_sdk.ui import (
     Button,
     Canvas,
@@ -31,15 +31,20 @@ GRID = 8
 _n = GRID
 
 
-def init(_size, _args) -> list:
+def init(size, _args) -> list:
     global _n
     _n = GRID
+    sdk.canvas_width, sdk.canvas_height = size
     log.info("canvas-sidebar: initialized HStack[Canvas grow + Sized sidebar]")
     return [SetTitle("Canvas Sidebar"), SetStatus(f"grid {_n}x{_n}")]
 
 
 def update(event) -> list:
     global _n
+    if isinstance(event, Resize):
+        sdk.canvas_width = event.width
+        sdk.canvas_height = event.height
+        return []
     if isinstance(event, UiAction):
         if event.handler_id == "denser":
             _n = min(24, _n + 1)
@@ -58,9 +63,7 @@ def update(event) -> list:
     return []
 
 
-def _grid_commands() -> list:
-    w = max(1.0, float(sdk.canvas_width or 480.0))
-    h = max(1.0, float(sdk.canvas_height or 360.0))
+def _grid_commands(w, h) -> list:
     cmds: list = [CanvasRect(0, 0, w, h, "#0d0d1a")]
     cell_w = w / _n
     cell_h = h / _n
@@ -94,5 +97,7 @@ def view():
         ),
         width=SIDEBAR_W,
     )
-    canvas = Canvas(_grid_commands(), grow=True)
+    w = max(1.0, float(sdk.canvas_width or 480.0) - SIDEBAR_W - 12.0)
+    h = max(1.0, float(sdk.canvas_height or 360.0))
+    canvas = Canvas(_grid_commands(w, h), width=w, height=h, grow=True)
     return HStack([canvas, sidebar], gap=12)
