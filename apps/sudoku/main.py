@@ -214,14 +214,32 @@ def update(event):
 
 # ── Input handlers ─────────────────────────────────────────────────────────
 
+def _hit_rect(x, y, rects):
+    """rects: iterable of (key, rx, ry, rw, rh). Return the first key whose
+    rect contains (x, y), else None. Pure — no state, no drawing."""
+    for key, rx, ry, rw, rh in rects:
+        if rx <= x < rx + rw and ry <= y < ry + rh:
+            return key
+    return None
+
+def _hit_cell(x, y, ox, oy, cell):
+    """Return the (row, col) of the grid cell containing (x, y), else None."""
+    gw = cell * 9
+    if not (ox <= x < ox + gw and oy <= y < oy + gw):
+        return None
+    r = max(0, min(8, int((y - oy) // cell)))
+    c = max(0, min(8, int((x - ox) // cell)))
+    return r, c
+
 def _mouse(d, x, y):
     if str(d.get("screen")) != "game":
         w = sdk.canvas_width or 800.0
         h = sdk.canvas_height or 600.0
-        for i, (bx, by, bw, bh) in enumerate(_diff_button_rects(w, h)):
-            if bx <= x < bx + bw and by <= y < by + bh:
-                diff = DIFFICULTIES[i]
-                return [SetState(_new_game(diff)), SetStatus(f"{diff.title()} — 00:00")]
+        rects = [(i, bx, by, bw, bh) for i, (bx, by, bw, bh) in enumerate(_diff_button_rects(w, h))]
+        idx = _hit_rect(x, y, rects)
+        if idx is not None:
+            diff = DIFFICULTIES[idx]
+            return [SetState(_new_game(diff)), SetStatus(f"{diff.title()} — 00:00")]
         return []
 
     sidebar_w, cell = _compute_layout()
@@ -232,16 +250,16 @@ def _mouse(d, x, y):
     oy = 8.0
     sx = ox + gw + 12.0
 
-    if ox <= x < ox + gw and oy <= y < oy + gw:
-        r = max(0, min(8, int((y - oy) // cell)))
-        c = max(0, min(8, int((x - ox) // cell)))
+    cell_hit = _hit_cell(x, y, ox, oy, cell)
+    if cell_hit is not None:
+        r, c = cell_hit
         board = d.get("board", [[0] * 9] * 9)
         return [SetState({"sel_r": r, "sel_c": c, "sel_num": board[r][c]})]
 
     _, num_rects = _draw_sidebar_canvas(d, sx, oy, sidebar_w, cell)
-    for num, bx, by, bw, bh in num_rects:
-        if bx <= x < bx + bw and by <= y < by + bh:
-            return _enter_number(d, num)
+    num = _hit_rect(x, y, num_rects)
+    if num is not None:
+        return _enter_number(d, num)
     return []
 
 def _key(d, event):
