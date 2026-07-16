@@ -9,7 +9,6 @@ pub(crate) struct PythonRuntime {
     pub(crate) executable: OsString,
     pub(crate) label: String,
     pub(crate) version: String,
-    pub(crate) pythonpath: String,
 }
 
 pub(crate) fn ensure_app_venv(
@@ -85,26 +84,21 @@ pub(crate) fn resolve_python_runtime(
         )
     })?;
 
-    let pythonpath = pythonpath_for_current_exe();
     if ensure_venv {
         let python = ensure_app_venv(app_id, app_dir, dependencies)?;
-        return runtime_from_path("venv", python, pythonpath);
+        return runtime_from_path("venv", python);
     }
 
     let venv_python = app_dir.join(".venv").join("bin").join("python");
     if venv_python.exists() {
-        return runtime_from_path("venv", venv_python, pythonpath);
+        return runtime_from_path("venv", venv_python);
     }
 
     if let Some(bundle_python) = bundled_python() {
-        return runtime_from_path("bundled", bundle_python, pythonpath);
+        return runtime_from_path("bundled", bundle_python);
     }
 
-    runtime_from_path("system", PathBuf::from("python3"), pythonpath)
-}
-
-pub(crate) fn pythonpath_for_current_exe() -> String {
-    crate::config::build_pythonpath(bundled_sdk().as_deref())
+    runtime_from_path("system", PathBuf::from("python3"))
 }
 
 pub(crate) fn bundled_python_bin_dir() -> Option<PathBuf> {
@@ -116,17 +110,12 @@ pub(crate) fn bundled_python_bin_dir() -> Option<PathBuf> {
     })
 }
 
-fn runtime_from_path(
-    source: &str,
-    python: PathBuf,
-    pythonpath: String,
-) -> Result<PythonRuntime, String> {
+fn runtime_from_path(source: &str, python: PathBuf) -> Result<PythonRuntime, String> {
     let version = check_python_version(&python)?;
     Ok(PythonRuntime {
         executable: OsString::from(&python),
         label: format!("{source}: {}", python.display()),
         version,
-        pythonpath,
     })
 }
 
@@ -201,10 +190,6 @@ fn bundled_python() -> Option<PathBuf> {
         .filter(|python| python.exists())
 }
 
-fn bundled_sdk() -> Option<PathBuf> {
-    bundle_contents_dir().map(|c| c.join("Resources").join("sdk").join("python"))
-}
-
 fn bundle_contents_dir() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
@@ -214,13 +199,6 @@ fn bundle_contents_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pythonpath_for_current_exe_includes_sdk_entry() {
-        let pythonpath = pythonpath_for_current_exe();
-
-        assert!(pythonpath.contains("sdk"), "{pythonpath}");
-    }
 
     #[test]
     fn command_output_summary_prefers_stderr_when_stdout_empty() {

@@ -365,6 +365,20 @@ interface types {
 
     record badge-node { text: string, color: badge-color }
 
+    record app-bar-node { title: string, subtitle: string }
+
+    record footer-key-entry { keys: list<string>, description: string }
+
+    record footer-keys-node { entries: list<footer-key-entry>, divider: bool }
+
+    enum pinned-edge { bottom, top, left, right }
+
+    record pinned-node { edge: pinned-edge, child: node-id }
+
+    record spinner-node { label: string }
+
+    record space-node { size: f32, grow: bool }
+
     record canvas-rect {
         x: f32,
         y: f32,
@@ -438,8 +452,12 @@ interface types {
         padding(padding-node),
         canvas(canvas-node),
         divider,
-        space(f32),
+        space(space-node),
         surface(surface-node),
+        app-bar(app-bar-node),
+        footer-keys(footer-keys-node),
+        pinned(pinned-node),
+        spinner(spinner-node),
     }
 
     record indexed-node {

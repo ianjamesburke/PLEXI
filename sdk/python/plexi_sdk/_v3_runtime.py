@@ -82,7 +82,6 @@ class V3AppRuntime:
         self._workspace_root = ""
         self._capabilities: list[str] = []
         self._running = True
-        self._pgap_wire = False
 
     def run(self) -> None:
         while self._running:
@@ -199,7 +198,6 @@ class V3AppRuntime:
         self._app_id = ev.get("app_id", "")
         self._workspace_root = ev.get("workspace_root", "")
         self._capabilities = ev.get("capabilities", [])
-        self._pgap_wire = ev.get("protocol") == "pgap/3"
 
         from ._theme import theme as _theme
         _theme.update_from(ev.get("theme"))
@@ -245,24 +243,12 @@ class V3AppRuntime:
             self._set_state(in_view=False)
 
         if root is not None:
-            if self._pgap_wire:
-                root_node = root if isinstance(root, dict) else root.to_node()
-                if not isinstance(root_node, dict):
-                    raise TypeError(
-                        f"Unknown PGAP UINode type: {type(root).__name__}"
-                    )
-                _emit({
-                    "type": "component_tree",
-                    "frame_id": frame_id,
-                    "root": root_node,
-                })
-            else:
-                from ._adapter import _encode_uitree
-                _emit({
-                    "type": "component_tree",
-                    "frame_id": frame_id,
-                    "tree": _encode_uitree(root),
-                })
+            from ._adapter import _encode_uitree
+            _emit({
+                "type": "component_tree",
+                "frame_id": frame_id,
+                "tree": _encode_uitree(root),
+            })
 
         _emit({"type": "frame_done", "frame_id": frame_id})
 
@@ -296,7 +282,7 @@ class V3AppRuntime:
     def _handle_timer(self, ev: dict) -> None:
         self._dispatch_timer(
             ev.get("timer_id", ""),
-            schedule_render=self._pgap_wire,
+            schedule_render=False,
         )
 
     def _dispatch_timer(self, timer_id, *, schedule_render: bool) -> None:

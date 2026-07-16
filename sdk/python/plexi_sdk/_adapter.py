@@ -143,40 +143,27 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
         child = data.get("child")
         if not isinstance(child, dict):
             raise TypeError("pinned node requires a child object")
-        return _normalize_node_data(child, key, flatten)
+        return {
+            "type": "Pinned",
+            "edge": data.get("edge", "bottom"),
+            "child": flatten(child, f"{key}/child"),
+        }
     if node_type == "footer_keys":
-        labels = []
-        for entry in data.get("entries", []):
-            keys = "/".join(str(value) for value in entry.get("keys", []))
-            description = str(entry.get("description", ""))
-            labels.append(f"{keys} {description}".strip())
         return {
-            "type": "Text",
-            "text": "    ".join(labels),
-            "size": 11.0,
-            "bold": False,
-            "truncate": True,
-            "align": "start",
+            "type": "FooterKeys",
+            "entries": data.get("entries", []),
+            "divider": data.get("divider", True),
         }
-    if node_type == "label":
-        normalized = {
-            "type": "Text",
-            "text": data.get("text", ""),
-            "bold": data.get("bold", False),
-            "truncate": data.get("truncate", False),
-            "align": data.get("align", "start"),
-        }
-        if data.get("size") is not None:
-            normalized["size"] = data["size"]
-        return normalized
-    if node_type == "markdown":
+    if node_type == "app_bar":
         return {
-            "type": "Text",
-            "text": data.get("text", ""),
-            "size": data.get("base_size"),
-            "bold": False,
-            "truncate": False,
-            "align": "start",
+            "type": "AppBar",
+            "title": data.get("title", ""),
+            "subtitle": data.get("subtitle", ""),
+        }
+    if node_type == "spinner":
+        return {
+            "type": "Spinner",
+            "label": data.get("label", ""),
         }
     if node_type == "column":
         children = data.get("children", [])
@@ -231,13 +218,13 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
                 child = {
                     "type": "column",
                     "children": [
-                        {"type": "label", "text": text, "bold": True},
-                        {"type": "label", "text": description, "size": 11.0},
+                        {"type": "text", "text": text, "bold": True},
+                        {"type": "text", "text": description, "size": 11.0},
                     ],
                     "gap": 2.0,
                 }
             else:
-                child = {"type": "label", "text": text}
+                child = {"type": "text", "text": text}
             child_ids.append(flatten(child, f"{key}/{idx}"))
         selected = data.get("selected_idx")
         if selected is not None:

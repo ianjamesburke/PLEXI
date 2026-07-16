@@ -9,13 +9,11 @@ pub(crate) enum ButtonKind {
     Secondary,
     Accent,
     Danger,
-    Ghost,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct ChromeButtonState {
     pub(crate) disabled: bool,
-    pub(crate) hovered: bool,
     pub(crate) down: bool,
 }
 
@@ -42,7 +40,6 @@ pub(crate) fn chrome_button_sized(
         colors,
         ChromeButtonState {
             disabled: false,
-            hovered: false,
             down: false,
         },
     );
@@ -59,48 +56,10 @@ pub(crate) fn chrome_button_sized(
     .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-pub(crate) fn chrome_button_intrinsic_width(ui: &egui::Ui, label: &str) -> f32 {
-    let font_id = egui::FontId::proportional(style::TEXT_CAPTION);
-    let text_w = ui.fonts(|f| {
-        f.layout_no_wrap(label.to_owned(), font_id, Color32::WHITE)
-            .size()
-            .x
-    });
-    (text_w + style::SPACE_MD * 2.0).max(48.0)
-}
-
-pub(crate) fn paint_chrome_button_at(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    label: &str,
-    kind: ButtonKind,
-    state: ChromeButtonState,
-    colors: &Colors,
-) {
-    let visuals = chrome_button_visuals(kind, colors, state);
-    painter.rect_filled(rect, style::RADIUS_MD, visuals.fill);
-    if visuals.stroke.color != Color32::TRANSPARENT && visuals.stroke.width > 0.0 {
-        painter.rect_stroke(
-            rect,
-            style::RADIUS_MD,
-            visuals.stroke,
-            egui::StrokeKind::Inside,
-        );
-    }
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(style::TEXT_CAPTION),
-        visuals.text,
-    );
-}
-
 #[derive(Clone, Copy)]
 struct ChromeButtonVisuals {
     fill: Color32,
     text: Color32,
-    stroke: egui::Stroke,
 }
 
 fn chrome_button_visuals(
@@ -112,14 +71,12 @@ fn chrome_button_visuals(
         ButtonKind::Primary | ButtonKind::Secondary => colors.bg_active,
         ButtonKind::Accent => colors.accent,
         ButtonKind::Danger => colors.danger,
-        ButtonKind::Ghost => Color32::TRANSPARENT,
     };
     let fill = if state.disabled {
         colors.bg_active.gamma_multiply(0.55)
     } else if state.down {
         match kind {
             ButtonKind::Accent | ButtonKind::Danger => base_fill.gamma_multiply(0.85),
-            ButtonKind::Ghost => colors.bg_hover,
             ButtonKind::Primary | ButtonKind::Secondary => colors.bg_hover,
         }
     } else {
@@ -131,26 +88,10 @@ fn chrome_button_visuals(
         match kind {
             ButtonKind::Accent | ButtonKind::Danger => colors.text_on(base_fill),
             ButtonKind::Secondary => colors.text_dim,
-            ButtonKind::Primary | ButtonKind::Ghost => colors.text_primary,
+            ButtonKind::Primary => colors.text_primary,
         }
     };
-    let stroke_color = if state.disabled {
-        Color32::TRANSPARENT
-    } else if matches!(kind, ButtonKind::Ghost) {
-        colors.border
-    } else if state.hovered {
-        match kind {
-            ButtonKind::Danger => colors.danger,
-            _ => colors.accent,
-        }
-    } else {
-        colors.border
-    };
-    ChromeButtonVisuals {
-        fill,
-        text,
-        stroke: egui::Stroke::new(1.0, stroke_color),
-    }
+    ChromeButtonVisuals { fill, text }
 }
 
 pub(crate) fn toolbar_button(
@@ -257,24 +198,3 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
     resp
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ghost_buttons_keep_visible_outline() {
-        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
-        let visuals = chrome_button_visuals(
-            ButtonKind::Ghost,
-            &colors,
-            ChromeButtonState {
-                disabled: false,
-                hovered: false,
-                down: false,
-            },
-        );
-
-        assert_ne!(visuals.stroke.color, Color32::TRANSPARENT);
-        assert!(visuals.stroke.width > 0.0);
-    }
-}
