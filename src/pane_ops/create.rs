@@ -256,8 +256,7 @@ impl PlexiApp {
     }
 
     /// Open a built-in error tile pane when a capability pre-flight check fails.
-    /// Mirrors `open_process_app_pane` but uses `AppRuntime::Builtin` — no
-    /// Python process is spawned.
+    /// Uses `AppRuntime::Builtin` — no app runtime is spawned.
     fn open_launch_failed_pane(
         &mut self,
         app_id: &str,
@@ -571,6 +570,20 @@ impl PlexiApp {
         use crate::host::wasm_app::{Grants, StateStore, WasmApp};
 
         let app_id = installed.manifest.id.clone();
+
+        // Cloud/remote execution is future work (stints 0286/0287): no
+        // server-side wasmtime runtime or thin-client streaming exists yet.
+        // Fail loudly at the launch boundary rather than silently running a
+        // `execution = "cloud"`/`"preferred-local"` app locally — the Python
+        // launch path already rejects the same shape in
+        // `PythonLaunchConfig::from_manifest_file`.
+        if installed.runtime.execution != crate::app::registry::RuntimeExecution::Local {
+            return Err(format!(
+                "app '{app_id}' declares runtime execution '{}', which is not available yet — \
+                 only local execution is supported (cloud streaming is future work)",
+                installed.runtime.execution.as_str()
+            ));
+        }
         let config_dir = crate::config::config_dir();
         let permission_store = PermissionStore::load_or_default(&config_dir);
         let declared_caps = crate::app::permissions::parse_capability_strings(

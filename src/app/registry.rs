@@ -95,6 +95,17 @@ pub enum RuntimeExecution {
     PreferredLocal,
 }
 
+impl RuntimeExecution {
+    /// Manifest wire spelling (`kebab-case`), used in launch-gate error text.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Cloud => "cloud",
+            Self::PreferredLocal => "preferred-local",
+        }
+    }
+}
+
 /// `[requires]` manifest section — host version compatibility.
 ///
 /// `plexi_min` is a hard floor (host below it refuses to install/run);

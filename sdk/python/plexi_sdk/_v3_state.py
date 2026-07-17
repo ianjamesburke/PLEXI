@@ -50,7 +50,7 @@ class LogProxy:
 
 
 def _host_log(level: str, msg: str) -> None:
-    # ProcessApp replaces this hook with a host-log bridge at launch.
+    # The host runtime replaces this hook with a host-log bridge at launch.
     print(f"[{level}] {msg}")
 
 

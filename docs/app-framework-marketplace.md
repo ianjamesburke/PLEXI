@@ -31,7 +31,7 @@ The local-first rule stays intact. Installed apps and user data live on disk. Ho
 - WASM is the third-party sandbox and performance runtime. It shares packaging, trust labels, capability review, and app identity with PGAP apps.
 - Bevy targets WASM + `Surface` in v2. Native Bevy embedding is not the first path.
 - Marketplace trust cannot launch while apps have ambient host control through inherited environment and CLI subprocesses.
-- Python marketplace apps are reviewed native processes until WASM ships. Do not describe them as sandboxed.
+- Python apps run through the CPython-in-WASM adapter, sharing the WASM runtime's packaging, trust labels, and component sandbox (stint 0285). Trust labels reflect review provenance, not sandbox strength — see `docs/wasm-runtime.md`.
 - Marketplace and Plexi AI subscription are business surfaces, but they do not block local package/install or app-framework completion.
 
 ## Definition Of Finished
@@ -54,7 +54,7 @@ The trust and packaging foundation is finished when:
 - Packages can be validated before install.
 - Package validation checks manifest fields, runtime, capabilities, package contents, generated metadata, and obvious bypass patterns.
 - Install screens show runtime trust labels and declared capabilities before the user proceeds.
-- Python apps are labeled as reviewed native processes. WASM apps are labeled as sandboxed when they run through the enforced WASM runtime path with scoped grants.
+- Install screens show a review-provenance trust label and declared capabilities; every app launches through the enforced wasmtime component boundary with scoped grants (`docs/wasm-runtime.md`).
 
 The marketplace plan is finished when:
 
@@ -84,7 +84,7 @@ The first milestone is "an agent can generate a good local Plexi app." Hosted ma
 
 ### 2. Clean Up Permissions And Trust
 
-The current permission model protects host APIs, not the native Python process. That is acceptable only if Plexi says so and routes host powers through the same model.
+The current permission model protects host APIs, not the app's own in-sandbox code. That is acceptable only if Plexi says so and routes host powers through the same model.
 
 Required work:
 
@@ -98,7 +98,7 @@ Required work:
 
 Trust labels must be blunt:
 
-- `Reviewed native process`: Python or other native app. Review and manifest are trust aids, not isolation.
+- `Reviewed`: a reviewed Python or WASM app. Review and manifest are trust aids layered on the sandbox, not the isolation boundary itself — see `docs/wasm-runtime.md`.
 - `Sandboxed WASM`: app runs under the WASM/WASI runtime with scoped host grants. Do not show this before it is true.
 - `First-party core`: bundled with Plexi and maintained in this repo.
 
@@ -255,7 +255,7 @@ Marketplace acceptance scenarios:
 
 - user installs a free local app package
 - publisher validates a package before submission
-- reviewed native app displays capabilities and native-process trust label before install
+- reviewed app displays capabilities and a review-provenance trust label before install
 - sandboxed WASM app displays sandboxed trust label only after WASM runtime enforcement exists
 - paid-app purchase and license flow is specified but does not block local package/install
 - Plexi AI subscription is specified as an `ai.query` backend, not as a requirement for local apps

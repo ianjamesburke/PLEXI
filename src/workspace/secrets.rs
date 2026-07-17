@@ -18,7 +18,8 @@
 //! 2. `[default] X = "fname"` → return `plexi:<workspace-id>:fname`.
 //! 3. `fallback = true` AND `plexi:user:X` exists → return user-scope value.
 //! 4. Else: missing-secret prompt (or hard error if `fallback = false` and no
-//!    route is defined). Out-of-band of this module — see `process_app/routing.rs`.
+//!    route is defined). Out-of-band of this module — resolved by the host at
+//!    app launch, not here.
 
 use serde::Deserialize;
 use std::collections::HashMap;

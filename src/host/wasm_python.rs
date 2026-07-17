@@ -349,7 +349,7 @@ impl PythonLaunchConfig {
 
         if manifest.runtime.execution != RuntimeExecution::Local {
             return Err(WasmPythonError::UnsupportedExecution {
-                execution: runtime_execution_label(manifest.runtime.execution),
+                execution: manifest.runtime.execution.as_str(),
             });
         }
 
@@ -2942,14 +2942,6 @@ fn decode_badge_color(value: &str) -> Result<BadgeColor, WasmPythonError> {
     }
 }
 
-fn runtime_execution_label(execution: RuntimeExecution) -> &'static str {
-    match execution {
-        RuntimeExecution::Local => "local",
-        RuntimeExecution::Cloud => "cloud",
-        RuntimeExecution::PreferredLocal => "preferred-local",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3508,6 +3500,40 @@ python_compat = true
 
         assert_eq!(config.module_name, "main");
         assert_eq!(config.app_id, "hello-py");
+    }
+
+    #[test]
+    fn manifest_cloud_execution_is_rejected() {
+        // Cloud/remote execution (stints 0286/0287) is future work with no
+        // launch path yet — a manifest declaring it must fail loudly rather
+        // than silently launching locally. Mirrors the WASM launch-path guard
+        // in `open_installed_wasm_app_pane`.
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("manifest.toml"),
+            r#"
+schema_version = 1
+
+[app]
+id = "cloud-py"
+type = "app"
+name = "Cloud Python"
+entry = "main.py"
+version = "0.1.0"
+
+[runtime]
+python_compat = true
+execution = "cloud"
+"#,
+        )
+        .expect("manifest");
+        std::fs::write(dir.path().join("main.py"), "def view(): pass\n").expect("entry");
+
+        let err = PythonLaunchConfig::from_manifest_file(dir.path()).unwrap_err();
+        assert!(matches!(
+            err,
+            WasmPythonError::UnsupportedExecution { execution: "cloud" }
+        ));
     }
 
     #[test]
