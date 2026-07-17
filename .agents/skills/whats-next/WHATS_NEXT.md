@@ -117,8 +117,7 @@ P3 and below: `0371`*, `0372`, `0373`, `0378`, `0379`, `0380`, `0382`, `0310`, `
 | `docs/app-framework-marketplace.md` | App framework + marketplace PRM; resolves roadmap conflicts |
 | `docs/marketplace-hosted.md` | Hosted registry, paid apps, AI subscription spec |
 | `docs/marketplace-monetization.md` | Monetization + anti-fork model; the payout-rail decision (`0352`) records here |
-| `docs/package-envelope.md` | App/agent/skill package envelope spec (`0325`) |
-| `docs/workspace-env-secrets.md` | Shared resolver contract for secrets |
+| `src/workspace/AGENTS.md` | Environment secrets resolver reference (retired from `docs/workspace-env-secrets.md`, stint `0408`) |
 | `docs/assistant-host-app.md` | Assistant spec: connectors, permissions, slash commands |
 | `docs/wasm-runtime.md` | WASM runtime spec |
 | `sdk/python/SDK_V3.md` | SDK v3 API reference |

@@ -31,6 +31,7 @@ When work begins: `stint claim <task-id>`. Do not run or document `stint start`;
 | `src/config/` | Config loading/validation, CONFIG.md reference |
 | `src/testing/` | Test infrastructure, TESTING.md reference, scene format |
 | `src/render/` | CLI renderer app contract |
+| `src/workspace/` | Workspace state, environment secrets resolver |
 | `sdk/python/` | SDK traps; AUTHORING.md canonical app guide; SDK_V3.md design spec |
 | `apps/` | App rules, maintained-set policy (`packs/core.toml`), design philosophy |
 | `scripts/` | Build channels, branch workflow, releases, install, RELEASE_CHANNELS.md |
