@@ -21,8 +21,13 @@ use crate::ui::list::ListRow;
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
+use crate::app_protocol::ModelTier;
+use crate::broker::Decision;
+
 use super::commands;
-use super::model::{AssistantModel, CompactionState, PermissionChoice, ToolStatus, TurnRole};
+use super::model::{
+    AssistantModel, AssistantOverlay, CompactionState, PermissionChoice, ToolStatus, TurnRole,
+};
 
 /// What the composer asked the pane shell to do this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +35,27 @@ pub enum ComposerEvent {
     Submit,
     /// The user decided the pending permission sheet.
     Permission(PermissionChoice),
+    /// Enter pressed in an open picker/manager overlay: apply the selection.
+    OverlayConfirm,
+}
+
+/// Row label for a model tier.
+fn model_tier_label(tier: ModelTier) -> &'static str {
+    match tier {
+        ModelTier::Low => "low",
+        ModelTier::Medium => "medium",
+        ModelTier::High => "high",
+    }
+}
+
+/// Row label for a permission decision — "block" reads clearer than "deny" in
+/// the manager (matches the Space-cycle affordance).
+fn decision_label(decision: Decision) -> &'static str {
+    match decision {
+        Decision::Allow => "allow",
+        Decision::Ask => "ask",
+        Decision::Deny => "block",
+    }
 }
 
 /// Stateless renderer for the Assistant pane.
@@ -142,8 +168,13 @@ impl AssistantRenderer {
                 }
                 // Keys first: Enter/Tab/arrows must be consumed before the
                 // TextEdit processes input, or completion renders a one-frame
-                // stale buffer (the autocomplete "glitch").
-                if let Some(key_event) = Self::handle_composer_keys(ui, model, te_id) {
+                // stale buffer (the autocomplete "glitch"). While an overlay is
+                // open it owns navigation keys and the composer stays inert.
+                if model.overlay_active() {
+                    if let Some(overlay_event) = Self::handle_overlay_keys(ui, model) {
+                        event = Some(overlay_event);
+                    }
+                } else if let Some(key_event) = Self::handle_composer_keys(ui, model, te_id) {
                     event = Some(key_event);
                 }
                 composer_rect = Some(Self::draw_composer(
@@ -154,15 +185,27 @@ impl AssistantRenderer {
                     is_focused,
                     total_h * Self::COMPOSER_MAX_FRACTION,
                 ));
-                let mut hints = vec![
-                    HintGroup::new(&["\u{21b5}"], "send"),
-                    HintGroup::new(&["\u{21e7}", "\u{21b5}"], "newline"),
-                    HintGroup::new(&["/"], "commands"),
-                ];
-                if model.streaming.in_flight {
-                    hints.push(HintGroup::new(&["Esc"], "stop"));
+                if model.overlay_active() {
+                    let mut hints = vec![
+                        HintGroup::new(&["\u{2191}", "\u{2193}"], "navigate"),
+                        HintGroup::new(&["\u{21b5}"], "confirm"),
+                        HintGroup::new(&["Esc"], "cancel"),
+                    ];
+                    if matches!(model.overlay, AssistantOverlay::PermissionsManager { .. }) {
+                        hints.push(HintGroup::new(&["Space"], "cycle"));
+                    }
+                    HintBar::new(&hints).show(ui, colors);
+                } else {
+                    let mut hints = vec![
+                        HintGroup::new(&["\u{21b5}"], "send"),
+                        HintGroup::new(&["\u{21e7}", "\u{21b5}"], "newline"),
+                        HintGroup::new(&["/"], "commands"),
+                    ];
+                    if model.streaming.in_flight {
+                        hints.push(HintGroup::new(&["Esc"], "stop"));
+                    }
+                    HintBar::new(&hints).show(ui, colors);
                 }
-                HintBar::new(&hints).show(ui, colors);
             });
 
         egui::CentralPanel::default()
@@ -173,8 +216,10 @@ impl AssistantRenderer {
                 Self::draw_transcript(ui, model, md_cache, text_cache, colors);
             });
 
-        if model.picker_active() {
-            if let Some(rect) = composer_rect {
+        if let Some(rect) = composer_rect {
+            if model.overlay_active() {
+                Self::draw_overlay_popup(ui, model, pane_id, colors, rect, picker_max_h);
+            } else if model.picker_active() {
                 Self::draw_picker_popup(ui, model, te_id, pane_id, colors, rect, picker_max_h);
             }
         }
@@ -795,6 +840,175 @@ impl AssistantRenderer {
         if let Some(name) = clicked {
             Self::complete_command(ui.ctx(), model, te_id, name, "click");
         }
+    }
+
+    /// Consume overlay navigation keys before the composer TextEdit renders.
+    /// Arrows move the cursor, Enter confirms (returned to the shell), Esc
+    /// cancels, and Space cycles a decision — but only in the permissions
+    /// manager, so Space keeps inserting literal spaces everywhere else.
+    fn handle_overlay_keys(ui: &mut egui::Ui, model: &mut AssistantModel) -> Option<ComposerEvent> {
+        let is_perms = matches!(model.overlay, AssistantOverlay::PermissionsManager { .. });
+        let mut up = false;
+        let mut down = false;
+        let mut confirm = false;
+        let mut cancel = false;
+        let mut cycle = false;
+        ui.input_mut(|input| {
+            up = input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+            down = input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+            confirm = input.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            cancel = input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            if is_perms {
+                cycle = input.consume_key(egui::Modifiers::NONE, egui::Key::Space);
+            }
+        });
+        if up {
+            model.overlay_move_up();
+        }
+        if down {
+            model.overlay_move_down();
+        }
+        if cycle {
+            model.overlay_cycle_decision();
+        }
+        if cancel {
+            model.cancel_overlay();
+            return None;
+        }
+        confirm.then_some(ComposerEvent::OverlayConfirm)
+    }
+
+    /// The model/agent picker and permissions manager share the slash-command
+    /// picker's floating geometry: an `Area` anchored above the composer,
+    /// growing upward, with a scrollable `ListRow` body clamped to `max_h`.
+    fn draw_overlay_popup(
+        ui: &egui::Ui,
+        model: &AssistantModel,
+        pane_id: egui::Id,
+        colors: &Colors,
+        composer_rect: egui::Rect,
+        max_h: f32,
+    ) {
+        let row_count = model.overlay_len().max(1);
+        let selected = model.overlay_selected();
+        let row_gap = ui.spacing().item_spacing.y;
+        let content_h =
+            row_count as f32 * style::LIST_ROW_H + row_count.saturating_sub(1) as f32 * row_gap;
+        let list_h = content_h.min(max_h.max(0.0));
+        let margin = style::SPACE_XS;
+        let popup_h = list_h + 2.0 * margin + 2.0;
+        let pos = composer_rect.left_top() - egui::vec2(0.0, style::SPACE_XS + popup_h);
+
+        egui::Area::new(pane_id.with("assistant_overlay"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.set_width(composer_rect.width());
+                egui::Frame::new()
+                    .fill(colors.bg_active)
+                    .stroke(egui::Stroke::new(1.0, colors.border))
+                    .corner_radius(style::RADIUS_MD)
+                    .inner_margin(egui::Margin::same(margin as i8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        egui::ScrollArea::vertical()
+                            .id_salt("assistant_overlay_scroll")
+                            .max_height(list_h)
+                            .min_scrolled_height(list_h)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| match &model.overlay {
+                                AssistantOverlay::ModelPicker {
+                                    current_tier,
+                                    active_agent_id,
+                                    tiers,
+                                    agents,
+                                    ..
+                                } => Self::draw_model_picker_rows(
+                                    ui,
+                                    colors,
+                                    selected,
+                                    *current_tier,
+                                    active_agent_id,
+                                    tiers,
+                                    agents,
+                                ),
+                                AssistantOverlay::PermissionsManager { grants, .. } => {
+                                    Self::draw_permissions_rows(ui, colors, selected, grants)
+                                }
+                                AssistantOverlay::None => {}
+                            });
+                    });
+            });
+    }
+
+    fn draw_model_picker_rows(
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        selected: usize,
+        current_tier: ModelTier,
+        active_agent_id: &str,
+        tiers: &[ModelTier],
+        agents: &[super::model::AgentChoice],
+    ) {
+        Self::overlay_section_label(ui, colors, "Model tier");
+        for (i, tier) in tiers.iter().enumerate() {
+            let mut row = ListRow::new(model_tier_label(*tier)).selected(i == selected);
+            if *tier == current_tier {
+                row = row.chip("current");
+            }
+            let resp = row.show(ui, colors);
+            if i == selected {
+                resp.scroll_into_view(ui, true);
+            }
+        }
+        Self::overlay_section_label(ui, colors, "Agent");
+        for (j, agent) in agents.iter().enumerate() {
+            let idx = tiers.len() + j;
+            let mut row = ListRow::new(&agent.display_name)
+                .secondary(&agent.id)
+                .selected(idx == selected);
+            if agent.id == active_agent_id {
+                row = row.chip("active");
+            }
+            let resp = row.show(ui, colors);
+            if idx == selected {
+                resp.scroll_into_view(ui, true);
+            }
+        }
+    }
+
+    fn draw_permissions_rows(
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        selected: usize,
+        grants: &[super::model::GrantRow],
+    ) {
+        if grants.is_empty() {
+            ui.label(
+                RichText::new("No grants yet — tool calls will ask.")
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
+            );
+            return;
+        }
+        for (i, grant) in grants.iter().enumerate() {
+            let resp = ListRow::new(&grant.target_id)
+                .secondary(decision_label(grant.decision))
+                .selected(i == selected)
+                .show(ui, colors);
+            if i == selected {
+                resp.scroll_into_view(ui, true);
+            }
+        }
+    }
+
+    fn overlay_section_label(ui: &mut egui::Ui, colors: &Colors, label: &str) {
+        ui.add_space(style::SPACE_XS);
+        ui.label(
+            RichText::new(label)
+                .size(style::TEXT_HINT)
+                .color(colors.text_dim),
+        );
     }
 
     /// The growable composer; returns its outer rect so the picker popup can

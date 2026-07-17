@@ -47,7 +47,10 @@ use crate::plexi_ai::tool_dispatch::{
 };
 
 use audit::{AuditEvent, AuditLog};
-use model::{AssistantEffect, AssistantModel, PermissionChoice, TurnRole};
+use model::{
+    AgentChoice, AssistantEffect, AssistantModel, AssistantOverlay, GrantRow, PermissionChoice,
+    TurnRole,
+};
 use render::{AssistantRenderer, ComposerEvent, MarkdownTextCache};
 use settings::{AssistantSettings, SessionOverrides, SettingsLoadError, SettingsLoader};
 use skills::{SkillDefinition, SkillRegistry};
@@ -556,11 +559,11 @@ impl AssistantApp {
                 AssistantEffect::ShowContext => self.cmd_show_context(),
                 AssistantEffect::ShowHooks => self.cmd_show_hooks(),
                 AssistantEffect::InvokeSkill { name, args } => self.cmd_invoke_skill(&name, &args),
-                AssistantEffect::ListPermissions => self.cmd_list_permissions(),
+                AssistantEffect::OpenPermissionsManager => self.open_permissions_manager(),
                 AssistantEffect::RevokeGrant { target_id } => self.cmd_revoke(&target_id),
                 AssistantEffect::ShowAudit => self.cmd_show_audit(),
                 AssistantEffect::ShowSettings => self.cmd_show_settings(),
-                AssistantEffect::ShowModelSetting => self.cmd_show_model_setting(),
+                AssistantEffect::OpenModelPicker => self.open_model_picker(),
                 AssistantEffect::SetSessionModel(tier) => self.set_session_model(tier),
                 AssistantEffect::ListAgents => self.cmd_list_agents(),
                 AssistantEffect::SwitchAgent(id) => self.cmd_switch_agent(&id),
@@ -1620,6 +1623,28 @@ impl AssistantApp {
         duration: GrantDuration,
         source: GrantSource,
     ) {
+        self.record_grant_with_decision(
+            actor_id,
+            actor_scope,
+            target_type,
+            target,
+            duration,
+            source,
+            Decision::Allow,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_grant_with_decision(
+        &mut self,
+        actor_id: &str,
+        actor_scope: ActorScope,
+        target_type: TargetType,
+        target: &str,
+        duration: GrantDuration,
+        source: GrantSource,
+        decision: Decision,
+    ) {
         // Canonicalize to match `PermissionRequest`'s workspace normalization
         // (macOS tempdirs resolve `/var` → `/private/var`).
         let workspace_root = self
@@ -1635,7 +1660,7 @@ impl AssistantApp {
             target_id: target.to_string(),
             resource_scope: ResourceScope::Workspace,
             resource_id: None,
-            decision: Decision::Allow,
+            decision,
             duration,
             source,
             created_at: std::time::SystemTime::now()
@@ -2276,32 +2301,37 @@ impl AssistantApp {
         self.execute_effects(effects);
     }
 
-    fn cmd_show_model_setting(&mut self) {
-        self.reload_settings();
+    /// The model tier that would drive the next turn: a session/user override
+    /// wins, otherwise the active agent's default. `reload_settings` must have
+    /// run so `self.settings` is current.
+    fn resolved_model_tier(&self) -> ModelTier {
         let configured = &self.settings.model.tier;
-        let (tier, source) = if self.session_overrides.model_tier.is_some()
+        if self.session_overrides.model_tier.is_some()
             || configured.source.scope != settings::SettingsScope::Default
         {
-            (configured.value, configured.source.description())
+            configured.value
         } else if let Some(agent) = self.active_agent() {
-            (
-                agent.default_tier,
-                format!("agent `{}` [{}]", agent.id, agent.source.label()),
-            )
+            agent.default_tier
         } else {
-            (configured.value, configured.source.description())
-        };
-        log::info!(
-            "assistant: /model showing {} from {}",
-            settings::model_tier_name(tier),
-            source
-        );
-        let effects = self.model.push_info(format!(
-            "Model tier: `{}` ({}).",
-            settings::model_tier_name(tier),
-            source
-        ));
-        self.execute_effects(effects);
+            configured.value
+        }
+    }
+
+    /// `/model` (no args): open the interactive model/agent picker.
+    fn open_model_picker(&mut self) {
+        self.reload_settings();
+        self.reload_agents();
+        let current_tier = self.resolved_model_tier();
+        let tiers = vec![ModelTier::Low, ModelTier::Medium, ModelTier::High];
+        let agents = self
+            .agent_registry
+            .agents()
+            .map(|agent| AgentChoice {
+                id: agent.id.clone(),
+                display_name: agent.display_name.clone(),
+            })
+            .collect();
+        self.model.open_model_picker(current_tier, tiers, agents);
     }
 
     fn cmd_show_settings(&mut self) {
@@ -2598,11 +2628,11 @@ impl AssistantApp {
         self.execute_effects(effects);
     }
 
-    /// `/permissions`: persisted grants for the assistant actor.
-    fn cmd_list_permissions(&mut self) {
+    /// Persisted grants attributable to the assistant actor (connector tools,
+    /// host tools, and shared event streams), as editable overlay rows.
+    fn assistant_grant_rows(&self) -> Vec<GrantRow> {
         let connector_actor_id = self.connector_actor().0;
-        let lines: Vec<String> = self
-            .grant_store
+        self.grant_store
             .records()
             .iter()
             .filter(|r| {
@@ -2614,30 +2644,135 @@ impl AssistantApp {
                         || (r.target_type == TargetType::AppEventStream
                             && r.actor_id == ASSISTANT_ACTOR_ID))
             })
-            .map(|r| {
-                format!(
-                    "{} = {} ({:?}, {:?})",
-                    r.target_id,
-                    r.decision.as_str(),
-                    r.duration,
-                    r.source
-                )
+            .map(|r| GrantRow {
+                target_id: r.target_id.clone(),
+                decision: r.decision,
             })
+            .collect()
+    }
+
+    /// `/permissions` and `/revoke` (no args): open the permissions manager.
+    fn open_permissions_manager(&mut self) {
+        let grants = self.assistant_grant_rows();
+        self.model.open_permissions_manager(grants);
+    }
+
+    /// Apply the permissions manager's edited rows (Enter). Only rows whose
+    /// decision changed touch the grant store: Ask reverts a target to the
+    /// posture default (delete), Allow/Deny re-record the existing grant's
+    /// metadata with the new decision. Every write is audited.
+    fn apply_permission_grants(&mut self, rows: Vec<GrantRow>) {
+        let current: std::collections::HashMap<String, Decision> = self
+            .assistant_grant_rows()
+            .into_iter()
+            .map(|r| (r.target_id, r.decision))
             .collect();
-        log::info!(
-            "assistant: /permissions — {} grant(s) for assistant",
-            lines.len()
-        );
-        let text = if lines.is_empty() {
-            "No persisted grants for the assistant. Tool calls will ask.".to_string()
+        let mut changed = 0usize;
+        for row in rows {
+            if current.get(&row.target_id) == Some(&row.decision) {
+                continue;
+            }
+            let actor_id = if row.target_id.starts_with("app.") || row.target_id.starts_with("host.")
+            {
+                self.connector_actor().0
+            } else {
+                ASSISTANT_ACTOR_ID.to_string()
+            };
+            match row.decision {
+                Decision::Ask => {
+                    let removed =
+                        self.grant_store
+                            .revoke(ActorType::Agent, &actor_id, &row.target_id);
+                    let unsubscribed = self.unsubscribe_stream(&row.target_id);
+                    if removed > 0 {
+                        self.grant_store.save();
+                    }
+                    self.audit.append(&AuditEvent::now(
+                        "revoke",
+                        &row.target_id,
+                        "revoked",
+                        &format!(
+                            "{removed} grant(s), {unsubscribed} subscription(s) removed via permissions manager"
+                        ),
+                    ));
+                }
+                Decision::Allow | Decision::Deny => {
+                    // Rows are built only from existing persisted grants, so
+                    // each has a record whose metadata we mirror with the new
+                    // decision.
+                    let meta = self
+                        .grant_store
+                        .records()
+                        .iter()
+                        .find(|r| {
+                            r.actor_type == ActorType::Agent
+                                && r.actor_id == actor_id
+                                && r.target_id == row.target_id
+                        })
+                        .map(|r| (r.target_type, r.actor_scope, r.duration, r.source));
+                    let Some((target_type, actor_scope, duration, source)) = meta else {
+                        log::warn!(
+                            "assistant: permissions manager skipped '{}' — no existing grant to re-record",
+                            row.target_id
+                        );
+                        continue;
+                    };
+                    self.record_grant_with_decision(
+                        &actor_id,
+                        actor_scope,
+                        target_type,
+                        &row.target_id,
+                        duration,
+                        source,
+                        row.decision,
+                    );
+                    self.grant_store.save();
+                    self.audit.append(&AuditEvent::now(
+                        "permission_set",
+                        &row.target_id,
+                        row.decision.as_str(),
+                        "via permissions manager",
+                    ));
+                }
+            }
+            changed += 1;
+            log::info!(
+                "assistant: permission '{}' set to {} via picker",
+                row.target_id,
+                row.decision.as_str()
+            );
+        }
+        let text = if changed == 0 {
+            "No permission changes.".to_string()
         } else {
-            format!(
-                "Assistant grants:\n{}\nUse /revoke <target_id> to remove one.",
-                lines.join("\n")
-            )
+            format!("Updated {changed} permission(s).")
         };
         let effects = self.model.push_info(text);
         self.execute_effects(effects);
+    }
+
+    /// Confirm the open overlay (Enter): dispatch the selection through the
+    /// same handlers the text commands use, then close.
+    fn confirm_overlay(&mut self) {
+        match std::mem::take(&mut self.model.overlay) {
+            AssistantOverlay::ModelPicker {
+                selected,
+                tiers,
+                agents,
+                ..
+            } => {
+                if selected < tiers.len() {
+                    self.set_session_model(tiers[selected]);
+                } else if let Some(choice) = agents.get(selected - tiers.len()) {
+                    let id = choice.id.clone();
+                    self.cmd_switch_agent(&id);
+                }
+            }
+            AssistantOverlay::PermissionsManager { grants, .. } => {
+                self.apply_permission_grants(grants);
+            }
+            AssistantOverlay::None => {}
+        }
     }
 
     /// `/revoke <target_id>`: remove persisted grants for one target. Event
@@ -2730,6 +2865,26 @@ impl App for AssistantApp {
     }
 
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
+        // The model/agent picker and permissions manager own Escape while
+        // open: this runs before `poll_actions`, which binds plain Escape to
+        // `CloseApp` when the assistant's app surface is focused
+        // (`src/host/keys.rs` `AppActive` context). Without claiming it here
+        // first, Escape falls through and destroys the pane instead of just
+        // closing the overlay — the same precedent `dispatch_app_key_events`
+        // already documents for file-browser search-mode Escape. Returning
+        // `Passthrough` for every other key (including ArrowUp) leaves them
+        // in the frame's input buffer for `render.rs`'s `handle_overlay_keys`
+        // to consume during the render pass — `Consumed` here would make
+        // `dispatch_app_key_events` strip ArrowUp out of the buffer too
+        // (it claims Escape *and* ArrowUp together on any `Consumed`
+        // disposition), starving the overlay's own up-navigation.
+        if self.model.overlay_active() {
+            if input.key_pressed(egui::Key::Escape) {
+                self.model.cancel_overlay();
+                return KeyDisposition::Consumed;
+            }
+            return KeyDisposition::Passthrough;
+        }
         if input.key_pressed(egui::Key::Escape) && self.model.streaming.in_flight {
             self.interrupt_in_flight_turn();
             return KeyDisposition::Consumed;
@@ -2775,6 +2930,7 @@ impl App for AssistantApp {
                 self.execute_effects(effects);
             }
             Some(ComposerEvent::Permission(choice)) => self.resolve_permission(choice),
+            Some(ComposerEvent::OverlayConfirm) => self.confirm_overlay(),
             None => {}
         }
         if compact_visible_this_frame && self.run_pending_compaction() {
@@ -3786,12 +3942,21 @@ enabled = ["allowed.tool"]
         let tools_row = &app.model.turns.last().unwrap().text;
         assert!(tools_row.contains("app.view.tool — allow"), "{tools_row}");
 
+        // `/permissions` now opens the interactive manager, populated from the
+        // grant store, instead of dumping text.
         app.model.composer = "/permissions".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
-        let perms_row = &app.model.turns.last().unwrap().text;
-        assert!(perms_row.contains("app.view.tool = allow"), "{perms_row}");
+        let AssistantOverlay::PermissionsManager { grants, .. } = &app.model.overlay else {
+            panic!("expected the permissions manager overlay to be open");
+        };
+        assert!(
+            grants.iter().any(|g| g.target_id == "app.view.tool"),
+            "seeded grant is listed: {grants:?}"
+        );
+        app.model.cancel_overlay();
 
+        // `/revoke <target_id>` keeps its fast-path text behavior.
         app.model.composer = "/revoke app.view.tool".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
@@ -3814,6 +3979,92 @@ enabled = ["allowed.tool"]
         );
 
         tool_dispatch::unregister(9104);
+    }
+
+    #[test]
+    fn permissions_manager_set_to_block_persists_and_audits() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        seed_grant(&mut app, "app.view.tool", Decision::Allow);
+
+        app.model.composer = "/permissions".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+
+        // Cycle the row Allow -> Ask -> Deny, then apply.
+        app.model.overlay_cycle_decision();
+        app.model.overlay_cycle_decision();
+        app.confirm_overlay();
+
+        assert!(!app.model.overlay_active());
+        let record = app
+            .grant_store
+            .records()
+            .iter()
+            .find(|r| r.target_id == "app.view.tool")
+            .expect("grant still persisted after set-to-block");
+        assert_eq!(record.decision, Decision::Deny);
+
+        let audited = app
+            .audit
+            .tail(5)
+            .into_iter()
+            .any(|e| e.kind == "permission_set" && e.target == "app.view.tool" && e.decision == "deny");
+        assert!(audited, "block change must be audited");
+    }
+
+    #[test]
+    fn permissions_manager_set_to_ask_revokes_and_audits() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        seed_grant(&mut app, "app.view.tool", Decision::Allow);
+
+        // `/revoke` (no args) opens the same manager as `/permissions`.
+        app.model.composer = "/revoke".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert!(matches!(
+            app.model.overlay,
+            AssistantOverlay::PermissionsManager { .. }
+        ));
+
+        // Allow -> Ask reverts to the posture default: the record is deleted.
+        app.model.overlay_cycle_decision();
+        app.confirm_overlay();
+
+        assert!(
+            app.grant_store.records().is_empty(),
+            "set-to-ask removes the persisted grant"
+        );
+        let audited = app
+            .audit
+            .tail(5)
+            .into_iter()
+            .any(|e| e.kind == "revoke" && e.target == "app.view.tool");
+        assert!(audited, "revert-to-ask must be audited");
+    }
+
+    #[test]
+    fn permissions_manager_cancel_leaves_grants_untouched() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+        seed_grant(&mut app, "app.view.tool", Decision::Allow);
+
+        app.model.composer = "/permissions".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+
+        app.model.overlay_cycle_decision(); // edit in-flight, then cancel
+        app.model.cancel_overlay();
+
+        assert!(!app.model.overlay_active());
+        let record = app
+            .grant_store
+            .records()
+            .iter()
+            .find(|r| r.target_id == "app.view.tool")
+            .expect("grant untouched after cancel");
+        assert_eq!(record.decision, Decision::Allow);
     }
 
     // ── Phase D3: event subscriptions + delivery bridge ───────────────────────
@@ -4506,7 +4757,7 @@ enabled = ["allowed.tool"]
     }
 
     #[test]
-    fn model_without_args_shows_the_resolved_tier_and_source() {
+    fn model_without_args_opens_picker_on_resolved_tier() {
         let ws = tempfile::tempdir().unwrap();
         let settings_path = ws.path().join("agents/settings.toml");
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
@@ -4517,8 +4768,53 @@ enabled = ["allowed.tool"]
         let effects = app.model.submit();
         app.execute_effects(effects);
 
-        let output = &app.model.turns.last().unwrap().text;
-        assert!(output.contains("`low`") && output.contains("user"));
+        // The picker opens with the cursor on the resolved tier (low, index 0)
+        // and the current agent listed. No text row is pushed.
+        assert!(app.model.turns.is_empty(), "picker opens instead of a text row");
+        let AssistantOverlay::ModelPicker {
+            selected,
+            current_tier,
+            tiers,
+            agents,
+            ..
+        } = &app.model.overlay
+        else {
+            panic!("expected the model picker overlay to be open");
+        };
+        assert_eq!(*current_tier, ModelTier::Low);
+        assert_eq!(*selected, 0);
+        assert_eq!(tiers.len(), 3);
+        assert!(
+            agents.iter().any(|a| a.id == "default"),
+            "the default agent is listed"
+        );
+    }
+
+    #[test]
+    fn model_picker_confirm_sets_the_selected_tier() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = test_app(ws.path());
+
+        app.model.composer = "/model".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+
+        // Default resolves to `medium` (index 1); one step down lands on
+        // `high` (index 2). Confirm follows the same path as `/model high`.
+        assert_eq!(app.model.overlay_selected(), 1);
+        app.model.overlay_move_down();
+        assert_eq!(app.model.overlay_selected(), 2);
+        app.confirm_overlay();
+
+        assert!(!app.model.overlay_active(), "overlay closes on confirm");
+        assert_eq!(app.session_overrides.model_tier, Some(ModelTier::High));
+        assert!(app
+            .model
+            .turns
+            .last()
+            .unwrap()
+            .text
+            .contains("Model tier set to"));
     }
 
     #[test]
