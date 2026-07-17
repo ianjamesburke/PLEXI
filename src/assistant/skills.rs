@@ -118,6 +118,45 @@ impl SkillRegistry {
             _ => None,
         }
     }
+
+    /// Fallback for when `matching_enabled` misses a plain build request.
+    /// That matcher's 50%-coverage bar is tuned to disambiguate many
+    /// similarly-worded user-installed skills, and silently drops short,
+    /// noun-heavy prompts against the builtin skill's own description — e.g.
+    /// "Build me a tiny counter app with plus and minus buttons" scores
+    /// 2/6 = 0.33 and never matches. Since silently never activating the
+    /// app-build skill strands the assistant without the SDK reference or
+    /// the raised tool-call cap (stint 0422), this check is independent of
+    /// description wording: a build-verb next to a build-noun anywhere in
+    /// the prompt is a signal that should never miss for this one,
+    /// high-value builtin skill.
+    pub fn app_build_fallback(&self, prompt: &str, enabled: &[String]) -> Option<&SkillDefinition> {
+        if !looks_like_app_build_request(prompt) {
+            return None;
+        }
+        if !(enabled.is_empty() || enabled.iter().any(|name| name == APP_BUILD_SKILL_NAME)) {
+            return None;
+        }
+        self.get(APP_BUILD_SKILL_NAME)
+    }
+}
+
+const BUILD_VERBS: &[&str] = &["build", "make", "create", "write", "code"];
+const BUILD_NOUNS: &[&str] = &[
+    "app", "apps", "game", "games", "tool", "tools", "widget", "widgets", "utility", "utilities",
+];
+
+/// Whether `prompt` reads as a request to build something. Word-boundary
+/// tokenized (not substring `contains`) so it doesn't false-positive on
+/// unrelated words that happen to embed a build noun/verb.
+fn looks_like_app_build_request(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    let words: std::collections::HashSet<&str> = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '-')
+        .filter(|word| !word.is_empty())
+        .collect();
+    BUILD_VERBS.iter().any(|verb| words.contains(verb))
+        && BUILD_NOUNS.iter().any(|noun| words.contains(noun))
 }
 
 fn distinctive_words(text: &str) -> std::collections::HashSet<String> {
@@ -240,6 +279,48 @@ mod tests {
             reference.contains("## UI Components") && reference.contains("## Effects"),
             "must cover the widget/effect API the app-build skill needs"
         );
+    }
+
+    /// Regression for the 0422 gate-fix follow-up: a real tester prompt
+    /// ("Build me a tiny counter app with plus and minus buttons") scores
+    /// only 2/6 = 0.33 word-overlap against the skill's own description, so
+    /// `matching_enabled` misses it — confirming the bug the fallback
+    /// exists to catch. `app_build_fallback` must still activate the skill.
+    #[test]
+    fn app_build_fallback_catches_prompt_the_general_matcher_misses() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = SkillRegistry::load(root.path(), root.path());
+        let prompt = "Build me a tiny counter app with plus and minus buttons";
+
+        assert!(
+            registry.matching_enabled(prompt, &[]).is_none(),
+            "this prompt is the known miss the fallback exists for; if this \
+             now passes, the general matcher changed and this assertion \
+             should be revisited"
+        );
+        let skill = registry
+            .app_build_fallback(prompt, &[])
+            .expect("fallback must catch a build-verb + build-noun prompt");
+        assert_eq!(skill.name, APP_BUILD_SKILL_NAME);
+    }
+
+    #[test]
+    fn app_build_fallback_respects_enabled_list_and_ignores_unrelated_prompts() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = SkillRegistry::load(root.path(), root.path());
+
+        assert!(registry
+            .app_build_fallback("what's the weather like today", &[])
+            .is_none());
+        assert!(registry
+            .app_build_fallback(
+                "build me a small app",
+                &["some-other-skill".to_string()]
+            )
+            .is_none());
+        assert!(registry
+            .app_build_fallback("make me a game", &[APP_BUILD_SKILL_NAME.to_string()])
+            .is_some());
     }
 
     #[test]
