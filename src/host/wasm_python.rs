@@ -2929,12 +2929,16 @@ fn decode_pinned_edge(value: &str) -> Result<PinnedEdge, WasmPythonError> {
     }
 }
 
+/// Decodes a badge color role. Accepts the canonical set (accent, success,
+/// warning, danger, neutral) plus the theme's status-role aliases
+/// (red/green/yellow — see `sdk/python/plexi_sdk/_theme.py`). There is
+/// intentionally no "blue" role; `accent` is the accent/blue-ish role.
 fn decode_badge_color(value: &str) -> Result<BadgeColor, WasmPythonError> {
     match value {
         "accent" => Ok(BadgeColor::Accent),
-        "success" => Ok(BadgeColor::Success),
-        "warning" => Ok(BadgeColor::Warning),
-        "danger" => Ok(BadgeColor::Danger),
+        "success" | "green" => Ok(BadgeColor::Success),
+        "warning" | "yellow" => Ok(BadgeColor::Warning),
+        "danger" | "red" => Ok(BadgeColor::Danger),
         "neutral" => Ok(BadgeColor::Neutral),
         other => Err(WasmPythonError::BridgeJson(format!(
             "unknown badge color: {other}"
@@ -4000,5 +4004,52 @@ execution = "cloud"
             .nodes
             .iter()
             .any(|node| matches!(node.data, UiNodeData::Scroll(_))));
+    }
+
+    #[test]
+    fn decode_badge_color_accepts_canonical_roles() {
+        assert!(matches!(decode_badge_color("accent"), Ok(BadgeColor::Accent)));
+        assert!(matches!(
+            decode_badge_color("success"),
+            Ok(BadgeColor::Success)
+        ));
+        assert!(matches!(
+            decode_badge_color("warning"),
+            Ok(BadgeColor::Warning)
+        ));
+        assert!(matches!(decode_badge_color("danger"), Ok(BadgeColor::Danger)));
+        assert!(matches!(
+            decode_badge_color("neutral"),
+            Ok(BadgeColor::Neutral)
+        ));
+    }
+
+    #[test]
+    fn decode_badge_color_accepts_theme_status_aliases() {
+        // sdk/python/plexi_sdk/_theme.py defines red==danger, green==success,
+        // yellow==warning as theme role aliases; the host decoder must accept
+        // them alongside the canonical badge color names.
+        assert!(matches!(decode_badge_color("red"), Ok(BadgeColor::Danger)));
+        assert!(matches!(
+            decode_badge_color("green"),
+            Ok(BadgeColor::Success)
+        ));
+        assert!(matches!(
+            decode_badge_color("yellow"),
+            Ok(BadgeColor::Warning)
+        ));
+    }
+
+    #[test]
+    fn decode_badge_color_rejects_unknown_value() {
+        // There is intentionally no "blue" role; "accent" is the accent/
+        // blue-ish role. Unknown values must fail loudly, naming the value.
+        let err = decode_badge_color("blue").expect_err("blue is not a badge color");
+        match err {
+            WasmPythonError::BridgeJson(msg) => {
+                assert!(msg.contains("blue"), "error should name the bad value: {msg}");
+            }
+            other => panic!("expected BridgeJson error, got {other:?}"),
+        }
     }
 }

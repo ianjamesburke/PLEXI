@@ -195,6 +195,13 @@ while body content stays inset.
 Canvas apps bypass the host WCAG contrast check. Use `theme.fg` for canvas text
 and reserve `dim()`/`theme.muted` for fills, or text fails contrast.
 
+`Badge`/`Banner` colors are the theme's SEMANTIC roles, not literal colors:
+`accent`, `success`, `warning`, `danger`, `neutral`, plus the alias roles
+`red`/`green`/`yellow` (== `danger`/`success`/`warning`). There is no `blue`.
+An invalid value raises `ValueError` at construction, not at host render. A
+bespoke color needs `AppPalette(dark=..., light=...)` — never a raw hex or
+CSS name inline.
+
 ## Keyboard Conventions
 
 Keys arrive in `update(event)` as `KeyEvent`. Key strings are lowercase

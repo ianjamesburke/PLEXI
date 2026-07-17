@@ -1115,4 +1115,28 @@ profile_dir = ".plexi-beta"
 
         assert!(err.contains("must be a plain JSON object"), "{err}");
     }
+
+    /// The render loop at the bottom of `app_check_cli` maps
+    /// `run_headless_frame`'s `Err(e)` to `errors.push(format!("render {label} — {e}"))`
+    /// (never a silent log-and-continue), so a component tree that fails to
+    /// decode — e.g. an app emitting `Badge(color="blue")`, which the host
+    /// decoder rejects (see `decode_badge_color`) — must surface as a named
+    /// `plexi app check` error, not merely an ERROR-level log line while the
+    /// check itself reports success.
+    #[test]
+    fn render_decode_error_becomes_a_named_check_error() {
+        let tree_json = r#"{"root":0,"nodes":[
+            {"id":0,"key":"0","data":{"type":"badge","text":"status","color":"blue"}}
+        ]}"#;
+
+        let decode_err = crate::host::wasm_python::decode_ui_tree(tree_json)
+            .expect_err("'blue' is not a valid badge color");
+
+        let label = "480x320";
+        let check_error = format!("render {label} — {decode_err}");
+        assert!(
+            check_error.contains("unknown badge color: blue"),
+            "check error must name the bad value: {check_error}"
+        );
+    }
 }

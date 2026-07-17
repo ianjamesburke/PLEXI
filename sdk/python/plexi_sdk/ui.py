@@ -5,7 +5,7 @@ theme, input, and rendering.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Protocol, Union, runtime_checkable
+from typing import List, Literal, Optional, Protocol, Union, runtime_checkable
 
 
 @runtime_checkable
@@ -512,16 +512,40 @@ def _initials(label: str) -> str:
     return (parts[0][0] + parts[-1][0]).upper()
 
 
+# Badge/status color vocabulary: the theme's SEMANTIC roles, not literal
+# colors. `accent`/`success`/`warning`/`danger`/`neutral` are canonical;
+# `red`/`green`/`yellow` are the theme's status-role aliases (see
+# `_theme.py`). There is intentionally no "blue" — `accent` is the
+# accent/blue-ish role. Keep in sync with the host decoder
+# `decode_badge_color` in `src/host/wasm_python.rs`.
+BadgeColor = Literal[
+    "accent", "success", "warning", "danger", "neutral", "red", "green", "yellow"
+]
+BADGE_COLORS: "tuple[str, ...]" = (
+    "accent", "success", "warning", "danger", "neutral", "red", "green", "yellow",
+)
+
+
+def _validate_badge_color(color: str, *, who: str) -> None:
+    if color not in BADGE_COLORS:
+        raise ValueError(
+            f"{who}: color must be one of {BADGE_COLORS}, got {color!r}. "
+            f"For a bespoke color, define an AppPalette(dark=..., light=...) "
+            f"token instead of a raw hex or CSS name."
+        )
+
+
 @dataclass
 class Badge(Component):
     text: str
-    color: str = "neutral"
-    tone: "str | None" = None
+    color: BadgeColor = "neutral"
+    tone: "BadgeColor | None" = None
     key: str = ""
 
     def __post_init__(self) -> None:
         if self.tone is not None:
             self.color = self.tone
+        _validate_badge_color(self.color, who="Badge")
 
     def measure(self, _avail_w: float) -> float:
         return 18.0
@@ -815,11 +839,18 @@ class Spinner(Component):
 @dataclass
 class Banner(Component):
     text: str
-    tone: str = ""
+    tone: "BadgeColor | Literal['']" = ""
     title: str = ""
 
+    def __post_init__(self) -> None:
+        # "" means untoned (renders as a neutral "info" pill); any other
+        # value must be a valid badge color, validated loudly rather than
+        # silently coerced to neutral.
+        if self.tone != "":
+            _validate_badge_color(self.tone, who="Banner")
+
     def to_node(self) -> dict:
-        badge_color = self.tone if self.tone in ("accent", "success", "warning", "danger") else "neutral"
+        badge_color = self.tone or "neutral"
         children = []
         if self.title:
             children.append({"type": "text", "text": self.title, "bold": True})
@@ -2721,6 +2752,8 @@ __all__ = [
     "RADIUS_SM", "RADIUS_MD", "RADIUS_LG", "RADIUS_BADGE",
     # color constants (dark-mode defaults)
     "BG", "FG", "ACCENT", "SURFACE", "HIGHLIGHT", "MUTED", "GREEN", "RED", "YELLOW",
+    # badge/status semantic color vocabulary
+    "BadgeColor", "BADGE_COLORS",
     # components
     "Component", "Column", "Card", "HStack", "Sized", "ActionBar",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
