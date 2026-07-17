@@ -52,6 +52,7 @@ impl PlexiApp {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
+                let target_pane_id = parsed.get("pane_id").and_then(serde_json::Value::as_u64);
                 match self.assistant_spawn_pane(
                     origin_pane_id,
                     origin_context_id,
@@ -59,6 +60,7 @@ impl PlexiApp {
                     layout,
                     args,
                     cwd,
+                    target_pane_id,
                 ) {
                     Ok(pane_id) => succeeded(
                         serde_json::json!({"ok": true, "pane_id": pane_id, "type_id": type_id}),
@@ -108,6 +110,7 @@ impl PlexiApp {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
+                let target_pane_id = parsed.get("pane_id").and_then(serde_json::Value::as_u64);
                 match self.assistant_spawn_pane(
                     origin_pane_id,
                     origin_context_id,
@@ -115,6 +118,7 @@ impl PlexiApp {
                     layout,
                     args,
                     None,
+                    target_pane_id,
                 ) {
                     Ok(pane_id) => {
                         succeeded(serde_json::json!({"ok": true, "pane_id": pane_id, "app": app}))
@@ -138,6 +142,7 @@ impl PlexiApp {
                     layout,
                     Vec::new(),
                     cwd,
+                    None,
                 ) {
                     Ok(pane_id) => {
                         if let Err(error) =
@@ -282,6 +287,20 @@ impl PlexiApp {
         Ok(())
     }
 
+    /// Spawn `type_id` into a new pane, or — when `target_pane_id` is set —
+    /// into the vicinity of that existing pane, which must be an idle
+    /// terminal (an "empty" pane). Targeting an occupied pane (already
+    /// running an app, or a portal) returns a clear `pane_occupied` error
+    /// instead of the opaque `open_..._failed` message a same-pane split
+    /// collision used to produce (stint 0374).
+    ///
+    /// The target's own pane_id is not reused for the new content — the
+    /// new app pane keeps its own freshly allocated id like any other
+    /// spawn, and the target is torn down (with full hot-reload/notification
+    /// cleanup via `close_pane_by_id`) only after the new pane exists. This
+    /// avoids reassigning a live pane's id, which would orphan any
+    /// subscriptions, watchers, or WASM runtime handles already registered
+    /// under the id the new pane launched with.
     fn assistant_spawn_pane(
         &mut self,
         origin_pane_id: u64,
@@ -290,6 +309,7 @@ impl PlexiApp {
         layout: Option<String>,
         args: Vec<String>,
         cwd: Option<std::path::PathBuf>,
+        target_pane_id: Option<u64>,
     ) -> Result<u64, String> {
         if !self.windows.iter().any(|window| {
             window.context_id == origin_context_id && window.panes.contains_key(&origin_pane_id)
@@ -298,6 +318,23 @@ impl PlexiApp {
                 "origin pane {origin_pane_id} is no longer in context {origin_context_id}"
             ));
         }
+        let from_pane_id = if let Some(target_id) = target_pane_id {
+            let Some((target_win, _)) = self.find_pane_in_any_window(target_id) else {
+                return Err(format!("pane_not_found: {target_id}"));
+            };
+            let is_empty_terminal = matches!(
+                self.windows[target_win].panes.get(&target_id),
+                Some(crate::host::pane::Pane::Terminal(_))
+            );
+            if !is_empty_terminal {
+                return Err(format!(
+                    "pane_occupied: pane {target_id} is not an empty terminal pane; only idle terminal panes can be targeted"
+                ));
+            }
+            target_id
+        } else {
+            origin_pane_id
+        };
         let before = self
             .windows
             .iter()
@@ -320,7 +357,7 @@ impl PlexiApp {
             type_id: type_id.to_string(),
             layout,
             args,
-            from_pane_id: Some(origin_pane_id),
+            from_pane_id: Some(from_pane_id),
             request_id: None,
             response_file: None,
             ephemeral: false,
@@ -331,29 +368,44 @@ impl PlexiApp {
             target_context: None,
             name: None,
         });
-        if let Some(created) = self
+        let result = if let Some(created) = self
             .windows
             .iter()
             .flat_map(|window| window.panes.keys().copied())
             .find(|pane_id| !before.contains(pane_id))
         {
-            return Ok(created);
+            Ok(created)
+        } else {
+            let window = self
+                .windows
+                .iter()
+                .find(|window| window.context_id == origin_context_id)
+                .ok_or_else(|| format!("origin context {origin_context_id} closed"))?;
+            let focused = window
+                .focused_pane
+                .and_then(|tile| window.tree.tiles.get(tile))
+                .and_then(|tile| match tile {
+                    egui_tiles::Tile::Pane(id) => Some(*id),
+                    _ => None,
+                });
+            focused
+                .filter(|pane_id| Some(*pane_id) != focused_before)
+                .ok_or_else(|| {
+                    format!("open request for '{type_id}' did not create or focus a pane")
+                })
+        };
+        // Only tear down the retargeted pane once the new content has
+        // actually landed — a failed spawn must leave the target alone
+        // rather than silently deleting it.
+        if let (Ok(created), Some(target_id)) = (&result, target_pane_id) {
+            if *created != target_id {
+                log::info!(
+                    "assistant_spawn_pane: retargeted pane {target_id} closed after '{type_id}' opened in pane {created}"
+                );
+                self.close_pane_by_id(target_id);
+            }
         }
-        let window = self
-            .windows
-            .iter()
-            .find(|window| window.context_id == origin_context_id)
-            .ok_or_else(|| format!("origin context {origin_context_id} closed"))?;
-        let focused = window
-            .focused_pane
-            .and_then(|tile| window.tree.tiles.get(tile))
-            .and_then(|tile| match tile {
-                egui_tiles::Tile::Pane(id) => Some(*id),
-                _ => None,
-            });
-        focused
-            .filter(|pane_id| Some(*pane_id) != focused_before)
-            .ok_or_else(|| format!("open request for '{type_id}' did not create or focus a pane"))
+        result
     }
 
     fn assistant_pane_list(&self) -> serde_json::Value {
@@ -557,6 +609,119 @@ mod tests {
                 .is_some_and(|error| error.contains("echo must be true")),
             "{:?}",
             hidden_echo.error
+        );
+    }
+
+    /// Stint 0374: `host.apps.open`/`host.panes.open` can target an existing
+    /// idle terminal pane instead of always spawning a fresh one — the
+    /// dogfooding bug where targeting pane 105 for calculator returned an
+    /// opaque `open_pane_failed` and the app landed in a brand-new pane.
+    #[test]
+    fn native_open_tools_target_existing_empty_terminal_pane() {
+        let mut harness = HostHarness::new();
+        let origin = harness.add_test_pane();
+        let context = harness.app.windows[0].context_id;
+
+        let terminal = harness.app.handle_assistant_host_tool(
+            "host.terminals.open",
+            &serde_json::json!({"layout": "split_h", "cwd": std::env::temp_dir()}).to_string(),
+            origin,
+            context,
+        );
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        let target_id = serde_json::from_str::<serde_json::Value>(
+            terminal.output_json.as_deref().expect("terminal output"),
+        )
+        .unwrap()["pane_id"]
+            .as_u64()
+            .expect("terminal pane id");
+
+        let opened = harness.app.handle_assistant_host_tool(
+            "host.apps.open",
+            &serde_json::json!({"app": "text-editor", "pane_id": target_id}).to_string(),
+            origin,
+            context,
+        );
+        assert!(opened.error.is_none(), "{:?}", opened.error);
+        let new_id = serde_json::from_str::<serde_json::Value>(
+            opened.output_json.as_deref().expect("open output"),
+        )
+        .unwrap()["pane_id"]
+            .as_u64()
+            .expect("new pane id");
+
+        assert_ne!(
+            new_id, target_id,
+            "targeting reuses the target's slot, not its literal pane_id"
+        );
+        assert!(
+            !harness
+                .app
+                .windows
+                .iter()
+                .any(|window| window.panes.contains_key(&target_id)),
+            "the retargeted terminal pane should be torn down"
+        );
+        assert!(
+            harness
+                .app
+                .windows
+                .iter()
+                .any(|window| window.panes.contains_key(&new_id)),
+            "the new app pane should exist"
+        );
+    }
+
+    #[test]
+    fn native_open_tools_target_occupied_pane_returns_clear_error() {
+        let mut harness = HostHarness::new();
+        let origin = harness.add_test_pane();
+        let context = harness.app.windows[0].context_id;
+        let occupied = harness.add_test_pane();
+
+        let result = harness.app.handle_assistant_host_tool(
+            "host.apps.open",
+            &serde_json::json!({"app": "text-editor", "pane_id": occupied}).to_string(),
+            origin,
+            context,
+        );
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("pane_occupied")),
+            "{:?}",
+            result.error
+        );
+        assert!(
+            harness
+                .app
+                .windows
+                .iter()
+                .any(|window| window.panes.contains_key(&occupied)),
+            "an occupied target must not be torn down on rejection"
+        );
+    }
+
+    #[test]
+    fn native_open_tools_target_missing_pane_returns_not_found() {
+        let mut harness = HostHarness::new();
+        let origin = harness.add_test_pane();
+        let context = harness.app.windows[0].context_id;
+
+        let result = harness.app.handle_assistant_host_tool(
+            "host.panes.open",
+            &serde_json::json!({"type_id": "text-editor", "pane_id": 999_999}).to_string(),
+            origin,
+            context,
+        );
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("pane_not_found")),
+            "{:?}",
+            result.error
         );
     }
 }

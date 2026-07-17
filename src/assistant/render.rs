@@ -163,19 +163,27 @@ impl AssistantRenderer {
                 bottom: style::SPACE_SM as i8,
             }))
             .show_inside(ui, |ui| {
-                if let Some(choice) = Self::draw_permission_sheet(ui, model, colors) {
-                    event = Some(ComposerEvent::Permission(choice));
-                }
                 // Keys first: Enter/Tab/arrows must be consumed before the
                 // TextEdit processes input, or completion renders a one-frame
-                // stale buffer (the autocomplete "glitch"). While an overlay is
-                // open it owns navigation keys and the composer stays inert.
-                if model.overlay_active() {
+                // stale buffer (the autocomplete "glitch"). While the
+                // permission sheet or an overlay is open, it owns navigation
+                // keys and the composer stays inert. The sheet takes
+                // priority over the overlay — a permission ask can interrupt
+                // an open overlay's underlying turn.
+                let permission_pending = model.pending_permission.is_some();
+                if permission_pending {
+                    if let Some(perm_event) = Self::handle_permission_keys(ui, model) {
+                        event = Some(perm_event);
+                    }
+                } else if model.overlay_active() {
                     if let Some(overlay_event) = Self::handle_overlay_keys(ui, model) {
                         event = Some(overlay_event);
                     }
                 } else if let Some(key_event) = Self::handle_composer_keys(ui, model, te_id) {
                     event = Some(key_event);
+                }
+                if let Some(choice) = Self::draw_permission_sheet(ui, model, colors) {
+                    event = Some(ComposerEvent::Permission(choice));
                 }
                 composer_rect = Some(Self::draw_composer(
                     ui,
@@ -185,7 +193,14 @@ impl AssistantRenderer {
                     is_focused,
                     total_h * Self::COMPOSER_MAX_FRACTION,
                 ));
-                if model.overlay_active() {
+                if permission_pending {
+                    HintBar::new(&[
+                        HintGroup::new(&["\u{21e5}"], "navigate"),
+                        HintGroup::new(&["\u{21b5}"], "confirm"),
+                        HintGroup::new(&["Esc"], "deny"),
+                    ])
+                    .show(ui, colors);
+                } else if model.overlay_active() {
                     let mut hints = vec![
                         HintGroup::new(&["\u{2191}", "\u{2193}"], "navigate"),
                         HintGroup::new(&["\u{21b5}"], "confirm"),
@@ -490,12 +505,19 @@ impl AssistantRenderer {
 
     /// Permission sheet for the pending ask-gated tool call, rendered above
     /// the composer. Returns the user's decision, if any, this frame.
+    ///
+    /// Sizing is responsive: the action row wraps onto a second line
+    /// instead of overflowing once the pane is too narrow to fit all four
+    /// buttons, and the summary text wraps within the available width
+    /// rather than clipping — so the sheet scales down to a small pane and
+    /// up to an ultra-wide one without layout breakage.
     fn draw_permission_sheet(
         ui: &mut egui::Ui,
         model: &AssistantModel,
         colors: &Colors,
     ) -> Option<PermissionChoice> {
         let pending = model.pending_permission.as_ref()?;
+        let selected = pending.selected;
         let mut choice = None;
         egui::Frame::new()
             .fill(colors.bg_active)
@@ -509,14 +531,18 @@ impl AssistantRenderer {
                         .size(style::TEXT_CAPTION)
                         .color(colors.accent),
                 );
-                ui.label(
-                    RichText::new(format!(
-                        "assistant (medium) wants to run the app tool '{}'",
-                        pending.tool
-                    ))
-                    .size(style::TEXT_BODY)
-                    .color(colors.text_primary),
-                );
+                ui.scope(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                    ui.set_max_width(ui.available_width());
+                    ui.label(
+                        RichText::new(format!(
+                            "assistant (medium) wants to run the app tool '{}'",
+                            pending.tool
+                        ))
+                        .size(style::TEXT_BODY)
+                        .color(colors.text_primary),
+                    );
+                });
                 if !pending.input_summary.is_empty() {
                     ui.scope(|ui| {
                         ui.set_max_width(ui.available_width());
@@ -524,26 +550,81 @@ impl AssistantRenderer {
                     });
                 }
                 ui.add_space(style::SPACE_XS);
-                ui.horizontal(|ui| {
-                    if chrome_button(ui, "Allow once", ButtonKind::Accent, colors, 0.0).clicked() {
-                        choice = Some(PermissionChoice::AllowOnce);
-                    }
-                    if chrome_button(ui, "Allow this session", ButtonKind::Primary, colors, 0.0)
-                        .clicked()
-                    {
-                        choice = Some(PermissionChoice::AllowSession);
-                    }
-                    if chrome_button(ui, "Always allow", ButtonKind::Primary, colors, 0.0).clicked()
-                    {
-                        choice = Some(PermissionChoice::AllowAlways);
-                    }
-                    if chrome_button(ui, "Deny", ButtonKind::Danger, colors, 0.0).clicked() {
-                        choice = Some(PermissionChoice::Deny);
+                let actions: [(&str, ButtonKind, PermissionChoice); 4] = [
+                    ("Allow once", ButtonKind::Accent, PermissionChoice::AllowOnce),
+                    (
+                        "Allow this session",
+                        ButtonKind::Primary,
+                        PermissionChoice::AllowSession,
+                    ),
+                    (
+                        "Always allow",
+                        ButtonKind::Primary,
+                        PermissionChoice::AllowAlways,
+                    ),
+                    ("Deny", ButtonKind::Danger, PermissionChoice::Deny),
+                ];
+                // `Ui::horizontal_wrapped` reflows buttons onto additional
+                // rows instead of clipping or forcing the frame wider than
+                // the pane, so the sheet stays usable at small window sizes.
+                ui.horizontal_wrapped(|ui| {
+                    for (i, (label, kind, value)) in actions.into_iter().enumerate() {
+                        let resp = chrome_button(ui, label, kind, colors, 0.0);
+                        if i == selected {
+                            ui.painter().rect_stroke(
+                                resp.rect.expand(2.0),
+                                style::RADIUS_MD,
+                                egui::Stroke::new(2.0, colors.accent),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+                        if resp.clicked() {
+                            choice = Some(value);
+                        }
                     }
                 });
             });
         ui.add_space(style::SPACE_XS);
         choice
+    }
+
+    /// Consume the permission sheet's keyboard-nav keys before the composer
+    /// TextEdit renders, mirroring `handle_overlay_keys`: Tab/Shift-Tab and
+    /// the arrow keys move the focused action, Enter activates it, and Esc
+    /// denies outright (the safe default) rather than merely dismissing the
+    /// sheet, since a pending ask-gated tool call has nothing safe to fall
+    /// back to.
+    fn handle_permission_keys(
+        ui: &mut egui::Ui,
+        model: &mut AssistantModel,
+    ) -> Option<ComposerEvent> {
+        let mut next = false;
+        let mut prev = false;
+        let mut confirm = false;
+        let mut deny = false;
+        ui.input_mut(|input| {
+            next = input.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
+                || input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight);
+            prev = input.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab)
+                || input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft);
+            confirm = input.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            deny = input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+        });
+        if next {
+            model.permission_move_next();
+        }
+        if prev {
+            model.permission_move_prev();
+        }
+        if deny {
+            return Some(ComposerEvent::Permission(PermissionChoice::Deny));
+        }
+        if confirm {
+            return model
+                .permission_selected_choice()
+                .map(ComposerEvent::Permission);
+        }
+        None
     }
 
     /// "thoughts" section: the model's reasoning tokens, rendered open and
