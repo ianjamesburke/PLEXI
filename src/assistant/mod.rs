@@ -888,7 +888,7 @@ impl AssistantApp {
             AiTool {
                 name: HOST_TOOL_PANES_OPEN.into(),
                 description: "Open an app or terminal pane by native type id.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"type_id":{"type":"string"},"layout":{"type":"string"},"cwd":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["type_id"]}),
+                input_schema: serde_json::json!({"type":"object","properties":{"type_id":{"type":"string"},"layout":{"type":"string"},"cwd":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"pane_id":{"type":"integer","description":"Open into this existing empty terminal pane instead of spawning a new one. The pane must be an idle terminal; occupied panes return an error."}},"required":["type_id"]}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
@@ -912,7 +912,7 @@ impl AssistantApp {
             AiTool {
                 name: HOST_TOOL_APPS_OPEN.into(),
                 description: "Open an installed Plexi app in a pane.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"app":{"type":"string"},"layout":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["app"]}),
+                input_schema: serde_json::json!({"type":"object","properties":{"app":{"type":"string"},"layout":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"pane_id":{"type":"integer","description":"Open into this existing empty terminal pane instead of spawning a new one. The pane must be an idle terminal; occupied panes return an error."}},"required":["app"]}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
@@ -2881,6 +2881,17 @@ impl App for AssistantApp {
         if self.model.overlay_active() {
             if input.key_pressed(egui::Key::Escape) {
                 self.model.cancel_overlay();
+                return KeyDisposition::Consumed;
+            }
+            return KeyDisposition::Passthrough;
+        }
+        // The permission sheet also owns Escape while open — same rationale
+        // as the overlay case above: resolve it as a deny here so `Escape`
+        // never falls through to `CloseApp`, and leave Tab/arrows/Enter in
+        // the buffer for `render.rs`'s `handle_permission_keys` to consume.
+        if self.model.pending_permission.is_some() {
+            if input.key_pressed(egui::Key::Escape) {
+                self.resolve_permission(PermissionChoice::Deny);
                 return KeyDisposition::Consumed;
             }
             return KeyDisposition::Passthrough;

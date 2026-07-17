@@ -78,6 +78,9 @@ pub struct ActiveToolCall {
 pub struct PendingPermission {
     pub tool: String,
     pub input_summary: String,
+    /// Keyboard cursor over `PermissionChoice::ORDER`, so Tab/arrow nav can
+    /// move it and Enter can activate whatever it lands on.
+    pub selected: usize,
 }
 
 /// What the user chose on the permission sheet.
@@ -87,6 +90,17 @@ pub enum PermissionChoice {
     AllowSession,
     AllowAlways,
     Deny,
+}
+
+impl PermissionChoice {
+    /// Left-to-right order the sheet renders its actions in — also the
+    /// Tab/arrow traversal order.
+    pub const ORDER: [PermissionChoice; 4] = [
+        PermissionChoice::AllowOnce,
+        PermissionChoice::AllowSession,
+        PermissionChoice::AllowAlways,
+        PermissionChoice::Deny,
+    ];
 }
 
 /// Live state of an in-flight model turn. Reasoning deltas are carried
@@ -842,11 +856,38 @@ impl AssistantModel {
     }
 
     /// The in-flight turn hit an ask-gated tool: show the permission sheet.
+    /// The cursor starts on `Deny` (`ORDER`'s last slot) — the safe default
+    /// if the user reflexively hits Enter without looking.
     pub fn permission_requested(&mut self, tool: &str, input_summary: &str) {
         self.pending_permission = Some(PendingPermission {
             tool: tool.to_string(),
             input_summary: input_summary.to_string(),
+            selected: PermissionChoice::ORDER.len() - 1,
         });
+    }
+
+    /// Move the permission sheet's keyboard cursor one action right,
+    /// wrapping from the last action back to the first.
+    pub fn permission_move_next(&mut self) {
+        if let Some(pending) = self.pending_permission.as_mut() {
+            pending.selected = (pending.selected + 1) % PermissionChoice::ORDER.len();
+        }
+    }
+
+    /// Move the permission sheet's keyboard cursor one action left,
+    /// wrapping from the first action back to the last.
+    pub fn permission_move_prev(&mut self) {
+        if let Some(pending) = self.pending_permission.as_mut() {
+            let len = PermissionChoice::ORDER.len();
+            pending.selected = (pending.selected + len - 1) % len;
+        }
+    }
+
+    /// The action the permission sheet's keyboard cursor currently sits on.
+    pub fn permission_selected_choice(&self) -> Option<PermissionChoice> {
+        self.pending_permission
+            .as_ref()
+            .map(|pending| PermissionChoice::ORDER[pending.selected])
     }
 
     /// The user decided the pending permission sheet. A denial appends a
@@ -1422,6 +1463,53 @@ mod tests {
         let row = m.turns.last().unwrap();
         assert_eq!(row.status, Some(ToolStatus::Failed));
         assert!(row.text.contains("tool_timeout"));
+    }
+
+    /// Stint 0377: the permission sheet's keyboard cursor starts on Deny
+    /// (the safe default), Tab/arrow-right cycles forward with wraparound,
+    /// and Shift-Tab/arrow-left cycles backward with wraparound.
+    #[test]
+    fn permission_sheet_keyboard_cursor_cycles_with_wraparound() {
+        let mut m = AssistantModel::fresh();
+        m.permission_requested("csv.write_range", "{}");
+        assert_eq!(
+            m.permission_selected_choice(),
+            Some(PermissionChoice::Deny),
+            "cursor starts on the safe default"
+        );
+
+        m.permission_move_next();
+        assert_eq!(
+            m.permission_selected_choice(),
+            Some(PermissionChoice::AllowOnce),
+            "wraps forward from the last action to the first"
+        );
+
+        m.permission_move_prev();
+        assert_eq!(m.permission_selected_choice(), Some(PermissionChoice::Deny));
+
+        m.permission_move_prev();
+        assert_eq!(
+            m.permission_selected_choice(),
+            Some(PermissionChoice::AllowAlways),
+            "wraps backward from the first action to the last"
+        );
+
+        m.permission_move_next();
+        m.permission_move_next();
+        assert_eq!(
+            m.permission_selected_choice(),
+            Some(PermissionChoice::AllowOnce)
+        );
+    }
+
+    #[test]
+    fn permission_sheet_cursor_navigation_is_noop_with_nothing_pending() {
+        let mut m = AssistantModel::fresh();
+        assert!(m.pending_permission.is_none());
+        m.permission_move_next();
+        m.permission_move_prev();
+        assert!(m.permission_selected_choice().is_none());
     }
 
     #[test]
