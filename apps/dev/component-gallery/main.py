@@ -97,24 +97,32 @@ _SCROLL = Scrollable(child=Column(children=[]))
 
 
 def update(event) -> list:
+    # Checkbox, Switch, Radio, Slider, Select, TabBar, and Pagination have no
+    # native CPython-WASM node — they compose onto Row/Button trees (stint
+    # 0407), so state changes arrive as UiAction clicks (like Toggle/
+    # Accordion already did), not UiValueChange.
     if isinstance(event, UiValueChange):
         h, v = event.handler_id, event.value
-        if h == "gallery-check":
-            return _set(CHECK, bool(v))
-        if h == "gallery-switch":
-            return _set(SWITCH, bool(v))
-        if h == "gallery-radio":
-            return _set(RADIO, int(v))
-        if h == "gallery-slider":
-            return _set(SLIDER, float(v))
-        if h == "gallery-tabs":
-            return _set(TAB, int(v))
-        if h == "gallery-page":
-            return _set(PAGE, int(v))
         if h == "gallery-note":
             return _set(NOTE, str(v))
     if isinstance(event, UiAction):
         h = event.handler_id
+        if h == "gallery-check":
+            return _set(CHECK, not state.get(CHECK, True))
+        if h == "gallery-switch":
+            return _set(SWITCH, not state.get(SWITCH, False))
+        if h.startswith("gallery-radio:"):
+            return _set(RADIO, int(h.split(":", 1)[1]))
+        if h == "gallery-slider:dec":
+            return _set(SLIDER, max(0.0, state.get(SLIDER, 0.4) - 0.1))
+        if h == "gallery-slider:inc":
+            return _set(SLIDER, min(1.0, state.get(SLIDER, 0.4) + 0.1))
+        if h.startswith("gallery-tabs:"):
+            return _set(TAB, int(h.split(":", 1)[1]))
+        if h == "gallery-page:prev":
+            return _set(PAGE, max(0, state.get(PAGE, 0) - 1))
+        if h == "gallery-page:next":
+            return _set(PAGE, min(4, state.get(PAGE, 0) + 1))
         if h == "gallery-accordion":
             return _set(ACCORDION, not state.get(ACCORDION, True))
         if h == "gallery-modal-open":
@@ -123,6 +131,8 @@ def update(event) -> list:
             return _set(MODAL, False)
         if h == "gallery-select":
             return _set(SELECT, (state.get(SELECT, 0) + 1) % 3)
+        if h.startswith("gallery-select:"):
+            return _set(SELECT, int(h.split(":", 1)[1]))
     return []
 
 

@@ -417,7 +417,24 @@ class ActionBar(Component):
         self.actions = actions
 
     def to_node(self) -> dict:
-        return {"type": "action_bar", "actions": [{"type": "button", "node_id": action.on_click, "label": action.label, "style": action.style, "disabled": action.disabled} for action in self.actions]}
+        # No native action-bar node — composes onto a Row of Buttons, same as
+        # any other button group. Discovered blocking live component-gallery
+        # verification during stint 0407; `action_bar` was previously
+        # aspirational (see test history) and never had a decode arm.
+        return {
+            "type": "row",
+            "children": [
+                {
+                    "type": "button",
+                    "label": action.label,
+                    "on_click": action.on_click,
+                    "style": action.style,
+                    "disabled": action.disabled,
+                }
+                for action in self.actions
+            ],
+            "gap": SPACE_SM,
+        }
 
 
 @dataclass
@@ -437,6 +454,62 @@ class Spacer(Component):
 
     def to_node(self) -> dict:
         return {"type": "spacer", "size": self.size, "grow": self.grow}
+
+
+# ── CPython-WASM decode-arm composition helpers ─────────────────────────────
+#
+# `src/host/wasm_python.rs::decode_node_data` only understands the WIT
+# `ui-node-data` variant set (row, column, button, text, progress-bar, badge,
+# text_input, ...). Widgets below have no dedicated variant, so their
+# `to_node()` composes an equivalent tree out of already-supported primitives
+# instead of emitting a bespoke `"type"` the decoder rejects with
+# "unsupported CPython-WASM UINode type: <name>" (stint 0402, 0407).
+
+
+def _toggle_row(node_id: str, label: str, active: bool,
+                 active_label: str, inactive_label: str, disabled: bool) -> dict:
+    """Single on/off control: a state-carrying Button, optionally preceded by
+    a label. Clicking fires `node_id` as an on_click UiAction — callers flip
+    their own boolean state, the same pattern `Toggle`/`Accordion` already use."""
+    chip = {
+        "type": "button",
+        "label": active_label if active else inactive_label,
+        "on_click": node_id,
+        "style": "primary" if active else "secondary",
+        "disabled": disabled,
+    }
+    if not label:
+        return chip
+    return {
+        "type": "row",
+        "children": [{"type": "text", "text": label}, chip],
+        "gap": SPACE_SM,
+    }
+
+
+def _option_row(node_id: str, options: List[str], selected: int, disabled: bool) -> dict:
+    """Single-select control: a Row of Buttons, one per option. Clicking
+    option `i` fires `f"{node_id}:{i}"` as an on_click UiAction."""
+    buttons = [
+        {
+            "type": "button",
+            "label": option,
+            "on_click": f"{node_id}:{i}",
+            "style": "primary" if i == selected else "secondary",
+            "disabled": disabled,
+        }
+        for i, option in enumerate(options)
+    ]
+    return {"type": "row", "children": buttons, "gap": SPACE_SM}
+
+
+def _initials(label: str) -> str:
+    parts = [p for p in label.split() if p]
+    if not parts:
+        return "?"
+    if len(parts) == 1:
+        return parts[0][:2].upper()
+    return (parts[0][0] + parts[-1][0]).upper()
 
 
 @dataclass
@@ -470,7 +543,16 @@ class Tooltip(Component):
     child: Component
 
     def to_node(self) -> dict:
-        return {"type": "tooltip", "text": self.text, "child": self.child.to_node()}
+        # No native hover/tooltip node — the hint is shown as a small caption
+        # under the child instead of appearing on hover.
+        return {
+            "type": "column",
+            "children": [
+                self.child.to_node(),
+                {"type": "text", "text": self.text, "size": TEXT_HINT},
+            ],
+            "gap": SPACE_XS,
+        }
 
 
 @dataclass
@@ -479,7 +561,7 @@ class Avatar(Component):
     size: float = 0.0
 
     def to_node(self) -> dict:
-        return {"type": "avatar", "label": self.label, "size": self.size}
+        return {"type": "badge", "text": _initials(self.label), "color": "neutral"}
 
 
 @dataclass
@@ -489,7 +571,7 @@ class Icon(Component):
     color: str = ""
 
     def to_node(self) -> dict:
-        return {"type": "icon", "name": self.name, "size": self.size, "color": self.color}
+        return {"type": "text", "text": f"[{self.name}]", "size": self.size or TEXT_BODY}
 
 
 @dataclass
@@ -498,7 +580,11 @@ class CodeBlock(Component):
     language: str = ""
 
     def to_node(self) -> dict:
-        return {"type": "code_block", "code": self.code, "language": self.language}
+        children = []
+        if self.language:
+            children.append({"type": "text", "text": self.language, "bold": True, "size": TEXT_HINT})
+        children.append({"type": "text", "text": self.code})
+        return {"type": "column", "children": children, "gap": SPACE_XS}
 
 
 @dataclass
@@ -507,7 +593,24 @@ class Table(Component):
     rows: list[list[str]]
 
     def to_node(self) -> dict:
-        return {"type": "table", "columns": self.columns, "rows": self.rows}
+        header = {
+            "type": "row",
+            "children": [{"type": "text", "text": col, "bold": True} for col in self.columns],
+            "gap": SPACE_SM,
+        }
+        body_rows = [
+            {
+                "type": "row",
+                "children": [{"type": "text", "text": str(cell)} for cell in row],
+                "gap": SPACE_SM,
+            }
+            for row in self.rows
+        ]
+        return {
+            "type": "column",
+            "children": [header, {"type": "divider"}, *body_rows],
+            "gap": SPACE_XS,
+        }
 
 
 @dataclass
@@ -515,9 +618,21 @@ class KeyValue(Component):
     rows: list[tuple[str, str]]
 
     def to_node(self) -> dict:
-        return {"type": "key_value", "rows": [
-            {"key": key, "value": value} for key, value in self.rows
-        ]}
+        return {
+            "type": "column",
+            "children": [
+                {
+                    "type": "row",
+                    "children": [
+                        {"type": "text", "text": key, "bold": True},
+                        {"type": "text", "text": value},
+                    ],
+                    "gap": SPACE_SM,
+                }
+                for key, value in self.rows
+            ],
+            "gap": SPACE_XS,
+        }
 
 
 @dataclass
@@ -525,7 +640,12 @@ class Breadcrumb(Component):
     items: list[str]
 
     def to_node(self) -> dict:
-        return {"type": "breadcrumb", "items": self.items}
+        children = []
+        for i, item in enumerate(self.items):
+            if i > 0:
+                children.append({"type": "text", "text": "›"})
+            children.append({"type": "text", "text": item})
+        return {"type": "row", "children": children, "gap": SPACE_XS}
 
 
 @dataclass
@@ -535,8 +655,23 @@ class Pagination(Component):
     total: int = 0
 
     def to_node(self) -> dict:
-        return {"type": "pagination", "node_id": self.node_id,
-                "page": self.page, "total": self.total}
+        at_start = self.page <= 0
+        at_end = self.page >= max(0, self.total - 1)
+        return {
+            "type": "row",
+            "children": [
+                {
+                    "type": "button", "label": "‹", "on_click": f"{self.node_id}:prev",
+                    "style": "secondary", "disabled": at_start,
+                },
+                {"type": "text", "text": f"{self.page + 1} / {max(self.total, 1)}"},
+                {
+                    "type": "button", "label": "›", "on_click": f"{self.node_id}:next",
+                    "style": "secondary", "disabled": at_end,
+                },
+            ],
+            "gap": SPACE_SM,
+        }
 
 
 @dataclass
@@ -547,8 +682,17 @@ class Accordion(Component):
     open: bool = False
 
     def to_node(self) -> dict:
-        return {"type": "accordion", "node_id": self.node_id, "title": self.title,
-                "open": self.open, "child": self.child.to_node()}
+        header = {
+            "type": "button",
+            "label": f"{'▾' if self.open else '▸'} {self.title}",
+            "on_click": self.node_id,
+            "style": "secondary",
+            "disabled": False,
+        }
+        children: list = [header]
+        if self.open:
+            children.append(self.child.to_node())
+        return {"type": "column", "children": children, "gap": SPACE_XS}
 
 
 @dataclass
@@ -559,8 +703,7 @@ class Checkbox(Component):
     disabled: bool = False
 
     def to_node(self) -> dict:
-        return {"type": "checkbox", "node_id": self.node_id, "label": self.label,
-                "checked": self.checked, "disabled": self.disabled}
+        return _toggle_row(self.node_id, self.label, self.checked, "☑", "☐", self.disabled)
 
 
 @dataclass
@@ -571,8 +714,7 @@ class Radio(Component):
     disabled: bool = False
 
     def to_node(self) -> dict:
-        return {"type": "radio", "node_id": self.node_id, "options": self.options,
-                "selected": self.selected, "disabled": self.disabled}
+        return _option_row(self.node_id, self.options, self.selected, self.disabled)
 
 
 @dataclass
@@ -583,8 +725,7 @@ class Switch(Component):
     disabled: bool = False
 
     def to_node(self) -> dict:
-        return {"type": "switch", "node_id": self.node_id, "label": self.label,
-                "on": self.on, "disabled": self.disabled}
+        return _toggle_row(self.node_id, self.label, self.on, "on", "off", self.disabled)
 
 
 @dataclass
@@ -596,8 +737,24 @@ class Slider(Component):
     disabled: bool = False
 
     def to_node(self) -> dict:
-        return {"type": "slider", "node_id": self.node_id, "value": self.value,
-                "min": self.min, "max": self.max, "disabled": self.disabled}
+        span = self.max - self.min
+        fraction = max(0.0, min(1.0, (self.value - self.min) / span)) if span > 0 else 0.0
+        return {
+            "type": "row",
+            "children": [
+                {
+                    "type": "button", "label": "-", "on_click": f"{self.node_id}:dec",
+                    "style": "secondary", "disabled": self.disabled,
+                },
+                {"type": "progress-bar", "value": fraction, "max": 1.0,
+                 "label": f"{self.value:.2f}"},
+                {
+                    "type": "button", "label": "+", "on_click": f"{self.node_id}:inc",
+                    "style": "secondary", "disabled": self.disabled,
+                },
+            ],
+            "gap": SPACE_SM,
+        }
 
 
 @dataclass
@@ -608,8 +765,14 @@ class Select(Component):
     placeholder: str = ""
 
     def to_node(self) -> dict:
-        return {"type": "select", "node_id": self.node_id, "options": self.options,
-                "selected": self.selected, "placeholder": self.placeholder}
+        row = _option_row(self.node_id, self.options, self.selected, False)
+        if not self.placeholder:
+            return row
+        return {
+            "type": "column",
+            "children": [{"type": "text", "text": self.placeholder, "size": TEXT_HINT}, row],
+            "gap": SPACE_XS,
+        }
 
 
 @dataclass
@@ -619,8 +782,14 @@ class DateTimePicker(Component):
     mode: str = "datetime"
 
     def to_node(self) -> dict:
-        return {"type": "date_time_picker", "node_id": self.node_id,
-                "value": self.value, "mode": self.mode}
+        return {
+            "type": "TextInput",
+            "value": self.value,
+            "placeholder": self.mode,
+            "on_change": self.node_id,
+            "on_submit": self.node_id,
+            "password": False,
+        }
 
 
 @dataclass
@@ -630,8 +799,9 @@ class Progress(Component):
     indeterminate: bool = False
 
     def to_node(self) -> dict:
-        return {"type": "progress", "value": self.value, "label": self.label,
-                "indeterminate": self.indeterminate}
+        if self.indeterminate:
+            return {"type": "spinner", "label": self.label}
+        return {"type": "progress-bar", "value": self.value, "max": 1.0, "label": self.label}
 
 
 @dataclass
@@ -649,7 +819,19 @@ class Banner(Component):
     title: str = ""
 
     def to_node(self) -> dict:
-        return {"type": "banner", "text": self.text, "tone": self.tone, "title": self.title}
+        badge_color = self.tone if self.tone in ("accent", "success", "warning", "danger") else "neutral"
+        children = []
+        if self.title:
+            children.append({"type": "text", "text": self.title, "bold": True})
+        children.append({"type": "text", "text": self.text})
+        return {
+            "type": "row",
+            "children": [
+                {"type": "badge", "text": self.tone or "info", "color": badge_color},
+                {"type": "column", "children": children, "gap": 0.0},
+            ],
+            "gap": SPACE_SM,
+        }
 
 
 @dataclass
@@ -659,8 +841,7 @@ class TabBar(Component):
     active: int = 0
 
     def to_node(self) -> dict:
-        return {"type": "tabs", "node_id": self.node_id, "tabs": self.tabs,
-                "active": self.active}
+        return _option_row(self.node_id, self.tabs, self.active, False)
 
 
 @dataclass
@@ -670,8 +851,13 @@ class EmptyState(Component):
     icon: str = ""
 
     def to_node(self) -> dict:
-        return {"type": "empty_state", "title": self.title,
-                "description": self.description, "icon": self.icon}
+        children = []
+        if self.icon:
+            children.append({"type": "text", "text": self.icon, "size": TEXT_TITLE})
+        children.append({"type": "text", "text": self.title, "bold": True})
+        if self.description:
+            children.append({"type": "text", "text": self.description})
+        return {"type": "column", "children": children, "gap": SPACE_XS, "align": "center"}
 
 
 @dataclass
@@ -680,7 +866,13 @@ class Skeleton(Component):
     height: float = 0.0
 
     def to_node(self) -> dict:
-        return {"type": "skeleton", "rows": self.rows, "height": self.height}
+        return {
+            "type": "column",
+            "children": [
+                {"type": "badge", "text": "", "color": "neutral"} for _ in range(max(0, self.rows))
+            ],
+            "gap": SPACE_XS,
+        }
 
 
 @dataclass
@@ -690,8 +882,17 @@ class Modal(Component):
     child: Component
 
     def to_node(self) -> dict:
-        return {"type": "modal", "node_id": self.node_id, "title": self.title,
-                "child": self.child.to_node()}
+        # No native overlay node — renders inline, framed by its title and a
+        # divider, in the position the app places it in the tree.
+        return {
+            "type": "column",
+            "children": [
+                {"type": "text", "text": self.title, "bold": True},
+                {"type": "divider"},
+                self.child.to_node(),
+            ],
+            "gap": SPACE_SM,
+        }
 
 
 @dataclass
@@ -895,7 +1096,14 @@ class Section(Component):
         ctx.rect(x, line_y, w, 1.0, theme.highlight)
 
     def to_node(self) -> dict:
-        return {"type": "section", "title": self.title}
+        return {
+            "type": "column",
+            "children": [
+                {"type": "text", "text": self.title.upper(), "bold": True, "size": TEXT_HINT},
+                {"type": "divider"},
+            ],
+            "gap": SPACE_XS,
+        }
 
 
 @dataclass
@@ -1553,7 +1761,9 @@ class Card(Component):
             if node is None:
                 return None
             children.append(node)
-        return {"type": "card", "children": children, "padding": self.padding}
+        # No native bordered/padded container node — renders as a plain
+        # Column; background/border/padding styling is dropped.
+        return {"type": "column", "children": children, "gap": self.gap}
 
 
 @dataclass
@@ -1649,13 +1859,16 @@ class TextEdit(Component):
         return self._submitted
 
     def to_node(self) -> dict:
+        # No native multiline text-editor node — composes onto the single-line
+        # TextInput primitive. `multiline`/`max_length` have no host-side
+        # equivalent yet and are dropped.
         return {
-            "type": "text_edit",
-            "node_id": self.node_id,
-            "placeholder": self.placeholder,
+            "type": "TextInput",
             "value": self.value,
-            "multiline": self.multiline,
-            "max_length": self.max_length,
+            "placeholder": self.placeholder,
+            "on_change": self.node_id,
+            "on_submit": self.node_id,
+            "password": False,
         }
 
 
