@@ -76,7 +76,10 @@ result. \
 Use the host.panes.*, host.apps.open, host.terminals.open, and host.terminals.run \
 tools for native pane, app, and terminal operations; never shell out to the plexi \
 CLI. When a terminal pane has already been opened or focused, reuse its pane id \
-with host.terminals.run; do not open a redundant terminal. \
+with host.terminals.run; do not open a redundant terminal. host.terminals.run \
+does not return the command's output — after every run call, read the result \
+with host.terminals.read before deciding your next step; never assume a command \
+succeeded or guess at paths it printed. \
 When the user asks you to build an app, game, or tool, build it as a Plexi app, \
 never as a loose script: scaffold with `plexi app init --global <kebab-name>` in a \
 terminal, read the scaffolded AGENTS.md to learn the SDK, write main.py, validate \
@@ -95,6 +98,7 @@ const HOST_TOOL_PANES_CLOSE: &str = "host.panes.close";
 const HOST_TOOL_APPS_OPEN: &str = "host.apps.open";
 const HOST_TOOL_TERMINALS_OPEN: &str = "host.terminals.open";
 const HOST_TOOL_TERMINALS_RUN: &str = "host.terminals.run";
+const HOST_TOOL_TERMINALS_READ: &str = "host.terminals.read";
 
 /// Broker identity for the Assistant: actor id at the permission tiers,
 /// `agent:assistant` as the `ToolDispatcher` caller id (Phase C convention).
@@ -938,6 +942,17 @@ impl AssistantApp {
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: false,
+            },
+            AiTool {
+                name: HOST_TOOL_TERMINALS_READ.into(),
+                description: "Read the last lines of a terminal pane's screen. \
+                    Call this after host.terminals.run to see the command's \
+                    output before deciding your next step."
+                    .into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"terminal_pane_id":{"type":"integer"},"lines":{"type":"integer","description":"How many trailing lines to read (default 40)."}},"required":["terminal_pane_id"]}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: true,
             },
         ]
     }

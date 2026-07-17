@@ -539,7 +539,9 @@ fn run_turn_and_respond(
     // Convert messages to JSON values for the backend.
     let mut conv: Vec<serde_json::Value> = messages_to_json(&request.messages);
 
-    const MAX_TOOL_ITERATIONS: usize = 10;
+    // High enough for multi-step host workflows (e.g. the build-plexi-app
+    // pipeline pairs every terminal command with a host.terminals.read).
+    const MAX_TOOL_ITERATIONS: usize = 30;
     let mut total_tokens_in: u32 = 0;
     let mut total_tokens_out: u32 = 0;
     let mut last_generation_id: Option<String> = None;
@@ -562,6 +564,13 @@ fn run_turn_and_respond(
                 "ai_broker[{}]: tool loop hit max iterations ({MAX_TOOL_ITERATIONS}), forcing stop",
                 request.app_id
             );
+            // Never end the turn silently: the user must see why it stopped.
+            if final_text.is_empty() {
+                final_text = format!(
+                    "Stopped after {MAX_TOOL_ITERATIONS} tool calls without a final answer. \
+                     Ask me to continue to pick up where I left off."
+                );
+            }
             break;
         }
 

@@ -191,6 +191,25 @@ impl PlexiApp {
                     Err(error) => failed(format!("run_terminal_failed: {error}")),
                 }
             }
+            "host.terminals.read" => {
+                let Some(terminal_pane_id) = parsed
+                    .get("terminal_pane_id")
+                    .and_then(serde_json::Value::as_u64)
+                else {
+                    return failed("invalid_input: terminal_pane_id is required".to_string());
+                };
+                let lines = parsed
+                    .get("lines")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(40) as usize;
+                match self.assistant_read_terminal(terminal_pane_id, lines) {
+                    Ok(captured) => succeeded(serde_json::json!({
+                        "terminal_pane_id": terminal_pane_id,
+                        "lines": captured,
+                    })),
+                    Err(error) => failed(error),
+                }
+            }
             _ => failed(format!("host_tool_unknown: {name}")),
         }
     }
@@ -448,6 +467,31 @@ impl PlexiApp {
         serde_json::Value::Array(entries)
     }
 
+    /// Read the last `lines` non-empty screen lines of a terminal pane, the
+    /// same capture path `plexi pane capture --lines` uses.
+    fn assistant_read_terminal(
+        &self,
+        terminal_pane_id: u64,
+        lines: usize,
+    ) -> Result<Vec<String>, String> {
+        let pane = self
+            .windows
+            .iter()
+            .find_map(|window| window.panes.get(&terminal_pane_id))
+            .ok_or_else(|| format!("pane_not_found: {terminal_pane_id}"))?;
+        let term = pane
+            .as_terminal()
+            .ok_or_else(|| format!("not_a_terminal: pane {terminal_pane_id}"))?;
+        let (mut captured, _cursor) = term.backend.capture_lines_with_cursor(lines);
+        let trimmed = captured
+            .iter()
+            .rposition(|line| !line.trim().is_empty())
+            .map(|pos| pos + 1)
+            .unwrap_or(0);
+        captured.truncate(trimmed);
+        Ok(captured)
+    }
+
     fn assistant_pane_state(&self, pane_id: u64) -> Option<serde_json::Value> {
         let pane = self
             .windows
@@ -487,6 +531,68 @@ fn failed(error: String) -> ToolCallResult {
 #[cfg(test)]
 mod tests {
     use crate::testing::HostHarness;
+
+    #[test]
+    fn terminals_read_returns_screen_lines_and_fails_loudly_on_non_terminals() {
+        let mut harness = HostHarness::new();
+        let origin = harness.add_test_pane();
+        let context = harness.app.windows[0].context_id;
+
+        let terminal = harness.app.handle_assistant_host_tool(
+            "host.terminals.open",
+            &serde_json::json!({"layout": "split_h", "cwd": std::env::temp_dir()}).to_string(),
+            origin,
+            context,
+        );
+        let terminal_id = serde_json::from_str::<serde_json::Value>(
+            terminal.output_json.as_deref().expect("terminal output"),
+        )
+        .unwrap()["pane_id"]
+            .as_u64()
+            .expect("terminal pane id");
+
+        let read = harness.app.handle_assistant_host_tool(
+            "host.terminals.read",
+            &serde_json::json!({"terminal_pane_id": terminal_id, "lines": 5}).to_string(),
+            origin,
+            context,
+        );
+        assert!(read.error.is_none(), "{:?}", read.error);
+        let value =
+            serde_json::from_str::<serde_json::Value>(read.output_json.as_deref().unwrap())
+                .unwrap();
+        assert!(value["lines"].is_array());
+
+        let not_terminal = harness.app.handle_assistant_host_tool(
+            "host.terminals.read",
+            &serde_json::json!({"terminal_pane_id": origin}).to_string(),
+            origin,
+            context,
+        );
+        assert!(not_terminal
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("not_a_terminal"));
+
+        let missing = harness.app.handle_assistant_host_tool(
+            "host.terminals.read",
+            r#"{"terminal_pane_id": 999999}"#,
+            origin,
+            context,
+        );
+        assert!(missing
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("pane_not_found"));
+
+        let no_arg =
+            harness
+                .app
+                .handle_assistant_host_tool("host.terminals.read", "{}", origin, context);
+        assert!(no_arg.error.as_deref().unwrap().starts_with("invalid_input"));
+    }
 
     #[test]
     fn native_host_tools_list_read_focus_and_close_real_harness_panes() {
