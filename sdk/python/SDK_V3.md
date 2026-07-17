@@ -8,7 +8,7 @@
 > design record: the WIT mapping and adapter/bridge protocol. Its inline type
 > tables capture original design intent and may lag the shipped surface.
 
-**Status:** authoritative design doc for task 0285. Implement exactly this. No design decisions during implementation.
+**Status:** task 0285 (CPython-in-WASM migration) is done and merged. Sections 7, 9, and 13 below describe the native-`ProcessApp`-subprocess model this doc originally specified as *deferred future work* — that framing is now inverted: the WASM runtime shipped and `src/process_app/` was deleted. Those three sections are historical; do not treat them as current. [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) is the accurate reference for the shipped runtime contract until this doc is rewritten end-to-end.
 
 Source of truth for all types: `wit/plexi.wit`. Every Python type here maps to a named WIT type. Where a mapping decision was made, it is stated explicitly.
 
@@ -652,7 +652,11 @@ Reset `_next_id` to 0 before each `view()` call. Keys are positional by default;
 
 ---
 
-## 7. Native ProcessApp Bridge Protocol
+## 7. Native ProcessApp Bridge Protocol (superseded — see status note above)
+
+**This section is historical.** SDK v3 Python apps no longer run through native `ProcessApp` — stint 0285 deleted `src/process_app/` and replaced this bridge with the CPython-in-WASM adapter (`src/host/wasm_python.rs`). Kept below for archival reference only; do not implement against it. See [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) for the current contract.
+
+<details><summary>Original (superseded) content</summary>
 
 SDK v3 Python apps run through native `ProcessApp`: the host starts the system Python interpreter as a subprocess and invokes `python -m plexi_sdk._v3_process <entry.py>`. PGAP remains the process transport. WASM-contained Python is not part of this contract.
 
@@ -682,6 +686,8 @@ SDK v3 Python apps run through native `ProcessApp`: the host starts the system P
 
 CPython-in-WASM remains deferred G8 runtime work. Do not add `[runtime] python_compat = true` for SDK v3 apps, do not route Python app manifests to a `WasmPythonAdapter`, and do not require CPython bundle or shim fixtures for this SDK contract.
 
+</details>
+
 ---
 
 ## 8. Manifest Schema
@@ -705,19 +711,19 @@ capabilities = []
 [launch]
 ```
 
-`[app] type = "app"` plus a `.py` entry launches through native `ProcessApp`. `[app] type = "wasm"` is the separate component-model WASM runtime. SDK v3 is the current Python app API; it is not a WASM execution mode.
+**Superseded:** `[app] type = "app"` plus a `.py` entry now launches through the CPython-in-WASM adapter (stint 0285), not native `ProcessApp` — see [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) for the current manifest/runtime routing.
 
 ---
 
-## 9. WASM-Contained Python Status
+## 9. WASM-Contained Python Status (superseded — see status note at top of doc)
 
-Deferred. A future G8 may add a CPython-in-WASM compatibility layer, bundle management, and manifest routing. That work is outside this SDK v3 native landing and must not be advertised as shipped.
+**Shipped.** Stint 0285 landed the CPython-in-WASM compatibility layer, bundle management, and manifest routing this section originally deferred. This section's "must not be advertised as shipped" framing no longer applies — see [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md).
 
 ---
 
-## 10. Hot Reload
+## 10. Hot Reload (superseded)
 
-Dev mode is the existing watched ProcessApp subprocess flow. On Python source changes, the host restarts the app subprocess and reinjects persisted/runtime state where supported by the ProcessApp lifecycle. There is no wasmtime store reset or CPython bundle reload in the current SDK v3 path.
+**This section describes the deleted native-`ProcessApp` hot-reload flow.** The current WASM adapter's reload behavior is described in stint 0285's own task body (`.stint/tasks/0285-*.md`, "Hot reload in dev mode" — resets the `wasmtime::Store` and re-calls `init` with the preserved state snapshot); confirm against `src/host/wasm_python.rs` before relying on specifics here.
 
 ---
 
@@ -825,11 +831,9 @@ plexi_sdk/
 
 ---
 
-## 13. Runtime Boundary
+## 13. Runtime Boundary (superseded)
 
-Do not delete `src/process_app/`. SDK v3 Python apps still run through native `ProcessApp`; PGAP is the current transport for Python apps.
-
-The WASM runtime remains available for `[app] type = "wasm"` component-model apps. CPython-in-WASM remains deferred G8 work and must not be described as shipped by SDK v3.
+**`src/process_app/` was deleted by stint 0285.** SDK v3 Python apps run through the CPython-in-WASM adapter, same as `[app] type = "wasm"` component-model apps — there is no longer a separate native-subprocess Python runtime. This section's original constraint is inverted from what's now true; see [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md).
 
 ---
 

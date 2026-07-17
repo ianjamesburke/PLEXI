@@ -52,7 +52,24 @@ Imported `host-state`, pipes, GPU, and audio interfaces are link-time gated. The
 
 The host renders the WIT `ui-tree` through egui. Typed UI actions are delivered as `ui-action` and `ui-value-change` events. Surface nodes use a host-owned GPU texture. The state import provides persisted get, set, delete, and list-prefix operations scoped to the app. Typed pipes use host-managed handles.
 
-The runtime is sandboxed. Components have isolated linear memory and only the host interfaces that Plexi links. Native Python apps remain a separate runtime and are not sandboxed by this component boundary.
+The runtime is sandboxed. Components have isolated linear memory and only the host interfaces that Plexi links. Python apps run through the CPython-in-WASM adapter (`src/host/wasm_python.rs`, stint 0285) and are sandboxed by this same component boundary — there is no remaining native-subprocess Python runtime (`src/process_app/` was deleted).
+
+## Security Model
+
+Every app pane — Rust WASM component or Python app — runs inside its own `wasmtime::Store` with isolated linear memory. A component can only reach the host interfaces Plexi links for its world (`plexi-app`, `plexi-gpu-app`, `plexi-audio-app`, `plexi-full-app`); this is link-time gating, not a runtime policy check. Python apps run through the CPython-in-WASM adapter (`src/host/wasm_python.rs`, stint 0285) inside the same component boundary — there is no separate native-subprocess Python runtime.
+
+Beyond the link-time boundary, protected effects (`file-read`, `file-write`, `http-fetch`, `ai-query`, `pipe.open`, `gpu.render`, `audio.playback`, `audio:record`, `open-pane`, `spawn.app`, `clipboard.read`, `clipboard.write`, `notify`, and scoped filesystem/network forms) require an explicit capability grant. A component requests one with `request-capability`; the host prompts the user on first request, remembers the decision per app and workspace, and returns `capability-granted` or `capability-denied` on every subsequent request. A protected effect invoked without its grant returns an error result instead of executing. Every requested capability and every executed effect is logged.
+
+**Trust labels.** `trust_label()` (`src/app/package.rs`) classifies a package before install:
+
+| Label | When |
+|---|---|
+| `FirstPartyCore` | App id is in the bundled core pack |
+| `SandboxedWasm` | `[app] type = "wasm"` entry |
+| `PythonUnreviewed` / `ReviewedNative` | `.py` entry, outside the core pack — reviewed if `marketplace_reviewed` is set by the install flow (server attestation only; never in-package self-attestation) |
+| `NativeUnreviewed` / `ReviewedNative` | Non-`.py`, non-WASM entry, outside the core pack, reviewed the same way |
+
+`marketplace_reviewed` gates only the trust label, not a sandbox choice. `FirstPartyCore`, `SandboxedWasm`, and Python entries all launch through the same wasmtime component boundary and capability grant flow described above — `PythonUnreviewed`/`ReviewedNative` for Python is a review-provenance label, not a weaker sandbox. `NativeUnreviewed`/`ReviewedNative` for a non-`.py`, non-WASM entry is a **package classification with no current launch path**: `ManifestType` only defines `App` (routed to the CPython-in-WASM adapter, which requires a `.py`/`.pyc` entry) and `Wasm`; a native-executable entry fails to launch rather than running unsandboxed. Do not read this label as describing a live unsandboxed process — none exists in the current host.
 
 ## Verification
 

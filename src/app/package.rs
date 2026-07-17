@@ -155,7 +155,7 @@ fn io_err(action: &'static str, path: &Path, source: std::io::Error) -> PackageE
 /// Package runtime — derived from the manifest entry point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageRuntime {
-    /// Entry ends in `.py` — launched via python3.
+    /// Entry ends in `.py` — launched through the CPython-in-WASM adapter (`src/host/wasm_python.rs`).
     Python,
     /// `[app] type = "wasm"` — launched through the wasmtime runtime.
     Wasm,
@@ -243,10 +243,10 @@ pub struct PackageReport {
 
 /// Blunt trust classification shown before any install proceeds (stint 0016).
 ///
-/// Process-app security stance: there is NO OS sandbox. Anything not bundled
-/// with Plexi runs with the user's full permissions, and the label says so
-/// verbatim. WASM components are separate: their host imports are
-/// capability-gated by the runtime.
+/// All runtimes are sandboxed WASM components today (stint 0285 replaced the
+/// native Python subprocess with the CPython-in-WASM adapter); the label
+/// distinguishes authoring path and marketplace review status, not sandbox
+/// presence. See `docs/wasm-runtime.md`'s "Security Model" section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustLabel {
     /// The app id is in the bundled core pack — ships with Plexi itself.

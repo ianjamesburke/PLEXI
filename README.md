@@ -173,7 +173,7 @@ A toolbar badge shows the count of pending notifications. `Cmd+Shift+A` always g
 
 ## Apps
 
-Apps are Python processes that render native UI and communicate with the host over PGAP. They declare capabilities in a manifest; the host enforces those capabilities for PGAP host APIs. Native Python apps are not a process sandbox.
+Apps run as sandboxed WASM components (Python apps run inside a CPython-in-WASM adapter; Rust apps compile natively to the same component model). They declare capabilities in a manifest; the host enforces those capabilities and prompts on first use of an undeclared one.
 
 A fresh install seeds a core set of apps automatically. Browse them with `Cmd+P` or manage them from the terminal.
 
@@ -270,24 +270,13 @@ To share your app: push the repo to GitHub, then anyone can install it with `ple
 
 ---
 
-## PGAP — Plexi General App Protocol
+## App runtime — WASM components
 
-PGAP is the wire protocol that every Plexi app speaks — built-in or third-party. It is the host API boundary: app requests go through typed messages and capability checks. Native Python apps are still native subprocesses, not a process sandbox.
+Every Plexi app — built-in or third-party — runs as a WASM component: one `wasmtime::Store` per app pane, exporting `lifecycle.init`, `lifecycle.update`, and `lifecycle.view`. The host renders the returned UI tree, delivers input events, and executes returned effects (`file-read`, `http-fetch`, `ai-query`, `request-capability`, and more). Components have isolated linear memory and only the host interfaces Plexi links — an app can't reach outside its granted capabilities by construction, not by convention.
 
-**Transport:** newline-delimited JSON on **stdin** (host → app) and **stdout** (app → host). One JSON object per line; no framing, no length prefix.
+**Binary data** (audio PCM, video frames, raw bytes) travels on **typed pipes** — Unix sockets opened by the host on demand, separate from the component effect interface.
 
-**Binary data** (audio PCM, video frames, raw bytes) travels on **typed pipes** — Unix sockets opened by the host on demand. The JSON wire carries only control and draw messages.
-
-**Handshake:**
-1. Host spawns the app process.
-2. Host sends one `init` event (fields: `protocol`, `app_id`, `workspace_root`, `capabilities`, `feature_flags`).
-3. App replies with `{"type": "ready", "sdk": "...", "features_used": [...]}`.
-4. Each frame: host sends `render`; app replies with draw commands terminated by `frame_done`.
-5. Input events (`key`, `click`, `command`, mouse) arrive between frames as they occur.
-6. Out-of-frame commands (`notify`, `secret_get`, `capability_request`, etc.) arrive at any time; host processes them immediately.
-7. On close: host sends `shutdown`; app must exit cleanly within a short timeout.
-
-Current protocol version: **pgap/3**. Full protocol reference: `src/protocol/`. Python SDK authoring reference: [`sdk/python/SDK_V3.md`](sdk/python/SDK_V3.md).
+Full current runtime reference: [`docs/wasm-runtime.md`](docs/wasm-runtime.md). Python SDK authoring reference: [`sdk/python/SDK_V3.md`](sdk/python/SDK_V3.md) (being reconciled with the WASM runtime — see `sdk/python/SDK_V3.md`'s own status note).
 
 ---
 

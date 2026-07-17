@@ -887,6 +887,50 @@ pub(crate) fn resolve_entry(
     Ok(path)
 }
 
+/// Walk up from `start` looking for an `apps/dev/` directory (the PLEXI repo's
+/// dev-pack POCs, per `apps/AGENTS.md`) and, if found, scan its immediate
+/// subdirectories for a manifest whose `[app].id` matches `id`.
+///
+/// Dev-pack apps are intentionally excluded from the id-addressable registry
+/// (`install.sh` never syncs `apps/dev/*` into a profile) — this is used only
+/// to turn a bare "no WASM runtime" miss into an actionable message pointing
+/// the developer at the path-open form.
+pub(crate) fn find_dev_pack_app(id: &str, start: &Path) -> Option<PathBuf> {
+    let home = dirs::home_dir();
+    let mut current = start.to_path_buf();
+    loop {
+        if let Some(ref h) = home {
+            if current == *h {
+                return None;
+            }
+        }
+        let dev_dir = current.join("apps").join("dev");
+        if dev_dir.is_dir() {
+            let entries = std::fs::read_dir(&dev_dir).ok()?;
+            for entry in entries.flatten() {
+                let app_dir = entry.path();
+                if !app_dir.is_dir() {
+                    continue;
+                }
+                let Ok(manifest_str) = std::fs::read_to_string(app_dir.join("manifest.toml"))
+                else {
+                    continue;
+                };
+                let Ok(manifest) = toml::from_str::<AppManifest>(&manifest_str) else {
+                    continue;
+                };
+                if manifest.app.id == id {
+                    return Some(app_dir);
+                }
+            }
+            return None;
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1725,5 +1769,38 @@ entry = "main.py"
         assert!(manifest.app.author.is_none());
         assert!(manifest.app.tags.is_empty());
         assert!(manifest.app.repo.is_none());
+    }
+
+    #[test]
+    fn find_dev_pack_app_matches_id_from_nested_start_dir() {
+        let repo = tempfile::tempdir().unwrap();
+        let dev_dir = repo.path().join("apps").join("dev");
+        fs::create_dir_all(&dev_dir).unwrap();
+        write_app(&dev_dir, "com.plexi.canvas-grid", "Canvas Grid POC");
+
+        // Search starts several directories below the repo root, mirroring a
+        // pane cwd inside a subdirectory of the checkout.
+        let start = repo.path().join("src").join("pane_ops");
+        fs::create_dir_all(&start).unwrap();
+
+        let found = find_dev_pack_app("com.plexi.canvas-grid", &start)
+            .expect("dev-pack app should be found by walking up to apps/dev");
+        assert_eq!(found, dev_dir.join("com.plexi.canvas-grid"));
+    }
+
+    #[test]
+    fn find_dev_pack_app_returns_none_for_unknown_id() {
+        let repo = tempfile::tempdir().unwrap();
+        let dev_dir = repo.path().join("apps").join("dev");
+        fs::create_dir_all(&dev_dir).unwrap();
+        write_app(&dev_dir, "com.plexi.canvas-grid", "Canvas Grid POC");
+
+        assert!(find_dev_pack_app("com.plexi.does-not-exist", repo.path()).is_none());
+    }
+
+    #[test]
+    fn find_dev_pack_app_returns_none_without_apps_dev_dir() {
+        let plain = tempfile::tempdir().unwrap();
+        assert!(find_dev_pack_app("anything", plain.path()).is_none());
     }
 }

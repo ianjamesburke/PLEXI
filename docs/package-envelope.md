@@ -104,7 +104,7 @@ Set by stint 0325, restated only as a boundary:
 
 - This spec owns the package `kind` discriminator, the per-kind install targets, the skill "no capabilities / inherit from host" rule, and the cross-kind validation consistency layer.
 - The base package format, the app trust sheet, and the reject list are owned by `app-framework-marketplace.md` §3 and the code in `src/app/package.rs`. This spec references them and never restates them.
-- The trust boundary (consent + audit, no sandbox for native apps) is owned by [`src/process_app/SECURITY_MODEL.md`](../src/process_app/SECURITY_MODEL.md).
+- The trust boundary is real WASM sandboxing now (stint 0285 deleted `src/process_app/`; Python apps run inside `wasmtime`, not as unsandboxed native processes). [`docs/wasm-runtime.md`](wasm-runtime.md)'s "Security Model" section (stint 0409) is the canonical reference.
 - The canonical capability set is the `Capability` enum in `src/app/permissions.rs`. New capabilities are added there, not here.
 - Commercial behavior (purchase, update-gating, refunds) is owned by `marketplace-monetization.md`.
 - When a future change alters a decision here, update this spec in the same PR, and delete it in the PR that closes stint 0325's successor build tasks once the envelope is implemented.
