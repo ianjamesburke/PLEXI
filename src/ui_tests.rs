@@ -1275,9 +1275,11 @@ mod tests {
             .expect("open File Browser");
         h.run_steps(2);
 
-        assert!(h.pane_has_label(assistant, "Assistant"));
-        assert!(h.pane_has_label(assistant, "default"));
-        assert!(!h.pane_has_label(files, "Assistant"));
+        // Stint 0424 removed the header bar (which used to carry "Assistant"/
+        // the session name); the default footer hint bar's "commands" label
+        // is the stable, assistant-only text left to scope against.
+        assert!(h.pane_has_label(assistant, "commands"));
+        assert!(!h.pane_has_label(files, "commands"));
     }
 
     #[test]
@@ -1313,8 +1315,11 @@ mod tests {
         });
 
         assert_eq!(assistant_state.runtime_kind, "builtin");
+        // Stint 0424 removed the header bar (which used to carry "Assistant"
+        // as a committed semantic node); the footer hint bar's "commands"
+        // label is the stable text left to check committed-semantics against.
         assert!(assistant_state.nodes.iter().any(|node| {
-            node.label.as_deref() == Some("Assistant") || node.value.as_deref() == Some("Assistant")
+            node.label.as_deref() == Some("commands") || node.value.as_deref() == Some("commands")
         }));
         assert_eq!(files_state.runtime_kind, "builtin");
         assert!(!files_state.nodes.is_empty());

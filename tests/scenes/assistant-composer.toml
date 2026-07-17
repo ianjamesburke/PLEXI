@@ -8,6 +8,16 @@ open = { kind = "builtin", id = "assistant", as = "assistant" }
 [[steps]]
 run_steps = 2
 
+# Stint 0423: pristine empty composer — hint text and caret must read as
+# vertically centered with left breathing room, not flush against the edge.
+# The hint is painted directly (not a `ui.label`), so it isn't visible to
+# `assert_label`; the screenshot is the evidence.
+[[steps]]
+assert = { target = "assistant", exists = true, focused = true, pane_count = 1 }
+
+[[steps]]
+shot = "assistant-composer-empty.png"
+
 [[steps]]
 text = { target = "assistant", value = "/help" }
 

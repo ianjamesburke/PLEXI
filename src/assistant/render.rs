@@ -111,10 +111,6 @@ impl MarkdownTextCache {
 }
 
 impl AssistantRenderer {
-    /// Header bar height — mirrors the terminal pane name bar and the
-    /// text-editor note header so the assistant reads as the same chrome.
-    const HEADER_BAR_H: f32 = 20.0;
-    const HEADER_FONT_SIZE: f32 = 11.0;
     /// Composer grows until it reaches this fraction of the pane height, then
     /// scrolls — generous on purpose so long drafts get room to breathe.
     const COMPOSER_MAX_FRACTION: f32 = 0.75;
@@ -134,8 +130,6 @@ impl AssistantRenderer {
         ui.painter()
             .rect_filled(ui.available_rect_before_wrap(), 0.0, colors.terminal_bg);
         ui.visuals_mut().extreme_bg_color = colors.terminal_bg;
-
-        Self::draw_header(ui, model, colors);
 
         // Egui ids are salted by the pane's own ui id — NOT the conversation
         // id. A conversation-salted id would reset the bottom panel's stored
@@ -242,62 +236,6 @@ impl AssistantRenderer {
         event
     }
 
-    /// Title bar styled like the terminal pane name bar: session name (or
-    /// "Assistant"), with a status pip — pulsing accent while a turn streams,
-    /// danger when the last turn errored, dim when idle.
-    fn draw_header(ui: &mut egui::Ui, model: &AssistantModel, colors: &Colors) {
-        let bar_rect = egui::Rect::from_min_size(
-            ui.cursor().min,
-            egui::vec2(ui.available_width(), Self::HEADER_BAR_H),
-        );
-        ui.advance_cursor_after_rect(bar_rect);
-        ui.painter()
-            .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
-
-        let pip_color = if model.streaming.in_flight {
-            let t = ui.input(|i| i.time);
-            let phase = ((t * 2.5).sin() * 0.5 + 0.5) as f32;
-            colors.accent.gamma_multiply(0.45 + 0.55 * phase)
-        } else if matches!(model.turns.last().map(|t| t.role), Some(TurnRole::Error)) {
-            colors.danger
-        } else {
-            colors.text_dim
-        };
-        ui.painter().circle_filled(
-            egui::pos2(bar_rect.left() + style::SPACE_SM + 3.0, bar_rect.center().y),
-            3.0,
-            pip_color,
-        );
-
-        let session = model
-            .session_name
-            .clone()
-            .unwrap_or_else(|| "Assistant".to_string());
-        // Keep the session title and active agent as separate semantic labels.
-        // Scenes and assistive technology rely on the stable session label,
-        // while the adjacent agent label makes selection state observable.
-        let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
-        bar_ui.centered_and_justified(|ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(session)
-                        .size(Self::HEADER_FONT_SIZE)
-                        .color(colors.text_dim),
-                );
-                ui.label(
-                    RichText::new("·")
-                        .size(Self::HEADER_FONT_SIZE)
-                        .color(colors.text_dim),
-                );
-                ui.label(
-                    RichText::new(&model.active_agent_id)
-                        .size(Self::HEADER_FONT_SIZE)
-                        .color(colors.text_dim),
-                );
-            });
-        });
-    }
-
     fn draw_transcript(
         ui: &mut egui::Ui,
         model: &AssistantModel,
@@ -332,20 +270,16 @@ impl AssistantRenderer {
                     .turn_anchor
                     .unwrap_or(model.turns.len())
                     .min(model.turns.len());
-                for (i, turn) in model.turns[..anchor].iter().enumerate() {
-                    ui.push_id(i, |ui| {
-                        Self::draw_turn_row(
-                            ui,
-                            md_cache,
-                            text_cache,
-                            &model.conversation_id,
-                            i,
-                            colors,
-                            turn,
-                            model.show_thoughts,
-                        );
-                    });
-                }
+                Self::draw_turn_range(
+                    ui,
+                    md_cache,
+                    text_cache,
+                    &model.conversation_id,
+                    0,
+                    colors,
+                    &model.turns[..anchor],
+                    model.show_thoughts,
+                );
                 for active in &model.active_tools {
                     Self::draw_active_tool_row(ui, colors, &active.tool);
                 }
@@ -363,22 +297,96 @@ impl AssistantRenderer {
                         Self::draw_streaming_row(ui, model, md_cache, colors);
                     });
                 }
-                for (i, turn) in model.turns[anchor..].iter().enumerate() {
-                    ui.push_id(anchor + i, |ui| {
+                Self::draw_turn_range(
+                    ui,
+                    md_cache,
+                    text_cache,
+                    &model.conversation_id,
+                    anchor,
+                    colors,
+                    &model.turns[anchor..],
+                    model.show_thoughts,
+                );
+                ui.add_space(style::SPACE_SM);
+            });
+    }
+
+    /// Render a contiguous slice of `model.turns` in order, collapsing runs of
+    /// consecutive successful tool calls into a single compact trail so they
+    /// don't bury the message they precede. Failures and permission denials
+    /// (`ToolStatus::Failed`) break a run and always render as their own row —
+    /// only routine successful calls collapse. `index_offset` is the slice's
+    /// absolute start index into `model.turns`, so cross-frame widget/cache
+    /// keys stay stable.
+    fn draw_turn_range(
+        ui: &mut egui::Ui,
+        md_cache: &mut egui_commonmark::CommonMarkCache,
+        text_cache: &mut MarkdownTextCache,
+        conversation_id: &str,
+        index_offset: usize,
+        colors: &Colors,
+        turns: &[super::model::Turn],
+        show_thoughts: bool,
+    ) {
+        for group in super::model::group_turns_for_render(turns) {
+            match group {
+                super::model::TurnGroup::Row(i, turn) => {
+                    ui.push_id(index_offset + i, |ui| {
                         Self::draw_turn_row(
                             ui,
                             md_cache,
                             text_cache,
-                            &model.conversation_id,
-                            anchor + i,
+                            conversation_id,
+                            index_offset + i,
                             colors,
                             turn,
-                            model.show_thoughts,
+                            show_thoughts,
                         );
                     });
                 }
-                ui.add_space(style::SPACE_SM);
-            });
+                super::model::TurnGroup::ToolRun(i, run) => {
+                    ui.push_id(index_offset + i, |ui| {
+                        Self::draw_tool_trail(ui, colors, run);
+                    });
+                }
+            }
+        }
+    }
+
+    /// A compact, scannable trail for a run of consecutive successful tool
+    /// calls. A single call renders exactly like before (one line); more than
+    /// one collapses into a summary line the user can expand.
+    fn draw_tool_trail(ui: &mut egui::Ui, colors: &Colors, run: &[super::model::Turn]) {
+        if let [only] = run {
+            Self::draw_succeeded_tool_line(ui, colors, &only.text);
+            return;
+        }
+        egui::CollapsingHeader::new(
+            RichText::new(format!("✓ {} tool calls", run.len()))
+                .size(style::TEXT_CAPTION)
+                .monospace()
+                .color(colors.text_dim),
+        )
+        .id_salt("tool_trail")
+        .default_open(false)
+        .show(ui, |ui| {
+            for turn in run {
+                Self::draw_succeeded_tool_line(ui, colors, &turn.text);
+            }
+        });
+        ui.add_space(style::SPACE_SM);
+    }
+
+    /// A single completed, successful tool-call row — the pre-collapse look,
+    /// reused both for lone calls and inside an expanded trail.
+    fn draw_succeeded_tool_line(ui: &mut egui::Ui, colors: &Colors, text: &str) {
+        ui.label(
+            RichText::new(format!("✓ {text}"))
+                .size(style::TEXT_CAPTION)
+                .monospace()
+                .color(colors.text_dim),
+        );
+        ui.add_space(style::SPACE_SM);
     }
 
     /// Render `text` as markdown (links, emphasis, inline code, fenced
@@ -1151,6 +1159,22 @@ impl AssistantRenderer {
                             .desired_rows(1)
                             .desired_width(f32::INFINITY)
                             .frame(false)
+                            // Left padding beyond egui's default `symmetric(4,
+                            // 2)` margin, so the caret and hint text never
+                            // sit flush against the composer's edge.
+                            .margin(egui::Margin {
+                                left: 6,
+                                right: 4,
+                                top: 2,
+                                bottom: 2,
+                            })
+                            // The hint galley (rendered at its own, smaller
+                            // size below) and the real-text/caret galley
+                            // otherwise both default to top-aligned, which
+                            // reads as off-center whenever their line
+                            // heights differ. Center both so the composer's
+                            // single row always looks vertically balanced.
+                            .vertical_align(egui::Align::Center)
                             // Keep Tab in the composer: without the focus
                             // lock, egui's frame-start focus traversal
                             // moves focus away before the picker's Tab

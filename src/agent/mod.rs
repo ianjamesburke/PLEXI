@@ -856,6 +856,7 @@ impl AgentHost {
             open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
             tool_dispatcher: Some(dispatcher),
             cancel: crate::plexi_ai::CancelToken::new(),
+            max_tool_iterations: None,
         };
         let agent_id = agent.def.id.clone();
         log::info!(

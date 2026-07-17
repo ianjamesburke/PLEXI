@@ -93,6 +93,12 @@ pub struct AiBrokerRequest {
     /// tripped token aborts both the network stream and any further tool
     /// rounds. Callers with no interrupt UI pass `CancelToken::new()`.
     pub cancel: CancelToken,
+    /// Override for the default tool-call round cap (see
+    /// `MAX_TOOL_ITERATIONS_DEFAULT`). Callers that expect a turn to need many
+    /// rounds (e.g. the assistant's app-build skill) set a higher value so the
+    /// turn pauses gracefully later instead of being cut short. `None` uses
+    /// the default.
+    pub max_tool_iterations: Option<usize>,
 }
 
 /// Broker outcome. Either `content` is `Some` (success) or `error` is `Some`
@@ -541,13 +547,16 @@ fn run_turn_and_respond(
 
     // High enough for multi-step host workflows (e.g. the build-plexi-app
     // pipeline pairs every terminal command with a host.terminals.read).
-    const MAX_TOOL_ITERATIONS: usize = 30;
+    // Callers expecting longer turns (app-build skill) raise this via
+    // `AiBrokerRequest::max_tool_iterations`.
+    const MAX_TOOL_ITERATIONS_DEFAULT: usize = 30;
+    let max_tool_iterations = request.max_tool_iterations.unwrap_or(MAX_TOOL_ITERATIONS_DEFAULT);
     let mut total_tokens_in: u32 = 0;
     let mut total_tokens_out: u32 = 0;
     let mut last_generation_id: Option<String> = None;
     let mut final_text = String::new();
 
-    for iteration in 0..=MAX_TOOL_ITERATIONS {
+    for iteration in 0..=max_tool_iterations {
         // Cancelled between rounds (ESC / event preempt): stop before starting
         // another turn. `final_text` holds whatever the last completed round
         // produced — committed as the (possibly empty) partial reply.
@@ -559,18 +568,28 @@ fn run_turn_and_respond(
             );
             break;
         }
-        if iteration == MAX_TOOL_ITERATIONS {
+        if iteration == max_tool_iterations {
             log::warn!(
-                "ai_broker[{}]: tool loop hit max iterations ({MAX_TOOL_ITERATIONS}), forcing stop",
+                "ai_broker[{}]: tool loop hit max iterations ({max_tool_iterations}), pausing gracefully",
                 request.app_id
             );
-            // Never end the turn silently: the user must see why it stopped.
-            if final_text.is_empty() {
-                final_text = format!(
-                    "Stopped after {MAX_TOOL_ITERATIONS} tool calls without a final answer. \
-                     Ask me to continue to pick up where I left off."
-                );
-            }
+            // Never end the turn silently, and never just truncate mid-build:
+            // ask the model for one more, tool-free round summarizing what it
+            // completed and what remains, so the reply is a real handoff the
+            // user can act on rather than a canned stub.
+            final_text = summarize_progress_on_pause(
+                backend,
+                &conv,
+                &system,
+                max_tool_iterations,
+                &request.app_id,
+                request.model_tier,
+                request.reasoning_effort,
+                &request.cancel,
+                &mut total_tokens_in,
+                &mut total_tokens_out,
+                &mut *on_delta,
+            );
             break;
         }
 
@@ -817,6 +836,70 @@ fn run_turn_and_respond(
     AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out)
 }
 
+/// Hitting `max_tool_iterations` must never strand a half-finished turn on a
+/// canned stub. Ask the model for one more, tool-free round that summarizes
+/// what it completed and what remains, so the reply is a real handoff the
+/// user can act on. Tools are omitted from this round so it cannot itself
+/// loop — the model can only reply with text.
+#[allow(clippy::too_many_arguments)]
+fn summarize_progress_on_pause(
+    backend: &dyn AiBackend,
+    conv: &[serde_json::Value],
+    system: &Arc<str>,
+    max_tool_iterations: usize,
+    app_id: &str,
+    model_tier: ModelTier,
+    reasoning_effort: Option<ReasoningEffort>,
+    cancel: &CancelToken,
+    total_tokens_in: &mut u32,
+    total_tokens_out: &mut u32,
+    on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
+) -> String {
+    let fallback = || {
+        format!(
+            "Paused after {max_tool_iterations} tool calls without a final answer. \
+             Ask me to continue to pick up where I left off."
+        )
+    };
+    if cancel.is_cancelled() {
+        return fallback();
+    }
+
+    let mut pause_messages = conv.to_vec();
+    pause_messages.push(serde_json::json!({
+        "role": "user",
+        "content": "You've reached the maximum number of tool calls allowed for this turn. \
+                    Do not call any more tools. Reply now with a concise summary of what you \
+                    completed and what remains, so the user can ask you to continue in the next turn."
+    }));
+    let pause_request = AiBackendRequest {
+        messages: pause_messages,
+        system: Arc::clone(system),
+        tools: Vec::<AiTool>::new().into(),
+        model_tier: Some(model_tier),
+        reasoning_effort,
+        cancel: cancel.clone(),
+    };
+
+    match turn_loop::run_turn(backend, pause_request, on_delta) {
+        Ok(result) => {
+            *total_tokens_in += result.input_tokens.unwrap_or(0);
+            *total_tokens_out += result.output_tokens.unwrap_or(0);
+            if result.text.is_empty() {
+                fallback()
+            } else {
+                result.text
+            }
+        }
+        Err(e) => {
+            log::warn!(
+                "ai_broker[{app_id}]: pause-summary turn failed: {e} — falling back to canned message",
+            );
+            fallback()
+        }
+    }
+}
+
 fn tier_name(tier: &ModelTier) -> &'static str {
     match tier {
         ModelTier::Low => "low",
@@ -1055,6 +1138,7 @@ mod tests {
                 open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
+                max_tool_iterations: None,
             },
             &mut |_| {},
         );
@@ -1093,6 +1177,7 @@ mod tests {
                 open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
+                max_tool_iterations: None,
             },
             &mut |_| {},
         );
@@ -1283,6 +1368,7 @@ mod tests {
                 open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
+                max_tool_iterations: None,
             },
             &mut |_| {},
         );
@@ -1320,6 +1406,7 @@ mod tests {
                 open_panes: Arc::new(Vec::new()),
                 tool_dispatcher: None,
                 cancel: CancelToken::new(),
+                max_tool_iterations: None,
             },
             &mut |_| {},
         );
@@ -1435,6 +1522,7 @@ mod tests {
             open_panes: Arc::new(Vec::new()),
             tool_dispatcher: None,
             cancel: CancelToken::new(),
+            max_tool_iterations: None,
         };
 
         let billing = crate::plexi_ai::backend::BillingModel::Subscription;
@@ -1468,6 +1556,109 @@ mod tests {
         assert!(
             Arc::ptr_eq(&st[0], &st[1]),
             "tools Arc must be the same allocation on both iterations"
+        );
+    }
+
+    /// Hitting `max_tool_iterations` must never truncate the turn on a bare
+    /// canned stub — the broker asks the model for one more, tool-free round
+    /// and uses that reply. A backend that always requests a tool call when
+    /// given tools, but returns real summary text once the round is called
+    /// with an empty tool list (the pause round), pins this contract. Also
+    /// verifies `max_tool_iterations` overrides the default cap.
+    #[test]
+    fn tool_loop_pauses_gracefully_after_max_iterations() {
+        use crate::app_protocol::AiTool;
+        use crate::plexi_ai::backend::{
+            AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
+        };
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex};
+
+        struct NeverConvergesBackend {
+            calls: Arc<Mutex<u32>>,
+        }
+
+        impl AiBackend for NeverConvergesBackend {
+            fn name(&self) -> &str {
+                "never-converges"
+            }
+
+            fn stream_to_channel(
+                &self,
+                req: AiBackendRequest,
+                tx: mpsc::Sender<StreamEvent>,
+            ) -> Result<(), AiBackendError> {
+                *self.calls.lock().unwrap() += 1;
+                if req.tools.is_empty() {
+                    // The pause round: tools omitted, so the model must reply
+                    // with text instead of looping forever.
+                    let _ = tx.send(StreamEvent::Text("done: file A, remaining: file B".into()));
+                } else {
+                    let _ = tx.send(StreamEvent::ToolCalls(vec![RawToolCall {
+                        id: "c".to_string(),
+                        name: "echo".to_string(),
+                        arguments: "{}".to_string(),
+                    }]));
+                }
+                let _ = tx.send(StreamEvent::Done {
+                    input_tokens: Some(1),
+                    output_tokens: Some(1),
+                    generation_id: None,
+                });
+                Ok(())
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(0u32));
+        let backend = NeverConvergesBackend {
+            calls: Arc::clone(&calls),
+        };
+        let tool = AiTool {
+            name: "echo".to_string(),
+            description: "echoes back".to_string(),
+            input_schema: serde_json::json!({"type":"object"}),
+            output_schema: serde_json::json!({"type":"object"}),
+            timeout_ms: None,
+            read_only: false,
+        };
+        let request = AiBrokerRequest {
+            app_id: "test".to_string(),
+            model_tier: ModelTier::Low,
+            concrete_model: None,
+            reasoning_effort: None,
+            system: "sys".to_string(),
+            messages: vec![AiMessage {
+                role: "user".to_string(),
+                content: "build me an app".to_string(),
+            }],
+            tools: vec![tool],
+            workspace_root: None,
+            open_panes: Arc::new(Vec::new()),
+            tool_dispatcher: None,
+            cancel: CancelToken::new(),
+            max_tool_iterations: Some(2),
+        };
+
+        let resp = run_turn_and_respond(
+            request,
+            &backend,
+            BillingModel::Subscription,
+            "test-model".to_string(),
+            String::new(),
+            &mut |_| {},
+        );
+
+        assert!(resp.error.is_none(), "a paused turn is not an error");
+        assert_eq!(
+            resp.content.as_deref(),
+            Some("done: file A, remaining: file B"),
+            "the pause round's real reply must be used, not a canned stub"
+        );
+        // 2 tool-forcing rounds (iterations 0 and 1) + 1 pause round with no tools.
+        assert_eq!(
+            *calls.lock().unwrap(),
+            3,
+            "must stop at the overridden cap, not the 30-iteration default"
         );
     }
 
@@ -1531,6 +1722,7 @@ mod tests {
             open_panes: Arc::new(Vec::new()),
             tool_dispatcher: None,
             cancel,
+            max_tool_iterations: None,
         };
         let resp = run_turn_and_respond(
             request,
@@ -1612,6 +1804,7 @@ mod tests {
             open_panes: Arc::new(Vec::new()),
             tool_dispatcher: None,
             cancel,
+            max_tool_iterations: None,
         };
         let resp = run_turn_and_respond(
             request,

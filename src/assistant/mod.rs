@@ -1203,6 +1203,9 @@ impl AssistantApp {
                 .matching_enabled(&prompt, &agent.skills)
                 .cloned()
         });
+        let is_app_build_turn = selected_skill
+            .as_ref()
+            .is_some_and(|skill| skill.name == skills::APP_BUILD_SKILL_NAME);
         let mut system = agent.prompt;
         system.push_str("\n\nCompaction status: ");
         system.push_str(&self.model.compaction_status());
@@ -1215,7 +1218,18 @@ impl AssistantApp {
             );
             system.push_str("\n\nFollow this loaded skill for the current turn:\n");
             system.push_str(&skill.instructions);
+            if is_app_build_turn {
+                system.push_str(
+                    "\n\nSDK API reference (generated, authoritative — read this instead of \
+                     exploring the SDK source via terminal):\n",
+                );
+                system.push_str(skills::app_build_sdk_reference());
+            }
         }
+        // App-build turns iterate across multiple files and need more tool
+        // rounds than a typical chat turn; raise the cap so the assistant
+        // pauses gracefully later instead of being cut short mid-build.
+        const APP_BUILD_MAX_TOOL_ITERATIONS: usize = 60;
         let request = AiBrokerRequest {
             app_id: "assistant".to_string(),
             model_tier: tier,
@@ -1228,6 +1242,7 @@ impl AssistantApp {
             open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
             tool_dispatcher: Some(Arc::new(dispatcher)),
             cancel,
+            max_tool_iterations: is_app_build_turn.then_some(APP_BUILD_MAX_TOOL_ITERATIONS),
         };
         log::info!(
             "assistant[{conversation_id}]: dispatching agent={} tier={} route={} effort={} messages={} tools={}",

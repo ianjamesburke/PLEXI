@@ -8,8 +8,10 @@ open = { kind = "builtin", id = "assistant", as = "assistant" }
 [[steps]]
 run_steps = 2
 
+# Stint 0424: the header bar (which used to carry this "Assistant" label) was
+# removed — the transcript now starts at the top of the pane.
 [[steps]]
-assert_label = { target = "assistant", label = "Assistant" }
+assert = { target = "assistant", exists = true, focused = true, pane_count = 1 }
 
 [[steps]]
 text = { target = "assistant", value = "/settings" }
