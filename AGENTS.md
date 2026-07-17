@@ -28,7 +28,7 @@ When work begins: `stint claim <task-id>`. Do not run or document `stint start`;
 |---|---|
 | `src/cli/` | CLI rules, channel-agnostic enforcement, namespace design, pane naming |
 | `src/ui/` | Host UI kit primitives, design tokens, overlay layout widgets |
-| `src/config/` | Config loading/validation, CONFIG.md reference |
+| `src/config/` | Config loading/validation; reference is `docs/CONFIG.md` |
 | `src/testing/` | Test infrastructure, TESTING.md reference, scene format |
 | `src/render/` | CLI renderer app contract |
 | `src/workspace/` | Workspace state, environment secrets resolver |
@@ -105,6 +105,8 @@ Document failures in the issue **body** under `## Prior Attempts`, not in commen
 ## Documentation Rule
 
 Every fact lives in exactly one place. Other files reference it; they never restate it. If you find yourself writing something that exists elsewhere, replace it with a pointer. Inline command help (justfile recipe comments) is exempt — it serves `just --list`, not agent orientation.
+
+**No volatile numbers in docs.** Never cite a line number, a file offset, or a count of things (`foo.rs:40`, "line 292", "the 14 exemplar apps", "Core 9") in any `AGENTS.md`, PRM, or contract doc. They drift silently the moment code changes and send agents to the wrong place. Reference code by symbol name (`builtin_factory`, `decode_badge_color`) and let grep find it; describe sets by their defining source (`packs/core.toml`, the exemplar dirs under `apps/`), never by a frozen tally. Version identifiers, schema numbers, and dates are not counts and are fine.
 
 **One progress tracker per unit of work.** Work lives in a stint task — never in a GitHub issue, never tracked inside a spec doc. A PRM describes destination state; it never tracks what is done. No checklists, no strikethrough, no status tables inside PRMs. The stint task is the single delete trigger for its PRM.
 
