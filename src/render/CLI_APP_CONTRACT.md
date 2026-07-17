@@ -12,8 +12,8 @@ re-document the descriptor schema — for that, read the
 schema at `schemas/plexi-descriptor-schema.json`.
 
 - **What the descriptor looks like** → [`CLI_DESCRIPTOR_GUIDE.md`](../../registry/CLI_DESCRIPTOR_GUIDE.md)
-- **The host/app wire protocol for SDK apps** → `src/protocol/` and [`SDK_V3.md`](../../sdk/python/SDK_V3.md)
-- **The capability/permission model** → [`SECURITY_MODEL.md`](../process_app/SECURITY_MODEL.md)
+- **The host/app wire protocol for SDK apps** → [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) (WIT component model — current runtime)
+- **The capability/permission model** → [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md)'s "Security Model" section.
 
 The renderer is implemented in `src/render/cli_renderer_app.rs`. The open path is
 `src/cli/open.rs` and `src/cli/descriptor.rs`. The linked-terminal dispatch is

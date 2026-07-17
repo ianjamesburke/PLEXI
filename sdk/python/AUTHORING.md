@@ -10,8 +10,10 @@ place the how-to-build knowledge lives.
   [`website/src/content/docs/sdk.md`](../../website/src/content/docs/sdk.md).
   That file is the exhaustive, always-fresh surface. This guide teaches the
   shape; `sdk.md` is the dictionary.
-- **Design/protocol spec** (adapter contract, native ProcessApp bridge, WIT
-  mapping) lives in [`SDK_V3.md`](SDK_V3.md).
+- **Design/protocol spec** (WIT mapping, CPython-in-WASM adapter) lives in
+  [`SDK_V3.md`](SDK_V3.md) — its own status note flags which sections are
+  historical (native `ProcessApp`, deleted by stint 0285). For the current
+  shipped runtime contract, read [`../../docs/wasm-runtime.md`](../../docs/wasm-runtime.md).
 - **Traps** (non-obvious failure modes) live in [`AGENTS.md`](AGENTS.md).
 
 ## Scaffold, Never Hand-Write
@@ -244,9 +246,10 @@ Always log at init and key state transitions; log escapes and errors from
 
 The scaffold writes a valid `manifest.toml`; the shape lives in the template at
 [`plexi_sdk/templates/manifest.toml`](plexi_sdk/templates/manifest.toml). A
-`[app] type = "app"` with a `.py` entry launches through native `ProcessApp`.
-Declare capabilities under `[app.capabilities]`; see `sdk.md` and the PGAP
-capability reference for what each grant allows.
+`[app] type = "app"` with a `.py` entry launches through the CPython-in-WASM
+adapter (stint 0285). Declare capabilities under `[app.capabilities]`; see
+`sdk.md` and `docs/wasm-runtime.md`'s "Capabilities" section for what each
+grant allows.
 
 `[launch] on_launch` declares what the host does when your app is launched
 while an instance already exists: `focus_existing` (one instance globally —
@@ -294,9 +297,9 @@ Inspect `~/.plexi-alpha/plexi.log` (or `~/.plexi-pr-<N>/plexi.log`) for app logs
 
 ## Traps
 
-`plexi_sdk` is only importable inside Plexi-spawned processes — it is on
-`PYTHONPATH` only for apps Plexi launches through native `ProcessApp`. A bare
-`python3 -c "import plexi_sdk"` in a terminal will fail or import a stale copy.
+`plexi_sdk` is only importable inside Plexi's app runtime — the CPython-in-WASM
+bridge adds it to `PYTHONPATH`. A bare `python3 -c "import plexi_sdk"` in a
+terminal pane will fail or import a stale copy.
 Test by opening the app in a pane. More traps: [`AGENTS.md`](AGENTS.md).
 
 ## Design Philosophy

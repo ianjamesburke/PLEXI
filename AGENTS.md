@@ -30,7 +30,6 @@ When work begins: `stint claim <task-id>`. Do not run or document `stint start`;
 | `src/ui/` | Host UI kit primitives, design tokens, overlay layout widgets |
 | `src/config/` | Config loading/validation, CONFIG.md reference |
 | `src/testing/` | Test infrastructure, TESTING.md reference, scene format |
-| `src/process_app/` | PGAP lifecycle, capability gating, security model, shell execution inventory |
 | `src/render/` | CLI renderer app contract |
 | `sdk/python/` | SDK traps; AUTHORING.md canonical app guide; SDK_V3.md design spec |
 | `apps/` | App rules, maintained-set policy (`packs/core.toml`), design philosophy |

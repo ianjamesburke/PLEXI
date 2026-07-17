@@ -4,7 +4,7 @@
 
 ## Scope
 
-Host-side rendering: CLI renderer app, app render pipeline, draw command dispatch.
+Host-side rendering: the CLI renderer app only. The legacy app-render pipeline and draw-command dispatch (`app_render.rs`, `draw_commands.rs`, `components.rs`) were deleted by stint 0389 — WIT is now the single UI node language, rendered by `src/host/wasm_render.rs`.
 
 ## Reference
 

@@ -93,7 +93,7 @@ Required work:
 - Replace Assistant-style CLI subprocess control tools with host-mediated PGAP/tool APIs before any app becomes a trusted marketplace surface.
 - Add explicit capabilities for every pane/app/terminal power a PGAP assistant-style app can use. Reuse `panes.spawn` and `terminal.bindings` where they fit; add narrower capabilities where they do not.
 - Make capability declarations match actual powers before marketplace trust labels ship.
-- Keep `docs/SECURITY_MODEL.md` honest: Python apps are native processes with consent + audit.
+- Keep `docs/wasm-runtime.md`'s "Security Model" section (stint 0409) aligned with the actual sandbox and trust-label behavior as it evolves.
 - Add denial tests for host APIs reachable by apps.
 
 Trust labels must be blunt:
@@ -176,7 +176,7 @@ Then, before cutting v1:
 - Regenerate public docs and CLI references from the current build.
 - Reconcile open GitHub issues against stint tasks and v1/v2 labels.
 - Verify install, upgrade, channel isolation, local package install, hosted marketplace install, and trust-label wording.
-- Keep `docs/SECURITY_MODEL.md`, `sdk/python/SDK_V3.md`, website docs, and README aligned.
+- Keep `docs/wasm-runtime.md`'s "Security Model" section, `sdk/python/SDK_V3.md`, website docs, and README aligned.
 
 ### Runtime Lanes
 
@@ -266,7 +266,7 @@ Marketplace acceptance scenarios:
 - Runtime lanes after v1 are parked here as v2 direction until their own PRM or stint sprint is created.
 - `sdk/python/SDK_V3.md` is the SDK API reference. It must remain consistent with this PRM.
 
-- `docs/SECURITY_MODEL.md` remains the current security disclosure as long as it says Python apps are not sandboxed.
+- `docs/SECURITY_MODEL.md` never existed as a file (this PRM's pointer was aspirational). `docs/wasm-runtime.md`'s "Security Model" section (stint 0409) is now the canonical security/capability-model reference: Python apps are sandboxed (stint 0285, CPython-in-WASM), not native unsandboxed processes.
 - Superseded plans under `docs/superpowers/plans/` and `docs/superpowers/specs/` should be removed when they conflict with the current PRM.
 - The old MCPUI standalone plan has been removed. This PRM owns MCPUI sequence.
 - This PRM resolves conflicts for app framework and marketplace decisions. Sprint tasks live in `.stint/`.
