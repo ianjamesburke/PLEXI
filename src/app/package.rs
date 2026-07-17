@@ -9,7 +9,7 @@
 //! [package]
 //! id      = "my-app"
 //! version = "0.1.0"
-//! runtime = "python"   # "python", "native", or "wasm"
+//! runtime = "python"   # "python" or "wasm"
 //!
 //! capabilities = ["ai.query"]
 //!
@@ -120,10 +120,12 @@ pub enum PackageError {
     IdMismatch { package: String, manifest: String },
     #[error("PACKAGE.toml version '{package}' disagrees with manifest.toml version '{manifest}'")]
     VersionMismatch { package: String, manifest: String },
-    #[error(
-        "unsupported runtime '{0}' in PACKAGE.toml — expected \"python\", \"native\", or \"wasm\""
-    )]
+    #[error("unsupported runtime '{0}' in PACKAGE.toml — expected \"python\" or \"wasm\"")]
     UnsupportedRuntime(String),
+    #[error(
+        "manifest entry '{0}' is neither WASM (`[app] type = \"wasm\"`) nor a `.py` file — the host has no launch path for a native-executable entry (see docs/wasm-runtime.md § Security Model)"
+    )]
+    UnlaunchableEntry(String),
     #[error(
         "review required for {runtime} package: {category} bypass pattern in {path}:{line}: {snippet} — reviewed native apps are not sandboxed"
     )]
@@ -153,24 +155,33 @@ fn io_err(action: &'static str, path: &Path, source: std::io::Error) -> PackageE
 // ── Runtime ───────────────────────────────────────────────────────────────────
 
 /// Package runtime — derived from the manifest entry point.
+///
+/// There is no "native executable" variant: the host has exactly two launch
+/// paths (`ManifestType::Wasm` → wasmtime, `.py`/`.pyc` entry → the
+/// CPython-in-WASM adapter in `src/host/wasm_python.rs`), so a package whose
+/// entry is neither is rejected at validate time by
+/// [`PackageRuntime::from_manifest`] rather than classified as launchable
+/// (stint 0411 — the previous `Native` variant/`NativeUnreviewed` trust label
+/// described a package shape that could never actually launch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageRuntime {
     /// Entry ends in `.py` — launched through the CPython-in-WASM adapter (`src/host/wasm_python.rs`).
     Python,
     /// `[app] type = "wasm"` — launched through the wasmtime runtime.
     Wasm,
-    /// Anything else — a native executable.
-    Native,
 }
 
 impl PackageRuntime {
-    pub fn from_manifest(manifest_type: crate::app::registry::ManifestType, entry: &str) -> Self {
+    pub fn from_manifest(
+        manifest_type: crate::app::registry::ManifestType,
+        entry: &str,
+    ) -> Result<Self, PackageError> {
         if manifest_type == crate::app::registry::ManifestType::Wasm {
-            Self::Wasm
+            Ok(Self::Wasm)
         } else if entry.ends_with(".py") {
-            Self::Python
+            Ok(Self::Python)
         } else {
-            Self::Native
+            Err(PackageError::UnlaunchableEntry(entry.to_string()))
         }
     }
 
@@ -178,7 +189,6 @@ impl PackageRuntime {
         match self {
             Self::Python => "python",
             Self::Wasm => "wasm",
-            Self::Native => "native",
         }
     }
 
@@ -186,7 +196,6 @@ impl PackageRuntime {
         match s {
             "python" => Ok(Self::Python),
             "wasm" => Ok(Self::Wasm),
-            "native" => Ok(Self::Native),
             other => Err(PackageError::UnsupportedRuntime(other.to_string())),
         }
     }
@@ -251,11 +260,9 @@ pub struct PackageReport {
 pub enum TrustLabel {
     /// The app id is in the bundled core pack — ships with Plexi itself.
     FirstPartyCore,
-    /// A native executable from outside the core pack.
-    NativeUnreviewed,
     /// A Python app from outside the core pack.
     PythonUnreviewed,
-    /// A Python/native app that has passed marketplace review.
+    /// A Python app that has passed marketplace review.
     ReviewedNative,
     /// A WASM component from outside the core pack.
     SandboxedWasm,
@@ -271,9 +278,6 @@ impl TrustLabel {
             }
             Self::ReviewedNative => "Reviewed native process — human-reviewed; not sandboxed",
             Self::SandboxedWasm => "Sandboxed WASM — scoped host imports are capability-gated",
-            Self::NativeUnreviewed => {
-                "Unreviewed native process — runs with your full user permissions"
-            }
         }
     }
 }
@@ -305,13 +309,6 @@ pub fn trust_label(
                 }
             }
             PackageRuntime::Wasm => TrustLabel::SandboxedWasm,
-            PackageRuntime::Native => {
-                if marketplace_reviewed {
-                    TrustLabel::ReviewedNative
-                } else {
-                    TrustLabel::NativeUnreviewed
-                }
-            }
         }
     }
 }
@@ -377,7 +374,7 @@ fn validate_dir_inner(
     )?;
 
     let files = collect_files(app_dir)?;
-    let runtime = PackageRuntime::from_manifest(manifest.app.manifest_type, &entry);
+    let runtime = PackageRuntime::from_manifest(manifest.app.manifest_type, &entry)?;
     scan_native_bypass_patterns(app_dir, &files, runtime, native_bypass_review)?;
     let total_size = files.iter().map(|(_, size)| size).sum();
 
@@ -1534,7 +1531,6 @@ mod tests {
             entry: match runtime {
                 PackageRuntime::Python => "main.py".to_string(),
                 PackageRuntime::Wasm => "app.wasm".to_string(),
-                PackageRuntime::Native => "bin/app".to_string(),
             },
             capabilities: Vec::new(),
             wasm_required_capabilities: Vec::new(),
@@ -1596,19 +1592,18 @@ mod tests {
     }
 
     #[test]
-    fn trust_label_native_entry_is_native_unreviewed() {
-        let r = report("third-party-bin", PackageRuntime::Native);
-        assert_eq!(trust_label(&r, &[], false), TrustLabel::NativeUnreviewed);
-        assert_eq!(
-            TrustLabel::NativeUnreviewed.display_str(),
-            "Unreviewed native process — runs with your full user permissions"
+    fn from_manifest_rejects_native_executable_entry() {
+        // No `.py`/`.pyc` entry and no `[app] type = "wasm"` — the host has no
+        // launch path for this shape (stint 0411: PackageRuntime::Native and
+        // TrustLabel::NativeUnreviewed described a package that could never
+        // actually launch, so validate-time now rejects it outright).
+        let err =
+            PackageRuntime::from_manifest(crate::app::registry::ManifestType::App, "bin/app")
+                .unwrap_err();
+        assert!(
+            matches!(err, PackageError::UnlaunchableEntry(ref e) if e == "bin/app"),
+            "expected UnlaunchableEntry, got: {err}"
         );
-    }
-
-    #[test]
-    fn trust_label_marketplace_reviewed_native_is_reviewed_native() {
-        let r = report("third-party-bin", PackageRuntime::Native);
-        assert_eq!(trust_label(&r, &[], true), TrustLabel::ReviewedNative);
     }
 
     #[test]

@@ -183,8 +183,10 @@ Timers remain supported for ordinary delayed and periodic work. Animation apps
 should use `SetSchedulerMode("continuous", fps=...)` plus `RenderFrame`; this
 lets the host request a new paint only when the guest commits a frame.
 
-PGAP is L1-only: build declarative L1 trees. L0 is deprecated and its `_l0`
-fallbacks are gone; the `Raw` escape hatch stays.
+PGAP is L1-only: build declarative L1 trees — the WIT `ui-node-data` variant
+set (`wit/plexi.wit`) is the single, live UI node language; there is no
+separate legacy renderer for it to diverge from. L0 is deprecated and its
+`_l0` fallbacks are gone; the `Raw` escape hatch stays.
 
 Keep the root shell padded: `Column([...], grow=True, padding=SPACE_MD)` or
 larger. Never `padding=0` on the root — app bars and footers render full-bleed
