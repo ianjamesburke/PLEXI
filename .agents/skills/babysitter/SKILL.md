@@ -128,13 +128,35 @@ Before feeding anything, group the queue. **Fewer PRs is always better.** Small 
 
 ## Spawning a Codex pane
 
+**This deployment launches workers/testers as Claude Code panes via the `c` alias (bypasses permissions), not Codex/`co`.** The `/model` slash command sets their model. The Codex-TUI command forms in the cheatsheet still apply to the pane's TUI, but the agent inside is Claude Code launched with `c`.
+
 ```
 plexi pane new -n "worker-<N>"          # or tester-<N>
 # grab the new pane id from the command output (fall back to `plexi pane list`)
-plexi pane command <newid> "co" --enter
+plexi pane command <newid> "c" --enter
 sleep 4
-plexi pane capture <newid> --from-cursor 0   # confirm Codex booted to its prompt
+plexi pane capture <newid> --from-cursor 0   # confirm the agent booted to its prompt
 ```
+
+**GOTCHA: BOOT RACE. Never fire `/model` (or any brief) back-to-back on a just-launched `c` pane.** Claude Code takes a few seconds to boot to its prompt. If `/model <name>` or a brief lands before the prompt is up, the inputs concatenate and the slash command swallows the following text as its argument → API 400 `model: String should have at most 256 characters`, and the whole task brief is lost. Fix: after `plexi pane command <id> "c" --enter`, poll `plexi pane capture <id> --from-cursor 0` until you see the booted prompt (the `Claude Code v...` banner / idle input line) **before** sending `/model`. Then confirm `Set model to <X>` in the buffer **before** sending the work brief.
+
+## Model selection per pane
+
+Workers/testers here are Claude Code panes (launched with `c`). Set the model with the `/model <name>` slash command sent into the pane. Same two-step as any prompt; `send` does not auto-submit:
+
+```
+plexi pane send <id> "/model <name>"
+sleep 1
+plexi pane key <id> enter
+```
+
+Set the model at each batch boundary, based on the batch's size, **before** sending the work brief.
+
+| Batch size | Model |
+|---|---|
+| **S / M** | `/model sonnet` — the default |
+| **L** | `/model opus` |
+| **Hard task, or an agent fumbling/looping** | `/model fable` — escalate to a stronger model |
 
 ## The loop
 
@@ -146,6 +168,8 @@ For each **batch**, in order:
    These two brief clauses exist because they were the top two token sinks in practice: workers pushing red (each unverified push burns a full tester round — install + validation) and workers yielding their turn mid-compile (each yield burns a nudge round-trip). State them up front in every worker brief, including fix-round briefs.
 
    **Verify, don't trust the worker's self-report.** After the worker replies with a PR number, you run `gh pr checks <PR#>` yourself before spawning the tester. If anything is red, send it straight back to the worker as a bug (same routing as a tester-found bug) — do not spawn the tester against a build with known-red CI.
+
+   **RUST-ONLY PRs SHOW ONLY `claude` + CodeRabbit IN CI; that is GREEN, not incomplete.** The `typecheck` and `check-*-docs` GitHub jobs are conditional on Python (`sdk/python`) or docs changes. A pure-Rust-host PR (e.g. `src/*.rs` only) will NEVER spawn a `typecheck` job, so `gh pr checks` returning just `claude: skipping` + `CodeRabbit: pass` is a full green, not a half-reported run. Do NOT wait or poll for a typecheck that will never appear; that is a silent stall. The real gate for a Rust PR is the worker's local `cargo test --bin plexi` summary (make the worker paste it) plus the tester round, NOT CI.
 
    Send → `key enter` **once**. Confirm it registered by polling the **status bar** (`plexi pane capture <id> --lines 3`) until `esc to interrupt` appears — not by re-sending. A long brief often pastes as a collapsed block (`paste again to expand`) and needs exactly one more `enter` to submit; that is the only sanctioned re-send.
 
@@ -192,7 +216,16 @@ For each **batch**, in order:
    ```
    gh pr view <PR#> --json state,mergedAt
    ```
-   Instruct the worker to squash-merge to alpha, then re-verify `state == MERGED` and `stint show <ID>` reflects done. **Then have the worker clean up its own worktree** — a bare `gh pr merge --squash` leaves the feature worktree behind (they piled up ~20 deep before this rule). Have it run `just merge-cleanup <PR#> <BRANCH>` (channel-clean + `wtp remove` + remote-branch delete), or at minimum `wtp remove <BRANCH>`, so the merged worktree is gone before the batch boundary. Squash-merge does not update `git branch --merged`, so never rely on that to find stale worktrees later — remove at merge time, here, while you still know the PR/branch.
+
+   **The full post-merge sequence is FOUR steps, and merge-cleanup does NOT close the stints.** Instruct the worker to run them in order, then you re-verify:
+   - **(a)** `gh pr merge <PR#> --squash`; squash to alpha. **Never** `--delete-branch`.
+   - **(b)** `just merge-cleanup <PR#> <BRANCH>`; channel-clean + worktree removal + remote-branch delete. This does NOT touch stint status.
+   - **(c)** `scripts/merge-pr.sh close-stints <PR#> <STINT_ID...>`; a **separate** step. `merge-cleanup` leaves the stints `in-progress` even though the PR is MERGED; only close-stints marks them `done`. Skipping it is a silent leak: the PR ships but the queue never advances.
+   - **(d)** Verify both: `gh pr view <PR#> --json state,mergedAt` shows `state == MERGED`, AND `stint show <ID>` shows `done` for every id.
+
+   `just merge-cleanup` leaves the feature worktree behind if you skip it (they piled up ~20 deep before this rule); it is also step (b) above. Squash-merge does not update `git branch --merged`, so never rely on that to find stale worktrees later; remove at merge time, here, while you still know the PR/branch.
+
+   **merge-cleanup RELIABLY hits `Directory not empty` on worktree removal; this is standard recovery, not a bug to escalate.** Observed on essentially every merge: `git worktree remove --force` deregisters the worktree but leaves files on disk, so merge-cleanup fails with `error: failed to delete '.../worktrees/<BRANCH>': Directory not empty`. Recovery: `rm -rf` the leftover worktree dir manually, then re-run `just merge-cleanup` (or just finish the remaining remote-branch delete). Tell the worker this up front in the merge instruction so it self-heals instead of stalling on a mid-cleanup error.
 
 6. **Recycle panes for the next batch — gate on context budget, not vibes.**
 
@@ -206,6 +239,9 @@ For each **batch**, in order:
    sleep 3
    plexi pane capture <id> --lines 12
    ```
+
+   **`/context` output on a Claude Code pane can exceed 60KB; never full-dump it, grep for the one token line.** A full `--from-cursor 0` of a `/context` render overflows your own window. Instead grep the buffer for the single line matching the token summary, e.g. `NNNk/967k tokens (NN%)`, and take the **LAST** match; earlier `/context` runs stay in scrollback, so a naive `grep | head` returns a stale percentage. Use `grep -oE '[0-9]+k/967k tokens \([0-9]+%\)' | tail -1` (or capture more `--lines` and grep the tail) to read the freshest utilization.
+
    Read the utilization percentage, then branch:
 
    | Context | Action |
@@ -260,6 +296,7 @@ When the user asks for a report, status, or "is the loop running", the deliverab
 - **Two panes per batch**: worker implements, a *separate fresh* tester validates. The tester must drive the real `plexi-pr-<N>` install build and use the feature — no pass on a compile alone.
 - **Fewest PRs possible** — batch small/related stints into one PR.
 - **No merge without a tester PASS.** Bugs route worker ↔ tester through you until clean.
+- **Opt-in auto-merge (user triggers it, never the default).** Default holds: surface each passing PR to the user and wait. But when the user explicitly says the queue is good to merge and they will test holistically at the end (e.g. a final e2e gate), drop the human-hold gate: on tester PASS, have the worker squash-merge to alpha immediately and roll to the next batch with no surfacing-and-waiting. Keep the tester round; it protects alpha's trunk for downstream stints. Only the human-hold is removed.
 - **Protect your context.** Never dump full pane captures into your own window — delegate reading to a sub-agent that returns a minified report, and use `--from-cursor` for deltas. You hold summaries, not scrollback.
 - **Label every pane** and recycle (close both, spawn fresh worker) between batches.
 - Verify state with `gh`/`stint`, not any pane's self-report.
