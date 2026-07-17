@@ -913,6 +913,104 @@ mod tests {
             .contains("tool call 0 mismatch"));
     }
 
+    /// Stint 0421: `host.build.run` executes on the embedded build surface —
+    /// ask-gated, no terminal pane, real subprocess output returned to the
+    /// model in one call.
+    #[test]
+    fn build_run_executes_embedded_command_behind_ask_gate() {
+        let mut harness = AssistantHarness::new(&[]);
+        let stub = harness.workspace.join("stub-plexi.sh");
+        std::fs::write(&stub, "#!/bin/sh\necho \"stub-build $@\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        harness.app.build_exe = stub;
+
+        let args = serde_json::json!({"args": ["app", "init", "demo-app"]});
+        let trace = harness
+            .run_turn(
+                "build me a demo app",
+                ScriptedTurn {
+                    calls: vec![ScriptedCall::success(
+                        "host.build.run",
+                        args.clone(),
+                        serde_json::json!({"unused": "real exec provides the output"}),
+                    )
+                    .with_permission(HarnessPermission::AllowOnce)],
+                    outcome: ScriptedOutcome::Answer("Scaffolded.".to_string()),
+                },
+            )
+            .unwrap();
+
+        assert!(
+            trace.iter().any(|event| matches!(
+                event,
+                OrchestrationEvent::PermissionDecision { tool, decision }
+                    if tool == "host.build.run" && *decision == HarnessPermission::AllowOnce
+            )),
+            "build.run must pass through the ask gate: {trace:?}"
+        );
+        assert!(
+            !trace
+                .iter()
+                .any(|event| matches!(event, OrchestrationEvent::HostEffect { .. })),
+            "the embedded surface must not route through a pane host effect: {trace:?}"
+        );
+        let output = trace
+            .iter()
+            .find_map(|event| match event {
+                OrchestrationEvent::ModelObservedToolResult {
+                    output: Some(output),
+                    ..
+                } => Some(output.clone()),
+                _ => None,
+            })
+            .expect("model must observe the real exec output");
+        assert_eq!(output["exit_code"], 0, "{output}");
+        assert_eq!(output["timed_out"], false, "{output}");
+        assert!(
+            output["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("stub-build app init demo-app"),
+            "{output}"
+        );
+    }
+
+    /// A disallowed subcommand never spawns: the validation error comes back
+    /// as the tool error after the gate approves the call.
+    #[test]
+    fn build_run_rejects_non_allowlisted_commands() {
+        let mut harness = AssistantHarness::new(&[]);
+        let args = serde_json::json!({"args": ["host", "stop"]});
+        let trace = harness
+            .run_turn(
+                "stop the host",
+                ScriptedTurn {
+                    calls: vec![ScriptedCall::success(
+                        "host.build.run",
+                        args,
+                        serde_json::json!({}),
+                    )
+                    .with_permission(HarnessPermission::AllowOnce)],
+                    outcome: ScriptedOutcome::Answer("Cannot.".to_string()),
+                },
+            )
+            .unwrap();
+        let error = trace
+            .iter()
+            .find_map(|event| match event {
+                OrchestrationEvent::ToolResult {
+                    error: Some(error), ..
+                } => Some(error.clone()),
+                _ => None,
+            })
+            .expect("disallowed command must fail as a tool error");
+        assert!(error.starts_with("command_not_allowed"), "{error}");
+    }
+
     #[test]
     fn connector_result_injection_fails_before_dispatch() {
         let mut harness = AssistantHarness::new(&[]);

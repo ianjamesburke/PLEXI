@@ -8,6 +8,7 @@
 //! dispatch-on-worker / outcome-channel pattern as `crate::agent::AgentHost`.
 
 pub mod audit;
+pub mod build_exec;
 pub mod commands;
 #[cfg(test)]
 pub mod harness;
@@ -81,13 +82,18 @@ does not return the command's output — after every run call, read the result \
 with host.terminals.read before deciding your next step; never assume a command \
 succeeded or guess at paths it printed. \
 When the user asks you to build an app, game, or tool, build it as a Plexi app, \
-never as a loose script: scaffold with `plexi app init --global <kebab-name>` in a \
-terminal, read the scaffolded AGENTS.md with host.files.read to learn the SDK, \
-write main.py with host.files.write and refine with host.files.edit — never write \
-file content through the terminal — validate with `plexi app check <app-dir>` in \
-the terminal, then open it with host.apps.open. The app-authoring commands \
-`plexi app init` and `plexi app check` run via host.terminals.run and are the one \
-sanctioned use of the plexi CLI. ";
+never as a loose script. Use the dedicated authoring tools for the whole flow; \
+never open or drive a terminal for your own build work — terminals are only for \
+things the user asked to see run. Scaffold with host.build.run \
+{\"args\": [\"app\", \"init\", \"<kebab-name>\"]} (its stdout names the created app \
+directory — use that path exactly), inspect code with host.files.list, \
+host.files.grep, and line-ranged host.files.read, write main.py with \
+host.files.write, refine with host.files.edit (each edit returns a diff the \
+user sees), and validate with host.build.run {\"args\": [\"app\", \"check\", \
+\"<app-dir>\"]} until it passes. Open the app with host.apps.open as soon as the \
+first check passes — workspace apps hot-reload on every file save, so the user \
+watches the app improve live while you keep editing; you do not need to close \
+or reopen it. ";
 
 /// Host tool names the Assistant injects into its dispatcher snapshot.
 const HOST_TOOL_SUBSCRIBE: &str = "host.events.subscribe";
@@ -104,6 +110,9 @@ const HOST_TOOL_TERMINALS_READ: &str = "host.terminals.read";
 const HOST_TOOL_FILES_READ: &str = "host.files.read";
 const HOST_TOOL_FILES_WRITE: &str = "host.files.write";
 const HOST_TOOL_FILES_EDIT: &str = "host.files.edit";
+const HOST_TOOL_FILES_GREP: &str = "host.files.grep";
+const HOST_TOOL_FILES_LIST: &str = "host.files.list";
+const HOST_TOOL_BUILD_RUN: &str = "host.build.run";
 
 /// Broker identity for the Assistant: actor id at the permission tiers,
 /// `agent:assistant` as the `ToolDispatcher` caller id (Phase C convention).
@@ -336,6 +345,10 @@ pub struct AssistantApp {
     /// `/compact` yields once so the renderer can show its progress row before
     /// the existing synchronous storage operation starts.
     compact_pending: bool,
+    /// Binary the embedded `host.build.run` surface executes — the running
+    /// host binary in production (host and CLI are one binary, so the channel
+    /// is inherently correct). Tests point it at a stub.
+    pub(crate) build_exe: PathBuf,
 }
 
 /// An ask-gated subscribe waiting on the permission sheet.
@@ -457,6 +470,12 @@ impl AssistantApp {
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             markdown_text_cache: MarkdownTextCache::default(),
             compact_pending: false,
+            build_exe: std::env::current_exe().unwrap_or_else(|error| {
+                log::warn!(
+                    "assistant: current_exe unavailable ({error}); host.build.run resolves `plexi` from PATH"
+                );
+                PathBuf::from("plexi")
+            }),
         };
         // Persist the active id immediately so close-then-reopen resumes
         // this conversation even before the first turn.
@@ -962,10 +981,34 @@ impl AssistantApp {
             AiTool {
                 name: HOST_TOOL_FILES_READ.into(),
                 description: "Read a file inside an apps directory (global or \
-                    workspace). App authoring only; paths outside the apps \
-                    directories are rejected."
+                    workspace) with line-numbered output. Page large files \
+                    with offset/limit instead of re-reading them whole. App \
+                    authoring only; paths outside the apps directories are \
+                    rejected."
                     .into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Absolute path (or ~/) under an apps directory."}},"required":["path"]}),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Absolute path (or ~/) under an apps directory."},"offset":{"type":"integer","description":"1-based first line to read (default 1)."},"limit":{"type":"integer","description":"Max lines to return (default 2000)."}},"required":["path"]}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: true,
+            },
+            AiTool {
+                name: HOST_TOOL_FILES_GREP.into(),
+                description: "Search files inside the apps directories with a \
+                    regular expression. Returns matching lines with file and \
+                    line number. Use this to find symbols or SDK usage \
+                    instead of reading whole files."
+                    .into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"pattern":{"type":"string","description":"Rust-syntax regular expression matched per line."},"path":{"type":"string","description":"Optional absolute file or directory to search; defaults to every apps root."},"max_matches":{"type":"integer","description":"Cap on returned matches (default 50, max 200)."}},"required":["pattern"]}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: true,
+            },
+            AiTool {
+                name: HOST_TOOL_FILES_LIST.into(),
+                description: "List files (with sizes) under an apps directory. \
+                    Use after scaffolding to see what `plexi app init` created."
+                    .into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Optional absolute directory to list; defaults to every apps root."}}}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
                 read_only: true,
@@ -974,7 +1017,8 @@ impl AssistantApp {
                 name: HOST_TOOL_FILES_WRITE.into(),
                 description: "Create or fully replace a file inside an apps \
                     directory. Use for writing an app's main.py; prefer \
-                    host.files.edit for small changes."
+                    host.files.edit for small changes. Overwrites return a \
+                    unified diff of what changed."
                     .into(),
                 input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}),
                 output_schema: serde_json::json!({"type":"object"}),
@@ -985,11 +1029,27 @@ impl AssistantApp {
                 name: HOST_TOOL_FILES_EDIT.into(),
                 description: "Replace one unique occurrence of old_string with \
                     new_string in a file inside an apps directory. Fails loudly \
-                    if old_string is absent or matches more than once."
+                    if old_string is absent or matches more than once. Returns \
+                    a unified diff of the change."
                     .into(),
                 input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
+                read_only: false,
+            },
+            AiTool {
+                name: HOST_TOOL_BUILD_RUN.into(),
+                description: "Run an app-authoring command (`plexi app init` \
+                    or `plexi app check`) on the embedded build surface — no \
+                    terminal pane, output returned directly as \
+                    {exit_code, stdout, stderr}. Pass args after `plexi`, \
+                    e.g. [\"app\", \"init\", \"my-game\"] or \
+                    [\"app\", \"check\", \"<app-dir>\"]. Never run these in a \
+                    user terminal."
+                    .into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"args":{"type":"array","items":{"type":"string"},"description":"Argument vector after `plexi`; must start with [\"app\", \"init\"] or [\"app\", \"check\"]."},"timeout_ms":{"type":"integer","description":"Wall-clock budget in ms (default 120000, max 300000)."}},"required":["args"]}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(build_exec::MAX_BUILD_TIMEOUT_MS + 10_000),
                 read_only: false,
             },
         ]
@@ -1049,6 +1109,103 @@ impl AssistantApp {
             .collect()
     }
 
+    /// Execute one `host.build.run` call on the embedded, non-visible build
+    /// surface: validate the allowlisted `plexi app` subcommand, then run it
+    /// as a hidden subprocess on a background thread. The broker worker
+    /// blocks on `reply`; the UI thread only spawns and returns.
+    fn handle_build_run(&mut self, input_json: &str, reply: SyncSender<ToolCallResult>) {
+        let fail = |reply: &SyncSender<ToolCallResult>, error: String| {
+            log::warn!("assistant: host.build.run rejected: {error}");
+            let _ = reply.send(ToolCallResult {
+                output_json: None,
+                error: Some(error),
+            });
+        };
+        let parsed: serde_json::Value = match serde_json::from_str(input_json) {
+            Ok(value) => value,
+            Err(error) => return fail(&reply, format!("invalid_input: {error}")),
+        };
+        let Some(args) = parsed.get("args").and_then(serde_json::Value::as_array) else {
+            return fail(
+                &reply,
+                "invalid_input: args (array of strings) is required".to_string(),
+            );
+        };
+        let args: Vec<String> = args
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect();
+        if let Err(error) = build_exec::validate_build_args(&args) {
+            return fail(&reply, error);
+        }
+        let timeout_ms = parsed
+            .get("timeout_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(build_exec::DEFAULT_BUILD_TIMEOUT_MS)
+            .min(build_exec::MAX_BUILD_TIMEOUT_MS);
+        self.audit.append(&AuditEvent::now(
+            "build_command",
+            HOST_TOOL_BUILD_RUN,
+            "requested",
+            &args.join(" "),
+        ));
+        let exe = self.build_exe.clone();
+        let cwd = self.workspace_root.clone();
+        log::info!(
+            "assistant: host.build.run `plexi {}` (embedded, cwd={}, timeout={timeout_ms}ms)",
+            args.join(" "),
+            cwd.display()
+        );
+        let spawned = std::thread::Builder::new()
+            .name("assistant-build".to_string())
+            .spawn(move || {
+                let result = build_exec::run_build_command(
+                    &exe,
+                    &args,
+                    &cwd,
+                    std::time::Duration::from_millis(timeout_ms),
+                );
+                let outcome = match result {
+                    Ok(output) => {
+                        log::info!(
+                            "assistant: host.build.run `plexi {}` finished exit={:?} timed_out={} in {}ms",
+                            args.join(" "),
+                            output.exit_code,
+                            output.timed_out,
+                            output.duration_ms
+                        );
+                        ToolCallResult {
+                            output_json: Some(
+                                serde_json::json!({
+                                    "exit_code": output.exit_code,
+                                    "stdout": output.stdout,
+                                    "stderr": output.stderr,
+                                    "timed_out": output.timed_out,
+                                    "duration_ms": output.duration_ms,
+                                })
+                                .to_string(),
+                            ),
+                            error: None,
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("assistant: host.build.run failed: {error}");
+                        ToolCallResult {
+                            output_json: None,
+                            error: Some(error),
+                        }
+                    }
+                };
+                if reply.send(outcome).is_err() {
+                    log::warn!("assistant: host.build.run worker dropped its reply channel");
+                }
+            });
+        if let Err(error) = spawned {
+            log::error!("assistant: failed to spawn build thread: {error}");
+        }
+    }
+
     /// Execute one `host.events.*` call on the UI thread. Replies on the
     /// worker's channel — except an ask-gated subscribe, which parks the
     /// reply in `pending_subscribe` until the permission sheet resolves.
@@ -1058,6 +1215,10 @@ impl AssistantApp {
         input_json: &str,
         reply: SyncSender<ToolCallResult>,
     ) {
+        if tool == HOST_TOOL_BUILD_RUN {
+            self.handle_build_run(input_json, reply);
+            return;
+        }
         if !matches!(tool, HOST_TOOL_SUBSCRIBE | HOST_TOOL_UNSUBSCRIBE) {
             log::info!("assistant: queueing native host tool '{tool}'");
             if tool == HOST_TOOL_TERMINALS_RUN {
