@@ -245,6 +245,44 @@ if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
     app_name="$(basename "$app_dir")"
     rm -rf "$profile_dir/apps/$app_name"
     rsync -a "$app_dir/" "$profile_dir/apps/$app_name/"
+    # Flattening changes app_dir's depth relative to the source tree
+    # (apps/wasm-poc/<name> → apps/<name>), so a manifest `entry` that
+    # escapes app_dir with `../` (wasm-poc apps point at the shared
+    # cargo target/ dir) no longer resolves post-flatten even though it
+    # resolves correctly for path-based open, which reads the manifest
+    # in place. Bundle the compiled artifact alongside the synced
+    # manifest and rewrite its entry to the bundled basename so id-based
+    # open is self-contained, matching every other installed app.
+    python3 - "$app_dir" "$profile_dir/apps/$app_name" <<'PYEOF'
+import os
+import shutil
+import sys
+import tomllib
+
+app_dir, dest_dir = sys.argv[1], sys.argv[2]
+with open(os.path.join(app_dir, "manifest.toml"), "rb") as f:
+    entry = tomllib.load(f)["app"]["entry"]
+
+if not entry.startswith(".."):
+    sys.exit(0)  # same-dir entry already resolves correctly post-flatten
+
+src = os.path.normpath(os.path.join(app_dir, entry))
+if not os.path.isfile(src):
+    sys.exit(0)  # not built yet; resolve_entry's "build it first" error still applies
+
+basename = os.path.basename(entry)
+shutil.copy2(src, os.path.join(dest_dir, basename))
+
+dest_manifest = os.path.join(dest_dir, "manifest.toml")
+with open(dest_manifest) as f:
+    text = f.read()
+old_line = f'entry = "{entry}"'
+new_line = f'entry = "{basename}"'
+if old_line not in text:
+    sys.exit(f"error: could not find '{old_line}' in {dest_manifest} to rewrite")
+with open(dest_manifest, "w") as f:
+    f.write(text.replace(old_line, new_line, 1))
+PYEOF
   done
 else
   bundled_bin="$app_dest/Contents/MacOS/plexi${suffix}"
