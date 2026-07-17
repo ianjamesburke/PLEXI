@@ -981,7 +981,9 @@ impl AssistantApp {
             AiTool {
                 name: HOST_TOOL_FILES_READ.into(),
                 description: "Read a file inside an apps directory (global or \
-                    workspace) with line-numbered output. Page large files \
+                    workspace) with line-numbered output (`   N\\tcontent`). \
+                    Strip the number prefix before reusing content in \
+                    host.files.edit or host.files.write. Page large files \
                     with offset/limit instead of re-reading them whole. App \
                     authoring only; paths outside the apps directories are \
                     rejected."

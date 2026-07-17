@@ -22,6 +22,13 @@ pub(crate) const MAX_BUILD_TIMEOUT_MS: u64 = 300_000;
 /// elision marker, the shape a model can still reason about.
 const MAX_STREAM_CHARS: usize = 16_384;
 
+/// How long to wait for the stream readers after the child is reaped. A
+/// grandchild that inherited the pipes (e.g. a python validator spawned by
+/// `plexi app check`) can hold them open past the child's death; the drain
+/// bound guarantees `run_build_command` always returns so the broker worker
+/// blocked on the tool reply can never wedge.
+const STREAM_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Result of one embedded build command.
 #[derive(Debug)]
 pub(crate) struct BuildCommandOutput {
@@ -59,7 +66,10 @@ pub(crate) fn validate_build_args(args: &[String]) -> Result<(), String> {
 
 /// Run `exe args…` from `cwd` with no visible surface: stdin closed, both
 /// output streams captured on reader threads (so a chatty command can never
-/// deadlock the pipe), and a hard kill once `timeout` elapses.
+/// deadlock the pipe), and a hard kill once `timeout` elapses. On Unix the
+/// child gets its own process group so the timeout kill reaches grandchildren
+/// (uv/python spawned by `plexi app check`) — killing only the direct child
+/// would leave them running and holding the pipes open.
 pub(crate) fn run_build_command(
     exe: &Path,
     args: &[String],
@@ -67,12 +77,19 @@ pub(crate) fn run_build_command(
     timeout: Duration,
 ) -> Result<BuildCommandOutput, String> {
     let started = Instant::now();
-    let mut child = Command::new(exe)
+    let mut command = Command::new(exe);
+    command
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command
         .spawn()
         .map_err(|error| format!("spawn_failed: {} {}: {error}", exe.display(), args.join(" ")))?;
 
@@ -84,8 +101,14 @@ pub(crate) fn run_build_command(
         .stderr
         .take()
         .ok_or_else(|| "spawn_failed: child stderr was not piped".to_string())?;
-    let stdout_reader = std::thread::spawn(move || read_stream(stdout));
-    let stderr_reader = std::thread::spawn(move || read_stream(stderr));
+    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = stdout_tx.send(read_stream(stdout));
+    });
+    std::thread::spawn(move || {
+        let _ = stderr_tx.send(read_stream(stderr));
+    });
 
     let mut timed_out = false;
     let exit_code = loop {
@@ -94,9 +117,7 @@ pub(crate) fn run_build_command(
             Ok(None) => {
                 if started.elapsed() >= timeout {
                     timed_out = true;
-                    if let Err(error) = child.kill() {
-                        log::warn!("assistant build_exec: kill after timeout failed: {error}");
-                    }
+                    kill_child_tree(&mut child);
                     // Reap the killed child so the readers see EOF.
                     break child.wait().ok().and_then(|status| status.code());
                 }
@@ -108,12 +129,18 @@ pub(crate) fn run_build_command(
         }
     };
 
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| "capture_failed: stdout reader panicked".to_string())?;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| "capture_failed: stderr reader panicked".to_string())?;
+    // Bounded drain: a pipe-inheriting grandchild that survived the kill (or
+    // a reader panic) must degrade to a marked partial capture, never a hang.
+    let drain = |rx: std::sync::mpsc::Receiver<String>, name: &str| {
+        rx.recv_timeout(STREAM_DRAIN_TIMEOUT).unwrap_or_else(|_| {
+            log::warn!(
+                "assistant build_exec: {name} capture incomplete — a child process is still holding the pipe"
+            );
+            format!("[{name} capture incomplete: a child process is still holding the pipe]")
+        })
+    };
+    let stdout = drain(stdout_rx, "stdout");
+    let stderr = drain(stderr_rx, "stderr");
     Ok(BuildCommandOutput {
         exit_code,
         stdout: truncate_stream(&stdout),
@@ -121,6 +148,24 @@ pub(crate) fn run_build_command(
         timed_out,
         duration_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+/// Kill the child and, on Unix, its whole process group (enabled by the
+/// `process_group(0)` spawn above) so grandchildren die with it.
+fn kill_child_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let pgid = child.id() as libc::pid_t;
+        // Negative pid targets the process group. The child is its own group
+        // leader, so pgid == child pid.
+        if unsafe { libc::kill(-pgid, libc::SIGKILL) } == 0 {
+            return;
+        }
+        log::warn!("assistant build_exec: process-group kill failed; killing direct child only");
+    }
+    if let Err(error) = child.kill() {
+        log::warn!("assistant build_exec: kill after timeout failed: {error}");
+    }
 }
 
 fn read_stream(mut stream: impl Read) -> String {
@@ -194,6 +239,29 @@ mod tests {
         .unwrap();
         assert!(out.timed_out);
         assert!(out.duration_ms < 10_000, "{}", out.duration_ms);
+    }
+
+    /// Review fix (stint 0421): a grandchild that inherits the pipes must be
+    /// killed with the process group (Unix) and must never wedge the capture —
+    /// the pre-fix code joined `read_to_end` unboundedly and hung until the
+    /// grandchild exited on its own.
+    #[cfg(unix)]
+    #[test]
+    fn run_timeout_reaps_pipe_holding_grandchildren_without_hanging() {
+        let started = std::time::Instant::now();
+        let out = run_build_command(
+            &PathBuf::from("/bin/sh"),
+            &args(&["-c", "sleep 30 & sleep 30"]),
+            &std::env::temp_dir(),
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        assert!(out.timed_out);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "capture must not wait for the grandchild: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

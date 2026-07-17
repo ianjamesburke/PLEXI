@@ -211,7 +211,7 @@ impl PlexiApp {
                         "path": path,
                         "content": slice.content,
                         "total_lines": slice.total_lines,
-                        "offset": slice.start_line,
+                        "offset": offset,
                         "lines_returned": slice.lines_returned,
                     })),
                     Err(error) => failed(error),
@@ -621,15 +621,12 @@ const MAX_LINE_CHARS: usize = 2000;
 /// Hard cap on grep matches per call; the default is lower.
 const MAX_GREP_MATCHES: usize = 200;
 const DEFAULT_GREP_MATCHES: usize = 50;
-/// Directory names never descended into by grep/list walks.
-const SKIPPED_DIR_NAMES: &[&str] = &[
-    ".git",
-    ".venv",
-    "__pycache__",
-    "node_modules",
-    ".pytest_cache",
-    ".mypy_cache",
-];
+/// Directory names never descended into by grep/list walks: the shared
+/// scaffold/check artifact list (`package::is_generated_dev_dir_name`) plus
+/// VCS and JS dependency trees that packaging never encounters.
+fn is_skipped_walk_dir(name: &str) -> bool {
+    crate::app::package::is_generated_dev_dir_name(name) || matches!(name, ".git" | "node_modules")
+}
 /// Caps on the grep/list directory walk so a runaway tree fails visibly
 /// instead of hanging the tool call.
 const MAX_WALK_DEPTH: usize = 8;
@@ -696,7 +693,6 @@ fn read_scoped_file(roots: &[std::path::PathBuf], raw: &str) -> Result<String, S
 struct ReadSlice {
     content: String,
     total_lines: usize,
-    start_line: usize,
     lines_returned: usize,
 }
 
@@ -733,7 +729,6 @@ fn read_scoped_file_slice(
     Ok(ReadSlice {
         content: out,
         total_lines,
-        start_line: offset,
         lines_returned: returned,
     })
 }
@@ -747,8 +742,10 @@ fn truncate_line(line: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Walk `start` depth-first in sorted order, yielding files. Skips the
-/// well-known junk directories, oversize files, and stops at the walk caps.
-/// Returns `(files, hit_file_cap)`.
+/// well-known junk directories, and stops at the walk caps. Symlinks are
+/// never followed (same rule as packaging): grep/list are read-only
+/// auto-allowed tools, so a symlink inside an apps directory must not widen
+/// their reach beyond the scoped roots. Returns `(files, hit_file_cap)`.
 fn walk_scoped_files(start: &std::path::Path) -> (Vec<std::path::PathBuf>, bool) {
     let mut files = Vec::new();
     if start.is_file() {
@@ -763,20 +760,27 @@ fn walk_scoped_files(start: &std::path::Path) -> (Vec<std::path::PathBuf>, bool)
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        let mut children: Vec<std::path::PathBuf> =
-            entries.flatten().map(|entry| entry.path()).collect();
-        children.sort();
+        let mut children: Vec<(std::path::PathBuf, std::fs::FileType)> = entries
+            .flatten()
+            .filter_map(|entry| entry.file_type().ok().map(|kind| (entry.path(), kind)))
+            .collect();
+        children.sort_by(|(a, _), (b, _)| a.cmp(b));
         let mut subdirs = Vec::new();
-        for child in children {
+        for (child, kind) in children {
+            // DirEntry::file_type does not follow symlinks — a link to a
+            // directory or file outside the roots is skipped entirely.
+            if kind.is_symlink() {
+                continue;
+            }
             let name = child
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            if child.is_dir() {
-                if !SKIPPED_DIR_NAMES.contains(&name.as_str()) {
+            if kind.is_dir() {
+                if !is_skipped_walk_dir(&name) {
                     subdirs.push(child);
                 }
-            } else if child.is_file() {
+            } else if kind.is_file() {
                 if files.len() >= MAX_WALK_FILES {
                     return (files, true);
                 }
@@ -923,21 +927,32 @@ fn unified_diff(old: &str, new: &str, path: &str) -> String {
         context_start + 1,
         context_start + 1,
     );
-    for line in &old_lines[context_start..prefix] {
-        out.push_str(&format!(" {line}\n"));
-    }
-    for line in &old_lines[prefix..old_lines.len() - suffix] {
-        out.push_str(&format!("-{line}\n"));
-    }
-    for line in &new_lines[prefix..new_lines.len() - suffix] {
-        out.push_str(&format!("+{line}\n"));
-    }
-    for line in &old_lines[old_lines.len() - suffix..context_end_old] {
-        out.push_str(&format!(" {line}\n"));
-    }
-    if out.len() > MAX_DIFF_CHARS {
-        out.truncate(MAX_DIFF_CHARS);
-        out.push_str("\n… [diff truncated]");
+    // Enforce the cap while building: a full-file rewrite would otherwise
+    // materialize the whole double-sided diff only to throw most of it away.
+    // The early return is also what keeps truncation on a char boundary —
+    // never byte-truncate a String built from arbitrary file content.
+    let push_line = |out: &mut String, marker: char, line: &str| -> bool {
+        if out.len() >= MAX_DIFF_CHARS {
+            out.push_str("… [diff truncated]\n");
+            return false;
+        }
+        out.push(marker);
+        out.push_str(&truncate_line(line));
+        out.push('\n');
+        true
+    };
+    let sections: [(char, &[&str]); 4] = [
+        (' ', &old_lines[context_start..prefix]),
+        ('-', &old_lines[prefix..old_lines.len() - suffix]),
+        ('+', &new_lines[prefix..new_lines.len() - suffix]),
+        (' ', &old_lines[old_lines.len() - suffix..context_end_old]),
+    ];
+    'sections: for (marker, lines) in sections {
+        for line in lines {
+            if !push_line(&mut out, marker, line) {
+                break 'sections;
+            }
+        }
     }
     out
 }
@@ -1157,6 +1172,48 @@ mod tests {
         assert!(paths[0].ends_with("demo/main.py"), "{paths:?}");
         assert!(paths[1].ends_with("demo/manifest.toml"), "{paths:?}");
         assert_eq!(result["truncated"], false);
+    }
+
+    /// Review fix (stint 0421): the diff cap must land on a char boundary and
+    /// stop building once reached — a full-file rewrite of multibyte content
+    /// used to byte-truncate and could panic mid-char.
+    #[test]
+    fn unified_diff_truncates_char_safely_on_multibyte_rewrites() {
+        let old: String = (0..400).map(|n| format!("línea →{n}★\n")).collect();
+        let new: String = (0..400).map(|n| format!("нова →{n}✦\n")).collect();
+        let diff = super::unified_diff(&old, &new, "demo/main.py");
+        assert!(diff.contains("… [diff truncated]"), "{}", diff.len());
+        assert!(diff.len() < super::MAX_DIFF_CHARS + 200, "{}", diff.len());
+    }
+
+    /// Review fix (stint 0421): symlinks inside an apps dir must not widen
+    /// the auto-allowed grep/list walks beyond the scoped roots.
+    #[cfg(unix)]
+    #[test]
+    fn grep_and_list_walks_never_follow_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let apps = root.path().join("apps");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(apps.join("demo")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(apps.join("demo/main.py"), "inside = 1\n").unwrap();
+        std::fs::write(outside.join("secret.py"), "outside = 1\n").unwrap();
+        std::os::unix::fs::symlink(&outside, apps.join("demo/escape")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.py"), apps.join("demo/leak.py")).unwrap();
+        let roots = vec![apps.clone()];
+
+        let listed = super::list_scoped(&roots, None).unwrap();
+        let paths: Vec<&str> = listed["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 1, "{paths:?}");
+        assert!(paths[0].ends_with("demo/main.py"), "{paths:?}");
+
+        let matches = super::grep_scoped(&roots, None, "= 1", 50).unwrap();
+        assert_eq!(matches["matches"].as_array().unwrap().len(), 1, "{matches}");
     }
 
     #[test]
