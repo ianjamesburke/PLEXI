@@ -2,7 +2,41 @@
 
 import pytest
 
-from plexi_sdk.ui import ActionBar, Button, Tabs, Grid, Toggle, Clickable, ProgressBar, TextEdit, Column
+from plexi_sdk.ui import (
+    Accordion,
+    ActionBar,
+    Avatar,
+    Banner,
+    Breadcrumb,
+    Button,
+    Card,
+    Checkbox,
+    Clickable,
+    CodeBlock,
+    Column,
+    DateTimePicker,
+    EmptyState,
+    Grid,
+    Icon,
+    KeyValue,
+    Modal,
+    Pagination,
+    Progress,
+    ProgressBar,
+    Radio,
+    Section,
+    Select,
+    Skeleton,
+    Slider,
+    Switch,
+    TabBar,
+    Table,
+    Tabs,
+    Text,
+    TextEdit,
+    Toggle,
+    Tooltip,
+)
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -189,14 +223,17 @@ def test_textedit_is_component() -> None:
 
 
 def test_textedit_to_node_fields() -> None:
+    # TextEdit has no dedicated CPython-WASM decode arm (stint 0407); it
+    # composes onto the native TextInput node. multiline/max_length have no
+    # host-side equivalent yet and are dropped.
     te = TextEdit("notes", placeholder="Write here", value="hello", multiline=True, max_length=500)
     assert te.to_node() == {
-        "type": "text_edit",
-        "node_id": "notes",
-        "placeholder": "Write here",
+        "type": "TextInput",
         "value": "hello",
-        "multiline": True,
-        "max_length": 500,
+        "placeholder": "Write here",
+        "on_change": "notes",
+        "on_submit": "notes",
+        "password": False,
     }
 
 
@@ -206,8 +243,8 @@ def test_textedit_nested_in_column_is_native() -> None:
     node = col.to_node()
     assert node is not None
     child_node = node["children"][0]
-    assert child_node["type"] == "text_edit"
-    assert child_node["node_id"] == "body"
+    assert child_node["type"] == "TextInput"
+    assert child_node["on_change"] == "body"
 
 
 def test_textedit_measure() -> None:
@@ -218,7 +255,11 @@ def test_textedit_measure() -> None:
 # ── ActionBar ─────────────────────────────────────────────────────────────
 
 
-def test_action_bar_to_node_is_semantic_action_bar() -> None:
+def test_action_bar_to_node_composes_row_of_buttons() -> None:
+    # ActionBar has no dedicated CPython-WASM decode arm; "action_bar" was
+    # never handled by decode_node_data, so it crashed the whole tree the
+    # first time a live app rendered it (discovered during stint 0407's
+    # component-gallery sweep). Composes onto a Row of Buttons instead.
     bar = ActionBar(
         [
             Button("Save", "save", style="primary"),
@@ -228,19 +269,19 @@ def test_action_bar_to_node_is_semantic_action_bar() -> None:
 
     node = bar.to_node()
 
-    assert node["type"] == "action_bar"
-    assert node["actions"] == [
+    assert node["type"] == "row"
+    assert node["children"] == [
         {
             "type": "button",
-            "node_id": "save",
             "label": "Save",
+            "on_click": "save",
             "style": "primary",
             "disabled": False,
         },
         {
             "type": "button",
-            "node_id": "cancel",
             "label": "Cancel",
+            "on_click": "cancel",
             "style": "ghost",
             "disabled": False,
         },
@@ -262,7 +303,8 @@ def test_action_bar_rejects_non_button_actions() -> None:
 # derived from the SDK's own output, since that would make the guard
 # tautological.
 _DECODER_SUPPORTED_ROOT_TYPES = {
-    "row", "column", "button", "text", "progress-bar",
+    "row", "column", "button", "text", "progress-bar", "badge",
+    "divider", "spinner", "TextInput",
 }
 
 
@@ -283,6 +325,67 @@ _DECODER_SUPPORTED_ROOT_TYPES = {
     ],
 )
 def test_v3_5_uinode_widgets_emit_decoder_supported_root_type(widget_factory) -> None:
+    node = widget_factory().to_node()
+    assert node["type"] in _DECODER_SUPPORTED_ROOT_TYPES, (
+        f"{node['type']!r} has no CPython-WASM decode arm in "
+        "src/host/wasm_python.rs decode_node_data — this widget will crash "
+        "any live Python-WASM app that renders it"
+    )
+
+
+# ── stint 0407: remaining component-gallery widgets ─────────────────────────
+#
+# These widgets had no CPython-WASM decode arm at all (Checkbox, Switch,
+# Radio, Slider, Select, DateTimePicker, TextEdit, Breadcrumb, TabBar,
+# Pagination, Banner, Progress, Skeleton, KeyValue, Table, CodeBlock, Card,
+# Avatar, Icon, Tooltip, Accordion, EmptyState, Modal, Section) plus ActionBar
+# (discovered live-blocking the whole gallery tree). Each now composes onto
+# an already-decoder-supported root type.
+@pytest.mark.parametrize(
+    "widget_factory",
+    [
+        lambda: Checkbox("c", label="I agree", checked=True),
+        lambda: Checkbox("c"),
+        lambda: Switch("s", label="Notifications", on=False),
+        lambda: Switch("s"),
+        lambda: Radio("r", options=["Low", "Medium", "High"], selected=1),
+        lambda: Slider("sl", value=0.4),
+        lambda: Select("se", options=["Red", "Green", "Blue"], selected=0, placeholder="Pick"),
+        lambda: Select("se", options=["Red", "Green", "Blue"]),
+        lambda: DateTimePicker("d", value="2026-01-01", mode="date"),
+        lambda: TextEdit("te", value="hi"),
+        lambda: Breadcrumb(items=["Home", "Apps", "Gallery"]),
+        lambda: TabBar("tb", tabs=["Overview", "Details"], active=0),
+        lambda: Pagination("p", page=0, total=5),
+        lambda: Banner("Saved.", tone="success", title="Success"),
+        lambda: Progress(value=0.5, label="Upload"),
+        lambda: Progress(indeterminate=True, label="Syncing"),
+        lambda: Skeleton(rows=3),
+        lambda: KeyValue(rows=[("Region", "us-east-1")]),
+        lambda: Table(columns=["Name"], rows=[["Ada"]]),
+        lambda: CodeBlock(code="x = 1", language="python"),
+        lambda: Card(children=[Text("hi")]),
+        lambda: Avatar(label="Ian Burke"),
+        lambda: Icon(name="gear"),
+        lambda: Tooltip(text="hint", child=Text("hover me")),
+        lambda: Accordion("a", title="Advanced", child=Text("hidden"), open=True),
+        lambda: Accordion("a", title="Advanced", child=Text("hidden"), open=False),
+        lambda: EmptyState(title="No results", description="Try again", icon="∅"),
+        lambda: Modal("m", title="Confirm", child=Text("Are you sure?")),
+        lambda: Section("Buttons"),
+        lambda: ActionBar([Button("Save", "save")]),
+    ],
+    ids=[
+        "checkbox-labeled", "checkbox-bare", "switch-labeled", "switch-bare",
+        "radio", "slider", "select-with-placeholder", "select-bare",
+        "date-time-picker", "text-edit", "breadcrumb", "tab-bar", "pagination",
+        "banner", "progress", "progress-indeterminate", "skeleton", "key-value",
+        "table", "code-block", "card", "avatar", "icon", "tooltip",
+        "accordion-open", "accordion-closed", "empty-state", "modal", "section",
+        "action-bar",
+    ],
+)
+def test_stint_0407_widgets_emit_decoder_supported_root_type(widget_factory) -> None:
     node = widget_factory().to_node()
     assert node["type"] in _DECODER_SUPPORTED_ROOT_TYPES, (
         f"{node['type']!r} has no CPython-WASM decode arm in "
