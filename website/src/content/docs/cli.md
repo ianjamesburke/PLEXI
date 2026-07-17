@@ -781,15 +781,22 @@ Example: plexi pane key 42 enter
 
 Inject a synthetic pointer click into an app pane, for driving canvas interaction without OS-level automation.
 
-Coordinates are PANE PIXELS (origin at the pane's top-left) — the honest primitive, since it exercises the same fit=contain/fit=fill `canvas_transform` inversion a real click goes through. The host injects a real pointer move + press + release into the live egui pass, never a parallel resolver. Only app panes accept clicks today.
+Two mutually exclusive targeting modes:
 
-Example: plexi pane click 42 120 80
+PANE-PIXEL coordinates (origin at the pane's top-left) — the honest primitive, since it exercises the same fit=contain/fit=fill `canvas_transform` inversion a real click goes through. The host injects a real pointer move + press + release into the live egui pass, never a parallel resolver.
+
+`--node <node_id>` — targets a specific Button/TextInput/ListView node by the id `plexi pane state` reports, so a caller never has to compute pixel geometry. The host resolves the node's on-screen rect during the next render pass and fails loudly if the id is missing or not an interactive role.
+
+Only app panes accept clicks today.
+
+Examples: plexi pane click 42 120 80 plexi pane click 42 --node 5
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id to click (from `plexi pane list`) |
-| `<x>` | string | yes | X offset in pane pixels from the pane's top-left corner |
-| `<y>` | string | yes | Y offset in pane pixels from the pane's top-left corner |
+| `<x>` | string | no | X offset in pane pixels from the pane's top-left corner |
+| `<y>` | string | no | Y offset in pane pixels from the pane's top-left corner |
+| `--node` | string | no | Node id to click (from `plexi pane state`), instead of pixel coordinates |
 | `--button` | string | no | Pointer button: "left", "right", or "middle" Default: `left`. |
 
 ### `plexi pane command`

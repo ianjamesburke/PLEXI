@@ -797,8 +797,20 @@ fn main() -> eframe::Result {
                                 pane_id,
                                 x,
                                 y,
+                                node,
                                 button,
-                            } => std::process::exit(cli::pane_click_cli(pane_id, x, y, &button)),
+                            } => std::process::exit(match node {
+                                Some(node_id) => cli::pane_click_node_cli(pane_id, &node_id, &button),
+                                None => match (x, y) {
+                                    (Some(x), Some(y)) => cli::pane_click_cli(pane_id, x, y, &button),
+                                    _ => {
+                                        eprintln!(
+                                            "error: pane click requires either <x> <y> or --node <node_id>"
+                                        );
+                                        1
+                                    }
+                                },
+                            }),
                             PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
                             PaneCmd::Info { previous } => {
                                 std::process::exit(cli::pane_info_cli(previous))

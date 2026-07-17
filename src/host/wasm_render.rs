@@ -157,6 +157,17 @@ fn cross_align(a: Alignment) -> egui::Align {
     }
 }
 
+/// True when `pending_click` (from `AppRequest::ClickPaneNode`/
+/// `HostHarness::inject_node_click`) targets this frame's node `id` by its
+/// arena id — the same honest match `PaneClickTarget::Pos` does by rect
+/// containment, just keyed on identity instead of geometry.
+fn node_click_matches(pending_click: Option<crate::host::pane::PendingPaneClick>, id: u32) -> bool {
+    matches!(
+        pending_click.map(|c| c.target),
+        Some(crate::host::pane::PaneClickTarget::Node(n)) if n == id
+    )
+}
+
 fn find_node(nodes: &[IndexedNode], id: u32) -> Option<&IndexedNode> {
     nodes
         .get(id as usize)
@@ -231,7 +242,8 @@ fn render_node(
             let btn = egui::Button::new(label)
                 .fill(fill)
                 .corner_radius(style::RADIUS_SM);
-            if ui.add_enabled(!b.disabled, btn).clicked() {
+            let synthetic_click = !b.disabled && node_click_matches(pending_click, id);
+            if ui.add_enabled(!b.disabled, btn).clicked() || synthetic_click {
                 out.actions.push(b.on_click.clone());
             }
         }
@@ -242,6 +254,11 @@ fn render_node(
                 .password(ti.password)
                 .hint_text(&ti.placeholder);
             let resp = ui.add(edit);
+            // Node-targeted clicks only focus the field — keystroke entry
+            // into a focused node is out of scope (stint 0414 non-scope).
+            if node_click_matches(pending_click, id) {
+                resp.request_focus();
+            }
             if resp.changed() && buf != ti.value {
                 out.value_changes.push((ti.on_change.clone(), buf.clone()));
             }
@@ -355,7 +372,7 @@ fn render_node(
                     })
                     .response
                     .interact(egui::Sense::click());
-                if resp.clicked() {
+                if resp.clicked() || node_click_matches(pending_click, *item_id) {
                     if let Some(action) = &l.on_select {
                         out.actions.push(action.clone());
                     }
@@ -416,10 +433,15 @@ fn render_node(
             // against this frame's freshly-computed `rect` — the same
             // honest hit-test a real click would need, just resolved
             // explicitly rather than via egui's internal interact_widgets.
-            let synthetic = pending_click.filter(|c| rect.contains(c.pos));
-            let pixel_pos = resp
-                .interact_pointer_pos()
-                .or_else(|| synthetic.map(|c| c.pos));
+            let synthetic = pending_click.filter(|c| {
+                matches!(c.target, crate::host::pane::PaneClickTarget::Pos(pos) if rect.contains(pos))
+            });
+            let pixel_pos = resp.interact_pointer_pos().or_else(|| {
+                synthetic.and_then(|c| match c.target {
+                    crate::host::pane::PaneClickTarget::Pos(pos) => Some(pos),
+                    crate::host::pane::PaneClickTarget::Node(_) => None,
+                })
+            });
             if resp.clicked() || synthetic.is_some() {
                 if let Some(pixel_pos) = pixel_pos {
                     let button = if let Some(c) = synthetic {

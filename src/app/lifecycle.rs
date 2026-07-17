@@ -1389,7 +1389,7 @@ impl PlexiApp {
                     self.pending_pane_clicks.insert(
                         *pane_id,
                         crate::host::pane::PendingPaneClick {
-                            pos: abs,
+                            target: crate::host::pane::PaneClickTarget::Pos(abs),
                             button: button_str,
                         },
                     );
@@ -1409,6 +1409,67 @@ impl PlexiApp {
                     if let Err(e) = std::fs::write(rf, &json) {
                         log::error!(
                             "pane_ipc: click_pane: could not write response file: {e}"
+                        );
+                    }
+                }
+            }
+            crate::app_protocol::AppRequest::ClickPaneNode {
+                pane_id,
+                node_id,
+                button,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=click_pane_node pane_id={pane_id} node_id={node_id} button={button:?}"
+                );
+                let result: Result<serde_json::Value, String> = (|| {
+                    let Some((win_idx, _tile_id)) = self.find_pane_in_any_window(*pane_id) else {
+                        return Err(format!("pane {pane_id} not found"));
+                    };
+                    let Some(app_pane) = self.windows[win_idx]
+                        .panes
+                        .get(pane_id)
+                        .and_then(|pane| pane.as_app())
+                    else {
+                        return Err(format!(
+                            "pane {pane_id}: click injection is only supported for app panes"
+                        ));
+                    };
+                    let arena_id = app_pane.semantic_state().resolve_interactive_node(node_id)?;
+                    if !self.pane_navigate(*pane_id) {
+                        return Err(format!("pane {pane_id} could not be focused"));
+                    }
+                    let button_str = match button.as_deref() {
+                        Some("right") => "right",
+                        Some("middle") => "middle",
+                        _ => "left",
+                    };
+                    // Same non-mid-pass reasoning as `ClickPane` above: queue
+                    // instead of replaying pointer input. The interactive
+                    // node's own render branch (`wasm_render.rs`) matches this
+                    // arena id against the frame's live tree and activates it
+                    // exactly as a real click would.
+                    self.pending_pane_clicks.insert(
+                        *pane_id,
+                        crate::host::pane::PendingPaneClick {
+                            target: crate::host::pane::PaneClickTarget::Node(arena_id),
+                            button: button_str,
+                        },
+                    );
+                    self.ctx.request_repaint();
+                    log::info!(
+                        "pane_ipc: click_pane_node: pane_id={pane_id} queued node_id={node_id} arena_id={arena_id}"
+                    );
+                    Ok(serde_json::json!({"ok": true}))
+                })();
+                if let Some(rf) = response_file {
+                    let json = match &result {
+                        Ok(v) => v.to_string(),
+                        Err(msg) => serde_json::json!({"error": msg}).to_string(),
+                    };
+                    if let Err(e) = std::fs::write(rf, &json) {
+                        log::error!(
+                            "pane_ipc: click_pane_node: could not write response file: {e}"
                         );
                     }
                 }

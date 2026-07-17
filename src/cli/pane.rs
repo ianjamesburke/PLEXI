@@ -684,6 +684,43 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
     }
 }
 
+/// Poll `response_file` for a `click_pane`/`click_pane_node` response,
+/// shared by the pixel and node-targeted `plexi pane click` variants.
+/// Returns 0 on success, 1 on error.
+fn poll_click_response(response_file: &str, log_prefix: &str) -> i32 {
+    let response_path = std::path::PathBuf::from(response_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if response_path.exists() {
+            match std::fs::read_to_string(&response_path) {
+                Ok(content) => {
+                    let _ = std::fs::remove_file(&response_path);
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            return 0;
+                        }
+                        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+                            eprintln!("error: {msg}");
+                            return 1;
+                        }
+                    }
+                    return 0;
+                }
+                Err(e) => {
+                    log::warn!("{log_prefix}: could not read response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return 1;
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for pane click response");
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// `plexi pane click <pane_id> <x> <y> [--button left]`
 ///
 /// Sends `click_pane` command to PLEXI_SOCKET. Waits for response.
@@ -708,37 +745,33 @@ pub fn pane_click_cli(pane_id: u64, x: f32, y: f32, button: &str) -> i32 {
     if code != 0 {
         return code;
     }
-    let response_path = std::path::PathBuf::from(&response_file);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if response_path.exists() {
-            match std::fs::read_to_string(&response_path) {
-                Ok(content) => {
-                    let _ = std::fs::remove_file(&response_path);
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            return 0;
-                        }
-                        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
-                            eprintln!("error: {msg}");
-                            return 1;
-                        }
-                    }
-                    return 0;
-                }
-                Err(e) => {
-                    log::warn!("pane_click:cli: could not read response file: {e}");
-                    eprintln!("error: could not read response file: {e}");
-                    return 1;
-                }
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            eprintln!("error: timed out waiting for pane click response");
-            return 1;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    poll_click_response(&response_file, "pane_click:cli")
+}
+
+/// `plexi pane click <pane_id> --node <node_id> [--button left]`
+///
+/// Sends `click_pane_node` command to PLEXI_SOCKET. Waits for response.
+/// Returns 0 on success, 1 on error.
+pub fn pane_click_node_cli(pane_id: u64, node_id: &str, button: &str) -> i32 {
+    let id = uuid::Uuid::new_v4();
+    let response_file = crate::config::config_dir()
+        .join(format!("pane-click-node-response-{id}.json"))
+        .to_string_lossy()
+        .into_owned();
+    log::info!(
+        "pane_click_node:cli: pane_id={pane_id} node_id={node_id} button={button} response_file={response_file:?}"
+    );
+    let code = send_to_socket(serde_json::json!({
+        "type": "click_pane_node",
+        "pane_id": pane_id,
+        "node_id": node_id,
+        "button": button,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
     }
+    poll_click_response(&response_file, "pane_click_node:cli")
 }
 
 /// `plexi pane capture [--lines N] [pane_id]`

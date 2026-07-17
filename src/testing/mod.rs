@@ -235,6 +235,31 @@ impl HostHarness {
             response_file,
         })
     }
+
+    /// Inject a synthetic node-targeted click, through the real
+    /// `AppRequest::ClickPaneNode` dispatch path — the same host code
+    /// `plexi pane click <pane_id> --node <node_id>` drives. `node_id`
+    /// matches `SemanticPaneNode.id`, the id `plexi pane state` reports for
+    /// every node in the pane's tree. The host resolves the node's on-screen
+    /// rect during the next render pass and delivers the same
+    /// `PendingPaneClick` honest hit-test the pixel path uses. Call
+    /// `run_frames` afterward to let the dispatch (and, for process apps,
+    /// the async IPC round trip to the guest) take effect. `button` is
+    /// `"left"`, `"right"`, or `"middle"`.
+    pub fn inject_node_click(
+        &self,
+        pane_id: PaneId,
+        node_id: &str,
+        button: &str,
+        response_file: Option<String>,
+    ) -> &Self {
+        self.inject_ipc(AppRequest::ClickPaneNode {
+            pane_id,
+            node_id: node_id.to_string(),
+            button: Some(button.to_string()),
+            response_file,
+        })
+    }
 }
 
 #[cfg(test)]

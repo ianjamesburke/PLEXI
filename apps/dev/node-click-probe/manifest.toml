@@ -1,0 +1,21 @@
+schema_version = 1
+
+[app]
+id = "node-click-probe"
+type = "app"
+name = "Node Click Probe"
+entry = "main.py"
+version = "0.1.0"
+description = "POC: HostHarness node-targeted click fixture (stint 0414) — a bare Button whose node_id (from `plexi pane state`) is the only input; a passing click proves the AppRequest::ClickPaneNode primitive end to end."
+watch = true
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+
+# Uncomment and fill in to publish with `plexi app publish`:
+# [marketplace]
+# visibility = "public"   # public | unlisted | private
+# price = "free"          # "free", or a price like "4.99"
+# publisher = "your-org"  # required: your publisher / org slug
