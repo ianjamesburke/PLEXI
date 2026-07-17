@@ -78,24 +78,44 @@ pub fn validate_cli(path: &str) -> i32 {
         let entry_path = app_dir.join(entry);
         if !entry_path.exists() {
             errors.push(format!("  entry file not found: {}", entry_path.display()));
-        } else if entry.ends_with(".py") {
-            // Python syntax check via AST parse (no import, no SDK needed)
-            let py_check = std::process::Command::new("python3")
-                .arg("-c")
-                .arg("import ast, sys; ast.parse(open(sys.argv[1]).read())")
-                .arg(&entry_path)
-                .output();
-            match py_check {
-                Ok(out) if out.status.success() => {}
-                Ok(out) => {
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    errors.push(format!(
-                        "  Python syntax error in {entry}: {}",
-                        stderr.trim()
-                    ));
-                }
-                Err(e) => {
-                    warnings.push(format!("  python3 not found — skipping syntax check: {e}"));
+        } else {
+            // Same launch-path check `package::validate_dir` enforces (stint
+            // 0411): the host only ever launches a WASM entry or a `.py`
+            // entry — anything else can never actually run, so this dev-facing
+            // validator must reject it too, not just the package/install path.
+            let manifest_type = if app_section
+                .and_then(|a| a.get("type"))
+                .and_then(|v| v.as_str())
+                == Some("wasm")
+            {
+                crate::app::registry::ManifestType::Wasm
+            } else {
+                crate::app::registry::ManifestType::App
+            };
+            if let Err(e) =
+                crate::app::package::PackageRuntime::from_manifest(manifest_type, entry)
+            {
+                errors.push(format!("  {e}"));
+            } else if entry.ends_with(".py") {
+                // Python syntax check via AST parse (no import, no SDK needed)
+                let py_check = std::process::Command::new("python3")
+                    .arg("-c")
+                    .arg("import ast, sys; ast.parse(open(sys.argv[1]).read())")
+                    .arg(&entry_path)
+                    .output();
+                match py_check {
+                    Ok(out) if out.status.success() => {}
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        errors.push(format!(
+                            "  Python syntax error in {entry}: {}",
+                            stderr.trim()
+                        ));
+                    }
+                    Err(e) => {
+                        warnings
+                            .push(format!("  python3 not found — skipping syntax check: {e}"));
+                    }
                 }
             }
         }
@@ -269,6 +289,36 @@ mod validate_tests {
         let path = dir.path().to_string_lossy().to_string();
         let code = super::validate_cli(&path);
         assert_eq!(code, 1, "unknown capability must be a hard error");
+    }
+
+    /// stint 0411 follow-up (PR #2412 tester round): `plexi app validate
+    /// <dir>` has its own lightweight validation path, separate from
+    /// `package::validate_dir`. It must reject the same unlaunchable-entry
+    /// shape (non-WASM, non-`.py`) that the package/install path rejects —
+    /// no validate entry point may bypass this check.
+    #[test]
+    fn validate_fails_on_unlaunchable_native_entry() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"test-app\"\n\
+             type = \"app\"\n\
+             name = \"Test App\"\n\
+             entry = \"bin/app\"\n\
+             version = \"0.1.0\"\n\
+             description = \"A test app\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir(dir.path().join("bin")).unwrap();
+        std::fs::write(dir.path().join("bin/app"), "#!/bin/sh\nexit 0\n").unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let code = super::validate_cli(&path);
+        assert_eq!(
+            code, 1,
+            "a non-wasm, non-.py entry has no launch path and must be rejected"
+        );
     }
 
     #[test]
