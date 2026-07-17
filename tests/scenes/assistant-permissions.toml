@@ -30,3 +30,9 @@ key = { target = "assistant", value = "escape" }
 
 [[steps]]
 run_steps = 2
+
+# Regression: escape must close only the overlay, not the whole pane (see
+# assistant-settings.toml for the same check on the /model picker — this
+# manager shares the exact same key-handling path).
+[[steps]]
+assert = { target = "assistant", exists = true, focused = true, pane_count = 1 }

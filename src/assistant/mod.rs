@@ -2865,6 +2865,26 @@ impl App for AssistantApp {
     }
 
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
+        // The model/agent picker and permissions manager own Escape while
+        // open: this runs before `poll_actions`, which binds plain Escape to
+        // `CloseApp` when the assistant's app surface is focused
+        // (`src/host/keys.rs` `AppActive` context). Without claiming it here
+        // first, Escape falls through and destroys the pane instead of just
+        // closing the overlay — the same precedent `dispatch_app_key_events`
+        // already documents for file-browser search-mode Escape. Returning
+        // `Passthrough` for every other key (including ArrowUp) leaves them
+        // in the frame's input buffer for `render.rs`'s `handle_overlay_keys`
+        // to consume during the render pass — `Consumed` here would make
+        // `dispatch_app_key_events` strip ArrowUp out of the buffer too
+        // (it claims Escape *and* ArrowUp together on any `Consumed`
+        // disposition), starving the overlay's own up-navigation.
+        if self.model.overlay_active() {
+            if input.key_pressed(egui::Key::Escape) {
+                self.model.cancel_overlay();
+                return KeyDisposition::Consumed;
+            }
+            return KeyDisposition::Passthrough;
+        }
         if input.key_pressed(egui::Key::Escape) && self.model.streaming.in_flight {
             self.interrupt_in_flight_turn();
             return KeyDisposition::Consumed;

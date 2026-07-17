@@ -52,3 +52,29 @@ run_steps = 3
 
 [[steps]]
 assert_label = { target = "assistant", label = "Model tier set to " }
+
+# Regression: escape inside the picker must close only the overlay, not the
+# whole pane. Escape has a plain host binding (CloseApp, AppActive context)
+# that previously fired because the picker never claimed the key before
+# `poll_actions` saw it — the pane was destroyed instead of the overlay
+# closing.
+[[steps]]
+text = { target = "assistant", value = "/model" }
+
+[[steps]]
+key = { target = "assistant", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+key = { target = "assistant", value = "escape" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { target = "assistant", exists = true, focused = true, pane_count = 1 }
+
+[[steps]]
+assert_label = { target = "assistant", label = "Model tier set to " }
