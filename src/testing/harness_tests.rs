@@ -1463,3 +1463,147 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
         "expected canvas-space y near {target_canvas_y}, got {got_y}"
     );
 }
+
+/// Stint 0414: node-targeted counterpart of stint 0398's
+/// `click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform`.
+/// Drives a REAL process-app pane (`apps/dev/node-click-probe`, a single
+/// `Button` with no other input) through the production
+/// `AppRequest::ClickPaneNode` dispatch — the exact path
+/// `plexi pane click <pane_id> --node <node_id>` uses — resolving the
+/// button's `node_id` from the pane's own semantic tree (`plexi pane state`)
+/// exactly as a tester would, never a hardcoded arena id. Proves the
+/// end-to-end contract the launch gate (stint 0413) needs: a widget can be
+/// activated by node_id and the guest's re-rendered view reflects it.
+#[test]
+fn click_pane_node_activates_button_and_mutates_guest_view() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/node-click-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch node-click-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching node-click-probe");
+
+    // Real subprocess: poll for its first committed render before reading
+    // the semantic tree.
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let rendered = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .is_some_and(
+                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+            );
+        if rendered {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "node-click-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    h.run_frames(2);
+
+    let semantic_state = h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .map(|pane| pane.semantic_state())
+        .expect("app pane has a semantic tree");
+
+    let button_id = semantic_state
+        .nodes
+        .iter()
+        .find(|n| n.role == "button" && n.label.as_deref() == Some("Increment"))
+        .map(|n| n.id.clone())
+        .expect("semantic tree exposes the Increment button by role/label");
+    let text_id = semantic_state
+        .nodes
+        .iter()
+        .find(|n| n.role == "text")
+        .map(|n| n.id.clone())
+        .expect("semantic tree exposes the count Text node");
+    assert_eq!(
+        semantic_state
+            .nodes
+            .iter()
+            .find(|n| n.id == text_id)
+            .and_then(|n| n.label.as_deref()),
+        Some("0"),
+        "count starts at 0"
+    );
+
+    // Fail-loud path: a node id absent from the current tree is rejected,
+    // never silently no-op'd.
+    let missing_response = temp_response(tmp.path(), "click-node-missing");
+    h.inject_node_click(pane_id, "9999", "left", Some(missing_response.clone()));
+    h.run_frames(1);
+    let missing = read_json_response(&missing_response);
+    assert!(
+        missing.get("error").is_some(),
+        "clicking an absent node_id must return a named error, not ok:true: {missing:?}"
+    );
+
+    // Fail-loud path: a non-interactive node (the Text node) is rejected too.
+    let non_interactive_response = temp_response(tmp.path(), "click-node-non-interactive");
+    h.inject_node_click(
+        pane_id,
+        &text_id,
+        "left",
+        Some(non_interactive_response.clone()),
+    );
+    h.run_frames(1);
+    let non_interactive = read_json_response(&non_interactive_response);
+    assert!(
+        non_interactive.get("error").is_some(),
+        "clicking a non-interactive node_id must return a named error: {non_interactive:?}"
+    );
+
+    // Happy path: click the button by node_id and observe the guest's
+    // re-rendered count. The click's egui-level effect is synchronous, but
+    // delivery to the Python subprocess and its reply round-trip the IPC
+    // pipe — poll for the app's re-render to reflect it.
+    let click_response = temp_response(tmp.path(), "click-node-increment");
+    h.inject_node_click(pane_id, &button_id, "left", Some(click_response.clone()));
+    h.run_frames(1);
+    let response = read_json_response(&click_response);
+    assert_eq!(
+        response["ok"], true,
+        "node click dispatch failed: {response:?}"
+    );
+
+    let start = std::time::Instant::now();
+    let mut observed_count: Option<String> = None;
+    loop {
+        h.run_frames(1);
+        let state = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .map(|pane| pane.semantic_state());
+        if let Some(state) = &state {
+            observed_count = state
+                .nodes
+                .iter()
+                .find(|n| n.role == "text")
+                .and_then(|n| n.label.clone());
+        }
+        if observed_count.as_deref() == Some("1") {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "app did not reflect the node-targeted click's mutation in time (last seen: {observed_count:?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}

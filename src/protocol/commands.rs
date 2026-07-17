@@ -437,6 +437,29 @@ pub enum AppRequest {
         response_file: Option<String>,
     },
 
+    /// Deliver a synthetic click to an app pane by node id, activating the
+    /// Button/TextInput/ListView node the id names — the node-addressed
+    /// sibling of `ClickPane` (stint 0414). Sent by
+    /// `plexi pane click <pane_id> --node <node_id>`. `node_id` matches
+    /// `SemanticPaneNode.id`, the id `plexi pane state` reports for every
+    /// node in the pane's tree, so a caller resolves it from `pane state`
+    /// output rather than computing pixel geometry. The host validates
+    /// `node_id` against the pane's cached semantic tree and fails loudly
+    /// (no queued click) when it is absent or not an interactive role;
+    /// otherwise it resolves the node's on-screen rect during the next
+    /// render pass and delivers the same `PendingPaneClick` honest hit-test
+    /// the pixel path uses. Host writes `{"ok":true}` or `{"error":"..."}`
+    /// to `response_file` when set.
+    ClickPaneNode {
+        pane_id: u64,
+        node_id: String,
+        /// "left" (default), "right", or "middle".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
+
     /// Read the last N lines from a terminal pane's PTY scrollback buffer.
     /// Sent by `plexi pane capture`. Host writes a JSON array of strings to `response_file`.
     CapturePane {
@@ -2568,6 +2591,56 @@ mod tests {
         assert!(
             serde_json::from_str::<AppRequest>(bad).is_err(),
             "must fail without required x/y fields"
+        );
+    }
+
+    #[test]
+    fn click_pane_node_command_round_trips_serde() {
+        let json = r#"{"type":"click_pane_node","pane_id":42,"node_id":"5","button":"left","response_file":"result.json"}"#;
+        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            AppRequest::ClickPaneNode {
+                pane_id,
+                node_id,
+                button,
+                response_file,
+            } => {
+                assert_eq!(*pane_id, 42);
+                assert_eq!(node_id, "5");
+                assert_eq!(button.as_deref(), Some("left"));
+                assert_eq!(response_file.as_deref(), Some("result.json"));
+            }
+            other => panic!("expected ClickPaneNode, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"click_pane_node""#),
+            "wire tag missing: {serialised}"
+        );
+
+        // Optional fields: button and response_file absent → None
+        let minimal = r#"{"type":"click_pane_node","pane_id":1,"node_id":"3"}"#;
+        let cmd2: AppRequest = serde_json::from_str(minimal).expect("deserialise minimal");
+        match &cmd2 {
+            AppRequest::ClickPaneNode {
+                button,
+                response_file,
+                ..
+            } => {
+                assert!(button.is_none(), "absent button must deserialise to None");
+                assert!(
+                    response_file.is_none(),
+                    "absent response_file must deserialise to None"
+                );
+            }
+            other => panic!("expected ClickPaneNode, got {other:?}"),
+        }
+
+        // Required-field discipline: missing node_id must fail
+        let bad = r#"{"type":"click_pane_node","pane_id":1}"#;
+        assert!(
+            serde_json::from_str::<AppRequest>(bad).is_err(),
+            "must fail without required node_id field"
         );
     }
 

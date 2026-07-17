@@ -1,0 +1,28 @@
+# Python/runtime noise
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local render and validation artifacts
+render-output/
+render-outputs/
+.plexi-render/
+shots/
+screenshots/
+
+# Local agent run logs
+.agent-runs/
+.plexi-agent-runs/
+agent-run-logs/
+codex-run-logs/
+
+# Local environment files
+.env
+.env.*

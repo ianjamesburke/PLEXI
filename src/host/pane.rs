@@ -234,6 +234,30 @@ impl SemanticPaneState {
             }
         }
     }
+
+    /// Resolve `node_id` (as reported by `plexi pane state`) against this
+    /// cached snapshot and confirm it is an activatable role. Used by the
+    /// `ClickPaneNode` host command to fail loudly — named error, no queued
+    /// click — before a `PendingPaneClick` is ever inserted, instead of
+    /// silently no-op'ing against a missing or non-interactive node.
+    pub(crate) fn resolve_interactive_node(&self, node_id: &str) -> Result<u32, String> {
+        const INTERACTIVE_ROLES: &[&str] = &["button", "text_input", "list_view"];
+
+        let Some(node) = self.nodes.iter().find(|n| n.id == node_id) else {
+            return Err(format!(
+                "node {node_id} not found in this pane's current tree"
+            ));
+        };
+        if !INTERACTIVE_ROLES.contains(&node.role.as_str()) {
+            return Err(format!(
+                "node {node_id} is not interactive (role: {})",
+                node.role
+            ));
+        }
+        node.id
+            .parse::<u32>()
+            .map_err(|_| format!("node {node_id} has a non-numeric id and cannot be targeted"))
+    }
 }
 
 #[cfg(test)]
@@ -623,9 +647,21 @@ impl TerminalPane {
 // AppPane — dedicated app runtime (process or in-process builtin)
 // ---------------------------------------------------------------------------
 
-/// A pointer click injected by `AppRequest::ClickPane` (`plexi pane click`,
-/// or `HostHarness::inject_click`), queued on `PlexiApp` and consumed by the
-/// canvas render pass for the target pane on the next frame it renders.
+/// What a `PendingPaneClick` is aimed at: a raw screen position (the pixel
+/// `plexi pane click <x> <y>` path), or a specific WASM UI-tree arena node id
+/// (the node-addressed `plexi pane click <pane_id> --node <node_id>` sibling,
+/// stint 0414). `node_id` matches `SemanticPaneNode.id` — the same id
+/// `plexi pane state` reports for every node in the tree.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PaneClickTarget {
+    Pos(egui::Pos2),
+    Node(u32),
+}
+
+/// A pointer click injected by `AppRequest::ClickPane`/`ClickPaneNode`
+/// (`plexi pane click`, or `HostHarness::inject_click`/`inject_node_click`),
+/// queued on `PlexiApp` and consumed by the canvas render pass for the
+/// target pane on the next frame it renders.
 ///
 /// egui's own click detection (`Response::clicked()`) resolves
 /// `viewport.interact_widgets` once, inside `Context::begin_pass`, strictly
@@ -634,13 +670,13 @@ impl TerminalPane {
 /// re-scan `InputState.events` live at widget-render time; pointer-click
 /// detection does not). `PendingPaneClick` is delivered instead through the
 /// same call chain a real click's hit-test result would reach —
-/// `render_node`'s Canvas branch — so it still exercises the pane's live
-/// `canvas_transform` inversion for the frame's actual widget rect, just via
-/// an explicit rect-containment check instead of `Sense::click()`.
+/// `render_node`'s Canvas branch for `Pos`, or the matching interactive
+/// node's own branch (Button/TextInput/ListView) for `Node` — so it still
+/// exercises the pane's live rendering for the frame's actual widget, just
+/// via an explicit id/rect-containment check instead of `Sense::click()`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PendingPaneClick {
-    /// Absolute screen position, same space as `egui::Response::interact_pointer_pos()`.
-    pub pos: egui::Pos2,
+    pub target: PaneClickTarget,
     pub button: &'static str,
 }
 
@@ -1007,5 +1043,46 @@ mod semantic_state_tests {
             .expect("parent retained");
 
         assert_eq!(parent.children, vec![inside_id.value().to_string()]);
+    }
+
+    fn node(id: &str, role: &str) -> SemanticPaneNode {
+        SemanticPaneNode {
+            id: id.to_string(),
+            role: role.to_string(),
+            label: None,
+            value: None,
+            children: Vec::new(),
+            bounds: None,
+            canvas_commands: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn resolve_interactive_node_accepts_button_and_returns_arena_id() {
+        let mut state = SemanticPaneState::empty("wasm");
+        state.nodes = vec![node("0", "column"), node("5", "button")];
+
+        assert_eq!(state.resolve_interactive_node("5"), Ok(5));
+    }
+
+    #[test]
+    fn resolve_interactive_node_rejects_missing_node_id() {
+        let state = SemanticPaneState::empty("wasm");
+
+        let err = state
+            .resolve_interactive_node("9999")
+            .expect_err("missing node_id must fail loudly");
+        assert!(err.contains("not found"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolve_interactive_node_rejects_non_interactive_role() {
+        let mut state = SemanticPaneState::empty("wasm");
+        state.nodes = vec![node("1", "text")];
+
+        let err = state
+            .resolve_interactive_node("1")
+            .expect_err("non-interactive role must fail loudly");
+        assert!(err.contains("not interactive"), "unexpected error: {err}");
     }
 }
