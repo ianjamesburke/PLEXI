@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSource {
+    Builtin,
     User,
     Workspace,
 }
@@ -11,11 +12,17 @@ pub enum SkillSource {
 impl SkillSource {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Builtin => "builtin",
             Self::User => "user",
             Self::Workspace => "workspace",
         }
     }
 }
+
+/// Skills compiled into the binary so a fresh install has them from first
+/// launch. Same SKILL.md format as on-disk skills; a user or workspace skill
+/// with the same name overrides a builtin.
+const BUILTIN_SKILLS: &[&str] = &[include_str!("builtin/build-plexi-app.md")];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillDefinition {
@@ -34,14 +41,21 @@ pub struct SkillRegistry {
 impl SkillRegistry {
     pub fn load(profile_dir: &Path, workspace_root: &Path) -> Self {
         let mut skills = Vec::new();
+        for text in BUILTIN_SKILLS {
+            match parse_skill_text(text, SkillSource::Builtin, Path::new("<builtin>")) {
+                Ok(skill) => skills.push(skill),
+                Err(error) => log::error!("assistant: invalid builtin skill: {error}"),
+            }
+        }
         load_root(profile_dir.join("skills"), SkillSource::User, &mut skills);
         load_root(
             workspace_root.join(".plexi/skills"),
             SkillSource::Workspace,
             &mut skills,
         );
-        // Roots are loaded user first, workspace second, so map insertion gives
-        // workspace definitions deterministic precedence for duplicate names.
+        // Roots are loaded builtin first, then user, then workspace, so map
+        // insertion gives workspace > user > builtin precedence for duplicate
+        // names.
         let mut by_name = std::collections::BTreeMap::new();
         for skill in skills {
             by_name.insert(skill.name.clone(), skill);
@@ -122,6 +136,10 @@ fn load_root(root: PathBuf, source: SkillSource, out: &mut Vec<SkillDefinition>)
 
 fn parse_skill(path: &Path, source: SkillSource) -> Result<SkillDefinition, String> {
     let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    parse_skill_text(&text, source, path)
+}
+
+fn parse_skill_text(text: &str, source: SkillSource, path: &Path) -> Result<SkillDefinition, String> {
     let body = text
         .strip_prefix("---\n")
         .ok_or("missing YAML frontmatter")?;
@@ -181,9 +199,51 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("skills/bad")).unwrap();
         std::fs::write(root.path().join("skills/bad/SKILL.md"), "# no frontmatter").unwrap();
-        assert!(SkillRegistry::load(root.path(), root.path())
+        let registry = SkillRegistry::load(root.path(), root.path());
+        assert!(registry
             .all()
-            .is_empty());
+            .iter()
+            .all(|skill| skill.source == SkillSource::Builtin));
+    }
+
+    #[test]
+    fn builtin_build_plexi_app_ships_and_auto_matches() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = SkillRegistry::load(root.path(), root.path());
+        let skill = registry.get("build-plexi-app").unwrap();
+        assert_eq!(skill.source, SkillSource::Builtin);
+        assert!(skill.instructions.contains("plexi app init --global"));
+        assert!(skill.instructions.contains("plexi app check ."));
+        assert_eq!(
+            registry
+                .matching_enabled("build me a small timer app", &[])
+                .unwrap()
+                .name,
+            "build-plexi-app"
+        );
+        assert_eq!(
+            registry
+                .matching_enabled("can you make a tic tac toe game", &[])
+                .unwrap()
+                .name,
+            "build-plexi-app"
+        );
+    }
+
+    #[test]
+    fn workspace_skill_overrides_builtin_of_same_name() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(workspace.join(".plexi/skills/build-plexi-app")).unwrap();
+        std::fs::write(
+            workspace.join(".plexi/skills/build-plexi-app/SKILL.md"),
+            "---\nname: build-plexi-app\ndescription: workspace override\n---\noverride body",
+        )
+        .unwrap();
+        let registry = SkillRegistry::load(root.path(), &workspace);
+        let skill = registry.get("build-plexi-app").unwrap();
+        assert_eq!(skill.source, SkillSource::Workspace);
+        assert_eq!(skill.instructions, "override body");
     }
 
     #[test]

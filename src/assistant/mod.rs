@@ -76,7 +76,13 @@ result. \
 Use the host.panes.*, host.apps.open, host.terminals.open, and host.terminals.run \
 tools for native pane, app, and terminal operations; never shell out to the plexi \
 CLI. When a terminal pane has already been opened or focused, reuse its pane id \
-with host.terminals.run; do not open a redundant terminal. ";
+with host.terminals.run; do not open a redundant terminal. \
+When the user asks you to build an app, game, or tool, build it as a Plexi app, \
+never as a loose script: scaffold with `plexi app init --global <kebab-name>` in a \
+terminal, read the scaffolded AGENTS.md to learn the SDK, write main.py, validate \
+with `plexi app check .` from the app directory, then open it with host.apps.open. \
+The app-authoring commands `plexi app init` and `plexi app check` run via \
+host.terminals.run and are the one sanctioned use of the plexi CLI. ";
 
 /// Host tool names the Assistant injects into its dispatcher snapshot.
 const HOST_TOOL_SUBSCRIBE: &str = "host.events.subscribe";

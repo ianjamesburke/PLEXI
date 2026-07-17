@@ -718,7 +718,10 @@ mod tests {
                 provider: Some("openrouter".to_string()),
                 model: Some("test/cheap".to_string()),
             }),
-            offered_skills: Some(vec!["pane-audit".to_string()]),
+            offered_skills: Some(vec![
+                "build-plexi-app".to_string(),
+                "pane-audit".to_string(),
+            ]),
             activated_skill: Some("pane-audit".to_string()),
             calls_in_order: vec![ExpectedCall {
                 name: "host.panes.open".to_string(),
@@ -738,7 +741,10 @@ mod tests {
                 error: None,
             }],
             ordered_events: vec![
-                ExpectedEvent::SkillsOffered(vec!["pane-audit".to_string()]),
+                ExpectedEvent::SkillsOffered(vec![
+                    "build-plexi-app".to_string(),
+                    "pane-audit".to_string(),
+                ]),
                 ExpectedEvent::SkillActivated("pane-audit".to_string()),
                 ExpectedEvent::ToolCall(ExpectedCall {
                     name: "host.panes.open".to_string(),
