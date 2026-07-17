@@ -1393,8 +1393,8 @@ fn parse_payload_mode(raw: &str) -> Result<crate::app_protocol::PayloadMode, Str
 // `LiveWasmPane` bridges the time-injected, headless [`WasmPane`] to the host's
 // live egui render loop. It owns the monotonic clock (so `WasmPane` stays pure
 // and testable), runs `init` lazily on the first frame once the pane size is
-// known, translates egui key input into guest `InputEvent`s using the same
-// printable-vs-named key split as `process_app`, and renders the guest's view
+// known, translates egui key input into guest `InputEvent`s using the host's
+// printable-vs-named key split, and renders the guest's view
 // tree each frame. A fatal guest/runtime error is captured and shown in place
 // rather than propagated — a misbehaving WASM app must never crash the host.
 

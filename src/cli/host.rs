@@ -142,7 +142,7 @@ const STRIP_VARS: &[&str] = &[
 /// Pure env-filter used to build the launched child's environment. Takes the
 /// parent env as a plain `Vec` (rather than reading `std::env::vars()`
 /// directly) so it is deterministically testable without mutating real
-/// process env — mirrors `src/process_app/tests/env_isolation_tests.rs`.
+/// process env.
 pub(crate) fn filter_child_env(
     parent_env: Vec<(String, String)>,
     channel: Option<&str>,

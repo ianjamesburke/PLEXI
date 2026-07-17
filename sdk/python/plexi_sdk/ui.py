@@ -2279,8 +2279,9 @@ class ListRow:
 # These classes produce ``dict`` values matching the ``UiNode`` wire format
 # defined in ``src/app_protocol.rs``.  ``to_node()`` returns a plain dict
 # with a ``"type"`` field; B3 (``ctx.render_tree``) will serialise the tree
-# to the host.  L0 types return their dict directly; L1 sugar types include
-# L1 sugar types are rendered natively by the host.
+# to the host.  All ``UiNode`` classes serialise to the single ``ui-node-data``
+# variant set; sugar types decompose to base nodes and are rendered natively by
+# the host.
 
 
 class Tabs:

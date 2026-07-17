@@ -1,8 +1,8 @@
 //! HostServices — host side-effect plumbing.
 //!
 //! `EventSink` is the only production field right now; fs/secrets/net/spawn
-//! trait seams live in `process_app` and `app_registry` until HostModel
-//! owns their routing.
+//! trait seams live in the app runtimes (`host::wasm_python`, `host::wasm_app`)
+//! and `app_registry` until HostModel owns their routing.
 
 use crate::host::effect::HostEffect;
 use std::collections::HashMap;

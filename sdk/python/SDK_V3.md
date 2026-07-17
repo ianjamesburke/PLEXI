@@ -729,7 +729,7 @@ capabilities = []
 
 ## 11. Scaffold Template (`plexi app init <name>`)
 
-`src/cli/app.rs` — `init` subcommand for Python apps generates a normal native app manifest and SDK v3 entry point.
+`src/cli/app.rs` — `init` subcommand for Python apps generates a normal app manifest and SDK v3 entry point.
 
 **`<name>/manifest.toml`:**
 ```toml
@@ -805,7 +805,7 @@ def view():
 
 ## 12. SDK Package Layout
 
-`sdk/python/plexi_sdk/` is the SDK v3 package used by native ProcessApp apps:
+`sdk/python/plexi_sdk/` is the SDK v3 package used by Python apps:
 
 ```
 plexi_sdk/
@@ -813,7 +813,7 @@ plexi_sdk/
   effects.py         # Effect dataclasses (section 4)
   events.py          # Event dataclasses (section 5)
   ui.py              # UINode dataclasses and layout primitives (section 6)
-  _v3_process.py     # native ProcessApp entry point
+  _v3_process.py     # Python app entry point
   _v3_runtime.py     # PGAP event/effect runtime
   _v3_state.py       # StateProxy and StateSnapshot implementation
   _adapter.py        # test/helper encode/decode surface
@@ -846,8 +846,8 @@ plexi_sdk/
 
 ### Host unit tests
 
-- `src/process_app/routing.rs`: native `FileList` / `FileRead` enforce `fs.read` and workspace scoping.
-- `src/process_app/mod.rs`: regression coverage proves Python SDK v3 apps launch through `ProcessApp`, not a WASM adapter.
+- `src/host/wasm_python.rs`: `fs.read` / `fs.write` capability gating and workspace scoping for Python host requests.
+- `src/host/wasm_python.rs` tests: regression coverage proves Python SDK v3 apps launch through the CPython-in-WASM adapter (stint 0285), not a native subprocess.
 - `src/protocol/events.rs` and `src/protocol/commands.rs`: serde round-trips for new event/request fields.
 
 ### App tests

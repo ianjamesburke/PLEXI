@@ -214,8 +214,8 @@ is a separate authoring concern documented in `CLI_DESCRIPTOR_GUIDE.md` §6.)
 ## 5. Permissions and the trust boundary
 
 **A CLI-backed app prompts for nothing.** Unlike a PGAP app — whose
-`terminal.bindings`, `fs.read`, `net.http`, etc. capabilities are gated in
-`src/process_app/routing.rs` and surfaced as grant modals (see
+`terminal.bindings`, `fs.read`, `net.http`, etc. capabilities are gated by the
+app runtime's capability layer and surfaced as grant modals (see
 `src/app/permissions.rs`) — the `cli-renderer` is a native builtin and its
 linked-terminal commands are dispatched **directly** by `PlexiApp` with no
 capability check (`canvas_bindings.rs:26`, `:147`). There are zero permission or

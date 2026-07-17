@@ -113,7 +113,7 @@ and test the underlying mutation through its public CLI command.
 
 ## Real App Processes in Tests
 
-`open = { kind = "process", ... }` uses the production path: manifest load, `ProcessApp::launch`, real child process, IPC threads, and the L1 render pipeline. Outside an installed bundle the repo SDK is exported through `PLEXI_SDK_PATH=sdk/python` automatically. Python resolution comes from `src/app/python_env.rs`: per-app `.venv`, bundled python, then system `python3`, with Python 3.11 or newer required.
+`open = { kind = "process", ... }` uses the production path: manifest load, launch through the CPython-in-WASM adapter (`src/host/wasm_python.rs`, stint 0285), and the L1 render pipeline. Outside an installed bundle the repo SDK is exported through `PLEXI_SDK_PATH=sdk/python` automatically. Python resolution comes from `src/app/python_env.rs`: per-app `.venv`, bundled python, then system `python3`, with Python 3.11 or newer required.
 
 ## Pre-Push Evidence
 

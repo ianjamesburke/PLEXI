@@ -67,9 +67,8 @@ Beyond the link-time boundary, protected effects (`file-read`, `file-write`, `ht
 | `FirstPartyCore` | App id is in the bundled core pack |
 | `SandboxedWasm` | `[app] type = "wasm"` entry |
 | `PythonUnreviewed` / `ReviewedNative` | `.py` entry, outside the core pack — reviewed if `marketplace_reviewed` is set by the install flow (server attestation only; never in-package self-attestation) |
-| `NativeUnreviewed` / `ReviewedNative` | Non-`.py`, non-WASM entry, outside the core pack, reviewed the same way |
 
-`marketplace_reviewed` gates only the trust label, not a sandbox choice. `FirstPartyCore`, `SandboxedWasm`, and Python entries all launch through the same wasmtime component boundary and capability grant flow described above — `PythonUnreviewed`/`ReviewedNative` for Python is a review-provenance label, not a weaker sandbox. `NativeUnreviewed`/`ReviewedNative` for a non-`.py`, non-WASM entry is a **package classification with no current launch path**: `ManifestType` only defines `App` (routed to the CPython-in-WASM adapter, which requires a `.py`/`.pyc` entry) and `Wasm`; a native-executable entry fails to launch rather than running unsandboxed. Do not read this label as describing a live unsandboxed process — none exists in the current host.
+`marketplace_reviewed` gates only the trust label, not a sandbox choice. `FirstPartyCore`, `SandboxedWasm`, and Python entries all launch through the same wasmtime component boundary and capability grant flow described above — `PythonUnreviewed`/`ReviewedNative` for Python is a review-provenance label, not a weaker sandbox. A non-`.py`, non-WASM entry has no launch path at all: `ManifestType` only defines `App` (routed to the CPython-in-WASM adapter, which requires a `.py`/`.pyc` entry) and `Wasm`, so such a package is rejected at validate time (`PackageError::UnlaunchableEntry`) rather than classified with a trust label (stints 0411, #2412 removed the former `NativeUnreviewed` label and `PackageRuntime::Native`).
 
 ## Verification
 
