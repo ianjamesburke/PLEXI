@@ -23,6 +23,8 @@ run_steps = 3
 [[steps]]
 assert_label = { target = "assistant", label = "Assistant settings" }
 
+# /model (no args) now opens the interactive tier/agent picker instead of
+# printing static text. Enter opens it; a tier row is visible.
 [[steps]]
 text = { target = "assistant", value = "/model" }
 
@@ -33,7 +35,20 @@ key = { target = "assistant", value = "enter" }
 run_steps = 3
 
 [[steps]]
-assert_label = { target = "assistant", label = "Model tier: " }
+assert_label = { target = "assistant", label = "medium" }
 
 [[steps]]
 shot = "assistant-settings.png"
+
+# Arrow down to the next tier and confirm; the session tier is applied.
+[[steps]]
+key = { target = "assistant", value = "down" }
+
+[[steps]]
+key = { target = "assistant", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "assistant", label = "Model tier set to " }

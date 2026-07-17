@@ -1,0 +1,32 @@
+# Native Assistant permissions-manager overlay. `/permissions` (no args) opens
+# the interactive manager instead of dumping text. With no persisted grants it
+# shows its empty state; Esc closes it. (Seeded-grant cycle/apply behavior is
+# covered by Rust #[test]s — the scene format can't seed the grant store.)
+size = [1280.0, 800.0]
+
+[[steps]]
+open = { kind = "builtin", id = "assistant", as = "assistant" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+text = { target = "assistant", value = "/permissions" }
+
+[[steps]]
+key = { target = "assistant", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "assistant", label = "No grants yet — tool calls will ask." }
+
+[[steps]]
+shot = "assistant-permissions.png"
+
+[[steps]]
+key = { target = "assistant", value = "escape" }
+
+[[steps]]
+run_steps = 2

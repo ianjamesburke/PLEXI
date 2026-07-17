@@ -141,8 +141,9 @@ pub enum AssistantEffect {
         name: String,
         args: String,
     },
-    /// `/permissions`: list persisted grants for the assistant actor.
-    ListPermissions,
+    /// `/permissions` and `/revoke` (no args): open the interactive
+    /// permissions manager overlay over the composer.
+    OpenPermissionsManager,
     /// `/revoke <target_id>`: remove persisted grants for one target.
     RevokeGrant {
         target_id: String,
@@ -151,8 +152,8 @@ pub enum AssistantEffect {
     ShowAudit,
     /// `/settings` and `/config`: show the resolved Assistant settings.
     ShowSettings,
-    /// `/model`: show the resolved model tier and its source.
-    ShowModelSetting,
+    /// `/model` (no args): open the interactive model/agent picker overlay.
+    OpenModelPicker,
     /// `/model low|medium|high`: override the model tier for this session.
     SetSessionModel(ModelTier),
     ListAgents,
@@ -174,6 +175,45 @@ pub enum AssistantEffect {
     /// thread waiting on a permission reply. The late outcome is dropped by
     /// the stale-conversation guard in `finish_turn`.
     CancelTurn,
+}
+
+/// One agent the model/agent picker can switch to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentChoice {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// One editable row in the permissions manager: a persisted grant target and
+/// the decision currently selected for it (cycled in-place, applied on Enter).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GrantRow {
+    pub target_id: String,
+    pub decision: crate::broker::Decision,
+}
+
+/// A modal overlay the composer renders above itself. Distinct from the
+/// filter-as-you-type slash-command picker (`picker_selected`/`picker_active`),
+/// which has its own text-driven lifecycle.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum AssistantOverlay {
+    #[default]
+    None,
+    /// `/model`: pick a session model tier or switch the active agent. The
+    /// flattened selection runs over `tiers` first, then `agents`.
+    ModelPicker {
+        selected: usize,
+        current_tier: ModelTier,
+        active_agent_id: String,
+        tiers: Vec<ModelTier>,
+        agents: Vec<AgentChoice>,
+    },
+    /// `/permissions` and `/revoke`: review persisted grants and re-decide
+    /// each one (Space cycles Allow/Ask/Block), applied on Enter.
+    PermissionsManager {
+        selected: usize,
+        grants: Vec<GrantRow>,
+    },
 }
 
 fn new_conversation_id() -> String {
@@ -217,6 +257,8 @@ pub struct AssistantModel {
     /// Shell-style composer history cursor over prior user turns. `None`
     /// means normal editing; `Some(0)` is the newest user message.
     history_cursor: Option<usize>,
+    /// Modal picker/manager overlay currently open over the composer.
+    pub overlay: AssistantOverlay,
 }
 
 impl AssistantModel {
@@ -238,6 +280,7 @@ impl AssistantModel {
             effort_override: None,
             compaction: CompactionState::Idle,
             history_cursor: None,
+            overlay: AssistantOverlay::None,
         }
     }
 
@@ -295,6 +338,115 @@ impl AssistantModel {
             .strip_prefix('/')
             .unwrap_or("")
             .to_string()
+    }
+
+    /// True while a modal picker/manager overlay is open over the composer.
+    pub fn overlay_active(&self) -> bool {
+        !matches!(self.overlay, AssistantOverlay::None)
+    }
+
+    /// Open the model/agent picker. `current_tier` is the resolved session
+    /// tier; the cursor lands on its row. Callers pass the full tier list and
+    /// the current agent roster.
+    pub fn open_model_picker(
+        &mut self,
+        current_tier: ModelTier,
+        tiers: Vec<ModelTier>,
+        agents: Vec<AgentChoice>,
+    ) {
+        let selected = tiers.iter().position(|t| *t == current_tier).unwrap_or(0);
+        log::info!(
+            "assistant[{}]: model picker opened, current tier={current_tier:?}, {} tier(s), {} agent(s)",
+            self.conversation_id,
+            tiers.len(),
+            agents.len()
+        );
+        self.overlay = AssistantOverlay::ModelPicker {
+            selected,
+            current_tier,
+            active_agent_id: self.active_agent_id.clone(),
+            tiers,
+            agents,
+        };
+    }
+
+    /// Open the permissions manager over the persisted grants for the actor.
+    pub fn open_permissions_manager(&mut self, grants: Vec<GrantRow>) {
+        log::info!(
+            "assistant[{}]: permissions manager opened, {} grant(s)",
+            self.conversation_id,
+            grants.len()
+        );
+        self.overlay = AssistantOverlay::PermissionsManager {
+            selected: 0,
+            grants,
+        };
+    }
+
+    /// Total selectable rows in the open overlay.
+    pub fn overlay_len(&self) -> usize {
+        match &self.overlay {
+            AssistantOverlay::None => 0,
+            AssistantOverlay::ModelPicker { tiers, agents, .. } => tiers.len() + agents.len(),
+            AssistantOverlay::PermissionsManager { grants, .. } => grants.len(),
+        }
+    }
+
+    /// The overlay's current cursor row (0 when no overlay is open).
+    pub fn overlay_selected(&self) -> usize {
+        match &self.overlay {
+            AssistantOverlay::None => 0,
+            AssistantOverlay::ModelPicker { selected, .. }
+            | AssistantOverlay::PermissionsManager { selected, .. } => *selected,
+        }
+    }
+
+    /// Move the cursor up one row (clamped at the top).
+    pub fn overlay_move_up(&mut self) {
+        match &mut self.overlay {
+            AssistantOverlay::ModelPicker { selected, .. }
+            | AssistantOverlay::PermissionsManager { selected, .. } => {
+                *selected = selected.saturating_sub(1);
+            }
+            AssistantOverlay::None => {}
+        }
+    }
+
+    /// Move the cursor down one row (clamped at the last row).
+    pub fn overlay_move_down(&mut self) {
+        let len = self.overlay_len();
+        match &mut self.overlay {
+            AssistantOverlay::ModelPicker { selected, .. }
+            | AssistantOverlay::PermissionsManager { selected, .. } => {
+                if *selected + 1 < len {
+                    *selected += 1;
+                }
+            }
+            AssistantOverlay::None => {}
+        }
+    }
+
+    /// Space in the permissions manager: cycle the selected grant's decision
+    /// Allow → Ask → Block → Allow. No-op for other overlays.
+    pub fn overlay_cycle_decision(&mut self) {
+        use crate::broker::Decision;
+        if let AssistantOverlay::PermissionsManager { selected, grants } = &mut self.overlay {
+            if let Some(row) = grants.get_mut(*selected) {
+                row.decision = match row.decision {
+                    Decision::Allow => Decision::Ask,
+                    Decision::Ask => Decision::Deny,
+                    Decision::Deny => Decision::Allow,
+                };
+            }
+        }
+    }
+
+    /// Close the overlay without applying anything (Esc).
+    pub fn cancel_overlay(&mut self) {
+        if self.overlay_active() {
+            log::info!("assistant[{}]: overlay cancelled", self.conversation_id);
+            self.overlay = AssistantOverlay::None;
+        }
     }
 
     /// Submit the composer. Returns the effects to execute. Blank input is a
@@ -526,7 +678,7 @@ impl AssistantModel {
             "skills" => vec![AssistantEffect::ListSkills],
             "context" => vec![AssistantEffect::ShowContext],
             "hooks" => vec![AssistantEffect::ShowHooks],
-            "permissions" => vec![AssistantEffect::ListPermissions],
+            "permissions" => vec![AssistantEffect::OpenPermissionsManager],
             "audit" => vec![AssistantEffect::ShowAudit],
             "settings" | "config" => vec![AssistantEffect::ShowSettings],
             "resume" if cmd.args.is_empty() => vec![AssistantEffect::ListConversations],
@@ -547,7 +699,7 @@ impl AssistantModel {
                 vec![AssistantEffect::CompactConversation]
             }
             "export" => vec![AssistantEffect::ExportConversation],
-            "model" if cmd.args.is_empty() => vec![AssistantEffect::ShowModelSetting],
+            "model" if cmd.args.is_empty() => vec![AssistantEffect::OpenModelPicker],
             "model" => {
                 let tier = match cmd.args.as_str() {
                     "low" => Some(ModelTier::Low),
@@ -621,21 +773,10 @@ impl AssistantModel {
                     }]
                 }
             },
-            "revoke" => {
-                if cmd.args.is_empty() {
-                    self.turns.push(Turn::now(
-                        TurnRole::Error,
-                        "Usage: /revoke <target_id> — see /permissions for target ids.",
-                    ));
-                    vec![AssistantEffect::SessionWrite {
-                        conversation_id: self.conversation_id.clone(),
-                    }]
-                } else {
-                    vec![AssistantEffect::RevokeGrant {
-                        target_id: cmd.args.clone(),
-                    }]
-                }
-            }
+            "revoke" if cmd.args.is_empty() => vec![AssistantEffect::OpenPermissionsManager],
+            "revoke" => vec![AssistantEffect::RevokeGrant {
+                target_id: cmd.args.clone(),
+            }],
             name => vec![AssistantEffect::InvokeSkill {
                 name: name.to_string(),
                 args: cmd.args.clone(),
@@ -1063,7 +1204,7 @@ mod tests {
         );
         assert_eq!(
             submitted(&mut m, "/permissions"),
-            vec![AssistantEffect::ListPermissions]
+            vec![AssistantEffect::OpenPermissionsManager]
         );
         assert_eq!(
             submitted(&mut m, "/audit"),
@@ -1075,12 +1216,13 @@ mod tests {
                 target_id: "app.csv.write_range".to_string()
             }]
         );
+        // Bare /revoke opens the permissions manager (same as /permissions),
+        // not a usage error.
+        assert_eq!(
+            submitted(&mut m, "/revoke"),
+            vec![AssistantEffect::OpenPermissionsManager]
+        );
         assert!(m.turns.is_empty(), "views answer via the pane shell");
-
-        // Bare /revoke is a usage error row, not an effect.
-        let effects = submitted(&mut m, "/revoke");
-        assert!(matches!(&effects[0], AssistantEffect::SessionWrite { .. }));
-        assert_eq!(m.turns.last().unwrap().role, TurnRole::Error);
     }
 
     #[test]
@@ -1131,12 +1273,77 @@ mod tests {
     }
 
     #[test]
-    fn model_without_args_requests_the_resolved_setting() {
+    fn model_without_args_opens_the_picker() {
         let mut model = AssistantModel::fresh();
 
         let effects = submitted(&mut model, "/model");
 
-        assert_eq!(effects, vec![AssistantEffect::ShowModelSetting]);
+        assert_eq!(effects, vec![AssistantEffect::OpenModelPicker]);
+    }
+
+    #[test]
+    fn model_picker_overlay_navigates_and_cancels() {
+        let mut model = AssistantModel::fresh();
+        model.open_model_picker(
+            ModelTier::Medium,
+            vec![ModelTier::Low, ModelTier::Medium, ModelTier::High],
+            vec![AgentChoice {
+                id: "default".to_string(),
+                display_name: "Plexi Assistant".to_string(),
+            }],
+        );
+        // Cursor lands on the current tier (medium = index 1).
+        assert_eq!(model.overlay_selected(), 1);
+        assert_eq!(model.overlay_len(), 4); // 3 tiers + 1 agent
+
+        model.overlay_move_down();
+        assert_eq!(model.overlay_selected(), 2); // high
+        model.overlay_move_down();
+        assert_eq!(model.overlay_selected(), 3); // agent row
+        model.overlay_move_down();
+        assert_eq!(model.overlay_selected(), 3, "clamps at the last row");
+
+        model.overlay_move_up();
+        model.overlay_move_up();
+        model.overlay_move_up();
+        model.overlay_move_up();
+        assert_eq!(model.overlay_selected(), 0, "clamps at the first row");
+
+        model.cancel_overlay();
+        assert!(!model.overlay_active());
+    }
+
+    #[test]
+    fn permissions_overlay_cycles_decisions() {
+        use crate::broker::Decision;
+        let mut model = AssistantModel::fresh();
+        model.open_permissions_manager(vec![
+            GrantRow {
+                target_id: "app.a.read".to_string(),
+                decision: Decision::Allow,
+            },
+            GrantRow {
+                target_id: "app.b.write".to_string(),
+                decision: Decision::Ask,
+            },
+        ]);
+        assert_eq!(model.overlay_selected(), 0);
+
+        // Space cycles the selected row: Allow -> Ask -> Deny -> Allow.
+        model.overlay_cycle_decision();
+        model.overlay_cycle_decision();
+        let AssistantOverlay::PermissionsManager { grants, .. } = &model.overlay else {
+            panic!("expected permissions manager");
+        };
+        assert_eq!(grants[0].decision, Decision::Deny);
+        assert_eq!(grants[1].decision, Decision::Ask, "other rows untouched");
+
+        model.overlay_move_down();
+        model.overlay_cycle_decision();
+        let AssistantOverlay::PermissionsManager { grants, .. } = &model.overlay else {
+            panic!("expected permissions manager");
+        };
+        assert_eq!(grants[1].decision, Decision::Deny);
     }
 
     #[test]
