@@ -236,7 +236,11 @@ find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 
 #                   reach channel app registries.
 if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
   mkdir -p "$profile_dir/apps"
-  find apps -mindepth 2 -maxdepth 2 -name manifest.toml -not -path 'apps/dev/*' -not -path 'apps/examples/*' | while read -r manifest; do
+  # maxdepth 3 (not 2) so apps/wasm-poc/<name>/manifest.toml is found too —
+  # wasm-poc apps nest one level deeper than top-level apps/<name>/manifest.toml.
+  # Registry scan is flat (one dir per app), so app_name below still resolves
+  # to the innermost dir name and syncs correctly regardless of nesting depth.
+  find apps -mindepth 2 -maxdepth 3 -name manifest.toml -not -path 'apps/dev/*' -not -path 'apps/examples/*' | while read -r manifest; do
     app_dir="$(dirname "$manifest")"
     app_name="$(basename "$app_dir")"
     rm -rf "$profile_dir/apps/$app_name"

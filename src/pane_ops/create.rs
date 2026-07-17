@@ -1289,6 +1289,32 @@ impl PlexiApp {
             }
         }
 
+        // Dev-pack apps (apps/dev/*) are intentionally excluded from the
+        // id-addressable registry (apps/AGENTS.md) — install.sh never syncs
+        // them into a profile. When the caller passed an explicit cwd, `cwd`
+        // already is that value; otherwise prefer the focused pane's actual
+        // cwd over `cwd` (which may have resolved to the context root ahead
+        // of it — see stint 0399) so this fires for a developer sitting in a
+        // repo checkout.
+        let search_start = if cwd_explicit {
+            cwd.clone()
+        } else {
+            self.windows[self.active_window]
+                .focused_pane
+                .and_then(|f| self.windows[self.active_window].get_focused_pane_cwd(f))
+                .unwrap_or_else(|| cwd.clone())
+        };
+        if let Some(dev_app_dir) = crate::app::registry::find_dev_pack_app(id, &search_start) {
+            log::warn!(
+                "launch_app_by_id: '{id}' is a dev-pack app ({dev_app_dir:?}) — not id-openable"
+            );
+            return Err(format!(
+                "'{id}' is a dev-pack app ({}) — dev apps are path-open only. Use `plexi app open {}` instead.",
+                dev_app_dir.display(),
+                dev_app_dir.display()
+            ));
+        }
+
         log::warn!("launch_app_by_id: app '{id}' has no WASM runtime");
         Err(format!("app '{id}' has no WASM runtime"))
     }
