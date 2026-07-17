@@ -1,4 +1,4 @@
-"""Tests for B2 UiNode component classes: Tabs, Grid, Toggle, Clickable, ProgressBar."""
+"""Tests for B2 UiNode component classes: Tabs, Grid, Toggle, ProgressBar."""
 
 import pytest
 
@@ -11,7 +11,6 @@ from plexi_sdk.ui import (
     Button,
     Card,
     Checkbox,
-    Clickable,
     CodeBlock,
     Column,
     DateTimePicker,
@@ -157,36 +156,10 @@ def test_toggle_label_reflects_value() -> None:
     assert Toggle("t", value=False).to_node()["label"] == "off"
 
 
-# ── Clickable ──────────────────────────────────────────────────────────────
-
-
-def test_clickable_wraps_in_interactive() -> None:
-    child = _TextNode("click me")
-    node = Clickable("btn", child).to_node()
-    assert isinstance(node, dict)
-    assert node["type"] == "interactive"
-    assert node["node_id"] == "btn"
-
-
-def test_clickable_child_is_nested() -> None:
-    child = _TextNode("hello")
-    node = Clickable("x", child).to_node()
-    assert node["child"] == {"type": "text", "text": "hello"}
-
-
-def test_clickable_on_click_default_true() -> None:
-    node = Clickable("x", _TextNode("y")).to_node()
-    assert node["on_click"] is True
-
-
-def test_clickable_on_click_false() -> None:
-    node = Clickable("x", _TextNode("y"), on_click=False).to_node()
-    assert node["on_click"] is False
-
-
-def test_clickable_on_hover_is_false() -> None:
-    node = Clickable("x", _TextNode("y")).to_node()
-    assert node["on_hover"] is False
+# Clickable was removed entirely (stint: SDK widget-class audit) -- it
+# composed onto a WIT "interactive" node type that decode_node_data
+# (src/host/wasm_python.rs) has never had a decode arm for, so any live app
+# using it crashed on render. See sdk/python/tests/test_ui_tree_widget_contract.py.
 
 
 # ── ProgressBar ────────────────────────────────────────────────────────────

@@ -204,6 +204,12 @@ SDK v3 inline text node.
 
 ### `Sized`
 
+Canvas-mode only (`measure()`/`render()`). There is no host-native
+fixed-size wrapper node — the WIT `ui-node-data` enum (`wit/plexi.wit`)
+has no `sized` variant, and none of `row`/`column`/`padding` carry a
+per-child width/height override. This class has no `to_node()` and
+cannot be placed in a declarative tree.
+
 ### `ActionBar`
 
 ### `Spacer`
@@ -260,6 +266,10 @@ Fixed or flex gap. `grow=True` expands to consume remaining space.
 
 A horizontal 1px rule.
 
+``color`` only affects canvas-mode `render()`. The WIT `divider` variant
+(`wit/plexi.wit`) is a bare unit with no fields, so `to_node()` cannot
+carry a color to the host — it is not emitted in the wire dict.
+
 ### `CanvasRect`
 
 ### `CanvasCircle`
@@ -300,10 +310,17 @@ metrics and flows them left-to-right. No Python-side width math.
 
 `key` accepts a single string (e.g. `"m"`) or a list (e.g. `["⌘", "K"]`).
 
+Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
+declarative-tree node exists for a single key-chip row. Use
+`FooterKeys` for a tree-mode shortcuts row.
+
 ### `ScrollLog`
 
 Bounded text log. Shows the most recent lines that fit in the available
 space; older lines are hidden. Lines are rendered newest-at-top.
+
+Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
+declarative-tree node exists for a bounded reversed-order text log.
 
 ### `Scrollable`
 
@@ -361,6 +378,12 @@ Returns:
 Small caption row. Wraps instead of clipping. The parent `Column`
 provides the outer bottom padding, so no extra padding is needed here.
 
+Canvas-mode only (`measure()`/`render()`). There is no host-native node
+for a standalone footer band — the WIT `ui-node-data` enum
+(`wit/plexi.wit`) has no `footer` variant, only `footer-keys`. Use
+`FooterKeys` in a declarative tree instead; this class has no
+`to_node()` and cannot be placed in one.
+
 ### `FooterKeys`
 
 Footer row that renders keyboard shortcuts as key chips + descriptions.
@@ -400,6 +423,12 @@ Example::
         selected=(i == self._sel),
     )
 
+Canvas-mode only (`measure()`/`render()`) — used internally by
+`SelectList.render()`. There is no `to_node()`; `SelectList.to_node()`
+synthesizes the equivalent tree shape itself
+(`_adapter.py::_normalize_node_data`'s `select_list` branch), it does not
+delegate to this class.
+
 ### `Row`
 
 Horizontal row: optional leading icon, main label, optional trailing text.
@@ -411,6 +440,10 @@ info rows with an icon, label, and badge or chevron.
 Example::
 
     Row(label="Workspace", leading="⚡", trailing=f"{count}")
+
+Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
+declarative-tree node exists for this leading/trailing text row. Compose
+a `"row"` of `Text` nodes yourself in tree mode.
 
 ### `badge(ctx, x, y_center, label, fill=None, fg=None, font_size=TEXT_HINT, radius=RADIUS_BADGE)`
 
@@ -494,9 +527,9 @@ A chat message bubble with left/right alignment and colored background.
 ``align="right"`` for user messages (accent bg), ``"left"`` for
 assistant messages (surface bg). Error messages use ``role="error"``.
 
-### `Markdown`
-
-Host-rendered markdown block for SDK v3 component trees.
+Canvas-mode only (`measure()`/`render()`, which also draws markdown via
+`ctx.markdown()`). There is no `to_node()` — no declarative-tree node
+exists for a colored, markdown-rendering chat bubble.
 
 ### `SelectList`
 
@@ -514,6 +547,10 @@ Label + TextInput row. Create in on_init (stable across renders).
 
 Read .submitted after the render pass; it contains the text entered by the
 user when they pressed Enter, or None if no submission this frame.
+
+Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
+declarative-tree node exists for a labeled input row. Compose a
+`"column"` of a `Text` label and a `TextInput` yourself in tree mode.
 
 ### `Column`
 
@@ -549,6 +586,12 @@ Example::
         ("app_id", "my-app"),
         ("workspace", "/path/to/ws"),
     ])
+
+Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
+declarative-tree node exists for a bordered key-value table with row
+dividers. Compose a `"column"` of `"row"`s of `Text` yourself in tree
+mode (see `KeyValue`, an unexported reference implementation earlier in
+this module).
 
 ### `ButtonRow`
 
@@ -644,15 +687,6 @@ Example::
 
     toggle = Toggle("dark_mode", value=True, label="Dark mode")
     ctx.render_tree(toggle.to_node())
-
-### `Clickable`
-
-Makes any component clickable by wrapping it in an Interactive node.
-
-Example::
-
-    clickable = Clickable("my_btn", child_node)
-    ctx.render_tree(clickable.to_node())
 
 ### `ProgressBar`
 

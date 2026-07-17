@@ -212,10 +212,14 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
         for idx, item in enumerate(items):
             text = str(item.get("name", "")) if isinstance(item, dict) else str(item)
             description = ""
+            leading = ""
+            trailing = ""
             if isinstance(item, dict):
                 description = str(item.get("description", "") or "")
+                leading = str(item.get("leading", "") or "")
+                trailing = str(item.get("trailing", "") or "")
             if description:
-                child = {
+                main = {
                     "type": "column",
                     "children": [
                         {"type": "text", "text": text, "bold": True},
@@ -224,7 +228,17 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
                     "gap": 2.0,
                 }
             else:
-                child = {"type": "text", "text": text}
+                main = {"type": "text", "text": text}
+            if leading or trailing:
+                row_children: list[dict[str, Any]] = []
+                if leading:
+                    row_children.append({"type": "text", "text": leading})
+                row_children.append(main)
+                if trailing:
+                    row_children.append({"type": "text", "text": trailing})
+                child = {"type": "row", "children": row_children, "gap": 8.0}
+            else:
+                child = main
             child_ids.append(flatten(child, f"{key}/{idx}"))
         selected = data.get("selected_idx")
         if selected is not None:

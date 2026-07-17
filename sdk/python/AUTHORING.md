@@ -73,7 +73,7 @@ def view():
 Pick one per app:
 
 - **Declarative UI trees** — forms, lists, dashboards. `view()` returns a
-  component tree (`Column`/`Row`/widgets).
+  component tree (`Column`/`HStack`/widgets).
 - **Canvas drawing** — games, animations, visualizations. `view()` returns a
   `Canvas([...])`. For animation, return `SetSchedulerMode("continuous", fps=60)`
   from `init()` and advance simulation state from `RenderFrame` events. Do not
@@ -156,11 +156,11 @@ Import from `plexi_sdk.ui`. Read `sdk.md` (UI Components section) for the full
 API; the widgets you reach for most:
 
 <!-- drift-check:components -->
-`AppBar`, `ActionBar`, `Column`, `Row`, `HStack`, `Label`, `Text`, `Heading`,
-`Spacer`, `Divider`, `FooterKeys`, `Footer`, `SelectList`, `TextEdit`, `Card`,
-`Section`, `Tabs`, `Grid`, `Toggle`, `ScrollLog`, `Scrollable`, `ChatBubble`,
-`Markdown`, `InfoTable`, `FormField`, `ButtonRow`, `Button`, `Badge`,
-`ProgressBar`, `Clickable`, `Canvas`, `CanvasRect`, `CanvasText`, `CanvasCircle`,
+`AppBar`, `ActionBar`, `Column`, `HStack`, `Label`, `Text`, `Heading`,
+`Spacer`, `Divider`, `FooterKeys`, `SelectList`, `TextEdit`, `Card`,
+`Section`, `Tabs`, `Grid`, `Toggle`, `Scrollable`,
+`ButtonRow`, `Button`, `Badge`,
+`ProgressBar`, `Canvas`, `CanvasRect`, `CanvasText`, `CanvasCircle`,
 `CanvasLine`
 <!-- /drift-check:components -->
 

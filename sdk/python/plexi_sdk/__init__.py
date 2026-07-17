@@ -32,7 +32,6 @@ from .ui import (
     Tabs as Tabs,
     Grid as Grid,
     Toggle as Toggle,
-    Clickable as Clickable,
     ProgressBar as ProgressBar,
     TextEdit as TextEdit,
 )

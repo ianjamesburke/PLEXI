@@ -384,11 +384,24 @@ class HStack(Component):
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         return None
 
-    def to_node(self) -> dict:
-        return {"type": "row", "children": [child.to_node() for child in self.children], "gap": self.gap, "grow": self.grow}
+    def to_node(self) -> "dict | None":
+        children = []
+        for child in self.children:
+            node = child.to_node()
+            if node is None:
+                return None
+            children.append(node)
+        return {"type": "row", "children": children, "gap": self.gap, "grow": self.grow}
 
 
 class Sized(Component):
+    """Canvas-mode only (`measure()`/`render()`). There is no host-native
+    fixed-size wrapper node — the WIT `ui-node-data` enum (`wit/plexi.wit`)
+    has no `sized` variant, and none of `row`/`column`/`padding` carry a
+    per-child width/height override. This class has no `to_node()` and
+    cannot be placed in a declarative tree.
+    """
+
     def __init__(self, child: Component, width: float | None = None, height: float | None = None) -> None:
         if not isinstance(child, Component):
             raise TypeError("Sized child must be a Component")
@@ -404,9 +417,6 @@ class Sized(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         self.child.render(ctx, x, y, self.width or w, self.height or h)
-
-    def to_node(self) -> dict:
-        return {"type": "sized", "child": self.child.to_node(), "width": self.width, "height": self.height}
 
 
 class ActionBar(Component):
@@ -928,7 +938,12 @@ class Modal(Component):
 
 @dataclass
 class Divider(Component):
-    """A horizontal 1px rule."""
+    """A horizontal 1px rule.
+
+    ``color`` only affects canvas-mode `render()`. The WIT `divider` variant
+    (`wit/plexi.wit`) is a bare unit with no fields, so `to_node()` cannot
+    carry a color to the host — it is not emitted in the wire dict.
+    """
     color: "str | None" = None
     margin_top: float = SPACE_SM
     margin_bottom: float = SPACE_SM
@@ -940,7 +955,7 @@ class Divider(Component):
         ctx.rect(x, y + self.margin_top, w, 1.0, self.color or theme.highlight)
 
     def to_node(self) -> dict:
-        return {"type": "divider", "color": self.color or ""}
+        return {"type": "divider"}
 
 
 @dataclass
@@ -1145,6 +1160,10 @@ class KeyRow(Component):
     metrics and flows them left-to-right. No Python-side width math.
 
     `key` accepts a single string (e.g. `"m"`) or a list (e.g. `["⌘", "K"]`).
+
+    Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
+    declarative-tree node exists for a single key-chip row. Use
+    `FooterKeys` for a tree-mode shortcuts row.
     """
     key: Union[str, List[str]]
     description: str
@@ -1171,7 +1190,11 @@ class KeyRow(Component):
 @dataclass
 class ScrollLog(Component):
     """Bounded text log. Shows the most recent lines that fit in the available
-    space; older lines are hidden. Lines are rendered newest-at-top."""
+    space; older lines are hidden. Lines are rendered newest-at-top.
+
+    Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
+    declarative-tree node exists for a bounded reversed-order text log.
+    """
     lines: List[str]
     line_size: float = TEXT_CAPTION
     empty_text: str = "no events yet"
@@ -1394,7 +1417,14 @@ def ensure_visible(scroll_offset: float, viewport_h: float,
 @dataclass
 class Footer(Component):
     """Small caption row. Wraps instead of clipping. The parent `Column`
-    provides the outer bottom padding, so no extra padding is needed here."""
+    provides the outer bottom padding, so no extra padding is needed here.
+
+    Canvas-mode only (`measure()`/`render()`). There is no host-native node
+    for a standalone footer band — the WIT `ui-node-data` enum
+    (`wit/plexi.wit`) has no `footer` variant, only `footer-keys`. Use
+    `FooterKeys` in a declarative tree instead; this class has no
+    `to_node()` and cannot be placed in one.
+    """
     text: str
     color: "str | None" = None
     max_lines: int = 2
@@ -1418,10 +1448,6 @@ class Footer(Component):
         for i, line in enumerate(self._lines(w)):
             ctx.text(x, text_y + i * self.LINE_H, line,
                      size=TEXT_HINT, color=self.color or theme.muted)
-
-    def to_node(self) -> dict:
-        inner = {"type": "footer", "text": self.text, "color": self.color or ""}
-        return {"type": "pinned", "edge": "bottom", "child": inner}
 
 
 @dataclass
@@ -1533,6 +1559,12 @@ class ListItem(Component):
             trailing="›",
             selected=(i == self._sel),
         )
+
+    Canvas-mode only (`measure()`/`render()`) — used internally by
+    `SelectList.render()`. There is no `to_node()`; `SelectList.to_node()`
+    synthesizes the equivalent tree shape itself
+    (`_adapter.py::_normalize_node_data`'s `select_list` branch), it does not
+    delegate to this class.
     """
     title: str
     subtitle: Optional[str] = None
@@ -1597,6 +1629,10 @@ class Row(Component):
     Example::
 
         Row(label="Workspace", leading="⚡", trailing=f"{count}")
+
+    Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
+    declarative-tree node exists for this leading/trailing text row. Compose
+    a `"row"` of `Text` nodes yourself in tree mode.
     """
     label: str
     leading: Optional[str] = None           # icon / short text, left slot
@@ -1909,6 +1945,10 @@ class ChatBubble(Component):
 
     ``align="right"`` for user messages (accent bg), ``"left"`` for
     assistant messages (surface bg). Error messages use ``role="error"``.
+
+    Canvas-mode only (`measure()`/`render()`, which also draws markdown via
+    `ctx.markdown()`). There is no `to_node()` — no declarative-tree node
+    exists for a colored, markdown-rendering chat bubble.
     """
     text: str
     role: str = "assistant"
@@ -1987,25 +2027,6 @@ class ChatBubble(Component):
         text_y = y + self.BUBBLE_PAD
         text_w = bubble_w - 2 * self.BUBBLE_PAD
         ctx.markdown(text_x, text_y, text_w, self.text, base_size=fs, color=fg)
-
-
-@dataclass
-class Markdown(Component):
-    """Host-rendered markdown block for SDK v3 component trees."""
-
-    text: str
-    padding: float = SPACE_MD
-    base_size: float = TEXT_BODY
-    color: str = ""
-
-    def to_node(self) -> dict:
-        return {
-            "type": "markdown",
-            "text": self.text,
-            "padding": self.padding,
-            "base_size": self.base_size,
-            "color": self.color,
-        }
 
 
 class SelectList(Component):
@@ -2156,6 +2177,10 @@ class FormField(Component):
 
     Read .submitted after the render pass; it contains the text entered by the
     user when they pressed Enter, or None if no submission this frame.
+
+    Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
+    declarative-tree node exists for a labeled input row. Compose a
+    `"column"` of a `Text` label and a `TextInput` yourself in tree mode.
     """
     id: str
     label: str
@@ -2313,6 +2338,12 @@ class InfoTable(Component):
             ("app_id", "my-app"),
             ("workspace", "/path/to/ws"),
         ])
+
+    Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
+    declarative-tree node exists for a bordered key-value table with row
+    dividers. Compose a `"column"` of `"row"`s of `Text` yourself in tree
+    mode (see `KeyValue`, an unexported reference implementation earlier in
+    this module).
     """
     rows: List[tuple]  # list of (key_label, value_text)
     key_width: float = 100.0
@@ -2416,8 +2447,12 @@ class ButtonRow(Component):
         )
 
     def to_node(self) -> dict:
-        return {"type": "button", "node_id": self.id,
-                "label": self.label, "disabled": False}
+        # `on_click` is required by the host's Button decode arm
+        # (`decode_node_data` in `src/host/wasm_python.rs`); ButtonRow's own
+        # `id` doubles as the click action, matching how canvas-mode
+        # `on_component_event(node_id, ...)` already keys clicks off `id`.
+        return {"type": "button", "label": self.label,
+                "on_click": self.id, "disabled": False}
 
 
 # ── ListView row helpers ───────────────────────────────────────────────────────
@@ -2693,31 +2728,6 @@ class Toggle:
         }
 
 
-class Clickable:
-    """Makes any component clickable by wrapping it in an Interactive node.
-
-    Example::
-
-        clickable = Clickable("my_btn", child_node)
-        ctx.render_tree(clickable.to_node())
-    """
-
-    def __init__(self, node_id: str, child: "HasToNode", on_click: bool = True) -> None:
-        self.node_id = node_id
-        self.child = child
-        self.on_click = on_click
-
-    def to_node(self) -> dict:
-        child_node = self.child.to_node() if hasattr(self.child, "to_node") else self.child
-        return {
-            "type": "interactive",
-            "node_id": self.node_id,
-            "child": child_node,
-            "on_click": self.on_click,
-            "on_hover": False,
-        }
-
-
 class ProgressBar:
     """Horizontal progress bar backed by the host's native progress-bar node.
 
@@ -2754,14 +2764,16 @@ __all__ = [
     "BG", "FG", "ACCENT", "SURFACE", "HIGHLIGHT", "MUTED", "GREEN", "RED", "YELLOW",
     # badge/status semantic color vocabulary
     "BadgeColor", "BADGE_COLORS",
-    # components
-    "Component", "Column", "Card", "HStack", "Sized", "ActionBar",
-    "AppBar", "Section", "KeyRow", "Heading", "Label",
+    # components (declarative-tree surface only -- every exported class here
+    # must produce a UiNode dict the host's decode_node_data actually
+    # understands; see sdk/python/tests/test_ui_tree_widget_contract.py)
+    "Component", "Column", "Card", "HStack", "ActionBar",
+    "AppBar", "Section", "Heading", "Label",
     "Spacer", "Divider", "Badge", "Canvas", "CanvasRect", "CanvasCircle", "CanvasLine",
-    "CanvasText", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
-    "ListItem", "Row", "TextInput", "TextEdit", "ChatBubble", "Markdown",
-    "SelectList", "FormField",
-    "InfoTable", "ButtonRow",
+    "CanvasText", "Scrollable", "FooterKeys",
+    "TextInput", "TextEdit",
+    "SelectList",
+    "ButtonRow",
     # badge primitive
     "badge",
     # scroll helpers
@@ -2771,5 +2783,5 @@ __all__ = [
     # ListView row helpers
     "ListRow", "RowChip", "LeadingBadge", "LeadingAvatar", "LeadingIcon",
     # UiNode component tree (PGAP v3.5)
-    "Tabs", "Grid", "Toggle", "Clickable", "ProgressBar",
+    "Tabs", "Grid", "Toggle", "ProgressBar",
 ]
