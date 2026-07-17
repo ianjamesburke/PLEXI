@@ -191,6 +191,50 @@ impl PlexiApp {
                     Err(error) => failed(format!("run_terminal_failed: {error}")),
                 }
             }
+            "host.files.read" => {
+                let Some(path) = parsed.get("path").and_then(serde_json::Value::as_str) else {
+                    return failed("invalid_input: path is required".to_string());
+                };
+                let roots = self.assistant_file_roots(origin_context_id);
+                match read_scoped_file(&roots, path) {
+                    Ok(content) => succeeded(serde_json::json!({"path": path, "content": content})),
+                    Err(error) => failed(error),
+                }
+            }
+            "host.files.write" => {
+                let Some(path) = parsed.get("path").and_then(serde_json::Value::as_str) else {
+                    return failed("invalid_input: path is required".to_string());
+                };
+                let Some(content) = parsed.get("content").and_then(serde_json::Value::as_str)
+                else {
+                    return failed("invalid_input: content is required".to_string());
+                };
+                let roots = self.assistant_file_roots(origin_context_id);
+                match write_scoped_file(&roots, path, content) {
+                    Ok(()) => succeeded(serde_json::json!({
+                        "ok": true, "path": path, "bytes": content.len(),
+                    })),
+                    Err(error) => failed(error),
+                }
+            }
+            "host.files.edit" => {
+                let Some(path) = parsed.get("path").and_then(serde_json::Value::as_str) else {
+                    return failed("invalid_input: path is required".to_string());
+                };
+                let Some(old_string) = parsed.get("old_string").and_then(serde_json::Value::as_str)
+                else {
+                    return failed("invalid_input: old_string is required".to_string());
+                };
+                let Some(new_string) = parsed.get("new_string").and_then(serde_json::Value::as_str)
+                else {
+                    return failed("invalid_input: new_string is required".to_string());
+                };
+                let roots = self.assistant_file_roots(origin_context_id);
+                match edit_scoped_file(&roots, path, old_string, new_string) {
+                    Ok(()) => succeeded(serde_json::json!({"ok": true, "path": path})),
+                    Err(error) => failed(error),
+                }
+            }
             "host.terminals.read" => {
                 let Some(terminal_pane_id) = parsed
                     .get("terminal_pane_id")
@@ -467,6 +511,17 @@ impl PlexiApp {
         serde_json::Value::Array(entries)
     }
 
+    /// Directories the Assistant's file tools may touch: the global apps dir
+    /// plus the origin context's workspace apps dir. App authoring only —
+    /// never the whole filesystem.
+    fn assistant_file_roots(&self, origin_context_id: u64) -> Vec<std::path::PathBuf> {
+        let mut roots = vec![crate::app::registry::apps_dir()];
+        if let Some(root) = self.context_root_for(origin_context_id) {
+            roots.push(crate::app::registry::workspace_apps_dir(&root));
+        }
+        roots
+    }
+
     /// Read the last `lines` non-empty screen lines of a terminal pane, the
     /// same capture path `plexi pane capture --lines` uses.
     fn assistant_read_terminal(
@@ -514,6 +569,98 @@ impl PlexiApp {
     }
 }
 
+const MAX_ASSISTANT_FILE_BYTES: u64 = 262_144;
+
+/// Resolve `raw` against the allowed roots: expand a leading `~/`, require an
+/// absolute path, reject `..` components, and require the result to sit under
+/// one of `roots`. Every rejection names what failed.
+fn resolve_scoped_file_path(
+    roots: &[std::path::PathBuf],
+    raw: &str,
+) -> Result<std::path::PathBuf, String> {
+    let expanded = if let Some(rest) = raw.strip_prefix("~/") {
+        dirs::home_dir()
+            .ok_or_else(|| "path_error: could not resolve home directory".to_string())?
+            .join(rest)
+    } else {
+        std::path::PathBuf::from(raw)
+    };
+    if !expanded.is_absolute() {
+        return Err(format!("path_not_absolute: {raw}"));
+    }
+    if expanded
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!("path_traversal_rejected: {raw}"));
+    }
+    if !roots.iter().any(|root| expanded.starts_with(root)) {
+        return Err(format!(
+            "path_out_of_scope: {raw} is not under an apps directory ({})",
+            roots
+                .iter()
+                .map(|r| r.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(expanded)
+}
+
+fn read_scoped_file(roots: &[std::path::PathBuf], raw: &str) -> Result<String, String> {
+    let path = resolve_scoped_file_path(roots, raw)?;
+    let size = std::fs::metadata(&path)
+        .map_err(|error| format!("read_failed: {}: {error}", path.display()))?
+        .len();
+    if size > MAX_ASSISTANT_FILE_BYTES {
+        return Err(format!(
+            "file_too_large: {} is {size} bytes (max {MAX_ASSISTANT_FILE_BYTES})",
+            path.display()
+        ));
+    }
+    std::fs::read_to_string(&path)
+        .map_err(|error| format!("read_failed: {}: {error}", path.display()))
+}
+
+fn write_scoped_file(
+    roots: &[std::path::PathBuf],
+    raw: &str,
+    content: &str,
+) -> Result<(), String> {
+    let path = resolve_scoped_file_path(roots, raw)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("write_failed: {}: {error}", parent.display()))?;
+    }
+    std::fs::write(&path, content)
+        .map_err(|error| format!("write_failed: {}: {error}", path.display()))
+}
+
+fn edit_scoped_file(
+    roots: &[std::path::PathBuf],
+    raw: &str,
+    old_string: &str,
+    new_string: &str,
+) -> Result<(), String> {
+    if old_string.is_empty() {
+        return Err("invalid_input: old_string must be non-empty".to_string());
+    }
+    let path = resolve_scoped_file_path(roots, raw)?;
+    let content = read_scoped_file(roots, raw)?;
+    match content.matches(old_string).count() {
+        0 => Err(format!(
+            "edit_no_match: old_string not found in {}",
+            path.display()
+        )),
+        1 => std::fs::write(&path, content.replacen(old_string, new_string, 1))
+            .map_err(|error| format!("write_failed: {}: {error}", path.display())),
+        n => Err(format!(
+            "edit_ambiguous: old_string matches {n} times in {}; provide a longer unique snippet",
+            path.display()
+        )),
+    }
+}
+
 fn succeeded(value: serde_json::Value) -> ToolCallResult {
     ToolCallResult {
         output_json: Some(value.to_string()),
@@ -531,6 +678,85 @@ fn failed(error: String) -> ToolCallResult {
 #[cfg(test)]
 mod tests {
     use crate::testing::HostHarness;
+
+    #[test]
+    fn scoped_file_helpers_write_read_edit_within_roots_and_reject_escapes() {
+        let root = tempfile::tempdir().unwrap();
+        let apps = root.path().join("apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        let roots = vec![apps.clone()];
+        let file = apps.join("demo/main.py").display().to_string();
+
+        super::write_scoped_file(&roots, &file, "count = 0\nprint(count)\n").unwrap();
+        assert_eq!(
+            super::read_scoped_file(&roots, &file).unwrap(),
+            "count = 0\nprint(count)\n"
+        );
+
+        super::edit_scoped_file(&roots, &file, "count = 0", "count = 5").unwrap();
+        assert_eq!(
+            super::read_scoped_file(&roots, &file).unwrap(),
+            "count = 5\nprint(count)\n"
+        );
+
+        let no_match = super::edit_scoped_file(&roots, &file, "absent", "x").unwrap_err();
+        assert!(no_match.starts_with("edit_no_match"), "{no_match}");
+
+        super::write_scoped_file(&roots, &file, "a\na\n").unwrap();
+        let ambiguous = super::edit_scoped_file(&roots, &file, "a", "b").unwrap_err();
+        assert!(ambiguous.starts_with("edit_ambiguous"), "{ambiguous}");
+
+        let outside = super::write_scoped_file(&roots, "/tmp/plexi-escape.py", "x").unwrap_err();
+        assert!(outside.starts_with("path_out_of_scope"), "{outside}");
+
+        let traversal = apps.join("demo/../../etc/passwd").display().to_string();
+        let escaped = super::read_scoped_file(&roots, &traversal).unwrap_err();
+        assert!(escaped.starts_with("path_traversal_rejected"), "{escaped}");
+
+        let relative = super::read_scoped_file(&roots, "apps/demo/main.py").unwrap_err();
+        assert!(relative.starts_with("path_not_absolute"), "{relative}");
+    }
+
+    #[test]
+    fn files_tools_dispatch_and_report_scope_errors() {
+        let mut harness = HostHarness::new();
+        let origin = harness.add_test_pane();
+        let context = harness.app.windows[0].context_id;
+
+        let out_of_scope = harness.app.handle_assistant_host_tool(
+            "host.files.read",
+            r#"{"path": "/etc/passwd"}"#,
+            origin,
+            context,
+        );
+        assert!(out_of_scope
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("path_out_of_scope"));
+
+        let missing_arg =
+            harness
+                .app
+                .handle_assistant_host_tool("host.files.write", "{}", origin, context);
+        assert!(missing_arg
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("invalid_input"));
+
+        let missing_edit_arg = harness.app.handle_assistant_host_tool(
+            "host.files.edit",
+            r#"{"path": "/tmp/x"}"#,
+            origin,
+            context,
+        );
+        assert!(missing_edit_arg
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("invalid_input"));
+    }
 
     #[test]
     fn terminals_read_returns_screen_lines_and_fails_loudly_on_non_terminals() {

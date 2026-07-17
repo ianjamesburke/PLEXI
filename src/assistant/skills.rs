@@ -213,7 +213,8 @@ mod tests {
         let skill = registry.get("build-plexi-app").unwrap();
         assert_eq!(skill.source, SkillSource::Builtin);
         assert!(skill.instructions.contains("plexi app init --global"));
-        assert!(skill.instructions.contains("plexi app check ."));
+        assert!(skill.instructions.contains("plexi app check"));
+        assert!(skill.instructions.contains("host.files.write"));
         assert_eq!(
             registry
                 .matching_enabled("build me a small timer app", &[])

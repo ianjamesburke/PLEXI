@@ -82,10 +82,12 @@ with host.terminals.read before deciding your next step; never assume a command 
 succeeded or guess at paths it printed. \
 When the user asks you to build an app, game, or tool, build it as a Plexi app, \
 never as a loose script: scaffold with `plexi app init --global <kebab-name>` in a \
-terminal, read the scaffolded AGENTS.md to learn the SDK, write main.py, validate \
-with `plexi app check .` from the app directory, then open it with host.apps.open. \
-The app-authoring commands `plexi app init` and `plexi app check` run via \
-host.terminals.run and are the one sanctioned use of the plexi CLI. ";
+terminal, read the scaffolded AGENTS.md with host.files.read to learn the SDK, \
+write main.py with host.files.write and refine with host.files.edit — never write \
+file content through the terminal — validate with `plexi app check <app-dir>` in \
+the terminal, then open it with host.apps.open. The app-authoring commands \
+`plexi app init` and `plexi app check` run via host.terminals.run and are the one \
+sanctioned use of the plexi CLI. ";
 
 /// Host tool names the Assistant injects into its dispatcher snapshot.
 const HOST_TOOL_SUBSCRIBE: &str = "host.events.subscribe";
@@ -99,6 +101,9 @@ const HOST_TOOL_APPS_OPEN: &str = "host.apps.open";
 const HOST_TOOL_TERMINALS_OPEN: &str = "host.terminals.open";
 const HOST_TOOL_TERMINALS_RUN: &str = "host.terminals.run";
 const HOST_TOOL_TERMINALS_READ: &str = "host.terminals.read";
+const HOST_TOOL_FILES_READ: &str = "host.files.read";
+const HOST_TOOL_FILES_WRITE: &str = "host.files.write";
+const HOST_TOOL_FILES_EDIT: &str = "host.files.edit";
 
 /// Broker identity for the Assistant: actor id at the permission tiers,
 /// `agent:assistant` as the `ToolDispatcher` caller id (Phase C convention).
@@ -954,6 +959,39 @@ impl AssistantApp {
                 timeout_ms: Some(30_000),
                 read_only: true,
             },
+            AiTool {
+                name: HOST_TOOL_FILES_READ.into(),
+                description: "Read a file inside an apps directory (global or \
+                    workspace). App authoring only; paths outside the apps \
+                    directories are rejected."
+                    .into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Absolute path (or ~/) under an apps directory."}},"required":["path"]}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: true,
+            },
+            AiTool {
+                name: HOST_TOOL_FILES_WRITE.into(),
+                description: "Create or fully replace a file inside an apps \
+                    directory. Use for writing an app's main.py; prefer \
+                    host.files.edit for small changes."
+                    .into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: false,
+            },
+            AiTool {
+                name: HOST_TOOL_FILES_EDIT.into(),
+                description: "Replace one unique occurrence of old_string with \
+                    new_string in a file inside an apps directory. Fails loudly \
+                    if old_string is absent or matches more than once."
+                    .into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}),
+                output_schema: serde_json::json!({"type":"object"}),
+                timeout_ms: Some(30_000),
+                read_only: false,
+            },
         ]
     }
 
@@ -1026,6 +1064,14 @@ impl AssistantApp {
                 self.audit.append(&AuditEvent::now(
                     "terminal_command",
                     HOST_TOOL_TERMINALS_RUN,
+                    "requested",
+                    &summarize_input(input_json),
+                ));
+            }
+            if matches!(tool, HOST_TOOL_FILES_WRITE | HOST_TOOL_FILES_EDIT) {
+                self.audit.append(&AuditEvent::now(
+                    "file_mutation",
+                    tool,
                     "requested",
                     &summarize_input(input_json),
                 ));
