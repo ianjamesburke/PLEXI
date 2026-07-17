@@ -6,6 +6,18 @@ or `/merge-pr` trims the orientation file; do not rewrite old entries.
 
 ---
 
+## 2026-07-17 — Assistant app-building hardening (0413 gate dogfood)
+
+Live dogfooding of the 0413 launch gate — "the assistant builds a small app in front of you" — exposed that the host Assistant could not actually author a Plexi app, and each fix went direct to alpha.
+
+- **No app-authoring knowledge.** The Assistant's `DEFAULT_AGENT_PROMPT` never mentioned the `plexi app init`/`app check` lifecycle and forbade all CLI use, so "build me a game" produced a raw curses script. Added a compiled-in builtin skill (`src/assistant/builtin/build-plexi-app.md`, new `SkillSource::Builtin`) that every fresh install carries and that auto-matches build/make/game prompts, plus a prompt carve-out routing app authoring through the CLI.
+- **Assistant was blind to terminal output.** `host.terminals.run` returned only `{ok}`, so the model guessed the scaffold path (`~/.plexi/` instead of `~/.plexi-alpha/`). Added read-only `host.terminals.read` and a read-after-every-run prompt rule; raised the broker tool-loop cap and made the forced-stop emit a visible message instead of ending the turn silently.
+- **File authoring through PTY heredocs.** The Assistant had no file tools, so it typed whole `main.py` files into a visible terminal. Added app-dir-scoped, audit-logged `host.files.read`/`host.files.write`/`host.files.edit` (unique-string-replace, loud on zero/multi match); traversal and out-of-scope paths reject by name.
+- **Badge/status color contract mismatch.** Apps could write `Badge(color="blue")`; the SDK accepted any string and the host decoder rejected all but five semantic roles, crashing the whole tree at render. Colors are now the theme's semantic roles (`accent/success/warning/danger/neutral` plus the `red/green/yellow` aliases the theme already defines); the SDK validates at construction with a `Literal` type and a named `ValueError`, and the host decoder accepts the aliases. `Banner` fails loud instead of coercing bad tones to neutral.
+- **Doc-drift purge.** An audit found the theme/color contract was undocumented in any agent-facing file, plus stale pointers (wrong `CONFIG.md` path, a mangled `src/ui/AGENTS.md` link, a dead `substitute_note_tokens_static` security trap, an inaccurate exemplar-app list). Fixed all, stripped volatile line-numbers/counts from the agent docs, and added a root "No volatile numbers in docs" rule so the drift can't recur.
+
+An SDK-vs-code audit also found that many `AUTHORING.md`-advertised widgets (`Markdown`, `Clickable`, `Footer`, `ButtonRow`, and several canvas-era classes with no `to_node()`) crash or no-op in the shipped declarative-tree mode — stranded debt from the native→WASM migration. Being fixed as a follow-up with an enumerate-every-component-and-assert-its-node-type guardrail so the class can't regress.
+
 ## 2026-07-11 — Durability + channel-routing fixes; assistant dogfooding audit
 
 `0367` made workspace saves atomic and durable (#2384); `0365` routed CLI commands by binary channel (#2385). Same evening, three live dogfooding sessions against the alpha assistant produced a 15-task audit batch (`0368`–`0382`): the headline finding is that the host-side v3.7 tool protocol (`ExposeTools`/`AiTool`, stint 0227) was never wrapped in the Python SDK, so zero apps can expose connector tools; the assistant also lacks terminal-input, internet, and pane-targeting tools, and the permission modal lacks keyboard support. Full detail on each task.
