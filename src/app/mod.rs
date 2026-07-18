@@ -1606,6 +1606,20 @@ impl PlexiApp {
             agent_host,
             pending_pane_clicks: HashMap::new(),
         };
+        // Seed the base root terminal so a fresh profile boots straight into a
+        // live pane — identical in shape to a freshly created context (root pane
+        // present, focused_pane set) rather than the empty welcome screen. Only
+        // the fresh-profile Default branch reaches here; the restore-from-saved
+        // workspace path returns earlier and is untouched. The welcome screen
+        // still renders for any genuinely-empty window elsewhere.
+        let seed_cwd = app.windows[0].path.clone();
+        if app.seed_window_root_pane(0, seed_cwd, None, false).is_some() {
+            log::info!("first boot: seeded base root pane in context 1");
+        } else {
+            log::warn!(
+                "first boot: base root pane seeding failed — falling back to welcome screen"
+            );
+        }
         app.apply_context_transition_effects();
         app
     }

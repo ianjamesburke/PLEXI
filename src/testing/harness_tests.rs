@@ -2111,3 +2111,89 @@ fn sidebar_rename_keys_do_not_reach_focused_app_pane() {
         "keys typed during sidebar rename must not reach the focused app pane"
     );
 }
+
+// -- First-boot context seeding (stint 0436) ------------------------------
+
+/// Stint 0436: a fresh-profile boot must land in a live root terminal, not the
+/// empty welcome screen. The real fix lives in `PlexiApp::new`'s Default branch,
+/// but the harness bypasses `PlexiApp::new` — `new_for_test` hand-builds an empty
+/// window 0 (no root pane, no focus), exactly the pre-seed first-boot shape. So
+/// we drive the closest reachable seam: `seed_window_root_pane(0, ..)`, which is
+/// precisely what the Default branch now calls on window 0.
+#[test]
+fn first_boot_seam_seeds_base_root_pane() {
+    let mut h = HostHarness::new();
+    // new_for_test starts window 0 empty — the old first-boot welcome state.
+    assert!(
+        h.app.windows[0].panes.is_empty(),
+        "setup: window starts with no panes"
+    );
+    assert!(
+        h.app.windows[0].tree.root.is_none(),
+        "setup: window starts with no tree root"
+    );
+    assert_eq!(
+        h.app.windows[0].focused_pane, None,
+        "setup: window starts with no focused pane"
+    );
+
+    let cwd = std::env::temp_dir();
+    if h.app.seed_window_root_pane(0, cwd, None, false).is_none() {
+        // No PTY in this env — the installer degrades to the welcome screen,
+        // matching first boot's documented fallback. Nothing more to assert.
+        return;
+    }
+
+    let win = &h.app.windows[0];
+    assert_eq!(win.panes.len(), 1, "seeded window has exactly one pane");
+    assert!(
+        win.panes.values().all(|p| p.as_terminal().is_some()),
+        "seeded root pane is a terminal"
+    );
+    assert!(win.tree.root.is_some(), "seeded window has a tree root");
+    assert!(
+        win.focused_pane.is_some(),
+        "seeded window has a focused pane"
+    );
+}
+
+/// The seeded first-boot window is identical in shape to a context created via
+/// the new-context flow — both funnel through `seed_window_root_pane`, so a fresh
+/// boot is indistinguishable from a manually created context.
+#[test]
+fn first_boot_shape_matches_new_context() {
+    let mut h = HostHarness::new();
+    let cwd = std::env::temp_dir();
+    if h.app.seed_window_root_pane(0, cwd, None, false).is_none() {
+        return; // no PTY in this env
+    }
+    let boot_pane_count = h.app.windows[0].panes.len();
+    let boot_has_root = h.app.windows[0].tree.root.is_some();
+    let boot_has_focus = h.app.windows[0].focused_pane.is_some();
+
+    h.app.new_context();
+    if h.app.router.len() == 1 {
+        return; // new_context degraded (no PTY) — nothing to compare
+    }
+    let new_idx = h.app.active_window;
+    let ctx = &h.app.windows[new_idx];
+    assert_eq!(
+        ctx.panes.len(),
+        boot_pane_count,
+        "new-context window has the same pane count as first boot"
+    );
+    assert_eq!(
+        ctx.tree.root.is_some(),
+        boot_has_root,
+        "new-context window has a tree root iff first boot does"
+    );
+    assert_eq!(
+        ctx.focused_pane.is_some(),
+        boot_has_focus,
+        "new-context window has a focused pane iff first boot does"
+    );
+    assert!(
+        ctx.panes.values().all(|p| p.as_terminal().is_some()),
+        "new-context root pane is a terminal"
+    );
+}
