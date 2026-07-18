@@ -104,6 +104,24 @@ if [[ -n "$suffix" ]]; then
   mv "$app_dest/Contents/MacOS/plexi" "$app_dest/Contents/MacOS/plexi${suffix}"
 fi
 
+# Sign the assembled bundle with the stable "Plexi Dev" identity so its code
+# signature's designated requirement pins to the cert instead of a per-build
+# cdhash. macOS keys keychain "Always Allow" ACLs off the designated
+# requirement, so an ad-hoc bundle (fresh cdhash every rebuild) makes the AI
+# broker's OPENROUTER_API_KEY read re-prompt after every install; a stable
+# identity stops it. Must run AFTER every bundle mutation above (Info.plist
+# patch, binary rename) — any change invalidates the signature.
+# `just codesign-setup` creates the identity one time.
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "Plexi Dev"; then
+  if codesign --force --deep --sign "Plexi Dev" "$app_dest" && codesign --verify "$app_dest"; then
+    echo "Signed $app_dest with stable 'Plexi Dev' identity (no per-install keychain re-prompt)"
+  else
+    echo "warning: codesign with 'Plexi Dev' failed — installed UNSIGNED; the AI-broker keychain re-prompt will persist"
+  fi
+else
+  echo "warning: no 'Plexi Dev' code-signing identity — installing UNSIGNED; run 'just codesign-setup' once to stop the per-install AI-broker keychain re-prompt"
+fi
+
 if [[ "$skip_bin_install" != "1" ]]; then
   if [[ "$channel" == "main" ]]; then
     # Main owns the bare `plexi` PATH command, but installs it as a contextual
