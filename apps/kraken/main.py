@@ -89,7 +89,6 @@ def view():
             FooterKeys([("j/k", "select"), ("r", "refresh"), ("timer", "auto")]),
         ],
         grow=True,
-        padding=0,
     )
 
 

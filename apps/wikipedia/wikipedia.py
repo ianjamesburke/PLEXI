@@ -218,7 +218,6 @@ def _search_view(data: dict):
             FooterKeys([("enter", "search")]),
         ],
         grow=True,
-        padding=0,
     )
 
 
@@ -237,7 +236,6 @@ def _results_view(data: dict):
             FooterKeys([("j/k", "select"), ("enter", "open"), ("esc", "search")]),
         ],
         grow=True,
-        padding=0,
     )
 
 
@@ -252,7 +250,6 @@ def _article_view(data: dict):
             FooterKeys([("esc", "results")]),
         ],
         grow=True,
-        padding=0,
     )
 
 

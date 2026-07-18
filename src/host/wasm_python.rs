@@ -2659,7 +2659,10 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
         })),
         "Column" | "column" => Ok(UiNodeData::Column(ColumnNode {
             children: u32_list(value, "children")?,
-            gap: optional_f32(value, "gap")?.unwrap_or(0.0),
+            // Default inter-child spacing when the app declares none. Absence
+            // means "use the good default"; an explicit `gap: 0.0` still wins
+            // and packs children flush (stint 0445).
+            gap: optional_f32(value, "gap")?.unwrap_or(crate::ui::style::SPACE_MD),
             align: decode_alignment(
                 value
                     .get("align")
@@ -2712,7 +2715,9 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
         })),
         "Row" | "row" => Ok(UiNodeData::Row(RowNode {
             children: u32_list(value, "children")?,
-            gap: optional_f32(value, "gap")?.unwrap_or(0.0),
+            // Rows sit tighter than columns by default; absence uses the token,
+            // an explicit `gap: 0.0` still packs children flush (stint 0445).
+            gap: optional_f32(value, "gap")?.unwrap_or(crate::ui::style::SPACE_SM),
             align: decode_alignment(
                 value
                     .get("align")
@@ -3283,6 +3288,50 @@ mod tests {
         assert!(error
             .to_string()
             .contains("unsupported CPython-WASM UINode type: Accordion"));
+    }
+
+    // Stint 0445: good-by-default inter-child spacing. When an app declares no
+    // `gap`, the decoder fills in the design-token default; an explicit value
+    // (including `0.0`, meaning "pack flush") always wins over the default.
+    #[test]
+    fn container_gap_defaults_when_unset_and_explicit_value_wins() {
+        let col_default = decode_node_data(&json!({"type": "column", "children": []}))
+            .expect("decode column");
+        let UiNodeData::Column(c) = col_default else {
+            panic!("expected column");
+        };
+        assert_eq!(
+            c.gap,
+            crate::ui::style::SPACE_MD,
+            "an unset column gap must fall back to the SPACE_MD token"
+        );
+
+        let row_default =
+            decode_node_data(&json!({"type": "row", "children": []})).expect("decode row");
+        let UiNodeData::Row(r) = row_default else {
+            panic!("expected row");
+        };
+        assert_eq!(
+            r.gap,
+            crate::ui::style::SPACE_SM,
+            "an unset row gap must fall back to the SPACE_SM token"
+        );
+
+        let col_zero =
+            decode_node_data(&json!({"type": "column", "children": [], "gap": 0.0}))
+                .expect("decode column");
+        let UiNodeData::Column(c) = col_zero else {
+            panic!("expected column");
+        };
+        assert_eq!(c.gap, 0.0, "an explicit gap=0 must pack children flush");
+
+        let row_explicit =
+            decode_node_data(&json!({"type": "row", "children": [], "gap": 20.0}))
+                .expect("decode row");
+        let UiNodeData::Row(r) = row_explicit else {
+            panic!("expected row");
+        };
+        assert_eq!(r.gap, 20.0, "an explicit row gap must be honored verbatim");
     }
 
     #[test]

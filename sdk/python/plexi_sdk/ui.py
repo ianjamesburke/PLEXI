@@ -368,7 +368,7 @@ class Button(Component):
 
 
 class HStack(Component):
-    def __init__(self, children: list[Component], gap: float = 0.0, grow: bool = False) -> None:
+    def __init__(self, children: list[Component], gap: "float | None" = None, grow: bool = False) -> None:
         if any(not isinstance(child, Component) for child in children):
             raise TypeError("HStack children must be Component instances")
         self.children = children
@@ -391,7 +391,12 @@ class HStack(Component):
             if node is None:
                 return None
             children.append(node)
-        return {"type": "row", "children": children, "gap": self.gap, "grow": self.grow}
+        node: dict = {"type": "row", "children": children, "grow": self.grow}
+        # Emit gap only when set so the host can distinguish "unset" (apply the
+        # default row spacing) from an explicit "gap=0" (pack flush).
+        if self.gap is not None:
+            node["gap"] = self.gap
+        return node
 
 
 class Sized(Component):
@@ -2217,15 +2222,20 @@ class Column(Component):
     measures fixed-height children first, then distributes leftover space to
     any `Spacer(grow=True)` descendants at the top level.
 
-    Padding defaults to `SPACE_XL` (24px) on the sides and bottom, and
-    `SPACE_SM` (8px) on the top. Pass `padding=0` for full-width content
-    (e.g. apps whose children manage their own horizontal margins).
-    Override top-only with `padding_top=`.
+    Spacing is good by default: leave `gap` unset and the host applies its
+    standard inter-child spacing; pass an explicit `gap=` (including `gap=0`
+    to pack children flush) to override. The root's *content padding* is owned
+    by the host too — a declarative tree is inset automatically, and app bars /
+    footers stay full-bleed — so apps need no layout code to look right.
+
+    `padding` / `padding_top` only affect the legacy canvas-mode layout
+    (`measure`/`render`); they are ignored by the declarative tree, whose inset
+    the host owns.
     """
     children: List[Component]
     padding: float = SPACE_XL
     padding_top: Optional[float] = None
-    gap: float = SPACE_MD
+    gap: Optional[float] = None
     align: str = "start"
     grow: bool = False
     key: str = ""
@@ -2243,13 +2253,20 @@ class Column(Component):
     def _pad_top(self) -> float:
         return self.padding_top if self.padding_top is not None else SPACE_SM
 
+    @property
+    def _gap(self) -> float:
+        """Resolved gap for canvas-mode layout math. The declarative tree omits
+        gap when unset so the host applies its default; canvas-mode has no host,
+        so it falls back to `SPACE_MD` here."""
+        return self.gap if self.gap is not None else SPACE_MD
+
     def measure(self, avail_w: float) -> float:
         inner_w = avail_w - 2 * self.padding
         total = 0.0
         for i, c in enumerate(self.children):
             total += c.measure(inner_w)
             if i < len(self.children) - 1:
-                total += self.gap
+                total += self._gap
         return total + self._pad_top + self.padding
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
@@ -2259,7 +2276,7 @@ class Column(Component):
         inner_h = h - self._pad_top - self.padding
 
         heights = [c.measure(inner_w) for c in self.children]
-        gap_total = self.gap * max(0, len(self.children) - 1)
+        gap_total = self._gap * max(0, len(self.children) - 1)
         fixed_used = sum(heights) + gap_total
 
         grow_indices = [i for i, c in enumerate(self.children) if c.is_grow()]
@@ -2280,7 +2297,7 @@ class Column(Component):
             child._render_clipped(ctx, inner_x, cursor, inner_w, ch)
             cursor += ch
             if i < len(self.children) - 1:
-                cursor += self.gap
+                cursor += self._gap
 
     def to_node(self) -> "dict | None":
         children = []
@@ -2289,13 +2306,17 @@ class Column(Component):
             if node is None:
                 return None
             children.append(node)
-        return {
+        node: dict = {
             "type": "column",
             "children": children,
-            "gap": self.gap,
-            "padding_top": self._pad_top,
-            "padding": self.padding,
+            "align": self.align,
+            "grow": self.grow,
         }
+        # Emit gap only when the app set one, so the host can tell "unset"
+        # (apply the default) from an explicit "gap=0" (pack flush).
+        if self.gap is not None:
+            node["gap"] = self.gap
+        return node
 
 
 # ── Public render entry point ──────────────────────────────────────────────
