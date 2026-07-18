@@ -1387,6 +1387,7 @@ mod tests {
             created_at: "2026-06-12T00:00:00Z".to_string(),
             status: None,
             thoughts: None,
+            detail: None,
         };
         assistant.model.turns = vec![
             turn(
@@ -1401,6 +1402,16 @@ mod tests {
                  - #2218 regenerates docs",
             ),
             turn(crate::assistant::model::TurnRole::User, "Thanks!"),
+            // A tool row carrying a file-edit diff payload (stint 0421) —
+            // exercises draw_diff_block through the real transcript path.
+            crate::assistant::model::Turn {
+                status: Some(crate::assistant::model::ToolStatus::Succeeded),
+                detail: Some(
+                    "--- a/main.py\n+++ b/main.py\n@@ -1,2 +1,2 @@\n-count = 0\n+count = 5\n print(count)\n"
+                        .to_string(),
+                ),
+                ..turn(crate::assistant::model::TurnRole::Tool, "host.files.edit")
+            },
         ];
         assistant.model.composer = "/".to_string();
         h.open_assistant_built(assistant, ws.path().to_path_buf());

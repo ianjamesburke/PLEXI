@@ -298,9 +298,11 @@ pub trait ToolCallHooks: Send + Sync {
     /// to the model as the tool error.
     fn before_call(&self, name: &str, input_json: &str) -> Result<(), String>;
 
-    /// Called with the call outcome (`None` = success). Not called when
+    /// Called with the call outcome (`error: None` = success, with the
+    /// tool's `output_json` when one was produced — the Assistant lifts
+    /// render payloads like file-edit diffs from it). Not called when
     /// `before_call` blocked the call or the tool was not found.
-    fn after_call(&self, name: &str, error: Option<&str>);
+    fn after_call(&self, name: &str, error: Option<&str>, output_json: Option<&str>);
 }
 
 // ── ToolDispatcher ──────────────────────────────────────────────────────────
@@ -460,7 +462,7 @@ impl ToolDispatcher {
             );
             let result = handler(name, &input_json);
             if let Some(hooks) = &self.hooks {
-                hooks.after_call(name, result.error.as_deref());
+                hooks.after_call(name, result.error.as_deref(), result.output_json.as_deref());
             }
             return result;
         }
@@ -484,7 +486,7 @@ impl ToolDispatcher {
         }
         let result = self.dispatch_inner(call_id, name, input_json);
         if let Some(hooks) = &self.hooks {
-            hooks.after_call(name, result.error.as_deref());
+            hooks.after_call(name, result.error.as_deref(), result.output_json.as_deref());
         }
         result
     }
@@ -781,7 +783,7 @@ mod tests {
             fn before_call(&self, _name: &str, _input: &str) -> Result<(), String> {
                 Err("permission_denied: test gate".to_string())
             }
-            fn after_call(&self, _name: &str, _error: Option<&str>) {
+            fn after_call(&self, _name: &str, _error: Option<&str>, _output: Option<&str>) {
                 panic!("after_call must not run for blocked or unknown calls");
             }
         }
@@ -883,7 +885,7 @@ mod tests {
             fn before_call(&self, _name: &str, _input: &str) -> Result<(), String> {
                 Err("permission_denied: app connector denied".to_string())
             }
-            fn after_call(&self, _name: &str, _error: Option<&str>) {}
+            fn after_call(&self, _name: &str, _error: Option<&str>, _output: Option<&str>) {}
         }
 
         let workspace = PathBuf::from("/workspace/wasm-denied");

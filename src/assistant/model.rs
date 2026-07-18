@@ -44,6 +44,11 @@ pub struct Turn {
     /// Assistant` rows so `/thoughts` can reveal them after the turn ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thoughts: Option<String>,
+    /// Render payload for `TurnRole::Tool` rows — the unified diff a
+    /// `host.files.edit`/`host.files.write` reported (stint 0421). `None`
+    /// for every other role and for tools with no visual payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 impl Turn {
@@ -54,6 +59,7 @@ impl Turn {
             created_at: crate::host::event_log::now_timestamp(),
             status: None,
             thoughts: None,
+            detail: None,
         }
     }
 
@@ -874,19 +880,22 @@ impl AssistantModel {
     }
 
     /// A tool call finished: drop its running row and append a completed
-    /// tool turn. Returns the persistence effect.
+    /// tool turn. `detail` is an optional render payload (a file edit's
+    /// unified diff) shown with the row. Returns the persistence effect.
     pub fn tool_call_finished(
         &mut self,
         tool: &str,
         error: Option<String>,
+        detail: Option<String>,
     ) -> Vec<AssistantEffect> {
         if let Some(pos) = self.active_tools.iter().position(|t| t.tool == tool) {
             self.active_tools.remove(pos);
         }
-        let turn = match error {
+        let mut turn = match error {
             None => Turn::tool(tool.to_string(), ToolStatus::Succeeded),
             Some(e) => Turn::tool(format!("{tool} — {e}"), ToolStatus::Failed),
         };
+        turn.detail = detail;
         self.push_flight_turn(turn);
         vec![AssistantEffect::SessionWrite {
             conversation_id: self.conversation_id.clone(),
@@ -1163,7 +1172,7 @@ mod tests {
         let mut m = AssistantModel::fresh();
         submitted(&mut m, "do it");
         m.tool_call_started("csv.read_range");
-        m.tool_call_finished("csv.read_range", None);
+        m.tool_call_finished("csv.read_range", None, None);
         submitted(&mut m, "/help");
         let id = m.conversation_id.clone();
         m.finish_turn(&id, Ok("done".to_string()));
@@ -1489,7 +1498,7 @@ mod tests {
         assert_eq!(m.active_tools.len(), 1);
         assert_eq!(m.active_tools[0].tool, "csv.read_range");
 
-        let effects = m.tool_call_finished("csv.read_range", None);
+        let effects = m.tool_call_finished("csv.read_range", None, None);
         assert!(m.active_tools.is_empty());
         let row = m.turns.last().unwrap();
         assert_eq!(row.role, TurnRole::Tool);
@@ -1497,10 +1506,29 @@ mod tests {
         assert!(matches!(&effects[0], AssistantEffect::SessionWrite { .. }));
 
         m.tool_call_started("csv.write_range");
-        m.tool_call_finished("csv.write_range", Some("tool_timeout".to_string()));
+        m.tool_call_finished("csv.write_range", Some("tool_timeout".to_string()), None);
         let row = m.turns.last().unwrap();
         assert_eq!(row.status, Some(ToolStatus::Failed));
         assert!(row.text.contains("tool_timeout"));
+    }
+
+    /// Stint 0421: a render payload (file-edit diff) rides on the completed
+    /// tool turn and survives serde.
+    #[test]
+    fn tool_turn_detail_attaches_and_round_trips() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "edit the app");
+        m.tool_call_started("host.files.edit");
+        m.tool_call_finished(
+            "host.files.edit",
+            None,
+            Some("--- a/x\n+++ b/x\n".to_string()),
+        );
+        let diff_turn = m.turns.last().unwrap();
+        assert_eq!(diff_turn.detail.as_deref(), Some("--- a/x\n+++ b/x\n"));
+        let json = serde_json::to_string(diff_turn).unwrap();
+        let back: Turn = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.detail, diff_turn.detail);
     }
 
     /// Stint 0416: even when a follow-up message is queued mid-turn while
@@ -1514,7 +1542,7 @@ mod tests {
         submitted(&mut m, "build me an app");
 
         m.tool_call_started("host.files.write");
-        m.tool_call_finished("host.files.write", None);
+        m.tool_call_finished("host.files.write", None, None);
 
         // A follow-up sent while the turn is still streaming is queued, not
         // dispatched immediately.
@@ -1522,7 +1550,7 @@ mod tests {
         assert_eq!(m.queued_user_turns, 1);
 
         m.tool_call_started("plexi.app_check");
-        m.tool_call_finished("plexi.app_check", None);
+        m.tool_call_finished("plexi.app_check", None, None);
 
         let id = m.conversation_id.clone();
         m.finish_turn(&id, Ok("Done — app scaffolded.".to_string()));

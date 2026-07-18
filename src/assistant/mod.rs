@@ -139,8 +139,15 @@ enum PermissionReply {
 enum ToolFlowEvent {
     /// A tool call is about to run (passed the gate).
     Started { tool: String },
-    /// A tool call finished (`error: None` = success).
-    Finished { tool: String, error: Option<String> },
+    /// A tool call finished (`error: None` = success). `detail` is an
+    /// optional render payload lifted from the tool output — the unified
+    /// diff of a `host.files.edit`/`host.files.write`, shown in the
+    /// transcript so the user watches the app change.
+    Finished {
+        tool: String,
+        error: Option<String>,
+        detail: Option<String>,
+    },
     /// An ask-gated tool needs a user decision. The worker is blocked on
     /// `reply` until the sheet resolves (or the pane drops the sender).
     Ask {
@@ -210,11 +217,49 @@ impl ToolCallHooks for AssistantToolHooks {
         Ok(())
     }
 
-    fn after_call(&self, name: &str, error: Option<&str>) {
+    fn after_call(&self, name: &str, error: Option<&str>, output_json: Option<&str>) {
         let _ = self.flow_tx.send(ToolFlowEvent::Finished {
             tool: name.to_string(),
             error: error.map(str::to_string),
+            detail: tool_render_detail(name, output_json),
         });
+    }
+}
+
+/// Render payload for a finished tool call: the unified diff a file
+/// edit/write reports. Everything else renders as a plain trail line.
+fn tool_render_detail(name: &str, output_json: Option<&str>) -> Option<String> {
+    if !matches!(name, HOST_TOOL_FILES_EDIT | HOST_TOOL_FILES_WRITE) {
+        return None;
+    }
+    let parsed: serde_json::Value = serde_json::from_str(output_json?).ok()?;
+    parsed
+        .get("diff")
+        .and_then(serde_json::Value::as_str)
+        .filter(|diff| !diff.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod render_detail_tests {
+    use super::tool_render_detail;
+
+    #[test]
+    fn file_edit_diffs_are_lifted_and_everything_else_is_ignored() {
+        let output = r#"{"ok": true, "path": "x", "diff": "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n"}"#;
+        let detail = tool_render_detail(super::HOST_TOOL_FILES_EDIT, Some(output)).unwrap();
+        assert!(detail.starts_with("--- a/x"));
+        assert!(tool_render_detail(super::HOST_TOOL_FILES_WRITE, Some(output)).is_some());
+
+        // Empty diffs, other tools, and absent/malformed output lift nothing.
+        assert!(tool_render_detail(
+            super::HOST_TOOL_FILES_EDIT,
+            Some(r#"{"ok": true, "diff": ""}"#)
+        )
+        .is_none());
+        assert!(tool_render_detail(super::HOST_TOOL_BUILD_RUN, Some(output)).is_none());
+        assert!(tool_render_detail(super::HOST_TOOL_FILES_EDIT, None).is_none());
+        assert!(tool_render_detail(super::HOST_TOOL_FILES_EDIT, Some("not json")).is_none());
     }
 }
 
@@ -1467,7 +1512,11 @@ impl AssistantApp {
                     log::info!("assistant: tool '{tool}' running");
                     self.model.tool_call_started(&tool);
                 }
-                ToolFlowEvent::Finished { tool, error } => {
+                ToolFlowEvent::Finished {
+                    tool,
+                    error,
+                    detail,
+                } => {
                     log::info!(
                         "assistant: tool '{tool}' finished ({})",
                         if error.is_none() { "ok" } else { "error" }
@@ -1483,7 +1532,7 @@ impl AssistantApp {
                         if error.is_none() { "ok" } else { "error" },
                         error.as_deref().unwrap_or(""),
                     ));
-                    let effects = self.model.tool_call_finished(&tool, error);
+                    let effects = self.model.tool_call_finished(&tool, error, detail);
                     self.execute_effects(effects);
                 }
                 ToolFlowEvent::Ask {

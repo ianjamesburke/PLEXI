@@ -358,7 +358,7 @@ impl AssistantRenderer {
     /// one collapses into a summary line the user can expand.
     fn draw_tool_trail(ui: &mut egui::Ui, colors: &Colors, run: &[super::model::Turn]) {
         if let [only] = run {
-            Self::draw_succeeded_tool_line(ui, colors, &only.text);
+            Self::draw_succeeded_tool_line(ui, colors, only);
             return;
         }
         egui::CollapsingHeader::new(
@@ -371,22 +371,55 @@ impl AssistantRenderer {
         .default_open(false)
         .show(ui, |ui| {
             for turn in run {
-                Self::draw_succeeded_tool_line(ui, colors, &turn.text);
+                Self::draw_succeeded_tool_line(ui, colors, turn);
             }
         });
         ui.add_space(style::SPACE_SM);
     }
 
     /// A single completed, successful tool-call row — the pre-collapse look,
-    /// reused both for lone calls and inside an expanded trail.
-    fn draw_succeeded_tool_line(ui: &mut egui::Ui, colors: &Colors, text: &str) {
+    /// reused both for lone calls and inside an expanded trail. A file-edit
+    /// diff payload renders directly under its row: watching edits land is
+    /// the app-build flow's feedback loop (stint 0421).
+    fn draw_succeeded_tool_line(ui: &mut egui::Ui, colors: &Colors, turn: &super::model::Turn) {
         ui.label(
-            RichText::new(format!("✓ {text}"))
+            RichText::new(format!("✓ {}", turn.text))
                 .size(style::TEXT_CAPTION)
                 .monospace()
                 .color(colors.text_dim),
         );
+        if let Some(diff) = &turn.detail {
+            Self::draw_diff_block(ui, colors, diff);
+        }
         ui.add_space(style::SPACE_SM);
+    }
+
+    /// A unified diff rendered line-by-line: additions in the success hue,
+    /// removals in the danger hue, headers and context dimmed.
+    fn draw_diff_block(ui: &mut egui::Ui, colors: &Colors, diff: &str) {
+        egui::Frame::new()
+            .fill(colors.bg_active)
+            .corner_radius(style::RADIUS_MD)
+            .inner_margin(egui::Margin::symmetric(
+                style::SPACE_SM as i8,
+                style::SPACE_XS as i8,
+            ))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for line in diff.lines() {
+                    let color = match line.as_bytes().first() {
+                        Some(b'+') if !line.starts_with("+++") => colors.success,
+                        Some(b'-') if !line.starts_with("---") => colors.danger,
+                        _ => colors.text_dim,
+                    };
+                    ui.label(
+                        RichText::new(line)
+                            .size(style::TEXT_CAPTION)
+                            .monospace()
+                            .color(color),
+                    );
+                }
+            });
     }
 
     /// Render `text` as markdown (links, emphasis, inline code, fenced
@@ -432,7 +465,8 @@ impl AssistantRenderer {
                 );
                 ui.add_space(style::SPACE_SM);
             }
-            // Completed tool calls are compact single-line rows.
+            // Completed tool calls are compact single-line rows; a file-edit
+            // diff payload renders under the row.
             TurnRole::Tool => {
                 let (icon, color) = match status {
                     Some(ToolStatus::Succeeded) | None => ("✓", colors.text_dim),
@@ -444,6 +478,9 @@ impl AssistantRenderer {
                         .monospace()
                         .color(color),
                 );
+                if let Some(diff) = &turn.detail {
+                    Self::draw_diff_block(ui, colors, diff);
+                }
                 ui.add_space(style::SPACE_SM);
             }
             // User turns sit right-aligned in an outlined bubble, like every
