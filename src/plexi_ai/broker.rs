@@ -1082,7 +1082,7 @@ mod tests {
             openrouter: Some(OpenRouterBackendConfig {
                 api_key_env: None,
                 model_low: Some("qwen/qwen3.6-flash".to_string()),
-                model_medium: Some("xiaomi/mimo-v2.5-pro".to_string()),
+                model_medium: Some("xiaomi/mimo-v2.5".to_string()),
                 model_high: Some("anthropic/claude-fable-5".to_string()),
             }),
             ollama: None,
@@ -1097,7 +1097,7 @@ mod tests {
         assert_eq!(or_config.model_low.as_deref(), Some("qwen/qwen3.6-flash"));
         assert_eq!(
             or_config.model_medium.as_deref(),
-            Some("xiaomi/mimo-v2.5-pro")
+            Some("xiaomi/mimo-v2.5")
         );
         assert_eq!(
             or_config.model_high.as_deref(),
