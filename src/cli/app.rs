@@ -13,6 +13,35 @@ pub(super) fn app_init_config_dir() -> String {
         .unwrap_or_else(crate::config::workspace_channel_dir)
 }
 
+/// Build an actionable error message for `app init` when `app_dir` already
+/// exists. Reuses `AppManifest` (never a hand-rolled TOML parse — see
+/// src/cli/AGENTS.md / root AGENTS.md regex-vs-parser rule) to name what's
+/// already occupying the slot, then suggests a single alternative name so the
+/// caller (including the assistant's `build-plexi-app` skill) can retry
+/// immediately instead of pivoting to edit a stale/foreign app in place
+/// (stint 0428).
+pub(super) fn describe_app_init_collision(app_dir: &std::path::Path, name: &str) -> String {
+    let manifest_path = app_dir.join("manifest.toml");
+    let existing = std::fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|raw| toml::from_str::<crate::app::registry::AppManifest>(&raw).ok());
+
+    let mut msg = match existing {
+        Some(manifest) => format!(
+            "error: {} already exists (id=\"{}\", type={:?}) — pick a different name",
+            app_dir.display(),
+            manifest.app.id,
+            manifest.app.manifest_type
+        ),
+        None => format!(
+            "error: {} already exists — pick a different name",
+            app_dir.display()
+        ),
+    };
+    msg.push_str(&format!("\n  Try: plexi app init {name}-2"));
+    msg
+}
+
 /// `plexi app init [--lang python|rust] [--global] <name> [--open]`
 ///
 /// Without `--global`: walks up from CWD looking for the nearest workspace
@@ -95,7 +124,11 @@ pub fn app_init(
     log::info!("app_init: placement={placement} path={}", app_dir.display());
 
     if app_dir.exists() {
-        eprintln!("error: {} already exists", app_dir.display());
+        log::info!(
+            "app_init: name collision at {} — refusing to overwrite existing directory",
+            app_dir.display()
+        );
+        eprintln!("{}", describe_app_init_collision(&app_dir, name));
         return 1;
     }
 
@@ -2639,5 +2672,62 @@ mod scaffold_marketplace_tests {
         assert_placeholder(&manifest_for(scaffold_python_app));
         assert_placeholder(&manifest_for(scaffold_agent_python_app));
         assert_placeholder(&manifest_for(scaffold_rust_app));
+    }
+}
+
+#[cfg(test)]
+mod app_init_collision_tests {
+    use super::describe_app_init_collision;
+    use tempfile::TempDir;
+
+    /// stint 0428: a name collision on `app init` must name the occupying
+    /// app's id/type and suggest a concrete alternative name, so an agent
+    /// (or the assistant's build-plexi-app skill) never pivots to silently
+    /// editing whatever it finds there instead.
+    #[test]
+    fn collision_with_valid_manifest_names_id_and_type() {
+        let dir = TempDir::new().unwrap();
+        let app_dir = dir.path().join("counter");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"counter\"\n\
+             type = \"wasm\"\n\
+             name = \"Counter\"\n\
+             entry = \"app.wasm\"\n\
+             version = \"0.1.0\"\n\
+             description = \"Test\"\n\n\
+             [app.capabilities]\n\
+             capabilities = []\n\n\
+             [launch]\n",
+        )
+        .unwrap();
+
+        let msg = describe_app_init_collision(&app_dir, "counter");
+        assert!(msg.contains("already exists"), "message: {msg}");
+        assert!(msg.contains("id=\"counter\""), "message: {msg}");
+        assert!(msg.contains("Wasm"), "message: {msg}");
+        assert!(
+            msg.contains("plexi app init counter-2"),
+            "must suggest a concrete alternative name: {msg}"
+        );
+    }
+
+    /// A colliding directory with no parseable manifest still gets an
+    /// actionable message — never a bare "already exists" with no next step.
+    #[test]
+    fn collision_without_manifest_falls_back_to_generic_message() {
+        let dir = TempDir::new().unwrap();
+        let app_dir = dir.path().join("stale-dir");
+        std::fs::create_dir_all(&app_dir).unwrap();
+
+        let msg = describe_app_init_collision(&app_dir, "stale-dir");
+        assert!(msg.contains("already exists"), "message: {msg}");
+        assert!(
+            msg.contains("plexi app init stale-dir-2"),
+            "must suggest a concrete alternative name: {msg}"
+        );
     }
 }

@@ -643,6 +643,18 @@ pub struct LivePythonPane {
     http_tx: std::sync::mpsc::Sender<(String, crate::host::services::HttpResponse)>,
     http_rx: std::sync::mpsc::Receiver<(String, crate::host::services::HttpResponse)>,
     pending_commands: Vec<crate::app::app_trait::AppCommand>,
+    /// Stint 0426: `ui()`'s caller (`tiling.rs`/`render.rs`) removes a queued
+    /// `PendingPaneClick` from `PlexiApp::pending_pane_clicks` *before*
+    /// calling `ui()`, so this is the pane's only chance to consume it. `ui()`
+    /// has three early-return branches (fatal error, not yet initialized, not
+    /// yet `ready`) that ran before ever reaching the tree-render call — a
+    /// click/node-click arriving on exactly one of those frames (subprocess
+    /// startup, or a hot-reload `relaunch()`) was silently dropped forever
+    /// with no error and no retry, even though `plexi pane click --node`
+    /// reported `{"ok": true}`. Carry it here across the transient branches
+    /// instead of discarding it, so it survives to the next frame that
+    /// actually reaches the render call.
+    pending_click_carry: Option<crate::host::pane::PendingPaneClick>,
 }
 
 #[derive(Debug)]
@@ -863,6 +875,7 @@ impl LivePythonPane {
             http_tx,
             http_rx,
             pending_commands: Vec::new(),
+            pending_click_carry: None,
         })
     }
 
@@ -873,6 +886,16 @@ impl LivePythonPane {
         pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let host_frame_started = std::time::Instant::now();
+        // Stint 0426: the caller already removed `pending_click` from
+        // `PlexiApp::pending_pane_clicks` before this call — it is not
+        // re-queued there. A fresh click for this frame wins over a carried
+        // one from a prior frame that couldn't be delivered yet (an app is
+        // never sent two independent clicks close enough together for both
+        // to still be meaningful); the carried one is dropped in that case.
+        let pending_click = pending_click.or_else(|| self.pending_click_carry.take());
+        if pending_click.is_some() {
+            log::info!("app::{}: pending pane click/node-click entering render (carried={})", self.app_id, self.pending_click_carry.is_none());
+        }
         if !self.output_waker_installed {
             let context = ui.ctx().clone();
             let viewport = ui.ctx().viewport_id();
@@ -885,12 +908,28 @@ impl LivePythonPane {
             self.output_waker_installed = true;
         }
         if let Some(error) = &self.error {
+            if pending_click.is_some() {
+                // Fatal and does not self-heal without a relaunch (which
+                // resets pending_click_carry) — fail loud instead of
+                // silently swallowing the click forever.
+                log::error!(
+                    "app::{}: dropping pending pane click — pane is in a fatal error state: {error}",
+                    self.app_id
+                );
+            }
             ui.colored_label(colors.danger, error);
             return;
         }
         if !self.initialized {
             let size = ui.available_size();
             if !valid_python_viewport(size.x, size.y) {
+                if pending_click.is_some() {
+                    log::info!(
+                        "app::{}: deferring pending pane click — viewport not yet valid",
+                        self.app_id
+                    );
+                    self.pending_click_carry = pending_click;
+                }
                 ui.spinner();
                 self.record_render_perf(host_frame_started.elapsed());
                 ui.ctx()
@@ -907,6 +946,12 @@ impl LivePythonPane {
                 "size": [size.x, size.y]
             })) {
                 self.error = Some(error.to_string());
+                if pending_click.is_some() {
+                    log::error!(
+                        "app::{}: dropping pending pane click — init send failed: {error}",
+                        self.app_id
+                    );
+                }
                 return;
             }
         }
@@ -928,6 +973,13 @@ impl LivePythonPane {
         }
         self.drain_runtime();
         if !self.ready {
+            if pending_click.is_some() {
+                log::info!(
+                    "app::{}: deferring pending pane click — pane not yet ready (subprocess startup or hot-reload relaunch)",
+                    self.app_id
+                );
+                self.pending_click_carry = pending_click;
+            }
             ui.spinner();
             self.record_render_perf(host_frame_started.elapsed());
             ui.ctx()
@@ -940,6 +992,12 @@ impl LivePythonPane {
             let timer_ids = std::mem::take(&mut self.pending_timer_events);
             if let Err(error) = self.runtime.send(&python_render_event(frame_id, timer_ids)) {
                 self.error = Some(error.to_string());
+                if pending_click.is_some() {
+                    log::error!(
+                        "app::{}: dropping pending pane click — render request send failed: {error}",
+                        self.app_id
+                    );
+                }
                 return;
             }
             self.drain_runtime();
@@ -976,6 +1034,13 @@ impl LivePythonPane {
                 }));
             }
         } else {
+            if pending_click.is_some() {
+                log::info!(
+                    "app::{}: deferring pending pane click — no committed tree yet",
+                    self.app_id
+                );
+                self.pending_click_carry = pending_click;
+            }
             ui.spinner();
         }
         self.record_render_perf(host_frame_started.elapsed());
@@ -1499,6 +1564,18 @@ impl LivePythonPane {
         self.timers.clear();
         self.pending_timer_events.clear();
         self.viewport_size = None;
+        if let Some(dropped) = self.pending_click_carry.take() {
+            // A node-targeted click's arena id belongs to the tree it was
+            // resolved against — that tree is gone after relaunch, so
+            // replaying it against the new one would hit the wrong node (or
+            // nothing at all). Fail loud instead of a silent stale-node
+            // click, matching the same policy as the other drop points above.
+            log::error!(
+                "app::{}: dropping pending pane click across hot-reload relaunch (target={:?}) — the tree it targeted no longer exists",
+                self.app_id,
+                dropped.target
+            );
+        }
         log::info!("app::{}: relaunched CPython WASM runtime", self.app_id);
         Ok(())
     }

@@ -236,23 +236,29 @@ find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 
 #                   reach channel app registries.
 if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
   mkdir -p "$profile_dir/apps"
-  # maxdepth 3 (not 2) so apps/wasm-poc/<name>/manifest.toml is found too —
-  # wasm-poc apps nest one level deeper than top-level apps/<name>/manifest.toml.
-  # Registry scan is flat (one dir per app), so app_name below still resolves
-  # to the innermost dir name and syncs correctly regardless of nesting depth.
-  find apps -mindepth 2 -maxdepth 3 -name manifest.toml -not -path 'apps/dev/*' -not -path 'apps/examples/*' | while read -r manifest; do
+  # apps/wasm-poc/* is excluded: raw cargo-component WASM POCs with no build
+  # step at install time — syncing them hijacks app-name slots (e.g. "counter")
+  # in every fresh profile with an unbuilt/unbuildable app (stint 0428). They
+  # are not Plexi apps (see apps/AGENTS.md) and are never in packs/core.toml.
+  # maxdepth stays 3 (not 2) in case any future maintained app nests one level
+  # deeper than top-level apps/<name>/manifest.toml; the registry scan is flat
+  # (one dir per app), so app_name below resolves correctly at any depth.
+  find apps -mindepth 2 -maxdepth 3 -name manifest.toml -not -path 'apps/dev/*' -not -path 'apps/examples/*' -not -path 'apps/wasm-poc/*' | while read -r manifest; do
     app_dir="$(dirname "$manifest")"
     app_name="$(basename "$app_dir")"
     rm -rf "$profile_dir/apps/$app_name"
     rsync -a "$app_dir/" "$profile_dir/apps/$app_name/"
     # Flattening changes app_dir's depth relative to the source tree
-    # (apps/wasm-poc/<name> → apps/<name>), so a manifest `entry` that
-    # escapes app_dir with `../` (wasm-poc apps point at the shared
-    # cargo target/ dir) no longer resolves post-flatten even though it
+    # (nested app dir → apps/<name>), so a manifest `entry` that escapes
+    # app_dir with `../` no longer resolves post-flatten even though it
     # resolves correctly for path-based open, which reads the manifest
     # in place. Bundle the compiled artifact alongside the synced
     # manifest and rewrite its entry to the bundled basename so id-based
-    # open is self-contained, matching every other installed app.
+    # open is self-contained, matching every other installed app. This
+    # is generic entry-rewriting logic, not wasm-poc-specific — it is
+    # simply unreached for wasm-poc today since that tree is excluded
+    # above (stint 0428); it still applies to any other nested app with
+    # a `../`-relative entry.
     python3 - "$app_dir" "$profile_dir/apps/$app_name" <<'PYEOF'
 import os
 import shutil
