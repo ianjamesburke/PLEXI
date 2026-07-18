@@ -66,6 +66,44 @@ impl Turn {
     }
 }
 
+/// A renderable unit within a turn range, paired with its absolute start
+/// index into the slice `group_turns_for_render` was called with (so the
+/// renderer can key widgets/caches by stable turn index).
+#[derive(Debug, PartialEq)]
+pub enum TurnGroup<'a> {
+    /// Any row that renders on its own: user/assistant/error/event turns, and
+    /// failed or denied tool calls — a failure must never disappear into a
+    /// collapsed trail.
+    Row(usize, &'a Turn),
+    /// A run of one or more consecutive successful tool calls, collapsed into
+    /// a single compact trail instead of one row per call.
+    ToolRun(usize, &'a [Turn]),
+}
+
+/// Group a turn slice for rendering. Pure function of `role`/`status` — no
+/// egui dependency — so the collapsing boundary (which calls bundle
+/// together, which stay visible) is testable directly. See stint 0416.
+pub fn group_turns_for_render(turns: &[Turn]) -> Vec<TurnGroup<'_>> {
+    let mut groups = Vec::new();
+    let mut i = 0;
+    while i < turns.len() {
+        if turns[i].role == TurnRole::Tool && turns[i].status == Some(ToolStatus::Succeeded) {
+            let start = i;
+            while i < turns.len()
+                && turns[i].role == TurnRole::Tool
+                && turns[i].status == Some(ToolStatus::Succeeded)
+            {
+                i += 1;
+            }
+            groups.push(TurnGroup::ToolRun(start, &turns[start..i]));
+        } else {
+            groups.push(TurnGroup::Row(i, &turns[i]));
+            i += 1;
+        }
+    }
+    groups
+}
+
 /// One tool call currently running inside the in-flight turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveToolCall {
@@ -1465,6 +1503,44 @@ mod tests {
         assert!(row.text.contains("tool_timeout"));
     }
 
+    /// Stint 0416: even when a follow-up message is queued mid-turn while
+    /// several tool calls complete, every row must land in strict
+    /// chronological order — both tool calls before the reply they belong
+    /// to, and the queued message after it. Tool calls must never end up
+    /// stacked above (or after) the wrong turn's message.
+    #[test]
+    fn tool_calls_and_queued_message_stay_in_chronological_order() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "build me an app");
+
+        m.tool_call_started("host.files.write");
+        m.tool_call_finished("host.files.write", None);
+
+        // A follow-up sent while the turn is still streaming is queued, not
+        // dispatched immediately.
+        submitted(&mut m, "also add a footer");
+        assert_eq!(m.queued_user_turns, 1);
+
+        m.tool_call_started("plexi.app_check");
+        m.tool_call_finished("plexi.app_check", None);
+
+        let id = m.conversation_id.clone();
+        m.finish_turn(&id, Ok("Done — app scaffolded.".to_string()));
+
+        let roles: Vec<_> = m.turns.iter().map(|t| (t.role, t.text.clone())).collect();
+        assert_eq!(
+            roles,
+            vec![
+                (TurnRole::User, "build me an app".to_string()),
+                (TurnRole::Tool, "host.files.write".to_string()),
+                (TurnRole::Tool, "plexi.app_check".to_string()),
+                (TurnRole::Assistant, "Done — app scaffolded.".to_string()),
+                (TurnRole::User, "also add a footer".to_string()),
+            ],
+            "tool calls and the reply must commit before the queued follow-up, in the order they happened"
+        );
+    }
+
     /// Stint 0377: the permission sheet's keyboard cursor starts on Deny
     /// (the safe default), Tab/arrow-right cycles forward with wraparound,
     /// and Shift-Tab/arrow-left cycles backward with wraparound.
@@ -1595,6 +1671,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(legacy.status, None);
+    }
+
+    /// Stint 0416: only a run of consecutive *successful* tool calls
+    /// collapses into a trail. A failure breaks the run and always renders
+    /// on its own — it must never disappear into a collapsed cluster — and
+    /// every other role never groups at all.
+    #[test]
+    fn group_turns_for_render_collapses_only_consecutive_successful_tool_calls() {
+        let turns = vec![
+            Turn::now(TurnRole::User, "hi"),
+            Turn::tool("host.files.write", ToolStatus::Succeeded),
+            Turn::tool("host.files.read", ToolStatus::Succeeded),
+            Turn::tool("host.terminals.write", ToolStatus::Failed),
+            Turn::tool("plexi.app_check", ToolStatus::Succeeded),
+            Turn::now(TurnRole::Assistant, "done"),
+        ];
+        let groups = group_turns_for_render(&turns);
+        match groups.as_slice() {
+            [
+                TurnGroup::Row(0, user),
+                TurnGroup::ToolRun(1, run_ab),
+                TurnGroup::Row(3, failed),
+                TurnGroup::ToolRun(4, run_d),
+                TurnGroup::Row(5, done),
+            ] => {
+                assert_eq!(user.text, "hi");
+                assert_eq!(run_ab.len(), 2);
+                assert_eq!(run_ab[0].text, "host.files.write");
+                assert_eq!(run_ab[1].text, "host.files.read");
+                assert_eq!(failed.status, Some(ToolStatus::Failed));
+                assert_eq!(run_d.len(), 1, "a lone success is still its own trail unit");
+                assert_eq!(done.text, "done");
+            }
+            other => panic!("unexpected grouping: {other:?}"),
+        }
     }
 
     #[test]

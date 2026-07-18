@@ -1069,6 +1069,7 @@ impl WasmPane {
                         open_panes: crate::plexi_ai::broker::get_pane_snapshot(),
                         tool_dispatcher: None,
                         cancel: crate::plexi_ai::CancelToken::new(),
+                        max_tool_iterations: None,
                     },
                     &mut on_delta,
                 );
