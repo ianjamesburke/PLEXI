@@ -330,9 +330,17 @@ mod tests {
         let skill = registry.get(APP_BUILD_SKILL_NAME).unwrap();
         assert_eq!(skill.name, APP_BUILD_SKILL_NAME);
         assert_eq!(skill.source, SkillSource::Builtin);
-        assert!(skill.instructions.contains("plexi app init --global"));
-        assert!(skill.instructions.contains("plexi app check"));
+        assert!(skill
+            .instructions
+            .contains(r#"host.build.run {"args": ["app", "init", "<kebab-name>"]}"#));
+        assert!(skill
+            .instructions
+            .contains(r#"host.build.run {"args": ["app", "check", "<app-dir>"]}"#));
         assert!(skill.instructions.contains("host.files.write"));
+        assert!(
+            !skill.instructions.contains("host.terminals.run"),
+            "the build flow must never route through a user-visible terminal"
+        );
         assert_eq!(
             registry
                 .matching_enabled("build me a small timer app", &[])

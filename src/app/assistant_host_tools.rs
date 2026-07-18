@@ -195,9 +195,50 @@ impl PlexiApp {
                 let Some(path) = parsed.get("path").and_then(serde_json::Value::as_str) else {
                     return failed("invalid_input: path is required".to_string());
                 };
+                let offset = parsed
+                    .get("offset")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|n| n as usize)
+                    .unwrap_or(1);
+                let limit = parsed
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|n| n as usize)
+                    .unwrap_or(MAX_READ_LINES);
                 let roots = self.assistant_file_roots(origin_context_id);
-                match read_scoped_file(&roots, path) {
-                    Ok(content) => succeeded(serde_json::json!({"path": path, "content": content})),
+                match read_scoped_file_slice(&roots, path, offset, limit) {
+                    Ok(slice) => succeeded(serde_json::json!({
+                        "path": path,
+                        "content": slice.content,
+                        "total_lines": slice.total_lines,
+                        "offset": offset,
+                        "lines_returned": slice.lines_returned,
+                    })),
+                    Err(error) => failed(error),
+                }
+            }
+            "host.files.grep" => {
+                let Some(pattern) = parsed.get("pattern").and_then(serde_json::Value::as_str)
+                else {
+                    return failed("invalid_input: pattern is required".to_string());
+                };
+                let path = parsed.get("path").and_then(serde_json::Value::as_str);
+                let max_matches = parsed
+                    .get("max_matches")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|n| (n as usize).clamp(1, MAX_GREP_MATCHES))
+                    .unwrap_or(DEFAULT_GREP_MATCHES);
+                let roots = self.assistant_file_roots(origin_context_id);
+                match grep_scoped(&roots, path, pattern, max_matches) {
+                    Ok(result) => succeeded(result),
+                    Err(error) => failed(error),
+                }
+            }
+            "host.files.list" => {
+                let path = parsed.get("path").and_then(serde_json::Value::as_str);
+                let roots = self.assistant_file_roots(origin_context_id);
+                match list_scoped(&roots, path) {
+                    Ok(result) => succeeded(result),
                     Err(error) => failed(error),
                 }
             }
@@ -211,8 +252,9 @@ impl PlexiApp {
                 };
                 let roots = self.assistant_file_roots(origin_context_id);
                 match write_scoped_file(&roots, path, content) {
-                    Ok(()) => succeeded(serde_json::json!({
+                    Ok(outcome) => succeeded(serde_json::json!({
                         "ok": true, "path": path, "bytes": content.len(),
+                        "created": outcome.created, "diff": outcome.diff,
                     })),
                     Err(error) => failed(error),
                 }
@@ -231,7 +273,9 @@ impl PlexiApp {
                 };
                 let roots = self.assistant_file_roots(origin_context_id);
                 match edit_scoped_file(&roots, path, old_string, new_string) {
-                    Ok(()) => succeeded(serde_json::json!({"ok": true, "path": path})),
+                    Ok(diff) => succeeded(serde_json::json!({
+                        "ok": true, "path": path, "diff": diff,
+                    })),
                     Err(error) => failed(error),
                 }
             }
@@ -570,6 +614,27 @@ impl PlexiApp {
 }
 
 const MAX_ASSISTANT_FILE_BYTES: u64 = 262_144;
+/// Default/maximum lines one `host.files.read` call returns.
+const MAX_READ_LINES: usize = 2000;
+/// Individual lines longer than this are truncated in read/grep output.
+const MAX_LINE_CHARS: usize = 2000;
+/// Hard cap on grep matches per call; the default is lower.
+const MAX_GREP_MATCHES: usize = 200;
+const DEFAULT_GREP_MATCHES: usize = 50;
+/// Directory names never descended into by grep/list walks: the shared
+/// scaffold/check artifact list (`package::is_generated_dev_dir_name`) plus
+/// VCS and JS dependency trees that packaging never encounters.
+fn is_skipped_walk_dir(name: &str) -> bool {
+    crate::app::package::is_generated_dev_dir_name(name) || matches!(name, ".git" | "node_modules")
+}
+/// Caps on the grep/list directory walk so a runaway tree fails visibly
+/// instead of hanging the tool call.
+const MAX_WALK_DEPTH: usize = 8;
+const MAX_WALK_FILES: usize = 5000;
+const MAX_LIST_ENTRIES: usize = 500;
+/// Unified-diff shaping for edit/write results rendered in the transcript.
+const DIFF_CONTEXT_LINES: usize = 3;
+const MAX_DIFF_CHARS: usize = 4000;
 
 /// Resolve `raw` against the allowed roots: expand a leading `~/`, require an
 /// absolute path, reject `..` components, and require the result to sit under
@@ -622,26 +687,315 @@ fn read_scoped_file(roots: &[std::path::PathBuf], raw: &str) -> Result<String, S
         .map_err(|error| format!("read_failed: {}: {error}", path.display()))
 }
 
+/// A line-ranged read: numbered content plus range metadata so the model can
+/// page through files instead of re-reading them whole.
+#[derive(Debug)]
+struct ReadSlice {
+    content: String,
+    total_lines: usize,
+    lines_returned: usize,
+}
+
+/// Read lines `offset..offset+limit` (1-based) of a scoped file, each
+/// prefixed with its line number — the same contract coding agents use, so
+/// follow-up edits can reference exact locations.
+fn read_scoped_file_slice(
+    roots: &[std::path::PathBuf],
+    raw: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<ReadSlice, String> {
+    if offset == 0 {
+        return Err("invalid_input: offset is 1-based and must be >= 1".to_string());
+    }
+    if limit == 0 {
+        return Err("invalid_input: limit must be >= 1".to_string());
+    }
+    let content = read_scoped_file(roots, raw)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let total_lines = lines.len();
+    if offset > total_lines && total_lines > 0 {
+        return Err(format!(
+            "invalid_input: offset {offset} is past the end of the file ({total_lines} lines)"
+        ));
+    }
+    let limit = limit.min(MAX_READ_LINES);
+    let mut out = String::new();
+    let mut returned = 0usize;
+    for (index, line) in lines.iter().enumerate().skip(offset - 1).take(limit) {
+        out.push_str(&format!("{:>6}\t{}\n", index + 1, truncate_line(line)));
+        returned += 1;
+    }
+    Ok(ReadSlice {
+        content: out,
+        total_lines,
+        lines_returned: returned,
+    })
+}
+
+fn truncate_line(line: &str) -> std::borrow::Cow<'_, str> {
+    if line.chars().count() <= MAX_LINE_CHARS {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    let cut: String = line.chars().take(MAX_LINE_CHARS).collect();
+    std::borrow::Cow::Owned(format!("{cut}… [line truncated]"))
+}
+
+/// Walk `start` depth-first in sorted order, yielding files. Skips the
+/// well-known junk directories, and stops at the walk caps. Symlinks are
+/// never followed (same rule as packaging): grep/list are read-only
+/// auto-allowed tools, so a symlink inside an apps directory must not widen
+/// their reach beyond the scoped roots. Returns `(files, hit_file_cap)`.
+fn walk_scoped_files(start: &std::path::Path) -> (Vec<std::path::PathBuf>, bool) {
+    let mut files = Vec::new();
+    if start.is_file() {
+        files.push(start.to_path_buf());
+        return (files, false);
+    }
+    let mut stack = vec![(start.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > MAX_WALK_DEPTH {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut children: Vec<(std::path::PathBuf, std::fs::FileType)> = entries
+            .flatten()
+            .filter_map(|entry| entry.file_type().ok().map(|kind| (entry.path(), kind)))
+            .collect();
+        children.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let mut subdirs = Vec::new();
+        for (child, kind) in children {
+            // DirEntry::file_type does not follow symlinks — a link to a
+            // directory or file outside the roots is skipped entirely.
+            if kind.is_symlink() {
+                continue;
+            }
+            let name = child
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if kind.is_dir() {
+                if !is_skipped_walk_dir(&name) {
+                    subdirs.push(child);
+                }
+            } else if kind.is_file() {
+                if files.len() >= MAX_WALK_FILES {
+                    return (files, true);
+                }
+                files.push(child);
+            }
+        }
+        // Reverse so the stack pops subdirectories in sorted order.
+        for subdir in subdirs.into_iter().rev() {
+            stack.push((subdir, depth + 1));
+        }
+    }
+    (files, false)
+}
+
+/// Resolve the search start points for grep/list: an explicit scoped path, or
+/// every existing root when no path is given.
+fn scoped_walk_starts(
+    roots: &[std::path::PathBuf],
+    raw_path: Option<&str>,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    match raw_path {
+        Some(raw) => {
+            let path = resolve_scoped_file_path(roots, raw)?;
+            if !path.exists() {
+                return Err(format!("path_not_found: {raw}"));
+            }
+            Ok(vec![path])
+        }
+        None => Ok(roots
+            .iter()
+            .filter(|root| root.exists())
+            .cloned()
+            .collect()),
+    }
+}
+
+/// Regex search across scoped app files — the in-process replacement for the
+/// `cat`/`grep` PTY round-trips that burned the tool budget.
+fn grep_scoped(
+    roots: &[std::path::PathBuf],
+    raw_path: Option<&str>,
+    pattern: &str,
+    max_matches: usize,
+) -> Result<serde_json::Value, String> {
+    let regex =
+        regex::Regex::new(pattern).map_err(|error| format!("invalid_pattern: {error}"))?;
+    let starts = scoped_walk_starts(roots, raw_path)?;
+    let mut matches = Vec::new();
+    let mut files_scanned = 0usize;
+    let mut truncated = false;
+    'outer: for start in &starts {
+        let (files, hit_cap) = walk_scoped_files(start);
+        truncated |= hit_cap;
+        for file in files {
+            if std::fs::metadata(&file)
+                .map(|meta| meta.len() > MAX_ASSISTANT_FILE_BYTES)
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            // Binary or non-UTF-8 files are silently skipped, like any grep.
+            let Ok(content) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            files_scanned += 1;
+            for (index, line) in content.lines().enumerate() {
+                if !regex.is_match(line) {
+                    continue;
+                }
+                if matches.len() >= max_matches {
+                    truncated = true;
+                    break 'outer;
+                }
+                matches.push(serde_json::json!({
+                    "file": file.display().to_string(),
+                    "line": index + 1,
+                    "text": truncate_line(line),
+                }));
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "matches": matches,
+        "truncated": truncated,
+        "files_scanned": files_scanned,
+    }))
+}
+
+/// List scoped app files with sizes — how the model discovers what a
+/// scaffold created without shelling out.
+fn list_scoped(
+    roots: &[std::path::PathBuf],
+    raw_path: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let starts = scoped_walk_starts(roots, raw_path)?;
+    let mut entries = Vec::new();
+    let mut truncated = false;
+    'outer: for start in &starts {
+        let (files, hit_cap) = walk_scoped_files(start);
+        truncated |= hit_cap;
+        for file in files {
+            if entries.len() >= MAX_LIST_ENTRIES {
+                truncated = true;
+                break 'outer;
+            }
+            let bytes = std::fs::metadata(&file).map(|meta| meta.len()).unwrap_or(0);
+            entries.push(serde_json::json!({
+                "path": file.display().to_string(),
+                "bytes": bytes,
+            }));
+        }
+    }
+    Ok(serde_json::json!({"entries": entries, "truncated": truncated}))
+}
+
+/// Minimal single-hunk unified diff: trims the common prefix/suffix and
+/// wraps the changed span in up to `DIFF_CONTEXT_LINES` of context. Exact
+/// for single-span changes (every `host.files.edit`); for multi-span writes
+/// the one hunk covers the full changed region.
+fn unified_diff(old: &str, new: &str, path: &str) -> String {
+    if old == new {
+        return String::new();
+    }
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let max_common = old_lines.len().min(new_lines.len());
+    let mut prefix = 0usize;
+    while prefix < max_common && old_lines[prefix] == new_lines[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0usize;
+    while suffix < max_common - prefix
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let context_start = prefix.saturating_sub(DIFF_CONTEXT_LINES);
+    let context_end_old = (old_lines.len() - suffix + DIFF_CONTEXT_LINES).min(old_lines.len());
+    let context_end_new = (new_lines.len() - suffix + DIFF_CONTEXT_LINES).min(new_lines.len());
+    let old_count = context_end_old - context_start;
+    let new_count = context_end_new - context_start;
+    let mut out = format!(
+        "--- a/{path}\n+++ b/{path}\n@@ -{},{old_count} +{},{new_count} @@\n",
+        context_start + 1,
+        context_start + 1,
+    );
+    // Enforce the cap while building: a full-file rewrite would otherwise
+    // materialize the whole double-sided diff only to throw most of it away.
+    // The early return is also what keeps truncation on a char boundary —
+    // never byte-truncate a String built from arbitrary file content.
+    let push_line = |out: &mut String, marker: char, line: &str| -> bool {
+        if out.len() >= MAX_DIFF_CHARS {
+            out.push_str("… [diff truncated]\n");
+            return false;
+        }
+        out.push(marker);
+        out.push_str(&truncate_line(line));
+        out.push('\n');
+        true
+    };
+    let sections: [(char, &[&str]); 4] = [
+        (' ', &old_lines[context_start..prefix]),
+        ('-', &old_lines[prefix..old_lines.len() - suffix]),
+        ('+', &new_lines[prefix..new_lines.len() - suffix]),
+        (' ', &old_lines[old_lines.len() - suffix..context_end_old]),
+    ];
+    'sections: for (marker, lines) in sections {
+        for line in lines {
+            if !push_line(&mut out, marker, line) {
+                break 'sections;
+            }
+        }
+    }
+    out
+}
+
+/// Outcome of a scoped write: whether the file was created, and the diff
+/// against the previous content when it was overwritten.
+#[derive(Debug)]
+struct WriteOutcome {
+    created: bool,
+    diff: Option<String>,
+}
+
 fn write_scoped_file(
     roots: &[std::path::PathBuf],
     raw: &str,
     content: &str,
-) -> Result<(), String> {
+) -> Result<WriteOutcome, String> {
     let path = resolve_scoped_file_path(roots, raw)?;
+    let previous = path
+        .is_file()
+        .then(|| std::fs::read_to_string(&path).ok())
+        .flatten();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("write_failed: {}: {error}", parent.display()))?;
     }
     std::fs::write(&path, content)
-        .map_err(|error| format!("write_failed: {}: {error}", path.display()))
+        .map_err(|error| format!("write_failed: {}: {error}", path.display()))?;
+    Ok(WriteOutcome {
+        created: previous.is_none(),
+        diff: previous.map(|old| unified_diff(&old, content, raw)),
+    })
 }
 
+/// Replace exactly one occurrence of `old_string` and return the unified
+/// diff of the change. Zero or multiple matches fail loudly — the same
+/// edit-verification contract proven by Claude Code's Edit tool.
 fn edit_scoped_file(
     roots: &[std::path::PathBuf],
     raw: &str,
     old_string: &str,
     new_string: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if old_string.is_empty() {
         return Err("invalid_input: old_string must be non-empty".to_string());
     }
@@ -652,8 +1006,12 @@ fn edit_scoped_file(
             "edit_no_match: old_string not found in {}",
             path.display()
         )),
-        1 => std::fs::write(&path, content.replacen(old_string, new_string, 1))
-            .map_err(|error| format!("write_failed: {}: {error}", path.display())),
+        1 => {
+            let updated = content.replacen(old_string, new_string, 1);
+            std::fs::write(&path, &updated)
+                .map_err(|error| format!("write_failed: {}: {error}", path.display()))?;
+            Ok(unified_diff(&content, &updated, raw))
+        }
         n => Err(format!(
             "edit_ambiguous: old_string matches {n} times in {}; provide a longer unique snippet",
             path.display()
@@ -687,13 +1045,17 @@ mod tests {
         let roots = vec![apps.clone()];
         let file = apps.join("demo/main.py").display().to_string();
 
-        super::write_scoped_file(&roots, &file, "count = 0\nprint(count)\n").unwrap();
+        let created = super::write_scoped_file(&roots, &file, "count = 0\nprint(count)\n").unwrap();
+        assert!(created.created);
+        assert!(created.diff.is_none(), "fresh writes have no diff");
         assert_eq!(
             super::read_scoped_file(&roots, &file).unwrap(),
             "count = 0\nprint(count)\n"
         );
 
-        super::edit_scoped_file(&roots, &file, "count = 0", "count = 5").unwrap();
+        let diff = super::edit_scoped_file(&roots, &file, "count = 0", "count = 5").unwrap();
+        assert!(diff.contains("-count = 0"), "{diff}");
+        assert!(diff.contains("+count = 5"), "{diff}");
         assert_eq!(
             super::read_scoped_file(&roots, &file).unwrap(),
             "count = 5\nprint(count)\n"
@@ -702,7 +1064,13 @@ mod tests {
         let no_match = super::edit_scoped_file(&roots, &file, "absent", "x").unwrap_err();
         assert!(no_match.starts_with("edit_no_match"), "{no_match}");
 
-        super::write_scoped_file(&roots, &file, "a\na\n").unwrap();
+        let overwrite = super::write_scoped_file(&roots, &file, "a\na\n").unwrap();
+        assert!(!overwrite.created);
+        assert!(
+            overwrite.diff.as_deref().is_some_and(|d| d.contains("+a")),
+            "{:?}",
+            overwrite.diff
+        );
         let ambiguous = super::edit_scoped_file(&roots, &file, "a", "b").unwrap_err();
         assert!(ambiguous.starts_with("edit_ambiguous"), "{ambiguous}");
 
@@ -715,6 +1083,152 @@ mod tests {
 
         let relative = super::read_scoped_file(&roots, "apps/demo/main.py").unwrap_err();
         assert!(relative.starts_with("path_not_absolute"), "{relative}");
+    }
+
+    #[test]
+    fn read_slice_numbers_lines_and_pages_through_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let apps = root.path().join("apps");
+        std::fs::create_dir_all(apps.join("demo")).unwrap();
+        let roots = vec![apps.clone()];
+        let file = apps.join("demo/main.py").display().to_string();
+        let body = (1..=10).map(|n| format!("line{n}\n")).collect::<String>();
+        super::write_scoped_file(&roots, &file, &body).unwrap();
+
+        let all = super::read_scoped_file_slice(&roots, &file, 1, 2000).unwrap();
+        assert_eq!(all.total_lines, 10);
+        assert_eq!(all.lines_returned, 10);
+        assert!(all.content.starts_with("     1\tline1\n"), "{}", all.content);
+
+        let page = super::read_scoped_file_slice(&roots, &file, 4, 2).unwrap();
+        assert_eq!(page.lines_returned, 2);
+        assert_eq!(page.content, "     4\tline4\n     5\tline5\n");
+
+        let past_end = super::read_scoped_file_slice(&roots, &file, 99, 5).unwrap_err();
+        assert!(past_end.contains("past the end"), "{past_end}");
+        let zero = super::read_scoped_file_slice(&roots, &file, 0, 5).unwrap_err();
+        assert!(zero.starts_with("invalid_input"), "{zero}");
+    }
+
+    #[test]
+    fn grep_scoped_matches_lines_respects_caps_and_rejects_bad_patterns() {
+        let root = tempfile::tempdir().unwrap();
+        let apps = root.path().join("apps");
+        std::fs::create_dir_all(apps.join("demo")).unwrap();
+        std::fs::create_dir_all(apps.join("demo/__pycache__")).unwrap();
+        let roots = vec![apps.clone()];
+        std::fs::write(
+            apps.join("demo/main.py"),
+            "def view():\n    return Button('go')\n\ndef update(event):\n    pass\n",
+        )
+        .unwrap();
+        std::fs::write(apps.join("demo/__pycache__/skip.py"), "def view(): pass\n").unwrap();
+
+        let result = super::grep_scoped(&roots, None, r"def \w+\(", 50).unwrap();
+        let matches = result["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 2, "{result}");
+        assert_eq!(matches[0]["line"], 1);
+        assert!(matches[0]["file"]
+            .as_str()
+            .unwrap()
+            .ends_with("demo/main.py"));
+
+        let capped = super::grep_scoped(&roots, None, r"def \w+\(", 1).unwrap();
+        assert_eq!(capped["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(capped["truncated"], true);
+
+        let scoped = super::grep_scoped(
+            &roots,
+            Some(&apps.join("demo/main.py").display().to_string()),
+            "update",
+            50,
+        )
+        .unwrap();
+        assert_eq!(scoped["matches"].as_array().unwrap().len(), 1);
+
+        let bad = super::grep_scoped(&roots, None, "def (", 50).unwrap_err();
+        assert!(bad.starts_with("invalid_pattern"), "{bad}");
+        let missing = super::grep_scoped(&roots, Some("/nope"), "x", 50).unwrap_err();
+        assert!(missing.starts_with("path_out_of_scope"), "{missing}");
+    }
+
+    #[test]
+    fn list_scoped_walks_sorted_and_skips_junk_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let apps = root.path().join("apps");
+        std::fs::create_dir_all(apps.join("demo/.venv")).unwrap();
+        let roots = vec![apps.clone()];
+        std::fs::write(apps.join("demo/manifest.toml"), "x").unwrap();
+        std::fs::write(apps.join("demo/main.py"), "y").unwrap();
+        std::fs::write(apps.join("demo/.venv/junk.py"), "z").unwrap();
+
+        let result = super::list_scoped(&roots, None).unwrap();
+        let entries = result["entries"].as_array().unwrap();
+        let paths: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(paths[0].ends_with("demo/main.py"), "{paths:?}");
+        assert!(paths[1].ends_with("demo/manifest.toml"), "{paths:?}");
+        assert_eq!(result["truncated"], false);
+    }
+
+    /// Review fix (stint 0421): the diff cap must land on a char boundary and
+    /// stop building once reached — a full-file rewrite of multibyte content
+    /// used to byte-truncate and could panic mid-char.
+    #[test]
+    fn unified_diff_truncates_char_safely_on_multibyte_rewrites() {
+        let old: String = (0..400).map(|n| format!("línea →{n}★\n")).collect();
+        let new: String = (0..400).map(|n| format!("нова →{n}✦\n")).collect();
+        let diff = super::unified_diff(&old, &new, "demo/main.py");
+        assert!(diff.contains("… [diff truncated]"), "{}", diff.len());
+        assert!(diff.len() < super::MAX_DIFF_CHARS + 200, "{}", diff.len());
+    }
+
+    /// Review fix (stint 0421): symlinks inside an apps dir must not widen
+    /// the auto-allowed grep/list walks beyond the scoped roots.
+    #[cfg(unix)]
+    #[test]
+    fn grep_and_list_walks_never_follow_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let apps = root.path().join("apps");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(apps.join("demo")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(apps.join("demo/main.py"), "inside = 1\n").unwrap();
+        std::fs::write(outside.join("secret.py"), "outside = 1\n").unwrap();
+        std::os::unix::fs::symlink(&outside, apps.join("demo/escape")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.py"), apps.join("demo/leak.py")).unwrap();
+        let roots = vec![apps.clone()];
+
+        let listed = super::list_scoped(&roots, None).unwrap();
+        let paths: Vec<&str> = listed["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 1, "{paths:?}");
+        assert!(paths[0].ends_with("demo/main.py"), "{paths:?}");
+
+        let matches = super::grep_scoped(&roots, None, "= 1", 50).unwrap();
+        assert_eq!(matches["matches"].as_array().unwrap().len(), 1, "{matches}");
+    }
+
+    #[test]
+    fn unified_diff_wraps_changed_span_in_context() {
+        let old = "a\nb\nc\nd\ne\nf\ng\nh\ni\n";
+        let new = "a\nb\nc\nd\nE\nf\ng\nh\ni\n";
+        let diff = super::unified_diff(old, new, "demo/main.py");
+        assert!(diff.starts_with("--- a/demo/main.py\n+++ b/demo/main.py\n"));
+        assert!(diff.contains("@@ -2,7 +2,7 @@"), "{diff}");
+        assert!(diff.contains("-e\n+E\n"), "{diff}");
+        assert!(!diff.contains("\na\n"), "context must stay within 3 lines: {diff}");
+        assert_eq!(super::unified_diff("same\n", "same\n", "x"), "");
+
+        let grow = super::unified_diff("a\n", "a\nb\nc\n", "x");
+        assert!(grow.contains("+b\n+c\n"), "{grow}");
     }
 
     #[test]
