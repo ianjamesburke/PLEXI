@@ -58,6 +58,15 @@ fn decision_label(decision: Decision) -> &'static str {
     }
 }
 
+/// Which edge of the transcript a chat bubble anchors to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BubbleSide {
+    /// Assistant replies and the streaming row — grow from the left edge.
+    Left,
+    /// User messages — pinned to the right edge, iMessage/Slack-style.
+    Right,
+}
+
 /// Stateless renderer for the Assistant pane.
 pub struct AssistantRenderer;
 
@@ -491,34 +500,22 @@ impl AssistantRenderer {
                 ui.add_space(style::SPACE_SM);
             }
             // User turns sit right-aligned in an outlined bubble, like every
-            // mainstream chat client.
+            // mainstream chat client. The body is a galley measured up-front at
+            // the bubble cap and painted as-is: the frame shrinks to exactly
+            // that galley, `Align::Max` pins the shrunk frame to the right edge,
+            // and the galley's own `LEFT` halign keeps wrapped lines left-read.
             TurnRole::User => {
-                let bubble_max = ui.available_width() * Self::BUBBLE_MAX_FRACTION;
-                // The outer `Align::Max` right-anchors the bubble frame against
-                // the pane edge. That cross-align cascades into any Label's
-                // galley halign, though, so text inside the frame must be
-                // rendered under an inner `Align::Min` layout — otherwise every
-                // wrapped line right-justifies (ragged left edge). The frame
-                // stays right-anchored; only the text within it reads left.
-                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
-                    egui::Frame::new()
-                        .fill(colors.bg_active)
-                        .stroke(egui::Stroke::new(1.0, colors.border))
-                        .corner_radius(style::RADIUS_MD)
-                        .inner_margin(egui::Margin::symmetric(
-                            style::SPACE_SM as i8,
-                            style::SPACE_XS as i8,
-                        ))
-                        .show(ui, |ui| {
-                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                                ui.set_max_width(bubble_max);
-                                ui.label(
-                                    RichText::new(text)
-                                        .size(style::TEXT_BODY)
-                                        .color(colors.text_primary),
-                                );
-                            });
-                        });
+                let cap = Self::bubble_content_cap(ui);
+                let galley = ui.fonts(|f| {
+                    f.layout(
+                        text.to_owned(),
+                        egui::FontId::proportional(style::TEXT_BODY),
+                        colors.text_primary,
+                        cap,
+                    )
+                });
+                Self::chat_bubble(ui, colors, BubbleSide::Right, true, |ui| {
+                    ui.add(egui::Label::new(galley));
                 });
                 ui.add_space(style::SPACE_MD);
             }
@@ -530,10 +527,8 @@ impl AssistantRenderer {
                         Self::draw_thoughts_section(ui, colors, thoughts);
                     }
                 }
-                Self::assistant_bubble(ui, colors, |ui| {
-                    let markdown = text_cache.softened_turn_text(conversation_id, turn_index, turn);
-                    Self::markdown_body(ui, md_cache, colors, markdown);
-                });
+                let markdown = text_cache.softened_turn_text(conversation_id, turn_index, turn);
+                Self::assistant_bubble(ui, colors, md_cache, markdown);
                 ui.add_space(style::SPACE_MD);
             }
             TurnRole::Error => {
@@ -707,27 +702,83 @@ impl AssistantRenderer {
         ui.add_space(style::SPACE_XS);
     }
 
-    /// The soft, left-aligned assistant reply bubble. Shared by committed turns
-    /// (`draw_turn_row`) and the in-flight streaming row so the background is
-    /// identical from the first frame of a turn — it must not pop in only once
-    /// the turn commits.
+    /// The soft, left-aligned assistant reply bubble, rendered as markdown.
+    /// Shared by committed turns (`draw_turn_row`) and the in-flight streaming
+    /// row so the background is identical from the first frame of a turn — it
+    /// must not pop in only once the turn commits. Shrinks to fit: the bubble
+    /// is capped to the measured wrapped width of the source, so a one-line
+    /// reply gets a one-line bubble rather than a full-cap slab.
     fn assistant_bubble(
         ui: &mut egui::Ui,
         colors: &Colors,
+        md_cache: &mut egui_commonmark::CommonMarkCache,
+        markdown: &str,
+    ) {
+        let inner_w = Self::measure_wrapped_width(ui, markdown, Self::bubble_content_cap(ui));
+        Self::chat_bubble(ui, colors, BubbleSide::Left, false, |ui| {
+            // Left origin, so `set_width` both constrains the fill-width
+            // markdown renderer and keeps the frame anchored left.
+            ui.set_width(inner_w);
+            Self::markdown_body(ui, md_cache, colors, markdown);
+        });
+    }
+
+    /// The one chat-row primitive both roles use: a padded, rounded bubble
+    /// frame anchored to the given side of the transcript. A right bubble is
+    /// pinned to the pane edge by the row's `Align::Max` cross-align and must
+    /// shrink to a fixed-size child (the caller paints a pre-measured galley);
+    /// a left bubble shares the row's left origin, so the caller may
+    /// `set_width` to constrain fill-width content. The frame chrome is
+    /// identical bar the outline — `stroke` gives the user bubble its border.
+    fn chat_bubble(
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        side: BubbleSide,
+        stroke: bool,
         add_contents: impl FnOnce(&mut egui::Ui),
     ) {
-        let bubble_max = ui.available_width() * Self::BUBBLE_MAX_FRACTION;
-        egui::Frame::new()
+        let outline = if stroke {
+            egui::Stroke::new(1.0, colors.border)
+        } else {
+            egui::Stroke::NONE
+        };
+        let frame = egui::Frame::new()
             .fill(colors.bg_active)
+            .stroke(outline)
             .corner_radius(style::RADIUS_MD)
             .inner_margin(egui::Margin::symmetric(
                 style::SPACE_SM as i8,
                 style::SPACE_XS as i8,
-            ))
-            .show(ui, |ui| {
-                ui.set_max_width(bubble_max);
-                add_contents(ui);
-            });
+            ));
+        let row_align = match side {
+            BubbleSide::Left => egui::Align::Min,
+            BubbleSide::Right => egui::Align::Max,
+        };
+        ui.with_layout(egui::Layout::top_down(row_align), |ui| {
+            frame.show(ui, add_contents);
+        });
+    }
+
+    /// The content-area width cap for a chat bubble: the bubble frame caps at
+    /// `BUBBLE_MAX_FRACTION` of the row, and the content sits inside the
+    /// horizontal padding on each edge.
+    fn bubble_content_cap(ui: &egui::Ui) -> f32 {
+        (ui.available_width() * Self::BUBBLE_MAX_FRACTION - 2.0 * style::SPACE_SM).max(0.0)
+    }
+
+    /// Natural wrapped width `text` wants at body scale, clamped to `cap`. Used
+    /// to size the assistant bubble to its content; the user bubble measures a
+    /// galley directly so it can also paint it.
+    fn measure_wrapped_width(ui: &egui::Ui, text: &str, cap: f32) -> f32 {
+        let galley = ui.fonts(|f| {
+            f.layout(
+                text.to_owned(),
+                egui::FontId::proportional(style::TEXT_BODY),
+                egui::Color32::PLACEHOLDER,
+                cap,
+            )
+        });
+        galley.size().x.ceil()
     }
 
     fn draw_streaming_row(
@@ -742,15 +793,16 @@ impl AssistantRenderer {
         // Same bubble as a committed reply, present from the first frame —
         // the thinking-dots beat and every streamed token sit on the
         // background, so it never appears only after streaming ends.
-        Self::assistant_bubble(ui, colors, |ui| {
-            if model.streaming.partial_answer.is_empty() {
+        if model.streaming.partial_answer.is_empty() {
+            // The dots allocate an exact size, so the bubble self-sizes to
+            // them — no width measurement needed.
+            Self::chat_bubble(ui, colors, BubbleSide::Left, false, |ui| {
                 Self::draw_thinking_dots(ui, colors);
-            } else {
-                let markdown =
-                    crate::ui::markdown::harden_soft_breaks(&model.streaming.partial_answer);
-                Self::markdown_body(ui, md_cache, colors, &markdown);
-            }
-        });
+            });
+        } else {
+            let markdown = crate::ui::markdown::harden_soft_breaks(&model.streaming.partial_answer);
+            Self::assistant_bubble(ui, colors, md_cache, &markdown);
+        }
         ui.add_space(style::SPACE_MD);
     }
 
@@ -1266,9 +1318,10 @@ impl AssistantRenderer {
 mod tests {
     use super::*;
     use crate::assistant::model::{Turn, TurnRole};
+    use std::sync::Arc;
 
     /// Walk a paint shape tree, collecting every text galley emitted.
-    fn collect_galleys(shape: &egui::Shape, out: &mut Vec<std::sync::Arc<egui::Galley>>) {
+    fn collect_galleys(shape: &egui::Shape, out: &mut Vec<Arc<egui::Galley>>) {
         match shape {
             egui::Shape::Text(text) => out.push(text.galley.clone()),
             egui::Shape::Vec(shapes) => {
@@ -1280,12 +1333,32 @@ mod tests {
         }
     }
 
-    /// A wrapped user message renders left-justified: even though the bubble
-    /// frame is right-anchored (`Align::Max`), the text galley inside must lay
-    /// out with `halign == LEFT`, or every wrapped line ragged-lefts against
-    /// the bubble's right edge (stint 0435).
-    #[test]
-    fn user_bubble_wrapped_text_is_left_justified() {
+    /// Walk a paint shape tree, collecting every filled rectangle as
+    /// `(fill, rect)` — the bubble frame is found by its `bg_active` fill.
+    fn collect_rects(shape: &egui::Shape, out: &mut Vec<(egui::Color32, egui::Rect)>) {
+        match shape {
+            egui::Shape::Rect(r) => out.push((r.fill, r.rect)),
+            egui::Shape::Vec(shapes) => {
+                for s in shapes {
+                    collect_rects(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    struct Rendered {
+        /// The transcript row's content rect at the moment the turn was drawn.
+        row_rect: egui::Rect,
+        galleys: Vec<Arc<egui::Galley>>,
+        rects: Vec<(egui::Color32, egui::Rect)>,
+        colors: crate::ui::theme::Colors,
+    }
+
+    /// Render a single user turn of `msg` into a `width`-wide pane, collecting
+    /// the painted galleys, filled rects, and the row's content rect. Bare
+    /// `egui::Context` needs `setup_fonts` or `ListRow`/galley layout panics.
+    fn render_user_turn(msg: &str, width: f32) -> Rendered {
         let ctx = egui::Context::default();
         crate::ui::theme::setup_fonts(&ctx);
         let colors = crate::ui::theme::Colors::from_config(
@@ -1294,13 +1367,9 @@ mod tests {
         let mut md_cache = egui_commonmark::CommonMarkCache::default();
         let mut text_cache = MarkdownTextCache::default();
 
-        // Long enough to wrap several times inside a narrow bubble.
-        const MSG: &str = "This is a deliberately long user message that absolutely \
-             must wrap across several lines inside the narrow chat bubble so the test \
-             can confirm each wrapped line stays left-justified.";
         let turn = Turn {
             role: TurnRole::User,
-            text: MSG.to_string(),
+            text: msg.to_string(),
             created_at: "2026-07-18T00:00:00Z".to_string(),
             status: None,
             thoughts: None,
@@ -1310,11 +1379,13 @@ mod tests {
         let mut raw_input = egui::RawInput::default();
         raw_input.screen_rect = Some(egui::Rect::from_min_size(
             egui::pos2(0.0, 0.0),
-            egui::vec2(320.0, 600.0),
+            egui::vec2(width, 600.0),
         ));
 
+        let mut row_rect = egui::Rect::NOTHING;
         let output = ctx.run(raw_input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
+                row_rect = ui.available_rect_before_wrap();
                 AssistantRenderer::draw_turn_row(
                     ui,
                     &mut md_cache,
@@ -1329,10 +1400,42 @@ mod tests {
         });
 
         let mut galleys = Vec::new();
+        let mut rects = Vec::new();
         for clipped in &output.shapes {
             collect_galleys(&clipped.shape, &mut galleys);
+            collect_rects(&clipped.shape, &mut rects);
         }
-        let bubble = galleys
+        Rendered {
+            row_rect,
+            galleys,
+            rects,
+            colors,
+        }
+    }
+
+    /// The single filled bubble frame — identified by its `bg_active` fill,
+    /// which nothing else in an isolated user turn paints.
+    fn bubble_rect(r: &Rendered) -> egui::Rect {
+        r.rects
+            .iter()
+            .find(|(fill, _)| *fill == r.colors.bg_active)
+            .map(|(_, rect)| *rect)
+            .expect("user bubble frame must be painted with the bg_active fill")
+    }
+
+    /// A wrapped user message renders left-justified: even though the bubble
+    /// frame is right-anchored (`Align::Max`), the text galley inside lays out
+    /// with `halign == LEFT`, or every wrapped line ragged-lefts against the
+    /// bubble's right edge (stints 0435, 0442).
+    #[test]
+    fn user_bubble_wrapped_text_is_left_justified() {
+        // Long enough to wrap several times inside a narrow bubble.
+        const MSG: &str = "This is a deliberately long user message that absolutely \
+             must wrap across several lines inside the narrow chat bubble so the test \
+             can confirm each wrapped line stays left-justified.";
+        let r = render_user_turn(MSG, 320.0);
+        let bubble = r
+            .galleys
             .iter()
             .find(|g| g.text().contains("absolutely"))
             .expect("user message galley must be painted");
@@ -1346,6 +1449,70 @@ mod tests {
             bubble.job.halign,
             egui::Align::LEFT,
             "wrapped user-bubble text must be left-justified, not right-anchored"
+        );
+    }
+
+    /// A short user message shrinks to fit: the bubble frame is far narrower
+    /// than the row, and its right edge is pinned to the row's right edge —
+    /// the standard right-anchored chat bubble (stint 0442).
+    #[test]
+    fn short_user_bubble_shrinks_and_right_anchors() {
+        let r = render_user_turn("Hi", 320.0);
+        let bubble = bubble_rect(&r);
+
+        assert!(
+            bubble.width() < r.row_rect.width() * 0.4,
+            "short bubble ({:.1}) must be far narrower than the row ({:.1})",
+            bubble.width(),
+            r.row_rect.width()
+        );
+        assert!(
+            (r.row_rect.right() - bubble.right()).abs() < 2.0,
+            "bubble right edge ({:.1}) must sit at the row's right edge ({:.1})",
+            bubble.right(),
+            r.row_rect.right()
+        );
+    }
+
+    /// A long user message wraps at the cap: the bubble fills the bubble-max
+    /// fraction of the row (never wider), while its text stays left-justified
+    /// across the wrapped rows (stint 0442).
+    #[test]
+    fn long_user_bubble_wraps_at_cap_left_justified() {
+        const MSG: &str = "Another long user message engineered to wrap onto several \
+             rows so we can confirm the bubble grows to the cap and no further, with \
+             every wrapped line still reading from the left edge of the bubble.";
+        let r = render_user_turn(MSG, 320.0);
+        let bubble = bubble_rect(&r);
+        let cap = r.row_rect.width() * AssistantRenderer::BUBBLE_MAX_FRACTION;
+
+        assert!(
+            bubble.width() <= cap + 1.0,
+            "bubble ({:.1}) must not exceed the cap ({:.1})",
+            bubble.width(),
+            cap
+        );
+        assert!(
+            bubble.width() > cap * 0.6,
+            "a wrapping bubble ({:.1}) should fill most of the cap ({:.1})",
+            bubble.width(),
+            cap
+        );
+
+        let galley = r
+            .galleys
+            .iter()
+            .find(|g| g.text().contains("engineered"))
+            .expect("user message galley must be painted");
+        assert!(
+            galley.rows.len() > 1,
+            "message must wrap (got {} row)",
+            galley.rows.len()
+        );
+        assert_eq!(
+            galley.job.halign,
+            egui::Align::LEFT,
+            "wrapped user-bubble text must be left-justified"
         );
     }
 }
