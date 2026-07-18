@@ -931,7 +931,9 @@ impl LivePythonPane {
                     );
                     self.pending_click_carry = pending_click;
                 }
-                ui.spinner();
+                ui.centered_and_justified(|ui| {
+                    ui.add(egui::Spinner::new());
+                });
                 self.record_render_perf(host_frame_started.elapsed());
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(5));
@@ -981,7 +983,9 @@ impl LivePythonPane {
                 );
                 self.pending_click_carry = pending_click;
             }
-            ui.spinner();
+            ui.centered_and_justified(|ui| {
+                ui.add(egui::Spinner::new());
+            });
             self.record_render_perf(host_frame_started.elapsed());
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(5));
@@ -1043,7 +1047,9 @@ impl LivePythonPane {
                 );
                 self.pending_click_carry = pending_click;
             }
-            ui.spinner();
+            ui.centered_and_justified(|ui| {
+                ui.add(egui::Spinner::new());
+            });
         }
         self.record_render_perf(host_frame_started.elapsed());
         let now = std::time::Instant::now();
@@ -1652,6 +1658,16 @@ fn python_key_events(events: &[egui::Event]) -> Vec<Value> {
             else {
                 return None;
             };
+            // Bare Escape is reserved for the host CloseApp binding (keys.rs,
+            // `BindingContext::AppActive`). Forwarding it to the guest also makes
+            // `handle_key` report `Consumed`, which claims Escape out of the
+            // frame's input buffer before `poll_actions` can fire CloseApp — so
+            // the focused app never closes on Escape. Skip it here, matching the
+            // pre-WASM ProcessApp carve-out. Cmd+Escape (context zoom-out) still
+            // forwards so guests can bind it.
+            if *key == egui::Key::Escape && !modifiers.command {
+                return None;
+            }
             Some(json!({
                 "key": python_key_name(*key),
                 "pressed": pressed,
@@ -3082,6 +3098,37 @@ mod tests {
         assert_eq!(events[0]["pressed"], true);
         assert_eq!(events[1]["key"], "right");
         assert_eq!(events[1]["pressed"], false);
+    }
+
+    /// Stint 0430: bare Escape is reserved for the host CloseApp binding. It must
+    /// never reach the guest — forwarding it makes `handle_key` report `Consumed`,
+    /// which claims Escape out of the frame buffer before `poll_actions` can fire
+    /// CloseApp, so the focused app never closes. Cmd+Escape (context zoom-out) is
+    /// still delivered so guests can bind it.
+    #[test]
+    fn python_key_events_skips_bare_escape_but_forwards_cmd_escape() {
+        let bare_escape = [egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }];
+        assert!(
+            python_key_events(&bare_escape).is_empty(),
+            "bare Escape must not reach the guest — it drives host CloseApp"
+        );
+
+        let cmd_escape = [egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        }];
+        let forwarded = python_key_events(&cmd_escape);
+        assert_eq!(forwarded.len(), 1, "Cmd+Escape still forwards to the guest");
+        assert_eq!(forwarded[0]["key"], "escape");
     }
 
     #[test]
