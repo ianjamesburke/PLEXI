@@ -1254,6 +1254,75 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_assistant_pane.png");
     }
 
+    /// Visual regression for stints 0435/0442: a real multi-turn conversation
+    /// (short + long messages on both sides) rendered end-to-end through the
+    /// actual assistant pane path, screenshotted for human/agent eyeball
+    /// review — not just the isolated `draw_turn_row` geometry assertions in
+    /// `assistant::render::tests`. Catches whole-conversation regressions
+    /// (e.g. every row rendering identically) that a single-turn unit test
+    /// cannot.
+    #[test]
+    fn screenshot_assistant_conversation_bubbles() {
+        use crate::assistant::model::{Turn, TurnRole};
+
+        let ws = tempfile::tempdir().unwrap();
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
+        let mut assistant = crate::assistant::AssistantApp::new(
+            ws.path().to_path_buf(),
+            broker,
+            ws.path(),
+        );
+        assistant.model.turns = vec![
+            Turn {
+                role: TurnRole::User,
+                text: "hi there big boii".to_string(),
+                created_at: "2026-07-18T00:00:00Z".to_string(),
+                status: None,
+                thoughts: None,
+                detail: None,
+            },
+            Turn {
+                role: TurnRole::Assistant,
+                text: "Hey hey! What's up? 👋".to_string(),
+                created_at: "2026-07-18T00:00:01Z".to_string(),
+                status: None,
+                thoughts: None,
+                detail: None,
+            },
+            Turn {
+                role: TurnRole::User,
+                text: "can you use markdown in your responses, just as an example so I can see."
+                    .to_string(),
+                created_at: "2026-07-18T00:00:02Z".to_string(),
+                status: None,
+                thoughts: None,
+                detail: None,
+            },
+            Turn {
+                role: TurnRole::Assistant,
+                text: "Sure — here's **bold**, *italic*, and a list:\n\n- one\n- two\n- three"
+                    .to_string(),
+                created_at: "2026-07-18T00:00:03Z".to_string(),
+                status: None,
+                thoughts: None,
+                detail: None,
+            },
+        ];
+
+        let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
+        h.step();
+        h.open_assistant_built(assistant, ws.path().to_path_buf());
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_assistant_conversation_bubbles.png")
+            .expect("render failed");
+        println!(
+            "Screenshot saved to /tmp/plexi_assistant_conversation_bubbles.png — \
+             inspect: user bubbles right-anchored + shrink-to-fit, assistant \
+             bubbles left-anchored, no row renders full-width/identical."
+        );
+    }
+
     #[test]
     fn semantic_label_lookup_is_scoped_to_the_target_pane() {
         let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
