@@ -8,7 +8,7 @@ from pathlib import Path
 from plexi_sdk import log, state
 from plexi_sdk.effects import RequestCapability, SetState, SetStatus, SetTitle
 from plexi_sdk.events import CapabilityDenied, CapabilityGranted, KeyEvent, UiAction
-from plexi_sdk.ui import Button, Column, SelectList, Spacer, Text
+from plexi_sdk.ui import Button, Column, FooterKeys, SelectList, Spacer, Text
 
 DEFAULT_STATE = {
     "grants": [],
@@ -165,7 +165,7 @@ def _list_view(data: dict):
             Spacer(grow=True),
             Button("Open", "permissions:detail", disabled=not rows),
             Button("Reload", "permissions:reload"),
-            Text("j/k selects. Enter opens. r reloads.", size=11.0),
+            FooterKeys([("j/k", "select"), ("↩", "open"), ("r", "reload")]),
         ],
         gap=8.0,
         grow=True,
@@ -194,7 +194,7 @@ def _detail_view(data: dict):
                 disabled=not data["can_manage"],
             ),
             Button("Back", "permissions:back"),
-            Text("x revokes. Esc returns.", size=11.0),
+            FooterKeys([("x", "revoke"), ("esc", "back")]),
         ],
         gap=8.0,
         grow=True,

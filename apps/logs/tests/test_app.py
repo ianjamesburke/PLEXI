@@ -115,18 +115,121 @@ def test_apply_log_result_error_surfaces_not_blank():
     assert data["error"] == "open /x: denied"
     assert data["lines"] == []
     assert data["loaded"] is True
-    text = app._visible_text(data)
+    text = app._placeholder_text(data)
     assert "Cannot read host log" in text
     assert "open /x: denied" in text
 
 
-def test_visible_text_shows_path_when_reachable_but_empty():
+def test_placeholder_text_shows_path_when_reachable_but_empty():
     app = _load_app_module()
-    text = app._visible_text(
+    text = app._placeholder_text(
         {**app.DEFAULT_STATE, "path": "/home/u/.plexi-alpha/plexi.log", "loaded": True}
     )
     assert "No log entries" in text
     assert "/home/u/.plexi-alpha/plexi.log" in text
+
+
+# ── Row rendering ─────────────────────────────────────────────────────────────
+
+
+def test_parseable_row_carries_level_colored_badge():
+    app = _load_app_module()
+    row = app._row(
+        {"time": "10:11:12", "level": "ERROR", "target": "app::todo", "message": "boom"}
+    ).to_node()
+    badges = [c for c in row["children"] if c.get("type") == "badge"]
+    assert len(badges) == 1
+    assert badges[0]["text"] == "ERROR"
+    assert badges[0]["color"] == "danger"
+    texts = [c["text"] for c in row["children"] if c.get("type") == "text"]
+    assert texts == ["10:11:12", "app::todo", "boom"]
+
+
+def test_each_level_gets_a_distinct_badge_color():
+    app = _load_app_module()
+    colors = {lvl: app.LEVEL_COLOR[lvl] for lvl in ("ERROR", "WARN", "INFO", "DEBUG")}
+    assert len(set(colors.values())) == 4
+
+
+def test_unparseable_line_kept_as_full_width_message_row():
+    app = _load_app_module()
+    lines = app._parse_log("this is not a log line\n")
+    assert lines == [{"time": "", "level": "", "target": "", "message": "this is not a log line"}]
+    row = app._row(lines[0]).to_node()
+    assert not [c for c in row["children"] if c.get("type") == "badge"]
+    assert [c["text"] for c in row["children"] if c.get("type") == "text"] == [
+        "this is not a log line"
+    ]
+
+
+# ── Follow-freeze ─────────────────────────────────────────────────────────────
+
+
+def _newer_log():
+    return (
+        "[2026-07-02 01:46:18] [INFO] [plexi::config] loaded config\n"
+        "[2026-07-02 01:46:19] [ERROR] [app::todo] save failed\n"
+        "[2026-07-02 01:46:20] [WARN] [app::todo] retrying\n"
+        "[2026-07-02 01:46:21] [INFO] [app::todo] recovered\n"
+    )
+
+
+def test_follow_off_freezes_tail_dropping_new_results():
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    app._apply_log_result(
+        data, HostLogResult(content=THREE_LINE_LOG.encode(), path="/x/plexi.log", error=None)
+    )
+    frozen = [dict(ln) for ln in data["lines"]]
+    data["follow"] = False
+    effects = app._apply_log_result(
+        data, HostLogResult(content=_newer_log().encode(), path="/x/plexi.log", error=None)
+    )
+    assert effects == []  # fresh tail dropped
+    assert data["lines"] == frozen  # visible tail unchanged
+
+
+def test_forced_refresh_bypasses_freeze_once():
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)
+    app._apply_log_result(
+        data, HostLogResult(content=THREE_LINE_LOG.encode(), path="/x/plexi.log", error=None)
+    )
+    data["follow"] = False
+    data["pending_force"] = True  # what pressing `r` sets
+    app._apply_log_result(
+        data, HostLogResult(content=_newer_log().encode(), path="/x/plexi.log", error=None)
+    )
+    assert data["pending_force"] is False  # consumed
+    assert "recovered" in [ln["message"] for ln in data["lines"]]
+
+
+def test_follow_on_keeps_applying_new_results():
+    app = _load_app_module()
+    data = dict(app.DEFAULT_STATE)  # follow defaults True
+    app._apply_log_result(
+        data, HostLogResult(content=THREE_LINE_LOG.encode(), path="/x/plexi.log", error=None)
+    )
+    app._apply_log_result(
+        data, HostLogResult(content=_newer_log().encode(), path="/x/plexi.log", error=None)
+    )
+    assert "recovered" in [ln["message"] for ln in data["lines"]]
+
+
+def test_timer_poll_suppressed_while_frozen():
+    app = _load_app_module()
+    from plexi_sdk import _v3_state
+    from plexi_sdk._v3_state import StateSnapshot
+    from plexi_sdk.effects import ReadHostLog
+    from plexi_sdk.events import TimerFired
+
+    # follow off → no ReadHostLog effect on the poll tick (tail is frozen).
+    _v3_state._state = StateSnapshot({**app.DEFAULT_STATE, "follow": False, "loaded": True}, {})
+    assert app.update(TimerFired(id=app.TIMER_ID)) == []
+    # follow on → the poll re-reads the tail.
+    _v3_state._state = StateSnapshot({**app.DEFAULT_STATE, "follow": True, "loaded": True}, {})
+    effects = app.update(TimerFired(id=app.TIMER_ID))
+    assert any(isinstance(e, ReadHostLog) for e in effects)
 
 
 # ── End-to-end lifecycle through the read_host_log effect ─────────────────────
@@ -140,6 +243,18 @@ def test_boots_and_populates_from_host_log(tmp_path):
         assert _last_status(h) == "3 lines"
         trees = [c for c in h._events_seen if c.get("type") == "component_tree"]
         assert "save failed" in json.dumps(trees[-1])
+
+
+def test_boots_renders_colored_level_badges(tmp_path):
+    log_path = tmp_path / "plexi.log"
+    log_path.write_text(THREE_LINE_LOG)
+    with AppHarness(str(APP), width=800, height=600, host_log_path=str(log_path)) as h:
+        h.run(2)
+        trees = [c for c in h._events_seen if c.get("type") == "component_tree"]
+        blob = json.dumps(trees[-1])
+        assert '"badge"' in blob
+        assert '"danger"' in blob  # ERROR row badge
+        assert '"warning"' in blob  # WARN row badge
 
 
 def test_level_key_narrows_status_count(tmp_path):

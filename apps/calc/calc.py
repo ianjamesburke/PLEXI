@@ -6,7 +6,7 @@ from __future__ import annotations
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction
-from plexi_sdk.ui import Button, Column, Component, Spacer, Text
+from plexi_sdk.ui import Button, Column, Component, FooterKeys, Spacer, Text
 
 BUTTON_ROWS = [
     ["C", "+/-", "%", "/"],
@@ -74,9 +74,14 @@ def view():
             Text(data["display"], size=28.0, bold=True, align="end", truncate=True),
             *[ButtonRow(row) for row in BUTTON_ROWS],
             Spacer(grow=True),
-            Text(
-                "0-9 input. Operators queue. Enter equals. Backspace deletes.",
-                size=11.0,
+            FooterKeys(
+                [
+                    ("0-9", "input"),
+                    ("+ - * /", "operators"),
+                    ("↩", "equals"),
+                    ("⌫", "delete"),
+                    ("esc", "clear"),
+                ]
             ),
         ],
         gap=8.0,
