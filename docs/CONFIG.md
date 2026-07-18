@@ -63,7 +63,7 @@ backend = "openrouter"
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"
 model_low    = "qwen/qwen3.6-flash"
-model_medium = "xiaomi/mimo-v2.5-pro"
+model_medium = "xiaomi/mimo-v2.5"
 model_high   = "anthropic/claude-fable-5"
 ```
 
@@ -173,7 +173,7 @@ backend = "openrouter"         # "openrouter" (cloud) or "ollama" (local)
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"
 model_low    = "qwen/qwen3.6-flash"
-model_medium = "xiaomi/mimo-v2.5-pro"
+model_medium = "xiaomi/mimo-v2.5"
 model_high   = "anthropic/claude-fable-5"
 
 # [ai.ollama]

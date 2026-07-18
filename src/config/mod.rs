@@ -568,7 +568,7 @@ pub struct OpenRouterBackendConfig {
     pub api_key_env: Option<String>,
     /// Low-tier model. e.g. "qwen/qwen3.6-flash"
     pub model_low: Option<String>,
-    /// Medium-tier model. e.g. "xiaomi/mimo-v2.5-pro"
+    /// Medium-tier model. e.g. "xiaomi/mimo-v2.5"
     pub model_medium: Option<String>,
     /// High-tier model. e.g. "anthropic/claude-fable-5"
     pub model_high: Option<String>,
