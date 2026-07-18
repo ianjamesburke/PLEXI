@@ -535,43 +535,50 @@ impl PlexiApp {
     fn new_context_empty(&mut self) {
         let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         log::info!("new_context_empty: cwd={}", cwd.display());
-        let Some((tree, panes, root_tile)) =
-            self.create_single_pane_tree(Some(cwd.clone()), None, false)
-        else {
-            log::error!("new_context_empty: failed to create terminal");
-            return;
-        };
 
         let ctx_id = self.next_window_id;
         self.next_window_id += 1;
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        let ctx_name = format!("Context {}", self.router.len() + 1);
-        self.router.push(crate::host::context::Context {
-            name: ctx_name,
-            path: cwd.clone(),
-            root: Some(cwd.clone()),
-            description: None,
-            context_id: ctx_id,
-            parent_id: None,
-            depth: 0,
-            parked: false,
-        });
+        // Push an empty window, then seed its base root pane in place through the
+        // shared installer. `active_window` still points at the previous window
+        // here, preserving `create_single_pane_tree`'s historical env context.
         self.windows.push(Window {
             name: String::new(),
-            path: cwd,
-            tree,
-            panes,
-            focused_pane: Some(root_tile),
+            path: cwd.clone(),
+            tree: egui_tiles::Tree::empty("plexi"),
+            panes: HashMap::new(),
+            focused_pane: None,
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
             window_id: win_id,
             context_id: ctx_id,
         });
+        let new_idx = self.windows.len() - 1;
+        if self
+            .seed_window_root_pane(new_idx, cwd.clone(), None, false)
+            .is_none()
+        {
+            log::error!("new_context_empty: failed to seed root pane — aborting new context");
+            self.windows.pop();
+            return;
+        }
+
+        let ctx_name = format!("Context {}", self.router.len() + 1);
+        self.router.push(crate::host::context::Context {
+            name: ctx_name,
+            path: cwd.clone(),
+            root: Some(cwd),
+            description: None,
+            context_id: ctx_id,
+            parent_id: None,
+            depth: 0,
+            parked: false,
+        });
         self.router.activate_last();
-        self.active_window = self.windows.len() - 1;
+        self.active_window = new_idx;
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
         self.apply_context_transition_effects();
@@ -596,20 +603,38 @@ impl PlexiApp {
     /// `[context]` defaults. Callers must call `save_workspace()` afterward.
     pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
         log::info!("new_context_at_path: path={}", path.display());
-        let Some((tree, panes, root_tile)) =
-            self.create_single_pane_tree(Some(path.clone()), None, false)
-        else {
-            log::error!(
-                "new_context_at_path: failed to create terminal for {}",
-                path.display()
-            );
-            return;
-        };
 
         let ctx_id = self.next_window_id;
         self.next_window_id += 1;
         let win_id = self.next_window_id;
         self.next_window_id += 1;
+
+        // Push an empty window, then seed its base root pane in place through the
+        // shared installer (see `new_context_empty` for the active_window note).
+        self.windows.push(Window {
+            name: String::new(),
+            path: path.clone(),
+            tree: egui_tiles::Tree::empty("plexi"),
+            panes: HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: win_id,
+            context_id: ctx_id,
+        });
+        let new_idx = self.windows.len() - 1;
+        if self
+            .seed_window_root_pane(new_idx, path.clone(), None, false)
+            .is_none()
+        {
+            log::error!(
+                "new_context_at_path: failed to seed root pane for {} — aborting new context",
+                path.display()
+            );
+            self.windows.pop();
+            return;
+        }
 
         // Check for anchor defaults from .plexi/workspace.toml [context] section.
         let anchor = crate::host::anchor::Anchor::detect(&path);
@@ -640,27 +665,15 @@ impl PlexiApp {
         self.router.push(crate::host::context::Context {
             name: ctx_name,
             path: path.clone(),
-            root: Some(path.clone()),
+            root: Some(path),
             description: ctx_description,
             context_id: ctx_id,
             parent_id: None,
             depth: 0,
             parked: false,
         });
-        self.windows.push(Window {
-            name: String::new(),
-            path,
-            tree,
-            panes,
-            focused_pane: Some(root_tile),
-            zoomed_pane: None,
-            grid_x: 0,
-            grid_y: 0,
-            window_id: win_id,
-            context_id: ctx_id,
-        });
         self.router.activate_last();
-        self.active_window = self.windows.len() - 1;
+        self.active_window = new_idx;
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
         self.apply_context_transition_effects();
@@ -733,6 +746,44 @@ impl PlexiApp {
         self.minimap.visible = true;
     }
 
+    /// The single install point for a context's base root terminal pane. Creates
+    /// a fresh single-pane terminal tree via
+    /// [`create_single_pane_tree`](Self::create_single_pane_tree) and installs it
+    /// into window `win_idx` in place — replacing its tree/panes, focusing the
+    /// root tile, and clearing any zoom. Every path that must leave a context
+    /// with a live root terminal funnels here: fresh-profile first boot,
+    /// [`new_context_empty`](Self::new_context_empty),
+    /// [`new_context_at_path`](Self::new_context_at_path), and the spawn-queue
+    /// fallback ([`seed_root_pane`](Self::seed_root_pane)).
+    ///
+    /// Context metadata for the terminal's backend settings is read from the
+    /// *active* window (see `create_single_pane_tree`). New-context callers seed
+    /// before switching `active_window`, so that historical env-var context is
+    /// preserved unchanged.
+    ///
+    /// Returns `(pane_id, root_tile)`, or `None` if the PTY-backed terminal
+    /// failed to spawn — the caller decides how to degrade.
+    pub(crate) fn seed_window_root_pane(
+        &mut self,
+        win_idx: usize,
+        cwd: PathBuf,
+        initial_cmd: Option<&str>,
+        close_on_exit: bool,
+    ) -> Option<(PaneId, egui_tiles::TileId)> {
+        let (tree, panes, root_tile) =
+            self.create_single_pane_tree(Some(cwd), initial_cmd, close_on_exit)?;
+        let pane_id = *panes
+            .keys()
+            .next()
+            .expect("create_single_pane_tree always yields exactly one pane");
+        let win = &mut self.windows[win_idx];
+        win.tree = tree;
+        win.panes = panes;
+        win.focused_pane = Some(root_tile);
+        win.zoomed_pane = None;
+        Some((pane_id, root_tile))
+    }
+
     /// Seed a root terminal pane into the active window when it has no tree root
     /// and no focused pane yet (the windowless-boot state). Returns the id of the
     /// pane actually created, or `None` if terminal creation failed.
@@ -755,24 +806,16 @@ impl PlexiApp {
             })
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
-        let Some((tree, panes, root_tile)) =
-            self.create_single_pane_tree(Some(cwd), initial_cmd, close_on_exit)
+        let active = self.active_window;
+        let Some((pane_id, _root_tile)) =
+            self.seed_window_root_pane(active, cwd, initial_cmd, close_on_exit)
         else {
             log::error!("seed_root_pane: failed to create terminal for empty active window");
             return None;
         };
-        let pane_id = *panes
-            .keys()
-            .next()
-            .expect("create_single_pane_tree always yields exactly one pane");
-        let win = &mut self.windows[self.active_window];
-        win.tree = tree;
-        win.panes = panes;
-        win.focused_pane = Some(root_tile);
-        win.zoomed_pane = None;
         log::info!(
             "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={} (windowless-boot spawn fallback) initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}",
-            win.window_id
+            self.windows[active].window_id
         );
         Some(pane_id)
     }
