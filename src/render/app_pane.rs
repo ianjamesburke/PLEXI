@@ -134,7 +134,11 @@ pub fn render(
     // ui.available_height() == pane_height - chrome_height(has_overtake, nav_title.is_some())
     // guaranteed by the allocate_exact_size calls above. Apps read ui.available_height() /
     // available_size() and always see the post-chrome budget with no guesswork.
-    let ctx = AppRenderContext { colors, is_focused };
+    let ctx = AppRenderContext {
+        colors,
+        is_focused,
+        pane_id: app_pane.id,
+    };
     let content_rect = ui.available_rect_before_wrap();
     app_pane.runtime.ui(ui, &ctx, pending_click);
     if matches!(app_pane.runtime, crate::host::pane::AppRuntime::Builtin(_)) {

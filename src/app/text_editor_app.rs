@@ -22,8 +22,9 @@ struct FindBar {
     matches: Vec<usize>,
     /// Index into `matches` for the current (highlighted) match.
     current: usize,
-    /// Requests focus on the find input on the next frame.
-    focus_requested: bool,
+    /// One-shot: claim the find input as this pane's focused surface on the
+    /// next render (via `claim_text_surface`; the reconciler grants it).
+    claim_focus: bool,
 }
 
 impl FindBar {
@@ -32,7 +33,7 @@ impl FindBar {
             query: String::new(),
             matches: Vec::new(),
             current: 0,
-            focus_requested: true,
+            claim_focus: true,
         }
     }
 
@@ -688,6 +689,10 @@ fn write_note_atomically(path: &Path, bytes: &[u8], durability: Durability) -> s
 }
 
 impl App for TextEditorApp {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn type_id(&self) -> &'static str {
         "text-editor"
     }
@@ -710,7 +715,7 @@ impl App for TextEditorApp {
         {
             log::info!("TextEditorApp: Cmd+F — opening find bar");
             match &mut self.find_bar {
-                Some(bar) => bar.focus_requested = true,
+                Some(bar) => bar.claim_focus = true,
                 None => {
                     let mut bar = FindBar::new();
                     bar.recompute(&self.content);
@@ -802,6 +807,13 @@ impl App for TextEditorApp {
         }
 
         let te_id = egui::Id::new("text_editor_content").with(&self.path);
+        // The editor is this pane's default text surface (stint 0429): the
+        // post-frame reconciler grants it focus while the pane owns input.
+        crate::ui::focus::register_default_text_surface(
+            ui.ctx(),
+            crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+            te_id,
+        );
         let font_id = egui::FontId::monospace(self.font_size);
 
         // When the find bar is open, reserve its height at the bottom before
@@ -1113,14 +1125,6 @@ impl App for TextEditorApp {
                     }
                     self.cursor_was_at_end = at_end;
                 }
-
-                // Request focus whenever this pane is active but the TextEdit doesn't
-                // have it — handles initial open, zoom/fullscreen toggles, and pane
-                // switches without a one-shot guard that breaks after focus changes.
-                // Skip when the find bar is open: the find input owns focus then.
-                if ctx.is_focused && !output.response.has_focus() && self.find_bar.is_none() {
-                    output.response.request_focus();
-                }
             });
 
         // Render the find bar below the scroll area.
@@ -1149,9 +1153,18 @@ impl App for TextEditorApp {
                         .frame(false),
                 );
 
-                if bar.focus_requested {
-                    response.request_focus();
-                    bar.focus_requested = false;
+                crate::ui::focus::register_text_surface(
+                    ui.ctx(),
+                    crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                    input_id,
+                );
+                if bar.claim_focus {
+                    crate::ui::focus::claim_text_surface(
+                        ui.ctx(),
+                        crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                        input_id,
+                    );
+                    bar.claim_focus = false;
                 }
 
                 if response.changed() {

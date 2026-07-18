@@ -916,7 +916,7 @@ impl PlexiApp {
                         )),
                         |ui| {
                             TextField::singleline(te_id, "Jump to context or launch app...")
-                                .focused(true)
+                                .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::CommandPalette)))
                                 .log_name("command_palette")
                                 .show(ui, &mut self.palette_query, &colors)
                         },
@@ -1267,21 +1267,11 @@ impl PlexiApp {
         match command {
             PaletteCommand::SplitRight => {
                 self.windows[self.active_window].clear_zoom();
-                self.ctx.memory_mut(|m| {
-                    if let Some(id) = m.focused() {
-                        m.surrender_focus(id);
-                    }
-                });
                 self.split_focused(false, None, false, false, None);
                 self.save_workspace();
             }
             PaletteCommand::SplitDown => {
                 self.windows[self.active_window].clear_zoom();
-                self.ctx.memory_mut(|m| {
-                    if let Some(id) = m.focused() {
-                        m.surrender_focus(id);
-                    }
-                });
                 self.split_focused(true, None, false, false, None);
                 self.save_workspace();
             }
@@ -1305,11 +1295,6 @@ impl PlexiApp {
         let cwd = self.palette_workspace_root.clone();
         log::info!("palette: running user command '{name}' scope={scope:?} cwd={cwd:?}");
         self.windows[self.active_window].clear_zoom();
-        self.ctx.memory_mut(|m| {
-            if let Some(id) = m.focused() {
-                m.surrender_focus(id);
-            }
-        });
         let initial_cmd = format!("plexi run {}", shell_single_quote(name));
         self.split_focused(false, Some(&initial_cmd), false, false, cwd);
         self.save_workspace();

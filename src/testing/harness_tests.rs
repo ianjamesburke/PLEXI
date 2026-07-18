@@ -79,6 +79,10 @@ struct KeyBurstProbe {
 }
 
 impl crate::app::app_trait::App for KeyBurstProbe {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn type_id(&self) -> &'static str {
         "key-burst-probe"
     }
@@ -112,6 +116,10 @@ impl crate::app::app_trait::App for KeyBurstProbe {
 }
 
 impl crate::app::app_trait::App for TextInputProbe {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn type_id(&self) -> &'static str {
         "text-input-probe"
     }
@@ -120,6 +128,9 @@ impl crate::app::app_trait::App for TextInputProbe {
         "Text Input Probe".to_string()
     }
 
+    // Deliberately simulates a misbehaving pane widget grabbing raw egui
+    // focus — the exact pattern the reconciler must survive (stint 0429).
+    #[allow(clippy::disallowed_methods)]
     fn ui(&mut self, ui: &mut egui::Ui, _ctx: &crate::app::app_trait::AppRenderContext<'_>) {
         if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
             self.enter_rendered = true;
@@ -1065,6 +1076,9 @@ fn quick_note_paste_consumed_from_queue() {
 
 /// Helper: simulate a CentralPanel pane widget stealing egui focus between two frames.
 /// Returns the egui Id of the "stealing" widget so callers can assert against it.
+/// Raw focus calls are banned in production (stint 0429); this helper exists
+/// precisely to simulate a rogue steal the reconciler must undo.
+#[allow(clippy::disallowed_methods)]
 fn steal_focus(h: &HostHarness) -> egui::Id {
     let steal_id = egui::Id::new("fake_pane_text_input_steal");
     h.ctx.memory_mut(|m| m.request_focus(steal_id));
@@ -1166,7 +1180,6 @@ fn text_input_overlay_focus_wins_after_central_panel_steal() {
             label: "Root directory".to_string(),
             hint: "/path/to/project".to_string(),
             buffer: String::new(),
-            focus_requested: false,
         },
         OverlayTarget::ContextRoot(0),
     ));
@@ -1823,4 +1836,241 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
+}
+
+// -- Single-authority input ownership (stint 0429) --------------------------
+
+/// Run one frame with the given input events.
+fn frame_with_events(h: &mut HostHarness, events: Vec<egui::Event>) {
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events,
+        ..Default::default()
+    });
+}
+
+/// Typing while pane A is active must leave pane B's assistant composer
+/// unchanged. Before stint 0429 the composer claimed egui focus when active
+/// and nothing surrendered it on deactivation, so the stale focus kept
+/// consuming Text events for an inactive pane.
+#[test]
+fn typing_while_pane_a_active_leaves_inactive_assistant_composer_unchanged() {
+    let mut h = HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_assistant_pane();
+
+    // Activate the assistant so its composer takes egui focus.
+    h.focus_pane(pane_b);
+    h.run_frames(2);
+
+    // Switch host focus to pane A and let the frame settle — the reconciler
+    // must project the ownership change onto egui focus here.
+    h.focus_pane(pane_a);
+    h.run_frames(1);
+
+    frame_with_events(&mut h, vec![egui::Event::Text("x".to_string())]);
+
+    assert_eq!(
+        h.assistant_mut(pane_b).model.composer,
+        "",
+        "text typed while pane A is active must not reach pane B's composer"
+    );
+}
+
+/// Enter must never submit an inactive assistant. Before stint 0429 the
+/// composer's stale egui focus passed the `has_focus` submit gate even when
+/// its pane was not the active pane.
+#[test]
+fn enter_never_submits_inactive_assistant() {
+    let mut h = HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_assistant_pane();
+
+    h.focus_pane(pane_b);
+    h.run_frames(2);
+    h.assistant_mut(pane_b).model.composer = "draft message".to_string();
+
+    h.focus_pane(pane_a);
+    h.run_frames(1);
+
+    let turns_before = h.assistant_mut(pane_b).model.turns.len();
+    frame_with_events(
+        &mut h,
+        vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+
+    let assistant = h.assistant_mut(pane_b);
+    assert_eq!(
+        assistant.model.turns.len(),
+        turns_before,
+        "Enter while pane A is active must not submit pane B's assistant"
+    );
+    assert_eq!(
+        assistant.model.composer, "draft message",
+        "the inactive assistant's draft must survive an Enter in another pane"
+    );
+}
+
+/// Sanity: the active assistant still receives typed text (the reconciler
+/// grants its composer focus as the input owner's default surface).
+#[test]
+fn active_assistant_composer_receives_typed_text() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane();
+    let pane_b = h.add_assistant_pane();
+
+    h.focus_pane(pane_b);
+    h.run_frames(2);
+
+    frame_with_events(&mut h, vec![egui::Event::Text("hi".to_string())]);
+
+    assert_eq!(
+        h.assistant_mut(pane_b).model.composer,
+        "hi",
+        "the active assistant's composer must receive typed text"
+    );
+}
+
+/// Overlay-over-pane ownership: while the command palette is open, the
+/// palette search field owns egui focus even though a pane is host-focused;
+/// closing the palette hands focus ownership back to the pane's surface.
+#[test]
+fn command_palette_owns_focus_over_focused_assistant_pane() {
+    let mut h = HostHarness::new();
+    let pane_b = h.add_assistant_pane();
+    h.focus_pane(pane_b);
+    h.run_frames(2);
+
+    h.app.show_command_palette = true;
+    h.app.sync_command_palette_focus();
+    h.run_frames(2);
+
+    assert_eq!(
+        h.app.ctx.memory(|m| m.focused()),
+        Some(egui::Id::new("palette_search")),
+        "palette search must own egui focus while the palette is open"
+    );
+
+    // Typing goes to the palette, not the assistant composer underneath.
+    frame_with_events(&mut h, vec![egui::Event::Text("q".to_string())]);
+    assert_eq!(
+        h.assistant_mut(pane_b).model.composer,
+        "",
+        "typed text must stay in the palette while it owns input"
+    );
+}
+
+/// Derivation precedence for `InputOwner` (stint 0429):
+/// OS focus > overlay surfaces > the focused pane.
+#[test]
+fn input_owner_precedence_os_overlay_pane() {
+    use crate::app::input_owner::{InputOwner, OverlaySurface};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(1);
+
+    let ctx = h.app.ctx.clone();
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Pane(pane),
+        "with no overlay, the focused pane owns input"
+    );
+
+    // Inline sidebar rename outranks the pane.
+    h.app.sidebar_visible = true;
+    h.app.renaming_window = Some(0);
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Overlay(OverlaySurface::SidebarRename),
+        "the inline sidebar rename editor owns input over the focused pane"
+    );
+
+    // A modal focus layer outranks the inline editor.
+    h.app.push_focus_layer(crate::app::FocusKind::CommandPalette);
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::CommandPalette)),
+        "the focus-stack top outranks inline editors"
+    );
+    h.app.renaming_window = None;
+    h.app.pop_focus_layer(&crate::app::FocusKind::CommandPalette);
+
+    // An unfocused OS window outranks everything.
+    let mut raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        ..Default::default()
+    };
+    raw.viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .focused = Some(false);
+    h.frame(raw);
+    let ctx = h.app.ctx.clone();
+    assert_eq!(
+        h.app.input_owner(&ctx),
+        InputOwner::OsUnfocused,
+        "an unfocused OS window owns nothing"
+    );
+}
+
+/// Typing into the inline sidebar rename must not reach the focused app
+/// pane's `handle_key` — the editor is `InputOwner::Overlay(SidebarRename)`,
+/// so `dispatch_app_key_events` is gated off (stint 0429). Before, the keys
+/// fed both the rename box and the app.
+#[test]
+fn sidebar_rename_keys_do_not_reach_focused_app_pane() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::<KeyBurstProbe>::default(),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.focus_pane(pane_id);
+    h.run_frames(1);
+
+    h.app.sidebar_visible = true;
+    h.app.renaming_window = Some(0);
+    h.run_frames(1);
+
+    frame_with_events(
+        &mut h,
+        vec![egui::Event::Key {
+            key: egui::Key::ArrowDown,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+
+    let state = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state())
+        .expect("burst probe state");
+    assert_eq!(
+        state["received"],
+        serde_json::json!([] as [&str; 0]),
+        "keys typed during sidebar rename must not reach the focused app pane"
+    );
 }

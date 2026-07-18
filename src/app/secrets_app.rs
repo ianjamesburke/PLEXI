@@ -88,7 +88,6 @@ pub struct SecretsApp {
     new_key: String,
     new_value: String,
     form_focus: FormField,
-    focus_requested: bool,
 
     /// First `d` sets this; second `d` or `y` confirms the delete.
     pending_delete: bool,
@@ -114,7 +113,6 @@ impl SecretsApp {
             new_key: String::new(),
             new_value: String::new(),
             form_focus: FormField::Key,
-            focus_requested: false,
             pending_delete: false,
             copy_pending: false,
             pending_cmds: Vec::new(),
@@ -139,7 +137,6 @@ impl SecretsApp {
         self.new_key.clear();
         self.new_value.clear();
         self.form_focus = FormField::Key;
-        self.focus_requested = false;
         self.mode = Mode::Adding;
     }
 
@@ -285,6 +282,10 @@ impl SecretsApp {
 }
 
 impl App for SecretsApp {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn type_id(&self) -> &'static str {
         "secrets_manager"
     }
@@ -383,6 +384,7 @@ impl App for SecretsApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         let colors = ctx.colors;
+        let pane_key = ctx.pane_id;
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
 
@@ -517,10 +519,11 @@ impl App for SecretsApp {
                         "e.g. OPENAI_API_KEY",
                     )
                     .show(ui, &mut self.new_key, colors);
-                    if !self.focus_requested {
-                        key_resp.request_focus();
-                        self.focus_requested = true;
-                    }
+                    crate::ui::focus::register_text_surface(
+                        ui.ctx(),
+                        crate::ui::focus::SurfaceKey::Pane(pane_key),
+                        egui::Id::new("secrets_new_key"),
+                    );
                     if key_resp.has_focus() {
                         self.form_focus = FormField::Key;
                     }
@@ -545,9 +548,11 @@ impl App for SecretsApp {
                     )
                     .password(true)
                     .show(ui, &mut self.new_value, colors);
-                    if self.form_focus == FormField::Value && !val_resp.has_focus() {
-                        val_resp.request_focus();
-                    }
+                    crate::ui::focus::register_text_surface(
+                        ui.ctx(),
+                        crate::ui::focus::SurfaceKey::Pane(pane_key),
+                        egui::Id::new("secrets_new_value"),
+                    );
                     if val_resp.has_focus() {
                         self.form_focus = FormField::Value;
                     }
@@ -557,6 +562,22 @@ impl App for SecretsApp {
                         self.commit_add();
                     }
                 });
+
+                // Focus is a projection of `form_focus` (stint 0429): claim
+                // the active field; the reconciler grants it while this pane
+                // owns input. Clicks re-sync `form_focus` above, so pointer
+                // and Tab navigation both flow through the same claim.
+                if self.mode == Mode::Adding {
+                    let claim_id = match self.form_focus {
+                        FormField::Key => egui::Id::new("secrets_new_key"),
+                        FormField::Value => egui::Id::new("secrets_new_value"),
+                    };
+                    crate::ui::focus::claim_text_surface(
+                        ui.ctx(),
+                        crate::ui::focus::SurfaceKey::Pane(pane_key),
+                        claim_id,
+                    );
+                }
 
                 ui.add_space(style::SPACE_SM);
 

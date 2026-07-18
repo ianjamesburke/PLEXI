@@ -1722,6 +1722,7 @@ impl LiveWasmPane {
         ui: &mut egui::Ui,
         colors: &Colors,
         pending_click: Option<crate::host::pane::PendingPaneClick>,
+        pane_key: u64,
     ) {
         // WASM apps don't yet consume canvas clicks (only Python process apps
         // do, via `wasm_python.rs`); still exercise the same `canvas_transform`
@@ -1836,7 +1837,13 @@ impl LiveWasmPane {
             },
             None => None,
         };
-        let result = render_ui_tree_with_surface(ui, &tree, colors, surface_tid);
+        let result = render_ui_tree_with_surface(
+            ui,
+            &tree,
+            colors,
+            surface_tid,
+            Some(crate::ui::focus::SurfaceKey::Pane(pane_key)),
+        );
         match self.inner.apply_render_result(result, now) {
             Ok(true) => {
                 match self.inner.view() {
@@ -2899,7 +2906,7 @@ mod tests {
             .build_ui_state(
                 move |ui, pane| {
                     let tree = pane.view().expect("view");
-                    let result = render_ui_tree_with_surface(ui, &tree, &colors, None);
+                    let result = render_ui_tree_with_surface(ui, &tree, &colors, None, None);
                     pane.apply_render_result(result, 0)
                         .expect("apply interactions");
                 },

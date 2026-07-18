@@ -142,6 +142,83 @@ impl HostHarness {
         pane_id
     }
 
+    /// Add a builtin Assistant app pane backed by an inert AI broker. Used by
+    /// input-ownership tests that assert on the composer's observable state.
+    pub fn add_assistant_pane(&mut self) -> PaneId {
+        struct InertBroker;
+        impl crate::plexi_ai::broker::AiBroker for InertBroker {
+            fn dispatch(
+                &self,
+                request: crate::plexi_ai::broker::AiBrokerRequest,
+                _on_delta: &mut dyn FnMut(crate::plexi_ai::turn_loop::TurnDelta<'_>),
+            ) -> crate::plexi_ai::broker::AiBrokerResponse {
+                log::warn!(
+                    "testing: InertBroker dispatch for '{}' — no AI in harness",
+                    request.app_id
+                );
+                crate::plexi_ai::broker::AiBrokerResponse {
+                    content: None,
+                    tokens_in: 0,
+                    tokens_out: 0,
+                    error: Some("no AI broker in HostHarness".to_string()),
+                }
+            }
+        }
+
+        let pane_id = self.next_pane_id;
+        self.next_pane_id += 1;
+        let workspace_root = std::env::temp_dir();
+        let assistant = crate::assistant::AssistantApp::new(
+            workspace_root.clone(),
+            Arc::new(InertBroker),
+            &crate::config::config_dir(),
+        );
+        let app_pane = AppPane {
+            pip_status: None,
+            id: pane_id,
+            runtime: AppRuntime::Builtin(Box::new(assistant)),
+            workspace_root,
+            permissions: AppPermissions::builtin(),
+            manifest_id: "assistant".to_string(),
+            name: "Assistant".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+            hidden: false,
+            agent: None,
+            slots: HashMap::new(),
+            semantic_state: Default::default(),
+        };
+        let win = &mut self.app.windows[0];
+        win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+        let tile_id = win.tree.tiles.insert_pane(pane_id);
+        // Join the layout so this pane actually renders each frame — a tile
+        // outside the root container would never reach the tiling behavior.
+        match win.tree.root {
+            None => win.tree.root = Some(tile_id),
+            Some(old_root) => {
+                let new_root = win.tree.tiles.insert_horizontal_tile(vec![old_root, tile_id]);
+                win.tree.root = Some(new_root);
+            }
+        }
+        pane_id
+    }
+
+    /// Mutable access to an assistant pane's concrete app for state assertions.
+    pub fn assistant_mut(&mut self, pane_id: PaneId) -> &mut crate::assistant::AssistantApp {
+        let pane = self.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("assistant pane not found");
+        let AppRuntime::Builtin(app) = &mut pane.as_app_mut().expect("not an app pane").runtime
+        else {
+            panic!("pane {pane_id} is not a builtin app");
+        };
+        app.as_any_mut()
+            .downcast_mut::<crate::assistant::AssistantApp>()
+            .expect("pane is not an AssistantApp")
+    }
+
     // ── Frame pump ───────────────────────────────────────────────────────────
 
     /// Run one egui frame with the given raw input.

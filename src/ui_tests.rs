@@ -1800,8 +1800,9 @@ mod tests {
             app.rename_buffer.clear();
             app.renaming_window = Some(ctx_idx);
         });
-        // Let the TextEdit mount and grab egui focus (terminal surrenders focus
-        // via suppress_focus while renaming_window is set).
+        // Let the TextEdit mount and gain egui focus: the reconciler (stint
+        // 0429) derives InputOwner::Overlay(SidebarRename) and grants the
+        // rename box focus, surrendering the terminal's surface.
         h.run_steps(3);
 
         // Type into the rename box.

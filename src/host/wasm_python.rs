@@ -884,6 +884,7 @@ impl LivePythonPane {
         ui: &mut egui::Ui,
         colors: &crate::ui::theme::Colors,
         pending_click: Option<crate::host::pane::PendingPaneClick>,
+        pane_key: u64,
     ) {
         let host_frame_started = std::time::Instant::now();
         // Stint 0426: the caller already removed `pending_click` from
@@ -1011,6 +1012,7 @@ impl LivePythonPane {
                 None,
                 Some(&tree.canvas_fits),
                 pending_click,
+                Some(crate::ui::focus::SurfaceKey::Pane(pane_key)),
             );
             self.perf_ui_render += render_started.elapsed();
             self.perf_canvas_render += result.canvas_time;

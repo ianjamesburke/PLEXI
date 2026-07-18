@@ -112,6 +112,7 @@ impl PlexiApp {
                             egui::Id::new("quick_note_text"),
                             RichText::new("What's on your mind?").size(style::TEXT_BODY),
                         )
+                        .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::QuickNote)))
                         .monospace(style::TEXT_BODY)
                         .text_color(self.colors.text_primary)
                         .hint_color(self.colors.text_dim.linear_multiply(0.3))

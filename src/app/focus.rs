@@ -75,7 +75,7 @@ impl FocusSegmentReason {
 /// frame's keyboard input. Global keybinds (Cmd+Q, Cmd+W, Cmd+Shift+A) are
 /// handled in `keys::poll_actions`, which always runs (see
 /// `src/app/input_router.rs`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum FocusKind {
     NotificationModal,
     ConfirmClose,
@@ -609,39 +609,17 @@ impl PlexiApp {
                 self.show_command_palette = false;
                 self.focus_stack
                     .retain(|l| *l != FocusKind::CommandPalette);
-                self.ctx.memory_mut(|m| {
-                    let palette_id = egui::Id::new("palette_search");
-                    if m.focused() == Some(palette_id) {
-                        m.surrender_focus(palette_id);
-                    }
-                });
             }
             _ => {}
         }
     }
 
-    /// True when a modal overlay owns keyboard input. Used by `update()` to
-    /// drain remaining key events after the overlay has rendered so panes see
-    /// an empty input buffer this frame.
+    /// True when a host overlay surface owns keyboard input: any modal on the
+    /// focus stack, or the inline sidebar rename editor. Thin wrapper over
+    /// [`Self::overlay_surface`] (stint 0429) — the one derivation of overlay
+    /// ownership. Used by `update()` to keep key events away from panes.
     pub(crate) fn input_captured_by_overlay(&self) -> bool {
-        matches!(
-            self.focus_stack.last(),
-            Some(FocusKind::NotificationModal)
-                | Some(FocusKind::ConfirmClose)
-                | Some(FocusKind::CommandPalette)
-                | Some(FocusKind::RenamePane)
-                | Some(FocusKind::ContextRename)
-                | Some(FocusKind::ContextDescription)
-                | Some(FocusKind::QuickNote)
-                | Some(FocusKind::CliSetupPrompt)
-                | Some(FocusKind::TextInput)
-                | Some(FocusKind::ContextCloseConfirm)
-                | Some(FocusKind::CapabilityModal)
-                | Some(FocusKind::EventConsent)
-                | Some(FocusKind::RawWasmReview)
-                | Some(FocusKind::NotesPicker)
-                | Some(FocusKind::NotesTriage)
-        )
+        self.overlay_surface().is_some()
     }
 
     /// Push a focus layer. Idempotent — if the same layer is already on top,
@@ -1238,19 +1216,7 @@ impl PlexiApp {
     /// Same pattern as the notification modal: boolean visibility flag is the
     /// source of truth, focus stack follows it deterministically each frame.
     pub(crate) fn sync_command_palette_focus(&mut self) {
-        let was_owned = self.focus_stack.contains(&FocusKind::CommandPalette);
         self.reconcile_focus_layer(FocusKind::CommandPalette, self.show_command_palette);
-        if was_owned && !self.show_command_palette {
-            // Explicitly surrender egui focus from palette_search so AccessKit
-            // doesn't hold a stale focused node ID after the widget is gone.
-            self.ctx.memory_mut(|m| {
-                let palette_id = egui::Id::new("palette_search");
-                if m.focused() == Some(palette_id) {
-                    log::info!("palette: surrendering palette_search focus on dismiss");
-                    m.surrender_focus(palette_id);
-                }
-            });
-        }
     }
 
     /// Navigate to a pane by id, updating both `focused_pane` on its window and

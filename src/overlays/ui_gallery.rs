@@ -290,7 +290,6 @@ impl PlexiApp {
                         egui::Id::new("host_ui_gallery_modal_field"),
                         "Type something...",
                     )
-                    .focused(true)
                     .log_name("ui_gallery_modal")
                     .show(ui, &mut self.ui_gallery_modal_buf, &colors);
                     let hints = [

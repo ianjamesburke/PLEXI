@@ -1,6 +1,6 @@
 //! Rendering helpers extracted from the main `eframe::App::update()` loop.
 
-use super::{ClickFlash, FocusKind, PlexiApp};
+use super::{ClickFlash, PlexiApp};
 use crate::app_protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
 use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
@@ -410,9 +410,10 @@ impl PlexiApp {
                     }
                 }
 
-                // Computed before the mutable borrow of `ctx` — needed by PlexiBehavior
-                // to prevent terminal panes from stealing egui focus while a modal is open.
-                let modal_open = self.input_captured_by_overlay();
+                // Computed before the mutable borrow of `ctx`: the pane that
+                // owns input this frame (stint 0429). `None` while an overlay
+                // owns input, so every pane renders unfocused under a modal.
+                let owner_pane = self.owner_pane(ui.ctx());
 
                 // Resolved before the mutable borrow of the active window. The
                 // explicit context root is a cheap field clone; the cwd-derived
@@ -432,14 +433,7 @@ impl PlexiApp {
 
                 let ctx = &mut self.windows[self.active_window];
 
-                let zoom_cleared = ctx.reconcile_stale_tiles();
-                if zoom_cleared {
-                    self.ctx.memory_mut(|m| {
-                        if let Some(id) = m.focused() {
-                            m.surrender_focus(id);
-                        }
-                    });
-                }
+                ctx.reconcile_stale_tiles();
                 #[cfg(debug_assertions)]
                 ctx.assert_focus_invariants();
 
@@ -466,9 +460,6 @@ impl PlexiApp {
                         (id, label)
                     })
                     .collect();
-                let suppress_focus = self.show_command_palette
-                    || self.renaming_pane.is_some()
-                    || self.renaming_window.is_some();
 
                 // When a pane is zoomed, drag targeting is moot (the whole
                 // window targets one pane), so skip the unsafe ObjC cursor
@@ -578,11 +569,7 @@ impl PlexiApp {
 
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
-                    focused_tile: if suppress_focus {
-                        None
-                    } else {
-                        ctx.focused_pane
-                    },
+                    focused_tile: ctx.focused_pane,
                     theme: self.theme.clone(),
                     new_focused: None,
                     close_exited: None,
@@ -597,7 +584,7 @@ impl PlexiApp {
                     workspace_root,
                     unfocused_opacity,
                     portal_info,
-                    modal_open,
+                    owner_pane,
                     ctrl_held,
                     pane_gap: self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0),
                     pane_title_font_size: self.config.pane_title_font_size.unwrap_or(12.0).clamp(6.0, 32.0),
@@ -622,7 +609,7 @@ impl PlexiApp {
                 // Paint the active pane focus outline using the parent painter which
                 // has the full window clip rect. paint_on_top_of_tile cannot do this —
                 // its painter is clipped to the tile rect, making Outside strokes invisible.
-                if zoomed_pane.is_none() && !suppress_focus {
+                if zoomed_pane.is_none() && owner_pane.is_some() {
                     if let Some(tile_id) = ctx.focused_pane {
                         if let Some(rect) = ctx.tree.tiles.rect(tile_id) {
                             let gap = behavior.pane_gap;
@@ -815,7 +802,7 @@ impl PlexiApp {
                                     &mut app_ui,
                                     app_pane,
                                     &self.colors,
-                                    !modal_open,
+                                    owner_pane == Some(pane_id),
                                     has_tabs,
                                     pending_click,
                                 );
@@ -877,8 +864,13 @@ impl PlexiApp {
                                                 log::debug!("[DRAG] zoom overlay: TerminalView render start");
                                                 use egui_term::TerminalView;
                                                 use crate::ui::theme;
+                                                crate::ui::focus::register_default_text_surface(
+                                                    ui.ctx(),
+                                                    crate::ui::focus::SurfaceKey::Pane(pane_id),
+                                                    egui_term::terminal_widget_id(pane_id),
+                                                );
                                                 let terminal = TerminalView::new(ui, &mut t.backend)
-                                                    .set_focus(!modal_open)
+                                                    .set_focus(owner_pane == Some(pane_id))
                                                     .set_theme(self.theme.clone())
                                                     .set_font(theme::terminal_font(font_size))
                                                     .set_size(Vec2::new(
@@ -1073,47 +1065,10 @@ impl PlexiApp {
 
         self.draw_feature_effects(ctx);
 
-        // Re-request registered overlay fields after all pane rendering. App panes
-        // call request_focus() on their TextInput widgets during CentralPanel, and
-        // egui focus is last-write-wins; host TextField registrations reclaim focus
-        // for migrated overlays without another hard-coded ID path.
-        let registered_overlay_focus = crate::ui::focus::drain_overlay_focus(ctx);
-        for id in registered_overlay_focus {
-            ctx.memory_mut(|m| m.request_focus(id));
-        }
-
-        // Same pattern: QuickNote compose mode needs re-focus every frame so
-        // pane TextInput widgets rendered in CentralPanel can't steal it.
-        if matches!(self.focus_stack.last(), Some(FocusKind::QuickNote)) {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("quick_note_text")));
-        }
-
-        // Same pattern for all remaining text-owning overlays. Each overlay's one-shot
-        // request fires during early overlay dispatch (BEFORE CentralPanel), so pane
-        // TextInput widgets rendered in CentralPanel steal focus back. Re-requesting
-        // here wins the last-write-wins contest for the frame.
-        if self.renaming_pane.is_some() {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("rename_pane_input")));
-        }
-        if self.renaming_window.is_some() && !self.sidebar_visible {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("rename_context_input")));
-        }
-        if self.editing_description.is_some() {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("edit_description_input")));
-        }
-        if self.text_overlay.is_some() {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("text_input_overlay_field")));
-        }
-        // Capability/secret modal: only re-request for Secret prompts — Capability prompts
-        // have no text field, so requesting a non-existent ID would leave egui holding a
-        // stale focus pointer that interferes with button interactions.
-        if matches!(self.focus_stack.last(), Some(FocusKind::CapabilityModal)) {
-            let has_secret_prompt = false;
-            if has_secret_prompt {
-                log::debug!("capability_modal: re-requesting focus for capability_secret_input post-CentralPanel");
-                ctx.memory_mut(|m| m.request_focus(egui::Id::new("capability_secret_input")));
-            }
-        }
+        // Egui focus is NOT touched here: the post-frame reconciler
+        // (`reconcile_egui_focus`, called at the end of `update()`) projects
+        // the derived input owner onto egui focus for overlays and panes alike
+        // (stint 0429).
     }
 }
 

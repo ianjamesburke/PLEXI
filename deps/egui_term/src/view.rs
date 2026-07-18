@@ -164,8 +164,7 @@ impl Widget for TerminalView<'_> {
                 .unwrap_or_default()
         });
 
-        self.focus(&layout)
-            .resize(&layout)
+        self.resize(&layout)
             .process_input(&layout, &mut state)
             .show(&mut state, &layout, &painter);
 
@@ -217,6 +216,9 @@ impl<'a> TerminalView<'a> {
         self
     }
 
+    /// Visual focus only (cursor style, selection rendering). Since stint
+    /// 0429 this never touches egui keyboard focus — the host's focus
+    /// reconciler owns that, keyed by `terminal_widget_id`.
     #[inline]
     pub fn set_focus(mut self, has_focus: bool) -> Self {
         self.has_focus = has_focus;
@@ -241,16 +243,6 @@ impl<'a> TerminalView<'a> {
         bindings: Vec<(Binding<InputKind>, BindingAction)>,
     ) -> Self {
         self.bindings_layout.add_bindings(bindings);
-        self
-    }
-
-    fn focus(self, layout: &Response) -> Self {
-        if self.has_focus {
-            layout.request_focus();
-        } else {
-            layout.surrender_focus();
-        }
-
         self
     }
 

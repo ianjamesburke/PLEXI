@@ -60,57 +60,30 @@ impl PlexiApp {
     /// `TerminalView`, so the events reach the terminal without egui's
     /// render-time widget machinery getting a chance to consume them first.
     ///
-    /// Returns `None` (leaving `ctx` untouched) when an overlay owns input, when
-    /// the OS window is unfocused, or when the focused pane is not a terminal —
-    /// in those cases nothing takes ownership and the normal ctx/render path
-    /// handles keyboard.
+    /// Returns `None` (leaving `ctx` untouched) unless the frame's derived
+    /// [`crate::app::input_owner::InputOwner`] is a terminal pane. The single
+    /// derivation covers every case the old ad-hoc gates covered: overlays on
+    /// the focus stack, the inline sidebar rename editor (the stint 0387
+    /// regression — now `InputOwner::Overlay(SidebarRename)`), an unfocused OS
+    /// window, and a non-terminal focused pane.
     ///
     /// This is a read of focus state only; it never mutates `active_window` or
     /// `focused_pane` to steer the lookup (repo trap: don't switch global state
     /// to thread data through a function).
-    ///
-    /// Invariant (stint 0387 regression fix): the steal only fires when the
-    /// focused terminal actually owns egui keyboard focus. If any *other* egui
-    /// widget holds keyboard focus this frame — e.g. the inline sidebar
-    /// context-rename `TextEdit`, which is not a focus layer while the sidebar
-    /// is visible, or any future inline editor — this returns `None` so those
-    /// keystrokes stay in `ctx` for that widget. The terminal surrenders egui
-    /// focus in that situation via `render`'s `suppress_focus` path, so
-    /// `memory.focused()` names the other widget rather than the terminal.
     pub(super) fn take_focused_terminal_input(
         &mut self,
         ctx: &egui::Context,
     ) -> Option<crate::render::terminal_pane::TerminalInput> {
-        if self.input_captured_by_overlay() {
-            return None;
-        }
-        // Same OS-focus guard as `dispatch_app_key_events`: don't route keys to
-        // the last-active pane while another window owns the keyboard.
-        if !ctx.input(|i| i.viewport().focused.unwrap_or(true)) {
-            return None;
-        }
-        let active = self.active_window;
-        let focused_tile = self.windows[active].focused_pane?;
-        let egui_tiles::Tile::Pane(pane_id) =
-            self.windows[active].tree.tiles.get(focused_tile)?
-        else {
+        let crate::app::input_owner::InputOwner::Pane(pane_id) = self.input_owner(ctx) else {
             return None;
         };
-        let pane_id = *pane_id;
-        // Focused pane must be a terminal (including an exited one — its
+        // The owner pane must be a terminal (including an exited one — its
         // "[process exited]" view auto-closes on the next keypress, which it now
         // reads from this buffer).
-        self.windows[active].panes.get(&pane_id)?.as_terminal()?;
-
-        // Gate the steal on egui keyboard focus: if another widget owns focus
-        // (its id differs from this terminal's deterministic widget id), the
-        // frame's keyboard belongs to that widget — leave `ctx` untouched so it
-        // receives the keys. See the doc comment's invariant.
-        if let Some(focused_id) = ctx.memory(|m| m.focused()) {
-            if focused_id != egui_term::terminal_widget_id(pane_id) {
-                return None;
-            }
-        }
+        self.windows[self.active_window]
+            .panes
+            .get(&pane_id)?
+            .as_terminal()?;
 
         let router = crate::app::input_router::PlexiInput::take_from(ctx);
         let (keyboard_events, modifiers) = router.into_events_and_modifiers();

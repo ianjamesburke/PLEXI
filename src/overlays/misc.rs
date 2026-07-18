@@ -428,15 +428,11 @@ impl PlexiApp {
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("text_input_overlay_field");
                 let (overlay, _target) = self.text_overlay.as_mut().unwrap();
-                let request_focus = !overlay.focus_requested;
                 crate::ui::text_field::TextField::singleline(te_id, hint.as_str())
-                    .focused(request_focus)
+                    .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::TextInput)))
                     .select_all_on_focus(true)
                     .log_name("TextInputOverlay")
                     .show(ui, &mut overlay.buffer, &self.colors);
-                if request_focus {
-                    overlay.focus_requested = true;
-                }
 
                 if show_browse {
                     ui.add_space(style::SPACE_SM);
@@ -560,43 +556,16 @@ impl PlexiApp {
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
             .scrim(false)
             .show(ctx, &colors, |ui| {
-                {
-                    {
-                        let te_id = egui::Id::new("rename_pane_input");
-                        let te = crate::ui::text_field::styled_text_input(
-                            ui,
-                            &mut self.rename_buffer,
-                            "Pane name...",
-                            te_id,
-                            &self.colors,
-                        );
-
-                        // One-shot focus: only request on the first render frame.
-                        // Re-requesting every frame (guarded by `!te.has_focus()`) lets
-                        // any widget rendered later in the same frame steal focus
-                        // permanently — egui resolves `request_focus()` conflicts
-                        // last-caller-wins within a frame.
-                        if !self.rename_pane_focus_requested {
-                            te.request_focus();
-                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                                state
-                                    .cursor
-                                    .set_char_range(Some(egui::text::CCursorRange::two(
-                                        egui::text::CCursor::new(0),
-                                        egui::text::CCursor::new(self.rename_buffer.len()),
-                                    )));
-                                state.store(ui.ctx(), te_id);
-                            }
-                            self.rename_pane_focus_requested = true;
-                            log::info!("rename_pane: focus requested for TextEdit");
-                        }
-                    }
-                }
+                let te_id = egui::Id::new("rename_pane_input");
+                crate::ui::text_field::TextField::singleline(te_id, "Pane name...")
+                    .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::RenamePane)))
+                    .select_all_on_focus(true)
+                    .log_name("rename_pane")
+                    .show(ui, &mut self.rename_buffer, &self.colors);
             });
 
         if cancel {
             self.renaming_pane = None;
-            self.rename_pane_focus_requested = false;
         } else if commit {
             let new_name = self.rename_buffer.trim().to_string();
             if let Some(pane) = self.windows[self.active_window].panes.get_mut(&pane_id) {
@@ -626,7 +595,6 @@ impl PlexiApp {
                 timestamp: crate::host::event_log::now_timestamp(),
             });
             self.renaming_pane = None;
-            self.rename_pane_focus_requested = false;
         }
     }
 
@@ -653,26 +621,11 @@ impl PlexiApp {
             .scrim(false)
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("rename_context_input");
-                let te = crate::ui::text_field::styled_text_input(
-                    ui,
-                    &mut self.rename_buffer,
-                    "Context name...",
-                    te_id,
-                    &self.colors,
-                );
-
-                if !te.has_focus() {
-                    te.request_focus();
-                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                        state
-                            .cursor
-                            .set_char_range(Some(egui::text::CCursorRange::two(
-                                egui::text::CCursor::new(0),
-                                egui::text::CCursor::new(self.rename_buffer.len()),
-                            )));
-                        state.store(ui.ctx(), te_id);
-                    }
-                }
+                crate::ui::text_field::TextField::singleline(te_id, "Context name...")
+                    .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::ContextRename)))
+                    .select_all_on_focus(true)
+                    .log_name("rename_context")
+                    .show(ui, &mut self.rename_buffer, &self.colors);
             });
 
         if cancel {
@@ -721,14 +674,15 @@ impl PlexiApp {
             .scrim(false)
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("edit_description_input");
-                let te = crate::ui::text_field::TextArea::multiline(
+                crate::ui::text_field::TextArea::multiline(
                     te_id,
                     "What are you working on in this context?",
                 )
                 .font(egui::TextStyle::Body.resolve(ui.style()))
                 .desired_width(MODAL_WIDTH)
                 .rows(3)
-                .focused(!self.description_focus_requested)
+                .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::ContextDescription)))
+                .select_all_on_focus(true)
                 .log_name("context_description")
                 .show(ui, &mut self.description_buffer, &self.colors);
 
@@ -738,25 +692,11 @@ impl PlexiApp {
                 ];
                 crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
 
-                if !self.description_focus_requested {
-                    te.request_focus();
-                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                        state
-                            .cursor
-                            .set_char_range(Some(egui::text::CCursorRange::two(
-                                egui::text::CCursor::new(0),
-                                egui::text::CCursor::new(self.description_buffer.len()),
-                            )));
-                        state.store(ui.ctx(), te_id);
-                    }
-                    self.description_focus_requested = true;
-                }
             });
 
         if cancel {
             log::info!("context_description: edit cancelled ctx_idx={ctx_idx}");
             self.editing_description = None;
-            self.description_focus_requested = false;
             self.pop_focus_layer(&crate::app::FocusKind::ContextDescription);
         } else if commit {
             let new_desc = self.description_buffer.trim().to_string();
@@ -766,7 +706,6 @@ impl PlexiApp {
                 Some(new_desc)
             };
             self.editing_description = None;
-            self.description_focus_requested = false;
             self.pop_focus_layer(&crate::app::FocusKind::ContextDescription);
             self.save_workspace();
             log::info!("context_description: updated ctx_idx={ctx_idx}");

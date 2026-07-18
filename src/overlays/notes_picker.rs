@@ -265,7 +265,7 @@ impl PlexiApp {
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("notes_picker_search");
                 let te = TextField::singleline(te_id, "Search notes…")
-                    .focused(true)
+                    .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::NotesPicker)))
                     .log_name("notes_picker_search")
                     .show(ui, &mut query, &colors);
                 if te.changed() {
