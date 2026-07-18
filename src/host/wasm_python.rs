@@ -115,67 +115,59 @@ impl AsyncRead for AppendableStdin {
     }
 }
 
+#[derive(Default)]
 struct OutputState {
     bytes: Vec<u8>,
-    wake: Option<Arc<dyn Fn() + Send + Sync>>,
-    wake_pending: bool,
-    notifications_enabled: bool,
+    closed: bool,
 }
 
-impl Default for OutputState {
-    fn default() -> Self {
-        Self {
-            bytes: Vec::new(),
-            wake: None,
-            wake_pending: false,
-            notifications_enabled: true,
-        }
-    }
-}
-
-/// Cloneable WASI output that can be drained without closing the guest stream.
+/// Cloneable WASI output drainable without closing the guest stream. A
+/// dedicated decoder thread (stint 0438) blocks on `wait_and_drain`; the
+/// guest's writes and an explicit `close` wake it through the paired condvar,
+/// so JSON + tree decode runs off the paint thread.
 #[derive(Clone, Default)]
 pub struct DrainableOutput {
     state: Arc<Mutex<OutputState>>,
+    signal: Arc<std::sync::Condvar>,
 }
 
 impl DrainableOutput {
+    /// Non-blocking drain, used by the headless one-shot path and stderr.
     pub fn drain(&self) -> Vec<u8> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.wake_pending = false;
         std::mem::take(&mut state.bytes)
     }
 
-    fn set_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-        let should_wake = {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.wake = Some(wake.clone());
-            if state.notifications_enabled && !state.wake_pending && state.bytes.contains(&b'\n') {
-                state.wake_pending = true;
-                true
-            } else {
-                false
+    /// Block until the guest writes bytes or the stream is closed. Returns
+    /// `None` once closed and fully drained so the decoder loop can exit.
+    fn wait_and_drain(&self) -> Option<Vec<u8>> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if !state.bytes.is_empty() {
+                return Some(std::mem::take(&mut state.bytes));
             }
-        };
-        if should_wake {
-            wake();
+            if state.closed {
+                return None;
+            }
+            state = self.signal.wait(state).unwrap_or_else(|e| e.into_inner());
         }
     }
 
-    fn set_notifications_enabled(&self, enabled: bool) {
-        let wake = {
+    fn push_bytes(&self, buf: &[u8]) {
+        {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.notifications_enabled = enabled;
-            if enabled && !state.wake_pending && state.bytes.contains(&b'\n') {
-                state.wake_pending = true;
-                state.wake.clone()
-            } else {
-                None
-            }
-        };
-        if let Some(wake) = wake {
-            wake();
+            state.bytes.extend_from_slice(buf);
         }
+        self.signal.notify_all();
+    }
+
+    /// Signal end-of-stream so a blocked decoder thread can exit.
+    fn close(&self) {
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.closed = true;
+        }
+        self.signal.notify_all();
     }
 }
 
@@ -197,27 +189,12 @@ impl AsyncWrite for DrainableOutput {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .bytes
-            .extend_from_slice(buf);
+        self.push_bytes(buf);
         Poll::Ready(Ok(buf.len()))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let wake = {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.notifications_enabled && !state.wake_pending && state.bytes.contains(&b'\n') {
-                state.wake_pending = true;
-                state.wake.clone()
-            } else {
-                None
-            }
-        };
-        if let Some(wake) = wake {
-            wake();
-        }
+        self.signal.notify_all();
         Poll::Ready(Ok(()))
     }
 
@@ -388,8 +365,6 @@ pub struct WasmPythonRuntime {
     stderr: DrainableOutput,
     thread: Option<JoinHandle<Result<(), String>>>,
     partial_stdout: Vec<u8>,
-    last_drain_bytes: usize,
-    last_json_decode_time: std::time::Duration,
 }
 
 impl WasmPythonRuntime {
@@ -465,8 +440,6 @@ impl WasmPythonRuntime {
             stderr,
             thread: Some(thread),
             partial_stdout: Vec::new(),
-            last_drain_bytes: 0,
-            last_json_decode_time: std::time::Duration::ZERO,
         })
     }
 
@@ -474,12 +447,12 @@ impl WasmPythonRuntime {
         self.stdin.push_json_line(event)
     }
 
+    /// Non-blocking synchronous drain for the headless one-shot path. The live
+    /// pane instead runs a dedicated decoder thread over `stdout`.
     pub fn drain_messages(&mut self) -> Result<Vec<Value>, WasmPythonError> {
         let drained = self.stdout.drain();
-        self.last_drain_bytes = drained.len();
         self.partial_stdout.extend(drained);
         let mut messages = Vec::new();
-        let decode_started = std::time::Instant::now();
         while let Some(newline) = self.partial_stdout.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = self.partial_stdout.drain(..=newline).collect();
             let line = &line[..line.len().saturating_sub(1)];
@@ -490,7 +463,6 @@ impl WasmPythonRuntime {
                 );
             }
         }
-        self.last_json_decode_time = decode_started.elapsed();
         Ok(messages)
     }
 
@@ -547,6 +519,9 @@ pub fn run_headless_ui_action_round_trip(
 
 struct HeadlessPythonSession {
     runtime: WasmPythonRuntime,
+    /// Previous decoded frame, so `tree_delta` frames (stint 0438) can be
+    /// reconstructed the same way the live host does.
+    last_tree: Option<PythonUiTree>,
 }
 
 impl HeadlessPythonSession {
@@ -566,7 +541,10 @@ impl HeadlessPythonSession {
             "args": config.launch_args,
             "size": [size.0, size.1],
         }))?;
-        let mut session = Self { runtime };
+        let mut session = Self {
+            runtime,
+            last_tree: None,
+        };
         session.wait_for(|message| message.get("type").and_then(Value::as_str) == Some("ready"))?;
         Ok(session)
     }
@@ -574,19 +552,40 @@ impl HeadlessPythonSession {
     fn render_frame(&mut self, frame_id: u64) -> Result<UiTree, WasmPythonError> {
         self.runtime
             .send(&python_render_event(frame_id, Vec::new()))?;
-        let mut tree_json = None;
+        let mut tree_message = None;
         self.wait_for(|message| {
-            if message.get("type").and_then(Value::as_str) == Some("component_tree") {
-                if let Some(raw) = message.get("tree") {
-                    tree_json = Some(raw.clone());
-                }
+            let message_type = message.get("type").and_then(Value::as_str);
+            if matches!(message_type, Some("component_tree" | "tree_delta")) {
+                tree_message = Some(message.clone());
             }
-            message.get("type").and_then(Value::as_str) == Some("frame_done")
+            message_type == Some("frame_done")
         })?;
-        let raw = tree_json.ok_or_else(|| {
+        let message = tree_message.ok_or_else(|| {
             WasmPythonError::BridgeJson("app emitted frame_done with no component_tree".to_string())
         })?;
-        decode_ui_tree_value(&raw)
+        let tree = match message.get("type").and_then(Value::as_str) {
+            Some("tree_delta") => {
+                let base = self.last_tree.as_ref().ok_or_else(|| {
+                    WasmPythonError::BridgeJson(
+                        "tree_delta received before any full tree".to_string(),
+                    )
+                })?;
+                let changed = message.get("changed").and_then(Value::as_array).ok_or_else(|| {
+                    WasmPythonError::BridgeJson("tree_delta missing 'changed' array".to_string())
+                })?;
+                apply_tree_delta(base, changed)?
+            }
+            _ => {
+                let raw = message.get("tree").ok_or_else(|| {
+                    WasmPythonError::BridgeJson(
+                        "component_tree message missing 'tree'".to_string(),
+                    )
+                })?;
+                decode_python_ui_tree_value(raw)?
+            }
+        };
+        self.last_tree = Some(tree.clone());
+        Ok(tree.tree)
     }
 
     fn wait_for(&mut self, mut matches: impl FnMut(&Value) -> bool) -> Result<(), WasmPythonError> {
@@ -618,12 +617,17 @@ pub struct LivePythonPane {
     runtime: WasmPythonRuntime,
     app_id: String,
     title: Option<String>,
-    tree: Option<PythonUiTree>,
-    pending_trees: HashMap<u64, PythonUiTree>,
+    tree: Option<Arc<PythonUiTree>>,
+    pending_trees: HashMap<u64, Arc<PythonUiTree>>,
     initialized: bool,
     ready: bool,
     frame_scheduler: PythonFrameScheduler,
-    output_waker_installed: bool,
+    /// Off-paint-thread JSON + tree decode (stint 0438). Recreated on
+    /// `relaunch` since it is bound to the runtime's stdout.
+    decoder: PythonOutputDecoder,
+    /// Egui repaint target for the decoder, installed on the first `ui()` and
+    /// shared with the decoder so a ready frame wakes the paint loop.
+    repaint: RepaintHook,
     wants_close: bool,
     error: Option<String>,
     timers: std::collections::HashMap<String, PythonTimer>,
@@ -657,10 +661,288 @@ pub struct LivePythonPane {
     pending_click_carry: Option<crate::host::pane::PendingPaneClick>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PythonUiTree {
     tree: UiTree,
     canvas_fits: HashMap<u32, super::wasm_render::CanvasFit>,
+}
+
+/// A decoded frame or bridge message handed from the decoder thread to the
+/// paint thread (stint 0438). JSON + tree decode happen on the decoder thread;
+/// the paint thread only picks up the ready result. Decode durations ride
+/// along so the per-app perf log keeps reporting `json_ms` / `tree_ms`.
+enum DecodedOutput {
+    Tree {
+        frame_id: Option<u64>,
+        tree: Arc<PythonUiTree>,
+        json_time: std::time::Duration,
+        tree_time: std::time::Duration,
+        bytes: usize,
+    },
+    Message {
+        value: Value,
+        json_time: std::time::Duration,
+        bytes: usize,
+    },
+    /// A malformed full tree — a hard bug, not a recoverable desync. Surfaced to
+    /// the pane as a fatal error the way the inline decode used to.
+    DecodeError(String),
+}
+
+/// Where a decoder thread wakes the paint loop once a frame is ready. Installed
+/// lazily on the first `ui()` call (egui's `Context` only exists then) and
+/// shared across `relaunch` so a fresh decoder inherits it immediately.
+type RepaintHook = Arc<Mutex<Option<(egui::Context, egui::ViewportId)>>>;
+
+/// Owns the off-paint-thread decoder: the thread handle, the ready-frame queue,
+/// and the `stdout` handle it drains (kept so `Drop` can wake and join it).
+struct PythonOutputDecoder {
+    rx: std::sync::mpsc::Receiver<DecodedOutput>,
+    thread: Option<JoinHandle<()>>,
+    stdout: DrainableOutput,
+}
+
+impl PythonOutputDecoder {
+    fn spawn(runtime: &WasmPythonRuntime, app_id: String, repaint: RepaintHook) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stdout = runtime.stdout.clone();
+        let stdin = runtime.stdin.clone();
+        let thread_stdout = stdout.clone();
+        let thread = std::thread::Builder::new()
+            .name(format!("plexi-python-decode-{app_id}"))
+            .spawn(move || {
+                decode_loop(thread_stdout, stdin, app_id, tx, repaint);
+            })
+            .ok();
+        Self {
+            rx,
+            thread,
+            stdout,
+        }
+    }
+}
+
+impl Drop for PythonOutputDecoder {
+    fn drop(&mut self) {
+        self.stdout.close();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Read guest stdout, split JSON lines, decode trees (full or delta), and hand
+/// ready frames to the paint thread. Deltas patch the previous decoded tree in
+/// place; an unapplyable delta triggers a fail-loud `request_full_tree` resync
+/// instead of painting a corrupt tree.
+fn decode_loop(
+    stdout: DrainableOutput,
+    stdin: AppendableStdin,
+    app_id: String,
+    tx: std::sync::mpsc::Sender<DecodedOutput>,
+    repaint: RepaintHook,
+) {
+    let mut partial: Vec<u8> = Vec::new();
+    let mut last_tree: Option<Arc<PythonUiTree>> = None;
+    let mut awaiting_full = false;
+    while let Some(bytes) = stdout.wait_and_drain() {
+        partial.extend(bytes);
+        let mut produced = false;
+        while let Some(newline) = partial.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = partial.drain(..=newline).collect();
+            let line = &line[..line.len().saturating_sub(1)];
+            if line.is_empty() {
+                continue;
+            }
+            let bytes = line.len() + 1;
+            let json_started = std::time::Instant::now();
+            let value: Value = match serde_json::from_slice(line) {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = tx.send(DecodedOutput::DecodeError(error.to_string()));
+                    produced = true;
+                    continue;
+                }
+            };
+            let json_time = json_started.elapsed();
+            let message_type = value.get("type").and_then(Value::as_str);
+            let output = match message_type {
+                Some("component_tree") => decode_full_tree(&value, json_time, bytes, &mut last_tree),
+                Some("tree_delta") => {
+                    match decode_tree_delta(&value, json_time, bytes, &last_tree) {
+                        Ok(output) => {
+                            if let DecodedOutput::Tree { tree, .. } = &output {
+                                last_tree = Some(tree.clone());
+                            }
+                            Some(output)
+                        }
+                        Err(reason) => {
+                            last_tree = None;
+                            if !awaiting_full {
+                                awaiting_full = true;
+                                log::warn!(
+                                    "app::{app_id}: tree delta could not be applied ({reason}); requesting full-tree resync"
+                                );
+                                if let Err(error) =
+                                    stdin.push_json_line(&json!({"type": "request_full_tree"}))
+                                {
+                                    log::error!(
+                                        "app::{app_id}: failed to request full-tree resync: {error}"
+                                    );
+                                }
+                            }
+                            None
+                        }
+                    }
+                }
+                _ => Some(DecodedOutput::Message {
+                    value,
+                    json_time,
+                    bytes,
+                }),
+            };
+            if let Some(output) = output {
+                if matches!(output, DecodedOutput::Tree { .. }) {
+                    awaiting_full = false;
+                }
+                if tx.send(output).is_err() {
+                    return; // paint side dropped the pane
+                }
+                produced = true;
+            }
+        }
+        if produced {
+            if let Some((context, viewport)) =
+                repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            {
+                // A zero-delay egui request deliberately schedules an extra
+                // settling paint; a 1ns request wakes immediately without it.
+                context.request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+            }
+        }
+    }
+}
+
+fn decode_full_tree(
+    value: &Value,
+    json_time: std::time::Duration,
+    bytes: usize,
+    last_tree: &mut Option<Arc<PythonUiTree>>,
+) -> Option<DecodedOutput> {
+    let Some(raw) = value.get("tree") else {
+        return Some(DecodedOutput::DecodeError(
+            "component_tree message missing 'tree'".to_string(),
+        ));
+    };
+    let tree_started = std::time::Instant::now();
+    match decode_python_ui_tree_value(raw) {
+        Ok(tree) => {
+            let tree = Arc::new(tree);
+            *last_tree = Some(tree.clone());
+            Some(DecodedOutput::Tree {
+                frame_id: value.get("frame_id").and_then(Value::as_u64),
+                tree,
+                json_time,
+                tree_time: tree_started.elapsed(),
+                bytes,
+            })
+        }
+        Err(error) => Some(DecodedOutput::DecodeError(error.to_string())),
+    }
+}
+
+fn decode_tree_delta(
+    value: &Value,
+    json_time: std::time::Duration,
+    bytes: usize,
+    last_tree: &Option<Arc<PythonUiTree>>,
+) -> Result<DecodedOutput, String> {
+    let base = last_tree
+        .as_ref()
+        .ok_or_else(|| "tree_delta received before any full tree".to_string())?;
+    let changed = value
+        .get("changed")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "tree_delta missing 'changed' array".to_string())?;
+    let tree_started = std::time::Instant::now();
+    let tree = apply_tree_delta(base, changed).map_err(|error| error.to_string())?;
+    Ok(DecodedOutput::Tree {
+        frame_id: value.get("frame_id").and_then(Value::as_u64),
+        tree: Arc::new(tree),
+        json_time,
+        tree_time: tree_started.elapsed(),
+        bytes,
+    })
+}
+
+/// Apply a `tree_delta` to the previous decoded tree, patching only the named
+/// arena slots (and, for canvas nodes, the named command indices) in place. Any
+/// out-of-range index or a `commands_changed` patch on a non-canvas node is a
+/// desync — returned as an error so the caller resyncs rather than corrupting
+/// the tree.
+fn apply_tree_delta(
+    base: &PythonUiTree,
+    changed: &[Value],
+) -> Result<PythonUiTree, WasmPythonError> {
+    let mut tree = base.tree.clone();
+    let mut canvas_fits = base.canvas_fits.clone();
+    for patch in changed {
+        let id = required_u32(patch, "id")?;
+        let index = id as usize;
+        let slot = tree.nodes.get_mut(index).ok_or_else(|| {
+            WasmPythonError::BridgeJson(format!(
+                "tree_delta id {id} out of range (arena has {} nodes)",
+                base.tree.nodes.len()
+            ))
+        })?;
+        if let Some(commands_changed) = patch.get("commands_changed").and_then(Value::as_array) {
+            let UiNodeData::Canvas(canvas) = &mut slot.data else {
+                return Err(WasmPythonError::BridgeJson(format!(
+                    "tree_delta commands_changed on non-canvas node {id}"
+                )));
+            };
+            for entry in commands_changed {
+                let pair = entry.as_array().ok_or_else(|| {
+                    WasmPythonError::BridgeJson(
+                        "commands_changed entry is not an [index, command] pair".to_string(),
+                    )
+                })?;
+                let command_index = pair
+                    .first()
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| {
+                        WasmPythonError::BridgeJson(
+                            "commands_changed entry missing integer index".to_string(),
+                        )
+                    })? as usize;
+                let command_value = pair.get(1).ok_or_else(|| {
+                    WasmPythonError::BridgeJson(
+                        "commands_changed entry missing command payload".to_string(),
+                    )
+                })?;
+                let command = canvas.commands.get_mut(command_index).ok_or_else(|| {
+                    WasmPythonError::BridgeJson(format!(
+                        "tree_delta command index {command_index} out of range on node {id}"
+                    ))
+                })?;
+                *command = decode_canvas_command(command_value)?;
+            }
+            // The guest only emits commands_changed when every other field
+            // (including `fit`) is unchanged, so canvas_fits stays valid.
+        } else {
+            let node = decode_indexed_node(patch)?;
+            match canvas_fit_for_node(patch)? {
+                Some(fit) => {
+                    canvas_fits.insert(id, fit);
+                }
+                None => {
+                    canvas_fits.remove(&id);
+                }
+            }
+            *slot = node;
+        }
+    }
+    Ok(PythonUiTree { tree, canvas_fits })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -767,11 +1049,6 @@ impl PythonFrameScheduler {
         Some(admission_deadline.max(now))
     }
 
-    fn output_notifications_enabled(&self, now: std::time::Instant) -> bool {
-        !(matches!(self.mode, PythonSchedulerMode::Continuous { .. })
-            && self.admission_deadline() > now)
-    }
-
     fn pipeline_capacity(&self) -> usize {
         match self.mode {
             PythonSchedulerMode::Continuous { .. } => 3,
@@ -845,8 +1122,11 @@ impl LivePythonPane {
         let app_id = config.app_id.clone();
         let persisted_state = load_python_state(&config);
         let (http_tx, http_rx) = std::sync::mpsc::channel();
+        let runtime = WasmPythonRuntime::launch(&config)?;
+        let repaint: RepaintHook = Arc::new(Mutex::new(None));
+        let decoder = PythonOutputDecoder::spawn(&runtime, app_id.clone(), repaint.clone());
         Ok(Self {
-            runtime: WasmPythonRuntime::launch(&config)?,
+            runtime,
             config,
             app_id,
             title: None,
@@ -855,7 +1135,8 @@ impl LivePythonPane {
             initialized: false,
             ready: false,
             frame_scheduler: PythonFrameScheduler::new(std::time::Instant::now()),
-            output_waker_installed: false,
+            decoder,
+            repaint,
             wants_close: false,
             error: None,
             timers: std::collections::HashMap::new(),
@@ -897,16 +1178,11 @@ impl LivePythonPane {
         if pending_click.is_some() {
             log::info!("app::{}: pending pane click/node-click entering render (carried={})", self.app_id, self.pending_click_carry.is_none());
         }
-        if !self.output_waker_installed {
-            let context = ui.ctx().clone();
-            let viewport = ui.ctx().viewport_id();
-            self.runtime.stdout.set_waker(Arc::new(move || {
-                // A zero-delay egui request deliberately produces two paints.
-                // Keep the wake immediate after prediction adjustment without
-                // asking egui for its extra settling pass.
-                context.request_repaint_after_for(std::time::Duration::from_nanos(1), viewport);
-            }));
-            self.output_waker_installed = true;
+        {
+            let mut repaint = self.repaint.lock().unwrap_or_else(|e| e.into_inner());
+            if repaint.is_none() {
+                *repaint = Some((ui.ctx().clone(), ui.ctx().viewport_id()));
+            }
         }
         if let Some(error) = &self.error {
             if pending_click.is_some() {
@@ -1055,9 +1331,6 @@ impl LivePythonPane {
         let now = std::time::Instant::now();
         let render_deadline = self.frame_scheduler.next_repaint_deadline(now);
         let timer_deadline = self.timers.values().map(|timer| timer.deadline).min();
-        self.runtime
-            .stdout
-            .set_notifications_enabled(self.frame_scheduler.output_notifications_enabled(now));
         if let Some(next_wake) = render_deadline.into_iter().chain(timer_deadline).min() {
             let predicted_frame =
                 std::time::Duration::from_secs_f32(ui.input(|input| input.predicted_dt));
@@ -1120,151 +1393,45 @@ impl LivePythonPane {
                 "headers": response.response_headers,
             }));
         }
-        match self.runtime.drain_messages() {
-            Ok(messages) => {
-                self.perf_stdout_bytes += self.runtime.last_drain_bytes;
-                self.perf_json_decode += self.runtime.last_json_decode_time;
-                for message in messages {
-                    let message_type = message.get("type").and_then(Value::as_str);
-                    log::debug!(
-                        "app::{}: CPython WASM message type={}",
-                        self.app_id,
-                        message_type.unwrap_or("<missing>")
-                    );
-                    match message_type {
-                        Some("ready") => {
-                            self.ready = true;
-                            self.frame_scheduler
-                                .request_render_at(std::time::Instant::now());
-                            self.reset_perf_window();
-                            log::info!("app::{}: CPython WASM bridge ready", self.app_id);
-                        }
-                        Some("component_tree") => {
-                            if let Some(tree) = message.get("tree") {
-                                let decode_started = std::time::Instant::now();
-                                match decode_python_ui_tree_value(tree) {
-                                    Ok(tree) => {
-                                        let frame_id = message
-                                            .get("frame_id")
-                                            .and_then(Value::as_u64)
-                                            .or_else(|| {
-                                                self.frame_scheduler.oldest_pending_frame_id()
-                                            });
-                                        if let Some(frame_id) = frame_id {
-                                            self.pending_trees.insert(frame_id, tree);
-                                        }
-                                    }
-                                    Err(error) => {
-                                        log::error!(
-                                            "app::{}: decode CPython WASM component tree: {error}",
-                                            self.app_id
-                                        );
-                                        self.error = Some(error.to_string());
-                                    }
-                                }
-                                self.perf_tree_decode += decode_started.elapsed();
-                            }
-                        }
-                        Some("set_title") => {
-                            self.title = message
-                                .get("title")
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                        }
-                        Some("set_timer") => {
-                            if let (Some(id), Some(after_ms)) = (
-                                message.get("timer_id").and_then(Value::as_str),
-                                message.get("after_ms").and_then(Value::as_u64),
-                            ) {
-                                let interval = std::time::Duration::from_millis(after_ms.max(1));
-                                self.timers.insert(
-                                    id.to_string(),
-                                    PythonTimer {
-                                        deadline: std::time::Instant::now() + interval,
-                                        repeat_every: message
-                                            .get("repeat")
-                                            .and_then(Value::as_bool)
-                                            .unwrap_or(false)
-                                            .then_some(interval),
-                                    },
-                                );
-                            }
-                        }
-                        Some("cancel_timer") => {
-                            if let Some(id) = message.get("timer_id").and_then(Value::as_str) {
-                                self.timers.remove(id);
-                            }
-                        }
-                        Some("schedule_render") => {
-                            let delay = std::time::Duration::from_millis(
-                                message
-                                    .get("after_ms")
-                                    .and_then(Value::as_u64)
-                                    .unwrap_or(16),
-                            );
-                            self.frame_scheduler
-                                .request_render_after(std::time::Instant::now(), delay);
-                        }
-                        Some("set_scheduler_mode") => {
-                            self.frame_scheduler.set_mode(
-                                message.get("mode").and_then(Value::as_str),
-                                message.get("fps").and_then(Value::as_u64),
-                                std::time::Instant::now(),
-                            );
-                        }
-                        Some("frame_done") => {
-                            self.perf_guest_frames += 1;
-                            let completed_frame = message.get("frame_id").and_then(Value::as_u64);
-                            let completed = completed_frame.and_then(|frame_id| {
-                                commit_python_frame(
-                                    &mut self.frame_scheduler,
-                                    &mut self.pending_trees,
-                                    &mut self.tree,
-                                    frame_id,
-                                )
-                            });
-                            if let Some(sent_at) = completed {
-                                self.perf_guest_roundtrip += sent_at.elapsed();
-                            } else {
-                                log::warn!(
-                                    "app::{}: CPython WASM completed unknown frame {:?}",
-                                    self.app_id,
-                                    completed_frame
-                                );
-                            }
-                        }
-                        Some("close") | Some("close_self") => self.wants_close = true,
-                        Some("save_app_state") => self.save_state(message.get("payload")),
-                        Some("file_read") => self.handle_file_read(&message),
-                        Some("file_write") => self.handle_file_write(&message),
-                        Some("read_host_log") => self.handle_read_host_log(&message),
-                        Some("http_request") => self.handle_http_request(&message),
-                        Some("capability_request") => self.handle_capability_request(&message),
-                        Some("log") => log::info!(
-                            "app::{}: {}",
-                            self.app_id,
-                            message
-                                .get("message")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                        ),
-                        Some("status_summary") => {}
-                        _ => {
-                            if let Some(command) = app_command_from_python_message(&message) {
-                                self.pending_commands.push(command);
-                            } else {
-                                log::warn!(
-                                    "app::{}: unhandled CPython WASM message: {message}",
-                                    self.app_id
-                                );
-                            }
-                        }
+        loop {
+            match self.decoder.rx.try_recv() {
+                Ok(DecodedOutput::Tree {
+                    frame_id,
+                    tree,
+                    json_time,
+                    tree_time,
+                    bytes,
+                }) => {
+                    self.perf_json_decode += json_time;
+                    self.perf_tree_decode += tree_time;
+                    self.perf_stdout_bytes += bytes;
+                    let frame_id = frame_id
+                        .or_else(|| self.frame_scheduler.oldest_pending_frame_id());
+                    if let Some(frame_id) = frame_id {
+                        self.pending_trees.insert(frame_id, tree);
                     }
                 }
-            }
-            Err(error) => {
-                log::error!("app::{}: drain CPython WASM messages: {error}", self.app_id);
-                self.error = Some(error.to_string());
+                Ok(DecodedOutput::Message {
+                    value,
+                    json_time,
+                    bytes,
+                }) => {
+                    self.perf_json_decode += json_time;
+                    self.perf_stdout_bytes += bytes;
+                    self.handle_message(value);
+                }
+                Ok(DecodedOutput::DecodeError(error)) => {
+                    log::error!(
+                        "app::{}: decode CPython WASM message: {error}",
+                        self.app_id
+                    );
+                    self.error = Some(error);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    log::error!("app::{}: CPython WASM decoder thread ended", self.app_id);
+                    break;
+                }
             }
         }
         let stderr = self.runtime.drain_stderr();
@@ -1274,6 +1441,117 @@ impl LivePythonPane {
                 self.app_id,
                 stderr.trim()
             );
+        }
+    }
+
+    /// Handle one non-tree bridge message. Tree framing (`component_tree` /
+    /// `tree_delta`) is resolved on the decoder thread and never reaches here.
+    fn handle_message(&mut self, message: Value) {
+        let message_type = message.get("type").and_then(Value::as_str);
+        log::debug!(
+            "app::{}: CPython WASM message type={}",
+            self.app_id,
+            message_type.unwrap_or("<missing>")
+        );
+        match message_type {
+            Some("ready") => {
+                self.ready = true;
+                self.frame_scheduler
+                    .request_render_at(std::time::Instant::now());
+                self.reset_perf_window();
+                log::info!("app::{}: CPython WASM bridge ready", self.app_id);
+            }
+            Some("set_title") => {
+                self.title = message
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }
+            Some("set_timer") => {
+                if let (Some(id), Some(after_ms)) = (
+                    message.get("timer_id").and_then(Value::as_str),
+                    message.get("after_ms").and_then(Value::as_u64),
+                ) {
+                    let interval = std::time::Duration::from_millis(after_ms.max(1));
+                    self.timers.insert(
+                        id.to_string(),
+                        PythonTimer {
+                            deadline: std::time::Instant::now() + interval,
+                            repeat_every: message
+                                .get("repeat")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false)
+                                .then_some(interval),
+                        },
+                    );
+                }
+            }
+            Some("cancel_timer") => {
+                if let Some(id) = message.get("timer_id").and_then(Value::as_str) {
+                    self.timers.remove(id);
+                }
+            }
+            Some("schedule_render") => {
+                let delay = std::time::Duration::from_millis(
+                    message.get("after_ms").and_then(Value::as_u64).unwrap_or(16),
+                );
+                self.frame_scheduler
+                    .request_render_after(std::time::Instant::now(), delay);
+            }
+            Some("set_scheduler_mode") => {
+                self.frame_scheduler.set_mode(
+                    message.get("mode").and_then(Value::as_str),
+                    message.get("fps").and_then(Value::as_u64),
+                    std::time::Instant::now(),
+                );
+            }
+            Some("frame_done") => {
+                self.perf_guest_frames += 1;
+                let completed_frame = message.get("frame_id").and_then(Value::as_u64);
+                let completed = completed_frame.and_then(|frame_id| {
+                    commit_python_frame(
+                        &mut self.frame_scheduler,
+                        &mut self.pending_trees,
+                        &mut self.tree,
+                        frame_id,
+                    )
+                });
+                if let Some(sent_at) = completed {
+                    self.perf_guest_roundtrip += sent_at.elapsed();
+                } else {
+                    log::warn!(
+                        "app::{}: CPython WASM completed unknown frame {:?}",
+                        self.app_id,
+                        completed_frame
+                    );
+                }
+            }
+            Some("close") | Some("close_self") => self.wants_close = true,
+            Some("save_app_state") => self.save_state(message.get("payload")),
+            Some("file_read") => self.handle_file_read(&message),
+            Some("file_write") => self.handle_file_write(&message),
+            Some("read_host_log") => self.handle_read_host_log(&message),
+            Some("http_request") => self.handle_http_request(&message),
+            Some("capability_request") => self.handle_capability_request(&message),
+            Some("log") => log::info!(
+                "app::{}: {}",
+                self.app_id,
+                message
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            ),
+            Some("status_summary") => {}
+            _ => {
+                if let Some(command) = app_command_from_python_message(&message) {
+                    self.pending_commands.push(command);
+                } else {
+                    log::warn!(
+                        "app::{}: unhandled CPython WASM message: {message}",
+                        self.app_id
+                    );
+                }
+            }
         }
     }
 
@@ -1587,7 +1865,7 @@ impl LivePythonPane {
     }
 
     pub(crate) fn semantic_state(&self) -> crate::host::pane::SemanticPaneState {
-        python_semantic_state(self.tree.as_ref())
+        python_semantic_state(self.tree.as_deref())
     }
     #[cfg(test)]
     pub fn has_rendered_tree(&self) -> bool {
@@ -1598,7 +1876,14 @@ impl LivePythonPane {
         self.error.as_deref()
     }
     pub fn relaunch(&mut self) -> Result<(), WasmPythonError> {
-        self.runtime = WasmPythonRuntime::launch(&self.config)?;
+        // Drop the old decoder (closes its stdout, joins the thread) before the
+        // old runtime is replaced, then bind a fresh decoder to the new
+        // runtime's stdout. The shared repaint hook carries over so the new
+        // decoder can wake the paint loop immediately.
+        let runtime = WasmPythonRuntime::launch(&self.config)?;
+        self.decoder =
+            PythonOutputDecoder::spawn(&runtime, self.app_id.clone(), self.repaint.clone());
+        self.runtime = runtime;
         self.tree = None;
         self.pending_trees.clear();
         self.initialized = false;
@@ -1770,8 +2055,8 @@ fn python_render_event(frame_id: u64, timer_ids: Vec<String>) -> Value {
 
 fn commit_python_frame(
     scheduler: &mut PythonFrameScheduler,
-    pending_trees: &mut HashMap<u64, PythonUiTree>,
-    visible_tree: &mut Option<PythonUiTree>,
+    pending_trees: &mut HashMap<u64, Arc<PythonUiTree>>,
+    visible_tree: &mut Option<Arc<PythonUiTree>>,
     frame_id: u64,
 ) -> Option<std::time::Instant> {
     let sent_at = scheduler.complete_frame(frame_id)?;
@@ -2490,28 +2775,36 @@ fn decode_python_ui_tree_value(value: &Value) -> Result<PythonUiTree, WasmPython
         .into_iter()
         .flatten()
     {
-        let Some(data) = node.get("data") else {
-            continue;
-        };
-        if !matches!(
-            data.get("type").and_then(Value::as_str),
-            Some("Canvas" | "canvas")
-        ) {
-            continue;
+        if let Some(fit) = canvas_fit_for_node(node)? {
+            canvas_fits.insert(required_u32(node, "id")?, fit);
         }
-        let id = required_u32(node, "id")?;
-        let fit = match data.get("fit").and_then(Value::as_str).unwrap_or("fill") {
-            "fill" => super::wasm_render::CanvasFit::Fill,
-            "contain" => super::wasm_render::CanvasFit::Contain,
-            other => {
-                return Err(WasmPythonError::BridgeJson(format!(
-                    "canvas fit must be 'fill' or 'contain', got {other:?}"
-                )))
-            }
-        };
-        canvas_fits.insert(id, fit);
     }
     Ok(PythonUiTree { tree, canvas_fits })
+}
+
+/// The `CanvasFit` an encoded node maps to, or `None` when it is not a canvas.
+/// Shared by the full decode and the delta full-node-replace path so both keep
+/// `canvas_fits` consistent.
+fn canvas_fit_for_node(node: &Value) -> Result<Option<super::wasm_render::CanvasFit>, WasmPythonError> {
+    let Some(data) = node.get("data") else {
+        return Ok(None);
+    };
+    if !matches!(
+        data.get("type").and_then(Value::as_str),
+        Some("Canvas" | "canvas")
+    ) {
+        return Ok(None);
+    }
+    let fit = match data.get("fit").and_then(Value::as_str).unwrap_or("fill") {
+        "fill" => super::wasm_render::CanvasFit::Fill,
+        "contain" => super::wasm_render::CanvasFit::Contain,
+        other => {
+            return Err(WasmPythonError::BridgeJson(format!(
+                "canvas fit must be 'fill' or 'contain', got {other:?}"
+            )))
+        }
+    };
+    Ok(Some(fit))
 }
 
 #[cfg(test)]
@@ -3406,7 +3699,7 @@ mod tests {
             .expect("valid JSON"),
         )
         .expect("pending tree");
-        let mut pending = HashMap::from([(frame_id, pending_tree)]);
+        let mut pending = HashMap::from([(frame_id, Arc::new(pending_tree))]);
         let mut visible = None;
 
         assert!(visible.is_none());
@@ -3432,7 +3725,6 @@ mod tests {
         assert!(scheduler
             .next_repaint_deadline(now + interval * 3)
             .is_none());
-        assert!(scheduler.output_notifications_enabled(now + interval * 3));
     }
 
     #[test]
@@ -3443,7 +3735,6 @@ mod tests {
         scheduler.poll_render(now).expect("first frame");
 
         assert!(scheduler.next_repaint_deadline(now).is_some());
-        assert!(!scheduler.output_notifications_enabled(now));
     }
 
     #[test]
@@ -3479,7 +3770,6 @@ mod tests {
                 scheduler.next_repaint_deadline(now),
                 Some(now + interval - CONTINUOUS_FRAME_HEADROOM)
             );
-            assert!(!scheduler.output_notifications_enabled(now));
         }
     }
 
@@ -3541,57 +3831,32 @@ mod tests {
     }
 
     #[test]
-    fn drainable_output_wakes_host_when_guest_writes() {
+    fn drainable_output_blocks_until_guest_writes_then_wakes_decoder() {
         let output = DrainableOutput::default();
-        let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let wake_flag = woke.clone();
-        output.set_waker(Arc::new(move || {
-            wake_flag.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }));
         let mut writer = output.clone();
+        let reader = output.clone();
+        let handle = std::thread::spawn(move || reader.wait_and_drain());
+        // Give the reader time to park on the condvar, then write.
+        std::thread::sleep(std::time::Duration::from_millis(20));
         let waker = Waker::from(Arc::new(NoopWake));
         let mut context = Context::from_waker(&waker);
-
         assert!(Pin::new(&mut writer)
             .poll_write(&mut context, b"frame_done\n")
             .is_ready());
-        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(Pin::new(&mut writer).poll_flush(&mut context).is_ready());
-        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(Pin::new(&mut writer)
-            .poll_write(&mut context, b"another_message\n")
-            .is_ready());
-        assert!(Pin::new(&mut writer).poll_flush(&mut context).is_ready());
-        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 1);
-        output.drain();
-        assert!(Pin::new(&mut writer)
-            .poll_write(&mut context, b"next_frame\n")
-            .is_ready());
-        assert!(Pin::new(&mut writer).poll_flush(&mut context).is_ready());
-        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(
+            handle.join().expect("reader thread"),
+            Some(b"frame_done\n".to_vec())
+        );
     }
 
     #[test]
-    fn drainable_output_defers_wake_until_notifications_are_rearmed() {
+    fn drainable_output_close_unblocks_decoder_with_none() {
         let output = DrainableOutput::default();
-        let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let wake_flag = woke.clone();
-        output.set_waker(Arc::new(move || {
-            wake_flag.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }));
-        output.set_notifications_enabled(false);
-        let mut writer = output.clone();
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut context = Context::from_waker(&waker);
-
-        assert!(Pin::new(&mut writer)
-            .poll_write(&mut context, b"frame_done\n")
-            .is_ready());
-        assert!(Pin::new(&mut writer).poll_flush(&mut context).is_ready());
-        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 0);
-
-        output.set_notifications_enabled(true);
-        assert_eq!(woke.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let reader = output.clone();
+        let handle = std::thread::spawn(move || reader.wait_and_drain());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        output.close();
+        assert_eq!(handle.join().expect("reader thread"), None);
     }
 
     #[test]
@@ -4129,6 +4394,203 @@ execution = "cloud"
                 if x == 41.0 && y == 42.0 && radius == 8.0
         ));
         assert!(matches!(canvas.commands[2], CanvasCommand::Text(_)));
+    }
+
+    fn encoded_value(json_text: &str) -> Value {
+        serde_json::from_str(json_text).expect("valid arena JSON")
+    }
+
+    // Full frame with a text node and a canvas node (background + one moving
+    // rect), matching the shape breakout emits.
+    const FULL_TREE_JSON: &str = r##"{
+        "root": 0,
+        "nodes": [
+            {"id":0,"key":"0","data":{"type":"Column","children":[1,2],"align":"start","grow":false}},
+            {"id":1,"key":"0/0","data":{"type":"Text","text":"score=0"}},
+            {"id":2,"key":"0/1","data":{"type":"canvas","width":640.0,"height":360.0,"grow":true,"fit":"fill","commands":[
+                {"type":"rect","x":0.0,"y":0.0,"w":640.0,"h":360.0,"fill":"#000000","radius":0.0},
+                {"type":"rect","x":0.0,"y":100.0,"w":20.0,"h":20.0,"fill":"#ff0000","radius":0.0}
+            ]}}
+        ]
+    }"##;
+
+    #[test]
+    fn full_tree_frame_decodes_with_canvas_fit() {
+        let tree = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("full tree");
+        assert_eq!(tree.tree.nodes.len(), 3);
+        assert_eq!(tree.canvas_fits.get(&2), Some(&super::super::wasm_render::CanvasFit::Fill));
+    }
+
+    #[test]
+    fn delta_replaces_full_node_matching_equivalent_full_decode() {
+        let base = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("base");
+        // The text node (arena slot 1) changed to score=7: a full-node patch.
+        let changed = [encoded_value(
+            r#"{"id":1,"key":"0/0","data":{"type":"Text","text":"score=7"}}"#,
+        )];
+        let patched = apply_tree_delta(&base, &changed).expect("apply delta");
+
+        let UiNodeData::Text(text) = &patched.tree.nodes[1].data else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.text, "score=7");
+        // Untouched slots are identical to the base.
+        assert_eq!(
+            format!("{:?}", patched.tree.nodes[2]),
+            format!("{:?}", base.tree.nodes[2])
+        );
+    }
+
+    #[test]
+    fn delta_patches_only_named_canvas_commands() {
+        let base = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("base");
+        // Move only the second rect (command index 1); background stays put.
+        let changed = [encoded_value(
+            r##"{"id":2,"key":"0/1","commands_changed":[[1,{"type":"rect","x":120.0,"y":100.0,"w":20.0,"h":20.0,"fill":"#ff0000","radius":0.0}]]}"##,
+        )];
+        let patched = apply_tree_delta(&base, &changed).expect("apply canvas delta");
+
+        let UiNodeData::Canvas(canvas) = &patched.tree.nodes[2].data else {
+            panic!("expected canvas node");
+        };
+        let CanvasCommand::Rect(background) = &canvas.commands[0] else {
+            panic!("expected background rect");
+        };
+        assert_eq!(background.x, 0.0); // unchanged
+        let CanvasCommand::Rect(moved) = &canvas.commands[1] else {
+            panic!("expected moved rect");
+        };
+        assert_eq!(moved.x, 120.0); // patched in place
+    }
+
+    #[test]
+    fn delta_out_of_range_id_is_a_desync_error() {
+        let base = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("base");
+        let changed = [encoded_value(
+            r#"{"id":99,"key":"x","data":{"type":"Empty"}}"#,
+        )];
+        assert!(apply_tree_delta(&base, &changed).is_err());
+    }
+
+    #[test]
+    fn delta_commands_changed_on_non_canvas_is_a_desync_error() {
+        let base = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("base");
+        // Slot 1 is a Text node, not a canvas.
+        let changed = [encoded_value(
+            r#"{"id":1,"key":"0/0","commands_changed":[[0,{"type":"rect"}]]}"#,
+        )];
+        assert!(apply_tree_delta(&base, &changed).is_err());
+    }
+
+    #[test]
+    fn delta_out_of_range_command_index_is_a_desync_error() {
+        let base = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("base");
+        let changed = [encoded_value(
+            r#"{"id":2,"key":"0/1","commands_changed":[[9,{"type":"rect"}]]}"#,
+        )];
+        assert!(apply_tree_delta(&base, &changed).is_err());
+    }
+
+    #[test]
+    fn decoder_thread_emits_full_then_delta_frames() {
+        let stdout = DrainableOutput::default();
+        let stdin = AppendableStdin::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let repaint: RepaintHook = Arc::new(Mutex::new(None));
+        let reader = stdout.clone();
+        let handle = std::thread::spawn(move || {
+            decode_loop(reader, stdin, "test".to_string(), tx, repaint);
+        });
+
+        // Serialize to one line each — the decoder splits on '\n', so the
+        // pretty-printed FULL_TREE_JSON must be collapsed first.
+        let full = serde_json::to_string(&json!({
+            "type": "component_tree",
+            "frame_id": 1,
+            "tree": encoded_value(FULL_TREE_JSON),
+        }))
+        .expect("serialize full frame");
+        stdout.push_bytes(full.as_bytes());
+        stdout.push_bytes(b"\n");
+        stdout.push_bytes(
+            br#"{"type":"tree_delta","frame_id":2,"changed":[{"id":1,"key":"0/0","data":{"type":"Text","text":"score=7"}}]}"#,
+        );
+        stdout.push_bytes(b"\n");
+
+        let first = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("first frame");
+        let DecodedOutput::Tree { frame_id, tree, .. } = first else {
+            panic!("expected full tree frame");
+        };
+        assert_eq!(frame_id, Some(1));
+        assert_eq!(tree.tree.nodes.len(), 3);
+
+        let second = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("second frame");
+        let DecodedOutput::Tree { frame_id, tree, .. } = second else {
+            panic!("expected delta-reconstructed frame");
+        };
+        assert_eq!(frame_id, Some(2));
+        let UiNodeData::Text(text) = &tree.tree.nodes[1].data else {
+            panic!("expected text node");
+        };
+        assert_eq!(text.text, "score=7");
+
+        stdout.close();
+        handle.join().expect("decoder thread");
+    }
+
+    #[test]
+    fn decoder_thread_requests_full_resync_on_unapplyable_delta() {
+        let stdout = DrainableOutput::default();
+        let stdin = AppendableStdin::default();
+        let stdin_probe = stdin.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let repaint: RepaintHook = Arc::new(Mutex::new(None));
+        let reader = stdout.clone();
+        let handle = std::thread::spawn(move || {
+            decode_loop(reader, stdin, "test".to_string(), tx, repaint);
+        });
+
+        // A delta with no prior full tree cannot be applied: fail-loud resync.
+        stdout.push_bytes(b"{\"type\":\"tree_delta\",\"frame_id\":1,\"changed\":[]}\n");
+
+        // The decoder must have asked the guest for a full tree, and emitted no
+        // frame for the dropped delta.
+        let request = drain_appendable_stdin(&stdin_probe, std::time::Duration::from_secs(2));
+        assert!(
+            request.contains("request_full_tree"),
+            "expected resync request, got {request:?}"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no frame should be emitted for an unapplyable delta"
+        );
+
+        stdout.close();
+        handle.join().expect("decoder thread");
+    }
+
+    // Poll the guest stdin the decoder writes into until a full line arrives.
+    fn drain_appendable_stdin(stdin: &AppendableStdin, timeout: std::time::Duration) -> String {
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        let mut collected = Vec::new();
+        let deadline = std::time::Instant::now() + timeout;
+        let mut input = stdin.clone();
+        while std::time::Instant::now() < deadline {
+            let mut bytes = [0_u8; 256];
+            let mut read = ReadBuf::new(&mut bytes);
+            if Pin::new(&mut input).poll_read(&mut context, &mut read).is_ready() {
+                let filled = read.filled();
+                if !filled.is_empty() {
+                    collected.extend_from_slice(filled);
+                    if collected.contains(&b'\n') {
+                        break;
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        String::from_utf8_lossy(&collected).into_owned()
     }
 
     #[test]

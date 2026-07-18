@@ -11,7 +11,7 @@ from plexi_sdk.effects import SetSchedulerMode, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, RenderFrame, Resize
 from plexi_sdk.ui import Canvas, CanvasCircle, CanvasRect, CanvasText, Column, FooterKeys
 
-TARGET_FPS = 30
+TARGET_FPS = 60
 TARGET_DT = 1.0 / TARGET_FPS
 
 BRICK_COLS = 10
@@ -156,9 +156,6 @@ def init(size, args) -> list:
     _runtime = _initial()
     effects: list = [
         SetTitle("Breakout"),
-        # Locked to a sustainable 30 fps until stint 0438 (diffed tree updates)
-        # restores a jitter-free 60 fps. Physics is dt-based, so gameplay speed
-        # is unchanged at this rate.
         SetSchedulerMode("continuous", fps=TARGET_FPS),
         SetStatus(f"Score: 0 | Lives: {STARTING_LIVES}"),
     ]
@@ -187,9 +184,7 @@ def update(event) -> list:
         if data["state"] != "playing":
             return []
         dt = event.elapsed if event.elapsed > 0 else TARGET_DT
-        # Cap a single physics step at one nominal frame so a jitter dip can't
-        # push the ball far enough to tunnel through a brick row.
-        effects = _step(data, min(dt, TARGET_DT))
+        effects = _step(data, min(dt, TARGET_DT * 2.0))
         return effects
 
     return []
