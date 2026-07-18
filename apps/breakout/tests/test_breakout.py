@@ -102,6 +102,37 @@ def test_brick_collision_removes_brick_and_scores() -> None:
     assert first_brick["alive"] is False
 
 
+def test_ball_displacement_per_second_is_tick_rate_independent() -> None:
+    """Physics is dt-based, so 1 real second of travel covers the same distance
+    whether ticked at 30 fps or the old 60 fps. Guards the 0446 fps lock against
+    a future regression that reintroduces fixed per-tick increments."""
+
+    def _travel(fps: int) -> tuple[float, float]:
+        sdk.pane_width = sdk.canvas_width = 2000.0
+        sdk.pane_height = sdk.canvas_height = 2000.0
+        breakout._keys_held.clear()
+        data = breakout._initial()
+        breakout._runtime = data
+        for brick in data["bricks"]:
+            brick["alive"] = False  # remove collisions; measure free flight
+        data["ball_attached"] = False
+        data["ball_x"] = data["ball_y"] = 1000.0
+        data["ball_vx"] = 100.0
+        data["ball_vy"] = -100.0
+        start_x, start_y = data["ball_x"], data["ball_y"]
+        dt = 1.0 / fps
+        for _ in range(fps):  # fps frames of 1/fps == exactly one real second
+            breakout._step(data, dt)
+        return data["ball_x"] - start_x, data["ball_y"] - start_y
+
+    dx_30, dy_30 = _travel(30)
+    dx_60, dy_60 = _travel(60)
+
+    # vx=100, vy=-100 px/s over 1.0 s -> (+100, -100) at either tick rate.
+    assert abs(dx_30 - 100.0) < 1e-6 and abs(dy_30 + 100.0) < 1e-6
+    assert abs(dx_30 - dx_60) < 1e-6 and abs(dy_30 - dy_60) < 1e-6
+
+
 def test_view_returns_canvas_with_correct_structure() -> None:
     _reset()
     node = breakout.view().to_node()
