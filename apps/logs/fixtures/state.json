@@ -1,0 +1,10 @@
+{
+  "loaded": true,
+  "path": "/home/u/.plexi-alpha/plexi.log",
+  "filter": "ALL",
+  "lines": [
+    {"time": "10:11:12", "level": "ERROR", "target": "app::todo", "message": "seeded save failed"},
+    {"time": "10:11:13", "level": "WARN", "target": "app::todo", "message": "seeded retrying"},
+    {"time": "10:11:14", "level": "INFO", "target": "plexi::config", "message": "seeded config load"}
+  ]
+}

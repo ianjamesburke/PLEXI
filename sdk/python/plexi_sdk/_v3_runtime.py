@@ -173,6 +173,13 @@ class V3AppRuntime:
             ))
         elif t == "file_write_result":
             self._dispatch(events.FileWriteResult(error=ev.get("error")))
+        elif t == "host_log_result":
+            content = ev.get("content")
+            self._dispatch(events.HostLogResult(
+                content=content.encode("utf-8") if isinstance(content, str) else None,
+                path=ev.get("path"),
+                error=ev.get("error"),
+            ))
         elif t == "capability_decision":
             self._handle_capability_decision(ev)
         elif t == "ui_action":
@@ -422,6 +429,8 @@ class V3AppRuntime:
                     "path": effect.path,
                     "content": effect.content.decode("utf-8"),
                 })
+            elif isinstance(effect, effects.ReadHostLog):
+                _emit({"type": "read_host_log", "max_bytes": int(effect.max_bytes)})
             elif isinstance(effect, effects.RequestCapability):
                 _emit({
                     "type": "capability_request",

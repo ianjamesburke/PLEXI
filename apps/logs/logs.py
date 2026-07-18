@@ -1,23 +1,48 @@
 #!/usr/bin/env python3
-"""Logs — SDK v3 runtime-state live tail of the Plexi host log."""
+"""Logs — live tail of the Plexi host channel log with clickable level filters.
+
+Runs sandboxed as CPython-in-WASM. The channel log lives on the host at
+`~/.plexi-<channel>/plexi.log`, outside the WASI mounts (only the SDK and app
+dir are preopened), so this app cannot open it directly. It reads the log
+through the capability-gated `read_host_log` host effect (`logs.read`): the host
+owns path resolution and tails the file; this app owns parsing, filtering, and
+presentation. A log it cannot reach renders an explicit error, never a blank
+pane.
+"""
 
 from __future__ import annotations
 
-import os
 import re
 
 from plexi_sdk import log, state
-from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
-from plexi_sdk.events import KeyEvent, TimerFired, UiValueChange
-from plexi_sdk.ui import AppBar, Column, FooterKeys, Scrollable, Spacer, Text, TextInput
+from plexi_sdk.effects import ReadHostLog, SetState, SetStatus, SetTimer, SetTitle
+from plexi_sdk.events import (
+    HostLogResult,
+    KeyEvent,
+    TimerFired,
+    UiAction,
+    UiValueChange,
+)
+from plexi_sdk.ui import (
+    AppBar,
+    Column,
+    FooterKeys,
+    Scrollable,
+    Spacer,
+    TabBar,
+    Text,
+    TextInput,
+)
 
 POLL_MS = 2_000
 TIMER_ID = 1
 MAX_LINES = 500
 TAIL_BYTES = 256 * 1024
 VISIBLE_LINES = 28
-FILTERS = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
-FILTER_KEY = {"a": "ALL", "e": "ERROR", "w": "WARN", "i": "INFO", "d": "DEBUG"}
+LEVELS = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
+LEVEL_KEY = {"a": "ALL", "e": "ERROR", "w": "WARN", "i": "INFO", "d": "DEBUG"}
+LEVEL_TAB = "logs-level"
+SEARCH_INPUT = "logs-search"
 
 LOG_RE = re.compile(
     r"^\[(\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}))\] \[(\w+)\] \[([^\]]+)\] (.*)$"
@@ -31,19 +56,18 @@ DEFAULT_STATE = {
     "searching": False,
     "offset": 0,
     "follow": True,
-    "signature": None,
+    "error": None,
+    "loaded": False,
 }
 
 
 def init(size, args) -> list:
-    path = args[0] if args else _detect_log_path()
     data = _state()
-    data["path"] = data["path"] or path
-    data.update(_refresh(data))
-    log.info(f"logs: SDK v3 initialized path={data['path']!r}")
+    log.info("logs: SDK v3 initialized — requesting host log via read_host_log effect")
     return [
         SetTitle("Logs"),
         SetTimer(TIMER_ID, POLL_MS, repeat=True),
+        ReadHostLog(TAIL_BYTES),
         SetStatus(_status(data)),
         SetState(data),
     ]
@@ -51,14 +75,24 @@ def init(size, args) -> list:
 
 def update(event) -> list:
     data = _state()
+
+    if isinstance(event, HostLogResult):
+        return _apply_log_result(data, event)
+
     if isinstance(event, TimerFired) and event.id == TIMER_ID:
-        refreshed = _refresh(data)
-        if refreshed["signature"] == data["signature"]:
+        # Live tail: ask the host for a fresh tail every poll. Lines update when
+        # the HostLogResult arrives; nothing to render until then.
+        return [ReadHostLog(TAIL_BYTES)]
+
+    if isinstance(event, UiAction) and event.handler_id.startswith(LEVEL_TAB + ":"):
+        index = _tab_index(event.handler_id)
+        if index is None:
             return []
-        data.update(refreshed)
+        data["filter"] = LEVELS[index]
+        data["offset"] = 0
         return [SetState(data), SetStatus(_status(data))]
 
-    if isinstance(event, UiValueChange) and event.handler_id == "logs-search":
+    if isinstance(event, UiValueChange) and event.handler_id == SEARCH_INPUT:
         data["query"] = event.value
         data["offset"] = 0
         data["follow"] = False
@@ -77,8 +111,8 @@ def update(event) -> list:
             return [SetState(data), SetStatus(_status(data))]
         return []
 
-    if key in FILTER_KEY:
-        data["filter"] = FILTER_KEY[key]
+    if key in LEVEL_KEY:
+        data["filter"] = LEVEL_KEY[key]
         data["offset"] = 0
     elif key == "/":
         data["searching"] = True
@@ -104,7 +138,8 @@ def update(event) -> list:
         if data["follow"]:
             data["offset"] = 0
     elif key == "r":
-        data.update(_refresh(data, force=True))
+        # Force a fresh read now, independent of the poll timer.
+        return [SetState(data), ReadHostLog(TAIL_BYTES)]
     else:
         return []
     return [SetState(data), SetStatus(_status(data))]
@@ -112,15 +147,18 @@ def update(event) -> list:
 
 def view():
     data = _state()
-    title = "Search" if data["searching"] else _subtitle(data)
-    children = [AppBar("Logs", title)]
+    subtitle = "Search" if data["searching"] else _subtitle(data)
+    children = [
+        AppBar("Logs", subtitle),
+        TabBar(LEVEL_TAB, LEVELS, active=LEVELS.index(data["filter"])),
+    ]
     if data["searching"]:
         children.append(
             TextInput(
-                "logs-search",
+                SEARCH_INPUT,
                 value=data["query"],
                 placeholder="filter by target or message",
-                on_change="logs-search",
+                on_change=SEARCH_INPUT,
             )
         )
     children.extend(
@@ -133,6 +171,7 @@ def view():
                     ("/", "search"),
                     ("j/k", "scroll"),
                     ("f", "follow"),
+                    ("r", "refresh"),
                 ]
             ),
         ]
@@ -146,65 +185,47 @@ def _state() -> dict:
         data[key] = state.get(key, value)
     data["lines"] = [dict(line) for line in data.get("lines") or []]
     data["filter"] = str(data.get("filter") or "ALL")
-    if data["filter"] not in FILTERS:
+    if data["filter"] not in LEVELS:
         data["filter"] = "ALL"
     data["query"] = str(data.get("query") or "")
     data["offset"] = max(0, int(data.get("offset") or 0))
     data["follow"] = bool(data.get("follow"))
     data["searching"] = bool(data.get("searching"))
+    data["loaded"] = bool(data.get("loaded"))
+    error = data.get("error")
+    data["error"] = str(error) if error else None
+    data["path"] = str(data.get("path") or "")
     return data
 
 
-def _detect_log_path() -> str:
-    config_dir = os.environ.get("PLEXI_CONFIG_DIR")
-    if config_dir:
-        return os.path.join(config_dir, "plexi.log")
-    channel = os.environ.get("PLEXI_CHANNEL", "").strip()
-    if channel:
-        profile = ".plexi" if channel in ("main", "default") else f".plexi-{channel}"
-        return os.path.expanduser(os.path.join("~", profile, "plexi.log"))
-    candidates = [
-        os.path.expanduser("~/.plexi-alpha/plexi.log"),
-        os.path.expanduser("~/.plexi-beta/plexi.log"),
-        os.path.expanduser("~/.plexi/plexi.log"),
-    ]
-    existing = [
-        (os.path.getmtime(path), path) for path in candidates if os.path.exists(path)
-    ]
-    return max(existing)[1] if existing else candidates[0]
-
-
-def _signature(path: str):
-    try:
-        stat = os.stat(path)
-    except OSError:
-        return None
-    return [stat.st_size, stat.st_mtime_ns]
-
-
-def _refresh(data: dict, force: bool = False) -> dict:
-    signature = _signature(data["path"])
-    if not force and signature == data.get("signature"):
-        return {"signature": signature, "lines": data["lines"]}
-    lines = _read_log(data["path"])
-    if data.get("follow", True):
+def _apply_log_result(data: dict, result: HostLogResult) -> list:
+    previous_lines = data["lines"]
+    had_error = data["error"] is not None
+    was_loaded = data["loaded"]
+    if result.path:
+        data["path"] = result.path
+    if result.error:
+        data["error"] = result.error
+        data["lines"] = []
+        data["loaded"] = True
+        log.warn(f"logs: host log unavailable: {result.error}")
+        return [SetState(data), SetStatus(_status(data))]
+    content = result.content.decode("utf-8", errors="replace") if result.content else ""
+    lines = _parse_log(content)
+    if was_loaded and not had_error and lines == previous_lines:
+        return []  # unchanged tail — skip the repaint
+    data["error"] = None
+    data["lines"] = lines
+    data["loaded"] = True
+    if data["follow"]:
         data["offset"] = 0
-    return {"signature": signature, "lines": lines}
+    return [SetState(data), SetStatus(_status(data))]
 
 
-def _read_log(path: str) -> list[dict]:
-    try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as handle:
-            if size > TAIL_BYTES:
-                handle.seek(-TAIL_BYTES, os.SEEK_END)
-                handle.readline()
-            raw_lines = handle.readlines()[-MAX_LINES:]
-    except OSError:
-        return []
+def _parse_log(content: str) -> list[dict]:
     parsed = []
-    for raw in reversed(raw_lines):
-        item = _parse(raw.decode("utf-8", errors="replace"))
+    for raw in reversed(content.splitlines()[-MAX_LINES:]):
+        item = _parse(raw)
         if item:
             parsed.append(item)
     return parsed
@@ -216,6 +237,14 @@ def _parse(raw: str) -> dict | None:
         return None
     _, time, level, target, message = match.groups()
     return {"time": time, "level": level, "target": target, "message": message}
+
+
+def _tab_index(handler_id: str) -> int | None:
+    try:
+        index = int(handler_id.rsplit(":", 1)[1])
+    except (ValueError, IndexError):
+        return None
+    return index if 0 <= index < len(LEVELS) else None
 
 
 def _filtered(data: dict) -> list[dict]:
@@ -233,9 +262,15 @@ def _filtered(data: dict) -> list[dict]:
 
 
 def _visible_text(data: dict) -> str:
+    if data["error"]:
+        location = f" ({data['path']})" if data["path"] else ""
+        return f"Cannot read host log{location}:\n{data['error']}"
     lines = _filtered(data)
     if not lines:
-        return f"No log entries at {data['path']}"
+        if not data["loaded"]:
+            return "Loading host log…"
+        where = f" at {data['path']}" if data["path"] else ""
+        return f"No log entries{where}"
     offset = min(data["offset"], _max_offset(data))
     visible = lines[offset : offset + VISIBLE_LINES]
     return "\n".join(
@@ -258,4 +293,8 @@ def _subtitle(data: dict) -> str:
 
 
 def _status(data: dict) -> str:
+    if data["error"]:
+        return "log unavailable"
+    if not data["loaded"]:
+        return "loading…"
     return f"{len(_filtered(data))} lines"

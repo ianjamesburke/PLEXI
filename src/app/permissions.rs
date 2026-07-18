@@ -81,6 +81,15 @@ pub enum Capability {
     /// mediated surface a permission-manager app uses to list, grant, and
     /// revoke capabilities.
     PermissionsManage,
+    /// Read the Plexi host channel log via the host-mediated `read_host_log`
+    /// effect (stint 0444). The host owns path resolution — it tails its own
+    /// `~/.plexi-<channel>/plexi.log` and returns the text — so the app never
+    /// names or opens the file and the WASM sandbox mounts stay limited to the
+    /// SDK and app dir. Non-sensitive by necessity: the CPython-in-WASM runtime
+    /// has no interactive-consent seam yet (`capability_request` only reflects
+    /// the launch-granted set), so a withheld sensitive cap could never be
+    /// granted at runtime. Auto-granted when declared, exactly like `fs.read`.
+    LogsRead,
 }
 
 impl fmt::Display for Capability {
@@ -115,6 +124,7 @@ impl Capability {
             Self::PanesRead => "See your open panes and read app or terminal pane state",
             Self::PanesControl => "Control your panes: focus, close, send input, and drive apps",
             Self::PermissionsManage => "See and change what other apps are allowed to do",
+            Self::LogsRead => "Read the Plexi host log",
         }
     }
 
@@ -141,6 +151,7 @@ impl Capability {
             Self::PanesRead => "panes.read",
             Self::PanesControl => "panes.control",
             Self::PermissionsManage => "permissions.manage",
+            Self::LogsRead => "logs.read",
         }
     }
 
@@ -170,6 +181,7 @@ impl Capability {
         Self::PanesRead,
         Self::PanesControl,
         Self::PermissionsManage,
+        Self::LogsRead,
     ];
 
     /// All capability wire strings, derived from [`Capability::ALL`].
@@ -295,6 +307,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "panes.read" => Ok(Self::PanesRead),
             "panes.control" => Ok(Self::PanesControl),
             "permissions.manage" => Ok(Self::PermissionsManage),
+            "logs.read" => Ok(Self::LogsRead),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -929,7 +942,7 @@ mod tests {
         }
         assert_eq!(
             Capability::ALL.len(),
-            21,
+            22,
             "update Capability::ALL (and this count) when adding a variant"
         );
         assert_eq!(Capability::all_str_values().len(), Capability::ALL.len());
@@ -951,6 +964,32 @@ mod tests {
         );
         assert!(matches!(
             check(&perms, Capability::AiQuery),
+            PermissionCheck::Allowed
+        ));
+    }
+
+    #[test]
+    fn logs_read_capability_recognized_and_auto_granted() {
+        // The logs app declares `logs.read` to reach the host-mediated
+        // `read_host_log` effect (stint 0444). It must round-trip through the
+        // manifest validator and, being non-sensitive, auto-grant on first
+        // launch — the CPython-in-WASM path has no runtime-consent seam, so a
+        // withheld sensitive cap could never be granted there.
+        let parsed = Capability::try_from("logs.read").expect("logs.read must parse");
+        assert_eq!(parsed, Capability::LogsRead);
+        assert_eq!(parsed.as_str(), "logs.read");
+        assert!(
+            !parsed.is_sensitive(),
+            "logs.read must stay non-sensitive until the WASM Python path gains interactive consent"
+        );
+
+        let perms = AppPermissions::from_capability_strings(&["logs.read".to_string()]);
+        assert!(
+            perms.capabilities.contains(&Capability::LogsRead),
+            "logs.read must end up in granted capabilities"
+        );
+        assert!(matches!(
+            check(&perms, Capability::LogsRead),
             PermissionCheck::Allowed
         ));
     }

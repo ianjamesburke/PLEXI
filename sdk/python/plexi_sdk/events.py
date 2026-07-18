@@ -108,6 +108,20 @@ class FileWriteResult:
 
 
 @dataclass
+class HostLogResult:
+    """Host reply to an `effects.ReadHostLog` request.
+
+    `content` is the raw tail text (whole log records, newline-separated) on
+    success; `error` names why the log could not be reached otherwise. `path` is
+    the host-resolved channel-log path, echoed back for the app to display in its
+    empty/error state. Exactly one of `content` / `error` is set.
+    """
+    content: Optional[bytes]
+    path: Optional[str]
+    error: Optional[str]
+
+
+@dataclass
 class HttpResponse:
     status: int
     headers: list

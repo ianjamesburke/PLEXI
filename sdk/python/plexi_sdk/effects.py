@@ -32,6 +32,17 @@ class FileWrite:
 
 
 @dataclass
+class ReadHostLog:
+    """Request the tail of the Plexi host channel log (`logs.read` capability).
+
+    The host owns path resolution — it tails its own `~/.plexi-<channel>/plexi.log`
+    and replies with an `events.HostLogResult`. The app never names or opens the
+    file, so the request carries only how many trailing bytes to read.
+    """
+    max_bytes: int = 256 * 1024
+
+
+@dataclass
 class HttpFetch:
     url: str
     method: str = "GET"

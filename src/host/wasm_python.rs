@@ -1237,6 +1237,7 @@ impl LivePythonPane {
                         Some("save_app_state") => self.save_state(message.get("payload")),
                         Some("file_read") => self.handle_file_read(&message),
                         Some("file_write") => self.handle_file_write(&message),
+                        Some("read_host_log") => self.handle_read_host_log(&message),
                         Some("http_request") => self.handle_http_request(&message),
                         Some("capability_request") => self.handle_capability_request(&message),
                         Some("log") => log::info!(
@@ -1360,6 +1361,42 @@ impl LivePythonPane {
             Err(error) => json!({"type": "file_write_result", "error": error}),
         };
         let _ = self.runtime.send(&response);
+    }
+
+    /// Serve a capability-gated `read_host_log` request (stint 0444). The host
+    /// owns log-path resolution: it tails its own channel log
+    /// (`crate::platform::logging::log_path()`), so the sandboxed app never
+    /// names or opens the file and the WASI mounts stay limited to the SDK and
+    /// app dir. The resolved path is echoed back so the app can show it in its
+    /// empty/error state. Both success and failure surface distinctly — a log
+    /// the app cannot reach must never render as a silent blank pane.
+    fn handle_read_host_log(&mut self, message: &Value) {
+        let path = crate::platform::logging::log_path();
+        let result = if !self.has_capability("logs.read") {
+            Err("missing capability logs.read".to_string())
+        } else {
+            let max_bytes = message
+                .get("max_bytes")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize)
+                .unwrap_or(DEFAULT_HOST_LOG_TAIL_BYTES);
+            read_host_log_tail(&path, max_bytes)
+        };
+        let response = match result {
+            Ok(content) => json!({
+                "type": "host_log_result",
+                "content": content,
+                "path": path.display().to_string(),
+            }),
+            Err(error) => json!({
+                "type": "host_log_result",
+                "error": error,
+                "path": path.display().to_string(),
+            }),
+        };
+        if let Err(error) = self.runtime.send(&response) {
+            log::error!("app::{}: send host_log_result: {error}", self.app_id);
+        }
     }
 
     fn handle_http_request(&mut self, message: &Value) {
@@ -1761,6 +1798,42 @@ fn http_host_allowed(raw_url: &str, allowed_hosts: &[String]) -> bool {
             host == pattern || host.ends_with(&format!(".{pattern}"))
         })
     })
+}
+
+/// Default tail window for a `read_host_log` request: the last 256 KiB. Bounded
+/// so a multi-megabyte channel log never crosses the JSON bridge whole; the
+/// logs app renders far fewer lines than this holds.
+const DEFAULT_HOST_LOG_TAIL_BYTES: usize = 256 * 1024;
+
+/// Read the tail of the host channel log for the capability-gated
+/// `read_host_log` effect (stint 0444). Seeks to the last `max_bytes` and drops
+/// the partial leading line so the app only ever parses whole records. Returns
+/// a typed error string (never an empty success) when the log cannot be reached
+/// so the app can render the failure instead of a blank pane.
+fn read_host_log_tail(path: &Path, max_bytes: usize) -> Result<String, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file =
+        std::fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let len = file
+        .metadata()
+        .map_err(|error| format!("stat {}: {error}", path.display()))?
+        .len();
+    let max = max_bytes as u64;
+    let trimmed_partial = len > max;
+    if trimmed_partial {
+        file.seek(SeekFrom::End(-(max as i64)))
+            .map_err(|error| format!("seek {}: {error}", path.display()))?;
+    }
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    if trimmed_partial {
+        if let Some(newline) = text.find('\n') {
+            text.drain(..=newline);
+        }
+    }
+    Ok(text)
 }
 
 fn app_command_from_python_message(message: &Value) -> Option<crate::app::app_trait::AppCommand> {
@@ -3705,6 +3778,59 @@ execution = "cloud"
 
         assert!(matches!(err, WasmPythonError::RawModuleAbiMismatch { .. }));
         assert!(err.to_string().contains("lifecycle"));
+    }
+
+    #[test]
+    fn read_host_log_tail_returns_whole_small_log() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("plexi.log");
+        std::fs::write(
+            &path,
+            "[2026-07-18 01:00:00] [INFO] [plexi::boot] up\n\
+             [2026-07-18 01:00:01] [ERROR] [app::todo] boom\n",
+        )
+        .expect("write log");
+
+        let text = read_host_log_tail(&path, DEFAULT_HOST_LOG_TAIL_BYTES).expect("read tail");
+
+        assert!(text.contains("[plexi::boot] up"));
+        assert!(text.contains("[app::todo] boom"));
+    }
+
+    #[test]
+    fn read_host_log_tail_drops_partial_leading_line_when_truncated() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("plexi.log");
+        // Three whole lines; a tiny window forces a mid-line seek so the first
+        // returned line must be dropped rather than handed back half-formed.
+        std::fs::write(
+            &path,
+            "AAAAAAAAAAAAAAAAAAAA\nBBBBBBBBBBBBBBBBBBBB\nCCCCCCCCCCCCCCCCCCCC\n",
+        )
+        .expect("write log");
+
+        let text = read_host_log_tail(&path, 25).expect("read tail");
+
+        assert!(
+            !text.contains("AAAA"),
+            "partial leading line must be dropped, got {text:?}"
+        );
+        assert!(text.contains("CCCCCCCCCCCCCCCCCCCC"));
+        assert!(
+            text.lines().all(|line| line.len() == 20),
+            "every returned line must be whole, got {text:?}"
+        );
+    }
+
+    #[test]
+    fn read_host_log_tail_reports_missing_log() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("does-not-exist.log");
+
+        let err = read_host_log_tail(&path, DEFAULT_HOST_LOG_TAIL_BYTES).unwrap_err();
+
+        assert!(err.contains("open"), "error must name the failed op: {err}");
+        assert!(err.contains("does-not-exist.log"));
     }
 
     #[test]

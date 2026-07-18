@@ -330,10 +330,15 @@ class AppHarness:
     """
 
     def __init__(self, app_path: "str | Path", width: int = 800, height: int = 600,
-                 timeout: float = 5.0) -> None:
+                 timeout: float = 5.0, host_log_path: "str | Path | None" = None) -> None:
         self._width = width
         self._height = height
         self._timeout = timeout
+        # Simulates the host side of the `read_host_log` effect (stint 0444):
+        # when the app requests the channel log, the harness tails this file the
+        # same way the live host tails `~/.plexi-<channel>/plexi.log`. Leave it
+        # None to exercise the unreachable-log path (host replies with an error).
+        self._host_log_path = Path(host_log_path) if host_log_path is not None else None
         self._draw_commands: "list[dict]" = []
         self._frame_id = 0
         self._stdout_q: "queue.Queue[str | None]" = queue.Queue()
@@ -433,11 +438,45 @@ class AppHarness:
             ev = self._next_event(timeout=max(0.05, remaining))
             if ev is not None:
                 self._events_seen.append(ev)
+                self._answer_host_effects(ev)
                 if ev.get("type") == "fatal_error":
                     return ev if predicate(ev) else None
                 if predicate(ev):
                     return ev
         return None
+
+    def _answer_host_effects(self, ev: dict) -> None:
+        """Reply to host-mediated effect requests the way the live host would.
+
+        Handles `read_host_log` (stint 0444): tails ``host_log_path`` — matching
+        the live host's tail of `~/.plexi-<channel>/plexi.log` — and replies with
+        a ``host_log_result``. With no configured path or an unreadable file it
+        replies with an error result so the unreachable-log UI path is testable.
+        """
+        if ev.get("type") != "read_host_log":
+            return
+        max_bytes = int(ev.get("max_bytes") or 256 * 1024)
+        path = self._host_log_path
+        if path is None:
+            self._send({"type": "host_log_result",
+                        "error": "no host log configured", "path": ""})
+            return
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                if size > max_bytes:
+                    handle.seek(-max_bytes, os.SEEK_END)
+                    handle.readline()  # drop the partial leading line
+                else:
+                    handle.seek(0)
+                data = handle.read()
+            self._send({"type": "host_log_result",
+                        "content": data.decode("utf-8", errors="replace"),
+                        "path": str(path)})
+        except OSError as e:
+            self._send({"type": "host_log_result",
+                        "error": f"open {path}: {e}", "path": str(path)})
 
     def _send(self, event: dict) -> None:
         assert self._proc.stdin is not None
@@ -478,6 +517,7 @@ class AppHarness:
                         )
                     continue
                 self._events_seen.append(ev)
+                self._answer_host_effects(ev)
                 if ev.get("type") == "fatal_error":
                     self._raise_fatal(ev)
                 if ev.get("type") == "frame_done":
@@ -503,6 +543,10 @@ class AppHarness:
     def text_submit(self, id: str, value: str) -> None:
         """Inject a synthetic text_submitted event (user pressed Enter in a TextInput)."""
         self._send({"type": "text_submitted", "id": id, "value": value})
+
+    def ui_action(self, handler_id: str) -> None:
+        """Inject a synthetic UI action — a button/tab/node click by handler id."""
+        self._send({"type": "ui_action", "handler_id": handler_id})
 
     def screenshot(self) -> bytes:
         """Render current draw commands to PNG. Requires the plexi binary."""
