@@ -124,6 +124,27 @@ diff, run every touched layer, inspect every generated screenshot, and write the
 `**Test evidence:**` block into the issue Ship Log or PR body. validate-pr reads
 that block; `install skippable — full coverage` means diff-review-only validation.
 
+**Visual review is mandatory for any host UI change, not optional.** A change
+touching layout, alignment, spacing, color, or any `egui::Ui`/render code is not
+done when the assertions pass — a passing geometry or galley-halign test proves
+the numbers are right, not that a human/agent looking at the pixels would agree.
+Before calling a UI fix complete:
+
+1. Write or reuse a `PlexiUiHarness::save_screenshot` test that renders the
+   actual changed surface with realistic seeded content (not an empty state) —
+   `screenshot_assistant_conversation_bubbles` in `src/ui_tests.rs` is the
+   pattern: build real model state, open through the real pane path, screenshot.
+2. Run it and **open the PNG with the Read tool and look at it** — confirm the
+   change looks right, not just that the test exited 0.
+3. Delete the screenshot from `/tmp` after review. Screenshots are a review
+   artifact, not evidence to persist — the passing test is what future runs
+   check; the PNG itself is not committed and not left on disk.
+4. Note in the PR body that this loop ran (what you looked at, what you saw).
+
+This applies whenever the diff includes host UI rendering — not only when the
+task is explicitly "visual." A logic-only PR that happens to touch `render.rs`
+still gets this pass before push.
+
 ## Conventions
 
 - `cargo test --bin plexi` must be green before any push; the justfile exports `RUSTFLAGS="-D warnings"`, so warnings are build failures under `just test`.

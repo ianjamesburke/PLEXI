@@ -118,6 +118,15 @@ png = render_draw_commands(cmds, width=800, height=600)
 
 Read every generated PNG with the Read tool and confirm it shows the intended state — not an empty pane, error tile, or default fallback. A screenshot nobody looked at is not evidence.
 
+Render realistic seeded content, not an empty state — an empty overlay or a
+zero-turn assistant pane cannot show the bug you fixed. `screenshot_assistant_conversation_bubbles`
+in `src/ui_tests.rs` is the pattern: build real model state, open through the
+real pane path (`open_assistant_built` / equivalent), screenshot, inspect.
+
+Once inspected, delete the PNG (`rm /tmp/plexi_*.png`). The screenshot is a
+review artifact, not evidence to keep — the passing test is what future runs
+re-check, and `/tmp` is not the durable record (see Guards).
+
 ## Step 5 — Write the Evidence Block
 
 Append to the Ship Log entry for this attempt (issue body), or the PR description when there is no linked issue:
