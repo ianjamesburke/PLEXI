@@ -494,6 +494,12 @@ impl AssistantRenderer {
             // mainstream chat client.
             TurnRole::User => {
                 let bubble_max = ui.available_width() * Self::BUBBLE_MAX_FRACTION;
+                // The outer `Align::Max` right-anchors the bubble frame against
+                // the pane edge. That cross-align cascades into any Label's
+                // galley halign, though, so text inside the frame must be
+                // rendered under an inner `Align::Min` layout — otherwise every
+                // wrapped line right-justifies (ragged left edge). The frame
+                // stays right-anchored; only the text within it reads left.
                 ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                     egui::Frame::new()
                         .fill(colors.bg_active)
@@ -504,12 +510,14 @@ impl AssistantRenderer {
                             style::SPACE_XS as i8,
                         ))
                         .show(ui, |ui| {
-                            ui.set_max_width(bubble_max);
-                            ui.label(
-                                RichText::new(text)
-                                    .size(style::TEXT_BODY)
-                                    .color(colors.text_primary),
-                            );
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.set_max_width(bubble_max);
+                                ui.label(
+                                    RichText::new(text)
+                                        .size(style::TEXT_BODY)
+                                        .color(colors.text_primary),
+                                );
+                            });
                         });
                 });
                 ui.add_space(style::SPACE_MD);
@@ -1251,5 +1259,93 @@ impl AssistantRenderer {
                     });
             });
         frame_response.response.rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assistant::model::{Turn, TurnRole};
+
+    /// Walk a paint shape tree, collecting every text galley emitted.
+    fn collect_galleys(shape: &egui::Shape, out: &mut Vec<std::sync::Arc<egui::Galley>>) {
+        match shape {
+            egui::Shape::Text(text) => out.push(text.galley.clone()),
+            egui::Shape::Vec(shapes) => {
+                for s in shapes {
+                    collect_galleys(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A wrapped user message renders left-justified: even though the bubble
+    /// frame is right-anchored (`Align::Max`), the text galley inside must lay
+    /// out with `halign == LEFT`, or every wrapped line ragged-lefts against
+    /// the bubble's right edge (stint 0435).
+    #[test]
+    fn user_bubble_wrapped_text_is_left_justified() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        let mut md_cache = egui_commonmark::CommonMarkCache::default();
+        let mut text_cache = MarkdownTextCache::default();
+
+        // Long enough to wrap several times inside a narrow bubble.
+        const MSG: &str = "This is a deliberately long user message that absolutely \
+             must wrap across several lines inside the narrow chat bubble so the test \
+             can confirm each wrapped line stays left-justified.";
+        let turn = Turn {
+            role: TurnRole::User,
+            text: MSG.to_string(),
+            created_at: "2026-07-18T00:00:00Z".to_string(),
+            status: None,
+            thoughts: None,
+            detail: None,
+        };
+
+        let mut raw_input = egui::RawInput::default();
+        raw_input.screen_rect = Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(320.0, 600.0),
+        ));
+
+        let output = ctx.run(raw_input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                AssistantRenderer::draw_turn_row(
+                    ui,
+                    &mut md_cache,
+                    &mut text_cache,
+                    "test-conversation",
+                    0,
+                    &colors,
+                    &turn,
+                    false,
+                );
+            });
+        });
+
+        let mut galleys = Vec::new();
+        for clipped in &output.shapes {
+            collect_galleys(&clipped.shape, &mut galleys);
+        }
+        let bubble = galleys
+            .iter()
+            .find(|g| g.text().contains("absolutely"))
+            .expect("user message galley must be painted");
+
+        assert!(
+            bubble.rows.len() > 1,
+            "message must wrap so justification is observable (got {} row)",
+            bubble.rows.len()
+        );
+        assert_eq!(
+            bubble.job.halign,
+            egui::Align::LEFT,
+            "wrapped user-bubble text must be left-justified, not right-anchored"
+        );
     }
 }
