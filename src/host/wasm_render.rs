@@ -71,19 +71,59 @@ pub fn render_ui_tree_with_canvas_fits(
     surface_key: Option<crate::ui::focus::SurfaceKey>,
 ) -> RenderResult {
     let mut out = RenderResult::default();
-    render_node(
-        ui,
-        &tree.nodes,
-        tree.root,
-        colors,
-        &mut out,
-        0,
-        surface,
-        canvas_fits,
-        pending_click,
-        surface_key,
-    );
+    let render_root = |ui: &mut egui::Ui, out: &mut RenderResult| {
+        render_node(
+            ui,
+            &tree.nodes,
+            tree.root,
+            colors,
+            out,
+            0,
+            surface,
+            canvas_fits,
+            pending_click,
+            surface_key,
+        );
+    };
+    // Good-by-default spacing (stint 0445): a declarative app with no layout
+    // code should not render flush against the pane edge. Wrap the whole tree
+    // in the host UI kit's standard content inset so body content, app bars,
+    // and footers all get comfortable breathing room. Full-bleed pixel apps (a
+    // grow Canvas or a GPU Surface anywhere in the tree) own their own layout
+    // and are exempt.
+    if tree_wants_content_padding(&tree.nodes) {
+        egui::Frame::NONE
+            .inner_margin(root_content_inset())
+            .show(ui, |ui| render_root(ui, &mut out));
+    } else {
+        render_root(ui, &mut out);
+    }
     out
+}
+
+/// The host UI kit's standard content inset for a declarative app's root.
+/// `SPACE_XL` horizontal matches the breathing room modal bodies get; the
+/// slightly tighter `SPACE_MD` top/bottom keeps short apps from feeling
+/// bottom-heavy. All values come from `crate::ui::style` design tokens.
+fn root_content_inset() -> egui::Margin {
+    egui::Margin {
+        left: style::SPACE_XL as i8,
+        right: style::SPACE_XL as i8,
+        top: style::SPACE_MD as i8,
+        bottom: style::SPACE_MD as i8,
+    }
+}
+
+/// A tree earns the default content inset unless it is a full-bleed pixel app:
+/// a grow `Canvas` (games, visualizers) or a GPU `Surface` (video/3D output)
+/// anywhere in the tree signals the app owns every pixel, so the host must not
+/// inset it. A fixed-size `Canvas` is treated as ordinary flow content.
+fn tree_wants_content_padding(nodes: &[IndexedNode]) -> bool {
+    !nodes.iter().any(|n| match &n.data {
+        UiNodeData::Canvas(c) => c.grow,
+        UiNodeData::Surface(_) => true,
+        _ => false,
+    })
 }
 
 /// Headless render of a `UiTree` to PNG bytes via `egui_kittest`'s wgpu
@@ -258,7 +298,11 @@ fn render_node(
             let label = RichText::new(&b.label).color(colors.text_on(fill));
             let btn = egui::Button::new(label)
                 .fill(fill)
-                .corner_radius(style::RADIUS_SM);
+                .corner_radius(style::RADIUS_SM)
+                // Comfortable minimum click/touch target so single-glyph
+                // buttons (calculator keys, toolbar chips) aren't cramped.
+                // Content-sized labels grow past this floor as usual.
+                .min_size(egui::vec2(style::BUTTON_H_MD, style::BUTTON_H_MD));
             let synthetic_click = !b.disabled && node_click_matches(pending_click, id);
             if ui.add_enabled(!b.disabled, btn).clicked() || synthetic_click {
                 out.actions.push(b.on_click.clone());
@@ -621,9 +665,207 @@ fn render_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::wasm_app::bindings::plexi::platform::types::CanvasNode;
+    use crate::host::wasm_app::bindings::plexi::platform::types::{
+        ButtonNode, CanvasNode, CanvasRect, ColumnNode, SurfaceNode, TextNode,
+    };
     use crate::host::wasm_app::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmApp};
     use std::path::PathBuf;
+
+    fn node(id: u32, data: UiNodeData) -> IndexedNode {
+        IndexedNode {
+            id,
+            key: String::new(),
+            data,
+        }
+    }
+
+    /// Bounding box of everything painted when `tree` renders into a `pane`-sized
+    /// screen. Used to observe where the good-by-default content inset places
+    /// real content vs. where a full-bleed app draws.
+    fn painted_bounds(tree: &UiTree, pane: egui::Vec2) -> egui::Rect {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = Colors::from_config(
+            &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
+        );
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, pane)),
+            ..Default::default()
+        };
+        let output = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let _ = render_ui_tree_with_surface(ui, tree, &colors, None, None);
+                });
+        });
+        let mut bounds = egui::Rect::NOTHING;
+        for clipped in output.shapes {
+            let r = clipped.shape.visual_bounding_rect();
+            if r.is_finite() && r.is_positive() {
+                bounds = bounds.union(r);
+            }
+        }
+        bounds
+    }
+
+    // Stint 0445: a declarative flow app (no grow Canvas / Surface) earns the
+    // host's standard content inset, so its content never renders flush against
+    // the pane edge, and buttons get a comfortable minimum click target.
+    #[test]
+    fn flow_root_is_inset_and_buttons_meet_minimum_size() {
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![node(
+                0,
+                UiNodeData::Button(ButtonNode {
+                    label: "X".to_string(),
+                    on_click: "x".to_string(),
+                    style: ButtonStyle::Primary,
+                    disabled: false,
+                }),
+            )],
+        };
+        let bounds = painted_bounds(&tree, egui::vec2(400.0, 300.0));
+        assert!(
+            bounds.min.x >= style::SPACE_XL - 0.5,
+            "flow content left edge {} should be inset by ~SPACE_XL ({})",
+            bounds.min.x,
+            style::SPACE_XL
+        );
+        assert!(
+            bounds.min.y >= style::SPACE_MD - 0.5,
+            "flow content top edge {} should be inset by ~SPACE_MD ({})",
+            bounds.min.y,
+            style::SPACE_MD
+        );
+        assert!(
+            bounds.height() >= style::BUTTON_H_MD - 0.5,
+            "button height {} should meet the minimum target ({})",
+            bounds.height(),
+            style::BUTTON_H_MD
+        );
+    }
+
+    // A grow Canvas signals a full-bleed pixel app; the host must not inset it,
+    // so its drawing reaches the pane edge.
+    #[test]
+    fn grow_canvas_app_is_not_inset() {
+        let fill = Color {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![node(
+                0,
+                UiNodeData::Canvas(CanvasNode {
+                    width: 100.0,
+                    height: 100.0,
+                    grow: true,
+                    commands: vec![CanvasCommand::Rect(CanvasRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 100.0,
+                        height: 100.0,
+                        radius: 0.0,
+                        fill,
+                    })],
+                }),
+            )],
+        };
+        let bounds = painted_bounds(&tree, egui::vec2(400.0, 300.0));
+        assert!(
+            bounds.min.x <= 1.0 && bounds.min.y <= 1.0,
+            "full-bleed canvas should reach the pane origin, got {:?}",
+            bounds.min
+        );
+    }
+
+    #[test]
+    fn content_padding_exemption_tracks_full_bleed_nodes() {
+        let flow = vec![
+            node(
+                0,
+                UiNodeData::Column(ColumnNode {
+                    children: vec![1],
+                    gap: 0.0,
+                    align: Alignment::Start,
+                    grow: false,
+                }),
+            ),
+            node(
+                1,
+                UiNodeData::Text(TextNode {
+                    text: "hi".to_string(),
+                    size: None,
+                    bold: false,
+                    color: None,
+                    truncate: false,
+                    align: Alignment::Start,
+                }),
+            ),
+        ];
+        assert!(
+            tree_wants_content_padding(&flow),
+            "a text/column tree is flow content and wants the inset"
+        );
+
+        let mut with_grow_canvas = flow.clone();
+        with_grow_canvas[1] = node(
+            1,
+            UiNodeData::Canvas(CanvasNode {
+                width: 10.0,
+                height: 10.0,
+                grow: true,
+                commands: vec![],
+            }),
+        );
+        assert!(
+            !tree_wants_content_padding(&with_grow_canvas),
+            "a grow canvas makes the app full-bleed"
+        );
+
+        let mut with_fixed_canvas = flow.clone();
+        with_fixed_canvas[1] = node(
+            1,
+            UiNodeData::Canvas(CanvasNode {
+                width: 10.0,
+                height: 10.0,
+                grow: false,
+                commands: vec![],
+            }),
+        );
+        assert!(
+            tree_wants_content_padding(&with_fixed_canvas),
+            "a fixed-size canvas is ordinary flow content and still wants the inset"
+        );
+
+        let mut with_surface = flow.clone();
+        with_surface[1] = node(
+            1,
+            UiNodeData::Surface(SurfaceNode {
+                width: 8,
+                height: 8,
+                texture_handle: None,
+            }),
+        );
+        assert!(
+            !tree_wants_content_padding(&with_surface),
+            "a GPU surface makes the app full-bleed"
+        );
+    }
+
+    #[test]
+    fn root_content_inset_uses_design_tokens() {
+        let inset = root_content_inset();
+        assert_eq!(inset.left, style::SPACE_XL as i8);
+        assert_eq!(inset.right, style::SPACE_XL as i8);
+        assert_eq!(inset.top, style::SPACE_MD as i8);
+        assert_eq!(inset.bottom, style::SPACE_MD as i8);
+    }
 
     fn fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/sysmon.wasm")

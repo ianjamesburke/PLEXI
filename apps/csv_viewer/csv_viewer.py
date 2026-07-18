@@ -184,7 +184,6 @@ def _list_view(data: dict):
             FooterKeys([("j/k", "select"), ("enter", "open"), ("r", "refresh")]),
         ],
         grow=True,
-        padding=0,
     )
 
 
@@ -209,7 +208,6 @@ def _detail_view(data: dict):
             FooterKeys([("j/k", "rows"), ("h/l", "cols"), ("esc", "back")]),
         ],
         grow=True,
-        padding=0,
     )
 
 

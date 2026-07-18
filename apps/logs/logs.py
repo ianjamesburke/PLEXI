@@ -176,7 +176,7 @@ def view():
             ),
         ]
     )
-    return Column(children, grow=True, padding=0)
+    return Column(children, grow=True)
 
 
 def _state() -> dict:

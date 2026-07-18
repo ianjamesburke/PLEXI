@@ -188,9 +188,27 @@ set (`wit/plexi.wit`) is the single, live UI node language; there is no
 separate legacy renderer for it to diverge from. L0 is deprecated and its
 `_l0` fallbacks are gone; the `Raw` escape hatch stays.
 
-Keep the root shell padded: `Column([...], grow=True, padding=SPACE_MD)` or
-larger. Never `padding=0` on the root — app bars and footers render full-bleed
-while body content stays inset.
+### Spacing is good by default
+
+You write no layout code to look right. The host fills in its standard spacing
+wherever your tree declares none, and any explicit value you set wins:
+
+- **Root content inset.** A declarative tree is automatically inset from the
+  pane edge (horizontal `SPACE_XL`, vertical `SPACE_MD`). App bars and footer
+  keys still render full-bleed — only body content is inset — so a
+  `Column([AppBar(...), ...body..., FooterKeys(...)])` needs no layout code.
+  You no longer set root padding: `Column(padding=...)` does not affect the
+  declarative tree (it survives only for legacy canvas-mode layout).
+- **Inter-child spacing.** Leave `gap` unset on `Column`/`HStack` and the host
+  spaces children (columns get `SPACE_MD`, rows get the tighter `SPACE_SM`).
+  Pass an explicit `gap=` to override; `gap=0` packs children flush.
+- **Button targets.** Buttons get a comfortable minimum click/touch size, so
+  single-glyph buttons (calculator keys, toolbar chips) are never cramped.
+
+Full-bleed pixel apps opt out automatically: a grow `Canvas` or a GPU
+`Surface` anywhere in the tree tells the host the app owns every pixel, so no
+inset is applied (games, visualizers, video). A fixed-size `Canvas` is ordinary
+flow content and stays inset.
 
 Canvas apps bypass the host WCAG contrast check. Use `theme.fg` for canvas text
 and reserve `dim()`/`theme.muted` for fills, or text fails contrast.

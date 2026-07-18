@@ -170,25 +170,31 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
         child_ids = [
             flatten(child, f"{key}/{idx}") for idx, child in enumerate(children)
         ]
-        return {
+        out: dict[str, Any] = {
             "type": "Column",
             "children": child_ids,
-            "gap": data.get("gap", 0.0),
             "align": data.get("align", "start"),
             "grow": data.get("grow", False),
         }
+        # Carry gap only when the app set one: absence lets the host apply its
+        # default inter-child spacing, an explicit value (including 0) wins.
+        if data.get("gap") is not None:
+            out["gap"] = data["gap"]
+        return out
     if node_type in ("row", "Row"):
         children = data.get("children", [])
         child_ids = [
             flatten(child, f"{key}/{idx}") for idx, child in enumerate(children)
         ]
-        return {
+        out = {
             "type": "Row",
             "children": child_ids,
-            "gap": data.get("gap", 0.0),
             "align": data.get("align", "start"),
             "grow": data.get("grow", False),
         }
+        if data.get("gap") is not None:
+            out["gap"] = data["gap"]
+        return out
     if node_type == "button":
         return {
             "type": "Button",

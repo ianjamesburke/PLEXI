@@ -140,7 +140,6 @@ def view():
                 Spacer(grow=True),
             ],
             grow=True,
-            padding=0,
         )
     if data["view"] == "detail":
         return _detail_view(data)
@@ -275,7 +274,6 @@ def _list_view(data: dict):
             ),
         ],
         grow=True,
-        padding=0,
     )
 
 
@@ -308,7 +306,6 @@ def _detail_view(data: dict):
             FooterKeys([("esc", "back")]),
         ],
         grow=True,
-        padding=0,
     )
 
 
