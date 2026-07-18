@@ -356,7 +356,6 @@ impl Default for PortalPreview {
 
 pub struct PlexiBehavior<'a> {
     pub panes: &'a mut HashMap<PaneId, Pane>,
-    pub focused_tile: Option<TileId>,
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
     pub close_exited: Option<TileId>,
@@ -381,10 +380,10 @@ pub struct PlexiBehavior<'a> {
     pub unfocused_opacity: Option<f32>,
     /// Preview data for Portal tiles.
     pub portal_info: HashMap<PaneId, PortalPreview>,
-    /// True when an overlay or modal has captured keyboard input this frame.
-    /// Prevents terminal panes from calling `request_focus()` and stealing
-    /// egui focus from the active overlay (egui resolves focus last-caller-wins).
-    pub modal_open: bool,
+    /// The pane that owns keyboard input this frame, derived once by
+    /// `PlexiApp::owner_pane` (stint 0429). `None` while an overlay owns
+    /// input, so every pane renders unfocused under a modal.
+    pub owner_pane: Option<PaneId>,
     /// True when the Control modifier is held — triggers the pane ID ghost overlay.
     pub ctrl_held: bool,
     /// Set by double-click on a Portal pane — the target context_id to zoom into.
@@ -433,7 +432,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             self.new_focused = Some(tile_id);
         }
 
-        let is_focused = self.focused_tile == Some(tile_id) && !self.modal_open;
+        let is_focused = self.owner_pane == Some(*pane_id);
 
         let is_hidden = self.panes.get(pane_id).map_or(false, |p| p.is_hidden());
 
@@ -512,7 +511,6 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 &mut app_ui,
                 app_pane,
                 &self.colors,
-                is_focused,
                 has_tabs,
                 pending_click,
             );

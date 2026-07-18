@@ -698,8 +698,8 @@ impl AppRuntime {
     ) {
         match self {
             AppRuntime::Builtin(app) => app.ui(ui, ctx),
-            AppRuntime::Python(app) => app.ui(ui, ctx.colors, pending_click),
-            AppRuntime::Wasm(app) => app.ui(ui, ctx.colors, pending_click),
+            AppRuntime::Python(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
+            AppRuntime::Wasm(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
         }
     }
 

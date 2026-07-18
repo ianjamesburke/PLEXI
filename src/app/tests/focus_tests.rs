@@ -308,7 +308,6 @@ fn rename_pane_focus_layer_syncs_immediately() {
 
     // Simulate what the fixed Action::RenamePane handler now does.
     h.app.renaming_pane = Some(pane_a);
-    h.app.rename_pane_focus_requested = false;
     h.app.sync_rename_pane_focus();
 
     assert_eq!(

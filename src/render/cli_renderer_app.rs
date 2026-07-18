@@ -454,7 +454,12 @@ impl CliRendererApp {
         });
     }
 
-    fn render_form(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
+    fn render_form(
+        &mut self,
+        ui: &mut egui::Ui,
+        colors: &crate::ui::theme::Colors,
+        pane_key: u64,
+    ) {
         let cmd = match self.current_command() {
             Some(c) => c,
             None => {
@@ -518,7 +523,7 @@ impl CliRendererApp {
                 .max_height(ui.available_height() - 80.0)
                 .show(ui, |ui| {
                     for arg in args.iter().chain(flags.iter()) {
-                        if self.render_field(ui, colors, arg, want_focus) {
+                        if self.render_field(ui, colors, arg, want_focus, pane_key) {
                             want_focus = false;
                         }
                     }
@@ -608,6 +613,7 @@ impl CliRendererApp {
         colors: &crate::ui::theme::Colors,
         arg: &ArgSpec,
         want_focus: bool,
+        pane_key: u64,
     ) -> bool {
         let mut took_focus = false;
         ui.horizontal(|ui| {
@@ -675,8 +681,17 @@ impl CliRendererApp {
                             egui::Id::new(("cli_renderer_field", arg.name.as_str())),
                             colors,
                         );
-                        if want_focus && !resp.has_focus() {
-                            resp.request_focus();
+                        crate::ui::focus::register_text_surface(
+                            ui.ctx(),
+                            crate::ui::focus::SurfaceKey::Pane(pane_key),
+                            resp.id,
+                        );
+                        if want_focus {
+                            crate::ui::focus::claim_text_surface(
+                                ui.ctx(),
+                                crate::ui::focus::SurfaceKey::Pane(pane_key),
+                                resp.id,
+                            );
                             took_focus = true;
                             log::info!("CliRendererApp: auto-focused field '{}'", arg.name);
                         }
@@ -720,6 +735,11 @@ impl Drop for CliRendererApp {
 // ── App trait ─────────────────────────────────────────────────────────────────
 
 impl App for CliRendererApp {
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn type_id(&self) -> &'static str {
         "cli-renderer"
     }
@@ -833,7 +853,7 @@ impl App for CliRendererApp {
                 self.render_list(ui, colors);
             }
             View::Form => {
-                self.render_form(ui, colors);
+                self.render_form(ui, colors, ctx.pane_id);
             }
         }
     }
@@ -997,7 +1017,7 @@ mod tests {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let rctx = AppRenderContext {
                         colors: &colors,
-                        is_focused: true,
+                        pane_id: 1,
                     };
                     app.ui(ui, &rctx);
                 });

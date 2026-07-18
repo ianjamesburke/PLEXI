@@ -1674,7 +1674,7 @@ impl FileBrowserApp {
         }
     }
 
-    fn draw_rename_modal(&mut self, ctx: &egui::Context, colors: &Colors) {
+    fn draw_rename_modal(&mut self, ctx: &egui::Context, colors: &Colors, pane_key: u64) {
         if self.rename_path.is_none() {
             return;
         }
@@ -1703,7 +1703,14 @@ impl FileBrowserApp {
                         output.response
                     })
                     .inner;
-                text_response.request_focus();
+                // Claim the rename field while the modal is open (stint 0429):
+                // the reconciler grants it while this pane owns input and
+                // surrenders it if ownership moves elsewhere.
+                crate::ui::focus::claim_text_surface(
+                    ctx,
+                    crate::ui::focus::SurfaceKey::Pane(pane_key),
+                    text_response.id,
+                );
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
@@ -2015,6 +2022,11 @@ impl FileBrowserApp {
 }
 
 impl App for FileBrowserApp {
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn type_id(&self) -> &'static str {
         "file_browser"
     }
@@ -2147,7 +2159,7 @@ impl App for FileBrowserApp {
 
         self.draw_quick_look_modal(ui.ctx(), colors);
         self.draw_pending_operation_modal(ui.ctx(), colors);
-        self.draw_rename_modal(ui.ctx(), colors);
+        self.draw_rename_modal(ui.ctx(), colors, ctx.pane_id);
     }
 
     fn handle_key(

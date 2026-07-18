@@ -229,11 +229,13 @@ impl PlexiApp {
                         let te = ui
                             .scope(|ui| {
                                 ui.set_max_width(sidebar_w - 56.0);
-                                crate::ui::text_field::TextField::singleline(te_id, "").show(
-                                    ui,
-                                    &mut self.rename_buffer,
-                                    &self.colors,
-                                )
+                                crate::ui::text_field::TextField::singleline(te_id, "")
+                                    .surface(crate::ui::focus::SurfaceKey::Overlay(
+                                        crate::app::input_owner::OverlaySurface::SidebarRename,
+                                    ))
+                                    .select_all_on_focus(true)
+                                    .log_name("sidebar_rename")
+                                    .show(ui, &mut self.rename_buffer, &self.colors)
                             })
                             .inner;
                         if te.lost_focus() {
@@ -257,18 +259,6 @@ impl PlexiApp {
                                 inp.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
                                 inp.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
                             });
-                        }
-                        if te.gained_focus() || !te.has_focus() {
-                            te.request_focus();
-                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                                state
-                                    .cursor
-                                    .set_char_range(Some(egui::text::CCursorRange::two(
-                                        egui::text::CCursor::new(0),
-                                        egui::text::CCursor::new(self.rename_buffer.len()),
-                                    )));
-                                state.store(ui.ctx(), te_id);
-                            }
                         }
                     });
                     ui.add_space(4.0);
@@ -681,7 +671,6 @@ impl PlexiApp {
                     self.editing_description = Some(i);
                     self.description_buffer =
                         self.router.get(i).description.clone().unwrap_or_default();
-                    self.description_focus_requested = false;
                     self.push_focus_layer(crate::app::FocusKind::ContextDescription);
                 }
                 WindowMenuAction::MoveToTop => {
@@ -732,7 +721,6 @@ impl PlexiApp {
                             label: "Set context root".to_string(),
                             hint: "/path/to/project or ~/...".to_string(),
                             buffer: existing,
-                            focus_requested: false,
                         },
                         crate::app::OverlayTarget::ContextRoot(i),
                     ));

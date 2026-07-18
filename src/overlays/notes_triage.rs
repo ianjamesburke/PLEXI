@@ -30,19 +30,14 @@ impl PlexiApp {
         }
     }
 
-    /// Handle keyboard input for the triage overlay. Must surrender egui focus
-    /// so the TextEdit in the modal does not reclaim it.
+    /// Handle keyboard input for the triage overlay. The focus reconciler
+    /// (stint 0429) keeps egui focus off other surfaces while this layer owns
+    /// input, so navigation keys reach the overlay without manual surrenders.
     pub(crate) fn notes_triage_handle_key(
         &mut self,
-        ctx: &egui::Context,
+        _ctx: &egui::Context,
         input: &mut crate::app::input_router::PlexiInput,
     ) {
-        ctx.memory_mut(|m| {
-            if let Some(id) = m.focused() {
-                m.surrender_focus(id);
-            }
-        });
-
         if self.notes_triage_notes.is_empty() {
             log::info!("notes_triage: inbox empty — returning to picker");
             self.notes_triage_back_to_picker();

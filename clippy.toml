@@ -1,0 +1,6 @@
+disallowed-methods = [
+    { path = "egui::Response::request_focus", reason = "egui focus is a projection of the host InputOwner (stint 0429). Register a text surface in crate::ui::focus (register/claim) instead; only src/app/input_owner.rs may touch egui focus." },
+    { path = "egui::Response::surrender_focus", reason = "egui focus is a projection of the host InputOwner (stint 0429). The reconciler in src/app/input_owner.rs owns all surrenders." },
+    { path = "egui::Memory::request_focus", reason = "egui focus is a projection of the host InputOwner (stint 0429). Register a text surface in crate::ui::focus (register/claim) instead; only src/app/input_owner.rs may touch egui focus." },
+    { path = "egui::Memory::surrender_focus", reason = "egui focus is a projection of the host InputOwner (stint 0429). The reconciler in src/app/input_owner.rs owns all surrenders." },
+]

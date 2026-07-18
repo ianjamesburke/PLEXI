@@ -130,7 +130,7 @@ pub(crate) fn draw_text_caret(
 pub(crate) struct TextField<'a> {
     id: egui::Id,
     hint: egui::WidgetText,
-    focused: bool,
+    surface: Option<crate::ui::focus::SurfaceKey>,
     select_all_on_focus: bool,
     password: bool,
     log_name: &'a str,
@@ -141,15 +141,19 @@ impl<'a> TextField<'a> {
         Self {
             id,
             hint: hint.into(),
-            focused: false,
+            surface: None,
             select_all_on_focus: false,
             password: false,
             log_name: "text_field",
         }
     }
 
-    pub(crate) fn focused(mut self, focused: bool) -> Self {
-        self.focused = focused;
+    /// Register this field as its owner's default text surface (stint 0429):
+    /// the post-frame reconciler grants it egui focus while `key` is the
+    /// input owner and surrenders it when ownership moves elsewhere. Fields
+    /// without a surface key are transient (egui click-to-focus only).
+    pub(crate) fn surface(mut self, key: crate::ui::focus::SurfaceKey) -> Self {
+        self.surface = Some(key);
         self
     }
 
@@ -175,12 +179,11 @@ impl<'a> TextField<'a> {
         colors: &Colors,
     ) -> egui::Response {
         let response = styled_text_input_inner(ui, buf, self.hint, self.id, colors, self.password);
-        let requested_focus = self.focused && !response.has_focus();
-        if requested_focus {
-            response.request_focus();
-            log::info!("{}: focus requested for host TextField", self.log_name);
+        if let Some(key) = self.surface {
+            crate::ui::focus::register_default_text_surface(ui.ctx(), key, self.id);
         }
-        if self.select_all_on_focus && (response.gained_focus() || requested_focus) {
+        if self.select_all_on_focus && response.gained_focus() {
+            log::info!("{}: select-all on focus gain", self.log_name);
             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), self.id) {
                 state
                     .cursor
@@ -191,9 +194,6 @@ impl<'a> TextField<'a> {
                 state.store(ui.ctx(), self.id);
             }
         }
-        if self.focused || response.has_focus() {
-            crate::ui::focus::register_overlay_focus(ui.ctx(), self.id);
-        }
         response
     }
 }
@@ -201,7 +201,8 @@ impl<'a> TextField<'a> {
 pub(crate) struct TextArea<'a> {
     id: egui::Id,
     hint: egui::WidgetText,
-    focused: bool,
+    surface: Option<crate::ui::focus::SurfaceKey>,
+    select_all_on_focus: bool,
     rows: usize,
     desired_width: f32,
     max_height: Option<f32>,
@@ -218,7 +219,8 @@ impl<'a> TextArea<'a> {
         Self {
             id,
             hint: hint.into(),
-            focused: false,
+            surface: None,
+            select_all_on_focus: false,
             rows: 3,
             desired_width: f32::INFINITY,
             max_height: None,
@@ -231,8 +233,14 @@ impl<'a> TextArea<'a> {
         }
     }
 
-    pub(crate) fn focused(mut self, focused: bool) -> Self {
-        self.focused = focused;
+    /// See [`TextField::surface`].
+    pub(crate) fn surface(mut self, key: crate::ui::focus::SurfaceKey) -> Self {
+        self.surface = Some(key);
+        self
+    }
+
+    pub(crate) fn select_all_on_focus(mut self, select_all_on_focus: bool) -> Self {
+        self.select_all_on_focus = select_all_on_focus;
         self
     }
 
@@ -293,7 +301,8 @@ impl<'a> TextArea<'a> {
         colors: &Colors,
     ) -> egui::Response {
         let id = self.id;
-        let focused = self.focused;
+        let surface = self.surface;
+        let select_all_on_focus = self.select_all_on_focus;
         let log_name = self.log_name;
         let response = if let Some(max_height) = self.max_height {
             egui::ScrollArea::vertical()
@@ -304,12 +313,20 @@ impl<'a> TextArea<'a> {
             self.show_editor(ui, buf, colors)
         };
 
-        if focused && !response.has_focus() {
-            response.request_focus();
-            log::info!("{log_name}: focus requested for host TextArea");
+        if let Some(key) = surface {
+            crate::ui::focus::register_default_text_surface(ui.ctx(), key, id);
         }
-        if focused || response.has_focus() {
-            crate::ui::focus::register_overlay_focus(ui.ctx(), id);
+        if select_all_on_focus && response.gained_focus() {
+            log::info!("{log_name}: select-all on focus gain");
+            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(buf.len()),
+                    )));
+                state.store(ui.ctx(), id);
+            }
         }
         response
     }

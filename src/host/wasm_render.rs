@@ -56,8 +56,9 @@ pub fn render_ui_tree_with_surface(
     tree: &UiTree,
     colors: &Colors,
     surface: Option<egui::TextureId>,
+    surface_key: Option<crate::ui::focus::SurfaceKey>,
 ) -> RenderResult {
-    render_ui_tree_with_canvas_fits(ui, tree, colors, surface, None, None)
+    render_ui_tree_with_canvas_fits(ui, tree, colors, surface, None, None, surface_key)
 }
 
 pub fn render_ui_tree_with_canvas_fits(
@@ -67,6 +68,7 @@ pub fn render_ui_tree_with_canvas_fits(
     surface: Option<egui::TextureId>,
     canvas_fits: Option<&HashMap<u32, CanvasFit>>,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
+    surface_key: Option<crate::ui::focus::SurfaceKey>,
 ) -> RenderResult {
     let mut out = RenderResult::default();
     render_node(
@@ -79,6 +81,7 @@ pub fn render_ui_tree_with_canvas_fits(
         surface,
         canvas_fits,
         pending_click,
+        surface_key,
     );
     out
 }
@@ -99,7 +102,7 @@ pub fn render_ui_tree_to_png(tree: &UiTree, width: f32, height: f32) -> Result<V
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None);
+                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None);
                 });
         });
     harness.run();
@@ -205,6 +208,7 @@ fn render_node(
     surface: Option<egui::TextureId>,
     canvas_fits: Option<&HashMap<u32, CanvasFit>>,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
+    surface_key: Option<crate::ui::focus::SurfaceKey>,
 ) {
     if depth > MAX_DEPTH {
         return;
@@ -254,10 +258,15 @@ fn render_node(
                 .password(ti.password)
                 .hint_text(&ti.placeholder);
             let resp = ui.add(edit);
-            // Node-targeted clicks only focus the field — keystroke entry
-            // into a focused node is out of scope (stint 0414 non-scope).
-            if node_click_matches(pending_click, id) {
-                resp.request_focus();
+            if let Some(key) = surface_key {
+                crate::ui::focus::register_text_surface(ui.ctx(), key, resp.id);
+                // Node-targeted clicks only focus the field — keystroke entry
+                // into a focused node is out of scope (stint 0414 non-scope).
+                // The claim routes through the reconciler (stint 0429), which
+                // grants it while this pane owns input.
+                if node_click_matches(pending_click, id) {
+                    crate::ui::focus::claim_text_surface(ui.ctx(), key, resp.id);
+                }
             }
             if resp.changed() && buf != ti.value {
                 out.value_changes.push((ti.on_change.clone(), buf.clone()));
@@ -271,7 +280,7 @@ fn render_node(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = r.gap;
                 for child in &r.children {
-                    render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits, pending_click);
+                    render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
                 }
             });
         }
@@ -298,7 +307,7 @@ fn render_node(
                     ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
                         ui.spacing_mut().item_spacing.y = c.gap;
                         for &child in &c.children[..c.children.len() - 1] {
-                            render_node(ui, nodes, child, colors, out, depth + 1, surface, canvas_fits, pending_click);
+                            render_node(ui, nodes, child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
                         }
                     });
                 });
@@ -311,13 +320,13 @@ fn render_node(
                     ui.set_clip_rect(footer_rect);
                     ui.set_min_height(footer_h);
                     ui.set_max_height(footer_h);
-                    render_node(ui, nodes, footer_id, colors, out, depth + 1, surface, canvas_fits, pending_click);
+                    render_node(ui, nodes, footer_id, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
                 });
             } else {
                 ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
                     ui.spacing_mut().item_spacing.y = c.gap;
                     for child in &c.children {
-                        render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits, pending_click);
+                        render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
                     }
                 });
             }
@@ -368,7 +377,7 @@ fn render_node(
                         if selected {
                             ui.visuals_mut().override_text_color = Some(colors.accent);
                         }
-                        render_node(ui, nodes, *item_id, colors, out, depth + 1, surface, canvas_fits, pending_click);
+                        render_node(ui, nodes, *item_id, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
                     })
                     .response
                     .interact(egui::Sense::click());
@@ -387,7 +396,7 @@ fn render_node(
                 egui::ScrollArea::vertical()
             };
             area.show(ui, |ui| {
-                render_node(ui, nodes, s.child, colors, out, depth + 1, surface, canvas_fits, pending_click);
+                render_node(ui, nodes, s.child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
             });
         }
 
@@ -400,7 +409,7 @@ fn render_node(
                     bottom: p.bottom as i8,
                 })
                 .show(ui, |ui| {
-                    render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits, pending_click);
+                    render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
                 });
         }
 
@@ -558,7 +567,7 @@ fn render_node(
         // `Column` (see `column_bottom_pin`). When `Pinned` appears outside a
         // `Column` (e.g. at the tree root), render its child inline.
         UiNodeData::Pinned(p) => {
-            render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits, pending_click);
+            render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
         }
 
         UiNodeData::Spinner(sp) => {
@@ -673,7 +682,7 @@ mod tests {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
-                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None);
+                    let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None);
                     allocated_height = ui.min_rect().height();
                 });
         });
@@ -736,7 +745,7 @@ mod tests {
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
                     let _ =
-                        render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits), None);
+                        render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits), None, None);
                 });
         });
 
@@ -768,7 +777,7 @@ mod tests {
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
                     captured =
-                        render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits), None);
+                        render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits), None, None);
                 });
         });
 
@@ -822,7 +831,7 @@ mod tests {
         let mut captured = RenderResult::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                captured = render_ui_tree_with_surface(ui, &tree, &colors, None);
+                captured = render_ui_tree_with_surface(ui, &tree, &colors, None, None);
             });
         });
 

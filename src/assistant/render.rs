@@ -123,7 +123,7 @@ impl AssistantRenderer {
         md_cache: &mut egui_commonmark::CommonMarkCache,
         text_cache: &mut MarkdownTextCache,
         colors: &Colors,
-        is_focused: bool,
+        host_pane_id: u64,
     ) -> Option<ComposerEvent> {
         // Match the terminal/editor surface, not the darker app-pane base
         // fill — the assistant is host chrome, same as the scratchpad.
@@ -137,6 +137,14 @@ impl AssistantRenderer {
         // (flash) the moment the conversation switches.
         let pane_id = ui.id();
         let te_id = pane_id.with("assistant_composer");
+        // The composer is this pane's default text surface: the post-frame
+        // reconciler (stint 0429) grants it egui focus while the pane owns
+        // input and surrenders it the moment ownership moves elsewhere.
+        crate::ui::focus::register_default_text_surface(
+            ui.ctx(),
+            crate::ui::focus::SurfaceKey::Pane(host_pane_id),
+            te_id,
+        );
 
         // Picker shows up to 10 command rows, clamped so it never overruns
         // the transcript area in a short pane (but always fits at least 3).
@@ -184,7 +192,6 @@ impl AssistantRenderer {
                     model,
                     te_id,
                     colors,
-                    is_focused,
                     total_h * Self::COMPOSER_MAX_FRACTION,
                 ));
                 if permission_pending {
@@ -1145,7 +1152,6 @@ impl AssistantRenderer {
         model: &mut AssistantModel,
         te_id: egui::Id,
         colors: &Colors,
-        is_focused: bool,
         max_h: f32,
     ) -> egui::Rect {
         let font_id = egui::FontId::proportional(style::TEXT_BODY);
@@ -1163,7 +1169,6 @@ impl AssistantRenderer {
             colors.border
         };
 
-        let mut response = None;
         let frame_response = egui::Frame::new()
             .fill(colors.bg_active)
             .stroke(egui::Stroke::new(1.0, stroke_color))
@@ -1243,23 +1248,8 @@ impl AssistantRenderer {
                         if output.response.changed() {
                             model.reset_history_recall();
                         }
-                        response = Some(output.response);
                     });
             });
-        // Keep the composer focused whenever the pane is active but the
-        // TextEdit has lost focus — covers initial open, pane switches, and
-        // window zoom/fullscreen toggles (which silently drop egui keyboard
-        // focus, even with a draft in the box). This is the same unconditional
-        // rule the text-editor pane uses (`text_editor_app.rs`): a one-shot
-        // edge guard breaks after the very focus changes it needs to react to.
-        // It does not fight transcript selection — selecting a label takes
-        // pointer interaction, not keyboard focus, and an empty composer never
-        // consumes the copy event, so cross-bubble copy still works.
-        if let Some(response) = response {
-            if is_focused && !response.has_focus() {
-                response.request_focus();
-            }
-        }
         frame_response.response.rect
     }
 }

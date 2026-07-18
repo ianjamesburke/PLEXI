@@ -101,6 +101,14 @@ pub fn render(
             TERMINAL_GLYPH_PADDING_X
         );
     });
+    // The terminal's deterministic widget id is this pane's default text
+    // surface (stint 0429): the reconciler grants it egui focus while the
+    // pane owns input, replacing the view's old per-frame request/surrender.
+    crate::ui::focus::register_default_text_surface(
+        ui.ctx(),
+        crate::ui::focus::SurfaceKey::Pane(*pane_id),
+        egui_term::terminal_widget_id(*pane_id),
+    );
     let view = TerminalView::new(ui, &mut terminal.backend)
         .set_focus(is_focused)
         .set_theme(theme.clone())

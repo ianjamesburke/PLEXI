@@ -12,8 +12,10 @@ pub(crate) enum KeyDisposition {
 /// Context passed to an app during rendering.
 pub struct AppRenderContext<'a> {
     pub colors: &'a Colors,
-    /// Whether this pane is the currently focused pane in its window.
-    pub is_focused: bool,
+    /// Host pane id of the pane being rendered. Apps use it to register their
+    /// text surfaces against `SurfaceKey::Pane(pane_id)` so the post-frame
+    /// focus reconciler can project host input ownership onto egui focus.
+    pub pane_id: u64,
 }
 
 /// Commands an app can issue back to the system.
@@ -301,4 +303,10 @@ pub trait App: Send {
     /// Called when the user renames this app's pane. TextEditorApp persists
     /// the new name into the note's frontmatter `title`.
     fn on_pane_renamed(&mut self, _name: &str) {}
+
+    /// Concrete-type access for host tests that assert on app-internal state
+    /// through `AppRuntime::Builtin`'s `dyn App`. Test-only: the sole consumer
+    /// is `HostHarness` (`src/testing/`), which is `#[cfg(test)]`.
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }

@@ -96,6 +96,11 @@ impl AudioPlayerApp {
 }
 
 impl App for AudioPlayerApp {
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn type_id(&self) -> &'static str {
         "audio-player"
     }

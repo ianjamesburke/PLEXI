@@ -11,6 +11,7 @@ pub mod host_mcp;
 pub mod host_version;
 pub mod http;
 pub mod image_viewer_app;
+pub(crate) mod input_owner;
 pub(crate) mod input_router;
 pub(crate) mod launch_spec;
 mod lifecycle;
@@ -96,8 +97,6 @@ pub(crate) struct TextInputOverlay {
     pub label: String,
     pub hint: String,
     pub buffer: String,
-    /// One-shot guard: true after the first `request_focus()` call.
-    pub focus_requested: bool,
 }
 
 use crate::app::registry::AppRegistry;
@@ -187,7 +186,6 @@ pub struct PlexiApp {
     pub(crate) rename_buffer: String,
     pub(crate) editing_description: Option<usize>,
     pub(crate) description_buffer: String,
-    pub(crate) description_focus_requested: bool,
     pub(crate) drag_context: Option<usize>,
     /// Whether the "Parked (N)" section in the sidebar is expanded.
     pub(crate) parked_section_expanded: bool,
@@ -220,10 +218,6 @@ pub struct PlexiApp {
         Option<(std::time::Instant, Option<std::path::PathBuf>)>,
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
-    /// One-shot guard: true after `request_focus()` fires on the rename modal's
-    /// first render. Prevents the focus from being re-requested every frame,
-    /// which lets a later widget steal it on the same frame indefinitely.
-    pub(crate) rename_pane_focus_requested: bool,
     /// Active text-input overlay and its dispatch target.
     pub(crate) text_overlay: Option<(TextInputOverlay, OverlayTarget)>,
     /// Receiver for async folder-picker results (Browse button).
@@ -1282,7 +1276,6 @@ impl PlexiApp {
                     rename_buffer: String::new(),
                     editing_description: None,
                     description_buffer: String::new(),
-                    description_focus_requested: false,
                     drag_context: None,
                     parked_section_expanded: false,
                     show_command_palette: false,
@@ -1295,7 +1288,6 @@ impl PlexiApp {
                     workspace_root_fallback_cache: None,
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
-                    rename_pane_focus_requested: false,
                     text_overlay: None,
                     text_overlay_browse_rx: None,
                     registry,
@@ -1530,7 +1522,6 @@ impl PlexiApp {
             rename_buffer: String::new(),
             editing_description: None,
             description_buffer: String::new(),
-            description_focus_requested: false,
             drag_context: None,
             parked_section_expanded: false,
             show_command_palette: false,
@@ -1543,7 +1534,6 @@ impl PlexiApp {
             workspace_root_fallback_cache: None,
             context_visit_history: Vec::new(),
             renaming_pane: None,
-            rename_pane_focus_requested: false,
             text_overlay: None,
             text_overlay_browse_rx: None,
             registry: default_registry,
@@ -1940,8 +1930,7 @@ impl PlexiApp {
                 rename_buffer: String::new(),
                 editing_description: None,
                 description_buffer: String::new(),
-                description_focus_requested: false,
-                drag_context: None,
+                    drag_context: None,
                 parked_section_expanded: false,
                 show_command_palette: false,
                 palette_query: String::new(),
@@ -1953,8 +1942,7 @@ impl PlexiApp {
                 workspace_root_fallback_cache: None,
                 context_visit_history: Vec::new(),
                 renaming_pane: None,
-                rename_pane_focus_requested: false,
-                text_overlay: None,
+                    text_overlay: None,
                 text_overlay_browse_rx: None,
                 registry: AppRegistry::load_with_global(&path, &path.join("nonexistent-apps-dir")),
                 features,
@@ -2186,11 +2174,6 @@ impl PlexiApp {
     /// there the rename falls through to the portal's target subcontext,
     /// same as Cmd+Shift+R from inside it.
     pub(crate) fn open_rename_for_focused(&mut self) {
-        self.ctx.memory_mut(|m| {
-            if let Some(id) = m.focused() {
-                m.surrender_focus(id);
-            }
-        });
         let active_ctx = &self.windows[self.active_window];
         let Some(focused_tile) = active_ctx.focused_pane else {
             return;
@@ -2225,7 +2208,6 @@ impl PlexiApp {
             })
             .unwrap_or_default();
         self.renaming_pane = Some(pane_id);
-        self.rename_pane_focus_requested = false;
         // Sync the focus layer immediately so `input_captured_by_overlay()`
         // is accurate for the rest of this frame — without this, there is a
         // one-frame window where `renaming_pane` is Some but the focus layer
@@ -3754,14 +3736,14 @@ impl eframe::App for PlexiApp {
         // since re-sequencing overlay/app/terminal dispatch around the router
         // needs interactive verification beyond this refactor's scope (see
         // `src/app/input_router.rs`).
-        let modal_open = self.input_captured_by_overlay();
+        let overlay_open = self.input_captured_by_overlay();
         let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
         let poll_actions_result = keys::poll_actions(
             &mut router_input,
             &self.binding_table,
             app_active,
             keyboard_capture_active,
-            modal_open,
+            overlay_open,
             self.show_shortcuts,
         );
         router_input.give_back(ctx);
@@ -3769,41 +3751,21 @@ impl eframe::App for PlexiApp {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].clear_zoom();
-                    self.ctx.memory_mut(|m| {
-                        if let Some(id) = m.focused() {
-                            m.surrender_focus(id);
-                        }
-                    });
                     self.split_focused(false, None, false, false, None);
                     self.save_workspace();
                 }
                 Action::SplitVertical => {
                     self.windows[self.active_window].clear_zoom();
-                    self.ctx.memory_mut(|m| {
-                        if let Some(id) = m.focused() {
-                            m.surrender_focus(id);
-                        }
-                    });
                     self.split_focused(true, None, false, false, None);
                     self.save_workspace();
                 }
                 Action::SplitRight => {
                     self.windows[self.active_window].clear_zoom();
-                    self.ctx.memory_mut(|m| {
-                        if let Some(id) = m.focused() {
-                            m.surrender_focus(id);
-                        }
-                    });
                     self.split_focused_mirror(crate::host::command::Placement::Right);
                     self.save_workspace();
                 }
                 Action::SplitDown => {
                     self.windows[self.active_window].clear_zoom();
-                    self.ctx.memory_mut(|m| {
-                        if let Some(id) = m.focused() {
-                            m.surrender_focus(id);
-                        }
-                    });
                     self.split_focused_mirror(crate::host::command::Placement::Below);
                     self.save_workspace();
                 }
@@ -3818,11 +3780,6 @@ impl eframe::App for PlexiApp {
                             self.windows[self.active_window].zoom_to(tile);
                         }
                         log::info!("zoom: navigate — new zoomed pane={new_pane:?}");
-                        self.ctx.memory_mut(|m| {
-                            if let Some(id) = m.focused() {
-                                m.surrender_focus(id);
-                            }
-                        });
                     }
                     let new_window_id = self.windows[self.active_window].window_id;
                     let new_focus = self.windows[self.active_window].focused_pane;
@@ -4003,11 +3960,6 @@ impl eframe::App for PlexiApp {
                                 ctx.zoom_to(focused);
                                 log::info!("zoom: toggle on — pane={focused:?}");
                             }
-                            self.ctx.memory_mut(|m| {
-                                if let Some(id) = m.focused() {
-                                    m.surrender_focus(id);
-                                }
-                            });
                         }
                     }
                 }
@@ -4041,11 +3993,6 @@ impl eframe::App for PlexiApp {
                 Action::ToggleCommandPalette => {
                     self.show_command_palette = !self.show_command_palette;
                     if self.show_command_palette {
-                        self.ctx.memory_mut(|m| {
-                            if let Some(id) = m.focused() {
-                                m.surrender_focus(id);
-                            }
-                        });
                         self.palette_query.clear();
                         self.palette_selected = 0;
                         self.palette_scroll_reset = true;
@@ -4445,6 +4392,11 @@ impl eframe::App for PlexiApp {
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.
         self.reconcile_focus_logging(FOCUS_HEARTBEAT_INTERVAL);
+
+        // Last step of every frame: project the derived input owner onto egui
+        // widget focus (stint 0429). Everything above may change host focus
+        // state; nothing after this may touch egui focus.
+        self.reconcile_egui_focus(ctx);
     }
 
     fn on_exit(&mut self) {
@@ -4533,13 +4485,6 @@ impl PlexiApp {
         self.notes_picker_selected = 0;
         self.notes_picker_query.clear();
         self.push_focus_layer(FocusKind::NotesPicker);
-        // Surrender egui keyboard focus from the active TextEdit so the picker
-        // receives j/k and other navigation keys immediately on the first frame.
-        self.ctx.memory_mut(|m| {
-            if let Some(id) = m.focused() {
-                m.surrender_focus(id);
-            }
-        });
     }
 }
 

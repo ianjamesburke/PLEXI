@@ -4,6 +4,10 @@
 // `todo!()` and froze the GUI when a recorder app sent AudioCapture without
 // PLEXI_AUDIO=mock://. Stubs must return `Err(NotImplemented)` instead.
 #![deny(clippy::todo, clippy::unimplemented)]
+// Single-authority input ownership (stint 0429): egui focus is a projection
+// of the host-derived InputOwner. Direct focus calls are banned everywhere
+// except the reconciler (src/app/input_owner.rs) — see clippy.toml.
+#![deny(clippy::disallowed_methods)]
 
 mod agent;
 mod app;
