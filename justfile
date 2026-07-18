@@ -226,6 +226,14 @@ regen-if-stale:
         python3 tools/gen_protocol_py.py
     fi
 
+# One-time: create a stable self-signed "Plexi Dev" code-signing identity in the
+# login keychain so `just install` signs the bundle with a persistent designated
+# requirement (kills the per-install keychain re-prompt for the AI broker's API
+# key). Idempotent — re-running is a no-op. May pop ONE admin dialog to trust the
+# cert for code signing.
+codesign-setup:
+    bash scripts/codesign-setup.sh
+
 # Derives channel from git branch (main/alpha/beta). Alias for: just channel-install
 # Run from repo root or any worktree: just install
 install: fetch-python-runtime regen-if-stale
