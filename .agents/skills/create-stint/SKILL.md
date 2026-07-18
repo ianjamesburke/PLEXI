@@ -16,6 +16,12 @@ The stint task body owns all implementation detail and acceptance criteria. `WHA
 
 ---
 
+## Step 0 -- Clarification Gate
+
+Never create a stint from an idea that still needs fleshing out. When a request arrives as a batch or brain-dump, process candidates **one at a time**: for each, either the scope is already crisp (proceed), or ask the single most important clarifying question and wait for the answer before drafting. One question at a time, never a barrage. A vague candidate that can't be clarified right now gets surfaced back to the user as "needs definition" — not silently created.
+
+---
+
 ## Step 1 -- Duplicate Check
 
 Before writing anything, scan existing tasks:
