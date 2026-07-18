@@ -50,3 +50,23 @@ def test_key_changes_direction_and_view_has_canvas() -> None:
     canvas = snake.view().children[1].to_node()
     assert canvas["type"] == "canvas"
     assert any(cmd["type"] == "rect" and "w" in cmd and "h" in cmd for cmd in canvas["commands"])
+
+
+def test_next_food_is_random_and_lands_on_free_cell() -> None:
+    body = [[13, 10], [12, 10], [11, 10]]
+    occupied = {tuple(cell) for cell in body}
+    results = set()
+    for _ in range(50):
+        food = snake._next_food(body)
+        assert 0 <= food[0] < snake.COLS
+        assert 0 <= food[1] < snake.ROWS
+        assert tuple(food) not in occupied
+        results.add(tuple(food))
+    # The old deterministic spawn returned one fixed cell for a fixed board;
+    # uniform random over ~500 free cells must produce more than one result.
+    assert len(results) > 1
+
+
+def test_next_food_full_board_returns_sentinel() -> None:
+    full = [[c, r] for r in range(snake.ROWS) for c in range(snake.COLS)]
+    assert snake._next_food(full) == [-1, -1]

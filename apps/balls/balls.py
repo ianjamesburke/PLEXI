@@ -1,33 +1,30 @@
 #!/usr/bin/env python3
-"""Balls — SDK v3 runtime-state canvas physics demo."""
+"""Balls — elastic circle collision physics demo.
+
+Runs against live pane dimensions each frame: walls track pane resizes, so
+balls fall into freed space when a pane below closes. Absolute pixel radii,
+1:1 canvas (fill mode with live width/height), click to add a ball at the
+cursor, click a ball to remove it.
+"""
 
 from __future__ import annotations
 
 import math
 import random
 
-from plexi_sdk import log
+from plexi_sdk import dim, log, theme
 from plexi_sdk.effects import SetSchedulerMode, SetStatus, SetTitle
-from plexi_sdk.events import KeyEvent, RenderFrame
-from plexi_sdk.ui import (
-    AppBar,
-    Canvas,
-    CanvasCircle,
-    CanvasRect,
-    CanvasText,
-    Column,
-    FooterKeys,
-)
+from plexi_sdk.events import MouseEvent, RenderFrame, Resize
+from plexi_sdk.ui import Canvas, CanvasCircle, CanvasRect, CanvasText
 
-CANVAS_W = 640.0
-CANVAS_H = 360.0
 TARGET_FPS = 60
 TARGET_DT = 1.0 / TARGET_FPS
-GRAVITY = 300.0
-DAMPING = 0.78
-FRICTION = 0.995
+MAX_DT = 0.05  # cap to avoid tunnelling on first frame / tab-back
+GRAVITY = 300.0  # px/s^2
+DAMPING = 0.78  # energy retained on wall bounce
+FRICTION = 0.995  # per-frame horizontal friction on floor contact
 MAX_BALLS = 50
-_runtime: dict | None = None
+BG = "#0d0d1a"
 PALETTE = [
     "#f38ba8",
     "#a6e3a1",
@@ -37,68 +34,110 @@ PALETTE = [
     "#94e2d5",
     "#fab387",
     "#74c7ec",
+    "#b4befe",
+    "#eba0ac",
+    "#a6adc8",
+    "#cdd6f4",
 ]
 
+_runtime: dict | None = None
 
-def _initial(count: int = 10) -> dict:
-    rng = random.Random(7)
+
+def _new_ball(
+    x: float,
+    y: float,
+    idx: int,
+    vx: float | None = None,
+    vy: float | None = None,
+) -> dict:
+    radius = random.uniform(14.0, 44.0)
+    return {
+        "x": x,
+        "y": y,
+        "vx": random.uniform(-180.0, 180.0) if vx is None else vx,
+        "vy": random.uniform(-250.0, -60.0) if vy is None else vy,
+        "r": radius,
+        "color": PALETTE[idx % len(PALETTE)],
+    }
+
+
+def _initial(w: float, h: float, count: int) -> dict:
+    count = max(1, min(count, MAX_BALLS))
     balls = []
-    for idx in range(max(1, min(count, MAX_BALLS))):
-        radius = rng.uniform(14.0, 36.0)
-        balls.append(
-            {
-                "x": rng.uniform(radius, CANVAS_W - radius),
-                "y": rng.uniform(radius, CANVAS_H * 0.55),
-                "vx": rng.uniform(-180.0, 180.0),
-                "vy": rng.uniform(-250.0, -60.0),
-                "r": radius,
-                "color": PALETTE[idx % len(PALETTE)],
-            }
-        )
-    return {"balls": balls, "ticks": 0}
+    for idx in range(count):
+        ball = _new_ball(0.0, 0.0, idx)
+        ball["x"] = random.uniform(ball["r"], max(ball["r"], w - ball["r"]))
+        ball["y"] = random.uniform(ball["r"], max(ball["r"], h * 0.6))
+        balls.append(ball)
+    return {"balls": balls, "w": w, "h": h}
 
 
 def _sim() -> dict:
     global _runtime
     if _runtime is None:
-        _runtime = _initial()
+        _runtime = _initial(640.0, 360.0, 10)
     return _runtime
 
 
 def init(size, args) -> list:
     global _runtime
+    w, h = size
     count = 10
     if args:
         try:
             count = int(args[0])
         except (TypeError, ValueError):
             count = 10
-    _runtime = _initial(count)
+    _runtime = _initial(w, h, count)
     effects: list = [
         SetTitle("Balls"),
         SetSchedulerMode("continuous", fps=TARGET_FPS),
         SetStatus(f"{len(_runtime['balls'])} balls"),
     ]
-    log.info("balls: SDK v3 canvas initialized")
+    log.info(f"balls: init complete, spawned {len(_runtime['balls'])} balls")
     return effects
 
 
 def update(event) -> list:
-    if isinstance(event, KeyEvent):
-        if event.key in ("+", "plus", "equals"):
-            _sim()["balls"].extend(_initial(1)["balls"])
-        elif event.key in ("-", "minus") and len(_sim()["balls"]) > 1:
-            _sim()["balls"].pop()
+    data = _sim()
+
+    if isinstance(event, Resize):
+        data["w"] = event.width
+        data["h"] = event.height
         return []
-    if not isinstance(event, RenderFrame):
+
+    if isinstance(event, MouseEvent) and event.pressed:
+        return _click(data, event.x, event.y)
+
+    if isinstance(event, RenderFrame):
+        dt = event.elapsed if event.elapsed > 0 else TARGET_DT
+        _step(data, min(dt, MAX_DT))
         return []
-    dt = event.elapsed if event.elapsed > 0 else TARGET_DT
-    _step(_sim(), min(dt, TARGET_DT * 2.0))
+
     return []
 
 
-def _step(data: dict, dt: float = TARGET_DT) -> dict:
+def _click(data: dict, x: float, y: float) -> list:
     balls = data["balls"]
+    # Topmost ball is drawn last, so hit-test from the end.
+    for i in range(len(balls) - 1, -1, -1):
+        ball = balls[i]
+        if (x - ball["x"]) ** 2 + (y - ball["y"]) ** 2 <= ball["r"] ** 2:
+            balls.pop(i)
+            log.info(f"balls: removed ball at ({x:.0f}, {y:.0f}), count={len(balls)}")
+            return [SetStatus(f"{len(balls)} balls")]
+    if len(balls) < MAX_BALLS:
+        balls.append(_new_ball(x, y, len(balls), vy=random.uniform(-300.0, -120.0)))
+        log.info(f"balls: spawned ball at ({x:.0f}, {y:.0f}), count={len(balls)}")
+        return [SetStatus(f"{len(balls)} balls")]
+    return []
+
+
+def _step(data: dict, dt: float) -> None:
+    balls = data["balls"]
+    w = data["w"]
+    h = data["h"]
+
     for ball in balls:
         ball["vy"] += GRAVITY * dt
         ball["x"] += ball["vx"] * dt
@@ -109,23 +148,21 @@ def _step(data: dict, dt: float = TARGET_DT) -> dict:
         if ball["x"] - radius < 0:
             ball["x"] = radius
             ball["vx"] = abs(ball["vx"]) * DAMPING
-        elif ball["x"] + radius > CANVAS_W:
-            ball["x"] = CANVAS_W - radius
+        elif ball["x"] + radius > w:
+            ball["x"] = w - radius
             ball["vx"] = -abs(ball["vx"]) * DAMPING
         if ball["y"] - radius < 0:
             ball["y"] = radius
             ball["vy"] = abs(ball["vy"]) * DAMPING
-        elif ball["y"] + radius > CANVAS_H:
-            ball["y"] = CANVAS_H - radius
+        elif ball["y"] + radius > h:
+            ball["y"] = h - radius
             ball["vy"] = -abs(ball["vy"]) * DAMPING
             ball["vx"] *= FRICTION
 
-    for i in range(len(balls)):
-        for j in range(i + 1, len(balls)):
+    n = len(balls)
+    for i in range(n):
+        for j in range(i + 1, n):
             _collide(balls[i], balls[j])
-
-    data["ticks"] += 1
-    return data
 
 
 def _collide(a: dict, b: dict) -> None:
@@ -141,8 +178,9 @@ def _collide(a: dict, b: dict) -> None:
     else:
         dist = 0.0
         nx, ny = 1.0, 0.0
+
     overlap = min_dist - dist
-    am = a["r"] * a["r"]
+    am = a["r"] * a["r"]  # mass proportional to area (uniform density)
     bm = b["r"] * b["r"]
     total = am + bm
     a["x"] -= nx * overlap * bm / total
@@ -164,36 +202,37 @@ def _collide(a: dict, b: dict) -> None:
 
 def view():
     data = _sim()
-    count = len(data["balls"])
-    return Column(
-        [
-            AppBar("Balls", f"{count} balls"),
-            Canvas(_draw(data), width=CANVAS_W, height=CANVAS_H, grow=True),
-            FooterKeys([("+", "add"), ("-", "remove")]),
-        ],
-        padding=0,
-        gap=0,
-        grow=True,
-    )
+    w = data["w"]
+    h = data["h"]
+    return Canvas(_draw(data), width=w, height=h, grow=True)
 
 
 def _draw(data: dict) -> list:
-    commands: list = [CanvasRect(0, 0, CANVAS_W, CANVAS_H, "#0d0d1a")]
-    for ball in data["balls"]:
+    w = data["w"]
+    h = data["h"]
+    balls = data["balls"]
+    commands: list = [CanvasRect(0.0, 0.0, w, h, BG)]
+    for ball in balls:
         commands.append(
-            CanvasCircle(ball["x"] + 3.0, ball["y"] + 4.0, ball["r"], "#00000055")
+            CanvasCircle(ball["x"] + 3.0, ball["y"] + 4.0, ball["r"], dim("#000000", 60))
         )
-    for ball in data["balls"]:
+    for ball in balls:
         commands.append(CanvasCircle(ball["x"], ball["y"], ball["r"], ball["color"]))
         commands.append(
             CanvasCircle(
                 ball["x"] - ball["r"] * 0.28,
                 ball["y"] - ball["r"] * 0.28,
                 max(3.0, ball["r"] * 0.28),
-                "#ffffff66",
+                dim("#ffffff", 90),
             )
         )
     commands.append(
-        CanvasText(12.0, 18.0, f"ticks {data['ticks']}", size=11.0, color="#a6adc8")
+        CanvasText(
+            12.0,
+            18.0,
+            f"{len(balls)} balls — click to add · click ball to remove",
+            size=12.0,
+            color=theme.muted,
+        )
     )
     return commands
