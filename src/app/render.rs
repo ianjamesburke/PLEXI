@@ -569,7 +569,6 @@ impl PlexiApp {
 
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
-                    focused_tile: ctx.focused_pane,
                     theme: self.theme.clone(),
                     new_focused: None,
                     close_exited: None,
@@ -802,7 +801,6 @@ impl PlexiApp {
                                     &mut app_ui,
                                     app_pane,
                                     &self.colors,
-                                    owner_pane == Some(pane_id),
                                     has_tabs,
                                     pending_click,
                                 );

@@ -735,6 +735,7 @@ impl Drop for CliRendererApp {
 // ── App trait ─────────────────────────────────────────────────────────────────
 
 impl App for CliRendererApp {
+    #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -1016,7 +1017,6 @@ mod tests {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let rctx = AppRenderContext {
                         colors: &colors,
-                        is_focused: true,
                         pane_id: 1,
                     };
                     app.ui(ui, &rctx);

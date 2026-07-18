@@ -3138,6 +3138,7 @@ impl AssistantApp {
 }
 
 impl App for AssistantApp {
+    #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -5314,7 +5315,6 @@ enabled = ["allowed.tool"]
             egui::CentralPanel::default().show(ctx, |ui| {
                 let render_ctx = AppRenderContext {
                     colors: &colors,
-                    is_focused: true,
                     pane_id: 1,
                 };
                 App::ui(&mut app, ui, &render_ctx);

@@ -356,7 +356,6 @@ impl Default for PortalPreview {
 
 pub struct PlexiBehavior<'a> {
     pub panes: &'a mut HashMap<PaneId, Pane>,
-    pub focused_tile: Option<TileId>,
     pub theme: TerminalTheme,
     pub new_focused: Option<TileId>,
     pub close_exited: Option<TileId>,
@@ -512,7 +511,6 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 &mut app_ui,
                 app_pane,
                 &self.colors,
-                is_focused,
                 has_tabs,
                 pending_click,
             );

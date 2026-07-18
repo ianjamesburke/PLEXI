@@ -33,7 +33,6 @@ pub fn render(
     ui: &mut egui::Ui,
     app_pane: &mut AppPane,
     colors: &Colors,
-    is_focused: bool,
     suppress_overtake: bool,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
 ) {
@@ -136,7 +135,6 @@ pub fn render(
     // available_size() and always see the post-chrome budget with no guesswork.
     let ctx = AppRenderContext {
         colors,
-        is_focused,
         pane_id: app_pane.id,
     };
     let content_rect = ui.available_rect_before_wrap();

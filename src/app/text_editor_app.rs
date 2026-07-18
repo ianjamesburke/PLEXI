@@ -689,6 +689,7 @@ fn write_note_atomically(path: &Path, bytes: &[u8], durability: Durability) -> s
 }
 
 impl App for TextEditorApp {
+    #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }

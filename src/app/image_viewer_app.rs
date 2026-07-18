@@ -67,6 +67,7 @@ impl ImageViewerApp {
 }
 
 impl App for ImageViewerApp {
+    #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }

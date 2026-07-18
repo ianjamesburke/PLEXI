@@ -13,6 +13,7 @@ pub struct LaunchFailedApp {
 }
 
 impl App for LaunchFailedApp {
+    #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
