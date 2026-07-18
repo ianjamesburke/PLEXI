@@ -13,7 +13,7 @@ mouse_tracking = true
 python_compat = true
 
 [app.capabilities]
-capabilities = ["fs.read", "timer"]
+capabilities = ["logs.read", "timer"]
 
 [launch]
 # One live tail of the host log per context — relaunching focuses the open

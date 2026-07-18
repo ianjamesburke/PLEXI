@@ -95,10 +95,23 @@ pub fn render_ui_tree_with_canvas_fits(
 pub fn render_ui_tree_to_png(tree: &UiTree, width: f32, height: f32) -> Result<Vec<u8>, String> {
     let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::load());
     let tree = tree.clone();
+    // `set_fonts` only takes effect on the *next* frame's `begin_frame`, so the
+    // custom `ui-medium` family used by declarative Button/ListRow nodes is not
+    // bound during the frame that calls it. Apply fonts on a first, content-less
+    // frame and render the tree only once they are live — otherwise laying out
+    // any button label on the first frame panics in epaint. The live host does
+    // not hit this because `setup_fonts` runs once at startup, long before any
+    // app frame.
+    let mut fonts_ready = false;
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::Vec2::new(width, height))
         .build(move |ctx| {
-            crate::ui::theme::setup_fonts(ctx);
+            if !fonts_ready {
+                crate::ui::theme::setup_fonts(ctx);
+                fonts_ready = true;
+                ctx.request_repaint();
+                return;
+            }
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
