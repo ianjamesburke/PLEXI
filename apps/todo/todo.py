@@ -6,7 +6,7 @@ from __future__ import annotations
 from plexi_sdk import state
 from plexi_sdk.effects import PersistState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction, UiValueChange
-from plexi_sdk.ui import AppBar, Button, Column, SelectList, Spacer, Text, TextInput
+from plexi_sdk.ui import AppBar, Button, Column, FooterKeys, SelectList, Spacer, Text, TextInput
 
 DEFAULT_TODO_STATE = {
     "items": [],
@@ -146,7 +146,7 @@ def view():
             Button("Add", "todo-add:submit", style="primary", disabled=not data["draft"].strip()),
             Button("Cancel", "todo-add:cancel", style="ghost"),
             Spacer(grow=True),
-            Text("Enter saves. Esc cancels.", size=11.0),
+            FooterKeys([("↩", "save"), ("esc", "cancel")]),
         ], grow=True)
 
     rows = [
@@ -167,5 +167,5 @@ def view():
         Button("Add item", "todo-add:start", style="primary"),
         Button("Toggle selected", "todo-toggle", disabled=not rows),
         Button("Delete selected", "todo-delete", style="danger", disabled=not rows),
-        Text("Up/down select. Space toggles. a adds. d deletes.", size=11.0),
+        FooterKeys([("↑/↓", "select"), ("space", "toggle"), ("a", "add"), ("d", "delete")]),
     ], grow=True)

@@ -10,7 +10,7 @@ from pathlib import Path
 from plexi_sdk import state
 from plexi_sdk.effects import PersistState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import FocusChanged, KeyEvent, TimerFired
-from plexi_sdk.ui import AppBar, Column, SelectList, Spacer, Text
+from plexi_sdk.ui import AppBar, Column, FooterKeys, SelectList, Spacer, Text
 
 DAY_START_HOUR = 4
 IDLE_THRESHOLD_SECS = 15 * 60
@@ -70,7 +70,7 @@ def view():
             Text("No focus events yet.", size=16.0, bold=True),
             Text("Stats will fill in as Plexi sends focus-change events.", size=12.0),
             Spacer(grow=True),
-            Text("r refreshes.", size=11.0),
+            FooterKeys([("r", "refresh")]),
         ], grow=True)
 
     rows = [
