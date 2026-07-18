@@ -21,6 +21,7 @@ from pathlib import Path
 import plexi_sdk as sdk
 from plexi_sdk import _v3_state, effects, events
 from plexi_sdk._keys import normalize_key as _normalize_key
+from plexi_sdk._v3_delta import node_patch as _node_patch
 from plexi_sdk._v3_state import StateSnapshot
 
 
@@ -77,6 +78,8 @@ class V3AppRuntime:
         self._launch_args = launch_args or []
         self._values: dict = {}
         self._last_render_time: float | None = None
+        self._last_tree: dict | None = None
+        self._force_full_tree = True
         self._frame_id = 0
         self._app_id = ""
         self._workspace_root = ""
@@ -192,6 +195,10 @@ class V3AppRuntime:
             self._dispatch(events.CapabilityDenied(name=ev.get("name", "")))
         elif t == "resize":
             self._handle_resize(ev)
+        elif t == "request_full_tree":
+            self._force_full_tree = True
+            _host_log("info", "tree resync requested by host; next frame is a full tree")
+            _emit({"type": "schedule_render", "after_ms": 16})
         elif t == "shutdown":
             self._running = False
         elif t == "theme":
@@ -253,13 +260,43 @@ class V3AppRuntime:
 
         if root is not None:
             from ._adapter import _encode_uitree
-            _emit({
-                "type": "component_tree",
-                "frame_id": frame_id,
-                "tree": _encode_uitree(root),
-            })
+            self._emit_tree(frame_id, _encode_uitree(root))
 
         _emit({"type": "frame_done", "frame_id": frame_id})
+
+    def _emit_tree(self, frame_id, encoded: dict) -> None:
+        """Emit the frame's UI tree as a full frame or a positional delta.
+
+        Node identity is the arena index (encoder ids are arena positions), so
+        a delta is only valid while the tree keeps the same shape: same root,
+        same node count, same per-slot key. Any structural change — and the
+        first frame, and any host-requested resync — sends the full tree, so
+        the host never has to guess what a patch applies to. Relies on the
+        documented `view()` purity contract: nodes are rebuilt every frame,
+        never cached and mutated in place across frames.
+        """
+        prev = self._last_tree
+        self._last_tree = encoded
+        nodes = encoded["nodes"]
+        force_full = self._force_full_tree
+        self._force_full_tree = False
+        if (
+            force_full
+            or prev is None
+            or encoded["root"] != prev["root"]
+            or len(nodes) != len(prev["nodes"])
+        ):
+            _emit({"type": "component_tree", "frame_id": frame_id, "tree": encoded})
+            return
+        changed: list[dict] = []
+        for node, old in zip(nodes, prev["nodes"]):
+            if node == old:
+                continue
+            if node["key"] != old["key"]:
+                _emit({"type": "component_tree", "frame_id": frame_id, "tree": encoded})
+                return
+            changed.append(_node_patch(node, old))
+        _emit({"type": "tree_delta", "frame_id": frame_id, "changed": changed})
 
     def _handle_key(self, ev: dict, *, schedule_render: bool = True) -> None:
         key = _normalize_key(ev.get("key", ""))

@@ -343,6 +343,11 @@ class AppHarness:
         self._frame_id = 0
         self._stdout_q: "queue.Queue[str | None]" = queue.Queue()
         self._events_seen: "list[dict]" = []
+        # Apps emit `tree_delta` after the first frame (stint 0438); reconstruct
+        # the full `component_tree` the same way the live host does so callers
+        # always see a full tree regardless of the wire framing.
+        from plexi_sdk._v3_delta import TreeReconstructor
+        self._reconstructor = TreeReconstructor()
 
         import os
         import subprocess as _subprocess
@@ -404,9 +409,10 @@ class AppHarness:
         if line is None:
             return None
         try:
-            return json.loads(line)
+            event = json.loads(line)
         except json.JSONDecodeError:
             return None
+        return self._reconstructor.ingest(event)
 
     def _fatal_event(self) -> "dict | None":
         while True:

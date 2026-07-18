@@ -93,14 +93,25 @@ def _send_event(proc, event: dict):
 
 
 def _collect_until(proc, target_type: str, timeout: float = 3.0) -> list[dict]:
-    """Read events until we see target_type or timeout."""
+    """Read events until we see target_type or timeout.
+
+    Reconstructs `tree_delta` frames (stint 0438) into full `component_tree`
+    events, per process, so assertions that look for `component_tree` keep
+    working after the first frame. State is carried on the process object so it
+    spans consecutive renders.
+    """
+    from plexi_sdk._v3_delta import TreeReconstructor
+    reconstructor = getattr(proc, "_plexi_reconstructor", None)
+    if reconstructor is None:
+        reconstructor = TreeReconstructor()
+        proc._plexi_reconstructor = reconstructor
     seen = []
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         line = proc.stdout.readline()
         if not line:
             break
-        ev = json.loads(line)
+        ev = reconstructor.ingest(json.loads(line))
         seen.append(ev)
         if ev.get("type") == target_type:
             return seen

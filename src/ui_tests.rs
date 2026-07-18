@@ -1136,6 +1136,28 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_with_pane.png");
     }
 
+    /// Visual review for the diffed WASM tree path (stint 0438): a real
+    /// CPython-in-WASM app (breakout) opened and stepped past its first frame,
+    /// so frame 2+ arrive as `tree_delta`s the decoder thread reconstructs and
+    /// the paint path renders. Proves the delta pipeline paints a coherent
+    /// frame, not just that the assertions pass.
+    #[test]
+    fn screenshot_python_app_delta_frames_paint() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
+        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/breakout");
+        let pane_id = h.open_app_at(&app_dir, &[]).expect("open breakout");
+        h.wait_for_app_frame(pane_id, Duration::from_secs(30))
+            .expect("breakout first frame");
+        // Advance host frames so the guest emits delta frames that the decoder
+        // reconstructs and commits, then screenshot the painted result.
+        for _ in 0..30 {
+            h.step();
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        h.save_screenshot("/tmp/plexi_python_delta_frames.png")
+            .expect("render delta frame");
+    }
+
     /// Regression: zoomed app panes must render through the shared
     /// `render::app_pane::render` path (full-rect fill, no collapsing
     /// `egui::Frame`) and exercise the overtake-bar chrome. Guards against
