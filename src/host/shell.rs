@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::io;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{LazyLock, Mutex};
@@ -123,15 +125,55 @@ pub fn install_login_shell_env() {
     }
 }
 
+/// Run a one-shot login-shell probe fully isolated from the launching session.
+///
+/// Plexi may be launched attached to a terminal (`plexi` run directly, before
+/// the GUI window opens). A login/interactive shell spawned to read the user's
+/// env or PATH otherwise inherits that controlling terminal, so anything the
+/// profile chain touches — job control, `sudo`, `tput` — can steal the user's
+/// keystrokes or write onto their prompt (the documented "`zsh -i` hijacks
+/// SIGINT" hazard). A footgun as ordinary as a `sleep()` shell function that
+/// shells out to `sudo` then bleeds `sudo: a terminal is required` onto the
+/// launching session.
+///
+/// `setsid` gives the probe its own session with no controlling terminal, and
+/// `Command::output()` reads stdout/stderr through pipes over a null stdin — so
+/// the launching session can never be polluted. Captured stderr is routed to
+/// the channel log, never silently discarded.
+fn run_login_shell_probe(shell: &str, args: &[&str]) -> Option<std::process::Output> {
+    let mut cmd = Command::new(shell);
+    cmd.args(args).stdin(std::process::Stdio::null());
+    // SAFETY: pre_exec runs only libc::setsid() between fork and exec — an
+    // async-signal-safe syscall with no allocation, locking, or heap access.
+    #[cfg(unix)]
+    unsafe {
+        cmd.pre_exec(|| {
+            // A forked child is never a process-group leader, so setsid()
+            // succeeds and yields a new session detached from any terminal.
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = cmd.output().ok()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        log::warn!(
+            "Login-shell probe `{shell} {}` wrote to stderr: {stderr}",
+            args.join(" ")
+        );
+    }
+    Some(output)
+}
+
 fn probe_login_shell_env() -> Option<HashMap<String, String>> {
     let shell = detect_shell();
     // `-i -l`: interactive + login. Login alone loads `~/.zprofile` /
     // `~/.zlogin` but NOT `~/.zshrc`, so secrets sourced from `.zshrc` (e.g.
     // `~/.zsh_secrets`) are invisible. Interactive forces `.zshrc` to load.
-    let output = Command::new(&shell)
-        .args(["-i", "-l", "-c", "env"])
-        .output()
-        .ok()?;
+    let output = run_login_shell_probe(&shell, &["-i", "-l", "-c", "env"])?;
     if !output.status.success() {
         log::warn!(
             "Login-shell env probe failed: {} exited {}",
@@ -156,10 +198,7 @@ fn probe_login_shell_env() -> Option<HashMap<String, String>> {
 
 fn probe_login_shell_path() -> Option<String> {
     let shell = detect_shell();
-    let output = Command::new(&shell)
-        .args(["-l", "-c", "printf %s \"$PATH\""])
-        .output()
-        .ok()?;
+    let output = run_login_shell_probe(&shell, &["-l", "-c", "printf %s \"$PATH\""])?;
     if !output.status.success() {
         log::warn!(
             "Login-shell PATH probe failed: {} exited {}",
@@ -514,6 +553,28 @@ mod tests {
     fn shell_join_special_chars_quoted() {
         let args = vec!["echo".to_string(), "$HOME".to_string()];
         assert_eq!(shell_join(&args), "echo '$HOME'");
+    }
+
+    #[test]
+    fn login_shell_probe_captures_stderr_not_inherited() {
+        // Regression (stint 0443): a probe shell that writes to stderr must have
+        // that output captured in `Output`, never inherited onto the launching
+        // session's fds. A dotfiles footgun like a `sleep()` function shelling
+        // out to `sudo` used to bleed `sudo: a terminal is required` onto the
+        // terminal Plexi was launched from.
+        let out =
+            run_login_shell_probe("/bin/sh", &["-c", "printf out; printf err 1>&2"]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "out");
+        assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "err");
+    }
+
+    #[test]
+    fn login_shell_probe_stdin_is_null_no_hang() {
+        // Regression (stint 0443): stdin is redirected to /dev/null, so a probe
+        // shell that reads stdin hits EOF immediately instead of blocking on —
+        // or stealing keystrokes from — the launching terminal.
+        let out = run_login_shell_probe("/bin/sh", &["-c", "cat; printf done"]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "done");
     }
 
     #[test]
