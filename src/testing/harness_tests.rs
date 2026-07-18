@@ -1607,3 +1607,220 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
 }
+
+/// Stint 0426: `plexi pane key` / `AppRequest::KeyPane` targeting a real
+/// WASM Python pane (`apps/dev/key-event-probe`, a keyboard-only counter —
+/// no click/pointer input). Drives a real subprocess through the exact
+/// dispatch `KeyPane` uses (`drive_native_pane_key` → `AppRuntime::handle_key`
+/// → `LivePythonPane::handle_key`) and asserts the guest's re-rendered state
+/// actually changed — not just that the command returned `{"ok": true}`.
+/// Written first per TESTING.md/TDD to confirm this path was broken before
+/// any fix, mirroring `click_pane_node_activates_button_and_mutates_guest_view`.
+#[test]
+fn key_pane_delivers_key_event_and_mutates_guest_view() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/key-event-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch key-event-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching key-event-probe");
+
+    // Real subprocess: poll for its first committed render before driving input.
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let rendered = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .is_some_and(
+                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+            );
+        if rendered {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "key-event-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    h.run_frames(2);
+
+    let initial_count = h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .map(|pane| pane.semantic_state())
+        .and_then(|state| {
+            state
+                .nodes
+                .iter()
+                .find(|n| n.role == "text")
+                .and_then(|n| n.label.clone())
+        });
+    assert_eq!(initial_count.as_deref(), Some("0"), "count starts at 0");
+
+    let key_response = temp_response(tmp.path(), "key-pane-plus");
+    h.inject_ipc(AppRequest::KeyPane {
+        pane_id,
+        key: "plus".to_string(),
+        response_file: Some(key_response.clone()),
+    });
+    h.run_frames(1);
+    let response = read_json_response(&key_response);
+    assert_eq!(response["ok"], true, "key dispatch failed: {response:?}");
+
+    let start = std::time::Instant::now();
+    let mut observed_count: Option<String> = None;
+    loop {
+        h.run_frames(1);
+        let state = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .map(|pane| pane.semantic_state());
+        if let Some(state) = &state {
+            observed_count = state
+                .nodes
+                .iter()
+                .find(|n| n.role == "text")
+                .and_then(|n| n.label.clone());
+        }
+        if observed_count.as_deref() == Some("1") {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "app did not reflect the key event's mutation in time (last seen: {observed_count:?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Stint 0426 root cause: `PlexiApp::pending_pane_clicks` is removed from its
+/// map by the render dispatcher (`tiling.rs`/`render.rs`) *before* calling
+/// `AppRuntime::ui`, so `LivePythonPane::ui` is a queued click's only chance
+/// at delivery. It had three early-return branches (fatal error, not
+/// initialized, not `ready`) that discarded an already-dequeued click
+/// without using it and without any error — `plexi pane click --node`
+/// reported `{"ok": true}` while nothing ever happened. A hot-reload
+/// relaunch (`AppRuntime::Python::relaunch`, triggered by file-watch or
+/// `reload_app_pane`) is the most realistic way to land a queued click on
+/// exactly that not-ready window: the click resolves and queues against the
+/// pane's current tree, then the pane briefly cycles through
+/// not-initialized/not-ready before its relaunched subprocess re-renders.
+///
+/// This test forces that exact race deterministically (no IPC timing
+/// dependent sleep-and-hope): queue a node click against the live tree,
+/// force a relaunch before any frame drains the queue, then confirm the
+/// click still lands once the relaunched pane is ready again. Before the
+/// fix in `LivePythonPane::ui`, this hung until timeout because the click
+/// was dropped the instant it landed on the not-ready frame.
+#[test]
+fn queued_node_click_survives_a_hot_reload_relaunch_race() {
+    let mut h = HostHarness::new();
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/node-click-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch node-click-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching node-click-probe");
+
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let rendered = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .is_some_and(
+                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+            );
+        if rendered {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "node-click-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    h.run_frames(2);
+
+    let semantic_state = h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .map(|pane| pane.semantic_state())
+        .expect("app pane has a semantic tree");
+    let button_arena_id = semantic_state
+        .nodes
+        .iter()
+        .find(|n| n.role == "button" && n.label.as_deref() == Some("Increment"))
+        .map(|n| n.id.clone())
+        .and_then(|id| semantic_state.resolve_interactive_node(&id).ok())
+        .expect("Increment button resolves to an arena id");
+
+    // Queue the click directly on the pending-click map — bypassing the IPC
+    // queue (`inject_node_click`) — so the relaunch below is guaranteed to
+    // land before any frame drains it. Going through IPC would risk the
+    // same `run_frames` call both draining the queue AND rendering the
+    // still-live (pre-reload) pane, delivering the click before the race
+    // window this test exists to exercise.
+    h.app.pending_pane_clicks.insert(
+        pane_id,
+        crate::host::pane::PendingPaneClick {
+            target: crate::host::pane::PaneClickTarget::Node(button_arena_id),
+            button: "left",
+        },
+    );
+
+    // Force the exact race: relaunch before any frame drains the queued
+    // click, landing it on a not-initialized/not-ready `ui()` call.
+    assert!(
+        h.app.reload_app_pane(pane_id, "test: relaunch race"),
+        "reload_app_pane must find and relaunch the Python pane"
+    );
+
+    // Wait for the relaunched subprocess to become ready and render again,
+    // then confirm the carried click still activated the button.
+    let start = std::time::Instant::now();
+    let mut observed_count: Option<String> = None;
+    loop {
+        h.run_frames(1);
+        let state = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .map(|pane| pane.semantic_state());
+        if let Some(state) = &state {
+            observed_count = state
+                .nodes
+                .iter()
+                .find(|n| n.role == "text")
+                .and_then(|n| n.label.clone());
+        }
+        if observed_count.as_deref() == Some("1") {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "click queued before a hot-reload relaunch must still land once the \
+             relaunched pane is ready again (last seen count: {observed_count:?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}

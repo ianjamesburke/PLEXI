@@ -1,0 +1,9 @@
+schema_version = 1
+generated_by = "plexi app init"
+plexi_cli_version = "0.1.17"
+sdk_version = "3.0.0"
+manifest_schema_version = 1
+python_runtime_version = "3.12"
+template_version = 3
+channel = "alpha"
+profile_dir = ".plexi-alpha"
