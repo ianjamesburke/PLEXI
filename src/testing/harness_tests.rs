@@ -1940,6 +1940,43 @@ fn active_assistant_composer_receives_typed_text() {
     );
 }
 
+/// Synthetic text injection (`plexi pane send`, drive-host, harness) arrives
+/// while the OS window is blurred — the CLI issuing it runs in another
+/// window. OS blur must not un-own the composer: egui focus stays projected
+/// from host pane focus, so the injected Text event still lands. Regression
+/// (PR #2421 tester): the reconciler treated `OsUnfocused` as "no owner",
+/// surrendered the composer, and every pane-send into an assistant dropped.
+#[test]
+fn blurred_window_still_delivers_injected_text_to_active_composer() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane();
+    let pane_b = h.add_assistant_pane();
+
+    h.focus_pane(pane_b);
+    h.run_frames(2);
+
+    // Blur the OS window and let a frame settle — the composer must keep
+    // egui focus through the blur.
+    let mut blurred = egui::RawInput::default();
+    blurred
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .focused = Some(false);
+    h.frame(blurred.clone());
+
+    // Inject text the way `SendToPane` does, still blurred.
+    let mut with_text = blurred;
+    with_text.events.push(egui::Event::Text("hi".to_string()));
+    h.frame(with_text);
+
+    assert_eq!(
+        h.assistant_mut(pane_b).model.composer,
+        "hi",
+        "pane-send text must reach the active composer while the window is blurred"
+    );
+}
+
 /// Overlay-over-pane ownership: while the command palette is open, the
 /// palette search field owns egui focus even though a pane is host-focused;
 /// closing the palette hands focus ownership back to the pane's surface.

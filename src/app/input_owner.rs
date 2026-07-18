@@ -62,10 +62,25 @@ impl PlexiApp {
 
     /// Derive this frame's input owner from host state. Precedence:
     /// OS window focus > overlay surfaces > the focused pane.
+    ///
+    /// The OS-focus gate applies to key *routing* (`dispatch_app_key_events`,
+    /// the terminal steal): while another window owns the keyboard, no pane
+    /// receives keys. It does not apply to egui-focus *projection* — see
+    /// [`Self::host_input_owner`].
     pub(crate) fn input_owner(&self, ctx: &egui::Context) -> InputOwner {
         if !ctx.input(|i| i.viewport().focused.unwrap_or(true)) {
             return InputOwner::OsUnfocused;
         }
+        self.host_input_owner()
+    }
+
+    /// The owner derived from host state alone, ignoring OS window focus.
+    /// This is what the reconciler projects onto egui focus: blurring the
+    /// window does not un-own a surface — egui receives no OS keyboard while
+    /// blurred, and synthetic input injected by `plexi pane send`, drive-host,
+    /// and the harness (which always arrives with the window blurred, since
+    /// the CLI runs in another window) must still land in the owner's surface.
+    pub(crate) fn host_input_owner(&self) -> InputOwner {
         if let Some(surface) = self.overlay_surface() {
             return InputOwner::Overlay(surface);
         }
@@ -110,9 +125,12 @@ impl PlexiApp {
     ///   focus, else its default surface is granted.
     /// - A focused id that no registration knows about is left alone (egui's
     ///   native click-to-focus on transient widgets).
+    /// - OS window focus is ignored: projection follows
+    ///   [`Self::host_input_owner`], so a blurred window keeps its owner's
+    ///   surface focused and CLI-injected text still lands.
     #[allow(clippy::disallowed_methods)]
     pub(crate) fn reconcile_egui_focus(&mut self, ctx: &egui::Context) {
-        let owner = self.input_owner(ctx);
+        let owner = self.host_input_owner();
         let registry = crate::ui::focus::drain_text_surfaces(ctx);
         let previous = take_previous_surfaces(ctx);
 
