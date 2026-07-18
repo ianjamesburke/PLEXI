@@ -1926,7 +1926,18 @@ impl LiveWasmPane {
         let mut consumed = false;
         for event in input.events() {
             match event {
-                egui::Event::Key { .. } => {
+                egui::Event::Key { key, modifiers, .. } => {
+                    // Bare Escape is reserved for the host CloseApp binding
+                    // (keys.rs, `BindingContext::AppActive`). Reporting it
+                    // consumed claims Escape out of the frame's input buffer
+                    // before `poll_actions` can fire CloseApp, so the focused
+                    // WASM pane never closes on Escape. Skip it — never forward
+                    // to the guest, never count toward `consumed`. Cmd+Escape
+                    // (context zoom-out) is already dropped by
+                    // `translate_key_event`.
+                    if *key == egui::Key::Escape && !modifiers.command {
+                        continue;
+                    }
                     if let Some(ke) = translate_key_event(event) {
                         self.inner.push_input(InputEvent::Key(ke));
                     }
@@ -3206,6 +3217,50 @@ mod tests {
         assert!(
             cmd.is_none(),
             "Cmd-chords are host shortcuts, not guest input"
+        );
+    }
+
+    /// Stint 0430: bare Escape is reserved for the host CloseApp binding
+    /// (keys.rs, `BindingContext::AppActive`). A focused WASM pane must report
+    /// `Passthrough` for it so `poll_actions` can fire CloseApp; before the fix
+    /// `handle_key` reported `Consumed` for every key event, claiming Escape out
+    /// of the frame buffer and starving the close. Normal keys stay `Consumed`.
+    #[test]
+    fn handle_key_reserves_bare_escape_for_host_close() {
+        fn disposition(live: &mut LiveWasmPane, event: egui::Event) -> KeyDisposition {
+            let ctx = egui::Context::default();
+            let mut raw = egui::RawInput::default();
+            raw.events.push(event);
+            let mut out = KeyDisposition::Passthrough;
+            let _ = ctx.run(raw, |ctx| {
+                let input = crate::app::input_router::PlexiInput::take_from(ctx);
+                out = live.handle_key(&input);
+            });
+            out
+        }
+
+        let mut live = LiveWasmPane::new(
+            pane(0.0),
+            "wasm-test",
+            StateSnapshot { entries: vec![] },
+            Vec::new(),
+        );
+
+        assert_eq!(
+            disposition(
+                &mut live,
+                egui_key(egui::Key::Escape, true, false, egui::Modifiers::NONE)
+            ),
+            KeyDisposition::Passthrough,
+            "bare Escape must pass through so the host CloseApp binding fires"
+        );
+        assert_eq!(
+            disposition(
+                &mut live,
+                egui_key(egui::Key::W, true, false, egui::Modifiers::NONE)
+            ),
+            KeyDisposition::Consumed,
+            "normal keys are consumed and forwarded to the WASM guest"
         );
     }
 

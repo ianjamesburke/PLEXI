@@ -255,6 +255,93 @@ impl PlexiApp {
             })
     }
 
+    /// Single placement authority for a freshly-built app pane. Honors the
+    /// layout `hint` identically for every runtime (builtin, Python-WASM, native
+    /// WASM) so no open path can silently diverge:
+    ///
+    /// * `Some("overlay")` — replace the focused pane in place, reusing its pane
+    ///   id and stashing the displaced pane in `overlay_replaced` so closing the
+    ///   app restores it (see `restore_overlay_replacement`). Falls through to
+    ///   the root/split path when the context is empty.
+    /// * any other hint — split beside the focused pane, or install as the tree
+    ///   root when no pane is focused.
+    ///
+    /// `build(pane_id, linked_pane_id, overlay_replaced) -> Pane` constructs the
+    /// runtime-specific pane once its final id is known — overlay reuses the
+    /// focused id; every other path allocates a fresh one via
+    /// [`Self::open_pane_layout`]. Returns the installed pane id, or `None` when
+    /// an overlay was requested against a degenerate focus target (the focused
+    /// tile is not a pane, or its pane is missing from the map); callers treat
+    /// that as a failed launch.
+    fn place_app_pane<F>(
+        &mut self,
+        app_id: &str,
+        group: Option<String>,
+        hint: Option<&str>,
+        share_hint: Option<f32>,
+        build: F,
+    ) -> Option<PaneId>
+    where
+        F: FnOnce(PaneId, Option<PaneId>, Option<Box<Pane>>) -> Pane,
+    {
+        let active = self.active_window;
+
+        if matches!(hint, Some("overlay")) {
+            if let Some(focused_tile) = self.windows[active].focused_pane {
+                let Some(Tile::Pane(focused_pane_id)) =
+                    self.windows[active].tree.tiles.get(focused_tile)
+                else {
+                    log::warn!(
+                        "app::{app_id}: overlay launch skipped — focused tile is not a pane"
+                    );
+                    return None;
+                };
+                let pane_id = *focused_pane_id;
+                let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
+                    log::warn!(
+                        "app::{app_id}: overlay launch skipped — pane {pane_id} missing from pane map"
+                    );
+                    return None;
+                };
+                let pane = build(pane_id, None, Some(Box::new(replaced_pane)));
+                self.windows[active].panes.insert(pane_id, pane);
+                self.set_window_focused_pane(active, focused_tile);
+                log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
+                return Some(pane_id);
+            }
+            log::info!(
+                "app::{app_id}: overlay requested but empty context — launching as root pane"
+            );
+            // fall through to the root/split path below
+        }
+
+        if self.windows[active].zoomed_pane.take().is_some() {
+            log::info!("app::{app_id}: cleared zoom before launch");
+        }
+
+        // Record which terminal we're splitting from before focus moves.
+        let linked_pane_id = self.focused_terminal_id(active);
+        let share = Self::share_ratio_from_fraction(app_id, share_hint);
+        let (new_id, share, vertical, new_pane_first) =
+            self.open_pane_layout(app_id, group, hint, share);
+        let pane = build(new_id, linked_pane_id, None);
+        self.windows[active].panes.insert(new_id, pane);
+
+        // Empty context: no focused pane means no existing tile to split against —
+        // install the new pane directly as the tree root.
+        if self.windows[active].focused_pane.is_none() {
+            let ctx = &mut self.windows[active];
+            let root_tile = ctx.tree.tiles.insert_pane(new_id);
+            ctx.tree.root = Some(root_tile);
+            ctx.focused_pane = Some(root_tile);
+            log::info!("app::{app_id}: launched as root pane {new_id} (empty context)");
+            return Some(new_id);
+        }
+        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first, false);
+        log::info!("app::{app_id}: launched as split pane {new_id}");
+        Some(new_id)
+    }
+
     /// Open a built-in error tile pane when a capability pre-flight check fails.
     /// Uses `AppRuntime::Builtin` — no app runtime is spawned.
     fn open_launch_failed_pane(
@@ -382,39 +469,35 @@ impl PlexiApp {
         let app_id = config.app_id.clone();
         let runtime = crate::host::wasm_python::LivePythonPane::launch(config)
             .map_err(|error| error.to_string())?;
-        let active = self.active_window;
-        let share = Self::share_ratio_from_fraction(&app_id, None);
-        let (new_id, share, vertical, new_pane_first) =
-            self.open_pane_layout(&app_id, None, layout, share);
-        let linked_pane_id = self.focused_terminal_id(active);
-        self.windows[active].panes.insert(
-            new_id,
-            Pane::App(Box::new(crate::host::pane::AppPane {
-                pip_status: None,
-                id: new_id,
-                runtime: crate::host::pane::AppRuntime::Python(Box::new(runtime)),
-                workspace_root,
-                permissions,
-                manifest_id: app_id.clone(),
-                name: app_id.clone(),
-                pane_group: None,
-                linked_pane_id,
-                overlay_replaced: None,
-                hidden: false,
-                agent: None,
-                slots: std::collections::HashMap::new(),
-                semantic_state: Default::default(),
-            })),
-        );
+        let manifest_id = app_id.clone();
+        let name = app_id.clone();
+        let new_id = self
+            .place_app_pane(
+                &app_id,
+                None,
+                layout,
+                None,
+                move |new_id, linked_pane_id, overlay_replaced| {
+                    Pane::App(Box::new(crate::host::pane::AppPane {
+                        pip_status: None,
+                        id: new_id,
+                        runtime: crate::host::pane::AppRuntime::Python(Box::new(runtime)),
+                        workspace_root,
+                        permissions,
+                        manifest_id,
+                        name,
+                        pane_group: None,
+                        linked_pane_id,
+                        overlay_replaced,
+                        hidden: false,
+                        agent: None,
+                        slots: std::collections::HashMap::new(),
+                        semantic_state: Default::default(),
+                    }))
+                },
+            )
+            .ok_or_else(|| format!("overlay launch target unavailable for {app_id}"))?;
         self.hot_reload.watch(new_id, app_dir);
-        if self.windows[active].focused_pane.is_none() {
-            let ctx = &mut self.windows[active];
-            let root = ctx.tree.tiles.insert_pane(new_id);
-            ctx.tree.root = Some(root);
-            ctx.focused_pane = Some(root);
-        } else {
-            let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first, false);
-        }
         crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
             app_id: app_id.clone(),
             type_id: "python-wasm".to_string(),
@@ -507,10 +590,6 @@ impl PlexiApp {
     ) -> Result<PaneId, String> {
         use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
 
-        let active = self.active_window;
-        let share = Self::share_ratio_from_fraction(app_id, None);
-        let (new_id, share, vertical, new_pane_first) =
-            self.open_pane_layout(app_id, None, layout, share);
         let pane = WasmPane::new(app, Box::new(SysinfoStats::new()));
         let pane = if let Some((store, granted, blocked)) = remembered {
             pane.with_remembered_capabilities(workspace_root.clone(), store, granted, blocked)
@@ -518,28 +597,36 @@ impl PlexiApp {
             pane
         };
         let mut live = LiveWasmPane::new(pane, app_id, snapshot, launch_args);
-        live.set_pane_id(new_id);
 
-        let linked_pane_id = self.focused_terminal_id(active);
-        self.windows[active].panes.insert(
-            new_id,
-            Pane::App(Box::new(crate::host::pane::AppPane {
-                pip_status: None,
-                id: new_id,
-                runtime: crate::host::pane::AppRuntime::Wasm(Box::new(live)),
-                workspace_root,
-                permissions,
-                manifest_id: app_id.to_string(),
-                name: app_id.to_string(),
-                pane_group: None,
-                linked_pane_id,
-                overlay_replaced: None,
-                hidden: false,
-                agent: None,
-                slots: std::collections::HashMap::new(),
-                semantic_state: Default::default(),
-            })),
-        );
+        let manifest_id = app_id.to_string();
+        let name = app_id.to_string();
+        let new_id = self
+            .place_app_pane(
+                app_id,
+                None,
+                layout,
+                None,
+                move |new_id, linked_pane_id, overlay_replaced| {
+                    live.set_pane_id(new_id);
+                    Pane::App(Box::new(crate::host::pane::AppPane {
+                        pip_status: None,
+                        id: new_id,
+                        runtime: crate::host::pane::AppRuntime::Wasm(Box::new(live)),
+                        workspace_root,
+                        permissions,
+                        manifest_id,
+                        name,
+                        pane_group: None,
+                        linked_pane_id,
+                        overlay_replaced,
+                        hidden: false,
+                        agent: None,
+                        slots: std::collections::HashMap::new(),
+                        semantic_state: Default::default(),
+                    }))
+                },
+            )
+            .ok_or_else(|| format!("overlay launch target unavailable for {app_id}"))?;
         crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
             app_id: app_id.to_string(),
             type_id: "wasm".to_string(),
@@ -547,15 +634,6 @@ impl PlexiApp {
             timestamp: crate::host::event_log::now_timestamp(),
         });
         log::info!("wasm::{app_id}: spawned pane {new_id}");
-
-        if self.windows[active].focused_pane.is_none() {
-            let ctx = &mut self.windows[active];
-            let root_tile = ctx.tree.tiles.insert_pane(new_id);
-            ctx.tree.root = Some(root_tile);
-            ctx.focused_pane = Some(root_tile);
-            return Ok(new_id);
-        }
-        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first, false);
         Ok(new_id)
     }
 
@@ -703,106 +781,42 @@ impl PlexiApp {
         hint: Option<&str>,
         share: Option<f32>,
     ) {
-        let active = self.active_window;
         let app_type_id = app.type_id().to_string();
         let app_name = app.display_name();
-        let new_app_pane = |id: PaneId,
-                            app: Box<dyn App>,
-                            workspace_root: PathBuf,
-                            group: Option<String>,
-                            linked_pane_id: Option<PaneId>,
-                            overlay_replaced: Option<Box<Pane>>| {
-            Pane::App(Box::new(crate::host::pane::AppPane {
-                pip_status: None,
-                id,
-                runtime: crate::host::pane::AppRuntime::Builtin(app),
-                workspace_root,
-                permissions,
-                manifest_id: app_type_id.clone(),
-                name: app_name.clone(),
-                pane_group: group,
-                linked_pane_id,
-                overlay_replaced,
-                hidden: false,
-                agent: None,
-                slots: std::collections::HashMap::new(),
-                semantic_state: Default::default(),
-            }))
-        };
-
-        if matches!(hint, Some("overlay")) {
-            if let Some(focused_tile) = self.windows[active].focused_pane {
-                let Some(Tile::Pane(focused_pane_id)) =
-                    self.windows[active].tree.tiles.get(focused_tile)
-                else {
-                    log::warn!(
-                        "builtin::{app_name}: overlay launch skipped — focused tile is not a pane"
-                    );
-                    return;
-                };
-                let pane_id = *focused_pane_id;
-                let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
-                    return;
-                };
-                self.windows[active].panes.insert(
-                    pane_id,
-                    new_app_pane(
-                        pane_id,
-                        app,
-                        workspace_root,
-                        group,
-                        None,
-                        Some(Box::new(replaced_pane)),
-                    ),
-                );
-                self.set_window_focused_pane(active, focused_tile);
-                log::info!("builtin::{app_name}: launched as overlay on pane {pane_id}");
-                crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
-                    app_id: app_type_id.clone(),
-                    type_id: app_type_id.clone(),
-                    pane_id,
-                    timestamp: crate::host::event_log::now_timestamp(),
-                });
-                return;
-            }
-            log::info!(
-                "builtin::{app_name}: overlay requested but empty context — launching as root pane"
-            );
-            // fall through to root-pane path below
-        }
-
-        if self.windows[active].zoomed_pane.take().is_some() {
-            log::info!("builtin::{app_name}: cleared zoom before launch");
-        }
-
-        // Record which terminal we're splitting from before focus moves.
-        let linked_pane_id = self.focused_terminal_id(active);
-        let share = Self::share_ratio_from_fraction(&app_type_id, share);
-        let (new_id, share, vertical, new_pane_first) =
-            self.open_pane_layout(&app_type_id, group.clone(), hint, share);
-        self.windows[active].panes.insert(
-            new_id,
-            new_app_pane(new_id, app, workspace_root, group, linked_pane_id, None),
+        let manifest_id = app_type_id.clone();
+        let group_for_pane = group.clone();
+        let placed = self.place_app_pane(
+            &app_type_id,
+            group,
+            hint,
+            share,
+            move |id, linked_pane_id, overlay_replaced| {
+                Pane::App(Box::new(crate::host::pane::AppPane {
+                    pip_status: None,
+                    id,
+                    runtime: crate::host::pane::AppRuntime::Builtin(app),
+                    workspace_root,
+                    permissions,
+                    manifest_id,
+                    name: app_name,
+                    pane_group: group_for_pane,
+                    linked_pane_id,
+                    overlay_replaced,
+                    hidden: false,
+                    agent: None,
+                    slots: std::collections::HashMap::new(),
+                    semantic_state: Default::default(),
+                }))
+            },
         );
-        crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
-            app_id: app_type_id.clone(),
-            type_id: app_type_id.clone(),
-            pane_id: new_id,
-            timestamp: crate::host::event_log::now_timestamp(),
-        });
-
-        // Empty context: no focused pane means no existing tile to split.
-        // Install the new pane directly as the tree root.
-        if self.windows[active].focused_pane.is_none() {
-            let ctx = &mut self.windows[active];
-            let root_tile = ctx.tree.tiles.insert_pane(new_id);
-            ctx.tree.root = Some(root_tile);
-            ctx.focused_pane = Some(root_tile);
-            log::info!("builtin::{app_name}: launched as root pane {new_id} (empty context)");
-            return;
+        if let Some(pane_id) = placed {
+            crate::host::event_log::emit(crate::host::event_log::HostEvent::AppSpawned {
+                app_id: app_type_id.clone(),
+                type_id: app_type_id.clone(),
+                pane_id,
+                timestamp: crate::host::event_log::now_timestamp(),
+            });
         }
-
-        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first, false);
     }
 
     pub(super) fn create_single_pane_tree(
@@ -1807,5 +1821,112 @@ fn sanitize_wasm_path_component(input: &str) -> String {
         "root".to_string()
     } else {
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::permissions::AppPermissions;
+    use crate::host::wasm_app::{StateSnapshot, StateStore, WasmApp};
+    use crate::testing::HostHarness;
+
+    fn counter_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wasm-fixtures/counter.wasm")
+    }
+
+    /// A loadable native-WASM component and the state snapshot the pane opens
+    /// with. Snapshot is taken before the store moves into the app, mirroring the
+    /// production launch path.
+    fn load_counter() -> (WasmApp, StateSnapshot) {
+        let store = StateStore::ephemeral();
+        let snapshot = store.snapshot();
+        let app = WasmApp::load_ephemeral_run("counter-pane", &counter_fixture(), store)
+            .expect("load counter fixture");
+        (app, snapshot)
+    }
+
+    /// Stint 0431: the native-WASM open path must honor the default `"overlay"`
+    /// placement hint (the layout Cmd+P uses) — replace the focused pane in
+    /// place, reusing its id and stashing the displaced pane for restore — not
+    /// unconditionally split a new pane below. Regression:
+    /// `open_wasm_app_instance` ignored the hint and always split.
+    #[test]
+    fn open_wasm_app_instance_overlay_replaces_focused_pane_in_place() {
+        let mut h = HostHarness::new();
+        let focused = h.add_test_pane();
+        h.focus_pane(focused);
+        let count_before = h.pane_count();
+
+        let (app, snapshot) = load_counter();
+        let pane_id = h
+            .app
+            .open_wasm_app_instance(
+                "counter-pane",
+                app,
+                snapshot,
+                std::env::temp_dir(),
+                AppPermissions::default(),
+                None,
+                Some("overlay"),
+                Vec::new(),
+            )
+            .expect("overlay launch returns the reused pane id");
+
+        assert_eq!(pane_id, focused, "overlay reuses the focused pane's id");
+        assert_eq!(
+            h.pane_count(),
+            count_before,
+            "overlay replaces in place — no extra pane is split"
+        );
+        let stashed_replacement = h.app.windows[0]
+            .panes
+            .get(&focused)
+            .and_then(Pane::as_app)
+            .map(|app| app.overlay_replaced.is_some())
+            .unwrap_or(false);
+        assert!(
+            stashed_replacement,
+            "overlay stashes the displaced pane in overlay_replaced for restore-on-close"
+        );
+    }
+
+    /// Stint 0431: an overlay launch into an empty context (no focused pane)
+    /// must fall through to the root-pane path and install the app as the tree
+    /// root — never a silent no-op.
+    #[test]
+    fn open_wasm_app_instance_overlay_no_focused_pane_launches_root() {
+        let mut h = HostHarness::new();
+        assert!(
+            h.app.windows[0].focused_pane.is_none(),
+            "empty context has no focused pane"
+        );
+
+        let (app, snapshot) = load_counter();
+        let pane_id = h
+            .app
+            .open_wasm_app_instance(
+                "counter-pane",
+                app,
+                snapshot,
+                std::env::temp_dir(),
+                AppPermissions::default(),
+                None,
+                Some("overlay"),
+                Vec::new(),
+            )
+            .expect("overlay with empty context launches as root pane");
+
+        let root = h.app.windows[0].tree.root.expect("root tile installed");
+        assert_eq!(
+            h.app.windows[0].focused_pane,
+            Some(root),
+            "new root pane must be focused"
+        );
+        assert_eq!(
+            h.app.windows[0].tree.tiles.get(root),
+            Some(&Tile::Pane(pane_id)),
+            "root tile must hold the launched wasm pane"
+        );
     }
 }

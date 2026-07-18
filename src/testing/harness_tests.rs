@@ -1718,6 +1718,80 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
     }
 }
 
+/// Stint 0430: bare Escape on a focused WASM/Python pane must close it. The
+/// Escape→CloseApp binding (keys.rs, `BindingContext::AppActive`) fires in
+/// `poll_actions` only when the focused app's `handle_key` did NOT consume the
+/// key. `LivePythonPane::handle_key` used to report `Consumed` for bare Escape
+/// (`python_key_events` forwarded it), which claimed Escape out of the frame's
+/// input buffer before `poll_actions` ran — so the pane never closed. Drive a
+/// real subprocess pane and a genuine Escape `RawInput` through a live frame
+/// and assert the pane closes.
+#[test]
+fn bare_escape_closes_focused_python_wasm_pane() {
+    let mut h = HostHarness::new();
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/key-event-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch key-event-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching key-event-probe");
+
+    // Real subprocess: poll for its first committed render before driving input.
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let rendered = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .is_some_and(
+                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+            );
+        if rendered {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "key-event-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    h.focus_pane(pane_id);
+    h.run_frames(1);
+    assert!(
+        h.state().open_panes.contains(&pane_id),
+        "pane must be open and focused before the Escape press"
+    );
+
+    // Drive a genuine bare Escape through a real frame's RawInput. The focused
+    // Python pane's handle_key returns Passthrough for it, so poll_actions fires
+    // CloseApp within this same frame.
+    h.frame(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events: vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
+    });
+
+    assert!(
+        !h.state().open_panes.contains(&pane_id),
+        "bare Escape on a focused Python-WASM pane must close it (Escape→CloseApp)"
+    );
+}
+
 /// Stint 0426 root cause: `PlexiApp::pending_pane_clicks` is removed from its
 /// map by the render dispatcher (`tiling.rs`/`render.rs`) *before* calling
 /// `AppRuntime::ui`, so `LivePythonPane::ui` is a queued click's only chance
