@@ -6,9 +6,11 @@
 
 ---
 
-## Current State (2026-07-11, dogfooding audit lands 15 assistant/UX tasks)
+## Current State (2026-07-19, app-build E2E loop passes on a PR build)
 
-`alpha` is at `56b994dc`: workspace saves are atomic (`0367`), CLI commands route by binary channel (`0365`), and the Assistant E2E harness with local/cheap-model verification (`0359`) is landed. Details in `docs/DEVLOG.md`.
+`alpha` is at `220ac87f` (PR #2439): the assistant transcript is append-only chronological with per-tool-call caret rows (`0455`), typing into a declarative TextInput works end to end — dispatch gate, host-owned edit buffer, styled field, `pane key` parity (`0456`), and `plexi app check` type-checks the app entry with mypy so authoring errors surface at check time instead of crashing the guest (`0415`). Validated live: one prompt → assistant builds a guessing game, self-corrects via the type gate, opens it, game played to the win screen with zero user-side fixes. Next for the launch gate (`0413`): user-driven runs on this alpha. Follow-up `0457` annotates the legacy maintained apps so the type gate can go strict for every scaffold version.
+
+Prior state (2026-07-11): workspace saves are atomic (`0367`), CLI commands route by binary channel (`0365`), and the Assistant E2E harness with local/cheap-model verification (`0359`) is landed. Details in `docs/DEVLOG.md`.
 
 **Free v1 finish line: one verification pass remains.** `0358` (P1, small) — production hosted-registry install smoke from a clean machine after deploying alpha. It is the only tracked Epoch 1 gap.
 
