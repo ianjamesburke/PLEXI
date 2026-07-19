@@ -286,7 +286,7 @@ impl PlexiApp {
                 if let Some(ref latest) = self.update_available.clone() {
                     egui::Frame::new()
                         .fill(self.colors.accent.gamma_multiply(0.15))
-                        .stroke(Stroke::new(1.0, self.colors.accent.gamma_multiply(0.4)))
+                        .stroke(Stroke::new(1.0_f32, self.colors.accent.gamma_multiply(0.4)))
                         .corner_radius(R6)
                         .inner_margin(egui::Margin::symmetric(12, 8))
                         .show(ui, |ui| {
@@ -316,7 +316,7 @@ impl PlexiApp {
                                                 .color(self.colors.text_dim),
                                         )
                                         .fill(egui::Color32::TRANSPARENT)
-                                        .stroke(Stroke::new(1.0, self.colors.border))
+                                        .stroke(Stroke::new(1.0_f32, self.colors.border))
                                         .corner_radius(egui::CornerRadius::same(4));
                                         if ui.add(cancel_btn).clicked() {
                                             self.update_confirm_prompt = false;

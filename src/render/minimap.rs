@@ -172,7 +172,7 @@ pub fn render_minimap(
     ui.painter().rect_stroke(
         panel_rect,
         egui::CornerRadius::same(CORNER_RADIUS as u8),
-        egui::Stroke::new(1.0, colors.border),
+        egui::Stroke::new(1.0_f32, colors.border),
         egui::StrokeKind::Inside,
     );
 
@@ -237,7 +237,7 @@ pub fn render_minimap(
             cell_rect,
             egui::CornerRadius::same(3),
             fill,
-            egui::Stroke::new(1.0, border_color),
+            egui::Stroke::new(1.0_f32, border_color),
             egui::StrokeKind::Inside,
         );
 

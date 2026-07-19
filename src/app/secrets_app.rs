@@ -428,7 +428,7 @@ impl App for SecretsApp {
                 egui::pos2(header_rect.left(), header_rect.bottom()),
                 egui::pos2(header_rect.right(), header_rect.bottom()),
             ],
-            egui::Stroke::new(1.0, colors.border),
+            egui::Stroke::new(1.0_f32, colors.border),
         );
 
         let mut header_ui = ui.new_child(
@@ -490,7 +490,7 @@ impl App for SecretsApp {
                     egui::pos2(form_rect.left(), form_rect.top()),
                     egui::pos2(form_rect.right(), form_rect.top()),
                 ],
-                egui::Stroke::new(1.0, colors.border),
+                egui::Stroke::new(1.0_f32, colors.border),
             );
 
             let mut form_ui = ui.new_child(

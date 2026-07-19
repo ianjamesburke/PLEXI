@@ -1452,7 +1452,7 @@ impl PlexiApp {
                     while y < screen.bottom() {
                         painter.line_segment(
                             [egui::pos2(screen.left(), y), egui::pos2(screen.right(), y)],
-                            Stroke::new(0.5, Color32::from_black_alpha(38)),
+                            Stroke::new(0.5_f32, Color32::from_black_alpha(38)),
                         );
                         y += 3.0;
                     }

@@ -615,7 +615,7 @@ impl AssistantRenderer {
         let mut choice = None;
         egui::Frame::new()
             .fill(colors.bg_active)
-            .stroke(egui::Stroke::new(1.0, colors.accent))
+            .stroke(egui::Stroke::new(1.0_f32, colors.accent))
             .corner_radius(style::RADIUS_MD)
             .inner_margin(egui::Margin::same(style::SPACE_SM as i8))
             .show(ui, |ui| {
@@ -668,7 +668,7 @@ impl AssistantRenderer {
                             ui.painter().rect_stroke(
                                 resp.rect.expand(2.0),
                                 style::RADIUS_MD,
-                                egui::Stroke::new(2.0, colors.accent),
+                                egui::Stroke::new(2.0_f32, colors.accent),
                                 egui::StrokeKind::Outside,
                             );
                         }
@@ -777,7 +777,7 @@ impl AssistantRenderer {
         add_contents: impl FnOnce(&mut egui::Ui),
     ) {
         let outline = if stroke {
-            egui::Stroke::new(1.0, colors.border)
+            egui::Stroke::new(1.0_f32, colors.border)
         } else {
             egui::Stroke::NONE
         };
@@ -1075,7 +1075,7 @@ impl AssistantRenderer {
                 ui.set_width(composer_rect.width());
                 egui::Frame::new()
                     .fill(colors.bg_active)
-                    .stroke(egui::Stroke::new(1.0, colors.border))
+                    .stroke(egui::Stroke::new(1.0_f32, colors.border))
                     .corner_radius(style::RADIUS_MD)
                     .inner_margin(egui::Margin::same(margin as i8))
                     .show(ui, |ui| {
@@ -1181,7 +1181,7 @@ impl AssistantRenderer {
                 ui.set_width(composer_rect.width());
                 egui::Frame::new()
                     .fill(colors.bg_active)
-                    .stroke(egui::Stroke::new(1.0, colors.border))
+                    .stroke(egui::Stroke::new(1.0_f32, colors.border))
                     .corner_radius(style::RADIUS_MD)
                     .inner_margin(egui::Margin::same(margin as i8))
                     .show(ui, |ui| {
@@ -1313,7 +1313,7 @@ impl AssistantRenderer {
 
         let frame_response = egui::Frame::new()
             .fill(colors.bg_active)
-            .stroke(egui::Stroke::new(1.0, stroke_color))
+            .stroke(egui::Stroke::new(1.0_f32, stroke_color))
             .corner_radius(style::RADIUS_MD)
             .inner_margin(egui::Margin::symmetric(
                 style::SPACE_SM as i8,
@@ -1385,7 +1385,7 @@ impl AssistantRenderer {
                             &output,
                             style::TEXT_BODY,
                             row_height,
-                            egui::Stroke::new(1.0, colors.accent),
+                            egui::Stroke::new(1.0_f32, colors.accent),
                         );
                         if output.response.changed() {
                             model.reset_history_recall();

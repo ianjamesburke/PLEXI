@@ -62,7 +62,7 @@ impl PlexiApp {
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(box_rect), |ui| {
             egui::Frame::new()
                 .fill(colors.bg_sidebar)
-                .stroke(Stroke::new(1.0, colors.border))
+                .stroke(Stroke::new(1.0_f32, colors.border))
                 .corner_radius(style::RADIUS_MD)
                 .inner_margin(egui::Margin::symmetric(
                     style::MODAL_PADDING_H,

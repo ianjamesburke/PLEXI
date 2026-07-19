@@ -791,7 +791,7 @@ impl<'a> TerminalView<'a> {
                     shapes.push(Shape::Rect(RectShape::stroke(
                         cell_rect,
                         CornerRadius::default(),
-                        Stroke::new(1.0, cursor_color),
+                        Stroke::new(1.0_f32, cursor_color),
                         egui::StrokeKind::Inside,
                     )));
                 }
@@ -1012,7 +1012,7 @@ impl<'a> TerminalView<'a> {
                 pill_rect,
                 CornerRadius::same(6),
                 Stroke::new(
-                    1.0,
+                    1.0_f32,
                     Color32::from_rgba_unmultiplied(100, 100, 100, 120),
                 ),
                 egui::StrokeKind::Inside,
@@ -1062,7 +1062,7 @@ impl<'a> TerminalView<'a> {
                         Pos2::new(cursor_x + 1.0, pill_rect.max.y - pill_pad_v),
                     ],
                     Stroke::new(
-                        1.5,
+                        1.5_f32,
                         Color32::from_rgba_unmultiplied(200, 200, 200, 200),
                     ),
                 );

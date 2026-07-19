@@ -104,7 +104,7 @@ fn corner_shapes(c: char, cell_rect: Rect, fg: Color32) -> Option<Vec<Shape>> {
     let bottom = cell_rect.max.y;
     let left = cell_rect.min.x;
     let right = cell_rect.max.x;
-    let stroke = Stroke::new(1.0, fg);
+    let stroke = Stroke::new(1.0_f32, fg);
 
     // Each arm goes from the cell center to the midpoint of an edge.
     // Names: U=up (center→top), D=down (center→bottom), L=left, R=right.
@@ -149,13 +149,13 @@ fn circle_shape(c: char, cell_rect: Rect, fg: Color32) -> Option<Shape> {
         // ○ WHITE CIRCLE — outline variant
         '\u{25CB}' => {
             let radius = half_w * 0.72;
-            let stroke = Stroke::new(1.0, fg);
+            let stroke = Stroke::new(1.0_f32, fg);
             Some(Shape::Circle(CircleShape::stroke(center, radius, stroke)))
         },
         // ◉ FISHEYE — filled circle with smaller inner circle
         '\u{25C9}' => {
             let radius = half_w * 0.72;
-            let stroke = Stroke::new(1.0, fg);
+            let stroke = Stroke::new(1.0_f32, fg);
             Some(Shape::Circle(CircleShape::stroke(center, radius, stroke)))
         },
         // ⏺ BLACK CIRCLE FOR RECORD
@@ -171,7 +171,7 @@ fn circle_shape(c: char, cell_rect: Rect, fg: Color32) -> Option<Shape> {
         // ◦ WHITE BULLET (smaller outline dot)
         '\u{25E6}' => {
             let radius = half_w * 0.38;
-            let stroke = Stroke::new(1.0, fg);
+            let stroke = Stroke::new(1.0_f32, fg);
             Some(Shape::Circle(CircleShape::stroke(center, radius, stroke)))
         },
         _ => None,

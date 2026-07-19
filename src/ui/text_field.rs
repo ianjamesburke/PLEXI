@@ -26,8 +26,8 @@ fn styled_text_input_inner(
         ui.visuals_mut().text_cursor.blink = false;
         ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
         ui.visuals_mut().extreme_bg_color = colors.bg_active;
-        ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
-        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+        ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, colors.accent);
+        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, colors.border);
         let font_id = egui::TextStyle::Body.resolve(ui.style());
         let row_height = ui.fonts(|f| f.row_height(&font_id));
         let edit = egui::TextEdit::singleline(buf)
@@ -43,7 +43,7 @@ fn styled_text_input_inner(
             &output,
             font_id.size,
             row_height,
-            egui::Stroke::new(1.0, colors.accent),
+            egui::Stroke::new(1.0_f32, colors.accent),
         );
         output.response
     })
@@ -342,8 +342,8 @@ impl<'a> TextArea<'a> {
             ui.visuals_mut().text_cursor.blink = false;
             ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
             ui.visuals_mut().extreme_bg_color = colors.bg_active;
-            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
-            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, colors.accent);
+            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, colors.border);
 
             let row_height = ui.fonts(|f| f.row_height(&self.font_id));
             let output = egui::TextEdit::multiline(buf)
@@ -361,7 +361,7 @@ impl<'a> TextArea<'a> {
                 &output,
                 self.font_id.size,
                 row_height,
-                egui::Stroke::new(1.0, colors.accent),
+                egui::Stroke::new(1.0_f32, colors.accent),
             );
             output.response
         })

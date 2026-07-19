@@ -1476,11 +1476,19 @@ impl LivePythonPane {
         }
         let stderr = self.runtime.drain_stderr();
         if !stderr.trim().is_empty() {
-            log::error!(
-                "app::{} CPython WASM stderr: {}",
-                self.app_id,
-                stderr.trim()
-            );
+            if is_benign_cpython_wasi_stderr(&stderr) {
+                log::debug!(
+                    "app::{} CPython WASM stderr (benign WASI startup noise): {}",
+                    self.app_id,
+                    stderr.trim()
+                );
+            } else {
+                log::error!(
+                    "app::{} CPython WASM stderr: {}",
+                    self.app_id,
+                    stderr.trim()
+                );
+            }
         }
     }
 
@@ -1981,6 +1989,22 @@ fn python_semantic_state(tree: Option<&PythonUiTree>) -> crate::host::pane::Sema
         }
     }
     state
+}
+
+/// Stint 0417: CPython-in-WASI prints `Could not find platform dependent
+/// libraries <exec_prefix>` to stderr on every guest boot even when the
+/// runtime starts and runs fine — WASI has no real filesystem layout for
+/// CPython's `sysconfig` probe to find. Logging that line at ERROR trains
+/// agents and humans to ignore real guest tracebacks in the same stream.
+/// Returns true only when *every* non-empty line matches a known-benign
+/// pattern; any unrecognized line (a real traceback) keeps the ERROR level.
+fn is_benign_cpython_wasi_stderr(stderr: &str) -> bool {
+    const BENIGN_SUBSTRINGS: &[&str] = &["Could not find platform dependent libraries"];
+    stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .all(|line| BENIGN_SUBSTRINGS.iter().any(|needle| line.contains(needle)))
 }
 
 fn python_key_name(key: egui::Key) -> String {
@@ -3477,6 +3501,35 @@ mod tests {
     struct NoopWake;
     impl Wake for NoopWake {
         fn wake(self: Arc<Self>) {}
+    }
+
+    /// Stint 0417: the benign CPython WASI startup line must classify as
+    /// non-error so it doesn't drown real guest tracebacks in the log.
+    #[test]
+    fn is_benign_cpython_wasi_stderr_recognizes_known_benign_line() {
+        assert!(is_benign_cpython_wasi_stderr(
+            "Could not find platform dependent libraries <exec_prefix>\n"
+        ));
+        // Repeated/whitespace-padded — still benign.
+        assert!(is_benign_cpython_wasi_stderr(
+            "  Could not find platform dependent libraries <exec_prefix>  \n\
+             Could not find platform dependent libraries <exec_prefix>\n"
+        ));
+        // Empty stderr trivially has no non-benign lines.
+        assert!(is_benign_cpython_wasi_stderr(""));
+        assert!(is_benign_cpython_wasi_stderr("\n\n"));
+    }
+
+    #[test]
+    fn is_benign_cpython_wasi_stderr_keeps_real_tracebacks_at_error() {
+        assert!(!is_benign_cpython_wasi_stderr(
+            "Traceback (most recent call last):\n  File \"logs.py\", line 10\nNameError: x"
+        ));
+        // A benign line mixed with a real traceback must not be swallowed.
+        assert!(!is_benign_cpython_wasi_stderr(
+            "Could not find platform dependent libraries <exec_prefix>\n\
+             Traceback (most recent call last):\n  ZeroDivisionError"
+        ));
     }
 
     #[test]

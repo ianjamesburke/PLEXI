@@ -38,7 +38,7 @@ pub fn show(
         s.visuals.hyperlink_color = colors.accent;
         s.visuals.faint_bg_color = colors.bg_hover;
         s.visuals.widgets.noninteractive.corner_radius = style::RADIUS_MD;
-        s.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+        s.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, colors.border);
         s.spacing.item_spacing.y = style::SPACE_SM;
         s.text_styles
             .insert(egui::TextStyle::Body, egui::FontId::proportional(base_size));
