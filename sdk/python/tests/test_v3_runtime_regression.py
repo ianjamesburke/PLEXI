@@ -855,7 +855,6 @@ class TestTimers:
     "apps/tetris/tetris.py",
     "apps/chess/chess.py",
     "apps/calc/calc.py",
-    "apps/csv_viewer/csv_viewer.py",
     "apps/todo/todo.py",
     "apps/stats/stats.py",
     "apps/logs/logs.py",

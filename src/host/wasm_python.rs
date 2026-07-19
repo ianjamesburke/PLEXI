@@ -2003,6 +2003,15 @@ fn python_key_name(key: egui::Key) -> String {
         egui::Key::Num7 => "7".to_string(),
         egui::Key::Num8 => "8".to_string(),
         egui::Key::Num9 => "9".to_string(),
+        egui::Key::Slash => "/".to_string(),
+        egui::Key::Minus => "-".to_string(),
+        egui::Key::Equals => "=".to_string(),
+        egui::Key::Backslash => "\\".to_string(),
+        egui::Key::Semicolon => ";".to_string(),
+        egui::Key::Quote => "'".to_string(),
+        egui::Key::Backtick => "`".to_string(),
+        egui::Key::Comma => ",".to_string(),
+        egui::Key::Period => ".".to_string(),
         other => format!("{other:?}").to_ascii_lowercase(),
     }
 }
@@ -3494,8 +3503,22 @@ mod tests {
     #[test]
     fn python_key_name_fallback_matches_documented_punctuation_names() {
         assert_eq!(python_key_name(egui::Key::Plus), "plus");
-        assert_eq!(python_key_name(egui::Key::Minus), "minus");
-        assert_eq!(python_key_name(egui::Key::Equals), "equals");
+    }
+
+    /// Stint 0462: punctuation keys must map to their literal characters, matching
+    /// `canonical_key_name()` in wasm_pane.rs, so PGAP apps comparing `key == "/"`
+    /// (e.g. logs.py's search shortcut) actually match.
+    #[test]
+    fn python_key_name_maps_punctuation_keys_to_literal_characters() {
+        assert_eq!(python_key_name(egui::Key::Slash), "/");
+        assert_eq!(python_key_name(egui::Key::Minus), "-");
+        assert_eq!(python_key_name(egui::Key::Equals), "=");
+        assert_eq!(python_key_name(egui::Key::Backslash), "\\");
+        assert_eq!(python_key_name(egui::Key::Semicolon), ";");
+        assert_eq!(python_key_name(egui::Key::Quote), "'");
+        assert_eq!(python_key_name(egui::Key::Backtick), "`");
+        assert_eq!(python_key_name(egui::Key::Comma), ",");
+        assert_eq!(python_key_name(egui::Key::Period), ".");
     }
 
     #[test]

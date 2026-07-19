@@ -290,6 +290,26 @@ def test_unreachable_log_renders_error_not_blank():
         assert "Cannot read host log" in json.dumps(trees[-1])
 
 
+def test_search_replaces_level_tabs_instead_of_stacking(tmp_path):
+    # Stint 0463: search must swap in for the level TabBar row rather than
+    # adding a third stacked header row (AppBar + TabBar + TextInput), which
+    # read as a heavy inset / "missing header" vs Snake.
+    log_path = tmp_path / "plexi.log"
+    log_path.write_text(THREE_LINE_LOG)
+    with AppHarness(str(APP), width=800, height=600, host_log_path=str(log_path)) as h:
+        h.run(2)
+        before = json.dumps(h._events_seen)
+        assert "logs-level:0" in before, "TabBar present before search"
+        assert '"TextInput"' not in before
+
+        h.key("/")
+        h.run(1)
+        trees = [c for c in h._events_seen if c.get("type") == "component_tree"]
+        latest = json.dumps(trees[-1])
+        assert '"TextInput"' in latest, "search input must replace the TabBar row"
+        assert "logs-level:0" not in latest, "TabBar must not stack alongside search"
+
+
 def test_renders_without_overlap(tmp_path):
     log_path = tmp_path / "plexi.log"
     log_path.write_text(THREE_LINE_LOG)
