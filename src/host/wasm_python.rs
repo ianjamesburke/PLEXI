@@ -507,21 +507,36 @@ pub fn run_headless_frame(
     session.render_frame(1)
 }
 
-/// Render once, send a `ui_action` for `handler_id`, render again. Returns
-/// `(before, after)`.
-pub fn run_headless_ui_action_round_trip(
+/// Render once, then send a `ui_action` for each handler in order inside the
+/// same guest session, rendering after every action. State accumulates across
+/// clicks, like a real user driving the app. Stops at the first failed action
+/// — the guest is dead or wedged and later clicks cannot succeed. Returns the
+/// pre-action frame plus one `(handler_id, render result)` entry per
+/// attempted action.
+pub fn run_headless_ui_action_sequence(
     config: &PythonLaunchConfig,
     size: (f32, f32),
     seed_state: Option<Value>,
-    handler_id: &str,
-) -> Result<(UiTree, UiTree), WasmPythonError> {
+    handler_ids: &[String],
+) -> Result<(UiTree, Vec<(String, Result<UiTree, WasmPythonError>)>), WasmPythonError> {
     let mut session = HeadlessPythonSession::launch(config, size, seed_state)?;
     let before = session.render_frame(1)?;
-    session
-        .runtime
-        .send(&json!({"type": "ui_action", "handler_id": handler_id}))?;
-    let after = session.render_frame(2)?;
-    Ok((before, after))
+    let mut outcomes = Vec::with_capacity(handler_ids.len());
+    for (index, handler_id) in handler_ids.iter().enumerate() {
+        let result = match session
+            .runtime
+            .send(&json!({"type": "ui_action", "handler_id": handler_id}))
+        {
+            Ok(()) => session.render_frame(2 + index as u64),
+            Err(e) => Err(e),
+        };
+        let failed = result.is_err();
+        outcomes.push((handler_id.clone(), result));
+        if failed {
+            break;
+        }
+    }
+    Ok((before, outcomes))
 }
 
 struct HeadlessPythonSession {
