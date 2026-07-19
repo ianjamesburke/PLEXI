@@ -815,6 +815,138 @@ fn delete_context_cascades_and_cleans_depth_stack() {
     }
 }
 
+/// Stint 0454: deleting a root context whose descendant tree covers every
+/// other context must not empty the `WorkspaceRouter` — `remove_at` clamps
+/// `active` to 0 on an empty vec, and the next `router.active()` call panics.
+/// The delete must be refused, same as the pre-existing single-context guard.
+#[test]
+fn delete_context_refuses_cascade_that_would_empty_router() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_idx = app.router.active_idx();
+    app.router.get_mut(root_idx).name = "Root".to_string();
+    let root_id = app.router.active().context_id;
+
+    let child_id = 9101u64;
+    let grandchild_id = 9102u64;
+
+    app.router.push(crate::host::context::Context {
+        name: "Child".to_string(),
+        path: std::path::PathBuf::from("/tmp/child"),
+        root: None,
+        description: None,
+        context_id: child_id,
+        parent_id: Some(root_id),
+        depth: 1,
+        parked: false,
+    });
+    app.router.push(crate::host::context::Context {
+        name: "Grandchild".to_string(),
+        path: std::path::PathBuf::from("/tmp/grandchild"),
+        root: None,
+        description: None,
+        context_id: grandchild_id,
+        parent_id: Some(child_id),
+        depth: 2,
+        parked: false,
+    });
+
+    assert_eq!(app.router.len(), 3, "setup: root + child + grandchild");
+
+    let root_idx_now = app.router.position(|c| c.context_id == root_id).unwrap();
+    app.delete_context(root_idx_now);
+
+    // The cascade (root + child + grandchild) would have covered every
+    // context in the router — the delete must be refused entirely.
+    assert_eq!(
+        app.router.len(),
+        3,
+        "delete must be refused — router must be unchanged"
+    );
+    assert!(app.router.iter().any(|c| c.context_id == root_id));
+    assert!(app.router.iter().any(|c| c.context_id == child_id));
+    assert!(app.router.iter().any(|c| c.context_id == grandchild_id));
+
+    // Must not panic.
+    let _ = app.router.active();
+}
+
+/// Stint 0454 companion: a cascade that leaves an unrelated sibling context
+/// standing must still succeed exactly as before the guard was added.
+#[test]
+fn delete_context_cascade_allowed_when_unrelated_sibling_survives() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_idx = app.router.active_idx();
+    app.router.get_mut(root_idx).name = "Root".to_string();
+    let root_id = app.router.active().context_id;
+
+    let a_id = 9201u64;
+    let b_id = 9202u64;
+    let sibling_id = 9203u64;
+
+    app.router.push(crate::host::context::Context {
+        name: "A".to_string(),
+        path: std::path::PathBuf::from("/tmp/a"),
+        root: None,
+        description: None,
+        context_id: a_id,
+        parent_id: Some(root_id),
+        depth: 1,
+        parked: false,
+    });
+    app.router.push(crate::host::context::Context {
+        name: "B".to_string(),
+        path: std::path::PathBuf::from("/tmp/b"),
+        root: None,
+        description: None,
+        context_id: b_id,
+        parent_id: Some(a_id),
+        depth: 2,
+        parked: false,
+    });
+    app.router.push(crate::host::context::Context {
+        name: "Sibling".to_string(),
+        path: std::path::PathBuf::from("/tmp/sibling"),
+        root: None,
+        description: None,
+        context_id: sibling_id,
+        parent_id: Some(root_id),
+        depth: 1,
+        parked: false,
+    });
+
+    assert_eq!(app.router.len(), 4, "setup: root + A + B + sibling");
+
+    let a_idx_now = app.router.position(|c| c.context_id == a_id).unwrap();
+    app.delete_context(a_idx_now);
+
+    assert!(
+        app.router.iter().find(|c| c.context_id == a_id).is_none(),
+        "A should be deleted"
+    );
+    assert!(
+        app.router.iter().find(|c| c.context_id == b_id).is_none(),
+        "B should be cascade-deleted"
+    );
+    assert!(
+        app.router.iter().any(|c| c.context_id == root_id),
+        "root must survive"
+    );
+    assert!(
+        app.router.iter().any(|c| c.context_id == sibling_id),
+        "unrelated sibling must survive"
+    );
+    assert_eq!(app.router.len(), 2, "root + sibling remain");
+
+    // Must not panic.
+    let _ = app.router.active();
+}
+
 /// Issue #1801: context transition must rescan the registry and restart the watcher.
 ///
 /// Creates two temp roots each with a distinct workspace-local app, switches the

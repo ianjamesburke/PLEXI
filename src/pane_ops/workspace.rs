@@ -857,6 +857,20 @@ impl PlexiApp {
                 }
             }
         }
+        // Refuse a cascade that would empty the router entirely — `remove_at`
+        // clamps `active` to 0 on an empty vec, and the next `router.active()`
+        // call panics with an out-of-bounds index. Same semantics as the
+        // single-context guard above, just discovered after the BFS instead
+        // of before it.
+        if deleted.len() >= self.router.len() {
+            log::warn!(
+                "delete_context: refusing cascade of ctx_id={target_ctx_id} + {} descendants — \
+                 would empty the router (no surviving contexts)",
+                deleted.len() - 1
+            );
+            return;
+        }
+
         log::info!(
             "delete_context: cascading delete of ctx_id={target_ctx_id} + {} descendants ({:?})",
             deleted.len() - 1,
