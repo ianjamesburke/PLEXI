@@ -220,11 +220,13 @@ impl ToolCallHooks for AssistantToolHooks {
                 }
             }
         }
+        // Compact one-liner for the running row; the multi-line key/value
+        // detail is stashed for the finished row's caret body (stint 0460).
         let input_summary = summarize_input(input_json);
         self.in_flight_inputs
             .lock()
             .unwrap()
-            .insert(name.to_string(), input_summary.clone());
+            .insert(name.to_string(), tool_input_detail(input_json));
         let _ = self.flow_tx.send(ToolFlowEvent::Started {
             tool: name.to_string(),
             input_summary,
@@ -295,9 +297,15 @@ mod output_preview_tests {
         let preview = tool_output_preview(output);
         assert_eq!(preview, "stdout: line one\nline two\nstderr: boom");
 
-        // No liftable string fields → raw JSON, still bounded.
-        let raw = r#"{"ok": true, "count": 3}"#;
-        assert_eq!(tool_output_preview(raw), raw);
+        // No liftable string fields → pretty-printed JSON, one field per line.
+        let pretty = tool_output_preview(r#"{"ok": true, "count": 3}"#);
+        assert!(pretty.contains("\n"), "must break into lines: {pretty}");
+        assert!(pretty.contains("\"count\": 3"));
+
+        // Input detail: one key per line, string values unquoted.
+        let detail =
+            super::tool_input_detail(r#"{"path": "/tmp/x.py", "sizes": [480, 320]}"#);
+        assert_eq!(detail, "path: /tmp/x.py\nsizes: [480,320]");
 
         // Oversized output keeps head and tail lines around a marker line.
         let big = format!(r#"{{"stdout": "{}"}}"#, "x\\n".repeat(2000));
@@ -335,8 +343,9 @@ fn format_setting_ids(ids: &[String]) -> String {
 /// `\n` escapes), falling back to the raw JSON when nothing liftable exists.
 fn tool_output_preview(output_json: &str) -> String {
     const FIELDS: &[&str] = &["stdout", "stderr", "content", "text", "message", "error"];
+    let parsed = serde_json::from_str::<serde_json::Value>(output_json).ok();
     let mut sections = Vec::new();
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(output_json) {
+    if let Some(value) = &parsed {
         for field in FIELDS {
             if let Some(text) = value.get(field).and_then(serde_json::Value::as_str) {
                 if !text.trim().is_empty() {
@@ -345,12 +354,35 @@ fn tool_output_preview(output_json: &str) -> String {
             }
         }
     }
+    // No liftable string field: pretty-print the JSON so it breaks into
+    // lines instead of one endless run that overflows the pane.
     let raw = if sections.is_empty() {
-        output_json.to_string()
+        parsed
+            .as_ref()
+            .and_then(|value| serde_json::to_string_pretty(value).ok())
+            .unwrap_or_else(|| output_json.to_string())
     } else {
         sections.join("\n")
     };
     bounded_head_tail_multiline(&raw, TOOL_OUTPUT_PREVIEW_BUDGET)
+}
+
+/// Multi-line `key: value` rendering of a tool call's input for the caret
+/// body — string values keep their real newlines, non-strings print as
+/// compact JSON. Falls back to the raw input when it isn't a JSON object.
+fn tool_input_detail(input_json: &str) -> String {
+    let detail = match serde_json::from_str::<serde_json::Value>(input_json) {
+        Ok(serde_json::Value::Object(map)) if !map.is_empty() => map
+            .iter()
+            .map(|(key, value)| match value {
+                serde_json::Value::String(text) => format!("{key}: {text}"),
+                other => format!("{key}: {other}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => input_json.to_string(),
+    };
+    bounded_head_tail_multiline(&detail, TOOL_OUTPUT_PREVIEW_BUDGET)
 }
 
 /// Head/tail bounding that keeps newlines — for block previews. The omission

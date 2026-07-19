@@ -1369,8 +1369,8 @@ mod tests {
             crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
 
         let mut write_tool = Turn::tool("host.files.write", ToolStatus::Succeeded);
-        write_tool.input_summary = Some(r#"{"path": "main.py"}"#.to_string());
-        write_tool.output_preview = Some(r#"{"ok": true, "bytes": 512}"#.to_string());
+        write_tool.input_summary = Some("path: main.py".to_string());
+        write_tool.output_preview = Some("{\n  \"ok\": true,\n  \"bytes\": 512\n}".to_string());
         write_tool.detail =
             Some("--- a/main.py\n+++ b/main.py\n@@ -1,1 +1,2 @@\n-pass\n+print(\"hi\")\n".to_string());
         let mut check_tool = Turn::tool("plexi.app_check", ToolStatus::Succeeded);
