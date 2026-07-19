@@ -1572,6 +1572,25 @@ impl AssistantApp {
             system.push_str("\n\nFollow this loaded skill for the current turn:\n");
             system.push_str(&skill.instructions);
             if is_app_build_turn {
+                // Placement is knowable host-side; telling the model up front
+                // saves the guaranteed-failed `app init` probe (stint 0465).
+                let placement = match crate::app::registry::resolve_workspace_root(
+                    &self.workspace_root,
+                ) {
+                    Some(root) => format!(
+                        "\n\nApp placement: this session has a Plexi workspace at {} — \
+                         `app init <name>` with no flag creates a hot-reloading workspace app.",
+                        root.display()
+                    ),
+                    None => "\n\nApp placement: no Plexi workspace exists in this session's \
+                             directory — pass --global to `app init` on the first call."
+                        .to_string(),
+                };
+                log::info!(
+                    "assistant[{conversation_id}]: app-build placement — {}",
+                    placement.trim_start()
+                );
+                system.push_str(&placement);
                 system.push_str(
                     "\n\nSDK API reference (generated, authoritative — read this instead of \
                      exploring the SDK source via terminal):\n",

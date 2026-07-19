@@ -22,146 +22,407 @@ restrict ambient process access.
 
 ### `SetState`
 
+```python
+SetState(data: dict)
+```
+
 ### `PersistState`
+
+```python
+PersistState(data: dict)
+```
 
 ### `SetSchedulerMode`
 
+```python
+SetSchedulerMode(mode: str, fps: int | None = None)
+```
+
 ### `FileRead`
+
+```python
+FileRead(path: str)
+```
 
 ### `FileWrite`
 
+```python
+FileWrite(path: str, content: bytes)
+```
+
+### `ReadHostLog`
+
+```python
+ReadHostLog(max_bytes: int = 256 * 1024)
+```
+
+Request the tail of the Plexi host channel log (`logs.read` capability).
+
+The host owns path resolution — it tails its own `~/.plexi-<channel>/plexi.log`
+and replies with an `events.HostLogResult`. The app never names or opens the
+file, so the request carries only how many trailing bytes to read.
+
 ### `HttpFetch`
+
+```python
+HttpFetch(url: str, method: str = 'GET', headers: dict = dict(), body: Optional[bytes] = None)
+```
 
 ### `AiMessage`
 
+```python
+AiMessage(role: str, content: str)
+```
+
 ### `AiQuery`
+
+```python
+AiQuery(request_id: str, model_tier: str, system: str, messages: list)
+```
 
 ### `AiTool`
 
+```python
+AiTool(name: str, description: str, input_schema: dict[str, Any], output_schema: dict[str, Any], timeout_ms: Optional[int] = None, read_only: bool = False)
+```
+
 ### `ExposeTools`
+
+```python
+ExposeTools(tools: list[AiTool])
+```
 
 ### `ToolResult`
 
+```python
+ToolResult(call_id: str, output_json: Optional[str] = None, error: Optional[str] = None)
+```
+
 ### `SetTimer`
+
+```python
+SetTimer(id: int, delay_ms: int, repeat: bool = False)
+```
 
 ### `CancelTimer`
 
+```python
+CancelTimer(id: int)
+```
+
 ### `GetSystemStats`
+
+```python
+GetSystemStats()
+```
 
 ### `SetTitle`
 
+```python
+SetTitle(title: str)
+```
+
 ### `SetStatus`
+
+```python
+SetStatus(text: str)
+```
 
 ### `CloseSelf`
 
+```python
+CloseSelf()
+```
+
 ### `RequestCapability`
+
+```python
+RequestCapability(name: str)
+```
 
 ### `EventStreamDecl`
 
+```python
+EventStreamDecl(name: str, schema_json: str, description: Optional[str] = None)
+```
+
 ### `DeclareEventStreams`
+
+```python
+DeclareEventStreams(streams: list)
+```
 
 ### `EmitEvent`
 
+```python
+EmitEvent(event: str, actor: str, summary: str, resource_id: str, revision_after: str, actor_id: Optional[str] = None, caused_by: Optional[str] = None, resource_scope: Optional[str] = None, payload_json: Optional[str] = None, state_ref: Optional[str] = None, revision_before: Optional[str] = None, rollback_token: Optional[str] = None, changed_resources: list = list(), suggested_trigger: Optional[str] = None)
+```
+
 ### `SubscribeEventStreams`
 
+```python
+SubscribeEventStreams(request_id: str, app_id: str, event_names: list[str], payload_mode: str = 'full', trigger_mode: str = 'conversation', resource_id: Optional[str] = None)
+```
+
 ### `UnsubscribeEventStreams`
+
+```python
+UnsubscribeEventStreams(request_id: str, subscription_id: str)
+```
 
 ## Events
 
 ### `Modifiers`
 
+```python
+Modifiers(ctrl: bool = False, shift: bool = False, alt: bool = False, meta: bool = False)
+```
+
 ### `KeyEvent`
+
+```python
+KeyEvent(key: str, modifiers: Modifiers = Modifiers(), pressed: bool = True)
+```
 
 ### `MouseEvent`
 
+```python
+MouseEvent(x: float, y: float, button: Optional[str] = None, pressed: bool = False, scroll_x: float = 0.0, scroll_y: float = 0.0)
+```
+
 ### `UiAction`
+
+```python
+UiAction(handler_id: str)
+```
 
 ### `UiValueChange`
 
+```python
+UiValueChange(handler_id: str, value: str)
+```
+
 ### `Resize`
+
+```python
+Resize(width: float, height: float)
+```
 
 ### `FocusGained`
 
+```python
+FocusGained()
+```
+
 ### `FocusLost`
+
+```python
+FocusLost()
+```
 
 ### `FocusChanged`
 
+```python
+FocusChanged(timestamp: str, duration_secs: int = 0, reason: str = 'focus_changed', pane_id: Optional[int] = None, context_name: Optional[str] = None, context_root: Optional[str] = None, cwd: Optional[str] = None)
+```
+
 ### `TimerFired`
+
+```python
+TimerFired(id: int)
+```
 
 ### `RenderFrame`
 
+```python
+RenderFrame(frame_id: int, elapsed: float)
+```
+
 ### `SystemStats`
+
+```python
+SystemStats(cpu_usage_pct: float, memory_used_bytes: int, memory_total_bytes: int, disk_read_bps: int, disk_write_bps: int, net_rx_bps: int, net_tx_bps: int, uptime_secs: int, load_avg_one_min: float)
+```
 
 ### `SystemStatsResult`
 
+```python
+SystemStatsResult(stats: SystemStats)
+```
+
 ### `FileReadResult`
+
+```python
+FileReadResult(content: Optional[bytes], error: Optional[str])
+```
 
 ### `FileWriteResult`
 
+```python
+FileWriteResult(error: Optional[str])
+```
+
+### `HostLogResult`
+
+```python
+HostLogResult(content: Optional[bytes], path: Optional[str], error: Optional[str])
+```
+
+Host reply to an `effects.ReadHostLog` request.
+
+`content` is the raw tail text (whole log records, newline-separated) on
+success; `error` names why the log could not be reached otherwise. `path` is
+the host-resolved channel-log path, echoed back for the app to display in its
+empty/error state. Exactly one of `content` / `error` is set.
+
 ### `HttpResponse`
+
+```python
+HttpResponse(status: int, headers: list, body: bytes)
+```
 
 ### `AiStreamChunk`
 
+```python
+AiStreamChunk(request_id: str, delta: str, reasoning: Optional[str], done: bool)
+```
+
 ### `AiResponse`
+
+```python
+AiResponse(request_id: str, content: Optional[str], tokens_in: int, tokens_out: int, error: Optional[str])
+```
 
 ### `ToolCall`
 
+```python
+ToolCall(call_id: str, name: str, input_json: str, caller_id: str)
+```
+
 ### `EventSubscriptionResult`
+
+```python
+EventSubscriptionResult(request_id: str, subscription_id: Optional[str], error: Optional[str])
+```
 
 ### `EventUnsubscriptionResult`
 
+```python
+EventUnsubscriptionResult(request_id: str, removed: bool, error: Optional[str])
+```
+
 ### `AppEvent`
+
+```python
+AppEvent(subscription_id: str, app_id: str, event: str, event_id: int, resource_id: str, trigger_mode: str, summary: Optional[str], payload_json: Optional[str], state_ref: Optional[str], created_at: str)
+```
 
 ### `DeclareEventStreamsResult`
 
+```python
+DeclareEventStreamsResult(streams: Optional[list], error: Optional[str])
+```
+
 ### `EmitEventResult`
+
+```python
+EmitEventResult(sequence: Optional[int], error: Optional[str])
+```
 
 ### `SurfaceReady`
 
+```python
+SurfaceReady(texture_handle: int, width: int, height: int)
+```
+
 ### `SurfaceResized`
+
+```python
+SurfaceResized(texture_handle: int, width: int, height: int)
+```
 
 ### `PipePayload`
 
+```python
+PipePayload(binary: Optional[bytes] = None, json: Optional[str] = None)
+```
+
 ### `PipeMessage`
+
+```python
+PipeMessage(handle: int, payload: PipePayload)
+```
 
 ### `PipePeerConnected`
 
+```python
+PipePeerConnected(handle: int)
+```
+
 ### `PipeClosed`
+
+```python
+PipeClosed(handle: int)
+```
 
 ### `PipeError`
 
+```python
+PipeError(handle: int, error: str)
+```
+
 ### `CapabilityGranted`
+
+```python
+CapabilityGranted(name: str)
+```
 
 ### `CapabilityDenied`
 
+```python
+CapabilityDenied(name: str)
+```
+
 ### `PaymentComplete`
 
+```python
+PaymentComplete()
+```
+
 ### `PaymentFailed`
+
+```python
+PaymentFailed(reason: str)
+```
 
 ## State and Logging
 
 ### `StateSnapshot`
 
+```python
+StateSnapshot(values: Mapping[str, Any], raw_values: Mapping[str, bytes])
+```
+
 ### `StateProxy`
 
-#### `get(key, default=None)`
+#### `get(key: str, default: Any = None)`
 
-#### `raw(key)`
+#### `raw(key: str)`
 
 #### `all()`
 
-#### `set(key, value)`
+#### `set(key: str, value: Any)`
 
 
 ### `LogProxy`
 
-#### `debug(msg)`
+#### `debug(msg: str)`
 
-#### `info(msg)`
+#### `info(msg: str)`
 
-#### `warn(msg)`
+#### `warn(msg: str)`
 
-#### `error(msg)`
+#### `error(msg: str)`
 
 
 ## UI Components
@@ -181,6 +442,10 @@ Base class. Subclasses implement `measure` and `render`.
 
 ### `Heading`
 
+```python
+Heading(text: str, level: int = 1, color: 'str | None' = None, bold: bool = True)
+```
+
 Title-ish text. level 1 = TEXT_TITLE_XL, 2 = TEXT_TITLE, 3 = TEXT_HEADING.
 
 `ctx.text(x, y, ...)` treats `y` as the TOP of the text box (host renders
@@ -189,6 +454,10 @@ with egui::Align2::LEFT_TOP). A Heading with font size `fs` occupies rows
 
 ### `Label`
 
+```python
+Label(text: str, tone: str = 'body', color: Optional[str] = None, bold: bool = False, max_lines: int = 3)
+```
+
 Body/caption/hint text. Wraps up to `max_lines`, then truncates.
 
 Line height = font_size + `LINE_LEADING`; lines stack top-to-bottom with
@@ -196,13 +465,29 @@ the first line's top at the component's `y`.
 
 ### `Text`
 
+```python
+Text(text: str, tone: str = 'body', color: Optional[str] = None, bold: bool = False, max_lines: int = 3, size: Optional[float] = None, truncate: bool = False, align: str = 'start', key: str = '')
+```
+
 SDK v3 inline text node.
 
 ### `Button`
 
+```python
+Button(label: str, on_click: str, style: str = 'secondary', disabled: bool = False, key: str = '')
+```
+
 ### `HStack`
 
+```python
+HStack(children: Sequence[Component], gap: 'float | None' = None, grow: bool = False)
+```
+
 ### `Sized`
+
+```python
+Sized(child: Component, width: float | None = None, height: float | None = None)
+```
 
 Canvas-mode only (`measure()`/`render()`). There is no host-native
 fixed-size wrapper node — the WIT `ui-node-data` enum (`wit/plexi.wit`)
@@ -212,57 +497,161 @@ cannot be placed in a declarative tree.
 
 ### `ActionBar`
 
+```python
+ActionBar(actions: Sequence[Button])
+```
+
 ### `Spacer`
+
+```python
+Spacer(size: float = SPACE_MD, grow: bool = False)
+```
 
 Fixed or flex gap. `grow=True` expands to consume remaining space.
 
 ### `Badge`
 
+```python
+Badge(text: str, color: BadgeColor = 'neutral', tone: 'BadgeColor | None' = None, key: str = '')
+```
+
 ### `Tooltip`
+
+```python
+Tooltip(text: str, child: Component)
+```
 
 ### `Avatar`
 
+```python
+Avatar(label: str = '', size: float = 0.0)
+```
+
 ### `Icon`
+
+```python
+Icon(name: str, size: float = 0.0, color: str = '')
+```
 
 ### `CodeBlock`
 
+```python
+CodeBlock(code: str, language: str = '')
+```
+
 ### `Table`
+
+```python
+Table(columns: list[str], rows: list[list[str]])
+```
 
 ### `KeyValue`
 
+```python
+KeyValue(rows: list[tuple[str, str]])
+```
+
 ### `Breadcrumb`
+
+```python
+Breadcrumb(items: list[str])
+```
 
 ### `Pagination`
 
+```python
+Pagination(node_id: str, page: int = 0, total: int = 0)
+```
+
 ### `Accordion`
+
+```python
+Accordion(node_id: str, title: str, child: Component, open: bool = False)
+```
 
 ### `Checkbox`
 
+```python
+Checkbox(node_id: str, label: str = '', checked: bool = False, disabled: bool = False)
+```
+
 ### `Radio`
+
+```python
+Radio(node_id: str, options: list[str], selected: int = 0, disabled: bool = False)
+```
 
 ### `Switch`
 
+```python
+Switch(node_id: str, label: str = '', on: bool = False, disabled: bool = False)
+```
+
 ### `Slider`
+
+```python
+Slider(node_id: str, value: float = 0.0, min: float = 0.0, max: float = 1.0, disabled: bool = False)
+```
 
 ### `Select`
 
+```python
+Select(node_id: str, options: list[str], selected: int = 0, placeholder: str = '')
+```
+
 ### `DateTimePicker`
+
+```python
+DateTimePicker(node_id: str, value: str = '', mode: str = 'datetime')
+```
 
 ### `Progress`
 
+```python
+Progress(value: float = 0.0, label: str = '', indeterminate: bool = False)
+```
+
 ### `Spinner`
+
+```python
+Spinner(label: str = '')
+```
 
 ### `Banner`
 
+```python
+Banner(text: str, tone: "BadgeColor | Literal['']" = '', title: str = '')
+```
+
 ### `TabBar`
+
+```python
+TabBar(node_id: str, tabs: list[str], active: int = 0)
+```
 
 ### `EmptyState`
 
+```python
+EmptyState(title: str, description: str = '', icon: str = '')
+```
+
 ### `Skeleton`
+
+```python
+Skeleton(rows: int = 3, height: float = 0.0)
+```
 
 ### `Modal`
 
+```python
+Modal(node_id: str, title: str, child: Component)
+```
+
 ### `Divider`
+
+```python
+Divider(color: 'str | None' = None, margin_top: float = SPACE_SM, margin_bottom: float = SPACE_SM)
+```
 
 A horizontal 1px rule.
 
@@ -272,19 +661,43 @@ carry a color to the host — it is not emitted in the wire dict.
 
 ### `CanvasRect`
 
+```python
+CanvasRect(x: float, y: float, width: float, height: float, fill: str, radius: float = 0.0)
+```
+
 ### `CanvasCircle`
+
+```python
+CanvasCircle(x: float, y: float, radius: float, fill: str)
+```
 
 ### `CanvasLine`
 
+```python
+CanvasLine(x1: float, y1: float, x2: float, y2: float, color: str, width: float = 1.0)
+```
+
 ### `CanvasText`
 
+```python
+CanvasText(x: float, y: float, text: str, size: float = 14.0, color: str = '#ffffff', bold: bool = False, align: str = 'left_top')
+```
+
 ### `Canvas`
+
+```python
+Canvas(commands: 'list | None' = None, width: float = 640.0, height: float = 360.0, grow: bool = True, fit: str = 'fill', key: str = '')
+```
 
 SDK v3 CPU canvas node.
 
 Pass typed drawing commands for host-side rendering from ``view()``.
 
 ### `AppBar`
+
+```python
+AppBar(title: str, subtitle: Optional[str] = None, accent: Optional[str] = None)
+```
 
 Thin top-of-pane app bar with optional subtitle.
 
@@ -294,6 +707,10 @@ stacked and centred together.
 
 ### `Section`
 
+```python
+Section(title: str)
+```
+
 Section divider with a small uppercase label sitting above the rule.
 
 Vertical stack: SPACE_SM padding, label (TEXT_HINT), SPACE_XS, divider,
@@ -302,6 +719,10 @@ instead of SPACE_SM) so the section headline sits close to its
 associated content block below.
 
 ### `KeyRow`
+
+```python
+KeyRow(key: Union[str, List[str]], description: str)
+```
 
 A keycap chip (or a chord of chips) followed by a description, left-aligned.
 
@@ -316,6 +737,10 @@ declarative-tree node exists for a single key-chip row. Use
 
 ### `ScrollLog`
 
+```python
+ScrollLog(lines: List[str], line_size: float = TEXT_CAPTION, empty_text: str = 'no events yet', max_pixel_height: Optional[float] = None)
+```
+
 Bounded text log. Shows the most recent lines that fit in the available
 space; older lines are hidden. Lines are rendered newest-at-top.
 
@@ -323,6 +748,10 @@ Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
 declarative-tree node exists for a bounded reversed-order text log.
 
 ### `Scrollable`
+
+```python
+Scrollable(child: Component, scroll_offset: float = 0.0, align: str = 'top', key_step: float = 20.0)
+```
 
 A clip-bounded vertically-scrollable container.
 
@@ -340,7 +769,7 @@ Apps drive this by calling `handle_key(key)` from their `on_key` handler.
 Mouse-wheel scroll: call `handle_scroll(delta_y)` from the app's
 `on_scroll_delta` handler (receives `PlexiEvent::Scroll` from the host).
 
-### `ensure_visible(scroll_offset, viewport_h, top, bottom, margin=0.0)`
+### `ensure_visible(scroll_offset: float, viewport_h: float, top: float, bottom: float, margin: float = 0.0)`
 
 Solve 'selection follows scroll' in one call. Returns the new offset.
 
@@ -375,6 +804,10 @@ Returns:
 
 ### `Footer`
 
+```python
+Footer(text: str, color: 'str | None' = None, max_lines: int = 2)
+```
+
 Small caption row. Wraps instead of clipping. The parent `Column`
 provides the outer bottom padding, so no extra padding is needed here.
 
@@ -385,6 +818,10 @@ for a standalone footer band — the WIT `ui-node-data` enum
 `to_node()` and cannot be placed in one.
 
 ### `FooterKeys`
+
+```python
+FooterKeys(shortcuts: List[tuple], divider: bool = True)
+```
 
 Footer row that renders keyboard shortcuts as key chips + descriptions.
 
@@ -407,6 +844,10 @@ Lists are joined with ``/`` as a single chip label so they stay compact
 in the footer context.
 
 ### `ListItem`
+
+```python
+ListItem(title: str, subtitle: Optional[str] = None, leading: Optional[str] = None, trailing: Optional[str] = None, selected: bool = False, background: Optional[str] = None, radius: float = RADIUS_MD)
+```
 
 Single or double-line list item with optional leading icon and trailing text.
 
@@ -431,6 +872,10 @@ delegate to this class.
 
 ### `Row`
 
+```python
+Row(label: str, leading: Optional[str] = None, trailing: Optional[str] = None, font_size: float = TEXT_BODY, color: 'str | None' = None, leading_color: Optional[str] = None, trailing_color: Optional[str] = None, height: Optional[float] = None, bold: bool = False)
+```
+
 Horizontal row: optional leading icon, main label, optional trailing text.
 
 Vertically centres all items automatically. Use instead of paired
@@ -445,7 +890,7 @@ Canvas-mode only (`measure()`/`render()`). There is no `to_node()` — no
 declarative-tree node exists for this leading/trailing text row. Compose
 a `"row"` of `Text` nodes yourself in tree mode.
 
-### `badge(ctx, x, y_center, label, fill=None, fg=None, font_size=TEXT_HINT, radius=RADIUS_BADGE)`
+### `badge(ctx, x: float, y_center: float, label: str, fill: 'str | None' = None, fg: 'str | None' = None, font_size: float = TEXT_HINT, radius: float = RADIUS_BADGE)`
 
 Render a host-measured pill badge centred on ``y_center``.
 
@@ -464,7 +909,7 @@ Args:
                ``RADIUS_BADGE`` (6 px, default) for rounded badges without
                the perfect-stadium look of ``RADIUS_MD`` (8 px).
 
-### `loading_pill(ctx, x, y, label='Fetching…')`
+### `loading_pill(ctx, x: float, y: float, label: str = 'Fetching…')`
 
 Render a small spinner+label pill at (x, y). Returns rendered width.
 
@@ -483,12 +928,20 @@ Args:
 
 ### `Card`
 
+```python
+Card(children: Sequence[Component], padding: float = SPACE_LG, gap: float = SPACE_XS, background: 'str | None' = None, border: Optional[str] = '__theme__', radius: float = RADIUS_MD)
+```
+
 Surface-colored container with inner padding. Stacks its children
 vertically with a configurable gap. A 1px border in `theme.highlight` separates
 it from the pane background — essential when surface and bg are close
 in brightness.
 
 ### `TextInput`
+
+```python
+TextInput(id: str, placeholder: str = '', height: float = 48.0, multiline: bool = False, value: Optional[str] = None, on_change: str = '', on_submit: str = '', password: bool = False)
+```
 
 Layout-aware text input. Place inside a Column like any other child.
 
@@ -501,7 +954,20 @@ instance is stable across renders so the host can track focus state.
 
 When ``multiline=True``, Shift+Enter inserts a newline and Enter submits.
 
+In a declarative ``view()`` tree, typing delivers ``UiValueChange`` and
+Enter delivers ``UiAction``. Both handler ids default to this input's
+``id`` — pass ``on_change``/``on_submit`` only to route them elsewhere::
+
+    TextInput("guess", value=state.get("guess", ""))
+    # update():
+    #   UiValueChange(handler_id="guess", value=...)  → echo into state
+    #   UiAction(handler_id="guess")                  → Enter pressed
+
 ### `TextEdit`
+
+```python
+TextEdit(node_id: str, placeholder: str = '', value: str = '', multiline: bool = False, max_length: int = 0, height: float = 48.0)
+```
 
 Host-rendered text editor. Use inside ``view()`` like any other component.
 
@@ -522,6 +988,10 @@ Example::
 
 ### `ChatBubble`
 
+```python
+ChatBubble(text: str, role: str = 'assistant', max_lines: int = 50)
+```
+
 A chat message bubble with left/right alignment and colored background.
 
 ``align="right"`` for user messages (accent bg), ``"left"`` for
@@ -533,6 +1003,10 @@ exists for a colored, markdown-rendering chat bubble.
 
 ### `SelectList`
 
+```python
+SelectList(items: List[dict], selected_idx: int = 0)
+```
+
 Keyboard-navigable scrollable list. Stateful -- create at module level or in init().
 
 items: list of dicts with keys: name (str), description (str, optional),
@@ -542,6 +1016,10 @@ selected_idx: currently highlighted row index
 Call handle_key(key) from on_key. Call hit_index(click_y) from on_click.
 
 ### `FormField`
+
+```python
+FormField(id: str, label: str, placeholder: str = '', required: bool = False, height: float = 48.0, LABEL_H: float = TEXT_HINT + SPACE_XS, LABEL_GAP: float = SPACE_SM, BOTTOM_PAD: float = SPACE_LG)
+```
 
 Label + TextInput row. Create in on_init (stable across renders).
 
@@ -554,16 +1032,25 @@ declarative-tree node exists for a labeled input row. Compose a
 
 ### `Column`
 
+```python
+Column(children: Sequence[Component], padding: float = SPACE_XL, padding_top: Optional[float] = None, gap: Optional[float] = None, align: str = 'start', grow: bool = False, key: str = '')
+```
+
 The root container. Stacks children vertically. Handles grow spacers:
 measures fixed-height children first, then distributes leftover space to
 any `Spacer(grow=True)` descendants at the top level.
 
-Padding defaults to `SPACE_XL` (24px) on the sides and bottom, and
-`SPACE_SM` (8px) on the top. Pass `padding=0` for full-width content
-(e.g. apps whose children manage their own horizontal margins).
-Override top-only with `padding_top=`.
+Spacing is good by default: leave `gap` unset and the host applies its
+standard inter-child spacing; pass an explicit `gap=` (including `gap=0`
+to pack children flush) to override. The root's *content padding* is owned
+by the host too — a declarative tree is inset automatically, and app bars /
+footers stay full-bleed — so apps need no layout code to look right.
 
-### `render_tree(ctx, root, fill=None)`
+`padding` / `padding_top` only affect the legacy canvas-mode layout
+(`measure`/`render`); they are ignored by the declarative tree, whose inset
+the host owns.
+
+### `render_tree(ctx, root: Component, fill: Optional[str] = None)`
 
 Clear the pane to `fill`, then render `root` into the full pane rect.
 
@@ -574,6 +1061,10 @@ The root component and every descendant must support ``to_node()``. The SDK
 emits a single ``ComponentTree`` command and the host renders it natively.
 
 ### `InfoTable`
+
+```python
+InfoTable(rows: List[tuple], key_width: float = 100.0, background: Optional[str] = None, border: Optional[str] = None, radius: float = RADIUS_MD)
+```
 
 Key-value table with surface background, border, and row dividers.
 
@@ -595,6 +1086,10 @@ this module).
 
 ### `ButtonRow`
 
+```python
+ButtonRow(id: str, label: str, text_color: 'str | None' = None, fill: 'str | None' = None, hover_fill: 'str | None' = None, active_fill: 'str | None' = None, font_size: float = TEXT_BODY, radius: float = RADIUS_MD, height: float = 36.0, clicked: bool = False)
+```
+
 A clickable button rendered as a component in the declarative tree.
 
 Use this from ``view()``. Button presses arrive through
@@ -613,11 +1108,19 @@ Example::
 
 ### `LeadingBadge`
 
+```python
+LeadingBadge(label: str, color: str = 'accent')
+```
+
 Badge leading slot for :class:`ListRow`.
 
 Renders a pill badge with ``label`` text and the given ``color``.
 
 ### `LeadingAvatar`
+
+```python
+LeadingAvatar(handle: str)
+```
 
 Circular avatar leading slot for :class:`ListRow`.
 
@@ -625,13 +1128,25 @@ Circular avatar leading slot for :class:`ListRow`.
 
 ### `LeadingIcon`
 
+```python
+LeadingIcon(name: str)
+```
+
 Text/emoji icon leading slot for :class:`ListRow`.
 
 ### `RowChip`
 
+```python
+RowChip(label: str, color: str = 'accent')
+```
+
 A small colored chip label on a :class:`ListRow`.
 
 ### `ListRow`
+
+```python
+ListRow(id: str, primary: str, leading: 'LeadingBadge | LeadingAvatar | LeadingIcon | None' = None, secondary: 'str | None' = None, chips: 'list[RowChip]' = list(), trailing: 'str | None' = None)
+```
 
 Typed row descriptor for list views.
 
@@ -650,6 +1165,10 @@ Example::
 
 ### `Tabs`
 
+```python
+Tabs(tabs: 'list[tuple[str, HasToNode]]', active: int = 0)
+```
+
 Tabbed container. Renders as a horizontal tab bar + active content area.
 
 Decomposes to a vertical Stack containing:
@@ -666,6 +1185,10 @@ Example::
 
 ### `Grid`
 
+```python
+Grid(columns: int, children: 'list[HasToNode]', gap: float = 8.0)
+```
+
 Fixed-column grid layout.
 
 Decomposes to a vertical Stack of rows, where each row is a horizontal
@@ -678,6 +1201,10 @@ Example::
 
 ### `Toggle`
 
+```python
+Toggle(node_id: str, value: bool, label: str = '')
+```
+
 On/off toggle switch (L1 sugar).
 
 Renders as a Button whose label carries the on/off state; clicking it
@@ -689,6 +1216,10 @@ Example::
     ctx.render_tree(toggle.to_node())
 
 ### `ProgressBar`
+
+```python
+ProgressBar(value: float, max_value: float = 1.0)
+```
 
 Horizontal progress bar backed by the host's native progress-bar node.
 
@@ -704,7 +1235,7 @@ Headless snapshot testing for Plexi widgets.
 Spawns the plexi binary with `--render`, feeds it DrawCommand JSON,
 reads back PNG bytes. Provides pixel-level assertions and snapshot file helpers.
 
-### `render_draw_commands(commands, width, height, background=DEFAULT_BG)`
+### `render_draw_commands(commands: list[dict], width: int, height: int, background: str = DEFAULT_BG)`
 
 Feed draw commands to the headless renderer, return PNG bytes.
 
@@ -720,7 +1251,7 @@ Returns:
 Raises:
     RuntimeError if the binary is not found or exits nonzero.
 
-### `decode_png(png_bytes)`
+### `decode_png(png_bytes: bytes)`
 
 Decode an RGBA 8-bit PNG to (width, height, raw_rgba_bytes).
 
@@ -730,18 +1261,18 @@ PNGs — which is exactly what tiny-skia produces.
 Raises:
     ValueError on an unrecognised PNG or unsupported colour type/bit depth.
 
-### `pixel_at(png_bytes, x, y)`
+### `pixel_at(png_bytes: bytes, x: int, y: int)`
 
 Return (r, g, b, a) of the pixel at (x, y).
 
-### `hex_to_rgba(hex_color)`
+### `hex_to_rgba(hex_color: str)`
 
 Convert a CSS hex color string to (r, g, b, a).
 
 Supports #RGB, #RRGGBB, and #RRGGBBAA.
 Alpha defaults to 255 when not specified.
 
-### `assert_pixel(png_bytes, x, y, expected, tolerance=4)`
+### `assert_pixel(png_bytes: bytes, x: int, y: int, expected: Union[str, tuple[int, int, int, int]], tolerance: int = 4)`
 
 Assert the pixel at (x, y) matches the expected color within per-channel tolerance.
 
@@ -754,11 +1285,15 @@ Args:
 Raises:
     AssertionError with a diagnostic message on mismatch.
 
-### `save_snapshot(png_bytes, path)`
+### `save_snapshot(png_bytes: bytes, path: Union[str, Path])`
 
 Write PNG bytes to path. Creates parent directories as needed.
 
 ### `AppHarness`
+
+```python
+AppHarness(app_path: 'str | Path', width: int = 800, height: int = 600, timeout: float = 5.0, host_log_path: 'str | Path | None' = None)
+```
 
 Headless runner for Plexi Python apps.
 
@@ -783,27 +1318,51 @@ so apps can catch the gate-denial path explicitly.
 
 ### `VideoHandle`
 
+```python
+VideoHandle(handle_id: int, width: int, height: int, fps: float, duration_ms: int, pipe: 'object')
+```
+
 Video handle. ``handle_id`` is opaque, passed back to video control
 effects. ``pipe`` delivers decoded RGBA8 frames of length
 ``width * height * 4``.
 
 ### `RectCommand`
 
+```python
+RectCommand(x: float, y: float, w: float, h: float, fill: str, radius: float = 0.0)
+```
+
 Typed constructor for ctx.rect(). Validates geometry at construction.
 
 ### `TextCommand`
+
+```python
+TextCommand(x: float, y: float, text: str, size: float, color: str, monospace: bool = False, bold: bool = False, align: str = 'left_top', max_width: Optional[float] = None, elide: bool = True, selectable: bool = False)
+```
 
 Typed constructor for ctx.text(). Validates align at construction.
 
 ### `BadgeCommand`
 
+```python
+BadgeCommand(x: float, y_center: float, label: str, fill: str = '', fg: str = '', font_size: float = 11.0, radius: float = 8.0)
+```
+
 Typed constructor for ctx.badge().
 
 ### `ShortcutPair`
 
+```python
+ShortcutPair(keys: List[str], description: str = '')
+```
+
 Typed constructor for one entry in ctx.shortcuts() pairs.
 
 ### `NotifyOption`
+
+```python
+NotifyOption(label: str, value: Optional[str] = None, shortcut: Optional[str] = None)
+```
 
 Typed constructor for one option in ctx.notify_choice().
 
@@ -822,17 +1381,19 @@ the name, only set attributes.
 
 ### `Theme`
 
+```python
+Theme()
+```
+
 Mutable bag of semantic color roles, each a ``#rrggbb`` string.
 
 ``is_dark`` is a computed boolean: ``True`` when the background luminance
 is below 0.5 (i.e. the theme is dark-mode). Derived from ``bg`` on every
 ``update_from`` call so it stays in sync with theme hot-reloads.
 
-#### `__init__()`
-
 #### `reset()`
 
-#### `update_from(payload)`
+#### `update_from(payload: 'dict | None')`
 
 Overlay host-provided roles. Unknown keys and non-string/empty
 values are ignored so a partial payload never blanks a color.
@@ -840,25 +1401,27 @@ values are ignored so a partial payload never blanks a color.
 
 ### `AppPalette`
 
+```python
+AppPalette(dark: 'dict[str, str]', light: 'dict[str, str]')
+```
+
 Light/dark palette for app-defined color tokens.
 
 Both dicts must have the same keys. ``resolve(theme)`` returns the
 matching set based on ``theme.is_dark``.
 
-#### `__init__(dark, light)`
-
-#### `resolve(theme)`
+#### `resolve(theme: Theme)`
 
 Return the dark or light token set based on ``theme.is_dark``.
 
 
 ## Constants
 
-### `rgba(r, g, b, a=255)`
+### `rgba(r: int, g: int, b: int, a: int = 255)`
 
 Return an 8-digit hex color string #rrggbbaa.
 
-### `dim(hex_color, alpha)`
+### `dim(hex_color: str, alpha: int)`
 
 Return hex_color with the given alpha (0-255). Strips existing alpha.
 
@@ -866,20 +1429,40 @@ Return hex_color with the given alpha (0-255). Strips existing alpha.
 
 ### `AiResponse`
 
+```python
+AiResponse(tokens_in: int, tokens_out: int, content: Optional[str] = None, error: Optional[str] = None)
+```
+
 Result of Emitter.ai_query. tokens_in/tokens_out are zero on error.
 
 ### `MidiPortInfo`
+
+```python
+MidiPortInfo(id: str, name: str, default: bool)
+```
 
 One MIDI port. Mirrors MidiPortWire in the Rust protocol.
 
 ### `MidiDeviceList`
 
+```python
+MidiDeviceList(inputs: list, outputs: list)
+```
+
 Result of Emitter.list_midi_devices.
 
 ### `AudioDeviceInfo`
 
+```python
+AudioDeviceInfo(id: str, name: str, default: bool)
+```
+
 One audio device. Mirrors AudioDeviceWire in the Rust protocol.
 
 ### `AudioDeviceList`
+
+```python
+AudioDeviceList(inputs: list, outputs: list)
+```
 
 Result of Emitter.list_audio_devices.
