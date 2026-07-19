@@ -5,7 +5,7 @@ theme, input, and rendering.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional, Protocol, Union, runtime_checkable
+from typing import List, Literal, Optional, Protocol, Sequence, Union, runtime_checkable
 
 
 @runtime_checkable
@@ -368,10 +368,10 @@ class Button(Component):
 
 
 class HStack(Component):
-    def __init__(self, children: list[Component], gap: "float | None" = None, grow: bool = False) -> None:
+    def __init__(self, children: Sequence[Component], gap: "float | None" = None, grow: bool = False) -> None:
         if any(not isinstance(child, Component) for child in children):
             raise TypeError("HStack children must be Component instances")
-        self.children = children
+        self.children = list(children)
         self.gap = gap
         self.grow = grow
 
@@ -425,11 +425,11 @@ class Sized(Component):
 
 
 class ActionBar(Component):
-    def __init__(self, actions: list[Button]) -> None:
+    def __init__(self, actions: Sequence[Button]) -> None:
         for index, action in enumerate(actions):
             if not isinstance(action, Button):
                 raise TypeError(f"ActionBar actions[{index}] must be a Button")
-        self.actions = actions
+        self.actions = list(actions)
 
     def to_node(self) -> dict:
         # No native action-bar node — composes onto a Row of Buttons, same as
@@ -1778,7 +1778,7 @@ class Card(Component):
     vertically with a configurable gap. A 1px border in `theme.highlight` separates
     it from the pane background — essential when surface and bg are close
     in brightness."""
-    children: List[Component]
+    children: Sequence[Component]
     padding: float = SPACE_LG
     gap: float = SPACE_XS
     background: "str | None" = None
@@ -1850,6 +1850,15 @@ class TextInput(Component):
     instance is stable across renders so the host can track focus state.
 
     When ``multiline=True``, Shift+Enter inserts a newline and Enter submits.
+
+    In a declarative ``view()`` tree, typing delivers ``UiValueChange`` and
+    Enter delivers ``UiAction``. Both handler ids default to this input's
+    ``id`` — pass ``on_change``/``on_submit`` only to route them elsewhere::
+
+        TextInput("guess", value=state.get("guess", ""))
+        # update():
+        #   UiValueChange(handler_id="guess", value=...)  → echo into state
+        #   UiAction(handler_id="guess")                  → Enter pressed
     """
     id: str
     placeholder: str = ""
@@ -1878,12 +1887,15 @@ class TextInput(Component):
         return self._submitted
 
     def to_node(self) -> dict:
+        # Handler ids default to the input's own id: the natural app code
+        # (`event.handler_id == "<my-input-id>"`) works without wiring
+        # on_change/on_submit explicitly (stint 0456).
         return {
             "type": "TextInput",
             "value": self.value or "",
             "placeholder": self.placeholder,
-            "on_change": self.on_change,
-            "on_submit": self.on_submit,
+            "on_change": self.on_change or self.id,
+            "on_submit": self.on_submit or self.id,
             "password": self.password,
         }
 
@@ -2232,7 +2244,7 @@ class Column(Component):
     (`measure`/`render`); they are ignored by the declarative tree, whose inset
     the host owns.
     """
-    children: List[Component]
+    children: Sequence[Component]
     padding: float = SPACE_XL
     padding_top: Optional[float] = None
     gap: Optional[float] = None

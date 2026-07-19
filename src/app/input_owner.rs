@@ -178,6 +178,26 @@ impl PlexiApp {
     }
 }
 
+/// True when egui's focused widget is a text surface registered for
+/// `pane_id` on the previous frame. Key dispatch runs before the render
+/// pass, so the current frame's registry is still empty — the previous
+/// frame's registrations are the freshest complete picture. Used by
+/// `dispatch_app_key_events` to keep keystrokes with a focused declarative
+/// `TextInput` instead of forwarding them to the app as raw key events
+/// (stint 0456).
+pub(crate) fn focused_pane_text_surface(ctx: &egui::Context, pane_id: PaneId) -> bool {
+    let id = Id::new(PREVIOUS_SURFACES_ID);
+    ctx.memory_mut(|memory| {
+        let Some(focused) = memory.focused() else {
+            return false;
+        };
+        memory
+            .data
+            .get_temp::<SurfaceRegistry>(id)
+            .is_some_and(|registry| registry.is_surface_of(SurfaceKey::Pane(pane_id), focused))
+    })
+}
+
 const PREVIOUS_SURFACES_ID: &str = "plexi_text_surfaces_previous_frame";
 
 fn take_previous_surfaces(ctx: &egui::Context) -> Vec<(SurfaceKey, Id, bool)> {
@@ -194,4 +214,40 @@ fn take_previous_surfaces(ctx: &egui::Context) -> Vec<(SurfaceKey, Id, bool)> {
 fn store_previous_surfaces(ctx: &egui::Context, registry: SurfaceRegistry) {
     let id = Id::new(PREVIOUS_SURFACES_ID);
     ctx.memory_mut(|memory| memory.data.insert_temp(id, registry));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Stint 0456: the dispatch gate reads the previous frame's surface
+    /// registrations (dispatch runs before render, when the current frame's
+    /// registry is still empty) and answers true only for a focused id
+    /// registered to that exact pane.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // this module owns egui focus
+    fn focused_pane_text_surface_matches_previous_frame_registrations() {
+        let ctx = egui::Context::default();
+        let field = Id::new("l1_field");
+        let mut registry = SurfaceRegistry::default();
+        registry.surfaces.push((SurfaceKey::Pane(7), field, false));
+        store_previous_surfaces(&ctx, registry);
+
+        // Nothing focused → gate off.
+        assert!(!focused_pane_text_surface(&ctx, 7));
+
+        ctx.memory_mut(|m| m.request_focus(field));
+        assert!(
+            focused_pane_text_surface(&ctx, 7),
+            "focused id registered for pane 7 flips the gate on"
+        );
+        assert!(
+            !focused_pane_text_surface(&ctx, 8),
+            "another pane's lookup must not match pane 7's surface"
+        );
+
+        // A focused id no registration knows about (transient widget) → off.
+        ctx.memory_mut(|m| m.request_focus(Id::new("unrelated")));
+        assert!(!focused_pane_text_surface(&ctx, 7));
+    }
 }

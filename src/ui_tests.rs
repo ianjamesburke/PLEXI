@@ -1303,6 +1303,8 @@ mod tests {
                 status: None,
                 thoughts: None,
                 detail: None,
+                input_summary: None,
+                output_preview: None,
             },
             Turn {
                 role: TurnRole::Assistant,
@@ -1311,6 +1313,8 @@ mod tests {
                 status: None,
                 thoughts: None,
                 detail: None,
+                input_summary: None,
+                output_preview: None,
             },
             Turn {
                 role: TurnRole::User,
@@ -1320,6 +1324,8 @@ mod tests {
                 status: None,
                 thoughts: None,
                 detail: None,
+                input_summary: None,
+                output_preview: None,
             },
             Turn {
                 role: TurnRole::Assistant,
@@ -1329,6 +1335,8 @@ mod tests {
                 status: None,
                 thoughts: None,
                 detail: None,
+                input_summary: None,
+                output_preview: None,
             },
         ];
 
@@ -1342,6 +1350,62 @@ mod tests {
             "Screenshot saved to /tmp/plexi_assistant_conversation_bubbles.png — \
              inspect: user bubbles right-anchored + shrink-to-fit, assistant \
              bubbles left-anchored, no row renders full-width/identical."
+        );
+    }
+
+    /// Stint 0455: an app-build turn's transcript renders chronologically —
+    /// user message, first assistant segment, individual caret-dropdown tool
+    /// rows (never a collapsed "N tool calls" trail), a failed row in the
+    /// danger hue, and the final reply as its own bubble below the tools.
+    /// Screenshot is for eyeball review of the caret rows and ordering.
+    #[test]
+    fn screenshot_assistant_transcript_with_tool_rows() {
+        use crate::assistant::model::{ToolStatus, Turn, TurnRole};
+
+        let ws = tempfile::tempdir().unwrap();
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
+        let mut assistant =
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
+
+        let mut write_tool = Turn::tool("host.files.write", ToolStatus::Succeeded);
+        write_tool.input_summary = Some(r#"{"path": "main.py"}"#.to_string());
+        write_tool.output_preview = Some(r#"{"ok": true, "bytes": 512}"#.to_string());
+        write_tool.detail =
+            Some("--- a/main.py\n+++ b/main.py\n@@ -1,1 +1,2 @@\n-pass\n+print(\"hi\")\n".to_string());
+        let mut check_tool = Turn::tool("plexi.app_check", ToolStatus::Succeeded);
+        check_tool.input_summary = Some(r#"{"app": "guessing-game"}"#.to_string());
+        check_tool.output_preview = Some(r#"{"ok": true}"#.to_string());
+        let mut failed_tool =
+            Turn::tool("host.build.run — exit 1: mypy error", ToolStatus::Failed);
+        failed_tool.input_summary = Some(r#"{"cmd": "app check"}"#.to_string());
+
+        assistant.model.turns = vec![
+            Turn::now(TurnRole::User, "Build a simple number guessing game as a Plexi app."),
+            Turn::now(
+                TurnRole::Assistant,
+                "Let me build this for you. Starting with scaffolding the app.",
+            ),
+            write_tool,
+            check_tool,
+            failed_tool,
+            Turn::now(
+                TurnRole::Assistant,
+                "The Guessing Game app is open! Type a number and press Enter.",
+            ),
+        ];
+
+        let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
+        h.step();
+        h.open_assistant_built(assistant, ws.path().to_path_buf());
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_assistant_tool_rows.png")
+            .expect("render failed");
+        println!(
+            "Screenshot saved to /tmp/plexi_assistant_tool_rows.png — inspect: \
+             assistant segment above the tool rows, one caret row per call \
+             (no 'N tool calls' summary), failed row in danger hue, final \
+             reply as its own bubble below the tools."
         );
     }
 
@@ -1370,6 +1434,8 @@ mod tests {
                 status: None,
                 thoughts: None,
                 detail: None,
+                input_summary: None,
+                output_preview: None,
             },
             Turn {
                 role: TurnRole::Assistant,
@@ -1380,6 +1446,8 @@ mod tests {
                 status: None,
                 thoughts: None,
                 detail: None,
+                input_summary: None,
+                output_preview: None,
             },
         ];
 
@@ -1530,6 +1598,8 @@ mod tests {
             status: None,
             thoughts: None,
             detail: None,
+            input_summary: None,
+            output_preview: None,
         };
         assistant.model.turns = vec![
             turn(

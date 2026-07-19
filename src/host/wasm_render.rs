@@ -233,6 +233,23 @@ fn node_click_matches(pending_click: Option<crate::host::pane::PendingPaneClick>
     )
 }
 
+/// Resolve a `TextInput`'s edit buffer for this frame (stint 0456).
+/// `stored` is `(buffer, last_app_value)` from egui temp memory; returns the
+/// pair to edit this frame. The app's reported `value` wins only when it
+/// *changed* since we last saw it (a reset after submit, an external
+/// `SetState`) — an unchanged value (or the echo of our own `on_change`,
+/// which the caller records into `last_app_value`) never clobbers a local
+/// draft still round-tripping to the guest.
+fn reconcile_text_input_buffer(
+    stored: Option<(String, String)>,
+    app_value: &str,
+) -> (String, String) {
+    match stored {
+        Some((buf, last_app_value)) if app_value == last_app_value => (buf, last_app_value),
+        _ => (app_value.to_string(), app_value.to_string()),
+    }
+}
+
 fn find_node(nodes: &[IndexedNode], id: u32) -> Option<&IndexedNode> {
     nodes
         .get(id as usize)
@@ -319,27 +336,52 @@ fn render_node(
         }
 
         UiNodeData::TextInput(ti) => {
-            let mut buf = ti.value.clone();
-            let edit = egui::TextEdit::singleline(&mut buf)
+            // Host-owned edit buffer (stint 0456): the app's `value` is a
+            // controlled input that round-trips asynchronously (on_change →
+            // guest update → SetState → next tree), so painting `ti.value`
+            // directly would clobber keystrokes typed while the echo is in
+            // flight. The buffer lives in egui temp memory keyed by the
+            // widget id; an app-pushed value change (reset after submit,
+            // external SetState) still wins over any local draft.
+            let widget_id = ui.id().with(("l1_text_input", id));
+            let state_id = widget_id.with("edit_state");
+            let stored: Option<(String, String)> =
+                ui.ctx().memory_mut(|m| m.data.get_temp(state_id));
+            let (mut buf, mut last_app_value) = reconcile_text_input_buffer(stored, &ti.value);
+            let resp = crate::ui::text_field::TextField::singleline(widget_id, &ti.placeholder)
                 .password(ti.password)
-                .hint_text(&ti.placeholder);
-            let resp = ui.add(edit);
+                .log_name("l1_text_input")
+                .show(ui, &mut buf, colors);
             if let Some(key) = surface_key {
                 crate::ui::focus::register_text_surface(ui.ctx(), key, resp.id);
-                // Node-targeted clicks only focus the field — keystroke entry
-                // into a focused node is out of scope (stint 0414 non-scope).
+                // Node-targeted clicks focus the field; once focused, the
+                // dispatch gate (`focused_pane_text_surface`, stint 0456)
+                // routes keystrokes here instead of the app's KeyEvent path.
                 // The claim routes through the reconciler (stint 0429), which
                 // grants it while this pane owns input.
                 if node_click_matches(pending_click, id) {
                     crate::ui::focus::claim_text_surface(ui.ctx(), key, resp.id);
                 }
             }
-            if resp.changed() && buf != ti.value {
+            if resp.changed() {
                 out.value_changes.push((ti.on_change.clone(), buf.clone()));
+                // Treat our own change as already-seen so the app's echo
+                // doesn't reset the buffer mid-typing.
+                last_app_value = buf.clone();
             }
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 out.actions.push(ti.on_submit.clone());
+                // Keep focus for consecutive entries — Enter submits, it
+                // doesn't dismiss the field. Escape leaves the field via
+                // egui's native focus surrender in `begin_pass`; the
+                // dispatch gate swallows that same-frame Escape so it
+                // can't fire the AppActive CloseApp binding.
+                if let Some(key) = surface_key {
+                    crate::ui::focus::claim_text_surface(ui.ctx(), key, resp.id);
+                }
             }
+            ui.ctx()
+                .memory_mut(|m| m.data.insert_temp(state_id, (buf, last_app_value)));
         }
 
         UiNodeData::Row(r) => {
@@ -675,9 +717,93 @@ fn render_node(
 mod tests {
     use super::*;
     use crate::host::wasm_app::bindings::plexi::platform::types::{
-        ButtonNode, CanvasNode, CanvasRect, ColumnNode, SurfaceNode, TextNode,
+        ButtonNode, CanvasNode, CanvasRect, ColumnNode, SurfaceNode, TextInputNode, TextNode,
     };
     use crate::host::wasm_app::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmApp};
+
+    /// Stint 0456: the declarative TextInput renders through the styled
+    /// host field (`crate::ui::text_field`) — bg_active fill, border
+    /// stroke, dimmed hint — not egui's default TextEdit chrome. Visual
+    /// review artifact: /tmp/plexi-render-0456-textinput.png.
+    #[test]
+    fn screenshot_declarative_text_input_styled_field() {
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![
+                node(
+                    0,
+                    UiNodeData::Column(ColumnNode {
+                        children: vec![1, 2],
+                        gap: 8.0,
+                        align: Alignment::Start,
+                        grow: true,
+                    }),
+                ),
+                node(
+                    1,
+                    UiNodeData::Text(TextNode {
+                        text: "I'm thinking of a number between 1 and 100.".to_string(),
+                        size: None,
+                        bold: false,
+                        color: None,
+                        truncate: false,
+                        align: Alignment::Start,
+                    }),
+                ),
+                node(
+                    2,
+                    UiNodeData::TextInput(TextInputNode {
+                        value: String::new(),
+                        placeholder: "Enter your guess (1-100)".to_string(),
+                        on_change: "guess".to_string(),
+                        on_submit: "guess".to_string(),
+                        password: false,
+                    }),
+                ),
+            ],
+        };
+        let png = render_ui_tree_to_png(&tree, 420.0, 180.0).expect("render TextInput tree");
+        std::fs::write("/tmp/plexi-render-0456-textinput.png", png)
+            .expect("write screenshot for visual review");
+    }
+
+    /// Stint 0456: the TextInput edit buffer only resets when the app
+    /// *pushes a different value* — our own echo and unchanged app frames
+    /// never clobber a local draft mid-round-trip.
+    #[test]
+    fn text_input_buffer_reconciliation() {
+        // Fresh widget: adopt the app's value.
+        assert_eq!(
+            reconcile_text_input_buffer(None, "seed"),
+            ("seed".to_string(), "seed".to_string())
+        );
+
+        // Local draft survives frames where the app still reports the value
+        // we last saw (the typed change is still round-tripping).
+        assert_eq!(
+            reconcile_text_input_buffer(Some(("typed".to_string(), "".to_string())), ""),
+            ("typed".to_string(), "".to_string()),
+            "stale app value must not clobber the draft"
+        );
+
+        // The caller records our own change into last_app_value, so the
+        // app's echo of it is a no-op.
+        assert_eq!(
+            reconcile_text_input_buffer(
+                Some(("typed".to_string(), "typed".to_string())),
+                "typed"
+            ),
+            ("typed".to_string(), "typed".to_string())
+        );
+
+        // An app-pushed change (reset after submit, external SetState) wins
+        // over any local draft.
+        assert_eq!(
+            reconcile_text_input_buffer(Some(("typed".to_string(), "typed".to_string())), ""),
+            ("".to_string(), "".to_string()),
+            "app reset must clear the draft"
+        );
+    }
     use std::path::PathBuf;
 
     fn node(id: u32, data: UiNodeData) -> IndexedNode {

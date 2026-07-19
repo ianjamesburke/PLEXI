@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from plexi_sdk import state
 from plexi_sdk.effects import PersistState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction, UiValueChange
 from plexi_sdk.ui import AppBar, Button, Column, FooterKeys, SelectList, Spacer, Text, TextInput
 
-DEFAULT_TODO_STATE = {
+DEFAULT_TODO_STATE: dict[str, Any] = {
     "items": [],
     "selected": 0,
     "adding": False,
