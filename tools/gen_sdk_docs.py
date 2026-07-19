@@ -62,12 +62,19 @@ def _fmt_default(node: ast.expr) -> str:
     return text
 
 
-def _sig(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    """Return a compact signature string, omitting 'self' and type annotations."""
-    if _is_property(node):
-        return node.name  # properties have no parens
+def _fmt_param(arg: ast.arg, default: ast.expr | None) -> str:
+    """Render one parameter with its annotation and default."""
+    text = arg.arg
+    if arg.annotation is not None:
+        text += f": {ast.unparse(arg.annotation)}"
+    if default is not None:
+        sep = " = " if arg.annotation is not None else "="
+        text += f"{sep}{_fmt_default(default)}"
+    return text
 
-    args = node.args
+
+def _params(args: ast.arguments) -> list[str]:
+    """Render a function's parameters (annotations kept, 'self' omitted)."""
     params: list[str] = []
 
     # positional args
@@ -77,11 +84,8 @@ def _sig(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
         if arg.arg == "self":
             continue
         default_offset = i - (n_args - n_defaults)
-        if default_offset >= 0:
-            default_node = args.defaults[default_offset]
-            params.append(f"{arg.arg}={_fmt_default(default_node)}")
-        else:
-            params.append(arg.arg)
+        default = args.defaults[default_offset] if default_offset >= 0 else None
+        params.append(_fmt_param(arg, default))
 
     # *args
     if args.vararg:
@@ -89,20 +93,93 @@ def _sig(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
 
     # keyword-only args
     for kw, default in zip(args.kwonlyargs, args.kw_defaults):
-        if default is not None:
-            params.append(f"{kw.arg}={_fmt_default(default)}")
-        else:
-            params.append(kw.arg)
+        params.append(_fmt_param(kw, default))
 
     # **kwargs
     if args.kwarg:
         params.append(f"**{args.kwarg.arg}")
 
-    return f"{node.name}({', '.join(params)})"
+    return params
+
+
+def _sig(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """Return a signature string with annotations, omitting 'self'."""
+    if _is_property(node):
+        return node.name  # properties have no parens
+    return f"{node.name}({', '.join(_params(node.args))})"
 
 
 def _dedent(doc: str) -> str:
     return textwrap.dedent(doc).strip()
+
+
+def _is_dataclass(cls: ast.ClassDef) -> bool:
+    for deco in cls.decorator_list:
+        target = deco.func if isinstance(deco, ast.Call) else deco
+        if isinstance(target, ast.Name) and target.id == "dataclass":
+            return True
+        if isinstance(target, ast.Attribute) and target.attr == "dataclass":
+            return True
+    return False
+
+
+def _fmt_field_default(node: ast.expr) -> str:
+    """Format a dataclass field default; unwrap `field(...)` calls."""
+    if isinstance(node, ast.Call) and (
+        (isinstance(node.func, ast.Name) and node.func.id == "field")
+        or (isinstance(node.func, ast.Attribute) and node.func.attr == "field")
+    ):
+        for kw in node.keywords:
+            if kw.arg == "default" and kw.value is not None:
+                return _fmt_default(kw.value)
+            if kw.arg == "default_factory" and kw.value is not None:
+                return f"{ast.unparse(kw.value)}()"
+        return "..."
+    return _fmt_default(node)
+
+
+def _dataclass_params(cls: ast.ClassDef, class_map: dict[str, ast.ClassDef]) -> list[str]:
+    """Synthesize the generated __init__ parameters for a dataclass.
+
+    Follows dataclass semantics: base-class fields come first in declaration
+    order; a redeclared field keeps its original position but takes the
+    override's annotation/default. Bases are resolved within the same module
+    (the SDK keeps each dataclass hierarchy in one file).
+    """
+    ordered: dict[str, str] = {}
+
+    def collect(node: ast.ClassDef) -> None:
+        for base in node.bases:
+            if isinstance(base, ast.Name) and base.id in class_map:
+                base_cls = class_map[base.id]
+                if _is_dataclass(base_cls):
+                    collect(base_cls)
+        for stmt in node.body:
+            if not (isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)):
+                continue
+            name = stmt.target.id
+            annotation = ast.unparse(stmt.annotation)
+            if name.startswith("_") or annotation.startswith("ClassVar"):
+                continue
+            rendered = f"{name}: {annotation}"
+            if stmt.value is not None:
+                rendered += f" = {_fmt_field_default(stmt.value)}"
+            ordered[name] = rendered
+
+    collect(cls)
+    return list(ordered.values())
+
+
+def _class_constructor_sig(
+    cls: ast.ClassDef, class_map: dict[str, ast.ClassDef]
+) -> str | None:
+    """The class's construction signature, or None when it has no public one."""
+    if _is_dataclass(cls):
+        return f"{cls.name}({', '.join(_dataclass_params(cls, class_map))})"
+    for method in _iter_methods(cls):
+        if method.name == "__init__":
+            return f"{cls.name}({', '.join(_params(method.args))})"
+    return None
 
 
 def _iter_top_level(
@@ -121,10 +198,18 @@ def _iter_methods(
             yield node
 
 
-def render_class(cls: ast.ClassDef, expand: bool) -> list[str]:
+def render_class(
+    cls: ast.ClassDef, expand: bool, class_map: dict[str, ast.ClassDef]
+) -> list[str]:
     lines: list[str] = []
     doc = ast.get_docstring(cls)
     lines.append(f"### `{cls.name}`")
+    constructor = _class_constructor_sig(cls, class_map)
+    if constructor is not None:
+        lines.append("")
+        lines.append("```python")
+        lines.append(constructor)
+        lines.append("```")
     if doc:
         lines.append("")
         lines.append(_dedent(doc))
@@ -134,7 +219,8 @@ def render_class(cls: ast.ClassDef, expand: bool) -> list[str]:
 
     methods: list[ast.FunctionDef | ast.AsyncFunctionDef] = [
         m for m in _iter_methods(cls)
-        if _is_public(m.name) and m.name not in SKIP_METHODS
+        # __init__ is already covered by the constructor signature above.
+        if _is_public(m.name) and m.name != "__init__" and m.name not in SKIP_METHODS
     ]
     if not methods:
         return lines
@@ -181,12 +267,15 @@ def process_file(path: Path, section_title: str) -> list[str]:
         lines.append(_dedent(mod_doc))
         lines.append("")
 
+    class_map = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
     for node in _iter_top_level(tree):
         if isinstance(node, ast.ClassDef):
             if node.name.startswith("_"):
                 continue
             expand = node.name in EXPAND_CLASSES
-            lines.extend(render_class(node, expand=expand))
+            lines.extend(render_class(node, expand=expand, class_map=class_map))
             lines.append("")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if not _is_public(node.name):

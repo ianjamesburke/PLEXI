@@ -321,6 +321,17 @@ mod tests {
             !skill.instructions.contains("host.files.grep to find SDK symbols"),
             "the skill must not instruct SDK discovery — the API reference is embedded"
         );
+        assert!(
+            skill.instructions.contains("other installed apps"),
+            "the no-discovery rule must cover example-app spelunking, not just SDK sources \
+             — the 2026-07-19 ant-simulator run reverse-engineered signatures from \
+             installed apps instead"
+        );
+        assert!(
+            skill.instructions.contains("App placement"),
+            "the skill must point at the host-injected placement line so init never \
+             burns a failed no-workspace probe"
+        );
     }
 
     #[test]
@@ -337,6 +348,16 @@ mod tests {
         assert!(
             reference.contains("## UI Components") && reference.contains("## Effects"),
             "must cover the widget/effect API the app-build skill needs"
+        );
+        assert!(
+            reference.contains("SetTimer(id: int, delay_ms: int, repeat: bool = False)"),
+            "the reference must carry real constructor signatures — headings alone \
+             taught the model nothing and caused guessed-kwarg first-try failures \
+             (2026-07-19 ant-simulator run)"
+        );
+        assert!(
+            reference.matches("```python").count() > 100,
+            "signature coverage must span the API surface, not a hand-picked few"
         );
     }
 

@@ -1203,6 +1203,7 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 | `start` | Launch this channel's app bundle detached and wait for readiness |
 | `stop` | Stop the running host for this channel |
 | `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
+| `screenshot` | Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture |
 
 ### `plexi host start`
 
@@ -1231,4 +1232,15 @@ Report whether this channel's host is running, its pid, socket path, and pane co
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--json` | flag | no | Output as JSON |
+
+### `plexi host screenshot`
+
+Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture.
+
+Example: plexi host screenshot --pane 3 --output /tmp/pane3.png
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--pane` | string | no | Crop the capture to this pane's current screen rect |
+| `--output` / `-o` | string | no | Where to write the PNG (default: <profile>/screenshots/<timestamp>.png) |
 
