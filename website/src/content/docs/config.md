@@ -135,7 +135,7 @@ plexi secret set openrouter-api-key --global
 |---|---|---|---|
 | `api_key_env` | string | `OPENROUTER_API_KEY` | Environment variable name for the API key. Default: `OPENROUTER_API_KEY`. |
 | `model_low` | string | — | Low-tier model. e.g. "qwen/qwen3.6-flash" |
-| `model_medium` | string | — | Medium-tier model. e.g. "xiaomi/mimo-v2.5-pro" |
+| `model_medium` | string | — | Medium-tier model. e.g. "xiaomi/mimo-v2.5" |
 | `model_high` | string | — | High-tier model. e.g. "anthropic/claude-fable-5" |
 
 #### Ollama (`[ai.ollama]`)
@@ -304,7 +304,7 @@ backend = "openrouter"         # "openrouter" (cloud) or "ollama" (local)
 [ai.openrouter]
 api_key_env  = "OPENROUTER_API_KEY"
 model_low    = "qwen/qwen3.6-flash"
-model_medium = "xiaomi/mimo-v2.5-pro"
+model_medium = "xiaomi/mimo-v2.5"
 model_high   = "anthropic/claude-fable-5"
 
 # [ai.ollama]
