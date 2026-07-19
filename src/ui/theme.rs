@@ -852,7 +852,7 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     } else {
         egui::Visuals::light()
     };
-    let hairline = egui::Stroke::new(1.0, colors.border);
+    let hairline = egui::Stroke::new(1.0_f32, colors.border);
     let v = &mut style.visuals;
 
     // Surfaces — layered from the workspace floor up through raised chrome.
@@ -881,8 +881,8 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     // green cursor that ignore the theme entirely.
     v.hyperlink_color = colors.accent;
     v.selection.bg_fill = colors.accent.gamma_multiply(0.35);
-    v.selection.stroke = egui::Stroke::new(1.0, colors.accent);
-    v.text_cursor.stroke = egui::Stroke::new(1.0, colors.accent);
+    v.selection.stroke = egui::Stroke::new(1.0_f32, colors.accent);
+    v.text_cursor.stroke = egui::Stroke::new(1.0_f32, colors.accent);
     v.warn_fg_color = colors.warning;
     v.error_fg_color = colors.danger;
     v.slider_trailing_fill = true;
@@ -895,18 +895,18 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     w.noninteractive.bg_fill = colors.bg_sidebar;
     w.noninteractive.weak_bg_fill = colors.bg_sidebar;
     w.noninteractive.bg_stroke = hairline; // Separators.
-    w.noninteractive.fg_stroke = egui::Stroke::new(1.0, colors.text_dim);
+    w.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, colors.text_dim);
     w.inactive.bg_fill = colors.bg_hover;
     w.inactive.weak_bg_fill = colors.bg_hover;
     w.inactive.bg_stroke = hairline;
     w.inactive.fg_stroke = text(1.0);
     w.hovered.bg_fill = colors.bg_sidebar_hover;
     w.hovered.weak_bg_fill = colors.bg_sidebar_hover;
-    w.hovered.bg_stroke = egui::Stroke::new(1.0, colors.text_section);
+    w.hovered.bg_stroke = egui::Stroke::new(1.0_f32, colors.text_section);
     w.hovered.fg_stroke = text(1.5);
     w.active.bg_fill = colors.bg_active;
     w.active.weak_bg_fill = colors.bg_active;
-    w.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+    w.active.bg_stroke = egui::Stroke::new(1.0_f32, colors.accent);
     w.active.fg_stroke = text(2.0);
     w.open.bg_fill = colors.bg_active;
     w.open.weak_bg_fill = colors.bg_active;

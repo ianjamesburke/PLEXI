@@ -180,7 +180,7 @@ pub(crate) fn paint_tab_bar(
                     egui::pos2(divider_x, bar_rect.top() + inset),
                     egui::pos2(divider_x, bar_rect.bottom() - inset),
                 ],
-                egui::Stroke::new(1.5, colors.border),
+                egui::Stroke::new(1.5_f32, colors.border),
             );
         }
 
@@ -279,7 +279,7 @@ pub(crate) fn paint_tab_bar(
         painter.rect_stroke(
             chip_rect,
             egui::CornerRadius::same(3),
-            egui::Stroke::new(1.0, colors.border),
+            egui::Stroke::new(1.0_f32, colors.border),
             egui::StrokeKind::Inside,
         );
         painter.text(
@@ -719,7 +719,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         match resize_state {
             ResizeState::Idle => egui::Stroke::NONE,
             ResizeState::Hovering | ResizeState::Dragging => {
-                egui::Stroke::new(2.0, self.colors.text_primary)
+                egui::Stroke::new(2.0_f32, self.colors.text_primary)
             }
         }
     }
@@ -933,7 +933,7 @@ pub(crate) fn paint_portal_minimap(
         painter.rect_stroke(
             win_rect,
             WIN_RADIUS,
-            egui::Stroke::new(1.0, frame_border),
+            egui::Stroke::new(1.0_f32, frame_border),
             egui::StrokeKind::Outside,
         );
 
@@ -988,7 +988,7 @@ pub(crate) fn paint_portal_minimap(
                         egui::pos2(cell.min.x, glow_y),
                         egui::pos2(cell.max.x, glow_y),
                     ],
-                    egui::Stroke::new(1.5, glow_color),
+                    egui::Stroke::new(1.5_f32, glow_color),
                 );
 
                 // Focused border
@@ -1001,7 +1001,7 @@ pub(crate) fn paint_portal_minimap(
                 painter.rect_stroke(
                     cell,
                     2.0,
-                    egui::Stroke::new(1.0, accent_border),
+                    egui::Stroke::new(1.0_f32, accent_border),
                     egui::StrokeKind::Middle,
                 );
             } else {
@@ -1014,7 +1014,7 @@ pub(crate) fn paint_portal_minimap(
                 painter.rect_stroke(
                     cell,
                     2.0,
-                    egui::Stroke::new(1.0, dim_border),
+                    egui::Stroke::new(1.0_f32, dim_border),
                     egui::StrokeKind::Middle,
                 );
             }
@@ -1178,7 +1178,7 @@ pub(crate) fn paint_portal_minimap(
                     painter.add(egui::Shape::convex_polygon(
                         body,
                         fill,
-                        egui::Stroke::new(1.0, outline),
+                        egui::Stroke::new(1.0_f32, outline),
                     ));
                     // Folded corner triangle, a touch lighter than the body.
                     painter.add(egui::Shape::convex_polygon(
@@ -1193,7 +1193,7 @@ pub(crate) fn paint_portal_minimap(
                             colors.text_dim.b(),
                             icon_alpha / 2,
                         ),
-                        egui::Stroke::new(1.0, outline),
+                        egui::Stroke::new(1.0_f32, outline),
                     ));
 
                     // Text rules — drop the last when the glyph is tiny.
@@ -1252,7 +1252,7 @@ pub(crate) fn paint_portal_minimap(
                                 painter.rect_stroke(
                                     rect,
                                     2.0,
-                                    egui::Stroke::new(1.0, outline_color),
+                                    egui::Stroke::new(1.0_f32, outline_color),
                                     egui::StrokeKind::Inside,
                                 );
                             }

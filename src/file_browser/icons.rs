@@ -80,7 +80,7 @@ pub(crate) fn paint_entry_icon(
     painter.rect_stroke(
         sheet,
         CornerRadius::same(2),
-        Stroke::new(1.0, colors.border),
+        Stroke::new(1.0_f32, colors.border),
         StrokeKind::Inside,
     );
     let fold_poly = vec![
@@ -91,7 +91,7 @@ pub(crate) fn paint_entry_icon(
     painter.add(egui::Shape::convex_polygon(
         fold_poly,
         colors.bg_active.gamma_multiply(0.75),
-        Stroke::new(1.0, colors.border),
+        Stroke::new(1.0_f32, colors.border),
     ));
 
     let x = |t: f32| sheet.left() + sheet.width() * t;
@@ -129,7 +129,7 @@ pub(crate) fn paint_entry_icon(
                     egui::pos2(x(0.26), y(0.58)),
                 ],
                 c,
-                Stroke::new(0.0, Color32::TRANSPARENT),
+                Stroke::new(0.0_f32, Color32::TRANSPARENT),
             ));
             painter.line_segment(
                 [egui::pos2(x(0.56), y(0.44)), egui::pos2(x(0.66), y(0.54))],
@@ -161,7 +161,7 @@ pub(crate) fn paint_entry_icon(
                     egui::pos2(x(0.74), y(0.30)),
                 ],
                 c,
-                Stroke::new(0.0, Color32::TRANSPARENT),
+                Stroke::new(0.0_f32, Color32::TRANSPARENT),
             ));
             if matches!(kind, FileIconKind::Markdown) {
                 painter.line_segment(

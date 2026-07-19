@@ -40,7 +40,7 @@ pub fn bullet_point_hollow(ui: &mut Ui) {
         rect.center(),
         rect.height() / 6.0,
         egui::Color32::TRANSPARENT,
-        egui::Stroke::new(0.6, ui.visuals().strong_text_color()),
+        egui::Stroke::new(0.6_f32, ui.visuals().strong_text_color()),
     );
 }
 
@@ -287,7 +287,7 @@ pub fn blockquote(ui: &mut Ui, accent: egui::Color32, add_contents: impl FnOnce(
                     response.rect.left_bottom().y - 5.0,
                 ),
             ],
-            egui::Stroke::new(3.0, accent),
+            egui::Stroke::new(3.0_f32, accent),
         ),
     );
 }

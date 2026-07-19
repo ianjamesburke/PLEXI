@@ -37,7 +37,7 @@ impl<'a> ToastShell<'a> {
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(colors.bg_sidebar)
-                    .stroke(egui::Stroke::new(1.0, colors.border))
+                    .stroke(egui::Stroke::new(1.0_f32, colors.border))
                     .corner_radius(style::RADIUS_SM)
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {

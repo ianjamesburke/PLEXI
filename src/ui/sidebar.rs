@@ -573,7 +573,7 @@ impl PlexiApp {
                     ui.painter().rect_stroke(
                         rect.shrink(2.0),
                         crate::ui::style::RADIUS_SM,
-                        Stroke::new(1.5, self.colors.accent),
+                        Stroke::new(1.5_f32, self.colors.accent),
                         egui::StrokeKind::Inside,
                     );
                 }
@@ -585,7 +585,7 @@ impl PlexiApp {
                         egui::pos2(x0, line_y),
                         egui::pos2(x0 + sidebar_width, line_y),
                     ],
-                    Stroke::new(2.0, self.colors.accent),
+                    Stroke::new(2.0_f32, self.colors.accent),
                 );
             }
         }

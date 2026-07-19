@@ -1054,7 +1054,7 @@ impl App for TextEditorApp {
                     &output,
                     self.font_size,
                     row_height,
-                    egui::Stroke::new(1.0, colors.accent),
+                    egui::Stroke::new(1.0_f32, colors.accent),
                 );
 
                 // Tab/Enter/smart-backspace are consumed above before TextEdit

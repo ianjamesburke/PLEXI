@@ -2354,7 +2354,7 @@ impl eframe::App for PlexiApp {
             crate::platform::frame_diag::note_egui_causes(&ctx.repaint_causes());
             if elapsed >= std::time::Duration::from_secs(10) {
                 let counts = crate::platform::frame_diag::snapshot_and_reset();
-                log::info!(
+                log::debug!(
                     target: "plexi::frame_diag",
                     "{}",
                     crate::platform::frame_diag::summary_line(
@@ -2364,7 +2364,7 @@ impl eframe::App for PlexiApp {
                     )
                 );
                 let egui_counts = crate::platform::frame_diag::egui_snapshot_and_reset();
-                log::info!(
+                log::debug!(
                     target: "plexi::frame_diag",
                     "{}",
                     crate::platform::frame_diag::egui_summary_line(&egui_counts, 8)

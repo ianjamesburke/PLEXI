@@ -41,7 +41,7 @@ impl<'a> ReadOnlyCodeViewer<'a> {
 
         egui::Frame::new()
             .fill(colors.bg_active)
-            .stroke(egui::Stroke::new(1.0, colors.border))
+            .stroke(egui::Stroke::new(1.0_f32, colors.border))
             .corner_radius(style::RADIUS_MD)
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {

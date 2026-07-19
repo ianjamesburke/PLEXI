@@ -81,7 +81,7 @@ pub(crate) fn color_swatch(
     ui.painter().rect_stroke(
         rect,
         style::RADIUS_MD,
-        egui::Stroke::new(1.0, colors.border),
+        egui::Stroke::new(1.0_f32, colors.border),
         egui::StrokeKind::Inside,
     );
     crate::ui::list::paint_text_centered(
@@ -111,7 +111,7 @@ pub(crate) fn status_chip_with_color(
 ) -> egui::Response {
     egui::Frame::new()
         .fill(colors.bg_active)
-        .stroke(egui::Stroke::new(1.0, color))
+        .stroke(egui::Stroke::new(1.0_f32, color))
         .corner_radius(style::RADIUS_BADGE)
         .inner_margin(egui::Margin::symmetric(
             style::BADGE_PAD_H as i8,
@@ -131,7 +131,7 @@ pub(crate) fn empty_state_panel(
 ) -> egui::Response {
     egui::Frame::new()
         .fill(colors.bg_toolbar)
-        .stroke(egui::Stroke::new(1.0, colors.border))
+        .stroke(egui::Stroke::new(1.0_f32, colors.border))
         .corner_radius(style::RADIUS_MD)
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
@@ -174,7 +174,7 @@ pub(crate) fn trust_decision_panel(
     };
     egui::Frame::new()
         .fill(colors.bg_toolbar)
-        .stroke(egui::Stroke::new(1.0, accent.gamma_multiply(0.45)))
+        .stroke(egui::Stroke::new(1.0_f32, accent.gamma_multiply(0.45)))
         .corner_radius(style::RADIUS_MD)
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {

@@ -158,7 +158,7 @@ impl<'a> ModalShell<'a> {
                 }
                 egui::Frame::new()
                     .fill(colors.bg_sidebar)
-                    .stroke(egui::Stroke::new(1.0, colors.border))
+                    .stroke(egui::Stroke::new(1.0_f32, colors.border))
                     .corner_radius(style::RADIUS_LG)
                     .shadow(egui::Shadow {
                         offset: [0, 12],

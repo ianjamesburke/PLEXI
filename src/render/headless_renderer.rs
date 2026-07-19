@@ -326,13 +326,13 @@ impl HeadlessRenderer {
                         .unwrap_or_default();
                     let gap_size = if dir == "column" {
                         taffy::geometry::Size {
-                            width: length(0.0),
+                            width: length(0.0_f32),
                             height: length(g),
                         }
                     } else {
                         taffy::geometry::Size {
                             width: length(g),
-                            height: length(0.0),
+                            height: length(0.0_f32),
                         }
                     };
                     let style = taffy::style::Style {
@@ -354,13 +354,13 @@ impl HeadlessRenderer {
         };
         let gap_size = if direction == "column" {
             taffy::geometry::Size {
-                width: length(0.0),
+                width: length(0.0_f32),
                 height: length(gap),
             }
         } else {
             taffy::geometry::Size {
                 width: length(gap),
-                height: length(0.0),
+                height: length(0.0_f32),
             }
         };
 

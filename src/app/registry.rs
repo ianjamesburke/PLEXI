@@ -523,6 +523,11 @@ impl AppRegistry {
             }
         };
 
+        // Collected rather than logged per-entry (stint 0417): a channel with
+        // several unbundled example/dev apps produced a dozen WARN lines per
+        // rescan, drowning real signal. One summary line names them all.
+        let mut skipped: Vec<String> = Vec::new();
+
         for entry in read_dir.flatten() {
             let entry_dir = entry.path();
             if !entry_dir.is_dir() {
@@ -614,10 +619,20 @@ impl AppRegistry {
                             entry_dir.file_name()
                         );
                     } else {
-                        log::warn!("AppRegistry: skipping {:?}: {e}", entry_dir.file_name());
+                        skipped.push(format!("{:?}: {e}", entry_dir.file_name()));
                     }
                 }
             }
+        }
+
+        if !skipped.is_empty() {
+            log::warn!(
+                "AppRegistry: skipped {} entr{} in {:?}: {}",
+                skipped.len(),
+                if skipped.len() == 1 { "y" } else { "ies" },
+                dir,
+                skipped.join("; ")
+            );
         }
     }
 
@@ -1015,6 +1030,32 @@ mod tests {
             .get("global-only")
             .expect("global app should appear");
         assert_eq!(entry.source, RegistrySource::Global);
+    }
+
+    /// Stint 0417: broken app dirs (missing manifest.toml) must be collected
+    /// into one summary WARN per scan, not one WARN per broken dir — and
+    /// valid apps in the same directory must still be discovered normally.
+    #[test]
+    fn broken_app_dirs_are_summarized_not_logged_per_entry() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        fs::create_dir_all(workspace.path().join(&channel_dir)).unwrap();
+
+        write_app(global.path(), "valid-app", "Valid App");
+        // No manifest.toml in these — load_app fails for each.
+        fs::create_dir_all(global.path().join("broken-one")).unwrap();
+        fs::create_dir_all(global.path().join("broken-two")).unwrap();
+        fs::create_dir_all(global.path().join("broken-three")).unwrap();
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        assert!(
+            registry.get("valid-app").is_some(),
+            "valid app must still be discovered alongside broken dirs"
+        );
+        assert!(registry.get("broken-one").is_none());
+        assert!(registry.get("broken-two").is_none());
+        assert!(registry.get("broken-three").is_none());
     }
 
     #[test]

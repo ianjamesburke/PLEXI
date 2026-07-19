@@ -122,7 +122,7 @@ pub(crate) fn paint_table_header_background(ui: &egui::Ui, rect: egui::Rect, col
     ui.painter().rect_stroke(
         rect,
         style::RADIUS_MD,
-        Stroke::new(1.0, colors.border),
+        Stroke::new(1.0_f32, colors.border),
         StrokeKind::Inside,
     );
 }
@@ -293,7 +293,7 @@ impl<'a> ListRow<'a> {
             ui.painter().rect_stroke(
                 inset,
                 style::RADIUS_SM,
-                Stroke::new(1.0, colors.danger.gamma_multiply(0.35)),
+                Stroke::new(1.0_f32, colors.danger.gamma_multiply(0.35)),
                 StrokeKind::Inside,
             );
         } else if response.hovered() {
@@ -598,7 +598,7 @@ pub fn selection_shapes(row_rect: egui::Rect, colors: &Colors) -> [egui::Shape; 
         egui::Shape::rect_stroke(
             inset,
             style::RADIUS_SM,
-            Stroke::new(1.0, colors.accent.gamma_multiply(0.45)),
+            Stroke::new(1.0_f32, colors.accent.gamma_multiply(0.45)),
             StrokeKind::Inside,
         ),
     ]
@@ -768,7 +768,7 @@ fn draw_pips(
         );
         if hidden {
             ui.painter()
-                .circle_stroke(center, PANE_PIP_RADIUS, Stroke::new(1.0, color));
+                .circle_stroke(center, PANE_PIP_RADIUS, Stroke::new(1.0_f32, color));
         } else {
             ui.painter().circle_filled(center, PANE_PIP_RADIUS, color);
         }

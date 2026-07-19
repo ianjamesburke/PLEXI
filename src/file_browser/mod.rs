@@ -1268,7 +1268,7 @@ impl FileBrowserApp {
                     egui::pos2(cell.right(), cell.top() + 5.0),
                     egui::pos2(cell.right(), cell.bottom() - 5.0),
                 ],
-                Stroke::new(1.0, colors.border),
+                Stroke::new(1.0_f32, colors.border),
             );
         }
     }
@@ -1365,7 +1365,7 @@ impl FileBrowserApp {
 
         egui::Frame::new()
             .fill(colors.bg_sidebar)
-            .stroke(Stroke::new(1.0, colors.border))
+            .stroke(Stroke::new(1.0_f32, colors.border))
             .corner_radius(CornerRadius::same(6))
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
@@ -1393,7 +1393,7 @@ impl FileBrowserApp {
                 ui.painter().rect_stroke(
                     slot_rect,
                     CornerRadius::same(4),
-                    Stroke::new(1.0, colors.border),
+                    Stroke::new(1.0_f32, colors.border),
                     StrokeKind::Inside,
                 );
                 if let Some(texture) = &self.preview_texture {
@@ -1444,7 +1444,7 @@ impl FileBrowserApp {
 
         egui::Frame::new()
             .fill(colors.bg_sidebar)
-            .stroke(Stroke::new(1.0, colors.border))
+            .stroke(Stroke::new(1.0_f32, colors.border))
             .corner_radius(CornerRadius::same(6))
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
@@ -1488,7 +1488,7 @@ impl FileBrowserApp {
 
         egui::Frame::new()
             .fill(colors.bg_sidebar)
-            .stroke(Stroke::new(1.0, colors.border))
+            .stroke(Stroke::new(1.0_f32, colors.border))
             .corner_radius(CornerRadius::same(6))
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
@@ -1513,7 +1513,7 @@ impl FileBrowserApp {
     fn draw_generic_sidebar(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
-            .stroke(Stroke::new(1.0, colors.border))
+            .stroke(Stroke::new(1.0_f32, colors.border))
             .corner_radius(CornerRadius::same(6))
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
@@ -1698,7 +1698,7 @@ impl FileBrowserApp {
                             &output,
                             font_id.size,
                             row_height,
-                            egui::Stroke::new(1.0, colors.accent),
+                            egui::Stroke::new(1.0_f32, colors.accent),
                         );
                         output.response
                     })
@@ -1749,7 +1749,7 @@ impl FileBrowserApp {
         ui.painter().rect_stroke(
             slot_rect,
             style::RADIUS_MD,
-            Stroke::new(1.0, colors.border),
+            Stroke::new(1.0_f32, colors.border),
             StrokeKind::Inside,
         );
         if let Some(texture) = &self.preview_texture {
@@ -2126,7 +2126,7 @@ impl App for FileBrowserApp {
                                 egui::pos2(splitter_rect.center().x, splitter_rect.top()),
                                 egui::pos2(splitter_rect.center().x, splitter_rect.bottom()),
                             ],
-                            Stroke::new(1.0, colors.border),
+                            Stroke::new(1.0_f32, colors.border),
                         );
                         ui.allocate_ui_with_layout(
                             egui::vec2(self.inspector_width, body_height),

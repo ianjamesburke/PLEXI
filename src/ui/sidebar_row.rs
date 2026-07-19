@@ -131,7 +131,7 @@ fn draw_pips(
         }
         let center = egui::pos2(cx, cy);
         if is_hidden {
-            painter.circle_stroke(center, PANE_DOT_RADIUS, egui::Stroke::new(1.0, color));
+            painter.circle_stroke(center, PANE_DOT_RADIUS, egui::Stroke::new(1.0_f32, color));
         } else {
             painter.circle_filled(center, PANE_DOT_RADIUS, color);
         }

@@ -698,7 +698,7 @@ impl PlexiApp {
                         ui.painter().rect_stroke(
                             zoom_rect,
                             CornerRadius::same(4),
-                            Stroke::new(2.0, self.colors.accent),
+                            Stroke::new(2.0_f32, self.colors.accent),
                             StrokeKind::Inside,
                         );
 
@@ -962,7 +962,7 @@ impl PlexiApp {
                                     egui::pos2(pane_rect.right(), pane_rect.bottom()),
                                 ),
                             };
-                            ui.painter().line_segment([p1, p2], egui::Stroke::new(3.0, edge_color));
+                            ui.painter().line_segment([p1, p2], egui::Stroke::new(3.0_f32, edge_color));
                             crate::platform::frame_diag::note(
                                 crate::platform::frame_diag::RepaintCause::EdgePulse,
                             );
