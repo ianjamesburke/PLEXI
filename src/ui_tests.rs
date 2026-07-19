@@ -1353,6 +1353,70 @@ mod tests {
         );
     }
 
+    /// Stint 0467, never-frozen rule: while a turn is in flight the
+    /// transcript always shows an animated element. Two screenshots: (1) the
+    /// model streamed a sentence and is now generating a tool call — the
+    /// generation row (`⠹ writing host.files.write · 3.4k chars`) renders
+    /// under the text; (2) same state with no generation info — the thinking
+    /// dots render under the text instead of the pre-0467 frozen bubble.
+    #[test]
+    fn screenshot_assistant_streaming_never_frozen() {
+        use crate::assistant::model::{Turn, TurnRole};
+
+        let ws = tempfile::tempdir().unwrap();
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
+        let mut assistant =
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
+        assistant.model.turns = vec![Turn {
+            role: TurnRole::User,
+            text: "build me a tictactoe app".to_string(),
+            created_at: "2026-07-19T00:00:00Z".to_string(),
+            status: None,
+            thoughts: None,
+            detail: None,
+            input_summary: None,
+            output_preview: None,
+        }];
+        assistant.model.streaming.in_flight = true;
+        assistant.model.streaming.partial_answer =
+            "The SDK uses state.get() from plexi_sdk. Let me fix all the issues.".to_string();
+        assistant
+            .model
+            .apply_tool_progress(Some("host.files.write".to_string()), 3400);
+
+        let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
+        h.step();
+        h.open_assistant_built(assistant, ws.path().to_path_buf());
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_assistant_streaming_tool_progress.png")
+            .expect("render failed");
+
+        // State 2: same turn with no generation info — a fresh pane, since
+        // the harness has no post-open mutable assistant accessor. The dots
+        // must take over under the text.
+        let broker2: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
+        let mut assistant2 =
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker2, ws.path());
+        assistant2.model.streaming.in_flight = true;
+        assistant2.model.streaming.partial_answer =
+            "The SDK uses state.get() from plexi_sdk. Let me fix all the issues.".to_string();
+        let mut h2 = PlexiUiHarness::new_sized(1000.0, 720.0);
+        h2.step();
+        h2.open_assistant_built(assistant2, ws.path().to_path_buf());
+        h2.run_steps(2);
+        h2.save_screenshot("/tmp/plexi_assistant_streaming_dots_after_text.png")
+            .expect("render failed");
+        println!(
+            "Screenshots saved to /tmp/plexi_assistant_streaming_tool_progress.png \
+             (spinner + 'writing host.files.write · 3.4k chars' under the text \
+             bubble) and /tmp/plexi_assistant_streaming_dots_after_text.png \
+             (thinking dots under the text bubble) — neither state may render \
+             as static text alone."
+        );
+    }
+
     /// Stint 0455: an app-build turn's transcript renders chronologically —
     /// user message, first assistant segment, individual caret-dropdown tool
     /// rows (never a collapsed "N tool calls" trail), a failed row in the

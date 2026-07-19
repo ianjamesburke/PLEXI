@@ -29,6 +29,10 @@ use super::model::{
     AssistantModel, AssistantOverlay, CompactionState, PermissionChoice, ToolStatus, TurnRole,
 };
 
+/// Braille beat shared by every animated activity row (running tool,
+/// tool-call generation). Keyed to wall clock at 100ms per frame.
+const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 /// What the composer asked the pane shell to do this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerEvent {
@@ -567,9 +571,8 @@ impl AssistantRenderer {
         // repaints continuously while a turn is in flight, so this animates
         // without extra repaint requests. Elapsed seconds make a long tool
         // call (a 60s+ `app check`) read as progress, not a hang.
-        const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let elapsed = active.started.elapsed();
-        let frame = FRAMES[(elapsed.as_millis() / 100) as usize % FRAMES.len()];
+        let frame = SPINNER_FRAMES[(elapsed.as_millis() / 100) as usize % SPINNER_FRAMES.len()];
         let elapsed_label = if elapsed.as_secs() >= 2 {
             format!(" · {}s", elapsed.as_secs())
         } else {
@@ -829,17 +832,60 @@ impl AssistantRenderer {
         // Same bubble as a committed reply, present from the first frame —
         // the thinking-dots beat and every streamed token sit on the
         // background, so it never appears only after streaming ends.
-        if model.streaming.partial_answer.is_empty() {
+        if !model.streaming.partial_answer.is_empty() {
+            let markdown = crate::ui::markdown::harden_soft_breaks(&model.streaming.partial_answer);
+            Self::assistant_bubble(ui, colors, md_cache, &markdown);
+        }
+        // Never-frozen rule (stint 0467): while a turn is in flight,
+        // something on screen always animates. Priority: the tool-generation
+        // row when the model is writing a call, the running-tool row (drawn
+        // by the caller) while one executes, the thinking dots otherwise —
+        // including after streamed text, which previously sat static for the
+        // whole argument stream.
+        if let Some(progress) = &model.streaming.tool_progress {
+            Self::draw_tool_progress_row(ui, colors, progress);
+        } else if model.active_tools.is_empty() {
             // The dots allocate an exact size, so the bubble self-sizes to
             // them — no width measurement needed.
             Self::chat_bubble(ui, colors, BubbleSide::Left, false, |ui| {
                 Self::draw_thinking_dots(ui, colors);
             });
-        } else {
-            let markdown = crate::ui::markdown::harden_soft_breaks(&model.streaming.partial_answer);
-            Self::assistant_bubble(ui, colors, md_cache, &markdown);
         }
         ui.add_space(style::SPACE_MD);
+    }
+
+    /// The model is writing a tool call — the longest otherwise-silent
+    /// stretch of an app-build turn. Spinner + tool name + cumulative
+    /// argument size + elapsed, so a 60s code generation reads as progress.
+    fn draw_tool_progress_row(
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        progress: &super::model::ToolArgProgress,
+    ) {
+        let elapsed = progress.started.elapsed();
+        let frame = SPINNER_FRAMES[(elapsed.as_millis() / 100) as usize % SPINNER_FRAMES.len()];
+        let chars = if progress.arg_chars >= 1000 {
+            format!("{:.1}k chars", progress.arg_chars as f64 / 1000.0)
+        } else {
+            format!("{} chars", progress.arg_chars)
+        };
+        let elapsed_label = if elapsed.as_secs() >= 2 {
+            format!(" · {}s", elapsed.as_secs())
+        } else {
+            String::new()
+        };
+        let name = progress.name.as_deref().unwrap_or("tool call");
+        let line = format!("{frame} writing {name} · {chars}{elapsed_label}");
+        ui.scope(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            ui.label(
+                RichText::new(line)
+                    .size(style::TEXT_CAPTION)
+                    .monospace()
+                    .color(colors.accent),
+            );
+        });
+        ui.add_space(style::SPACE_SM);
     }
 
     /// Three dots pulsing in sequence — the "assistant is thinking" beat
