@@ -332,6 +332,11 @@ mod tests {
             "the skill must point at the host-injected placement line so init never \
              burns a failed no-workspace probe"
         );
+        assert!(
+            skill.instructions.contains("`view()` is pure and returns exactly one component"),
+            "the skill must state the effect contract — the 2026-07-19 tictactoe run \
+             returned (tree, SetTimer) from view() and crashed on the first click"
+        );
     }
 
     #[test]

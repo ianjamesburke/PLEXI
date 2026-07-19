@@ -113,7 +113,28 @@ def _decode_event(payload: dict[str, Any]) -> Any:
     return cast(Any, cls)(**kwargs)
 
 
+def _require_view_component(root: Any) -> None:
+    """Teachable failure when view() breaks the effect contract.
+
+    The most common generated-app mistake is `return tree, SetTimer(...)` from
+    view(); without this check it dies later as an opaque
+    "Unknown UINode type: tuple".
+    """
+    if isinstance(root, (tuple, list)):
+        raise TypeError(
+            f"view() must return a single component tree, got {type(root).__name__}. "
+            "Effects (SetTimer, SetState, ...) are returned from update() or init(), "
+            "never from view()."
+        )
+    if is_dataclass(root) and getattr(effect_types, type(root).__name__, None) is type(root):
+        raise TypeError(
+            f"view() returned the effect {type(root).__name__}. Effects are returned "
+            "from update() or init(); view() returns exactly one component."
+        )
+
+
 def _encode_uitree(root: Any) -> dict[str, Any]:
+    _require_view_component(root)
     arena: list[dict[str, Any]] = []
 
     def flatten(node: Any, key: str) -> int:

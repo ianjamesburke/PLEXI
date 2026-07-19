@@ -346,3 +346,14 @@ def test_view_lifecycle_resets_view_guard(
     call_lifecycle("view", json.dumps({"state": {}}))
 
     assert _v3_state._in_view is False
+
+
+def test_encode_uitree_rejects_view_returning_effect_tuple() -> None:
+    from plexi_sdk.effects import SetTimer
+    from plexi_sdk.ui import Text
+
+    with pytest.raises(TypeError, match=r"view\(\) must return a single component tree"):
+        _encode_uitree((Text("hi"), SetTimer(id=1, delay_ms=500)))
+
+    with pytest.raises(TypeError, match=r"view\(\) returned the effect SetTimer"):
+        _encode_uitree(SetTimer(id=1, delay_ms=500))

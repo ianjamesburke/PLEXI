@@ -91,7 +91,10 @@ fn indexed_node_to_json(node: &crate::host::wasm_app::IndexedNode) -> serde_json
 
 const DEFAULT_CHECK_SIZES: &[(u32, u32)] = &[(320, 240), (480, 320), (800, 600), (1200, 800)];
 const SEEDED_PROBE_SIZE: (u32, u32) = (480, 320);
-const RECOGNIZED_ACTION_HANDLERS: &[&str] = &["counter-increment"];
+/// Upper bound on how many discovered handlers the action probe clicks in one
+/// sequence, keeping a button-heavy app's check fast. The probe prints how
+/// many it skipped when an app exceeds it.
+const MAX_ACTION_PROBE_HANDLERS: usize = 8;
 
 #[derive(Debug, Default)]
 struct SdkAnalysis {
@@ -441,51 +444,90 @@ fn run_seeded_state_and_action_probe(
         matched
     );
 
-    let Some(handler_id) = recognized_action_handler(&frame) else {
-        println!("skip action probe — no recognized action handler in seeded render");
+    let discovered = discover_action_handlers(&frame);
+    if discovered.is_empty() {
+        println!("skip action probe — no clickable handler in seeded render");
         log::info!(
-            "app_check[{}]: no recognized action handler in seeded render",
+            "app_check[{}]: no clickable handler in seeded render",
             manifest.app.id
         );
         return;
-    };
+    }
+    let total = discovered.len();
+    let handlers: Vec<String> = discovered
+        .into_iter()
+        .take(MAX_ACTION_PROBE_HANDLERS)
+        .collect();
+    if total > handlers.len() {
+        println!(
+            "action probe — probing first {} of {total} clickable handler(s)",
+            handlers.len()
+        );
+    }
 
-    let action_label = format!("action probe {handler_id}");
-    let expected_after = expected_action_signal(&fixture.state, &handler_id);
-    match crate::host::wasm_python::run_headless_ui_action_round_trip(
+    match crate::host::wasm_python::run_headless_ui_action_sequence(
         launch_config,
         (width as f32, height as f32),
         Some(fixture.state.clone()),
-        &handler_id,
+        &handlers,
     ) {
-        Ok((before, after)) => {
-            let before_frame = ui_tree_to_json(&before);
-            let after_frame = ui_tree_to_json(&after);
-            if let Some(expected) = expected_after {
-                if frame_contains_scalar(&after_frame, &expected) {
-                    println!("✓ {action_label} — rendered expected state value {expected}");
-                    log::info!(
-                        "app_check[{}]: {action_label} rendered expected value {expected}",
-                        manifest.app.id
-                    );
-                } else {
-                    errors.push(format!(
-                        "{action_label} — expected rendered state value {expected} after action"
-                    ));
+        Err(e) => errors.push(format!("action probe — {e}")),
+        Ok((before, outcomes)) => {
+            let mut prev_frame = ui_tree_to_json(&before);
+            let mut any_effect = false;
+            let mut probe_failed = false;
+            for (index, (handler_id, outcome)) in outcomes.iter().enumerate() {
+                let action_label = format!("action probe {handler_id}");
+                match outcome {
+                    Err(e) => {
+                        probe_failed = true;
+                        errors.push(format!("{action_label} — {e}"));
+                    }
+                    Ok(after) => {
+                        let after_frame = ui_tree_to_json(after);
+                        // Seed-derived expectations predict the state after a
+                        // single click from the fixture, so only the first
+                        // action in the sequence can assert one.
+                        let expected = (index == 0)
+                            .then(|| expected_action_signal(&fixture.state, handler_id))
+                            .flatten();
+                        if let Some(expected) = expected {
+                            if frame_contains_scalar(&after_frame, &expected) {
+                                any_effect = true;
+                                println!(
+                                    "✓ {action_label} — rendered expected state value {expected}"
+                                );
+                                log::info!(
+                                    "app_check[{}]: {action_label} rendered expected value {expected}",
+                                    manifest.app.id
+                                );
+                            } else {
+                                probe_failed = true;
+                                errors.push(format!(
+                                    "{action_label} — expected rendered state value {expected} after action"
+                                ));
+                            }
+                        } else if after_frame != prev_frame {
+                            any_effect = true;
+                            println!("✓ {action_label} — rendered frame changed after action");
+                            log::info!(
+                                "app_check[{}]: {action_label} changed rendered frame",
+                                manifest.app.id
+                            );
+                        } else {
+                            println!("• {action_label} — frame unchanged");
+                        }
+                        prev_frame = after_frame;
+                    }
                 }
-            } else if after_frame != before_frame {
-                println!("✓ {action_label} — rendered frame changed after action");
-                log::info!(
-                    "app_check[{}]: {action_label} changed rendered frame",
-                    manifest.app.id
-                );
-            } else {
+            }
+            if !any_effect && !probe_failed {
                 warnings.push(format!(
-                    "{action_label} — action ran, but no generic state expectation was available and the frame did not change"
+                    "action probe — clicked {} handler(s), no rendered frame ever changed",
+                    outcomes.len()
                 ));
             }
         }
-        Err(e) => errors.push(format!("{action_label} — {e}")),
     }
 }
 
@@ -538,32 +580,33 @@ fn frame_contains_scalar(frame: &serde_json::Value, expected: &str) -> bool {
     }
 }
 
-fn recognized_action_handler(frame: &serde_json::Value) -> Option<String> {
-    for handler in RECOGNIZED_ACTION_HANDLERS {
-        if frame_contains_keyed_string(frame, &["node_id", "handler_id", "on_click"], handler) {
-            return Some((*handler).to_string());
-        }
-    }
-    None
+/// Every clickable handler id in the rendered frame, in render order, deduped.
+/// Any node carrying a non-empty string `on_click` counts — the encoder emits
+/// that key for buttons and any future clickable node type.
+fn discover_action_handlers(frame: &serde_json::Value) -> Vec<String> {
+    let mut handlers = Vec::new();
+    collect_action_handlers(frame, &mut handlers);
+    handlers
 }
 
-fn frame_contains_keyed_string(frame: &serde_json::Value, keys: &[&str], expected: &str) -> bool {
-    match frame {
+fn collect_action_handlers(value: &serde_json::Value, handlers: &mut Vec<String>) {
+    match value {
         serde_json::Value::Object(map) => {
-            if keys.iter().any(|key| {
-                map.get(*key)
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|value| value == expected)
-            }) {
-                return true;
+            if let Some(handler) = map.get("on_click").and_then(serde_json::Value::as_str) {
+                if !handler.is_empty() && !handlers.iter().any(|known| known == handler) {
+                    handlers.push(handler.to_string());
+                }
             }
-            map.values()
-                .any(|value| frame_contains_keyed_string(value, keys, expected))
+            for value in map.values() {
+                collect_action_handlers(value, handlers);
+            }
         }
-        serde_json::Value::Array(values) => values
-            .iter()
-            .any(|value| frame_contains_keyed_string(value, keys, expected)),
-        _ => false,
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_action_handlers(value, handlers);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1224,28 +1267,41 @@ profile_dir = ".plexi-beta"
         assert!(super::frame_contains_scalar(&frame, "13"));
     }
 
+    /// Discovery must find every clickable handler in render order without an
+    /// allowlist — the mimo tictactoe run shipped a first-click crash because
+    /// the old probe only recognized `counter-increment` and skipped the
+    /// app's real `cell-*`/`reset` handlers entirely.
     #[test]
-    fn recognized_action_handler_finds_counter_increment_button() {
-        let frame = serde_json::json!([
-            {
-                "type": "component_tree",
-                "root": {
-                    "type": "column",
-                    "children": [
-                        {
-                            "type": "button",
-                            "node_id": "counter-increment",
-                            "label": "Increment"
-                        }
-                    ]
-                }
-            }
-        ]);
+    fn discover_action_handlers_finds_all_unique_on_click_ids() {
+        let frame = serde_json::json!({
+            "root": 0,
+            "nodes": [
+                {"id": 0, "data": {"type": "Column", "children": [1, 2, 3, 4]}},
+                {"id": 1, "data": {"type": "Button", "label": "1", "on_click": "cell-0"}},
+                {"id": 2, "data": {"type": "Button", "label": "2", "on_click": "cell-1"}},
+                {"id": 3, "data": {"type": "Button", "label": "again", "on_click": "cell-0"}},
+                {"id": 4, "data": {"type": "Button", "label": "New Game", "on_click": "reset"}},
+            ],
+        });
 
         assert_eq!(
-            super::recognized_action_handler(&frame),
-            Some("counter-increment".to_string())
+            super::discover_action_handlers(&frame),
+            vec!["cell-0".to_string(), "cell-1".to_string(), "reset".to_string()]
         );
+    }
+
+    #[test]
+    fn discover_action_handlers_ignores_empty_and_missing_on_click() {
+        let frame = serde_json::json!({
+            "root": 0,
+            "nodes": [
+                {"id": 0, "data": {"type": "Text", "text": "hello"}},
+                {"id": 1, "data": {"type": "Button", "label": "dead", "on_click": ""}},
+                {"id": 2, "data": {"type": "Button", "label": "null", "on_click": null}},
+            ],
+        });
+
+        assert!(super::discover_action_handlers(&frame).is_empty());
     }
 
     #[test]
