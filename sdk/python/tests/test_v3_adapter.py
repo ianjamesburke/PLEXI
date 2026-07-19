@@ -176,6 +176,15 @@ def test_ui_tree_serializes_text_input_and_select_list() -> None:
     assert "size" not in nodes[5]["data"]
 
 
+def test_text_input_handlers_default_to_its_id() -> None:
+    # Stint 0456: the natural app pattern (`event.handler_id == "<input-id>"`)
+    # must work without wiring on_change/on_submit explicitly — typing
+    # delivers UiValueChange(handler_id=id), Enter delivers UiAction(id).
+    node = TextInput("guess", value="42").to_node()
+    assert node["on_change"] == "guess"
+    assert node["on_submit"] == "guess"
+
+
 def test_ui_tree_flattens_scrollable_child() -> None:
     tree = _encode_uitree(Scrollable(Text("log line")))
 

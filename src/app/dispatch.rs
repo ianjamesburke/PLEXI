@@ -39,6 +39,39 @@ impl PlexiApp {
         let Some(app_pane) = pane.as_app_mut() else {
             return;
         };
+        // A focused declarative TextInput owns the keyboard (stint 0456):
+        // leave the frame's events in the router so the render pass's
+        // TextEdit consumes them (typing, arrows, Enter-submit). Escape
+        // surrenders egui focus natively, flipping this gate back off so
+        // keys reach the app's KeyEvent path again next frame.
+        let text_surface_focused =
+            crate::app::input_owner::focused_pane_text_surface(ctx, pane_id);
+        let gate_id = egui::Id::new(("l1_text_input_gate", pane_id));
+        let previously_focused =
+            ctx.memory_mut(|m| m.data.get_temp::<bool>(gate_id).unwrap_or(false));
+        if text_surface_focused != previously_focused {
+            log::info!(
+                "app_keys: pane {pane_id} text-input gate {} — keys route to {}",
+                if text_surface_focused { "on" } else { "off" },
+                if text_surface_focused {
+                    "focused TextInput"
+                } else {
+                    "app key events"
+                }
+            );
+            ctx.memory_mut(|m| m.data.insert_temp(gate_id, text_surface_focused));
+        }
+        if text_surface_focused {
+            return;
+        }
+        // egui surrenders widget focus on Escape during `begin_pass`, before
+        // this dispatch runs — so on the keypress that leaves a focused
+        // TextInput the gate above is already off. Swallow that Escape so
+        // the AppActive CloseApp binding doesn't close the pane on the same
+        // keypress; the next keystroke routes to the app normally.
+        if previously_focused && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            log::info!("app_keys: pane {pane_id} Escape left the focused TextInput — swallowed");
+        }
         // The app classifies keys from the frame's ownership-transfer buffer
         // (stint 0387) rather than a second read of `ctx`. If it consumed the
         // key, also claim Escape/ArrowUp out of the buffer so `poll_actions`

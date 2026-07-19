@@ -297,7 +297,7 @@ impl AssistantRenderer {
                     model.show_thoughts,
                 );
                 for active in &model.active_tools {
-                    Self::draw_active_tool_row(ui, colors, &active.tool);
+                    Self::draw_active_tool_row(ui, colors, active);
                 }
                 if matches!(model.compaction, CompactionState::Compacting) {
                     ui.label(
@@ -327,13 +327,10 @@ impl AssistantRenderer {
             });
     }
 
-    /// Render a contiguous slice of `model.turns` in order, collapsing runs of
-    /// consecutive successful tool calls into a single compact trail so they
-    /// don't bury the message they precede. Failures and permission denials
-    /// (`ToolStatus::Failed`) break a run and always render as their own row —
-    /// only routine successful calls collapse. `index_offset` is the slice's
-    /// absolute start index into `model.turns`, so cross-frame widget/cache
-    /// keys stay stable.
+    /// Render a contiguous slice of `model.turns` in order — one row per
+    /// turn, in strict chronological order (stint 0455). `index_offset` is
+    /// the slice's absolute start index into `model.turns`, so cross-frame
+    /// widget/cache keys stay stable.
     fn draw_turn_range(
         ui: &mut egui::Ui,
         md_cache: &mut egui_commonmark::CommonMarkCache,
@@ -344,69 +341,74 @@ impl AssistantRenderer {
         turns: &[super::model::Turn],
         show_thoughts: bool,
     ) {
-        for group in super::model::group_turns_for_render(turns) {
-            match group {
-                super::model::TurnGroup::Row(i, turn) => {
-                    ui.push_id(index_offset + i, |ui| {
-                        Self::draw_turn_row(
-                            ui,
-                            md_cache,
-                            text_cache,
-                            conversation_id,
-                            index_offset + i,
-                            colors,
-                            turn,
-                            show_thoughts,
+        for (i, turn) in turns.iter().enumerate() {
+            ui.push_id(index_offset + i, |ui| {
+                Self::draw_turn_row(
+                    ui,
+                    md_cache,
+                    text_cache,
+                    conversation_id,
+                    index_offset + i,
+                    colors,
+                    turn,
+                    show_thoughts,
+                );
+            });
+        }
+    }
+
+    /// One completed tool call: a caret dropdown headed by status icon +
+    /// tool name, closed by default, whose body shows the call's input
+    /// summary, output preview, and file-edit diff where present (stint
+    /// 0455). Failures open by default and render in the danger hue — a
+    /// failure must never hide. Rows persisted before the dropdown payloads
+    /// existed render as a plain line (no caret over an empty body).
+    fn draw_tool_call_row(ui: &mut egui::Ui, colors: &Colors, turn: &super::model::Turn) {
+        let failed = turn.status == Some(ToolStatus::Failed);
+        let (icon, color) = if failed {
+            ("✗", colors.danger)
+        } else {
+            ("✓", colors.text_dim)
+        };
+        let header = RichText::new(format!("{icon} {}", turn.text))
+            .size(style::TEXT_CAPTION)
+            .monospace()
+            .color(color);
+        let has_body = turn.input_summary.is_some()
+            || turn.output_preview.is_some()
+            || turn.detail.is_some();
+        if !has_body {
+            ui.label(header);
+            ui.add_space(style::SPACE_SM);
+            return;
+        }
+        egui::CollapsingHeader::new(header)
+            .id_salt("tool_call")
+            .default_open(failed)
+            .show(ui, |ui| {
+                if let Some(input) = &turn.input_summary {
+                    ui.label(
+                        RichText::new(format!("in  {input}"))
+                            .size(style::TEXT_CAPTION)
+                            .monospace()
+                            .color(colors.text_dim),
+                    );
+                }
+                if let Some(output) = &turn.output_preview {
+                    ui.scope(|ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                        ui.label(
+                            RichText::new(format!("out {output}"))
+                                .size(style::TEXT_CAPTION)
+                                .monospace()
+                                .color(colors.text_dim),
                         );
                     });
                 }
-                super::model::TurnGroup::ToolRun(i, run) => {
-                    ui.push_id(index_offset + i, |ui| {
-                        Self::draw_tool_trail(ui, colors, run);
-                    });
+                if let Some(diff) = &turn.detail {
+                    Self::draw_diff_block(ui, colors, diff);
                 }
-            }
-        }
-    }
-
-    /// A compact, scannable trail for a run of consecutive successful tool
-    /// calls. A single call renders exactly like before (one line); more than
-    /// one collapses into a summary line the user can expand.
-    fn draw_tool_trail(ui: &mut egui::Ui, colors: &Colors, run: &[super::model::Turn]) {
-        if let [only] = run {
-            Self::draw_succeeded_tool_line(ui, colors, only);
-            return;
-        }
-        egui::CollapsingHeader::new(
-            RichText::new(format!("✓ {} tool calls", run.len()))
-                .size(style::TEXT_CAPTION)
-                .monospace()
-                .color(colors.text_dim),
-        )
-        .id_salt("tool_trail")
-        .default_open(false)
-        .show(ui, |ui| {
-            for turn in run {
-                Self::draw_succeeded_tool_line(ui, colors, turn);
-            }
-        });
-        ui.add_space(style::SPACE_SM);
-    }
-
-    /// A single completed, successful tool-call row — the pre-collapse look,
-    /// reused both for lone calls and inside an expanded trail. A file-edit
-    /// diff payload renders directly under its row: watching edits land is
-    /// the app-build flow's feedback loop (stint 0421).
-    fn draw_succeeded_tool_line(ui: &mut egui::Ui, colors: &Colors, turn: &super::model::Turn) {
-        ui.label(
-            RichText::new(format!("✓ {}", turn.text))
-                .size(style::TEXT_CAPTION)
-                .monospace()
-                .color(colors.text_dim),
-        );
-        if let Some(diff) = &turn.detail {
-            Self::draw_diff_block(ui, colors, diff);
-        }
+            });
         ui.add_space(style::SPACE_SM);
     }
 
@@ -469,7 +471,6 @@ impl AssistantRenderer {
         show_thoughts: bool,
     ) {
         let text = turn.text.as_str();
-        let status = turn.status;
         match turn.role {
             // Delivered app events are compact single-line rows.
             TurnRole::Event => {
@@ -481,23 +482,9 @@ impl AssistantRenderer {
                 );
                 ui.add_space(style::SPACE_SM);
             }
-            // Completed tool calls are compact single-line rows; a file-edit
-            // diff payload renders under the row.
+            // Completed tool calls are caret-dropdown rows (stint 0455).
             TurnRole::Tool => {
-                let (icon, color) = match status {
-                    Some(ToolStatus::Succeeded) | None => ("✓", colors.text_dim),
-                    Some(ToolStatus::Failed) => ("✗", colors.danger),
-                };
-                ui.label(
-                    RichText::new(format!("{icon} {text}"))
-                        .size(style::TEXT_CAPTION)
-                        .monospace()
-                        .color(color),
-                );
-                if let Some(diff) = &turn.detail {
-                    Self::draw_diff_block(ui, colors, diff);
-                }
-                ui.add_space(style::SPACE_SM);
+                Self::draw_tool_call_row(ui, colors, turn);
             }
             // User turns sit right-aligned in an outlined bubble, like every
             // mainstream chat client. The body is a galley measured up-front at
@@ -547,14 +534,28 @@ impl AssistantRenderer {
         }
     }
 
-    /// A tool call currently running inside the in-flight turn.
-    fn draw_active_tool_row(ui: &mut egui::Ui, colors: &Colors, tool: &str) {
-        ui.label(
-            RichText::new(format!("⟳ {tool} — running…"))
-                .size(style::TEXT_CAPTION)
-                .monospace()
-                .color(colors.accent),
-        );
+    /// A tool call currently running inside the in-flight turn. The input
+    /// summary shows what the call is doing (which file, which command)
+    /// while it runs.
+    fn draw_active_tool_row(
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        active: &super::model::ActiveToolCall,
+    ) {
+        let line = if active.input_summary.is_empty() {
+            format!("⟳ {} — running…", active.tool)
+        } else {
+            format!("⟳ {} {} — running…", active.tool, active.input_summary)
+        };
+        ui.scope(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+            ui.label(
+                RichText::new(line)
+                    .size(style::TEXT_CAPTION)
+                    .monospace()
+                    .color(colors.accent),
+            );
+        });
         ui.add_space(style::SPACE_SM);
     }
 
@@ -1374,6 +1375,8 @@ mod tests {
             status: None,
             thoughts: None,
             detail: None,
+            input_summary: None,
+            output_preview: None,
         };
 
         let mut raw_input = egui::RawInput::default();

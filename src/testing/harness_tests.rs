@@ -2271,3 +2271,164 @@ fn first_boot_shape_matches_new_context() {
         "new-context root pane is a terminal"
     );
 }
+
+// -- Stint 0456: focused TextInput typing ----------------------------------
+
+/// One pressed key event with no modifiers.
+fn pressed_key(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+/// The label of the first `text` semantic node starting with `prefix`, from
+/// the pane's current semantic tree.
+fn text_label_with_prefix(h: &HostHarness, pane_id: PaneId, prefix: &str) -> Option<String> {
+    let state = h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .map(|pane| pane.semantic_state())?;
+    state
+        .nodes
+        .iter()
+        .filter(|n| n.role == "text")
+        .filter_map(|n| n.label.clone())
+        .find(|label| label.starts_with(prefix))
+}
+
+/// Poll idle frames until the pane's semantic tree contains a `text` label
+/// exactly equal to `expected`, panicking after 30s with the last seen state.
+fn wait_for_text_label(h: &mut HostHarness, pane_id: PaneId, prefix: &str, expected: &str) {
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let seen = text_label_with_prefix(h, pane_id, prefix);
+        if seen.as_deref() == Some(expected) {
+            return;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "timed out waiting for label '{expected}' (last seen: {seen:?})"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Stint 0456: end-to-end typing contract for the declarative `TextInput`,
+/// against a REAL process app (`apps/dev/text-input-probe`). Keystrokes
+/// with no field focused route to the app's raw `KeyEvent` path; after a
+/// node-targeted click focuses the field, the dispatch gate
+/// (`focused_pane_text_surface`) keeps keystrokes with the host TextEdit —
+/// the guest's `keys:` counter must stay frozen — while `on_change`
+/// round-trips the draft and Enter fires `on_submit` without dropping
+/// focus.
+#[test]
+fn focused_text_input_receives_typing_and_enter_submits() {
+    let mut h = HostHarness::new();
+
+    let app_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/dev/text-input-probe");
+    h.app
+        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .expect("launch text-input-probe");
+    let pane_id = *h
+        .state()
+        .open_panes
+        .last()
+        .expect("a pane appears after launching text-input-probe");
+
+    // Real subprocess: poll for its first committed render before driving input.
+    let start = std::time::Instant::now();
+    loop {
+        h.run_frames(1);
+        let rendered = h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .is_some_and(
+                |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+            );
+        if rendered {
+            break;
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "text-input-probe did not render its first frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    h.focus_pane(pane_id);
+    h.run_frames(2);
+
+    // Baseline: no field focused — a keystroke routes to the app's raw
+    // KeyEvent path and bumps the guest's counter.
+    frame_with_events(&mut h, vec![pressed_key(egui::Key::X)]);
+    wait_for_text_label(&mut h, pane_id, "keys:", "keys:1");
+
+    // Focus the TextInput by node id, exactly as `plexi pane click --node`
+    // would. The claim routes through the focus reconciler at frame end.
+    let input_node_id = h.app.windows[h.app.active_window]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .map(|pane| pane.semantic_state())
+        .and_then(|state| {
+            state
+                .nodes
+                .iter()
+                .find(|n| n.role == "text_input")
+                .map(|n| n.id.clone())
+        })
+        .expect("semantic tree exposes the TextInput node");
+    h.inject_node_click(pane_id, &input_node_id, "left", None);
+    h.run_frames(2);
+
+    // Typing now lands in the host TextEdit: the draft round-trips through
+    // on_change while the guest's raw-key counter stays frozen.
+    frame_with_events(
+        &mut h,
+        vec![pressed_key(egui::Key::H), egui::Event::Text("h".to_string())],
+    );
+    wait_for_text_label(&mut h, pane_id, "draft:", "draft:h");
+    assert_eq!(
+        text_label_with_prefix(&h, pane_id, "keys:").as_deref(),
+        Some("keys:1"),
+        "keystrokes into the focused TextInput must not reach the app's KeyEvent path"
+    );
+
+    // Enter fires on_submit (the probe records the draft and clears it).
+    frame_with_events(&mut h, vec![pressed_key(egui::Key::Enter)]);
+    wait_for_text_label(&mut h, pane_id, "submitted:", "submitted:h");
+    wait_for_text_label(&mut h, pane_id, "draft:", "draft:");
+
+    // Focus survives the submit: more typing lands without another click.
+    frame_with_events(
+        &mut h,
+        vec![pressed_key(egui::Key::I), egui::Event::Text("i".to_string())],
+    );
+    wait_for_text_label(&mut h, pane_id, "draft:", "draft:i");
+    assert_eq!(
+        text_label_with_prefix(&h, pane_id, "keys:").as_deref(),
+        Some("keys:1"),
+        "post-submit typing must stay with the still-focused TextInput"
+    );
+
+    // Escape leaves the field without closing the app (the AppActive
+    // CloseApp binding must not fire); the next keystroke routes to the
+    // app's raw KeyEvent path again.
+    let panes_before = h.pane_count();
+    frame_with_events(&mut h, vec![pressed_key(egui::Key::Escape)]);
+    h.run_frames(2);
+    assert_eq!(
+        h.pane_count(),
+        panes_before,
+        "Escape in a focused TextInput must not close the app pane"
+    );
+    frame_with_events(&mut h, vec![pressed_key(egui::Key::Z)]);
+    wait_for_text_label(&mut h, pane_id, "keys:", "keys:2");
+}

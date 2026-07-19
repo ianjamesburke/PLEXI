@@ -1850,6 +1850,15 @@ class TextInput(Component):
     instance is stable across renders so the host can track focus state.
 
     When ``multiline=True``, Shift+Enter inserts a newline and Enter submits.
+
+    In a declarative ``view()`` tree, typing delivers ``UiValueChange`` and
+    Enter delivers ``UiAction``. Both handler ids default to this input's
+    ``id`` — pass ``on_change``/``on_submit`` only to route them elsewhere::
+
+        TextInput("guess", value=state.get("guess", ""))
+        # update():
+        #   UiValueChange(handler_id="guess", value=...)  → echo into state
+        #   UiAction(handler_id="guess")                  → Enter pressed
     """
     id: str
     placeholder: str = ""
@@ -1878,12 +1887,15 @@ class TextInput(Component):
         return self._submitted
 
     def to_node(self) -> dict:
+        # Handler ids default to the input's own id: the natural app code
+        # (`event.handler_id == "<my-input-id>"`) works without wiring
+        # on_change/on_submit explicitly (stint 0456).
         return {
             "type": "TextInput",
             "value": self.value or "",
             "placeholder": self.placeholder,
-            "on_change": self.on_change,
-            "on_submit": self.on_submit,
+            "on_change": self.on_change or self.id,
+            "on_submit": self.on_submit or self.id,
             "password": self.password,
         }
 

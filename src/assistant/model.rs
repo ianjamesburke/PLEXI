@@ -49,6 +49,14 @@ pub struct Turn {
     /// for every other role and for tools with no visual payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Compact summary of the tool call's input, for `TurnRole::Tool` rows
+    /// (stint 0455). Shown inside the row's caret dropdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_summary: Option<String>,
+    /// Bounded preview of the tool call's output, for `TurnRole::Tool` rows
+    /// (stint 0455). Shown inside the row's caret dropdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_preview: Option<String>,
 }
 
 impl Turn {
@@ -60,6 +68,8 @@ impl Turn {
             status: None,
             thoughts: None,
             detail: None,
+            input_summary: None,
+            output_preview: None,
         }
     }
 
@@ -72,48 +82,28 @@ impl Turn {
     }
 }
 
-/// A renderable unit within a turn range, paired with its absolute start
-/// index into the slice `group_turns_for_render` was called with (so the
-/// renderer can key widgets/caches by stable turn index).
-#[derive(Debug, PartialEq)]
-pub enum TurnGroup<'a> {
-    /// Any row that renders on its own: user/assistant/error/event turns, and
-    /// failed or denied tool calls — a failure must never disappear into a
-    /// collapsed trail.
-    Row(usize, &'a Turn),
-    /// A run of one or more consecutive successful tool calls, collapsed into
-    /// a single compact trail instead of one row per call.
-    ToolRun(usize, &'a [Turn]),
-}
-
-/// Group a turn slice for rendering. Pure function of `role`/`status` — no
-/// egui dependency — so the collapsing boundary (which calls bundle
-/// together, which stay visible) is testable directly. See stint 0416.
-pub fn group_turns_for_render(turns: &[Turn]) -> Vec<TurnGroup<'_>> {
-    let mut groups = Vec::new();
-    let mut i = 0;
-    while i < turns.len() {
-        if turns[i].role == TurnRole::Tool && turns[i].status == Some(ToolStatus::Succeeded) {
-            let start = i;
-            while i < turns.len()
-                && turns[i].role == TurnRole::Tool
-                && turns[i].status == Some(ToolStatus::Succeeded)
-            {
-                i += 1;
-            }
-            groups.push(TurnGroup::ToolRun(start, &turns[start..i]));
-        } else {
-            groups.push(TurnGroup::Row(i, &turns[i]));
-            i += 1;
-        }
-    }
-    groups
-}
-
 /// One tool call currently running inside the in-flight turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveToolCall {
     pub tool: String,
+    /// Compact summary of the call's input, shown on the running row.
+    pub input_summary: String,
+}
+
+/// Everything the model needs to commit a completed tool call as a
+/// transcript row (stint 0455). Built by the pane shell from the tool-flow
+/// event; the model never parses tool payloads itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinishedToolCall {
+    pub tool: String,
+    /// `None` = success; `Some(reason)` renders as a failed row.
+    pub error: Option<String>,
+    /// Unified diff payload for file edits (stint 0421).
+    pub detail: Option<String>,
+    /// Compact summary of the call's input.
+    pub input_summary: Option<String>,
+    /// Bounded preview of the call's output.
+    pub output_preview: Option<String>,
 }
 
 /// A permission sheet awaiting the user's decision (renderable state only —
@@ -155,6 +145,10 @@ pub struct StreamingState {
     pub in_flight: bool,
     pub partial_answer: String,
     pub partial_reasoning: String,
+    /// Answer text already committed to the transcript mid-turn — segments
+    /// flushed when a tool call started (stint 0455). `finish_turn` strips
+    /// this prefix from the broker's final text so only the tail commits.
+    pub committed_answer: String,
 }
 
 /// Observable lifecycle for `/compact`. This deliberately records feedback,
@@ -872,30 +866,56 @@ impl AssistantModel {
         }]
     }
 
-    /// A tool call started running inside the in-flight turn.
-    pub fn tool_call_started(&mut self, tool: &str) {
+    /// A tool call started running inside the in-flight turn. Any answer
+    /// text streamed so far commits as its own transcript row first, so the
+    /// tool row lands *below* the text that preceded it — the transcript
+    /// stays chronological instead of the whole reply committing at turn end
+    /// above nothing and below every tool call (stint 0455).
+    pub fn tool_call_started(&mut self, tool: &str, input_summary: &str) {
+        self.flush_streamed_segment();
         self.active_tools.push(ActiveToolCall {
             tool: tool.to_string(),
+            input_summary: input_summary.to_string(),
         });
     }
 
+    /// Commit the streamed-but-uncommitted answer text as an Assistant turn.
+    /// No-op outside an in-flight turn or when nothing has streamed.
+    fn flush_streamed_segment(&mut self) {
+        if !self.streaming.in_flight || self.streaming.partial_answer.is_empty() {
+            return;
+        }
+        let segment = std::mem::take(&mut self.streaming.partial_answer);
+        self.streaming.committed_answer.push_str(&segment);
+        // `committed_answer` tracks the exact streamed text for the
+        // prefix-strip in `finish_turn`; the transcript row gets a trimmed
+        // copy so inter-segment newlines don't render as blank bubbles.
+        let display = segment.trim();
+        if display.is_empty() {
+            // Whitespace-only segment: nothing to show. Any streamed
+            // reasoning stays pending and attaches to the next commit.
+            return;
+        }
+        let mut turn = Turn::now(TurnRole::Assistant, display);
+        if !self.streaming.partial_reasoning.is_empty() {
+            turn.thoughts = Some(std::mem::take(&mut self.streaming.partial_reasoning));
+        }
+        self.push_flight_turn(turn);
+    }
+
     /// A tool call finished: drop its running row and append a completed
-    /// tool turn. `detail` is an optional render payload (a file edit's
-    /// unified diff) shown with the row. Returns the persistence effect.
-    pub fn tool_call_finished(
-        &mut self,
-        tool: &str,
-        error: Option<String>,
-        detail: Option<String>,
-    ) -> Vec<AssistantEffect> {
-        if let Some(pos) = self.active_tools.iter().position(|t| t.tool == tool) {
+    /// tool turn. Returns the persistence effect.
+    pub fn tool_call_finished(&mut self, call: FinishedToolCall) -> Vec<AssistantEffect> {
+        if let Some(pos) = self.active_tools.iter().position(|t| t.tool == call.tool) {
             self.active_tools.remove(pos);
         }
-        let mut turn = match error {
-            None => Turn::tool(tool.to_string(), ToolStatus::Succeeded),
-            Some(e) => Turn::tool(format!("{tool} — {e}"), ToolStatus::Failed),
+        let mut turn = match &call.error {
+            None => Turn::tool(call.tool.clone(), ToolStatus::Succeeded),
+            Some(e) => Turn::tool(format!("{} — {e}", call.tool), ToolStatus::Failed),
         };
-        turn.detail = detail;
+        turn.detail = call.detail;
+        turn.input_summary = call.input_summary;
+        turn.output_preview = call.output_preview;
         self.push_flight_turn(turn);
         vec![AssistantEffect::SessionWrite {
             conversation_id: self.conversation_id.clone(),
@@ -981,17 +1001,37 @@ impl AssistantModel {
         match outcome {
             Ok(text) => {
                 log::info!(
-                    "assistant[{}]: turn end ({} chars, {} reasoning chars)",
+                    "assistant[{}]: turn end ({} chars, {} committed mid-turn, {} reasoning chars)",
                     self.conversation_id,
                     text.len(),
+                    self.streaming.committed_answer.len(),
                     self.streaming.partial_reasoning.len()
                 );
-                // An empty reply with no reasoning means nothing was produced —
-                // e.g. a turn cancelled before any text streamed. Don't commit
-                // an empty assistant bubble; just reset and let any folded
-                // follow-up turn do the talking.
-                if !text.is_empty() || !self.streaming.partial_reasoning.is_empty() {
-                    let mut turn = Turn::now(TurnRole::Assistant, text);
+                // Segments flushed when tool calls started (stint 0455) are
+                // already in the transcript — commit only the remaining tail
+                // of the broker's final text. A prefix mismatch means the
+                // final text diverged from the streamed deltas; fall back to
+                // the full text so nothing the model said is lost.
+                let tail = match text.strip_prefix(self.streaming.committed_answer.as_str()) {
+                    Some(tail) => tail.to_string(),
+                    None => {
+                        if !self.streaming.committed_answer.is_empty() {
+                            log::warn!(
+                                "assistant[{}]: final text does not start with the {} chars committed mid-turn; committing full text",
+                                self.conversation_id,
+                                self.streaming.committed_answer.len()
+                            );
+                        }
+                        text
+                    }
+                };
+                // An empty tail with no reasoning means nothing new was
+                // produced — e.g. a turn cancelled before any text streamed,
+                // or a reply that ended on a tool call. Don't commit an
+                // empty assistant bubble.
+                let tail = tail.trim();
+                if !tail.is_empty() || !self.streaming.partial_reasoning.is_empty() {
+                    let mut turn = Turn::now(TurnRole::Assistant, tail);
                     if !self.streaming.partial_reasoning.is_empty() {
                         turn.thoughts = Some(std::mem::take(&mut self.streaming.partial_reasoning));
                     }
@@ -1020,6 +1060,25 @@ mod tests {
     fn submitted(model: &mut AssistantModel, text: &str) -> Vec<AssistantEffect> {
         model.composer = text.to_string();
         model.submit()
+    }
+
+    fn tool_started(m: &mut AssistantModel, tool: &str) {
+        m.tool_call_started(tool, "{}");
+    }
+
+    fn tool_finished(
+        m: &mut AssistantModel,
+        tool: &str,
+        error: Option<String>,
+        detail: Option<String>,
+    ) -> Vec<AssistantEffect> {
+        m.tool_call_finished(FinishedToolCall {
+            tool: tool.to_string(),
+            error,
+            detail,
+            input_summary: Some("{}".to_string()),
+            output_preview: None,
+        })
     }
 
     #[test]
@@ -1096,7 +1155,7 @@ mod tests {
         submitted(&mut m, "question");
         let old_id = m.conversation_id.clone();
         assert!(m.streaming.in_flight);
-        m.tool_call_started("csv.read_range");
+        tool_started(&mut m, "csv.read_range");
         m.permission_requested("csv.write_range", "{}");
 
         let effects = submitted(&mut m, "/clear");
@@ -1171,8 +1230,8 @@ mod tests {
     fn tool_rows_stay_with_their_turn_above_mid_turn_output() {
         let mut m = AssistantModel::fresh();
         submitted(&mut m, "do it");
-        m.tool_call_started("csv.read_range");
-        m.tool_call_finished("csv.read_range", None, None);
+        tool_started(&mut m, "csv.read_range");
+        tool_finished(&mut m, "csv.read_range", None, None);
         submitted(&mut m, "/help");
         let id = m.conversation_id.clone();
         m.finish_turn(&id, Ok("done".to_string()));
@@ -1494,19 +1553,19 @@ mod tests {
         let mut m = AssistantModel::fresh();
         submitted(&mut m, "do work");
 
-        m.tool_call_started("csv.read_range");
+        tool_started(&mut m, "csv.read_range");
         assert_eq!(m.active_tools.len(), 1);
         assert_eq!(m.active_tools[0].tool, "csv.read_range");
 
-        let effects = m.tool_call_finished("csv.read_range", None, None);
+        let effects = tool_finished(&mut m, "csv.read_range", None, None);
         assert!(m.active_tools.is_empty());
         let row = m.turns.last().unwrap();
         assert_eq!(row.role, TurnRole::Tool);
         assert_eq!(row.status, Some(ToolStatus::Succeeded));
         assert!(matches!(&effects[0], AssistantEffect::SessionWrite { .. }));
 
-        m.tool_call_started("csv.write_range");
-        m.tool_call_finished("csv.write_range", Some("tool_timeout".to_string()), None);
+        tool_started(&mut m, "csv.write_range");
+        tool_finished(&mut m, "csv.write_range", Some("tool_timeout".to_string()), None);
         let row = m.turns.last().unwrap();
         assert_eq!(row.status, Some(ToolStatus::Failed));
         assert!(row.text.contains("tool_timeout"));
@@ -1518,8 +1577,9 @@ mod tests {
     fn tool_turn_detail_attaches_and_round_trips() {
         let mut m = AssistantModel::fresh();
         submitted(&mut m, "edit the app");
-        m.tool_call_started("host.files.edit");
-        m.tool_call_finished(
+        tool_started(&mut m, "host.files.edit");
+        tool_finished(
+            &mut m,
             "host.files.edit",
             None,
             Some("--- a/x\n+++ b/x\n".to_string()),
@@ -1541,16 +1601,16 @@ mod tests {
         let mut m = AssistantModel::fresh();
         submitted(&mut m, "build me an app");
 
-        m.tool_call_started("host.files.write");
-        m.tool_call_finished("host.files.write", None, None);
+        tool_started(&mut m, "host.files.write");
+        tool_finished(&mut m, "host.files.write", None, None);
 
         // A follow-up sent while the turn is still streaming is queued, not
         // dispatched immediately.
         submitted(&mut m, "also add a footer");
         assert_eq!(m.queued_user_turns, 1);
 
-        m.tool_call_started("plexi.app_check");
-        m.tool_call_finished("plexi.app_check", None, None);
+        tool_started(&mut m, "plexi.app_check");
+        tool_finished(&mut m, "plexi.app_check", None, None);
 
         let id = m.conversation_id.clone();
         m.finish_turn(&id, Ok("Done — app scaffolded.".to_string()));
@@ -1647,7 +1707,7 @@ mod tests {
     fn finish_turn_clears_tool_and_permission_state() {
         let mut m = AssistantModel::fresh();
         submitted(&mut m, "q");
-        m.tool_call_started("csv.read_range");
+        tool_started(&mut m, "csv.read_range");
         m.permission_requested("csv.write_range", "{}");
         let id = m.conversation_id.clone();
         m.finish_turn(&id, Err("worker died".to_string()));
@@ -1701,39 +1761,123 @@ mod tests {
         assert_eq!(legacy.status, None);
     }
 
-    /// Stint 0416: only a run of consecutive *successful* tool calls
-    /// collapses into a trail. A failure breaks the run and always renders
-    /// on its own — it must never disappear into a collapsed cluster — and
-    /// every other role never groups at all.
+    /// Stint 0455: answer text streamed before a tool call commits as its
+    /// own Assistant turn the moment the tool starts, so the transcript
+    /// reads chronologically — text, then the tool row below it, then the
+    /// final reply as a separate bubble.
     #[test]
-    fn group_turns_for_render_collapses_only_consecutive_successful_tool_calls() {
-        let turns = vec![
-            Turn::now(TurnRole::User, "hi"),
-            Turn::tool("host.files.write", ToolStatus::Succeeded),
-            Turn::tool("host.files.read", ToolStatus::Succeeded),
-            Turn::tool("host.terminals.write", ToolStatus::Failed),
-            Turn::tool("plexi.app_check", ToolStatus::Succeeded),
-            Turn::now(TurnRole::Assistant, "done"),
-        ];
-        let groups = group_turns_for_render(&turns);
-        match groups.as_slice() {
-            [
-                TurnGroup::Row(0, user),
-                TurnGroup::ToolRun(1, run_ab),
-                TurnGroup::Row(3, failed),
-                TurnGroup::ToolRun(4, run_d),
-                TurnGroup::Row(5, done),
-            ] => {
-                assert_eq!(user.text, "hi");
-                assert_eq!(run_ab.len(), 2);
-                assert_eq!(run_ab[0].text, "host.files.write");
-                assert_eq!(run_ab[1].text, "host.files.read");
-                assert_eq!(failed.status, Some(ToolStatus::Failed));
-                assert_eq!(run_d.len(), 1, "a lone success is still its own trail unit");
-                assert_eq!(done.text, "done");
-            }
-            other => panic!("unexpected grouping: {other:?}"),
-        }
+    fn streamed_text_flushes_before_tool_rows_and_tail_commits_at_finish() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "build the app");
+
+        m.apply_answer_delta("Let me build this for you.");
+        m.apply_reasoning_delta("plan the scaffold");
+        tool_started(&mut m, "host.terminals.run");
+        assert_eq!(
+            m.turns.last().unwrap().role,
+            TurnRole::Assistant,
+            "streamed segment commits when the tool call starts"
+        );
+        assert_eq!(m.turns.last().unwrap().text, "Let me build this for you.");
+        assert_eq!(
+            m.turns.last().unwrap().thoughts.as_deref(),
+            Some("plan the scaffold"),
+            "reasoning streamed before the flush rides on the segment"
+        );
+        tool_finished(&mut m, "host.terminals.run", None, None);
+
+        m.apply_answer_delta("\n\nNow the code.");
+        tool_started(&mut m, "host.files.write");
+        tool_finished(&mut m, "host.files.write", None, None);
+
+        let id = m.conversation_id.clone();
+        m.finish_turn(
+            &id,
+            Ok("Let me build this for you.\n\nNow the code.\n\nDone — try it!".to_string()),
+        );
+
+        let rows: Vec<_> = m.turns.iter().map(|t| (t.role, t.text.clone())).collect();
+        assert_eq!(
+            rows,
+            vec![
+                (TurnRole::User, "build the app".to_string()),
+                (TurnRole::Assistant, "Let me build this for you.".to_string()),
+                (TurnRole::Tool, "host.terminals.run".to_string()),
+                (TurnRole::Assistant, "Now the code.".to_string()),
+                (TurnRole::Tool, "host.files.write".to_string()),
+                (TurnRole::Assistant, "Done — try it!".to_string()),
+            ],
+            "segments, tool rows, and the tail commit in chronological order"
+        );
+        assert_eq!(m.streaming, StreamingState::default());
+    }
+
+    /// Stint 0455: when the broker's final text diverges from the streamed
+    /// deltas, the full text commits (nothing the model said is lost), at
+    /// the cost of repeating the flushed segments.
+    #[test]
+    fn finish_turn_prefix_mismatch_falls_back_to_full_text() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "q");
+        m.apply_answer_delta("streamed prefix");
+        tool_started(&mut m, "host.files.read");
+        tool_finished(&mut m, "host.files.read", None, None);
+        let id = m.conversation_id.clone();
+        m.finish_turn(&id, Ok("completely different final".to_string()));
+        assert_eq!(m.turns.last().unwrap().text, "completely different final");
+    }
+
+    /// Stint 0455: a reply that ends on a tool call (no text after it)
+    /// commits no trailing empty bubble.
+    #[test]
+    fn finish_turn_with_fully_flushed_text_commits_no_empty_bubble() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "q");
+        m.apply_answer_delta("Working on it.");
+        tool_started(&mut m, "host.files.write");
+        tool_finished(&mut m, "host.files.write", None, None);
+        let id = m.conversation_id.clone();
+        m.finish_turn(&id, Ok("Working on it.".to_string()));
+        let rows: Vec<_> = m.turns.iter().map(|t| (t.role, t.text.clone())).collect();
+        assert_eq!(
+            rows,
+            vec![
+                (TurnRole::User, "q".to_string()),
+                (TurnRole::Assistant, "Working on it.".to_string()),
+                (TurnRole::Tool, "host.files.write".to_string()),
+            ],
+            "no empty assistant bubble after the last tool row"
+        );
+    }
+
+    /// Stint 0455: the caret-dropdown payloads ride on the tool turn and
+    /// survive serde; rows persisted before the fields existed still load.
+    #[test]
+    fn tool_turn_dropdown_payloads_round_trip() {
+        let mut m = AssistantModel::fresh();
+        submitted(&mut m, "q");
+        m.tool_call_started("host.files.grep", r#"{"pattern": "draft"}"#);
+        assert_eq!(m.active_tools[0].input_summary, r#"{"pattern": "draft"}"#);
+        m.tool_call_finished(FinishedToolCall {
+            tool: "host.files.grep".to_string(),
+            error: None,
+            detail: None,
+            input_summary: Some(r#"{"pattern": "draft"}"#.to_string()),
+            output_preview: Some(r#"{"matches": 3}"#.to_string()),
+        });
+        let row = m.turns.last().unwrap();
+        assert_eq!(row.input_summary.as_deref(), Some(r#"{"pattern": "draft"}"#));
+        assert_eq!(row.output_preview.as_deref(), Some(r#"{"matches": 3}"#));
+        let json = serde_json::to_string(row).unwrap();
+        let back: Turn = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.input_summary, row.input_summary);
+        assert_eq!(back.output_preview, row.output_preview);
+        let legacy: Turn = serde_json::from_str(
+            r#"{"role":"tool","text":"csv.read_range","created_at":"2026-01-01T00:00:00Z","status":"succeeded"}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.input_summary, None);
+        assert_eq!(legacy.output_preview, None);
     }
 
     #[test]

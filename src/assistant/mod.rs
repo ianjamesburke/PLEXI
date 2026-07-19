@@ -18,7 +18,7 @@ pub mod settings;
 pub mod skills;
 pub mod store;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -137,16 +137,20 @@ enum PermissionReply {
 
 /// Tool-flow notifications from the broker worker thread to the pane.
 enum ToolFlowEvent {
-    /// A tool call is about to run (passed the gate).
-    Started { tool: String },
+    /// A tool call is about to run (passed the gate). `input_summary` is a
+    /// compact one-line summary of the call input for the running row.
+    Started { tool: String, input_summary: String },
     /// A tool call finished (`error: None` = success). `detail` is an
     /// optional render payload lifted from the tool output — the unified
     /// diff of a `host.files.edit`/`host.files.write`, shown in the
-    /// transcript so the user watches the app change.
+    /// transcript so the user watches the app change. `input_summary` and
+    /// `output_preview` feed the row's caret dropdown (stint 0455).
     Finished {
         tool: String,
         error: Option<String>,
         detail: Option<String>,
+        input_summary: Option<String>,
+        output_preview: Option<String>,
     },
     /// An ask-gated tool needs a user decision. The worker is blocked on
     /// `reply` until the sheet resolves (or the pane drops the sender).
@@ -177,6 +181,11 @@ struct AssistantToolHooks {
     ask_tools: HashSet<String>,
     /// Tools the user allowed with "remember" during this turn.
     session_allowed: Mutex<HashSet<String>>,
+    /// Input summary per in-flight tool, stashed in `before_call` so
+    /// `after_call` (which is not handed the input) can attach it to the
+    /// finished row. Keyed by tool name — calls within one turn run
+    /// sequentially, so a name is in flight at most once.
+    in_flight_inputs: Mutex<HashMap<String, String>>,
     flow_tx: Sender<ToolFlowEvent>,
     actor_id: String,
     actor_scope: ActorScope,
@@ -211,8 +220,14 @@ impl ToolCallHooks for AssistantToolHooks {
                 }
             }
         }
+        let input_summary = summarize_input(input_json);
+        self.in_flight_inputs
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), input_summary.clone());
         let _ = self.flow_tx.send(ToolFlowEvent::Started {
             tool: name.to_string(),
+            input_summary,
         });
         Ok(())
     }
@@ -222,9 +237,16 @@ impl ToolCallHooks for AssistantToolHooks {
             tool: name.to_string(),
             error: error.map(str::to_string),
             detail: tool_render_detail(name, output_json),
+            input_summary: self.in_flight_inputs.lock().unwrap().remove(name),
+            output_preview: output_json
+                .map(|output| bounded_head_tail(output, TOOL_OUTPUT_PREVIEW_BUDGET))
+                .filter(|preview| !preview.is_empty()),
         });
     }
 }
+
+/// Character budget for a finished tool row's output preview (stint 0455).
+const TOOL_OUTPUT_PREVIEW_BUDGET: usize = 600;
 
 /// Render payload for a finished tool call: the unified diff a file
 /// edit/write reports. Everything else renders as a plain trail line.
@@ -877,6 +899,7 @@ impl AssistantApp {
         dispatcher.set_hooks(Arc::new(AssistantToolHooks {
             ask_tools,
             session_allowed: Mutex::new(HashSet::new()),
+            in_flight_inputs: Mutex::new(HashMap::new()),
             flow_tx: self.flow_tx.clone(),
             actor_id,
             actor_scope,
@@ -1505,65 +1528,18 @@ impl AssistantApp {
     /// and queued app-event deliveries.
     fn pump_turn_io(&mut self) {
         self.pump_deliveries();
-        let flow_events: Vec<ToolFlowEvent> = self.flow_rx.try_iter().collect();
-        for event in flow_events {
-            match event {
-                ToolFlowEvent::Started { tool } => {
-                    log::info!("assistant: tool '{tool}' running");
-                    self.model.tool_call_started(&tool);
-                }
-                ToolFlowEvent::Finished {
-                    tool,
-                    error,
-                    detail,
-                } => {
-                    log::info!(
-                        "assistant: tool '{tool}' finished ({})",
-                        if error.is_none() { "ok" } else { "error" }
-                    );
-                    let audit_target = if tool.starts_with("host.") {
-                        tool.clone()
-                    } else {
-                        Self::connector_target(&tool)
-                    };
-                    self.audit.append(&AuditEvent::now(
-                        "tool_call",
-                        &audit_target,
-                        if error.is_none() { "ok" } else { "error" },
-                        error.as_deref().unwrap_or(""),
-                    ));
-                    let effects = self.model.tool_call_finished(&tool, error, detail);
-                    self.execute_effects(effects);
-                }
-                ToolFlowEvent::Ask {
-                    tool,
-                    input_json,
-                    actor_id,
-                    actor_scope,
-                    reply,
-                } => {
-                    log::info!("assistant: permission sheet shown for '{tool}'");
-                    self.model
-                        .permission_requested(&tool, &summarize_input(&input_json));
-                    self.pending_reply = Some(reply);
-                    self.pending_connector_actor = Some((actor_id, actor_scope));
-                }
-                ToolFlowEvent::HostCall {
-                    tool,
-                    input_json,
-                    reply,
-                } => self.handle_host_call(&tool, &input_json, reply),
-            }
+        // Stream deltas and tool-flow events arrive on separate channels
+        // with no cross-channel ordering, but the worker sends a tool call's
+        // preceding text deltas strictly before its `Started` event — so
+        // draining deltas before each flow event keeps the transcript
+        // chronological: text streamed before a tool call is applied (and
+        // flushed by `tool_call_started`) before the tool row commits
+        // (stint 0455).
+        while let Ok(event) = self.flow_rx.try_recv() {
+            self.drain_stream_deltas();
+            self.handle_flow_event(event);
         }
-        if let Some(rx) = &self.delta_rx {
-            let deltas: Vec<StreamDelta> = rx.try_iter().collect();
-            for delta in deltas {
-                match delta {
-                    StreamDelta::Answer(chunk) => self.model.apply_answer_delta(&chunk),
-                    StreamDelta::Reasoning(chunk) => self.model.apply_reasoning_delta(&chunk),
-                }
-            }
-        }
+        self.drain_stream_deltas();
         while let Ok(outcome) = self.outcome_rx.try_recv() {
             self.delta_rx = None;
             self.pending_reply = None;
@@ -1591,6 +1567,81 @@ impl AssistantApp {
                 users
             );
             self.start_event_turn(lines.len() + users);
+        }
+    }
+
+    /// Apply every pending stream delta to the model.
+    fn drain_stream_deltas(&mut self) {
+        if let Some(rx) = &self.delta_rx {
+            let deltas: Vec<StreamDelta> = rx.try_iter().collect();
+            for delta in deltas {
+                match delta {
+                    StreamDelta::Answer(chunk) => self.model.apply_answer_delta(&chunk),
+                    StreamDelta::Reasoning(chunk) => self.model.apply_reasoning_delta(&chunk),
+                }
+            }
+        }
+    }
+
+    /// Handle one tool-flow event from the broker worker thread.
+    fn handle_flow_event(&mut self, event: ToolFlowEvent) {
+        match event {
+            ToolFlowEvent::Started {
+                tool,
+                input_summary,
+            } => {
+                log::info!("assistant: tool '{tool}' running");
+                self.model.tool_call_started(&tool, &input_summary);
+            }
+            ToolFlowEvent::Finished {
+                tool,
+                error,
+                detail,
+                input_summary,
+                output_preview,
+            } => {
+                log::info!(
+                    "assistant: tool '{tool}' finished ({})",
+                    if error.is_none() { "ok" } else { "error" }
+                );
+                let audit_target = if tool.starts_with("host.") {
+                    tool.clone()
+                } else {
+                    Self::connector_target(&tool)
+                };
+                self.audit.append(&AuditEvent::now(
+                    "tool_call",
+                    &audit_target,
+                    if error.is_none() { "ok" } else { "error" },
+                    error.as_deref().unwrap_or(""),
+                ));
+                let effects = self.model.tool_call_finished(model::FinishedToolCall {
+                    tool,
+                    error,
+                    detail,
+                    input_summary,
+                    output_preview,
+                });
+                self.execute_effects(effects);
+            }
+            ToolFlowEvent::Ask {
+                tool,
+                input_json,
+                actor_id,
+                actor_scope,
+                reply,
+            } => {
+                log::info!("assistant: permission sheet shown for '{tool}'");
+                self.model
+                    .permission_requested(&tool, &summarize_input(&input_json));
+                self.pending_reply = Some(reply);
+                self.pending_connector_actor = Some((actor_id, actor_scope));
+            }
+            ToolFlowEvent::HostCall {
+                tool,
+                input_json,
+                reply,
+            } => self.handle_host_call(&tool, &input_json, reply),
         }
     }
 
