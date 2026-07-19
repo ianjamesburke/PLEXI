@@ -109,7 +109,12 @@ impl App for AudioPlayerApp {
         format!("Audio - {}", self.filename())
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &AppRenderContext<'_>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        _ctx: &AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         self.sync_position();
         if self.playing {
             ui.ctx().request_repaint();

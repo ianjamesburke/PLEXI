@@ -1855,7 +1855,13 @@ impl FileBrowserApp {
         }
     }
 
-    fn draw_toolbar(&mut self, ui: &mut egui::Ui, colors: &Colors, layout: FileBrowserLayout) {
+    fn draw_toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        layout: FileBrowserLayout,
+        pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         // Path gets its own full-width row, elided from the left so the
         // leaf directory always stays visible. The old single-row layout
         // (path left, chips right) collided at narrow widths: the chips
@@ -1904,8 +1910,15 @@ impl FileBrowserApp {
                             );
                         }
                         let mut show_hidden = self.columns.show_hidden;
-                        if ui.checkbox(&mut show_hidden, "Show hidden files").changed() {
-                            self.columns.show_hidden = show_hidden;
+                        let show_hidden_resp = ui.checkbox(&mut show_hidden, "Show hidden files");
+                        let synthetic_toggle =
+                            pending_click.is_some_and(|c| c.targets_id(show_hidden_resp.id));
+                        if show_hidden_resp.changed() || synthetic_toggle {
+                            self.columns.show_hidden = if show_hidden_resp.changed() {
+                                show_hidden
+                            } else {
+                                !self.columns.show_hidden
+                            };
                             self.refresh_preserving_filter();
                             log::info!(
                                 "file_browser: show_hidden changed to {}",
@@ -2028,6 +2041,14 @@ impl FileBrowserApp {
             });
         });
     }
+
+    /// Read `show_hidden` from outside the module (cross-module host tests
+    /// reach `FileBrowserApp` through `AppRuntime::Builtin` + `as_any_mut`,
+    /// where the private `columns` field is unreachable).
+    #[cfg(test)]
+    pub(crate) fn show_hidden(&self) -> bool {
+        self.columns.show_hidden
+    }
 }
 
 impl App for FileBrowserApp {
@@ -2047,7 +2068,12 @@ impl App for FileBrowserApp {
             .unwrap_or_else(|| "/".to_string())
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &AppRenderContext<'_>,
+        pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         let colors = ctx.colors;
 
         egui::Frame::new()
@@ -2056,7 +2082,7 @@ impl App for FileBrowserApp {
             .show(ui, |ui| {
                 let layout = FileBrowserLayout::for_width(ui.available_width());
                 let show_inspector = self.should_show_inspector(ui.available_width());
-                self.draw_toolbar(ui, colors, layout);
+                self.draw_toolbar(ui, colors, layout, pending_click);
 
                 if self.in_search {
                     self.draw_search_bar(ui, colors);

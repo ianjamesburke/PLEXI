@@ -80,7 +80,12 @@ impl App for ImageViewerApp {
         format!("Image - {}", self.filename())
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &AppRenderContext<'_>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        _ctx: &AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         self.load_texture(ui.ctx());
 
         ui.horizontal(|ui| {

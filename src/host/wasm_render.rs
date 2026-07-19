@@ -229,7 +229,7 @@ fn cross_align(a: Alignment) -> egui::Align {
 fn node_click_matches(pending_click: Option<crate::host::pane::PendingPaneClick>, id: u32) -> bool {
     matches!(
         pending_click.map(|c| c.target),
-        Some(crate::host::pane::PaneClickTarget::Node(n)) if n == id
+        Some(crate::host::pane::PaneClickTarget::Node(n)) if n == u64::from(id)
     )
 }
 

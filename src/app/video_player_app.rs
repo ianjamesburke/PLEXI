@@ -187,7 +187,12 @@ impl App for VideoPlayerApp {
         format!("Video - {}", self.filename())
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &AppRenderContext<'_>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        _ctx: &AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         self.tick_position();
         self.drain_frames(ui.ctx());
         if self.playing {
