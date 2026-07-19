@@ -7,11 +7,6 @@ source  = "local:wikipedia"
 version = "bundled"
 
 [[app]]
-id      = "csv_viewer"
-source  = "local:csv_viewer"
-version = "bundled"
-
-[[app]]
 id      = "snake"
 source  = "local:snake"
 version = "bundled"

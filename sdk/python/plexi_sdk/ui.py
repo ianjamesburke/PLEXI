@@ -387,16 +387,16 @@ class HStack(Component):
     def to_node(self) -> "dict | None":
         children = []
         for child in self.children:
-            node = child.to_node()
-            if node is None:
+            child_node = child.to_node()
+            if child_node is None:
                 return None
-            children.append(node)
-        node: dict = {"type": "row", "children": children, "grow": self.grow}
+            children.append(child_node)
+        row_node: dict = {"type": "row", "children": children, "grow": self.grow}
         # Emit gap only when set so the host can distinguish "unset" (apply the
         # default row spacing) from an explicit "gap=0" (pack flush).
         if self.gap is not None:
-            node["gap"] = self.gap
-        return node
+            row_node["gap"] = self.gap
+        return row_node
 
 
 class Sized(Component):
@@ -2314,11 +2314,11 @@ class Column(Component):
     def to_node(self) -> "dict | None":
         children = []
         for child in self.children:
-            node = child.to_node()
-            if node is None:
+            child_node = child.to_node()
+            if child_node is None:
                 return None
-            children.append(node)
-        node: dict = {
+            children.append(child_node)
+        column_node: dict = {
             "type": "column",
             "children": children,
             "align": self.align,
@@ -2327,8 +2327,8 @@ class Column(Component):
         # Emit gap only when the app set one, so the host can tell "unset"
         # (apply the default) from an explicit "gap=0" (pack flush).
         if self.gap is not None:
-            node["gap"] = self.gap
-        return node
+            column_node["gap"] = self.gap
+        return column_node
 
 
 # ── Public render entry point ──────────────────────────────────────────────

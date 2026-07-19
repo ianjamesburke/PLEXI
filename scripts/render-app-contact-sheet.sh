@@ -274,7 +274,6 @@ make_contact_sheet() {
 
 apps=(
   calc
-  csv_viewer
   github-issues
   logs
   permissions

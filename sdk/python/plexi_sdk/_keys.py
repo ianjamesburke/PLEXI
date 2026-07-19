@@ -23,7 +23,10 @@ _KEY_ALIASES: dict[str, str] = {
     "`": "backtick",
     ",": "comma",
     ".": "period",
-    "/": "slash",
+    # "/" is deliberately absent (stint 0462): the host already sends "/" as
+    # the literal character (python_key_name() in wasm_python.rs), matching
+    # what apps like logs.py check for (`key == "/"`). Aliasing it to "slash"
+    # here would re-break the exact bug that stint fixed.
 }
 
 

@@ -163,19 +163,23 @@ def update(event) -> list:
 def view():
     data = _state()
     subtitle = "Search" if data["searching"] else _subtitle(data)
+    # Search replaces the level TabBar row rather than stacking a third header
+    # row — keeps Logs' header height in line with other Core apps (Snake),
+    # which never stack more than AppBar + one control row.
+    header_row: Component = (
+        TextInput(
+            SEARCH_INPUT,
+            value=data["query"],
+            placeholder="filter by target or message",
+            on_change=SEARCH_INPUT,
+        )
+        if data["searching"]
+        else TabBar(LEVEL_TAB, LEVELS, active=LEVELS.index(data["filter"]))
+    )
     children: list[Component] = [
         AppBar("Logs", subtitle),
-        TabBar(LEVEL_TAB, LEVELS, active=LEVELS.index(data["filter"])),
+        header_row,
     ]
-    if data["searching"]:
-        children.append(
-            TextInput(
-                SEARCH_INPUT,
-                value=data["query"],
-                placeholder="filter by target or message",
-                on_change=SEARCH_INPUT,
-            )
-        )
     children.extend(
         [
             Scrollable(_body(data)),

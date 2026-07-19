@@ -20,26 +20,6 @@
       "checksum": "c8e7bb495c67e43348c27269d56399f4ee1876f94a2f77111a35f509aac9200c"
     },
     {
-      "id": "csv_viewer",
-      "name": "CSV Viewer",
-      "version": "0.1.0",
-      "description": "Browse and inspect CSV files through host-scoped file listing.",
-      "publisher": "plexi",
-      "capabilities": [
-        "fs.read"
-      ],
-      "tags": [
-        "core",
-        "free",
-        "reviewed-native"
-      ],
-      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
-      "reviewed_native": true,
-      "visibility": "public",
-      "price": "free",
-      "checksum": "c5e8012c7750d9ca973e660fd6d92e8e3f8821af8fc0a7740cd91f66c08e72e5"
-    },
-    {
       "id": "logs",
       "name": "Logs",
       "version": "0.3.0",
