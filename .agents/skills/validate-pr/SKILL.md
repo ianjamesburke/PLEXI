@@ -123,15 +123,15 @@ Evaluate the conclusion, **then apply overrides**:
 
 **Do not re-run `cargo test` in validation.** The suite ran during implementation; the Test Evidence block is the authoritative record. Validation owns diff review and user acceptance, not test execution. Never re-run a suite that the Ship Log already reports as green.
 
-**Default mode: install the binary.** Always run `just pr-install $PR_NUMBER` unless one of the explicit skip conditions below applies. The install cost is low and gives the user the option to manually exercise the change.
+**Default mode: install the binary.** Always run `just pr-install $PR_NUMBER` unless the skip gate below applies. The install cost is low and gives the user the option to manually exercise the change.
 
-**Skip install only if ALL of the following hold:**
-- Test evidence explicitly says `install skippable — full coverage`
-- No `apps/` files changed
-- Done When does not require binary exercise
-- Changes are exclusively: cosmetic constants, help strings, markdown, or config TOML values
+**Skip install when the Test Evidence conclusion says to.** The `/testing` skill's Step 5 conclusion rules are the single source of truth for this decision — consume the conclusion verbatim, do not re-derive it here:
+- `install skippable — full coverage` or `docs-only` → diff-review mode
+- `binary install required` → install
+- Block absent → fall through to the install-trigger list below
+- Override regardless of conclusion: `apps/` files changed, or Done When requires binary exercise
 
-If skipping → mark Install row as `skipped — <reason>`, proceed to Step 2b (automated quality checks).
+If skipping → mark Install row as `skipped — <reason>`, proceed to Step 3 (write and surface the testing block).
 
 ---
 
@@ -175,50 +175,19 @@ fi
 PR_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= "//' | tr -d '"')
 ```
 
-Wait for completion. The binary is now installed (`$PR_VERSION`). Move immediately to Step 2b.
+Wait for completion. The binary is now installed (`$PR_VERSION`). Move immediately to Step 3.
 
-> **HARD STOP — do not launch the PR binary.** Do not tail logs waiting for app output. Do not poll, watch, or sleep. The full sequence after install is: Codex review → write testing block → notify → stop. The user launches and exercises the app; that is not the agent's job.
+> **HARD STOP — do not launch the PR binary.** Do not tail logs waiting for app output. Do not poll, watch, or sleep. The full sequence after install is: write testing block → notify → stop. The user launches and exercises the app; that is not the agent's job.
 
 ---
 
-## Step 2b — Automated Quality Checks
+## No AI review in this phase
 
-**Skip gate — assess before running.** Read the diff and changed file list, then classify the PR:
+AI diff review happens **once**, pre-push, in `/implement-stint` Phase 4. This skill does not run it again — a second pass over the same diff costs a full Codex run and, in babysitter mode, duplicates what the tester pane is already doing with fresh eyes.
 
-- **Run checks** if any changed file contains: new logic, new branches, new error paths, behavioral changes, new API surface, bug fixes, or anything systemic that could break silently. Always run for `sdk/` changes.
-- **Skip checks** if ANY of these conditions holds:
-  - ALL changes are exclusively: color/spacing/font-size constants, help/doc strings, markdown files, config TOML values, label/copy text, or UI layout values that require human eyes to verify anyway. Set `AI_FINDINGS="skipped — cosmetic/style change, user verifies visually"`.
-  - The diff is **fewer than 5 lines changed** (additions + deletions combined, excluding blank lines and comments). Set `AI_FINDINGS="skipped — diff under 5 lines, low infrastructural risk"`.
-  - ALL changed files are under `apps/` (app code, not SDK). Set `AI_FINDINGS="skipped — apps-only change, no host/SDK risk"`.
+Carry the implementation phase's verdict into the testing block as `AI_FINDINGS` (the Ship Log's `Codex verdict:` line). If that line is missing, set `AI_FINDINGS="no pre-push review recorded"` and say so plainly rather than running a review here to fill the gap.
 
-When in doubt, run Codex review. Do not expand to broad cargo tests or binary install from doubt alone.
-
-**Review-run cap:** Run Codex review at most twice for one validation attempt without checking with Ian. The first run is the normal review. If it finds issues and you push fixes, one rerun is allowed to verify those fixes. If the second run finds more issues, stop, report the remaining findings, and ask Ian before running review again.
-
-**If running — Codex review (low reasoning):**
-
-```bash
-# Use git worktree list to find the alpha root — git rev-parse --show-toplevel returns the
-# CWD's worktree path (not the main repo root) when run from inside a worktree.
-ALPHA_ROOT=$(git worktree list --porcelain | grep -B2 "branch refs/heads/alpha" | grep "^worktree " | head -1 | cut -d' ' -f2)
-REVIEW_OUT="/tmp/plexi-pr-$PR_NUMBER-codex-review.txt"
-(cd "$ALPHA_ROOT/worktrees/$BRANCH" && \
-  codex review \
-    -c model_reasoning_effort=low \
-    --base alpha \
-    "Review this git diff for a Rust/Python codebase. Focus on: correctness bugs, unsafe patterns, missed error handling, and clear simplification opportunities. Do not flag style, formatting, or cosmetic issues. Reply with a concise bulleted findings list referencing file and line where possible, or 'No issues found.' if the diff is clean." \
-  > "$REVIEW_OUT" 2>&1) || true
-
-AI_FINDINGS=$(tail -120 "$REVIEW_OUT")
-
-if [ -z "$AI_FINDINGS" ]; then
-  AI_FINDINGS="Codex review completed; no output detected. Full raw output: $REVIEW_OUT"
-fi
-```
-
-Only surface `AI_FINDINGS` in the testing block. Do not paste the raw Codex transcript into chat. If you need to inspect raw output, read the temp file narrowly with `tail`, `rg`, or `sed`.
-
-After the optional PR install, mergeable check, and review summary are available, surface the testing block immediately. Do not launch the PR app, browse logs, run broad full-suite tests, or keep investigating unless the install, build, targeted tests, or Codex findings show a real blocker.
+Surface the testing block as soon as the install and mergeable check are done. Do not launch the PR app, browse logs, or run broad full-suite tests unless the install or build shows a real blocker.
 
 ---
 
@@ -279,7 +248,7 @@ Reply: "pass" | "fail: <desc>" | "modify: <change>"
 
 On the diff-review path, omit the `Pass:` / `Fail:` criteria entirely. The user is reviewing the Codex findings, not exercising a binary. Only the install path asks the user to verify observable stop-check criteria.
 
-AI_FINDINGS always shown verbatim when review ran; if skipped, one-line reason in the table is sufficient.
+AI_FINDINGS always shown verbatim when a pre-push review verdict exists; if none was recorded, say so in one line rather than leaving the row blank.
 
 **Your final response for this turn must be the testing block above.** Do not replace it with a status recap. Do not keep working after it is surfaced.
 
@@ -483,10 +452,10 @@ Issue re-labeled ready for next attempt
 
 ## Diff-Review Testing Block (default)
 
-Still run Step 2b unless the diff is exclusively cosmetic/style. Then surface the diff-review testing block format from Step 3. Key differences from the install path:
+Surface the diff-review testing block format from Step 3. Key differences from the install path:
 - No attempt count in header (no retry loop for diff-only)
 - No `Pass:` / `Fail:` stop-check criteria — those are only for binary install validation
-- Show AI_FINDINGS verbatim; the user is reviewing the automated findings, not exercising a binary
+- Show AI_FINDINGS verbatim (the pre-push verdict carried from `/implement-stint`); the user is reviewing those findings plus the diff, not exercising a binary
 
 Flip pane status the same as the install path before notifying:
 ```bash
@@ -498,10 +467,8 @@ pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the d
 
 ## Rules
 
-- Binary install is the default. Skip only when test evidence says skippable AND no apps/ changes AND changes are purely cosmetic.
-- Step 2b quality checks (Codex diff review) run unless skipped by the skip gate — assess the diff, then decide
-- Skip conditions: cosmetic/style-only changes; diff under 5 lines; apps/-only changes. Always run for sdk/ changes.
-- Do not run Codex review more than twice in one validation attempt without checking with Ian
+- Binary install is the default. Skip only per the Test Evidence conclusion (single source: `/testing` Step 5), with the `apps/`-changed and Done-When overrides.
+- **This skill runs no AI diff review.** Pre-push Codex review is owned by `/implement-stint` Phase 4 — see "Who reviews what" there. Validation owns install and user acceptance, not review.
 - Cosmetic = colors, spacing, font sizes, help strings, markdown, config values, UI copy — anything where human visual verification is the only meaningful check
 - Do not run cargo tests during validation unless Codex review names a specific risk that needs a specific test command
 - AI_FINDINGS is always shown verbatim — never summarized or filtered

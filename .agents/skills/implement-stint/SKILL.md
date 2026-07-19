@@ -277,12 +277,24 @@ Receive the summary from Sub-agent I.
 
 **Orchestrator diff review:** Run `git -C <worktree-path> diff --staged --stat` and spot-check the diff before committing. If Sub-agent I reported unresolved Codex findings, surface them to the user and ask whether to proceed or iterate.
 
+### Who reviews what
+
+This phase is the **single owner of AI diff review** for the whole pipeline. Sub-agent I's Codex pass above is the one AI review the diff gets, and it runs pre-push where findings are cheapest to fix — the worktree is live and no PR churn is needed.
+
+The other phases deliberately do not review:
+
+| Layer | Reviews? |
+|---|---|
+| `/implement-stint` Phase 4 (here) | **Yes** — Codex, max 2 runs, pre-push |
+| `/open-pr` | No — its own Rules already say so |
+| `/validate-pr` | No — owns install + user acceptance; carries this phase's verdict into the testing block |
+| Babysitter tester pane | Behavior only — live-drives the build, does not re-review the diff |
+
+**CI is not a review layer today.** The `CodeRabbit` check reports "automatic reviews are disabled" on every PR, and the `claude` check is conditional and skips on Rust-only diffs. Treat a green `gh pr checks` as "nothing red," not as "the diff was reviewed." If this phase's review is skipped, the diff ships unreviewed — say so in the handoff rather than assuming CI caught it.
+
 Then run the `/testing` skill (`.agents/skills/testing/SKILL.md`) to produce the `**Test evidence:**` block — diff classification, harness tests, headless render screenshots for visual changes. Include the block in the Ship Log entry (or PR body when no issue is linked) during handoff.
 
-Validation bias:
-
-- Use `binary install required` as the default conclusion for visible UI, keyboard, app-launch, channel, filesystem, host/runtime, or interaction changes.
-- Use `install skippable — full coverage` only for pure logic, docs-only, or changes with direct HostHarness/PlexiUiHarness/scene coverage that exercises the full user-visible behavior.
+**Install-skip conclusion:** the `/testing` skill's Step 5 conclusion rules are the single source of truth. Apply them as written — do not re-derive skip criteria here.
 - If binary install is required, explicitly state that validation should install the PR build with `just pr-install <PR>` after `/open-pr` creates the PR. The validator should run `plexi-pr-<PR>` from the relevant workspace, not `plexi` or `plexi-alpha`.
 - Never cite `cargo build` or a feature-worktree app install as install evidence.
 
@@ -330,6 +342,8 @@ pipeline_slots_set implement <issue-or-task> "" pushed "" ""
 Then invoke `/open-pr` inline for the branch. Do not run `stint done` here; `/merge-pr` closes the task after the PR merges and alpha is verified.
 
 If no linked GitHub issue exists, still invoke `/open-pr` for the branch. The PR body should name the stint task and state that there is no linked GitHub issue.
+
+**Stop-at-PR-open mode.** When the invoker says to stop once the PR is open — babysitter workers always do — hand off to `/open-pr` but tell it not to chain into `/validate-pr`. Report the PR number and green checks, then end the turn. A separate tester owns validation in that mode; running `/validate-pr` anyway costs a duplicate `just pr-install` (~5 min) and leaves the turn parked on a `[TESTING]` block waiting for a reply that is not coming.
 
 ## Blocked Or Abandoned Work
 

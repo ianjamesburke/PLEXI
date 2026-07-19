@@ -138,12 +138,16 @@ Append to the Ship Log entry for this attempt (issue body), or the PR descriptio
 - Conclusion: install skippable — full coverage | binary install required — <why>
 ```
 
+**These conclusion rules are the single source of truth for install-skip.** `/implement-stint` and `/validate-pr` consume the conclusion this block produces — they never re-derive it against their own criteria. If you are editing skip criteria anywhere else, you are editing the wrong file.
+
 Conclusion rules:
-- `install skippable — full coverage`: every touched layer has green tests AND any visual change has an inspected screenshot.
-- `binary install required`: PTY/terminal interaction, keyboard-capture flows, anything `#[ignore = "requires-pty"]`, or behavior only observable in the installed bundle (menus, dock, file associations).
+- `install skippable — full coverage`: every touched layer has green tests AND any visual change has an inspected screenshot. This includes pure-logic and docs-only changes with direct `HostHarness`/`PlexiUiHarness`/scene coverage of the full user-visible behavior — coverage is the test, not cosmetic-ness.
+- `binary install required`: PTY/terminal interaction, keyboard-capture flows, anything `#[ignore = "requires-pty"]`, or behavior only observable in the installed bundle (menus, dock, file associations). This is the default for visible UI, keyboard, app-launch, channel, filesystem, host/runtime, or interaction changes.
+- `docs-only — no test evidence required`: markdown, comments, or skill/doc text with no code path touched.
 - A `LiveBackend` change always requires `just scene-live` against the installed
   PR channel. Headless parity proves schema semantics, not CLI execution or
   eventual polling against a real host.
+- `apps/` changes always require binary install regardless of conclusion — the app registry and bundle layout are only exercised by a real install.
 
 ## Guards
 
