@@ -1291,6 +1291,30 @@ impl PlexiApp {
                             term.backend
                                 .process_command(egui_term::BackendCommand::Write(bytes));
                             Ok(serde_json::json!({"ok": true}))
+                        } else if pane.as_app_mut().is_some()
+                            && text_input_focused
+                            && key.eq_ignore_ascii_case("escape")
+                        {
+                            // Escape parity with a live keypress (stint 0460):
+                            // a replayed raw Escape lands mid-frame, after the
+                            // dispatch gate already ran, so it would fall
+                            // through to the AppActive CloseApp binding and
+                            // destroy the pane. Deliver it to the app's
+                            // handle_key instead — the assistant interrupts
+                            // its in-flight turn — and never replay it raw.
+                            let app_pane = pane.as_app_mut().expect("checked above");
+                            match super::drive_native_pane_key(&mut app_pane.runtime, key) {
+                                Ok(disposition) => {
+                                    log::info!(
+                                        "pane_ipc: key_pane: pane {pane_id} Escape delivered to app (text surface focused, CloseApp suppressed, result={disposition:?})"
+                                    );
+                                    Ok(serde_json::json!({
+                                        "ok": true,
+                                        "disposition": "text_input_escape",
+                                    }))
+                                }
+                                Err(e) => Err(e),
+                            }
                         } else if pane.as_app_mut().is_some() && text_input_focused {
                             match super::key_str_to_egui_raw_input(key) {
                                 Some(raw) => {
