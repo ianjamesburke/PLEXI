@@ -1632,16 +1632,19 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
     }
 }
 
-/// Stint 0469: node-targeted click passthrough into a *builtin* app. Drives a
-/// real File Explorer pane through the production `AppRequest::ClickPaneNode`
-/// dispatch (the `plexi pane click <id> --node <id>` path) and asserts the
-/// app's own `show_hidden` state flips — proving `pending_click` now reaches
-/// `AppRuntime::Builtin` (it was dropped before this stint) and that
-/// `resolve_interactive_node`/`INTERACTIVE_ROLES` accept a real `checkbox`
-/// node whose id is a full `u64` egui hash (the reason `PaneClickTarget::Node`
-/// was widened from `u32`). The checkbox only renders while the "View" menu is
-/// open, so the menu is first opened with a REAL simulated pointer click; the
-/// checkbox node id is then read off the live semantic tree, never fabricated.
+/// Stint 0469: node-targeted click passthrough into a *builtin* app, exercising
+/// the FULL two-step workflow entirely through synthetic node clicks — the same
+/// path `plexi pane click <id> --node <id>` drives — with no real pointer input
+/// anywhere. Step 1 clicks the "View" toolbar button (opening its menu, which is
+/// what the tester's PR #2448 reject proved was a silent no-op: `ui.menu_button`
+/// only toggles open from a real click resolved inside `Context::begin_pass`, so
+/// the menu never opened and the checkbox never entered the tree). Step 2 clicks
+/// the now-exposed "Show hidden files" checkbox. Proves: `pending_click` reaches
+/// `AppRuntime::Builtin`; a synthetic click force-opens the menu popup so its
+/// items enter the semantic tree; and `resolve_interactive_node`/
+/// `INTERACTIVE_ROLES` accept a real `checkbox` node whose id is a full `u64`
+/// egui hash (why `PaneClickTarget::Node` was widened from `u32`). Every node id
+/// is read off the live semantic tree, never fabricated.
 #[test]
 fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1673,83 +1676,54 @@ fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
             .expect("pane is a FileBrowserApp")
             .show_hidden()
     };
-
-    assert!(
-        !read_show_hidden(&mut h),
-        "show_hidden must start disabled"
-    );
-
-    // Locate the "View \u{2304}" toolbar button on-screen from the semantic
-    // tree and open its menu with a REAL simulated pointer click — a synthetic
-    // node click cannot open the menu (egui resolves `menu_button`'s open
-    // toggle from real pointer input, out of this stint's scope).
-    let view_center = {
-        let semantic_state = h.app.windows[h.app.active_window]
+    let find_node = |h: &mut HostHarness, role: &str, label: &str| -> Option<String> {
+        h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
             .and_then(Pane::as_app)
             .map(|pane| pane.semantic_state())
-            .expect("app pane has a semantic tree");
-        let bounds = semantic_state
+            .expect("app pane has a semantic tree")
             .nodes
             .iter()
-            .find(|n| {
-                n.role == "button" && n.label.as_deref().is_some_and(|l| l.contains("View"))
-            })
-            .and_then(|n| n.bounds)
-            .expect("semantic tree exposes the View menu button by role/label");
-        egui::pos2(
-            ((bounds[0] + bounds[2]) / 2.0) as f32,
-            ((bounds[1] + bounds[3]) / 2.0) as f32,
-        )
+            .find(|n| n.role == role && n.label.as_deref() == Some(label))
+            .map(|n| n.id.clone())
     };
 
-    let screen_rect = Some(egui::Rect::from_min_size(
-        egui::Pos2::ZERO,
-        egui::vec2(1280.0, 800.0),
-    ));
-    h.frame(egui::RawInput {
-        screen_rect,
-        events: vec![
-            egui::Event::PointerMoved(view_center),
-            egui::Event::PointerButton {
-                pos: view_center,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::NONE,
-            },
-            egui::Event::PointerButton {
-                pos: view_center,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            },
-        ],
-        ..Default::default()
-    });
+    assert!(!read_show_hidden(&mut h), "show_hidden must start disabled");
+    assert!(
+        find_node(&mut h, "checkbox", "Show hidden files").is_none(),
+        "checkbox must NOT be in the tree before the View menu is opened"
+    );
+
+    // Step 1 (SYNTHETIC): click the "View \u{2304}" toolbar button by node id.
+    // Before the fix this was a silent no-op — the menu stayed closed and the
+    // checkbox never appeared, so `find_node` below would return None.
+    let view_id = find_node(&mut h, "button", "View \u{2304}")
+        .expect("semantic tree exposes the View menu button by role/label");
+    let view_response = temp_response(tmp.path(), "click-node-view-menu");
+    h.inject_node_click(pane_id, &view_id, "left", Some(view_response.clone()));
     h.run_frames(2);
+    let view_result = read_json_response(&view_response);
+    assert_eq!(
+        view_result["ok"], true,
+        "View button node click dispatch failed: {view_result:?}"
+    );
 
-    // The checkbox now renders inside the open menu and appears in the tree —
-    // proof `checkbox` is an accepted interactive role.
-    let checkbox_id = h.app.windows[h.app.active_window]
-        .panes
-        .get(&pane_id)
-        .and_then(Pane::as_app)
-        .map(|pane| pane.semantic_state())
-        .expect("app pane has a semantic tree")
-        .nodes
-        .iter()
-        .find(|n| n.role == "checkbox" && n.label.as_deref() == Some("Show hidden files"))
-        .map(|n| n.id.clone())
-        .expect("open View menu exposes the Show hidden files checkbox");
+    // The synthetic click must have opened the menu, so the checkbox now
+    // renders inside it and enters the semantic tree.
+    let checkbox_id = find_node(&mut h, "checkbox", "Show hidden files").expect(
+        "synthetic click on the View button must open the menu and expose the \
+         Show hidden files checkbox in the semantic tree",
+    );
 
+    // Step 2 (SYNTHETIC): click the now-exposed checkbox by node id.
     let click_response = temp_response(tmp.path(), "click-node-hidden-files");
     h.inject_node_click(pane_id, &checkbox_id, "left", Some(click_response.clone()));
     h.run_frames(1);
     let response = read_json_response(&click_response);
     assert_eq!(
         response["ok"], true,
-        "node click dispatch failed: {response:?}"
+        "checkbox node click dispatch failed: {response:?}"
     );
 
     assert!(
