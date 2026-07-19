@@ -92,6 +92,15 @@ pub fn render_ui_tree_with_canvas_fits(
     // grow Canvas or a GPU Surface anywhere in the tree) own their own layout
     // and are exempt.
     if tree_wants_content_padding(&tree.nodes) {
+        // Stint 0448: the inset must move only the *content* cursor, never the
+        // app's visible surface. Paint the app-surface fill (`theme.bg`, the
+        // color apps are told their container is) across the entire pane rect
+        // first, then inset the layout. Without this the surface would start
+        // inside the inset and the darker pane gutter would show through as a
+        // black border around every flow app. AppBar/FooterKeys still paint
+        // their own bands full-bleed via `clip_rect`, on top of this surface.
+        ui.painter()
+            .rect_filled(ui.max_rect(), 0.0, colors.terminal_bg);
         egui::Frame::NONE
             .inner_margin(root_content_inset())
             .show(ui, |ui| render_root(ui, &mut out));
@@ -683,6 +692,17 @@ mod tests {
     /// screen. Used to observe where the good-by-default content inset places
     /// real content vs. where a full-bleed app draws.
     fn painted_bounds(tree: &UiTree, pane: egui::Vec2) -> egui::Rect {
+        let mut bounds = egui::Rect::NOTHING;
+        for r in painted_shapes(tree, pane) {
+            bounds = bounds.union(r);
+        }
+        bounds
+    }
+
+    /// Every finite, positive shape bounding rect painted by `tree` into a
+    /// `pane`-sized screen (the host panel is `Frame::NONE`, so shapes are
+    /// exactly what the tree render draws).
+    fn painted_shapes(tree: &UiTree, pane: egui::Vec2) -> Vec<egui::Rect> {
         let ctx = egui::Context::default();
         crate::ui::theme::setup_fonts(&ctx);
         let colors = Colors::from_config(
@@ -699,14 +719,34 @@ mod tests {
                     let _ = render_ui_tree_with_surface(ui, tree, &colors, None, None);
                 });
         });
-        let mut bounds = egui::Rect::NOTHING;
-        for clipped in output.shapes {
-            let r = clipped.shape.visual_bounding_rect();
-            if r.is_finite() && r.is_positive() {
-                bounds = bounds.union(r);
+        output
+            .shapes
+            .into_iter()
+            .map(|clipped| clipped.shape.visual_bounding_rect())
+            .filter(|r| r.is_finite() && r.is_positive())
+            .collect()
+    }
+
+    /// Split painted shapes into the pane-filling background surface (any shape
+    /// that covers the whole `pane` rect) and the union of everything else
+    /// (the actual content). Used to prove the surface fills the pane while
+    /// content stays inset.
+    fn surface_and_content(tree: &UiTree, pane: egui::Vec2) -> (Option<egui::Rect>, egui::Rect) {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, pane);
+        let mut surface: Option<egui::Rect> = None;
+        let mut content = egui::Rect::NOTHING;
+        for r in painted_shapes(tree, pane) {
+            let fills_pane = r.min.x <= screen.min.x + 0.5
+                && r.min.y <= screen.min.y + 0.5
+                && r.max.x >= screen.max.x - 0.5
+                && r.max.y >= screen.max.y - 0.5;
+            if fills_pane {
+                surface = Some(surface.map_or(r, |s| s.union(r)));
+            } else {
+                content = content.union(r);
             }
         }
-        bounds
+        (surface, content)
     }
 
     // Stint 0445: a declarative flow app (no grow Canvas / Surface) earns the
@@ -726,24 +766,82 @@ mod tests {
                 }),
             )],
         };
-        let bounds = painted_bounds(&tree, egui::vec2(400.0, 300.0));
+        let pane = egui::vec2(400.0, 300.0);
+        let (surface, content) = surface_and_content(&tree, pane);
+        // Stint 0448: the app surface fills the whole pane; only content insets.
+        let surface = surface.expect("flow app must paint a pane-filling surface");
         assert!(
-            bounds.min.x >= style::SPACE_XL - 0.5,
+            surface.min.x <= 0.5
+                && surface.min.y <= 0.5
+                && surface.max.x >= pane.x - 0.5
+                && surface.max.y >= pane.y - 0.5,
+            "flow surface {surface:?} should fill the pane {pane:?}"
+        );
+        assert!(
+            content.min.x >= style::SPACE_XL - 0.5,
             "flow content left edge {} should be inset by ~SPACE_XL ({})",
-            bounds.min.x,
+            content.min.x,
             style::SPACE_XL
         );
         assert!(
-            bounds.min.y >= style::SPACE_MD - 0.5,
+            content.min.y >= style::SPACE_MD - 0.5,
             "flow content top edge {} should be inset by ~SPACE_MD ({})",
-            bounds.min.y,
+            content.min.y,
             style::SPACE_MD
         );
         assert!(
-            bounds.height() >= style::BUTTON_H_MD - 0.5,
+            content.height() >= style::BUTTON_H_MD - 0.5,
             "button height {} should meet the minimum target ({})",
-            bounds.height(),
+            content.height(),
             style::BUTTON_H_MD
+        );
+    }
+
+    // Stint 0448: a flow app's surface/background fill must span the entire
+    // pane rect — the content inset moves only the layout cursor, never the
+    // visible surface. Regression guard against the 0445 black-border bug.
+    #[test]
+    fn flow_root_background_fills_the_pane() {
+        let tree = UiTree {
+            root: 0,
+            nodes: vec![
+                node(
+                    0,
+                    UiNodeData::Column(ColumnNode {
+                        children: vec![1],
+                        gap: 0.0,
+                        align: Alignment::Start,
+                        grow: true,
+                    }),
+                ),
+                node(
+                    1,
+                    UiNodeData::Text(TextNode {
+                        text: "hello".to_string(),
+                        size: None,
+                        bold: false,
+                        color: None,
+                        truncate: false,
+                        align: Alignment::Start,
+                    }),
+                ),
+            ],
+        };
+        let pane = egui::vec2(400.0, 300.0);
+        let (surface, content) = surface_and_content(&tree, pane);
+        let surface = surface.expect("flow app must paint a pane-filling surface");
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, pane);
+        assert!(
+            surface.min.x <= 0.5
+                && surface.min.y <= 0.5
+                && surface.max.x >= pane.x - 0.5
+                && surface.max.y >= pane.y - 0.5,
+            "surface {surface:?} must equal the full pane rect {screen:?}"
+        );
+        // Content still lives inside the inset.
+        assert!(
+            content.min.x >= style::SPACE_XL - 0.5 && content.min.y >= style::SPACE_MD - 0.5,
+            "content {content:?} must stay inset while the surface fills the pane"
         );
     }
 
