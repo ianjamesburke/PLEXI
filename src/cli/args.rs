@@ -859,6 +859,18 @@ pub enum HostCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Capture the running host window as a PNG through the real render
+    /// pipeline — the pixels the user actually sees, no OS screen capture.
+    ///
+    /// Example: plexi host screenshot --pane 3 --output /tmp/pane3.png
+    Screenshot {
+        /// Crop the capture to this pane's current screen rect
+        #[arg(long)]
+        pane: Option<u64>,
+        /// Where to write the PNG (default: <profile>/screenshots/<timestamp>.png)
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+    },
 }
 
 /// `plexi account <cmd>` — marketplace account management.

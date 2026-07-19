@@ -618,6 +618,9 @@ fn main() -> eframe::Result {
                         )),
                         HostCmd::Stop => std::process::exit(cli::host_stop_cli()),
                         HostCmd::Status { json } => std::process::exit(cli::host_status_cli(json)),
+                        HostCmd::Screenshot { pane, output } => std::process::exit(
+                            cli::host_screenshot_cli(pane, output.as_deref()),
+                        ),
                     },
                     Commands::Notify {
                         title,

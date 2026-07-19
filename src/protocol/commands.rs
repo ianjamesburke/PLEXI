@@ -481,6 +481,20 @@ pub enum AppRequest {
     /// Host writes `{"error":"..."}` if the pane is not found.
     GetPaneState { pane_id: u64, response_file: String },
 
+    /// Capture the live host window as a PNG through the real render
+    /// pipeline (`egui::ViewportCommand::Screenshot` — actual rendered
+    /// pixels, not a re-render). With `pane_id`, the image is cropped to
+    /// that pane's current screen rect. Sent by `plexi host screenshot`.
+    /// Host writes the PNG to `output_path` and
+    /// `{"ok":true,"path":...,"width":...,"height":...}` (or
+    /// `{"error":"..."}`) to `response_file`.
+    Screenshot {
+        #[serde(default)]
+        pane_id: Option<u64>,
+        output_path: String,
+        response_file: String,
+    },
+
     /// Dispatch a semantic action to an app pane. Sent by `plexi app action <pane_id> <action> [args...]`.
     /// Host delivers `PlexiEvent::Action { action, args }` to the target app pane.
     /// Writes `{"ok":true}` or `{"error":"..."}` to `response_file`.

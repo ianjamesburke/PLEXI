@@ -12,6 +12,7 @@ pub mod host_version;
 pub mod http;
 pub mod image_viewer_app;
 pub(crate) mod input_owner;
+pub(crate) mod screenshot;
 pub(crate) mod input_router;
 pub(crate) mod launch_spec;
 mod lifecycle;
@@ -167,6 +168,9 @@ pub struct PlexiApp {
     /// Repaint-cause diagnostics sample window (#2019): start instant and
     /// frame count. `None` until the first frame opens a window.
     pub(crate) frame_diag_window: Option<(std::time::Instant, u32)>,
+    /// Screenshot requests (`plexi host screenshot`) awaiting the viewport
+    /// capture that `AppRequest::Screenshot` triggered (stint 0461).
+    pub(crate) pending_screenshots: Vec<crate::app::screenshot::PendingScreenshot>,
     /// Last window title sent via `ViewportCommand::Title`. egui's
     /// `send_viewport_cmd` unconditionally requests a repaint, so sending the
     /// title every frame creates a self-sustaining repaint loop (60fps
@@ -1270,6 +1274,7 @@ impl PlexiApp {
                     pending_context_close: None,
                     frame_tick,
                     frame_diag_window: None,
+                    pending_screenshots: Vec::new(),
                     last_sent_window_title: None,
                     permission_store_dir: crate::config::config_dir(),
                     renaming_window: None,
@@ -1516,6 +1521,7 @@ impl PlexiApp {
             pending_context_close: None,
             frame_tick,
             frame_diag_window: None,
+            pending_screenshots: Vec::new(),
             last_sent_window_title: None,
             permission_store_dir: crate::config::config_dir(),
             renaming_window: None,
@@ -1933,6 +1939,7 @@ impl PlexiApp {
                 pending_context_close: None,
                 frame_tick,
                 frame_diag_window: None,
+            pending_screenshots: Vec::new(),
                 last_sent_window_title: None,
                 permission_store_dir: {
                     let dir = std::env::temp_dir()
@@ -2322,6 +2329,10 @@ impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_tick
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Viewport captures requested by `plexi host screenshot` arrive as
+        // raw-input events; fulfill queued requests before anything else
+        // consumes this frame's input (stint 0461).
+        self.fulfill_pending_screenshots(ctx);
         // Repaint-cause diagnostics (#2019): count this frame, attribute
         // input-carrying frames to UserInput, and flush one summary per
         // 10s sample window.

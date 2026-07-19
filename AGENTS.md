@@ -144,6 +144,10 @@ There is one comms model with three disjoint planes, each with a single sanction
 
 Later consolidation candidates (left untouched by 0327, not yet unified): notifications (`NotifyAction`), pane slots, `PathChanged` pane-group sync, poll-based "Phase C" delivery, and undo/rollback checkpoints on the event record.
 
+## Capturing Host State
+
+`plexi host screenshot [--pane <id>] [--output <path>]` captures the running host window as a PNG through the real render pipeline (`AppRequest::Screenshot` → `egui::ViewportCommand::Screenshot` → `src/app/screenshot.rs`) — the actual pixels on screen: chrome, terminals, apps, overlays. `--pane` crops to that pane's current rect. Works over the channel socket like every pane command (`PLEXI_SOCKET`/`PLEXI_CHANNEL` rules apply). **Never use macOS `screencapture` or any OS-level capture to inspect a Plexi host** — this command is the sanctioned path, works headless, and needs no screen-recording permission. For pane *semantics* (text, node bounds) use `plexi pane state <id>`; for a not-running-host render of an app, use `plexi app render . --png`.
+
 ## General Rules
 
 - When the user reports a bug, fix what they asked for first.

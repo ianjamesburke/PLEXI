@@ -1582,6 +1582,40 @@ impl PlexiApp {
                     );
                 }
             }
+            crate::app_protocol::AppRequest::Screenshot {
+                pane_id,
+                output_path,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=screenshot pane_id={pane_id:?} output_path={output_path}"
+                );
+                // Validate a pane target up front so the CLI fails fast on a
+                // bad id; the rect itself is resolved at capture time.
+                let unknown_pane = pane_id
+                    .is_some_and(|id| self.find_pane_in_any_window(id).is_none());
+                if unknown_pane {
+                    let response = serde_json::json!({
+                        "error": format!("pane {} not found", pane_id.unwrap_or_default())
+                    });
+                    if let Err(e) = std::fs::write(response_file, response.to_string()) {
+                        log::error!(
+                            "pane_ipc: screenshot: could not write response file {response_file:?}: {e}"
+                        );
+                    }
+                } else {
+                    self.pending_screenshots
+                        .push(crate::app::screenshot::PendingScreenshot {
+                            pane_id: *pane_id,
+                            output_path: output_path.clone(),
+                            response_file: response_file.clone(),
+                        });
+                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
+                        egui::UserData::default(),
+                    ));
+                    self.ctx.request_repaint();
+                }
+            }
             crate::app_protocol::AppRequest::GetPaneState {
                 pane_id,
                 response_file,
