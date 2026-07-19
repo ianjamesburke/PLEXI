@@ -157,7 +157,9 @@ pub struct TerminalBackend {
     #[cfg(unix)]
     master_fd: i32,
     pub lines_written: AtomicU64,
-    /// (prev_total, oldest_row_snapshot) — grouped to avoid nested lock acquisitions.
+    /// (prev_produced, oldest_row_snapshot) — grouped to avoid nested lock
+    /// acquisitions. `prev_produced` is `history_size + cursor.line`, the
+    /// prior call's absolute count of lines the terminal has produced.
     capture_state: Mutex<(usize, String)>,
     max_scroll_limit: usize,
 }
@@ -441,24 +443,40 @@ impl TerminalBackend {
 
     /// Advance `lines_written` to account for newly written terminal lines.
     ///
-    /// Always updates `prev_total` — including on terminal resize-down — so
-    /// the next call correctly counts lines written after the resize.
+    /// Stint 0385: grid *capacity* (`total = screen_lines + history_size`)
+    /// only grows once scrollback has engaged. A fresh pane with fewer real
+    /// lines than the viewport height has `history_size == 0` and a constant
+    /// `screen_lines`, so `total` never changes while the cursor advances
+    /// through blank rows already counted in `screen_lines` — every line
+    /// written during that entire early-pane regime went undetected, and
+    /// `--from-cursor <n>` returned an empty delta no matter how much new
+    /// output arrived. `history_size + cursor.line` is the actual absolute
+    /// count of lines produced (it advances on every linefeed, whether the
+    /// cursor is still moving down inside the screen or already at the
+    /// bottom and pushing rows into history), so use that instead.
+    ///
+    /// Always updates `prev_produced` — including on terminal resize-down or
+    /// a redraw that moves the cursor back up (e.g. full-screen clear) — so
+    /// the next call correctly counts lines written after the jump instead
+    /// of re-counting a spurious negative-then-positive swing.
     fn advance_cursor(
         &self,
         grid: &alacritty_terminal::Grid<alacritty_terminal::term::cell::Cell>,
-        total: usize,
+        _total: usize,
         _screen_lines: usize,
         history_size: usize,
     ) {
         use alacritty_terminal::index::{Column, Line};
         let mut state = self.capture_state.lock().unwrap();
-        if total > state.0 {
-            let delta = total - state.0;
+        let cursor_line = grid.cursor.point.line.0.max(0) as usize;
+        let produced = history_size + cursor_line;
+        if produced > state.0 {
+            let delta = produced - state.0;
             self.lines_written
                 .fetch_add(delta as u64, Ordering::Relaxed);
         }
-        // Always update prev_total — handles terminal resize-down correctly.
-        state.0 = total;
+        // Always update prev_produced — handles resize and cursor jumps correctly.
+        state.0 = produced;
         // Saturation: history at max means oldest rows may scroll off without
         // changing `total`. Detect one scrolled line per call via row comparison.
         if history_size > 0 && history_size == self.max_scroll_limit {
@@ -1145,6 +1163,7 @@ impl EventListener for EventProxy {
 #[cfg(test)]
 mod tests {
     use super::is_url_char;
+    use super::TerminalBackend;
 
     /// The URL char predicate must mirror the negated class in `url_regex`:
     /// `[^\u{0000}-\u{001F}\u{007F}-\u{009F}<>"\s{-}\^⟨⟩\`]`.
@@ -1203,7 +1222,7 @@ mod tests {
             "child {pid} must be gone after reap_child, kill returned {alive_after}"
         );
     }
-}
+
     #[test]
     fn capture_tail_keeps_history_content_when_screen_bottom_is_blank() {
         let captured = TerminalBackend::last_content_tail(
@@ -1217,3 +1236,74 @@ mod tests {
         );
         assert_eq!(captured, vec!["Codex session output", "working…"]);
     }
+
+    /// Stint 0385: a fresh pane (few real lines, well under the viewport
+    /// height, `history_size == 0`) must still report new output through
+    /// `--from-cursor <cursor>` — this is the exact regime the old
+    /// `total`-capacity heuristic in `advance_cursor` was blind to, since
+    /// `total = screen_lines + history_size` doesn't change while the cursor
+    /// is still advancing through blank rows already counted in
+    /// `screen_lines`.
+    #[test]
+    #[cfg(unix)]
+    fn capture_lines_since_reports_delta_before_scrollback_engages() {
+        use super::settings::BackendSettings;
+        use super::{BackendCommand, TerminalBackend};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        // Poll instead of a fixed sleep — the PTY read thread delivers output
+        // asynchronously and a fixed delay is either flaky (too short) or
+        // slow (too long, padded for CI). `capture_lines(200)` reads directly
+        // from the live shared grid, no `sync()` required.
+        fn wait_for(backend: &TerminalBackend, needle: &str) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if backend
+                    .capture_lines(200)
+                    .iter()
+                    .any(|l| l.contains(needle))
+                {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for {needle:?} to appear in the pane"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        let ctx = egui::Context::default();
+        let (tx, _rx) = mpsc::channel();
+        let settings = BackendSettings {
+            shell: "/bin/sh".to_string(),
+            ..Default::default()
+        };
+        let mut backend =
+            TerminalBackend::new(1, ctx, tx, settings).expect("spawn backend");
+
+        // First write establishes some initial content — deterministic,
+        // rather than relying on the shell's startup banner formatting.
+        backend.process_command(BackendCommand::Write(b"echo line-one\n".to_vec()));
+        wait_for(&backend, "line-one");
+        let (_lines, cursor, _missed) = backend.capture_lines_since(0);
+        assert!(cursor > 0, "initial capture should report a nonzero cursor");
+
+        backend.process_command(BackendCommand::Write(
+            b"echo cursor-delta-exact\n".to_vec(),
+        ));
+        wait_for(&backend, "cursor-delta-exact");
+
+        let (lines, new_cursor, missed) = backend.capture_lines_since(cursor);
+        assert!(!missed, "capture must not report missed history");
+        assert!(
+            new_cursor > cursor,
+            "cursor must advance after new output (was {cursor}, now {new_cursor})"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("cursor-delta-exact")),
+            "delta must include the newly written line, got: {lines:?}"
+        );
+    }
+}
