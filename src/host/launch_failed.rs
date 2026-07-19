@@ -26,7 +26,12 @@ impl App for LaunchFailedApp {
         format!("Cannot launch {}", self.app_id)
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         let colors = ctx.colors;
         ui.vertical_centered(|ui| {
             ui.add_space(style::SPACE_XL * 2.0);

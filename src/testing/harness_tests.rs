@@ -91,7 +91,13 @@ impl crate::app::app_trait::App for KeyBurstProbe {
         "Key Burst Probe".to_string()
     }
 
-    fn ui(&mut self, _ui: &mut egui::Ui, _ctx: &crate::app::app_trait::AppRenderContext<'_>) {}
+    fn ui(
+        &mut self,
+        _ui: &mut egui::Ui,
+        _ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+    }
 
     fn handle_key(
         &mut self,
@@ -131,7 +137,12 @@ impl crate::app::app_trait::App for TextInputProbe {
     // Deliberately simulates a misbehaving pane widget grabbing raw egui
     // focus — the exact pattern the reconciler must survive (stint 0429).
     #[allow(clippy::disallowed_methods)]
-    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &crate::app::app_trait::AppRenderContext<'_>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        _ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
             self.enter_rendered = true;
         }
@@ -1619,6 +1630,106 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
+}
+
+/// Stint 0469: node-targeted click passthrough into a *builtin* app, exercising
+/// the FULL two-step workflow entirely through synthetic node clicks — the same
+/// path `plexi pane click <id> --node <id>` drives — with no real pointer input
+/// anywhere. Step 1 clicks the "View" toolbar button (opening its menu, which is
+/// what the tester's PR #2448 reject proved was a silent no-op: `ui.menu_button`
+/// only toggles open from a real click resolved inside `Context::begin_pass`, so
+/// the menu never opened and the checkbox never entered the tree). Step 2 clicks
+/// the now-exposed "Show hidden files" checkbox. Proves: `pending_click` reaches
+/// `AppRuntime::Builtin`; a synthetic click force-opens the menu popup so its
+/// items enter the semantic tree; and `resolve_interactive_node`/
+/// `INTERACTIVE_ROLES` accept a real `checkbox` node whose id is a full `u64`
+/// egui hash (why `PaneClickTarget::Node` was widened from `u32`). Every node id
+/// is read off the live semantic tree, never fabricated.
+#[test]
+fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(crate::file_browser::FileBrowserApp::new(
+            tmp.path().to_path_buf(),
+        )),
+        AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.run_frames(2);
+
+    let read_show_hidden = |h: &mut HostHarness| -> bool {
+        let win = h.app.active_window;
+        let pane = h.app.windows[win]
+            .panes
+            .get_mut(&pane_id)
+            .expect("file explorer pane exists");
+        let AppRuntime::Builtin(app) = &mut pane.as_app_mut().expect("app pane").runtime else {
+            panic!("pane {pane_id} is not a builtin app");
+        };
+        app.as_any_mut()
+            .downcast_mut::<crate::file_browser::FileBrowserApp>()
+            .expect("pane is a FileBrowserApp")
+            .show_hidden()
+    };
+    let find_node = |h: &mut HostHarness, role: &str, label: &str| -> Option<String> {
+        h.app.windows[h.app.active_window]
+            .panes
+            .get(&pane_id)
+            .and_then(Pane::as_app)
+            .map(|pane| pane.semantic_state())
+            .expect("app pane has a semantic tree")
+            .nodes
+            .iter()
+            .find(|n| n.role == role && n.label.as_deref() == Some(label))
+            .map(|n| n.id.clone())
+    };
+
+    assert!(!read_show_hidden(&mut h), "show_hidden must start disabled");
+    assert!(
+        find_node(&mut h, "checkbox", "Show hidden files").is_none(),
+        "checkbox must NOT be in the tree before the View menu is opened"
+    );
+
+    // Step 1 (SYNTHETIC): click the "View \u{2304}" toolbar button by node id.
+    // Before the fix this was a silent no-op — the menu stayed closed and the
+    // checkbox never appeared, so `find_node` below would return None.
+    let view_id = find_node(&mut h, "button", "View \u{2304}")
+        .expect("semantic tree exposes the View menu button by role/label");
+    let view_response = temp_response(tmp.path(), "click-node-view-menu");
+    h.inject_node_click(pane_id, &view_id, "left", Some(view_response.clone()));
+    h.run_frames(2);
+    let view_result = read_json_response(&view_response);
+    assert_eq!(
+        view_result["ok"], true,
+        "View button node click dispatch failed: {view_result:?}"
+    );
+
+    // The synthetic click must have opened the menu, so the checkbox now
+    // renders inside it and enters the semantic tree.
+    let checkbox_id = find_node(&mut h, "checkbox", "Show hidden files").expect(
+        "synthetic click on the View button must open the menu and expose the \
+         Show hidden files checkbox in the semantic tree",
+    );
+
+    // Step 2 (SYNTHETIC): click the now-exposed checkbox by node id.
+    let click_response = temp_response(tmp.path(), "click-node-hidden-files");
+    h.inject_node_click(pane_id, &checkbox_id, "left", Some(click_response.clone()));
+    h.run_frames(1);
+    let response = read_json_response(&click_response);
+    assert_eq!(
+        response["ok"], true,
+        "checkbox node click dispatch failed: {response:?}"
+    );
+
+    assert!(
+        read_show_hidden(&mut h),
+        "synthetic node click on the checkbox must toggle show_hidden on"
+    );
 }
 
 /// Stint 0426: `plexi pane key` / `AppRequest::KeyPane` targeting a real

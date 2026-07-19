@@ -749,7 +749,12 @@ impl App for TextEditorApp {
         log::info!("TextEditorApp: font_size -> {}", self.font_size);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         let colors = ctx.colors;
 
         if let Some(err) = &self.load_error {

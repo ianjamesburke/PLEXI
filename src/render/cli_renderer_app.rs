@@ -804,7 +804,12 @@ impl App for CliRendererApp {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         // Request terminal on first render
         if !self.terminal_requested && self.descriptor.is_some() {
             self.request_terminal();
@@ -1019,7 +1024,7 @@ mod tests {
                         colors: &colors,
                         pane_id: 1,
                     };
-                    app.ui(ui, &rctx);
+                    app.ui(ui, &rctx, None);
                 });
             });
         };

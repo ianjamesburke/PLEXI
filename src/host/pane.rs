@@ -240,8 +240,8 @@ impl SemanticPaneState {
     /// `ClickPaneNode` host command to fail loudly — named error, no queued
     /// click — before a `PendingPaneClick` is ever inserted, instead of
     /// silently no-op'ing against a missing or non-interactive node.
-    pub(crate) fn resolve_interactive_node(&self, node_id: &str) -> Result<u32, String> {
-        const INTERACTIVE_ROLES: &[&str] = &["button", "text_input", "list_view"];
+    pub(crate) fn resolve_interactive_node(&self, node_id: &str) -> Result<u64, String> {
+        const INTERACTIVE_ROLES: &[&str] = &["button", "text_input", "list_view", "checkbox"];
 
         let Some(node) = self.nodes.iter().find(|n| n.id == node_id) else {
             return Err(format!(
@@ -255,7 +255,7 @@ impl SemanticPaneState {
             ));
         }
         node.id
-            .parse::<u32>()
+            .parse::<u64>()
             .map_err(|_| format!("node {node_id} has a non-numeric id and cannot be targeted"))
     }
 }
@@ -655,7 +655,7 @@ impl TerminalPane {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PaneClickTarget {
     Pos(egui::Pos2),
-    Node(u32),
+    Node(u64),
 }
 
 /// A pointer click injected by `AppRequest::ClickPane`/`ClickPaneNode`
@@ -680,6 +680,16 @@ pub(crate) struct PendingPaneClick {
     pub button: &'static str,
 }
 
+impl PendingPaneClick {
+    /// True when this pending click's target identity-matches `id` — the same
+    /// honest node-id equality check `node_click_matches` (wasm_render.rs)
+    /// uses on the WASM/Python path, applied to a Builtin app's own `egui::Id`
+    /// instead of a WASM arena index.
+    pub(crate) fn targets_id(&self, id: egui::Id) -> bool {
+        matches!(self.target, PaneClickTarget::Node(n) if n == id.value())
+    }
+}
+
 pub enum AppRuntime {
     Builtin(Box<dyn App>),
     Python(Box<crate::host::wasm_python::LivePythonPane>),
@@ -697,7 +707,7 @@ impl AppRuntime {
         pending_click: Option<PendingPaneClick>,
     ) {
         match self {
-            AppRuntime::Builtin(app) => app.ui(ui, ctx),
+            AppRuntime::Builtin(app) => app.ui(ui, ctx, pending_click),
             AppRuntime::Python(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
             AppRuntime::Wasm(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
         }

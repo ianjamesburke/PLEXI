@@ -3428,7 +3428,12 @@ impl App for AssistantApp {
         self.session_write();
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         self.pump_turn_io();
         // Active panes do not receive `background_tick`; defer until after
         // this frame draws the status row, then compact before the next frame.
@@ -5523,7 +5528,7 @@ enabled = ["allowed.tool"]
                     colors: &colors,
                     pane_id: 1,
                 };
-                App::ui(&mut app, ui, &render_ctx);
+                App::ui(&mut app, ui, &render_ctx, None);
             });
         });
 

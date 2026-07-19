@@ -383,7 +383,12 @@ impl App for SecretsApp {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         let colors = ctx.colors;
         let pane_key = ctx.pane_id;
         let rect = ui.max_rect();

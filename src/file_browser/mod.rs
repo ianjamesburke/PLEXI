@@ -1855,7 +1855,13 @@ impl FileBrowserApp {
         }
     }
 
-    fn draw_toolbar(&mut self, ui: &mut egui::Ui, colors: &Colors, layout: FileBrowserLayout) {
+    fn draw_toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        layout: FileBrowserLayout,
+        pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         // Path gets its own full-width row, elided from the left so the
         // leaf directory always stays visible. The old single-row layout
         // (path left, chips right) collided at narrow widths: the chips
@@ -1891,63 +1897,92 @@ impl FileBrowserApp {
                 // egui then extended every sibling row's left boundary, which
                 // shoved the whole table off-screen at middle widths. A menu
                 // is one fixed-width control: it fits at every pane size.
-                ui.menu_button(
+                //
+                // Hand-rolled expansion of `ui.menu_button` (egui's
+                // `stationary_menu_impl`) so a queued node click can open the
+                // popup. `menu_button` flips its open state only from a real
+                // click resolved inside `Context::begin_pass`, which
+                // `plexi pane click --node` / `PendingPaneClick` bypasses
+                // (stint 0469). When a pending click targets this button we
+                // open the menu directly through egui's public menu state
+                // (`menu::BarState` / `menu::MenuRoot`) so the popup renders
+                // this frame and exposes its items — including the Show hidden
+                // files checkbox — to the semantic tree and to a follow-up
+                // node click.
+                let bar_id = ui.id().with("view_menu");
+                let mut bar_state = egui::menu::BarState::load(ui.ctx(), bar_id);
+                let menu_button = ui.add(egui::Button::new(
                     egui::RichText::new("View \u{2304}").size(style::TEXT_HINT),
-                    |ui| {
-                        let mut folders_on_top = self.columns.folders_on_top;
-                        if ui.checkbox(&mut folders_on_top, "Folders first").changed() {
-                            self.columns.folders_on_top = folders_on_top;
-                            self.refresh_preserving_filter();
-                            log::info!(
-                                "file_browser: folders_on_top changed to {}",
-                                self.columns.folders_on_top
-                            );
-                        }
-                        let mut show_hidden = self.columns.show_hidden;
-                        if ui.checkbox(&mut show_hidden, "Show hidden files").changed() {
-                            self.columns.show_hidden = show_hidden;
-                            self.refresh_preserving_filter();
-                            log::info!(
-                                "file_browser: show_hidden changed to {}",
-                                self.columns.show_hidden
-                            );
-                        }
-                        let mut inspector = self.inspector_open;
-                        if ui.checkbox(&mut inspector, "Inspector").changed() {
-                            self.toggle_inspector();
-                        }
-                        // Column toggles only exist in the details table — in
-                        // the compact list they would be seven dead entries.
-                        if layout.shows_details() {
-                            ui.separator();
-                            for id in [
-                                ColumnId::Kind,
-                                ColumnId::Size,
-                                ColumnId::Modified,
-                                ColumnId::Created,
-                                ColumnId::Extension,
-                                ColumnId::Permissions,
-                                ColumnId::Tags,
-                            ] {
-                                let mut visible = self
-                                    .columns
-                                    .columns
-                                    .iter()
-                                    .find(|column| column.id == id)
-                                    .map(|column| column.visible)
-                                    .unwrap_or(false);
-                                if ui.checkbox(&mut visible, id.label()).changed() {
-                                    self.columns.set_column_visible(id, visible);
-                                    log::info!(
-                                        "file_browser: column {} visibility changed to {}",
-                                        id.key(),
-                                        visible
-                                    );
-                                }
+                ));
+                if bar_state.is_none()
+                    && pending_click.is_some_and(|c| c.targets_id(menu_button.id))
+                {
+                    let pos = menu_button.rect.left_bottom();
+                    **bar_state = Some(egui::menu::MenuRoot::new(pos, menu_button.id));
+                    log::info!("file_browser: View menu opened via synthetic node click");
+                }
+                bar_state.bar_menu(&menu_button, |ui| {
+                    let mut folders_on_top = self.columns.folders_on_top;
+                    if ui.checkbox(&mut folders_on_top, "Folders first").changed() {
+                        self.columns.folders_on_top = folders_on_top;
+                        self.refresh_preserving_filter();
+                        log::info!(
+                            "file_browser: folders_on_top changed to {}",
+                            self.columns.folders_on_top
+                        );
+                    }
+                    let mut show_hidden = self.columns.show_hidden;
+                    let show_hidden_resp = ui.checkbox(&mut show_hidden, "Show hidden files");
+                    let synthetic_toggle =
+                        pending_click.is_some_and(|c| c.targets_id(show_hidden_resp.id));
+                    if show_hidden_resp.changed() || synthetic_toggle {
+                        self.columns.show_hidden = if show_hidden_resp.changed() {
+                            show_hidden
+                        } else {
+                            !self.columns.show_hidden
+                        };
+                        self.refresh_preserving_filter();
+                        log::info!(
+                            "file_browser: show_hidden changed to {}",
+                            self.columns.show_hidden
+                        );
+                    }
+                    let mut inspector = self.inspector_open;
+                    if ui.checkbox(&mut inspector, "Inspector").changed() {
+                        self.toggle_inspector();
+                    }
+                    // Column toggles only exist in the details table — in
+                    // the compact list they would be seven dead entries.
+                    if layout.shows_details() {
+                        ui.separator();
+                        for id in [
+                            ColumnId::Kind,
+                            ColumnId::Size,
+                            ColumnId::Modified,
+                            ColumnId::Created,
+                            ColumnId::Extension,
+                            ColumnId::Permissions,
+                            ColumnId::Tags,
+                        ] {
+                            let mut visible = self
+                                .columns
+                                .columns
+                                .iter()
+                                .find(|column| column.id == id)
+                                .map(|column| column.visible)
+                                .unwrap_or(false);
+                            if ui.checkbox(&mut visible, id.label()).changed() {
+                                self.columns.set_column_visible(id, visible);
+                                log::info!(
+                                    "file_browser: column {} visibility changed to {}",
+                                    id.key(),
+                                    visible
+                                );
                             }
                         }
-                    },
-                );
+                    }
+                });
+                bar_state.store(ui.ctx(), bar_id);
             });
         });
     }
@@ -2028,6 +2063,14 @@ impl FileBrowserApp {
             });
         });
     }
+
+    /// Read `show_hidden` from outside the module (cross-module host tests
+    /// reach `FileBrowserApp` through `AppRuntime::Builtin` + `as_any_mut`,
+    /// where the private `columns` field is unreachable).
+    #[cfg(test)]
+    pub(crate) fn show_hidden(&self) -> bool {
+        self.columns.show_hidden
+    }
 }
 
 impl App for FileBrowserApp {
@@ -2047,7 +2090,12 @@ impl App for FileBrowserApp {
             .unwrap_or_else(|| "/".to_string())
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &AppRenderContext<'_>,
+        pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
         let colors = ctx.colors;
 
         egui::Frame::new()
@@ -2056,7 +2104,7 @@ impl App for FileBrowserApp {
             .show(ui, |ui| {
                 let layout = FileBrowserLayout::for_width(ui.available_width());
                 let show_inspector = self.should_show_inspector(ui.available_width());
-                self.draw_toolbar(ui, colors, layout);
+                self.draw_toolbar(ui, colors, layout, pending_click);
 
                 if self.in_search {
                     self.draw_search_bar(ui, colors);

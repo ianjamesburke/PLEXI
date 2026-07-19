@@ -231,8 +231,18 @@ pub trait App: Send {
     /// Human-readable display name shown in the pane title.
     fn display_name(&self) -> String;
 
-    /// Render the app into the given Ui region.
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>);
+    /// Render the app into the given Ui region. `pending_click` (stint 0469) is
+    /// a synthetic pointer click queued by `plexi pane click --node` /
+    /// `HostHarness::inject_node_click`, delivered the same frame a real click's
+    /// hit-test result would reach. Apps that expose activatable widgets to
+    /// node-targeted clicks match it against their own `egui::Id`s (see File
+    /// Explorer in `src/file_browser/mod.rs`); apps that don't ignore it.
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &AppRenderContext<'_>,
+        pending_click: Option<crate::host::pane::PendingPaneClick>,
+    );
 
     /// Handle raw key input before the app's own render pass.
     /// Return `Consumed` to prevent downstream handlers from seeing the event.
