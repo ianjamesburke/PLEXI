@@ -1345,6 +1345,57 @@ mod tests {
         );
     }
 
+    /// Stint 0451: emoji in an assistant reply must rasterize as monochrome
+    /// glyphs, not tofu boxes. Before the Noto Emoji fallback was bound in
+    /// `theme::font_definitions`, none of the bundled fonts covered the emoji
+    /// planes, so these codepoints drew as empty boxes. Screenshot is for
+    /// eyeball review — confirm each emoji draws a distinct shape.
+    #[test]
+    fn screenshot_assistant_emoji_render() {
+        use crate::assistant::model::{Turn, TurnRole};
+
+        let ws = tempfile::tempdir().unwrap();
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
+        let mut assistant = crate::assistant::AssistantApp::new(
+            ws.path().to_path_buf(),
+            broker,
+            ws.path(),
+        );
+        assistant.model.turns = vec![
+            Turn {
+                role: TurnRole::User,
+                text: "show me some emoji".to_string(),
+                created_at: "2026-07-18T00:00:00Z".to_string(),
+                status: None,
+                thoughts: None,
+                detail: None,
+            },
+            Turn {
+                role: TurnRole::Assistant,
+                // Exact transcript codepoints from stint 0451: U+1F44B U+1F604
+                // U+1F6D2 U+2728 U+1F3AE.
+                text: "Here you go: 👋 😄 🛒 ✨ 🎮".to_string(),
+                created_at: "2026-07-18T00:00:01Z".to_string(),
+                status: None,
+                thoughts: None,
+                detail: None,
+            },
+        ];
+
+        let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
+        h.step();
+        h.open_assistant_built(assistant, ws.path().to_path_buf());
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_assistant_emoji_render.png")
+            .expect("render failed");
+        println!(
+            "Screenshot saved to /tmp/plexi_assistant_emoji_render.png — \
+             inspect: 👋 😄 🛒 ✨ 🎮 render as distinct monochrome glyphs, \
+             not tofu boxes."
+        );
+    }
+
     #[test]
     fn semantic_label_lookup_is_scoped_to_the_target_pane() {
         let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);

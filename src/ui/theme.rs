@@ -10,6 +10,7 @@ const UI_FONT_NAME: &str = "Inter";
 const UI_FONT_MEDIUM_NAME: &str = "Inter Medium";
 const FALLBACK_FONT_NAME: &str = "DejaVu Sans";
 const UNICODE_FALLBACK_FONT_NAME: &str = "Noto Sans";
+const EMOJI_FALLBACK_FONT_NAME: &str = "Noto Emoji";
 
 /// Named family for medium-weight UI text (titles, section headers). egui has
 /// no weight axis — a second family backed by Inter Medium is how weight
@@ -1029,6 +1030,16 @@ pub fn font_definitions() -> egui::FontDefinitions {
             "../../fonts/NotoSans-Regular.ttf"
         ))),
     );
+    // Monochrome emoji fallback. egui/epaint rasterizes greyscale glyphs only,
+    // so a color emoji font (Apple Color Emoji) would render as tofu; Noto Emoji
+    // is the monochrome build that covers the emoji planes. Bound last in every
+    // family so it never shadows a glyph an earlier font provides.
+    fonts.font_data.insert(
+        EMOJI_FALLBACK_FONT_NAME.to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../fonts/NotoEmoji-Regular.ttf"
+        ))),
+    );
     // Proportional family: route UI text through JetBrains Mono Nerd Font so
     // the host can be evaluated as a fully monospace app. Inter stays bundled
     // as fallback while this experiment is active.
@@ -1040,6 +1051,7 @@ pub fn font_definitions() -> egui::FontDefinitions {
     proportional.insert(1, UI_FONT_NAME.to_owned());
     proportional.insert(2, FALLBACK_FONT_NAME.to_owned());
     proportional.insert(3, UNICODE_FALLBACK_FONT_NAME.to_owned());
+    proportional.push(EMOJI_FALLBACK_FONT_NAME.to_owned());
     // Medium family mirrors Proportional while the monospace UI experiment is
     // active; egui has no weight axis for this bundled Nerd Font.
     let mut medium = proportional.clone();
@@ -1062,6 +1074,11 @@ pub fn font_definitions() -> egui::FontDefinitions {
         .entry(egui::FontFamily::Monospace)
         .or_default()
         .insert(2, UNICODE_FALLBACK_FONT_NAME.to_owned());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push(EMOJI_FALLBACK_FONT_NAME.to_owned());
 
     // Load system fonts as additional fallbacks after bundled fonts but before egui defaults.
     for (name, path) in SYSTEM_FALLBACK_FONTS {
