@@ -1269,6 +1269,13 @@ impl PlexiApp {
                     key.chars().count()
                 );
                 let mut passthrough_raw = None;
+                // Mirror the live dispatch gate (stint 0456): while this
+                // pane's TextInput holds egui focus, keys belong to the
+                // host TextEdit — replay into the real ctx (the passthrough
+                // path below) instead of the app's raw KeyEvent path, the
+                // same routing a physical keypress gets.
+                let text_input_focused =
+                    crate::app::input_owner::focused_pane_text_surface(&self.ctx, *pane_id);
                 let mut result: Result<serde_json::Value, String> = match self
                     .windows
                     .iter_mut()
@@ -1284,6 +1291,22 @@ impl PlexiApp {
                             term.backend
                                 .process_command(egui_term::BackendCommand::Write(bytes));
                             Ok(serde_json::json!({"ok": true}))
+                        } else if pane.as_app_mut().is_some() && text_input_focused {
+                            match super::key_str_to_egui_raw_input(key) {
+                                Some(raw) => {
+                                    log::info!(
+                                        "pane_ipc: key_pane: pane {pane_id} routed to its focused TextInput"
+                                    );
+                                    passthrough_raw = Some(raw);
+                                    Ok(serde_json::json!({
+                                        "ok": true,
+                                        "disposition": "text_input",
+                                    }))
+                                }
+                                None => Err(format!(
+                                    "key {key:?} does not map to a native app key event"
+                                )),
+                            }
                         } else if let Some(app_pane) = pane.as_app_mut() {
                             match &mut app_pane.runtime {
                                 runtime => match super::drive_native_pane_key(runtime, key) {
