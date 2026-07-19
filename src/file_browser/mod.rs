@@ -345,7 +345,7 @@ impl FileBrowserApp {
                     .filter_map(|e| {
                         let e = e.ok()?;
                         let name = e.file_name().to_string_lossy().to_string();
-                        if name.starts_with('.') {
+                        if name.starts_with('.') && !self.columns.show_hidden {
                             return None;
                         }
                         let path = e.path();
@@ -1903,6 +1903,15 @@ impl FileBrowserApp {
                                 self.columns.folders_on_top
                             );
                         }
+                        let mut show_hidden = self.columns.show_hidden;
+                        if ui.checkbox(&mut show_hidden, "Show hidden files").changed() {
+                            self.columns.show_hidden = show_hidden;
+                            self.refresh_preserving_filter();
+                            log::info!(
+                                "file_browser: show_hidden changed to {}",
+                                self.columns.show_hidden
+                            );
+                        }
                         let mut inspector = self.inspector_open;
                         if ui.checkbox(&mut inspector, "Inspector").changed() {
                             self.toggle_inspector();
@@ -3199,6 +3208,7 @@ mod tests {
         app.columns.set_column_visible(ColumnId::Created, true);
         app.columns.move_column(ColumnId::Created, -1);
         app.columns.folders_on_top = false;
+        app.columns.show_hidden = true;
 
         let state = app.serialize_state().expect("state");
         let mut restored = FileBrowserApp::new(app.cwd.clone());
@@ -3207,6 +3217,7 @@ mod tests {
         assert_eq!(restored.columns.sort.column, ColumnId::Size);
         assert_eq!(restored.columns.sort.direction, SortDirection::Desc);
         assert!(!restored.columns.folders_on_top);
+        assert!(restored.columns.show_hidden);
         assert_eq!(
             restored
                 .columns
@@ -3238,6 +3249,40 @@ mod tests {
             .position(|column| column.id == ColumnId::Modified)
             .expect("modified column");
         assert!(created_index < modified_index);
+    }
+
+    /// Stint 0368: dotfile entries are filtered out of the listing by default,
+    /// and reappear once `show_hidden` is toggled on.
+    #[test]
+    fn show_hidden_toggle_filters_dotfile_entries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("visible.txt"), b"v").expect("write visible");
+        std::fs::write(dir.path().join(".hidden"), b"h").expect("write hidden");
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+
+        assert!(!app.columns.show_hidden, "hidden files are off by default");
+        assert!(app.entries.iter().any(|e| e.name == "visible.txt"));
+        assert!(
+            !app.entries.iter().any(|e| e.name == ".hidden"),
+            "dotfile must be filtered out while show_hidden is off"
+        );
+
+        app.columns.show_hidden = true;
+        app.refresh_preserving_filter();
+
+        assert!(app.entries.iter().any(|e| e.name == "visible.txt"));
+        assert!(
+            app.entries.iter().any(|e| e.name == ".hidden"),
+            "dotfile must appear once show_hidden is on"
+        );
+
+        app.columns.show_hidden = false;
+        app.refresh_preserving_filter();
+
+        assert!(
+            !app.entries.iter().any(|e| e.name == ".hidden"),
+            "dotfile must be filtered again once show_hidden is toggled back off"
+        );
     }
 
     #[test]

@@ -226,6 +226,7 @@ pub(crate) struct ColumnModel {
     pub columns: Vec<ColumnConfig>,
     pub sort: SortDescriptor,
     pub folders_on_top: bool,
+    pub show_hidden: bool,
 }
 
 impl Default for ColumnModel {
@@ -243,6 +244,7 @@ impl Default for ColumnModel {
             ],
             sort: SortDescriptor::default(),
             folders_on_top: true,
+            show_hidden: false,
         }
     }
 }
@@ -322,6 +324,7 @@ impl ColumnModel {
                 "direction": self.sort.direction.key(),
             },
             "folders_on_top": self.folders_on_top,
+            "show_hidden": self.show_hidden,
             "columns": self.columns.iter().map(|column| {
                 serde_json::json!({
                     "id": column.id.key(),
@@ -348,6 +351,9 @@ impl ColumnModel {
         }
         if let Some(folders_on_top) = value["folders_on_top"].as_bool() {
             model.folders_on_top = folders_on_top;
+        }
+        if let Some(show_hidden) = value["show_hidden"].as_bool() {
+            model.show_hidden = show_hidden;
         }
         if let Some(columns) = value["columns"].as_array() {
             let mut restored = Vec::new();
