@@ -50,6 +50,10 @@ pub struct SkillDefinition {
     pub instructions: String,
     pub source: SkillSource,
     pub path: PathBuf,
+    /// Optional model-tier floor (frontmatter `tier:`). When the session tier
+    /// is still the installed default, dispatch escalates to at least this
+    /// tier for turns that load the skill; an explicit user tier always wins.
+    pub tier: Option<crate::app_protocol::ModelTier>,
 }
 
 #[derive(Debug, Default)]
@@ -215,12 +219,24 @@ fn parse_skill_text(text: &str, source: SkillSource, path: &Path) -> Result<Skil
     if name.is_empty() || description.is_empty() || instructions.trim().is_empty() {
         return Err("name, description, and instructions must be non-empty".to_string());
     }
+    let tier = match value("tier").as_deref() {
+        None => None,
+        Some("low") => Some(crate::app_protocol::ModelTier::Low),
+        Some("medium") => Some(crate::app_protocol::ModelTier::Medium),
+        Some("high") => Some(crate::app_protocol::ModelTier::High),
+        Some(other) => {
+            return Err(format!(
+                "frontmatter tier must be low, medium, or high — got '{other}'"
+            ))
+        }
+    };
     Ok(SkillDefinition {
         name,
         description,
         instructions: instructions.trim().to_string(),
         source,
         path: path.to_path_buf(),
+        tier,
     })
 }
 
@@ -262,6 +278,49 @@ mod tests {
             .all()
             .iter()
             .all(|skill| skill.source == SkillSource::Builtin));
+    }
+
+    #[test]
+    fn tier_frontmatter_parses_and_rejects_unknown_values() {
+        let skill = parse_skill_text(
+            "---\nname: deploy\ndescription: deploy a release\ntier: high\n---\nbody",
+            SkillSource::User,
+            Path::new("x"),
+        )
+        .expect("valid tier");
+        assert_eq!(skill.tier, Some(crate::app_protocol::ModelTier::High));
+
+        let no_tier = parse_skill_text(
+            "---\nname: deploy\ndescription: deploy a release\n---\nbody",
+            SkillSource::User,
+            Path::new("x"),
+        )
+        .expect("tier is optional");
+        assert_eq!(no_tier.tier, None);
+
+        let err = parse_skill_text(
+            "---\nname: deploy\ndescription: deploy a release\ntier: turbo\n---\nbody",
+            SkillSource::User,
+            Path::new("x"),
+        )
+        .expect_err("unknown tier must fail loudly");
+        assert!(err.contains("turbo"), "{err}");
+    }
+
+    #[test]
+    fn builtin_app_build_skill_declares_a_high_tier_floor() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = SkillRegistry::load(root.path(), root.path());
+        let skill = registry.get(APP_BUILD_SKILL_NAME).expect("builtin present");
+        assert_eq!(
+            skill.tier,
+            Some(crate::app_protocol::ModelTier::High),
+            "app builds must escalate off a default-sourced weak tier"
+        );
+        assert!(
+            !skill.instructions.contains("host.files.grep to find SDK symbols"),
+            "the skill must not instruct SDK discovery — the API reference is embedded"
+        );
     }
 
     #[test]
@@ -381,10 +440,12 @@ mod tests {
             instructions: "do it".into(),
             source: SkillSource::User,
             path: PathBuf::new(),
+            tier: None,
         };
         let docs = SkillDefinition {
             name: "docs".into(), description: "Write and revise product documentation with clear examples and accurate command references.".into(),
             instructions: "write".into(), source: SkillSource::User, path: PathBuf::new(),
+            tier: None,
         };
         let registry = SkillRegistry {
             skills: vec![release, docs],
@@ -412,6 +473,7 @@ mod tests {
             instructions: "do it".into(),
             source: SkillSource::User,
             path: PathBuf::new(),
+            tier: None,
         };
         let registry = SkillRegistry {
             skills: vec![make("release-a"), make("release-b")],

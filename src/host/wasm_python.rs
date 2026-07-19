@@ -469,6 +469,13 @@ impl WasmPythonRuntime {
     pub fn drain_stderr(&self) -> String {
         String::from_utf8_lossy(&self.stderr.drain()).into_owned()
     }
+
+    /// Whether the guest thread has exited (crash, clean exit, or failed
+    /// boot). Buffered stdout may still hold undrained messages after this
+    /// turns true — drain once more before treating the guest as gone.
+    pub fn is_finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(std::thread::JoinHandle::is_finished)
+    }
 }
 
 impl Drop for WasmPythonRuntime {
@@ -595,6 +602,24 @@ impl HeadlessPythonSession {
                 if matches(&message) {
                     return Ok(());
                 }
+            }
+            if self.runtime.is_finished() {
+                // The guest may have flushed final messages between the drain
+                // above and exiting — drain once more before declaring death.
+                for message in self.runtime.drain_messages()? {
+                    if matches(&message) {
+                        return Ok(());
+                    }
+                }
+                let stderr = self.runtime.drain_stderr();
+                return Err(WasmPythonError::BridgeJson(format!(
+                    "app exited before responding{}",
+                    if stderr.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n  stderr:\n{stderr}")
+                    }
+                )));
             }
             if std::time::Instant::now() > deadline {
                 let stderr = self.runtime.drain_stderr();
@@ -3922,6 +3947,39 @@ mod tests {
                     if *x == 41.0 && *y == 42.0
             )
         )));
+    }
+
+    #[test]
+    fn headless_frame_fails_fast_when_the_guest_dies_at_import() {
+        let app = tempdir().expect("app dir");
+        std::fs::write(
+            app.path().join("main.py"),
+            "raise RuntimeError('broken on purpose')\n",
+        )
+        .expect("write app");
+        let config = PythonLaunchConfig {
+            app_id: "test.broken-guest".to_string(),
+            app_dir: app.path().to_path_buf(),
+            entry: app.path().join("main.py"),
+            module_name: "main".to_string(),
+            launch_args: Vec::new(),
+            workspace_root: app.path().to_path_buf(),
+            capabilities: Vec::new(),
+            allowed_hosts: Vec::new(),
+        };
+        let started = std::time::Instant::now();
+        let err = run_headless_frame(&config, (480.0, 320.0), None)
+            .expect_err("an entry that raises at import must fail the headless probe");
+        let elapsed = started.elapsed();
+        let message = format!("{err:?}");
+        assert!(
+            message.contains("app exited before responding"),
+            "must take the guest-death fast path, not the {HEADLESS_DEFAULT_TIMEOUT:?} timeout: {message}"
+        );
+        assert!(
+            elapsed < HEADLESS_DEFAULT_TIMEOUT,
+            "broken guest must fail before the poll timeout, took {elapsed:?}"
+        );
     }
 
     fn python_shim_fixture() -> PathBuf {

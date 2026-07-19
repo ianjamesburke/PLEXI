@@ -170,11 +170,25 @@ fn stream_openrouter(
         Ok(r) => r,
         Err(ureq::Error::Status(status, error_resp)) => {
             let body = error_resp.into_string().unwrap_or_default();
-            // Try to parse OpenRouter error shape: {"error":{"code":N,"message":"…"}}
-            let msg = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| body.clone());
+            // OpenRouter error shape: {"error":{"code":N,"message":"…",
+            // "metadata":{"raw":"<the upstream provider's actual error>"}}}.
+            // "Provider returned error" alone is undiagnosable — always
+            // surface metadata.raw when present and log the full body.
+            log::warn!("openrouter: http {status} error body: {body}");
+            let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
+            let message = parsed
+                .as_ref()
+                .and_then(|v| v["error"]["message"].as_str())
+                .map(str::to_string);
+            let provider_raw = parsed
+                .as_ref()
+                .and_then(|v| v["error"]["metadata"]["raw"].as_str())
+                .map(str::to_string);
+            let msg = match (message, provider_raw) {
+                (Some(message), Some(raw)) => format!("{message} — provider detail: {raw}"),
+                (Some(message), None) => message,
+                (None, _) => body.clone(),
+            };
             let _ = tx.send(StreamEvent::Error(format!(
                 "openrouter http error {status}: {msg}"
             )));
