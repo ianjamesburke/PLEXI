@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction
@@ -16,7 +18,7 @@ BUTTON_ROWS = [
     ["0", ".", "="],
 ]
 
-DEFAULT_STATE = {
+DEFAULT_STATE: dict[str, Any] = {
     "display": "0",
     "pending": None,
     "op": None,

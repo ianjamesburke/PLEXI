@@ -210,6 +210,30 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
             }
             Err(e) => errors.push(format!("SDK — {e}")),
         }
+        // Static type gate (stint 0415): the AST analysis above proves shape,
+        // mypy proves attribute/type correctness — e.g. `event.payload` on a
+        // `UiValueChange` (which only has `.value`) fails here instead of
+        // crashing the guest on the first keystroke.
+        // Findings gate hard only for current-template scaffolds (every app
+        // the assistant generates). Pre-gate apps surface the same findings
+        // as loud warnings until the maintained set is annotated — tracked
+        // as its own stint, not silently skipped here.
+        let strict_types = scaffold_at_current_template(app_dir);
+        match run_python_type_check(&manifest.app.id, &entry_path, &manifest.app.dependencies) {
+            Ok(TypeCheckOutcome::Clean) => println!("✓ types — mypy clean"),
+            Ok(TypeCheckOutcome::Findings(findings)) if strict_types => {
+                errors.push(format!("types — mypy found errors:\n{findings}"));
+            }
+            Ok(TypeCheckOutcome::Findings(findings)) => {
+                warnings.push(format!(
+                    "types — mypy findings (pre-current-template scaffold; not failing the check):\n{findings}"
+                ));
+            }
+            Ok(TypeCheckOutcome::Unavailable(reason)) => {
+                warnings.push(format!("types — type-check skipped: {reason}"));
+            }
+            Err(e) => errors.push(format!("types — {e}")),
+        }
     } else {
         warnings.push(format!(
             "SDK — {} is not a Python entry; skipping Python SDK checks",
@@ -735,6 +759,12 @@ fn scaffold_metadata_warnings(app_dir: &Path) -> Vec<String> {
 }
 
 fn scaffold_requires_semantic_chrome(app_dir: &Path) -> bool {
+    scaffold_at_current_template(app_dir)
+}
+
+/// True when the app was scaffolded at (or above) the current template
+/// version — the gate for checks that only hold for freshly-generated apps.
+fn scaffold_at_current_template(app_dir: &Path) -> bool {
     let metadata_path = app_dir.join(crate::cli::app::SCAFFOLD_METADATA_FILE);
     let Ok(raw) = std::fs::read_to_string(&metadata_path) else {
         return false;
@@ -743,6 +773,123 @@ fn scaffold_requires_semantic_chrome(app_dir: &Path) -> bool {
         return false;
     };
     metadata.template_version >= crate::cli::app::PYTHON_SCAFFOLD_TEMPLATE_VERSION
+}
+
+/// Outcome of the static type-check pass over the app entry (stint 0415).
+enum TypeCheckOutcome {
+    Clean,
+    /// mypy exited 1 with findings — the app has type errors.
+    Findings(String),
+    /// mypy is not importable and could not be installed (offline venv);
+    /// surfaced as a named warning, never silently skipped.
+    Unavailable(String),
+}
+
+fn run_python_type_check(
+    app_id: &str,
+    entry_path: &Path,
+    python_dependencies: &[String],
+) -> Result<TypeCheckOutcome, String> {
+    let runtime = crate::app::python_env::resolve_python_runtime(
+        app_id,
+        entry_path,
+        true,
+        python_dependencies,
+    )?;
+    run_python_type_check_with(
+        entry_path,
+        Path::new(&runtime.executable),
+        &crate::config::build_pythonpath(None),
+    )
+}
+
+/// Run mypy over `entry_path` through the app venv's `python`, resolving
+/// `plexi_sdk` from `pythonpath`. `--check-untyped-defs` is load-bearing:
+/// scaffolded apps leave `update(event)` unannotated, and without the flag
+/// mypy skips untyped function bodies entirely — the exact place authoring
+/// mistakes live. `--follow-imports=silent` type-checks against the SDK's
+/// annotations without reporting on SDK-internal code.
+fn run_python_type_check_with(
+    entry_path: &Path,
+    python: &Path,
+    pythonpath: &str,
+) -> Result<TypeCheckOutcome, String> {
+    // The venv resolver can hand back paths relative to the caller's cwd;
+    // the mypy run below changes cwd to the app dir, so resolve everything
+    // to absolute paths first.
+    let entry_path = &entry_path
+        .canonicalize()
+        .map_err(|e| format!("could not resolve app entry {}: {e}", entry_path.display()))?;
+    let python = &python
+        .canonicalize()
+        .map_err(|e| format!("could not resolve app venv python {}: {e}", python.display()))?;
+    if let Err(probe) = probe_mypy(python) {
+        // One-time install into the app venv, mirroring how app
+        // dependencies land there (`python_env::install_dependencies`).
+        let install = std::process::Command::new("uv")
+            .args(["pip", "install", "--python"])
+            .arg(python)
+            .arg("mypy")
+            .output();
+        let installed = matches!(&install, Ok(out) if out.status.success());
+        if !installed {
+            return Ok(TypeCheckOutcome::Unavailable(format!(
+                "mypy not importable ({probe}) and `uv pip install mypy` did not succeed"
+            )));
+        }
+        probe_mypy(python).map_err(|e| format!("mypy installed but still not importable: {e}"))?;
+        log::info!("app_check: installed mypy into the app venv at {}", python.display());
+    }
+    let app_dir = entry_path.parent().unwrap_or_else(|| Path::new("."));
+    let cache_dir = app_dir.join(".venv").join("mypy_cache");
+    let output = std::process::Command::new(python)
+        .args([
+            "-m",
+            "mypy",
+            "--no-error-summary",
+            "--no-color-output",
+            "--hide-error-context",
+            "--follow-imports=silent",
+            "--check-untyped-defs",
+            "--cache-dir",
+        ])
+        .arg(&cache_dir)
+        .arg(entry_path)
+        .env("MYPYPATH", pythonpath)
+        .current_dir(app_dir)
+        .output()
+        .map_err(|e| format!("failed to run mypy via {}: {e}", python.display()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    log::info!(
+        "app_check: mypy over {} exited {:?} ({} finding bytes)",
+        entry_path.display(),
+        output.status.code(),
+        stdout.len()
+    );
+    match output.status.code() {
+        Some(0) => Ok(TypeCheckOutcome::Clean),
+        Some(1) if !stdout.is_empty() => Ok(TypeCheckOutcome::Findings(stdout)),
+        code => Err(format!(
+            "mypy failed (exit {code:?}): {}",
+            if stdout.is_empty() {
+                String::from_utf8_lossy(&output.stderr).trim().to_string()
+            } else {
+                stdout
+            }
+        )),
+    }
+}
+
+fn probe_mypy(python: &Path) -> Result<(), String> {
+    let output = std::process::Command::new(python)
+        .args(["-m", "mypy", "--version"])
+        .output()
+        .map_err(|e| format!("could not run {}: {e}", python.display()))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
 }
 
 fn analyze_python_entry(
@@ -1138,5 +1285,69 @@ profile_dir = ".plexi-beta"
             check_error.contains("unknown badge color: blue"),
             "check error must name the bad value: {check_error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod type_check_tests {
+    use super::*;
+
+    /// Stint 0415, both halves of the contract: (1) an app reading a field
+    /// that doesn't exist on an SDK event (`UiValueChange.payload` — it only
+    /// has `.value`) fails the type gate instead of crashing the guest at
+    /// runtime; (2) a mixed-children `Column([Text, Button])` type-checks
+    /// clean now that container params are covariant `Sequence`. Runs mypy
+    /// through the repo venv's python; skips (loudly) when that venv isn't
+    /// synced so a fresh clone's `cargo test` doesn't require Python setup.
+    #[test]
+    fn mypy_gate_flags_wrong_event_attribute_and_accepts_mixed_children() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let python = manifest_dir.join(".venv/bin/python");
+        if !python.exists() || probe_mypy(&python).is_err() {
+            eprintln!("skipping: repo venv python with mypy not available");
+            return;
+        }
+        let sdk_path = manifest_dir.join("sdk/python");
+        let sdk = sdk_path.to_string_lossy();
+
+        let dir = tempfile::tempdir().unwrap();
+        let bad_dir = dir.path().join("bad");
+        std::fs::create_dir_all(&bad_dir).unwrap();
+        let bad = bad_dir.join("main.py");
+        std::fs::write(
+            &bad,
+            "from plexi_sdk.events import UiValueChange\n\n\
+             def update(event):\n\
+             \x20   if isinstance(event, UiValueChange):\n\
+             \x20       return [event.payload.get(\"value\")]\n\
+             \x20   return []\n",
+        )
+        .unwrap();
+        match run_python_type_check_with(&bad, &python, &sdk).expect("mypy run") {
+            TypeCheckOutcome::Findings(findings) => assert!(
+                findings.contains("payload"),
+                "findings must name the bogus attribute: {findings}"
+            ),
+            TypeCheckOutcome::Clean => panic!("`event.payload` on UiValueChange must fail the type gate"),
+            TypeCheckOutcome::Unavailable(reason) => panic!("mypy vanished mid-test: {reason}"),
+        }
+
+        let good_dir = dir.path().join("good");
+        std::fs::create_dir_all(&good_dir).unwrap();
+        let good = good_dir.join("main.py");
+        std::fs::write(
+            &good,
+            "from plexi_sdk.ui import Button, Column, Text\n\n\
+             def view():\n\
+             \x20   return Column([Text(\"hello\"), Button(\"go\", \"on-go\")])\n",
+        )
+        .unwrap();
+        match run_python_type_check_with(&good, &python, &sdk).expect("mypy run") {
+            TypeCheckOutcome::Clean => {}
+            TypeCheckOutcome::Findings(findings) => panic!(
+                "mixed-children Column must type-check clean under Sequence covariance: {findings}"
+            ),
+            TypeCheckOutcome::Unavailable(reason) => panic!("mypy vanished mid-test: {reason}"),
+        }
     }
 }
