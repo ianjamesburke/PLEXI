@@ -47,6 +47,13 @@ pub enum TurnDelta<'a> {
     /// Reasoning ("thinking") text from a reasoning model. Never part of
     /// `TurnResult::text`.
     Reasoning(&'a str),
+    /// The model is generating a tool call: name once known, cumulative
+    /// argument chars so far. Lets the UI animate the longest otherwise
+    /// silent stretch of a turn (stint 0467).
+    ToolCallProgress {
+        name: Option<&'a str>,
+        arg_chars: usize,
+    },
 }
 
 /// Error variants for a failed turn.
@@ -109,6 +116,12 @@ pub fn run_turn(
             }
             Ok(StreamEvent::ToolCalls(calls)) => {
                 tool_calls = calls;
+            }
+            Ok(StreamEvent::ToolCallProgress { name, arg_chars }) => {
+                on_delta(TurnDelta::ToolCallProgress {
+                    name: name.as_deref(),
+                    arg_chars,
+                });
             }
             Ok(StreamEvent::Done {
                 input_tokens: in_tok,

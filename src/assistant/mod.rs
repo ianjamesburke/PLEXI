@@ -42,6 +42,12 @@ use crate::plexi_ai::CancelToken;
 enum StreamDelta {
     Answer(String),
     Reasoning(String),
+    /// The model is generating a tool call (name once known, cumulative
+    /// argument chars) — drives the transcript's generation-progress row.
+    ToolProgress {
+        name: Option<String>,
+        arg_chars: usize,
+    },
 }
 use crate::plexi_ai::tool_dispatch::{
     HostToolHandler, ToolCallHooks, ToolCallResult, ToolDispatcher,
@@ -1645,6 +1651,12 @@ impl AssistantApp {
                     let owned = match delta {
                         TurnDelta::Text(chunk) => StreamDelta::Answer(chunk.to_string()),
                         TurnDelta::Reasoning(chunk) => StreamDelta::Reasoning(chunk.to_string()),
+                        TurnDelta::ToolCallProgress { name, arg_chars } => {
+                            StreamDelta::ToolProgress {
+                                name: name.map(str::to_string),
+                                arg_chars,
+                            }
+                        }
                     };
                     let _ = delta_tx.send(owned);
                 });
@@ -1718,6 +1730,9 @@ impl AssistantApp {
                 match delta {
                     StreamDelta::Answer(chunk) => self.model.apply_answer_delta(&chunk),
                     StreamDelta::Reasoning(chunk) => self.model.apply_reasoning_delta(&chunk),
+                    StreamDelta::ToolProgress { name, arg_chars } => {
+                        self.model.apply_tool_progress(name, arg_chars);
+                    }
                 }
             }
         }

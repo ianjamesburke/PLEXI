@@ -71,6 +71,15 @@ pub enum StreamEvent {
     /// Incremental reasoning ("thinking") chunk from a reasoning model.
     /// Displayed separately from the answer text; never part of `TurnResult::text`.
     Reasoning(String),
+    /// The model is generating a tool call (stint 0467). `name` is the
+    /// decoded tool name once the stream has delivered it; `arg_chars` is the
+    /// total argument chars accumulated so far across the in-flight calls.
+    /// Purely informational — the finished calls still arrive via
+    /// `ToolCalls`.
+    ToolCallProgress {
+        name: Option<String>,
+        arg_chars: usize,
+    },
     /// Turn complete. Token counts are `Some` only for metered backends.
     /// `generation_id` carries the `X-Generation-Id` response header value
     /// (OpenRouter-specific); the broker uses it to fetch the real cost after

@@ -152,6 +152,20 @@ pub struct StreamingState {
     /// flushed when a tool call started (stint 0455). `finish_turn` strips
     /// this prefix from the broker's final text so only the tail commits.
     pub committed_answer: String,
+    /// The model is currently generating a tool call (stint 0467) — the
+    /// longest otherwise-silent stretch of an app-build turn. Cleared when
+    /// the finished call dispatches (`tool_call_started`) or the turn ends.
+    pub tool_progress: Option<ToolArgProgress>,
+}
+
+/// Live tool-call generation progress: the tool name once the stream has
+/// delivered it, cumulative argument chars, and when generation began so the
+/// row can show real elapsed time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolArgProgress {
+    pub name: Option<String>,
+    pub arg_chars: usize,
+    pub started: std::time::Instant,
 }
 
 /// Observable lifecycle for `/compact`. This deliberately records feedback,
@@ -839,10 +853,42 @@ impl AssistantModel {
         }
     }
 
-    /// Append an answer text delta from the streaming turn.
+    /// Append an answer text delta from the streaming turn. Text arriving
+    /// means the model is no longer mid-tool-call, so stale generation
+    /// progress is dropped.
     pub fn apply_answer_delta(&mut self, chunk: &str) {
         if self.streaming.in_flight {
             self.streaming.partial_answer.push_str(chunk);
+            self.streaming.tool_progress = None;
+        }
+    }
+
+    /// Record tool-call generation progress (stint 0467). The start instant
+    /// survives updates so the row's elapsed time is the real generation
+    /// time; the name upgrades from `None` once the stream delivers it.
+    pub fn apply_tool_progress(&mut self, name: Option<String>, arg_chars: usize) {
+        if !self.streaming.in_flight {
+            return;
+        }
+        match &mut self.streaming.tool_progress {
+            Some(progress) => {
+                if name.is_some() {
+                    progress.name = name;
+                }
+                progress.arg_chars = arg_chars;
+            }
+            None => {
+                log::info!(
+                    "assistant[{}]: tool-call generation started ({})",
+                    self.conversation_id,
+                    name.as_deref().unwrap_or("name pending")
+                );
+                self.streaming.tool_progress = Some(ToolArgProgress {
+                    name,
+                    arg_chars,
+                    started: std::time::Instant::now(),
+                });
+            }
         }
     }
 
@@ -876,6 +922,9 @@ impl AssistantModel {
     /// above nothing and below every tool call (stint 0455).
     pub fn tool_call_started(&mut self, tool: &str, input_summary: &str) {
         self.flush_streamed_segment();
+        // Generation is over — the finished call is dispatching; the running
+        // tool row takes over as the animated element.
+        self.streaming.tool_progress = None;
         self.active_tools.push(ActiveToolCall {
             tool: tool.to_string(),
             input_summary: input_summary.to_string(),
@@ -1083,6 +1132,45 @@ mod tests {
             input_summary: Some("{}".to_string()),
             output_preview: None,
         })
+    }
+
+    /// Never-frozen contract (stint 0467): tool-arg generation progress is
+    /// tracked while in flight, upgrades its name in place, hands off to the
+    /// running-tool row on dispatch, and never survives text or turn
+    /// boundaries.
+    #[test]
+    fn tool_progress_tracks_generation_and_clears_on_dispatch_and_text() {
+        let mut m = AssistantModel::fresh();
+        m.apply_tool_progress(Some("host.files.write".into()), 10);
+        assert!(
+            m.streaming.tool_progress.is_none(),
+            "progress outside an in-flight turn must be ignored"
+        );
+
+        submitted(&mut m, "build me an app");
+        m.apply_tool_progress(None, 12);
+        let p = m.streaming.tool_progress.as_ref().expect("progress set");
+        assert_eq!((p.name.as_deref(), p.arg_chars), (None, 12));
+
+        m.apply_tool_progress(Some("host.files.write".into()), 3400);
+        let p = m.streaming.tool_progress.as_ref().expect("progress kept");
+        assert_eq!(
+            (p.name.as_deref(), p.arg_chars),
+            (Some("host.files.write"), 3400)
+        );
+
+        tool_started(&mut m, "host.files.write");
+        assert!(
+            m.streaming.tool_progress.is_none(),
+            "dispatch hands the animated element to the running-tool row"
+        );
+
+        m.apply_tool_progress(Some("host.build.run".into()), 5);
+        m.apply_answer_delta("done!");
+        assert!(
+            m.streaming.tool_progress.is_none(),
+            "answer text arriving means generation is over"
+        );
     }
 
     #[test]

@@ -1051,6 +1051,10 @@ impl WasmPane {
                                 done: false,
                             })
                         }
+                        // App-facing `ai.query` streams carry only text and
+                        // reasoning; tool-call generation progress drives the
+                        // assistant transcript, not app protocol events.
+                        crate::plexi_ai::turn_loop::TurnDelta::ToolCallProgress { .. } => return,
                     };
                     if let Err(e) = chunk_tx.send(event) {
                         log::warn!("wasm ai: stream receiver dropped: {e}");
