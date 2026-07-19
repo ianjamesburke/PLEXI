@@ -387,29 +387,50 @@ impl AssistantRenderer {
             .default_open(failed)
             .show(ui, |ui| {
                 if let Some(input) = &turn.input_summary {
-                    ui.label(
-                        RichText::new(format!("in  {input}"))
-                            .size(style::TEXT_CAPTION)
-                            .monospace()
-                            .color(colors.text_dim),
-                    );
+                    Self::draw_preview_block(ui, colors, "in", input);
                 }
                 if let Some(output) = &turn.output_preview {
-                    ui.scope(|ui| {
-                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                        ui.label(
-                            RichText::new(format!("out {output}"))
-                                .size(style::TEXT_CAPTION)
-                                .monospace()
-                                .color(colors.text_dim),
-                        );
-                    });
+                    Self::draw_preview_block(ui, colors, "out", output);
                 }
                 if let Some(diff) = &turn.detail {
                     Self::draw_diff_block(ui, colors, diff);
                 }
             });
         ui.add_space(style::SPACE_SM);
+    }
+
+    /// A labeled multi-line preview (tool input/output, stint 0460): real
+    /// newlines render as separate rows inside a framed block that fills the
+    /// available width, and long rows wrap instead of clipping at the pane
+    /// edge.
+    fn draw_preview_block(ui: &mut egui::Ui, colors: &Colors, label: &str, body: &str) {
+        ui.label(
+            RichText::new(label)
+                .size(style::TEXT_HINT)
+                .monospace()
+                .color(colors.text_dim),
+        );
+        egui::Frame::new()
+            .fill(colors.bg_active)
+            .corner_radius(style::RADIUS_MD)
+            .inner_margin(egui::Margin::symmetric(
+                style::SPACE_SM as i8,
+                style::SPACE_XS as i8,
+            ))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                for line in body.lines() {
+                    ui.label(
+                        RichText::new(line)
+                            .size(style::TEXT_CAPTION)
+                            .monospace()
+                            .color(colors.text_dim),
+                    );
+                }
+            });
+        ui.add_space(style::SPACE_XS);
     }
 
     /// A unified diff rendered line-by-line: additions in the success hue,
@@ -542,10 +563,22 @@ impl AssistantRenderer {
         colors: &Colors,
         active: &super::model::ActiveToolCall,
     ) {
-        let line = if active.input_summary.is_empty() {
-            format!("⟳ {} — running…", active.tool)
+        // Braille spinner keyed to wall clock — the assistant already
+        // repaints continuously while a turn is in flight, so this animates
+        // without extra repaint requests. Elapsed seconds make a long tool
+        // call (a 60s+ `app check`) read as progress, not a hang.
+        const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let elapsed = active.started.elapsed();
+        let frame = FRAMES[(elapsed.as_millis() / 100) as usize % FRAMES.len()];
+        let elapsed_label = if elapsed.as_secs() >= 2 {
+            format!(" · {}s", elapsed.as_secs())
         } else {
-            format!("⟳ {} {} — running…", active.tool, active.input_summary)
+            String::new()
+        };
+        let line = if active.input_summary.is_empty() {
+            format!("{frame} {}{elapsed_label}", active.tool)
+        } else {
+            format!("{frame} {} {}{elapsed_label}", active.tool, active.input_summary)
         };
         ui.scope(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
@@ -556,6 +589,8 @@ impl AssistantRenderer {
                     .color(colors.accent),
             );
         });
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
         ui.add_space(style::SPACE_SM);
     }
 

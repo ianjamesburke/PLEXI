@@ -249,7 +249,12 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
     }
     let launch_config = is_python_entry.then(|| python_launch_config(&manifest, &entry_path, app_dir));
 
-    for (width, height) in render_sizes {
+    // A guest that fails to boot fails identically at every size; stop after
+    // the first boot failure instead of paying the probe cost 4 more times
+    // (stint 0458 — a broken first draft is the assistant loop's hot path).
+    let mut render_boot_failed = false;
+    let total_sizes = render_sizes.len();
+    for (index, (width, height)) in render_sizes.into_iter().enumerate() {
         let label = format!("{width}x{height}");
         let Some(launch_config) = &launch_config else {
             continue;
@@ -284,7 +289,17 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                     }
                 }
             }
-            Err(e) => errors.push(format!("render {label} — {e}")),
+            Err(e) => {
+                errors.push(format!("render {label} — {e}"));
+                render_boot_failed = true;
+                let remaining = total_sizes - index - 1;
+                if remaining > 0 {
+                    println!(
+                        "skip render — {remaining} remaining size(s) skipped after {label} failed to boot"
+                    );
+                }
+                break;
+            }
         }
     }
 
@@ -298,7 +313,9 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                     .unwrap_or(&fixture.path)
                     .display()
             );
-            if let Some(launch_config) = &launch_config {
+            if render_boot_failed {
+                println!("skip seeded probe — app failed to boot during render checks");
+            } else if let Some(launch_config) = &launch_config {
                 run_seeded_state_and_action_probe(
                     &manifest,
                     launch_config,

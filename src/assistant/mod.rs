@@ -220,11 +220,13 @@ impl ToolCallHooks for AssistantToolHooks {
                 }
             }
         }
+        // Compact one-liner for the running row; the multi-line key/value
+        // detail is stashed for the finished row's caret body (stint 0460).
         let input_summary = summarize_input(input_json);
         self.in_flight_inputs
             .lock()
             .unwrap()
-            .insert(name.to_string(), input_summary.clone());
+            .insert(name.to_string(), tool_input_detail(input_json));
         let _ = self.flow_tx.send(ToolFlowEvent::Started {
             tool: name.to_string(),
             input_summary,
@@ -239,7 +241,7 @@ impl ToolCallHooks for AssistantToolHooks {
             detail: tool_render_detail(name, output_json),
             input_summary: self.in_flight_inputs.lock().unwrap().remove(name),
             output_preview: output_json
-                .map(|output| bounded_head_tail(output, TOOL_OUTPUT_PREVIEW_BUDGET))
+                .map(|output| tool_output_preview(output))
                 .filter(|preview| !preview.is_empty()),
         });
     }
@@ -285,6 +287,34 @@ mod render_detail_tests {
     }
 }
 
+#[cfg(test)]
+mod output_preview_tests {
+    use super::tool_output_preview;
+
+    #[test]
+    fn lifts_string_fields_with_real_newlines_and_falls_back_to_raw_json() {
+        let output = r#"{"ok": true, "exit_code": 1, "stdout": "line one\nline two", "stderr": "boom"}"#;
+        let preview = tool_output_preview(output);
+        assert_eq!(preview, "stdout: line one\nline two\nstderr: boom");
+
+        // No liftable string fields → pretty-printed JSON, one field per line.
+        let pretty = tool_output_preview(r#"{"ok": true, "count": 3}"#);
+        assert!(pretty.contains("\n"), "must break into lines: {pretty}");
+        assert!(pretty.contains("\"count\": 3"));
+
+        // Input detail: one key per line, string values unquoted.
+        let detail =
+            super::tool_input_detail(r#"{"path": "/tmp/x.py", "sizes": [480, 320]}"#);
+        assert_eq!(detail, "path: /tmp/x.py\nsizes: [480,320]");
+
+        // Oversized output keeps head and tail lines around a marker line.
+        let big = format!(r#"{{"stdout": "{}"}}"#, "x\\n".repeat(2000));
+        let bounded = tool_output_preview(&big);
+        assert!(bounded.chars().count() <= super::TOOL_OUTPUT_PREVIEW_BUDGET + 40);
+        assert!(bounded.contains("chars omitted"));
+    }
+}
+
 /// Compact single-line summary of a tool input for sheets and audit lines.
 fn summarize_input(input_json: &str) -> String {
     let flat: String = input_json.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -305,6 +335,79 @@ fn format_setting_ids(ids: &[String]) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     }
+}
+
+/// Human-readable preview of a tool call's output: meaningful string fields
+/// lifted out of the result JSON with their real newlines preserved (a
+/// command's stdout reads as the lines it printed, not one flattened run of
+/// `\n` escapes), falling back to the raw JSON when nothing liftable exists.
+fn tool_output_preview(output_json: &str) -> String {
+    const FIELDS: &[&str] = &["stdout", "stderr", "content", "text", "message", "error"];
+    let parsed = serde_json::from_str::<serde_json::Value>(output_json).ok();
+    let mut sections = Vec::new();
+    if let Some(value) = &parsed {
+        for field in FIELDS {
+            if let Some(text) = value.get(field).and_then(serde_json::Value::as_str) {
+                if !text.trim().is_empty() {
+                    sections.push(format!("{field}: {}", text.trim_end()));
+                }
+            }
+        }
+    }
+    // No liftable string field: pretty-print the JSON so it breaks into
+    // lines instead of one endless run that overflows the pane.
+    let raw = if sections.is_empty() {
+        parsed
+            .as_ref()
+            .and_then(|value| serde_json::to_string_pretty(value).ok())
+            .unwrap_or_else(|| output_json.to_string())
+    } else {
+        sections.join("\n")
+    };
+    bounded_head_tail_multiline(&raw, TOOL_OUTPUT_PREVIEW_BUDGET)
+}
+
+/// Multi-line `key: value` rendering of a tool call's input for the caret
+/// body — string values keep their real newlines, non-strings print as
+/// compact JSON. Falls back to the raw input when it isn't a JSON object.
+fn tool_input_detail(input_json: &str) -> String {
+    let detail = match serde_json::from_str::<serde_json::Value>(input_json) {
+        Ok(serde_json::Value::Object(map)) if !map.is_empty() => map
+            .iter()
+            .map(|(key, value)| match value {
+                serde_json::Value::String(text) => format!("{key}: {text}"),
+                other => format!("{key}: {other}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => input_json.to_string(),
+    };
+    bounded_head_tail_multiline(&detail, TOOL_OUTPUT_PREVIEW_BUDGET)
+}
+
+/// Head/tail bounding that keeps newlines — for block previews. The omission
+/// marker sits on its own line so surviving head/tail lines stay intact.
+fn bounded_head_tail_multiline(text: &str, budget: usize) -> String {
+    let chars = text.chars().collect::<Vec<_>>();
+    if chars.len() <= budget {
+        return text.to_string();
+    }
+    if budget < 12 {
+        return chars.into_iter().take(budget).collect();
+    }
+    let mut keep = budget;
+    for _ in 0..2 {
+        let omitted = chars.len().saturating_sub(keep);
+        let marker_len = format!("\n[{omitted} chars omitted]\n").chars().count();
+        keep = budget.saturating_sub(marker_len);
+    }
+    let head = keep.div_ceil(2);
+    let tail = keep.saturating_sub(head);
+    let omitted = chars.len().saturating_sub(head + tail);
+    let mut out = chars.iter().take(head).collect::<String>();
+    out.push_str(&format!("\n[{omitted} chars omitted]\n"));
+    out.extend(chars.iter().skip(chars.len() - tail));
+    out
 }
 
 fn bounded_head_tail(text: &str, budget: usize) -> String {
@@ -1420,14 +1523,6 @@ impl AssistantApp {
             self.execute_effects(effects);
             return;
         };
-        let tier = self.session_overrides.model_tier.unwrap_or_else(|| {
-            if self.settings.model.tier.source.scope == settings::SettingsScope::Default {
-                agent.default_tier
-            } else {
-                self.settings.model.tier.value
-            }
-        });
-        let concrete_model = agent.model_routes.for_tier(tier).cloned();
         let effort = self.model.effort_override.or(agent.effort);
         let selected_skill = self.pending_skill.take().or_else(|| {
             self.skill_registry
@@ -1435,6 +1530,32 @@ impl AssistantApp {
                 .or_else(|| self.skill_registry.app_build_fallback(&prompt, &agent.skills))
                 .cloned()
         });
+        // Session tier, with a skill-declared floor (stint 0459): a skill that
+        // knows its work needs a stronger model (frontmatter `tier:`) raises a
+        // *default-sourced* tier for the turns it drives. An explicit user
+        // choice — `/model` session override or a configured tier — always
+        // wins; only the installed default is escalated.
+        let tier_is_default_sourced = self.session_overrides.model_tier.is_none()
+            && self.settings.model.tier.source.scope == settings::SettingsScope::Default;
+        let mut tier = self.session_overrides.model_tier.unwrap_or_else(|| {
+            if tier_is_default_sourced {
+                agent.default_tier
+            } else {
+                self.settings.model.tier.value
+            }
+        });
+        if let Some(floor) = selected_skill.as_ref().and_then(|skill| skill.tier) {
+            if tier_is_default_sourced && floor > tier {
+                log::info!(
+                    "assistant[{conversation_id}]: skill '{}' raised default tier {} -> {} (skill-tier-floor)",
+                    selected_skill.as_ref().map(|s| s.name.as_str()).unwrap_or("?"),
+                    settings::model_tier_name(tier),
+                    settings::model_tier_name(floor),
+                );
+                tier = floor;
+            }
+        }
+        let concrete_model = agent.model_routes.for_tier(tier).cloned();
         let is_app_build_turn = selected_skill
             .as_ref()
             .is_some_and(|skill| skill.name == skills::APP_BUILD_SKILL_NAME);

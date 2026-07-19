@@ -1369,8 +1369,8 @@ mod tests {
             crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
 
         let mut write_tool = Turn::tool("host.files.write", ToolStatus::Succeeded);
-        write_tool.input_summary = Some(r#"{"path": "main.py"}"#.to_string());
-        write_tool.output_preview = Some(r#"{"ok": true, "bytes": 512}"#.to_string());
+        write_tool.input_summary = Some("path: main.py".to_string());
+        write_tool.output_preview = Some("{\n  \"ok\": true,\n  \"bytes\": 512\n}".to_string());
         write_tool.detail =
             Some("--- a/main.py\n+++ b/main.py\n@@ -1,1 +1,2 @@\n-pass\n+print(\"hi\")\n".to_string());
         let mut check_tool = Turn::tool("plexi.app_check", ToolStatus::Succeeded);
@@ -1379,6 +1379,11 @@ mod tests {
         let mut failed_tool =
             Turn::tool("host.build.run — exit 1: mypy error", ToolStatus::Failed);
         failed_tool.input_summary = Some(r#"{"cmd": "app check"}"#.to_string());
+        // Multi-line output preview (stint 0460): real newlines render as a
+        // framed block, so a command's output reads as the lines it printed.
+        failed_tool.output_preview = Some(
+            "stdout: ✓ manifest — fish-game\n✗ types — mypy found errors:\nmain.py:12: error: \"UiValueChange\" has no attribute \"payload\"\n✗ app check failed — 1 error(s)".to_string(),
+        );
 
         assistant.model.turns = vec![
             Turn::now(TurnRole::User, "Build a simple number guessing game as a Plexi app."),
@@ -1394,6 +1399,12 @@ mod tests {
                 "The Guessing Game app is open! Type a number and press Enter.",
             ),
         ];
+        // An in-flight tool call so the animated running row (spinner +
+        // elapsed seconds, stint 0460) is on the screenshot too.
+        assistant.model.streaming.in_flight = true;
+        assistant
+            .model
+            .tool_call_started("host.build.run", r#"{"args": ["app", "check", "fish-game"]}"#);
 
         let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
         h.step();

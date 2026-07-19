@@ -88,6 +88,9 @@ pub struct ActiveToolCall {
     pub tool: String,
     /// Compact summary of the call's input, shown on the running row.
     pub input_summary: String,
+    /// When the call started, so the running row can show elapsed time — a
+    /// long `app check` reads as progress instead of a hang (stint 0460).
+    pub started: std::time::Instant,
 }
 
 /// Everything the model needs to commit a completed tool call as a
@@ -876,6 +879,7 @@ impl AssistantModel {
         self.active_tools.push(ActiveToolCall {
             tool: tool.to_string(),
             input_summary: input_summary.to_string(),
+            started: std::time::Instant::now(),
         });
     }
 

@@ -532,7 +532,7 @@ pub use events::{
     events_subscribe_cli, EmitArgs,
 };
 pub use doctor::doctor_cli;
-pub use host::{host_start_cli, host_status_cli, host_stop_cli};
+pub use host::{host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli};
 pub use install::{
     install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,
     self_update_cli, update_cli,

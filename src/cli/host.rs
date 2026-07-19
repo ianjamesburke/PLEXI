@@ -633,6 +633,86 @@ pub fn host_status_cli(json: bool) -> i32 {
     0
 }
 
+/// `plexi host screenshot [--pane <id>] [--output <path>]` — capture the
+/// live host window (optionally cropped to one pane) through the real
+/// render pipeline. Prints the written PNG path on success.
+pub fn host_screenshot_cli(pane: Option<u64>, output: Option<&str>) -> i32 {
+    let id = uuid::Uuid::new_v4();
+    let output_path = match output {
+        Some(path) => path.to_string(),
+        None => {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default();
+            crate::config::config_dir()
+                .join("screenshots")
+                .join(format!("host-{stamp}.png"))
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+    let response_file = crate::config::config_dir()
+        .join(format!("screenshot-response-{id}.json"))
+        .to_string_lossy()
+        .into_owned();
+    log::info!("host_screenshot:cli: pane={pane:?} output_path={output_path}");
+
+    let code = super::send_to_socket(serde_json::json!({
+        "type": "screenshot",
+        "pane_id": pane,
+        "output_path": output_path,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+
+    // The capture round-trips through the GPU (request frame -> readback ->
+    // next frame's input), so allow a little longer than plain state reads.
+    let response_path = std::path::PathBuf::from(&response_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if response_path.exists() {
+            let content = match std::fs::read_to_string(&response_path) {
+                Ok(content) => content,
+                Err(e) => {
+                    eprintln!("error: could not read response file: {e}");
+                    return 1;
+                }
+            };
+            let _ = std::fs::remove_file(&response_path);
+            match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(v) if v.get("error").is_some() => {
+                    eprintln!(
+                        "error: {}",
+                        v["error"].as_str().unwrap_or("screenshot failed")
+                    );
+                    return 1;
+                }
+                Ok(v) => {
+                    println!(
+                        "{} ({}x{})",
+                        v["path"].as_str().unwrap_or(&output_path),
+                        v["width"],
+                        v["height"]
+                    );
+                    return 0;
+                }
+                Err(e) => {
+                    eprintln!("error: malformed screenshot response: {e}");
+                    return 1;
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for screenshot response");
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
