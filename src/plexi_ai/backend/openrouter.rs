@@ -85,6 +85,48 @@ struct PartialToolCall {
     arguments: String,
 }
 
+/// Tool name as sent on the wire. Both the OpenAI function-calling spec and
+/// Anthropic's tool schema require `^[a-zA-Z0-9_-]{1,128}$` — Plexi's dotted
+/// host-tool names (`host.files.read`) only ever worked because some
+/// providers are lenient. Anthropic-family providers hard-reject them with
+/// `tools.0.custom.name: String should match pattern ...`, which is exactly
+/// how the 2026-07-19 mid-conversation model switch to claude died. Encode
+/// on the way out, decode via the reverse map on the way back in.
+fn wire_tool_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Rewrite every tool name inside an OpenAI-format message to its wire form:
+/// `tool_calls[].function.name` on assistant messages and the optional
+/// `name` on tool-result messages. History replay must match the tools
+/// array or strict providers reject the whole request.
+fn sanitize_message_tool_names(message: &mut serde_json::Value) {
+    if let Some(calls) = message
+        .get_mut("tool_calls")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for call in calls {
+            if let Some(name) = call["function"]["name"].as_str() {
+                call["function"]["name"] = serde_json::Value::String(wire_tool_name(name));
+            }
+        }
+    }
+    if message.get("role").and_then(serde_json::Value::as_str) == Some("tool") {
+        if let Some(name) = message.get("name").and_then(serde_json::Value::as_str) {
+            let wire = wire_tool_name(name);
+            message["name"] = serde_json::Value::String(wire);
+        }
+    }
+}
+
 /// Worker: calls OpenRouter SSE endpoint and delivers events to `tx`.
 fn stream_openrouter(
     api_key: String,
@@ -111,6 +153,15 @@ fn stream_openrouter(
         }));
     }
     messages.extend(request.messages.iter().cloned());
+    for message in &mut messages {
+        sanitize_message_tool_names(message);
+    }
+    // wire name -> real dotted name, for decoding the model's tool calls.
+    let tool_name_map: HashMap<String, String> = request
+        .tools
+        .iter()
+        .map(|t| (wire_tool_name(&t.name), t.name.clone()))
+        .collect();
 
     let mut body = serde_json::json!({
         "model": model,
@@ -130,7 +181,7 @@ fn stream_openrouter(
                 serde_json::json!({
                     "type": "function",
                     "function": {
-                        "name": t.name,
+                        "name": wire_tool_name(&t.name),
                         "description": t.description,
                         "parameters": t.input_schema
                     }
@@ -300,7 +351,9 @@ fn stream_openrouter(
                 .into_values()
                 .map(|p| RawToolCall {
                     id: p.id,
-                    name: p.name,
+                    // Decode the wire name back to the real dotted tool name;
+                    // a name outside the map passes through untouched.
+                    name: tool_name_map.get(&p.name).cloned().unwrap_or(p.name),
                     arguments: p.arguments,
                 })
                 .collect();
@@ -374,6 +427,38 @@ fn apply_reasoning_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_names_are_wire_safe_and_history_is_sanitized() {
+        // Dotted host-tool names must encode to the provider-required
+        // `^[a-zA-Z0-9_-]{1,128}$` pattern and decode back via the map.
+        assert_eq!(wire_tool_name("host.files.read"), "host_files_read");
+        assert_eq!(wire_tool_name("already_safe-name"), "already_safe-name");
+
+        let mut assistant_msg = serde_json::json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "host.build.run", "arguments": "{}"}
+            }]
+        });
+        sanitize_message_tool_names(&mut assistant_msg);
+        assert_eq!(
+            assistant_msg["tool_calls"][0]["function"]["name"],
+            serde_json::json!("host_build_run")
+        );
+
+        let mut tool_msg = serde_json::json!({
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "host.build.run",
+            "content": "ok"
+        });
+        sanitize_message_tool_names(&mut tool_msg);
+        assert_eq!(tool_msg["name"], serde_json::json!("host_build_run"));
+    }
 
     #[test]
     fn explicit_reasoning_effort_is_encoded_in_payload() {
