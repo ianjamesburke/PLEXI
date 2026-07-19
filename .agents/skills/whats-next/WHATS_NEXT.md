@@ -6,9 +6,11 @@
 
 ---
 
-## Current State (2026-07-19, app-build E2E loop passes on a PR build)
+## Current State (2026-07-19, app-build loop is fast and observable)
 
-`alpha` is at `220ac87f` (PR #2439): the assistant transcript is append-only chronological with per-tool-call caret rows (`0455`), typing into a declarative TextInput works end to end — dispatch gate, host-owned edit buffer, styled field, `pane key` parity (`0456`), and `plexi app check` type-checks the app entry with mypy so authoring errors surface at check time instead of crashing the guest (`0415`). Validated live: one prompt → assistant builds a guessing game, self-corrects via the type gate, opens it, game played to the win screen with zero user-side fixes. Next for the launch gate (`0413`): user-driven runs on this alpha. Follow-up `0457` annotates the legacy maintained apps so the type gate can go strict for every scaffold version.
+`alpha` is at `224fb512` (PR #2440), fixing everything the first user-driven fish-game run exposed: `app check` fails fast on a broken guest — ~2s instead of 76s of silent 15s-timeout spins (`0458`); app-build turns stop grepping the SDK (the embedded reference is authoritative) and escalate off a default-sourced weak tier via skill-frontmatter `tier: high` (`0459`); one Escape press interrupts an in-flight turn on both the live and CLI key paths, the running tool row animates with elapsed time, tool caret bodies show labeled full-width in/out blocks with real newlines, and OpenRouter failures surface the provider's actual error (`0460`) — which found and fixed the real bug behind "model switch ignored": anthropic-family providers reject dotted tool names, now encoded to wire-safe form. New: `plexi host screenshot [--pane <id>]` captures live host pixels through the render pipeline — the only sanctioned capture path, documented in root AGENTS.md (`0461`). Validated live on the PR build: same fish prompt went from ~45 tool calls / ~8 min to **8 tool calls / ~3 min**, game verified playing via pane-cropped screenshots. Launch gate (`0413`): ready for the next user-driven alpha run. Follow-up `0457` still annotates the legacy maintained apps for a strict type gate.
+
+Prior state (earlier 2026-07-19): PR #2439 landed the chronological transcript (`0455`), TextInput end-to-end typing (`0456`), and the mypy check gate (`0415`).
 
 Prior state (2026-07-11): workspace saves are atomic (`0367`), CLI commands route by binary channel (`0365`), and the Assistant E2E harness with local/cheap-model verification (`0359`) is landed. Details in `docs/DEVLOG.md`.
 
