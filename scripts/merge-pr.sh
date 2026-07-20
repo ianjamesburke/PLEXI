@@ -59,12 +59,23 @@ do_cleanup() {
     rm -f "test_pr${PR}.py"
     just channel-clean "pr-${PR}" 2>/dev/null || true
 
+    # `git worktree remove --force` routinely fails with "Directory not empty" —
+    # it deregisters the worktree but leaves files (build artifacts, untracked
+    # scratch) on disk. Under `set -e` that used to abort the whole script here,
+    # *before* the issue/stint close ran, so the PR merged but the task silently
+    # stayed in-progress. Self-heal instead of aborting: drop the leftovers and
+    # only fail if the directory genuinely survives.
     if git worktree list --porcelain | grep -Fqx "worktree $WORKTREE_PATH"; then
-        git worktree remove --force "$WORKTREE_PATH"
+        git worktree remove --force "$WORKTREE_PATH" || true
     fi
     git worktree prune
     if [ -e "$WORKTREE_PATH" ]; then
-        echo "ERROR: cleanup left worktree directory: $WORKTREE_PATH" >&2
+        echo "==> Worktree dir survived removal (usually 'Directory not empty') — clearing: $WORKTREE_PATH"
+        rm -rf "$WORKTREE_PATH"
+        git worktree prune
+    fi
+    if [ -e "$WORKTREE_PATH" ]; then
+        echo "ERROR: cleanup left worktree directory after rm -rf: $WORKTREE_PATH" >&2
         exit 1
     fi
     if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
@@ -259,11 +270,39 @@ test_resolve_stints() {
     echo "resolve_stints tests passed"
 }
 
+# Regression: a worktree dir that survives `git worktree remove --force` (the
+# routine "Directory not empty" case) must be cleared, not abort the run before
+# the issue/stint close. See do_cleanup.
+test_cleanup_survivor() {
+    local TMP
+    TMP=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$TMP'" RETURN
+
+    local WORKTREE_PATH="$TMP/worktrees/feature/fake-branch"
+    mkdir -p "$WORKTREE_PATH"
+    echo "leftover build artifact" > "$WORKTREE_PATH/stale.o"
+
+    # Mimic do_cleanup's survivor branch in isolation: removal already failed and
+    # left files behind, so the directory is still present at this point.
+    if [ -e "$WORKTREE_PATH" ]; then
+        rm -rf "$WORKTREE_PATH"
+    fi
+
+    if [ -e "$WORKTREE_PATH" ]; then
+        echo "expected leftover worktree dir to be cleared, still present" >&2
+        return 1
+    fi
+
+    echo "cleanup survivor test passed"
+}
+
 # --- Dispatch ---
 CMD="${1:-}"
 case "$CMD" in
     test-resolve-issue) test_resolve_issue ;;
     test-resolve-stints) test_resolve_stints ;;
+    test-cleanup-survivor) test_cleanup_survivor ;;
     rebase)   do_rebase "${2:?BRANCH required}" ;;
     squash)   do_squash "${2:?PR required}" ;;
     sync)     do_sync ;;

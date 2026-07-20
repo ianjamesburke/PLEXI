@@ -231,20 +231,22 @@ For each **batch**, in order:
 
    **Only skip the wait when the user has explicitly opted into auto-merge for this queue** (see Rules). If they have, merge on PASS and roll straight to the next batch.
 
-   Once approved, you confirm the state yourself, then have the worker squash-merge to alpha (it owns git):
+   Once approved, have the worker run **one command from the alpha root** (it owns git):
    ```
-   gh pr view <PR#> --json state,mergedAt
+   just merge-pr <PR#>
    ```
 
-   **The full post-merge sequence is FOUR steps, and merge-cleanup does NOT close the stints.** Instruct the worker to run them in order, then you re-verify:
-   - **(a)** `gh pr merge <PR#> --squash`; squash to alpha. **Never** `--delete-branch`.
-   - **(b)** `just merge-cleanup <PR#> <BRANCH>`; channel-clean + worktree removal + remote-branch delete. This does NOT touch stint status.
-   - **(c)** `scripts/merge-pr.sh close-stints <PR#> <STINT_ID...>`; a **separate** step. `merge-cleanup` leaves the stints `in-progress` even though the PR is MERGED; only close-stints marks them `done`. Skipping it is a silent leak: the PR ships but the queue never advances.
-   - **(d)** Verify both: `gh pr view <PR#> --json state,mergedAt` shows `state == MERGED`, AND `stint show <ID>` shows `done` for every id.
+   That recipe owns the whole sequence: rebase → squash → sync local alpha → clean up channel/worktree/branches → close the issue *or* the stint tasks. It resolves stint ids from the branch name and PR body automatically, so a `feature/stint-<id>-<slug>` branch needs no extra arguments. For a standalone PR with nothing to close, `just merge-pr <PR#> no-issue`.
 
-   `just merge-cleanup` leaves the feature worktree behind if you skip it (they piled up ~20 deep before this rule); it is also step (b) above. Squash-merge does not update `git branch --merged`, so never rely on that to find stale worktrees later; remove at merge time, here, while you still know the PR/branch.
+   **Do not hand-roll the steps.** An earlier version of this skill taught a four-step sequence (`gh pr merge --squash` → `just merge-cleanup` → `close-stints` → verify) because the recipe used to abort mid-flow: `git worktree remove --force` routinely fails with `Directory not empty`, and under `set -e` that killed the run *before* the stint close, leaving the PR merged and the task stuck `in-progress`. The recipe now self-heals that case. Calling the sub-steps by hand reintroduces the leak it was split to work around.
 
-   **merge-cleanup RELIABLY hits `Directory not empty` on worktree removal; this is standard recovery, not a bug to escalate.** Observed on essentially every merge: `git worktree remove --force` deregisters the worktree but leaves files on disk, so merge-cleanup fails with `error: failed to delete '.../worktrees/<BRANCH>': Directory not empty`. Recovery: `rm -rf` the leftover worktree dir manually, then re-run `just merge-cleanup` (or just finish the remaining remote-branch delete). Tell the worker this up front in the merge instruction so it self-heals instead of stalling on a mid-cleanup error.
+   Then verify yourself — never on the worker's say-so:
+   ```
+   gh pr view <PR#> --json state,mergedAt      # expect state == MERGED
+   stint show <ID>                             # expect done, for every id
+   ```
+
+   Sub-steps (`merge-rebase`, `merge-squash`, `merge-sync`, `merge-cleanup`, `merge-close-stints`) exist only for resuming a genuinely failed run — e.g. a rebase conflict. Reach for them after a failure, not as the normal path.
 
 6. **Recycle panes for the next batch — gate on context budget, not vibes.**
 

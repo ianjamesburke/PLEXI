@@ -35,23 +35,30 @@ gh pr view <pr-number> --json title,headRefName,number,baseRefName,state
 
 Extract:
 - `BRANCH` = `headRefName` (e.g. `feature/1234-something`)
-- `ISSUE_NUMBER` = parse from branch name
 - `PR_NUMBER` = from arg
+- `ISSUE_NUMBER` = parse from branch name — **empty in stint-first mode**
 
-Read current attempt count from issue body:
+**Stint-first mode.** A `feature/stint-<id>[-<id>...]-<slug>` branch has no issue: `.stint/` is authoritative and issues are optional. Do not read a digit run out of that branch as an issue number — `0469` is a stint id, and `gh issue view 469` returns an unrelated issue. In this mode, for the whole skill:
+
+- `ISSUE_NUMBER` is empty; the **PR body** is the Ship Log (read/append there instead of an issue body)
+- attempt counting reads the PR body: `gh pr view $PR_NUMBER --json body --jq '.body'`
+- the issue brief is `stint show <id>` (title + Scope) instead of `gh issue view`
+- **skip every `gh issue edit` / pipeline-label call** — there is no issue to label
+- the testing block's Issue row becomes a Stint row: `| Stint | <id> — <title> |`
+
+Read current attempt count from the Ship Log (issue body, or PR body in stint-first mode). Count `**Validate attempt` entries; `ATTEMPT_COUNT` = that number (0 if no log yet).
 ```bash
-gh issue view $ISSUE_NUMBER --json body --jq '.body'
-```
-Count `**Validate attempt` entries in `## Ship Log`. Set `ATTEMPT_COUNT` = that number (0 if no log yet).
-```bash
+# issue-first
 ATTEMPT_COUNT=$(gh issue view $ISSUE_NUMBER --json body --jq '.body' \
+  | grep -cE '^\*\*Validate attempt [0-9]+:' || true)
+# stint-first
+ATTEMPT_COUNT=$(gh pr view $PR_NUMBER --json body --jq '.body' \
   | grep -cE '^\*\*Validate attempt [0-9]+:' || true)
 ```
 
-Mark issue as actively in this phase and update pane status:
+Mark issue as actively in this phase and update pane status. `/open-pr` already set `pipeline:validate` when it chained in here, so this is a no-op on the inline path — it exists so a standalone `/validate-pr <PR>` on an issue still sitting at `pipeline:open-pr` lands in the right phase. Do not add `in progress`: `/open-pr` deliberately removes it in favor of `ready`, and re-adding it here just thrashes the label back and forth.
 ```bash
 gh issue edit $ISSUE_NUMBER \
-  --add-label "in progress" \
   --remove-label "pipeline:open-pr" \
   --add-label "pipeline:validate" 2>/dev/null || true
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · validate"
@@ -193,18 +200,27 @@ Surface the testing block as soon as the install and mergeable check are done. D
 
 ## Step 3 — Write and Surface Testing Block
 
-**Spec gate:** Re-read the issue's Done When checklist before writing. Pass criteria map 1:1 to checklist items. No extra criteria.
+**Spec gate:** Re-read the Done When checklist (issue body, or the stint's `## Scope` in stint-first mode) before writing. Pass criteria map 1:1 to checklist items. No extra criteria.
 
-**Fetch issue brief:**
+**Fetch the brief:**
 ```bash
+# issue-first
 ISSUE_TITLE=$(gh issue view $ISSUE_NUMBER --json title --jq '.title')
 ISSUE_WHAT=$(gh issue view $ISSUE_NUMBER --json body --jq '.body' \
   | sed '/^---$/,/^---$/d' \
   | grep -v '^#' \
   | grep -v '^$' \
   | head -3)
+
+# stint-first — same variables, sourced from stint
+ISSUE_TITLE=$(stint show <id> | sed -n 's/^Title: *//p')
+ISSUE_WHAT=$(stint show <id> \
+  | sed '/^---$/,/^---$/d' \
+  | grep -v '^#' \
+  | grep -v '^$' \
+  | head -3)
 ```
-This is the one-line context shown at the top of every testing block so the reviewer knows exactly what they're evaluating.
+This is the one-line context shown at the top of every testing block so the reviewer knows exactly what they're evaluating. In stint-first mode the block's `Issue` row becomes `| Stint | <id> — <ISSUE_TITLE> |`.
 
 **Surface testing block format — binary install path:**
 ```
@@ -335,9 +351,10 @@ Append to Ship Log:
 
 "fail" without a description: ask for it before taking any action.
 
-**Check attempt count:**
+**Check attempt count** — same marker as Step 0. `### Attempt` counts *implementation* attempts (written by `/implement-issue` and `/implement-stint`), not validation rounds; counting those here made the 3-strikes gate fire off a different number than Step 0 computed:
 ```bash
-ATTEMPT_COUNT=$(gh issue view $ISSUE_NUMBER --json body --jq '.body' | grep -c "### Attempt")
+ATTEMPT_COUNT=$(gh issue view $ISSUE_NUMBER --json body --jq '.body' \
+  | grep -cE '^\*\*Validate attempt [0-9]+:' || true)
 ```
 
 **If ATTEMPT_COUNT < 3 (soft reject — push a fix):**
