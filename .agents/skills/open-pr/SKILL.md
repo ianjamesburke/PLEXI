@@ -39,11 +39,19 @@ Must be a `feature/` or `fix/` branch. Fail loudly if on `alpha`, `beta`, or `ma
 git ls-remote origin "refs/heads/<branch>"
 ```
 
-**Extract issue number(s) from branch:**
+**Classify the branch first — stint-first or issue-first.** `.stint/` is authoritative and GitHub issues are optional, so a branch may have no issue at all. Match in this order:
+
+- `feature/stint-<id>[-<id>...]-<slug>` → **stint-first**, no issue. Do NOT try to read an issue number out of it — `0469` is a stint id, and treating it as issue #469 attaches the PR to something unrelated.
 - `feature/<number>-...` → single issue
 - `feature/bundle-<n1>-<n2>-...` → multiple issues
 
-**Fetch issue title(s) for PR body:**
+**Stint-first — resolve titles from stint, not GitHub:**
+```bash
+stint show <id>            # title + body for the PR description
+```
+For the rest of this skill in stint-first mode: `ISSUE_NUMBER` is empty, there is no `Closes #<n>` line (name the stint ids in the body instead), the Ship Log lives in the PR description rather than an issue body, and **pipeline labels are skipped entirely** — they live on issues, and there is no issue to label. Skip those `gh issue edit` calls rather than erroring on them.
+
+**Issue-first — fetch issue title(s) for PR body:**
 ```bash
 gh issue view <number> --json title --jq '.title'
 ```
@@ -108,6 +116,28 @@ EOF
 PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 ```
 
+Stint-first (`feature/stint-<id>...`) — no `Closes #`, name the stints instead:
+```bash
+PR_URL=$(gh pr create \
+  --base alpha \
+  --head <branch> \
+  --title "<short summary> (stint <id>[, <id>])" \
+  --body "$(cat <<'EOF'
+## Summary
+
+Implements stint <id>[, <id>]. No linked GitHub issue — stint is authoritative.
+
+<2-3 bullet points summarizing what changed and why>
+
+## Done When
+
+<paste Scope / acceptance from `stint show <id>`>
+EOF
+)")
+PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+```
+Keep the stint ids in the title or body — `just merge-pr` resolves them from either to close the tasks on merge.
+
 Update pane status:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pr-open"
@@ -118,7 +148,9 @@ pipeline_slots_set open-pr <n> "$PR_NUMBER" pr-open "" ""
 
 ## Step 3 — Ship Log + Pipeline Labels
 
-Append to `## Ship Log` in each issue's body:
+**Stint-first: skip this entire step.** There is no issue body to append to and no issue to label; the PR description is the Ship Log. Go straight to Step 4.
+
+Issue-first — append to `## Ship Log` in each issue's body:
 ```markdown
 **PR:** #<pr-number> — <pr-url>
 ```

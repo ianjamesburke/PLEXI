@@ -70,16 +70,9 @@ stint done <task-id>
 
 If estimate was off >2x, add one sentence to the task body explaining why. If no linked task exists, note it in the ship log.
 
-Then update `WHATS_NEXT.md` to reflect the closed task — run the whats-next audit inline:
+**Do not run a full whats-next audit here.** `stint list` + `stint status` + `git log` + `gh pr list` followed by a rewrite of `WHATS_NEXT.md` costs four commands and a regenerated file on *every* merge; in a babysitter queue that repeats per batch and the intermediate rewrites are all thrown away by the next one.
 
-```bash
-stint list 2>&1
-stint status 2>&1
-git log --oneline -5 2>&1
-gh pr list --state open --limit 20 2>&1
-```
-
-Rewrite `.agents/skills/whats-next/WHATS_NEXT.md` with the current priority stack (same format the `/whats-next` skill produces). This keeps the file in sync without requiring a separate invocation.
+Run `/whats-next` **once at the end of a session** (or after a batch of merges lands) instead. If you are merging a single PR interactively and want the file current, invoking `/whats-next` yourself afterward is the cheap path — it is the same work, done once.
 
 ---
 
