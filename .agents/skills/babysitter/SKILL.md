@@ -1,16 +1,18 @@
 ---
 name: babysitter
-description: "Land a queue of stint tasks as fast as possible by orchestrating Codex instances in Plexi panes. You give a ready Codex pane id + a list of stints; this loop batches them into as few PRs as possible, drives a WORKER Codex pane to implement each batch, spawns a separate TESTER Codex pane to validate the PR against the real install build, routes bugs between them until it passes, merges, then recycles panes for the next batch. You are the router, never the coder. Checks in every 15 min, manages Codex's 5-hour usage window. Triggered by /babysitter, \"babysit codex\", \"queue these stints in the other pane\"."
+description: "Land a queue of stint tasks as fast as possible by orchestrating agent instances in Plexi panes. You give a ready agent pane id + a list of stints; this loop batches them into as few PRs as possible, drives a WORKER pane to implement each batch, spawns a separate TESTER pane to validate the PR against the real install build, routes bugs between them until it passes, merges, then recycles panes for the next batch. You are the router, never the coder. Checks in every 15 min. Triggered by /babysitter, \"babysit the queue\", \"queue these stints in the other pane\"."
 source: local
 date_added: "2026-07-11"
 ---
 
-# Babysitter — Orchestrate Worker + Tester Codex Panes Through a Stint Queue
+# Babysitter — Orchestrate Worker + Tester Panes Through a Stint Queue
 
-You are a **router and coordinator, not a coder.** You never touch code, git, or the repo yourself. You drive Codex instances running in Plexi panes and pass messages between them. Two roles exist per batch:
+You are a **router and coordinator, not a coder.** You never touch code, git, or the repo yourself. You drive agent instances running in Plexi panes and pass messages between them. Two roles exist per batch:
 
-- **Worker** — a Codex pane that implements the batch and opens the PR.
-- **Tester** — a *separate, fresh* Codex pane that installs the PR build, drives the app to verify it, and reports bugs back to you.
+- **Worker** — a pane that implements the batch and opens the PR.
+- **Tester** — a *separate, fresh* pane that installs the PR build, drives the app to verify it, and reports bugs back to you.
+
+**Panes run Claude Code, launched with the `c` alias** (bypasses permissions). Set the model with `/model`. Everything below assumes that; there is no Codex in this loop.
 
 You are the wire between them: Worker → PR → Tester → (bugs) → you → Worker → (fix) → you → Tester → … → pass → merge → recycle.
 
@@ -20,7 +22,7 @@ You are the wire between them: Worker → PR → Tester → (bugs) → you → W
 /babysitter <PANE_ID> <STINT_ID> [<STINT_ID> ...]
 ```
 
-- `<PANE_ID>` — a pane running a **ready** Codex chat (user hands this to you, already at an idle prompt). This is your first Worker.
+- `<PANE_ID>` — a pane running a **ready** agent chat (user hands this to you, already at an idle prompt). This is your first Worker.
 - `<STINT_ID...>` — stints to land, in order.
 
 First action: confirm the worker pane is real and idle, and label it.
@@ -28,11 +30,11 @@ First action: confirm the worker pane is real and idle, and label it.
 plexi pane capture <PANE_ID> --from-cursor 0
 plexi pane name <PANE_ID> "worker-1"
 ```
-If it isn't a live Codex prompt, stop and tell the user. Never assume — capture first.
+If it isn't a live agent prompt, stop and tell the user. Never assume — capture first.
 
 ## Verified command cheatsheet
 
-Exact forms confirmed against the Codex TUI. Use them; don't invent variants.
+Exact forms confirmed in live runs. Use them; don't invent variants.
 
 | Need | Command |
 |---|---|
@@ -42,24 +44,27 @@ Exact forms confirmed against the Codex TUI. Use them; don't invent variants.
 | Read full pane buffer (verdict parsing only) | `plexi pane capture <id> --from-cursor 0` |
 | Read only *new* output (delta) | `plexi pane capture <id> --from-cursor <CURSOR>` |
 | Pane UI state as JSON | `plexi pane state <id>` |
-| Type a prompt (Codex TUI) | `plexi pane send <id> "<text>"` |
+| Type a prompt into the pane's TUI | `plexi pane send <id> "<text>"` |
 | **Submit** the prompt | `plexi pane key <id> enter` |
-| Interrupt Codex | `plexi pane key <id> ctrl+c` |
+| Interrupt the agent | `plexi pane key <id> ctrl+c` |
 | Open a new terminal pane | `plexi pane new -n "<label>"` |
-| Launch Codex in a shell pane | `plexi pane command <id> "co" --enter` |
+| Launch an agent in a shell pane | `plexi pane command <id> "c" --enter` |
+| Set the pane's model | `plexi pane send <id> "/model <name>"` then `key enter` |
 | Rename / label a pane | `plexi pane name <id> "<label>"` |
 | List panes (alive? find by name) | `plexi pane list` |
 | Close a pane | `plexi pane close <id>` |
 
-`co` is the alias for `codex -s danger-full-access`. **Label every pane** (`worker-N`, `tester-N`) so you can find them in `plexi pane list` by name instead of tracking bare ids.
+**Label every pane** (`worker-N`, `tester-N`) so you can find them in `plexi pane list` by name instead of tracking bare ids.
+
+**Backtick trap:** never put backticks in the text you pass to `plexi pane send` from a double-quoted shell string — they trigger command substitution and the send fails or mangles. Write commands and paths bare in briefs.
 
 ### Capture forms — `--lines 20` is the default; full-buffer reads are the exception
 
 Since stint 0383 (PR #2390), `capture --lines N` returns the last N real content lines on full-screen TUIs. Cost order, cheapest first:
 
-- `plexi pane capture <id> --lines 20` → bounded tail. **Default for every status check** — it answers "what is Codex's last message" in ~20 lines.
+- `plexi pane capture <id> --lines 20` → bounded tail. **Default for every status check** — it answers "what is the agent's last message" in ~20 lines.
 - `plexi pane capture <id> --from-cursor <CURSOR>` → delta since a known cursor.
-- `plexi pane capture <id> --from-cursor 0` → full buffer. Only when parsing a long verdict/report whose start you'd otherwise miss — and delegate that read to a sub-agent.
+- `plexi pane capture <id> --from-cursor 0` → full buffer. Only when parsing a long verdict/report whose start you'd otherwise miss. Prefer narrowing it with `grep`/`sed` over dumping the whole thing; delegate to a sub-agent only when the report is genuinely too long to narrow.
 
 Known pre-existing bug (stint 0385): `--from-cursor <N>` deltas can return empty on a live pane. If a delta comes back empty, fall back to `--lines`, not to a full-buffer dump.
 
@@ -110,7 +115,7 @@ The failure mode this skill exists to prevent: send a key → capture comes back
 
 ### CRITICAL gotcha — send does not submit
 
-`plexi pane send`'s `\n` does **not** reliably auto-submit inside the Codex TUI. Standing two-step, used dozens of times:
+`plexi pane send`'s `\n` does **not** reliably auto-submit inside the agent TUI. Standing two-step, used dozens of times:
 
 ```
 plexi pane send <id> "<prompt text>"
@@ -120,15 +125,15 @@ sleep 3
 plexi pane capture <id> --from-cursor 0   # confirm it took; re-send enter ONCE if not
 ```
 
-(This is for the Codex *TUI*. To launch `co` at the *shell* level in a fresh pane, `plexi pane command <id> "co" --enter` is fine.)
+(This is for typing into a pane's *TUI*. Launching the agent at the *shell* level in a fresh pane uses `plexi pane command <id> "c" --enter`.)
 
 ## Batch into as few PRs as possible (hard rule)
 
 Before feeding anything, group the queue. **Fewer PRs is always better.** Small or related stints ship together in **one** PR — never one-PR-per-stint when they can combine. Parallelize implementation where stints don't share files, but collapse the result into the smallest number of PRs that makes sense. A **batch** is the unit of work below, not a single stint. Group by shared subsystem/files, small size, logical cohesion. When in doubt, combine.
 
-## Spawning a Codex pane
+## Spawning an agent pane
 
-**This deployment launches workers/testers as Claude Code panes via the `c` alias (bypasses permissions), not Codex/`co`.** The `/model` slash command sets their model. The Codex-TUI command forms in the cheatsheet still apply to the pane's TUI, but the agent inside is Claude Code launched with `c`.
+Workers and testers are Claude Code panes launched with the `c` alias (bypasses permissions); `/model` sets the model.
 
 ```
 plexi pane new -n "worker-<N>"          # or tester-<N>
@@ -162,14 +167,16 @@ Set the model at each batch boundary, based on the batch's size, **before** send
 
 For each **batch**, in order:
 
-1. **Worker: implement + open PR.** Send the worker Codex a directive:
-   > "Land stints `<ID>[, <ID>...]` **together in a single PR**. Run `stint show <ID>` for each, then claim them, implement in one worktree branched from alpha, and open ONE PR to alpha covering all of them per the repo AGENTS.md ship pipeline. Do NOT merge — a separate tester will validate first. **Before pushing, run the full CI-equivalent local gate, not just `cargo test --bin plexi`**: `mypy sdk/python/plexi_sdk/ --ignore-missing-imports --check-untyped-defs --exclude testing.py`, and every `just gen-*-docs` / `just check-*-docs` generator touched by the diff (SDK, capability, config, authoring, CLI docs) — regenerate and commit any that are stale. `cargo test --bin plexi` passing is not sufficient evidence the PR is green; confirm with `gh pr checks <PR#>` after push and fix any red check before reporting done. **HARD GATE: paste the final green summary line of every suite you ran (`just test`, sdk pytest, mypy) in your reply — an unverified push gets bounced back without a tester round.** **Never end your turn while a build or test is still running — wait on it in the foreground and report its result.** Reply with the PR number when it's open and checks are green."
+1. **Worker: implement + open PR.** Send the worker a directive:
+   > "Land stints `<ID>[, <ID>...]` **together in a single PR**. Run `stint show <ID>` for each, then claim them, implement in one worktree branched from alpha, and open ONE PR to alpha covering all of them per the repo AGENTS.md ship pipeline. **Stop once the PR is open and checks are green — do NOT invoke `/validate-pr`, and do NOT merge.** A separate tester pane owns validation. **Before pushing, run the full CI-equivalent local gate, not just `cargo test --bin plexi`**: `mypy sdk/python/plexi_sdk/ --ignore-missing-imports --check-untyped-defs --exclude testing.py`, and every `just gen-*-docs` / `just check-*-docs` generator touched by the diff (SDK, capability, config, authoring, CLI docs) — regenerate and commit any that are stale. `cargo test --bin plexi` passing is not sufficient evidence the PR is green; confirm with `gh pr checks <PR#>` after push and fix any red check before reporting done. **HARD GATE: paste the final green summary line of every suite you ran (`just test`, sdk pytest, mypy) in your reply — an unverified push gets bounced back without a tester round.** **Never end your turn while a build or test is still running — wait on it in the foreground and report its result.** Reply with the PR number when it's open and checks are green."
 
-   These two brief clauses exist because they were the top two token sinks in practice: workers pushing red (each unverified push burns a full tester round — install + validation) and workers yielding their turn mid-compile (each yield burns a nudge round-trip). State them up front in every worker brief, including fix-round briefs.
+   These three brief clauses exist because they were the top token sinks in practice: workers running `/validate-pr` (the pipeline auto-chains `implement-stint` → `open-pr` → `validate-pr`, so a worker that follows the skills literally installs the build itself — a ~5 min compile the tester then repeats — and parks on a `[TESTING]` block waiting for a reply that never comes, which you then read as "idle with unfinished work" and burn a nudge on), workers pushing red (each unverified push burns a full tester round), and workers yielding their turn mid-compile (each yield burns a nudge round-trip). State all three up front in every worker brief, including fix-round briefs.
 
    **Verify, don't trust the worker's self-report.** After the worker replies with a PR number, you run `gh pr checks <PR#>` yourself before spawning the tester. If anything is red, send it straight back to the worker as a bug (same routing as a tester-found bug) — do not spawn the tester against a build with known-red CI.
 
-   **RUST-ONLY PRs SHOW ONLY `claude` + CodeRabbit IN CI; that is GREEN, not incomplete.** The `typecheck` and `check-*-docs` GitHub jobs are conditional on Python (`sdk/python`) or docs changes. A pure-Rust-host PR (e.g. `src/*.rs` only) will NEVER spawn a `typecheck` job, so `gh pr checks` returning just `claude: skipping` + `CodeRabbit: pass` is a full green, not a half-reported run. Do NOT wait or poll for a typecheck that will never appear; that is a silent stall. The real gate for a Rust PR is the worker's local `cargo test --bin plexi` summary (make the worker paste it) plus the tester round, NOT CI.
+   **RUST-ONLY PRs SHOW ONLY `claude` + CodeRabbit IN CI; that is GREEN, not incomplete.** The `typecheck` and `check-*-docs` GitHub jobs are conditional on Python (`sdk/python`) or docs changes. A pure-Rust-host PR (e.g. `src/*.rs` only) will NEVER spawn a `typecheck` job, so `gh pr checks` returning just `claude: skipping` + `CodeRabbit: pass` is a full green, not a half-reported run. Do NOT wait or poll for a typecheck that will never appear; that is a silent stall.
+
+   **But green ≠ reviewed.** `CodeRabbit` currently reports "Review skipped: automatic reviews are disabled" on every PR, and `claude` skips on Rust-only diffs — neither is actually reading the code. The real gate for a Rust PR is the worker's local `cargo test --bin plexi` summary (make the worker paste it), the pre-push Codex review in `/implement-stint` Phase 4, and the tester round. Never tell a user a diff was "reviewed by CI."
 
    Send → `key enter` **once**. Confirm it registered by polling the **status bar** (`plexi pane capture <id> --lines 3`) until `esc to interrupt` appears — not by re-sending. A long brief often pastes as a collapsed block (`paste again to expand`) and needs exactly one more `enter` to submit; that is the only sanctioned re-send.
 
@@ -177,7 +184,7 @@ For each **batch**, in order:
 
    ```
    plexi pane list 2>&1 | grep -v "sudo:"           # agent.state: working or idle
-   plexi pane capture <id> --lines 20 2>&1 | grep -v "sudo:"   # Codex's last message
+   plexi pane capture <id> --lines 20 2>&1 | grep -v "sudo:"   # agent's last message
    ```
 
    `working` → reschedule, done. `idle` → the 20-line tail almost always contains the verdict/reply/blocker; act on it directly. This replaced ~40k-token sub-agent reads with ~1k-token direct reads in practice.
@@ -192,8 +199,14 @@ For each **batch**, in order:
    Bash (run_in_background): until [ "$(gh pr view <PR#> --json state --jq .state)" != "OPEN" ]; do sleep 15; done; gh pr view <PR#> --json state,mergedAt
    ```
 
-3. **Spawn the Tester (fresh Codex pane) once the PR is open.** New pane, `co`, labeled `tester-<N>`. First gate on the diff: **if the PR is docs/scripts/manifests-only with no runtime behavior change, the tester does a diff review + `just test` and skips the 5-minute install** — say so in the brief and let the tester judge from `gh pr diff <PR#> --name-only`. Otherwise brief it:
-   > "Validate PR #`<PR#>` for Plexi. Install it with `just pr-install <PR#>` (from that PR's worktree), then **actually drive the installed `plexi-pr-<PR#>` build** — open the app, use the specific feature these stints added, and confirm end-to-end that it really works (not just that it compiles). Where the PR adds an assertion/validation/guard, prove it is **falsifiable**: deliberately violate it locally, watch it fail with a clear message, revert. Use the host's own primitives to observe it, never macOS `screencapture`/screen-recording (see below). Do NOT re-run test suites (`cargo test`, `just test`, pytest) — CI already proved them green; your job is exclusively behavior the suites can't see. Report a clear PASS, or a numbered list of concrete bugs/repro steps. Do not touch the code."
+3. **Spawn the Tester (fresh pane) once the PR is open.** New pane launched with `c`, labeled `tester-<N>`; set its model with `/model` before briefing. First gate on the diff — judge from `gh pr diff <PR#> --name-only`:
+
+   - **Docs/scripts/manifests-only, no runtime behavior change** → the tester does a diff review only and skips both the install and the suites. There is nothing to live-drive and the worker already ran the suites pre-push; re-running them here duplicates that.
+   - **Anything else** → the install-and-drive brief below.
+
+   > "Validate PR #`<PR#>` for Plexi. Install it with `just pr-install <PR#>` (from that PR's worktree), then **actually drive the installed `plexi-pr-<PR#>` build** — open the app, use the specific feature these stints added, and confirm end-to-end that it really works (not just that it compiles). Where the PR adds an assertion/validation/guard, prove it is **falsifiable**: deliberately violate it locally, watch it fail with a clear message, revert. Use the host's own primitives to observe it, never macOS `screencapture`/screen-recording (see below). Do NOT re-run test suites (`cargo test`, `just test`, pytest) — the worker already ran them green pre-push and pasted the summary; your job is exclusively behavior the suites can't see. Report a clear PASS, or a numbered list of concrete bugs/repro steps. Do not touch the code."
+
+   **The tester validates behavior, not the diff.** It does not re-review code — AI diff review already happened once, pre-push, in `/implement-stint` Phase 4. Live-driving the real build is the thing only this pane can do; that is its entire job.
 
    **Never let the tester reach for macOS `screencapture`, screen recording, or any OS permission prompt to observe the host.** Plexi ships its own capture primitives that need zero OS permission — use them instead:
    - `plexi-pr-<N> pane state <id>` — normalized semantic tree (assert on `semantic.nodes`, not pixels).
@@ -212,7 +225,13 @@ For each **batch**, in order:
      Loop worker ↔ tester until the tester returns a clean PASS. You are the only channel between them.
    - **PASS** → proceed to merge.
 
-5. **Merge (only after tester PASS).** You confirm the state yourself, then have the worker squash-merge to alpha (it owns git):
+5. **Merge — after tester PASS *and* the human gate.** A PASS is not permission to merge.
+
+   **Default (always, unless the user opted out): surface the passing PR and wait.** Report the verdict and ask for explicit merge approval. Do not proceed on your own judgment that the evidence looks strong — that is exactly the reasoning that merges something the user wanted to see first.
+
+   **Only skip the wait when the user has explicitly opted into auto-merge for this queue** (see Rules). If they have, merge on PASS and roll straight to the next batch.
+
+   Once approved, you confirm the state yourself, then have the worker squash-merge to alpha (it owns git):
    ```
    gh pr view <PR#> --json state,mergedAt
    ```
@@ -263,20 +282,12 @@ For each **batch**, in order:
 
    Recycle at clean boundaries only — batch merged, or pane about to take an unrelated task. Never mid-fix.
 
-## Usage-window management (Codex's 5-hour limit)
+## Usage-limit handling
 
-When a pane prints `■ You've hit your usage limit. ... try again at 8:39 PM.`, parse the reset time and branch:
+When a pane reports it has hit a usage limit, parse the reset time and branch:
 
 - **Reset < 1 hour away** → wait. `ScheduleWakeup` for just past the reset, then resume that pane's task (send `enter` or re-send the prompt) and capture to confirm it picked back up.
-- **Reset ≥ 1 hour away** (window burned, too long to idle) → switch usage buckets instead of waiting; we have resets to spend. **In that pane:**
-  ```
-  plexi pane send <id> "/usage"
-  sleep 1
-  plexi pane key <id> enter
-  sleep 2
-  plexi pane capture <id> --from-cursor 0      # read the menu
-  ```
-  Drive the menu with `plexi pane key <id> <up|down|enter>` to re-enable / select the next allotment (options are TUI-version-dependent — read them each time). Capture after every keypress. Then resume the in-flight task.
+- **Reset ≥ 1 hour away** → don't idle the queue. Report the wall to the user with the reset time and ask how to proceed; they may want to switch accounts, drop to a cheaper model via `/model`, or pause the run.
 
 Applies to whichever pane hit the wall — worker or tester.
 
@@ -292,12 +303,12 @@ When the user asks for a report, status, or "is the loop running", the deliverab
 
 ## Rules
 
-- You never write code, run git, or merge yourself. You spawn, label, route messages, and observe. All work is the Codex panes'.
+- You never write code, run git, or merge yourself. You spawn, label, route messages, and observe. All work is the agent panes'.
 - **Two panes per batch**: worker implements, a *separate fresh* tester validates. The tester must drive the real `plexi-pr-<N>` install build and use the feature — no pass on a compile alone.
 - **Fewest PRs possible** — batch small/related stints into one PR.
 - **No merge without a tester PASS.** Bugs route worker ↔ tester through you until clean.
 - **Opt-in auto-merge (user triggers it, never the default).** Default holds: surface each passing PR to the user and wait. But when the user explicitly says the queue is good to merge and they will test holistically at the end (e.g. a final e2e gate), drop the human-hold gate: on tester PASS, have the worker squash-merge to alpha immediately and roll to the next batch with no surfacing-and-waiting. Keep the tester round; it protects alpha's trunk for downstream stints. Only the human-hold is removed.
-- **Protect your context.** Never dump full pane captures into your own window — delegate reading to a sub-agent that returns a minified report, and use `--from-cursor` for deltas. You hold summaries, not scrollback.
+- **Protect your context.** Default to `--lines 20` reads and narrow full-buffer reads with `grep`/`sed`. Sub-agent delegation is the exception for genuinely long reports, not the default — see the capture-forms section. You hold summaries, not scrollback.
 - **Label every pane** and recycle (close both, spawn fresh worker) between batches.
 - Verify state with `gh`/`stint`, not any pane's self-report.
 - Keep the 15-min cadence via `ScheduleWakeup`; nudge rather than wait passively.

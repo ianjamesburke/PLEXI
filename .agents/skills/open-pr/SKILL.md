@@ -139,7 +139,7 @@ gh issue edit <N> \
   --remove-label "in progress"
 ```
 
-Invoke `/validate-pr <pr-number>` inline in the same pane.
+Invoke `/validate-pr <pr-number>` inline in the same pane — **unless the caller asked to stop at PR-open** (babysitter workers always do). In that mode, report the PR number and check status and end the turn; a separate tester owns validation.
 
 ---
 
@@ -148,6 +148,6 @@ Invoke `/validate-pr <pr-number>` inline in the same pane.
 - PR always targets `alpha` — never `beta` or `main`
 - Never push to `alpha`, `beta`, or `main` directly
 - Idempotency: re-running on an already-open PR advances labels, never errors
-- All quality review happens in `/validate-pr` — open-pr does not run any review
+- open-pr runs no review. AI diff review is owned solely by `/implement-stint` Phase 4 (pre-push) — see "Who reviews what" there. `/validate-pr` does not review either.
 
 

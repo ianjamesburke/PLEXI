@@ -59,7 +59,9 @@ For bug tasks, verify the root cause by reading code. Never state an unverified 
 
 Grep `GOTCHAS.md` for related pitfalls if it exists.
 
-**Before writing the task file, present the decided implementation plan to the user and confirm.** One approach only — no options, no A/B. If multiple approaches exist, pick the best one yourself and state it. Only ask the user if there is a genuine trade-off they must own (e.g., breaking API change, scope that affects other teams). Wait for confirmation before proceeding to Step 3.
+**When a human is in the loop, present the decided implementation plan and confirm before writing the task file.** One approach only — no options, no A/B. If multiple approaches exist, pick the best one yourself and state it. Only ask the user if there is a genuine trade-off they must own (e.g., breaking API change, scope that affects other teams). Wait for confirmation before proceeding to Step 3.
+
+**Autonomous mode — no human to confirm with.** When this skill is invoked by an agent mid-run (a babysitter worker filing a follow-up, a tester recording a discovered gap, any unattended flow), there is nobody to answer and waiting deadlocks the caller. In that case: skip the confirmation gate, pick the approach yourself, and write the chosen approach into the task body's `## Scope` as the decision of record. If a genuine trade-off exists that a human should own, still write the task — put the open decision under `## Open Questions` and set priority so it surfaces, rather than blocking on an answer that will never come. Never stall an unattended run waiting for confirmation.
 
 ---
 
