@@ -39,7 +39,7 @@ Exact forms confirmed in live runs. Use them; don't invent variants.
 | Need | Command |
 |---|---|
 | **Is the agent busy or idle?** | No single signal is trustworthy — use the "cheap triangle" below. Never gate a decision on one flag. |
-| Pipeline slots (pr#, phase, status, error) | read files under the pane's `slots.*` paths from `pane list` |
+| **Read a pane's progress slot (PRIMARY status channel)** | `plexi pane slot read <name> <pane_id>` — contract names: `status`, `pr`, `verdict`, `last_error`, `issue` |
 | **Read the last N lines (default read)** | `plexi pane capture <id> --lines 20` |
 | Read full pane buffer (verdict parsing only) | `plexi pane capture <id> --from-cursor 0` |
 | Read only *new* output (delta) | `plexi pane capture <id> --from-cursor <CURSOR>` |
@@ -69,6 +69,32 @@ Since stint 0383 (PR #2390), `capture --lines N` returns the last N real content
 Known pre-existing bug (stint 0385): `--from-cursor <N>` deltas can return empty on a live pane. If a delta comes back empty, fall back to `--lines`, not to a full-buffer dump.
 
 Append `2>&1 | grep -v "sudo:"` to plexi commands run from your own Bash — the background-updater bug (#2339) spews `sudo:` noise on stderr that otherwise dominates every output.
+
+### Progress channel — pane slots FIRST, capture is the fallback
+
+**The primary way you read a pane's progress is its typed slots, not its scrollback.** A slot read is ~3 tokens and unambiguous; a full TUI capture is ~700 tokens and semantically fragile (false idle/busy reads, marker-glyph guessing, truncation, locale-sensitive Unicode). Read the declared state; scrape the TUI only when a slot is empty or stale.
+
+**The pane-owned slot contract** (generic names — the slots belong to the pane; the babysitter is one reader). Worker and tester both honor it:
+
+| Slot | Meaning |
+|---|---|
+| `status` | Current state, `<step-token>:<state>` — state is one of `working \| done \| blocked \| needs-input \| failed`. The step token (e.g. `batch3-impl`, `step4`) makes a stale value impossible to misread as current. |
+| `pr` | PR number once opened. |
+| `verdict` | Tester's final call: `PASS` or `FAIL`. |
+| `last_error` | Short reason string when `status` is `blocked`/`failed`. |
+| `issue` | Stint/issue id(s) the pane is working. |
+
+Read the primary status slot on every check:
+
+```
+plexi pane slot read status <pane_id> 2>&1 | grep -v "sudo:"
+```
+
+**Freshness rule.** A slot value is only trustworthy if it names the current step. Two enforcement mechanisms, and every worker/tester brief must use one:
+- Stamp a step/generation token into `status` on write (`step4:blocked`, `batch3-test:working`), OR
+- `plexi pane slot delete status <pane_id>` at each step's start, so a stale value reads as *empty* (→ fall back to capture) rather than as current.
+
+**Fallback to capture only when the slot is empty or its step token is stale.** The capture path (`--lines 20`, or full-buffer + `sed '1d' | jq -r '.lines[]'` chrome-strip for verdict parsing) is retained solely for that case and for reading a long verbatim report a slot can't hold.
 
 ### Reading whether a pane is busy
 
@@ -101,7 +127,7 @@ Then judge: a trailing `⏺ Bash(...)` / tool call in the buffer means it is wor
 
 Never grep the status bar for `esc to interrupt` and treat absence as proof of idle without checking whether the line ends in `…`.
 
-Machine-readable progress lives in the pane's **slot files** (`slots.pr`, `slots.pipeline_phase`, `slots.status`, `slots.last_error`, `slots.issue`) — read those files, not scrollback.
+Machine-readable progress lives in the pane's **slots** (`status`, `pr`, `verdict`, `last_error`, `issue`) — read them with `plexi pane slot read <name> <pane_id>` (see the slot-contract section above), not scrollback. The busy/idle screen-signal reads below are the *fallback* for when a slot is empty or its step token is stale.
 
 ### ANTI-THRASH — never re-fire a command to "confirm" it landed
 
@@ -168,7 +194,7 @@ Set the model at each batch boundary, based on the batch's size, **before** send
 For each **batch**, in order:
 
 1. **Worker: implement + open PR.** Send the worker a directive:
-   > "Land stints `<ID>[, <ID>...]` **together in a single PR**. Run `stint show <ID>` for each, then claim them, implement in one worktree branched from alpha, and open ONE PR to alpha covering all of them per the repo AGENTS.md ship pipeline. **Stop once the PR is open and checks are green — do NOT invoke `/validate-pr`, and do NOT merge.** A separate tester pane owns validation. **Before pushing, run the full CI-equivalent local gate, not just `cargo test --bin plexi`**: `mypy sdk/python/plexi_sdk/ --ignore-missing-imports --check-untyped-defs --exclude testing.py`, and every `just gen-*-docs` / `just check-*-docs` generator touched by the diff (SDK, capability, config, authoring, CLI docs) — regenerate and commit any that are stale. `cargo test --bin plexi` passing is not sufficient evidence the PR is green; confirm with `gh pr checks <PR#>` after push and fix any red check before reporting done. **HARD GATE: paste the final green summary line of every suite you ran (`just test`, sdk pytest, mypy) in your reply — an unverified push gets bounced back without a tester round.** **Never end your turn while a build or test is still running — wait on it in the foreground and report its result.** Reply with the PR number when it's open and checks are green."
+   > "Land stints `<ID>[, <ID>...]` **together in a single PR**. Run `stint show <ID>` for each, then claim them, implement in one worktree branched from alpha, and open ONE PR to alpha covering all of them per the repo AGENTS.md ship pipeline. **Stop once the PR is open and checks are green — do NOT invoke `/validate-pr`, and do NOT merge.** A separate tester pane owns validation. **Before pushing, run the full CI-equivalent local gate, not just `cargo test --bin plexi`**: `mypy sdk/python/plexi_sdk/ --ignore-missing-imports --check-untyped-defs --exclude testing.py`, and every `just gen-*-docs` / `just check-*-docs` generator touched by the diff (SDK, capability, config, authoring, CLI docs) — regenerate and commit any that are stale. `cargo test --bin plexi` passing is not sufficient evidence the PR is green; confirm with `gh pr checks <PR#>` after push and fix any red check before reporting done. **HARD GATE: paste the final green summary line of every suite you ran (`just test`, sdk pytest, mypy) in your reply — an unverified push gets bounced back without a tester round.** **Never end your turn while a build or test is still running — wait on it in the foreground and report its result.** **Publish your progress on your pane's typed slots so I can read your state cheaply instead of scraping your screen — this is required, not optional.** On every state transition write your `status` slot with a step token, event-driven (not on a timer): `plexi pane slot write status $PLEXI_PANE_ID \"impl:working\"` when you start, then `pr:working`, `blocked`, `needs-input`, or `failed` as they happen; write the PR number to `pr` and any blocker reason to `last_error`. Write `impl:done` (with `pr` set) the moment the PR is open and green. `plexi pane slot write` prints a one-line stderr ack on success and exits non-zero with a named error on failure — trust that ack; never read the slot back to confirm the write. Reply with the PR number when it's open and checks are green."
 
    These three brief clauses exist because they were the top token sinks in practice: workers running `/validate-pr` (the pipeline auto-chains `implement-stint` → `open-pr` → `validate-pr`, so a worker that follows the skills literally installs the build itself — a ~5 min compile the tester then repeats — and parks on a `[TESTING]` block waiting for a reply that never comes, which you then read as "idle with unfinished work" and burn a nudge on), workers pushing red (each unverified push burns a full tester round), and workers yielding their turn mid-compile (each yield burns a nudge round-trip). State all three up front in every worker brief, including fix-round briefs.
 
@@ -180,14 +206,22 @@ For each **batch**, in order:
 
    Send → `key enter` **once**. Confirm it registered by polling the **status bar** (`plexi pane capture <id> --lines 3`) until `esc to interrupt` appears — not by re-sending. A long brief often pastes as a collapsed block (`paste again to expand`) and needs exactly one more `enter` to submit; that is the only sanctioned re-send.
 
-2. **Check in every 15 min — cheaply.** `ScheduleWakeup` `delaySeconds: 900`. On each wake, the default check is **two direct commands, no sub-agent**:
+2. **Check in every 15 min — cheaply.** `ScheduleWakeup` `delaySeconds: 900`. On each wake, the default check is **one slot read** (~3 tokens):
+
+   ```
+   plexi pane slot read status <id> 2>&1 | grep -v "sudo:"   # e.g. batch3-impl:working
+   ```
+
+   Branch on the state token: `working` → reschedule, done. `done`/`blocked`/`needs-input`/`failed` → read `pr`/`verdict`/`last_error` for the details and act. **The slot is the source of truth when its step token is current.**
+
+   **Only fall back to capture when the slot is empty or its step token is stale** (the pane hasn't adopted the contract, or crashed before writing). Then the old two-command read applies:
 
    ```
    plexi pane list 2>&1 | grep -v "sudo:"           # agent.state: working or idle
    plexi pane capture <id> --lines 20 2>&1 | grep -v "sudo:"   # agent's last message
    ```
 
-   `working` → reschedule, done. `idle` → the 20-line tail almost always contains the verdict/reply/blocker; act on it directly. This replaced ~40k-token sub-agent reads with ~1k-token direct reads in practice.
+   The 20-line tail almost always contains the verdict/reply/blocker; act on it directly.
 
    **Escalate to a sub-agent only when the tail is not enough** — a long tester report whose numbered bug list scrolled past 20 lines, or evidence that must be quoted verbatim from deep in the buffer. Sub-agent brief (pass the pane id):
    > "Inspect Plexi pane `<id>` for status only — do not touch it. Run `plexi pane list` for its `agent.state`, then `plexi pane capture <id> --from-cursor 0` and read the END of the buffer. Report ≤8 lines: (a) task/PR + phase, (b) working / idle / blocked / usage-limited, (c) verdict or bug list verbatim if present, (d) any question verbatim. Never re-send a command to force output. Ignore 'sudo:' noise lines."
@@ -204,7 +238,7 @@ For each **batch**, in order:
    - **Docs/scripts/manifests-only, no runtime behavior change** → the tester does a diff review only and skips both the install and the suites. There is nothing to live-drive and the worker already ran the suites pre-push; re-running them here duplicates that.
    - **Anything else** → the install-and-drive brief below.
 
-   > "Validate PR #`<PR#>` for Plexi. Install it with `just pr-install <PR#>` (from that PR's worktree), then **actually drive the installed `plexi-pr-<PR#>` build** — open the app, use the specific feature these stints added, and confirm end-to-end that it really works (not just that it compiles). Where the PR adds an assertion/validation/guard, prove it is **falsifiable**: deliberately violate it locally, watch it fail with a clear message, revert. Use the host's own primitives to observe it, never macOS `screencapture`/screen-recording (see below). Do NOT re-run test suites (`cargo test`, `just test`, pytest) — the worker already ran them green pre-push and pasted the summary; your job is exclusively behavior the suites can't see. Report a clear PASS, or a numbered list of concrete bugs/repro steps. Do not touch the code."
+   > "Validate PR #`<PR#>` for Plexi. Install it with `just pr-install <PR#>` (from that PR's worktree), then **actually drive the installed `plexi-pr-<PR#>` build** — open the app, use the specific feature these stints added, and confirm end-to-end that it really works (not just that it compiles). Where the PR adds an assertion/validation/guard, prove it is **falsifiable**: deliberately violate it locally, watch it fail with a clear message, revert. Use the host's own primitives to observe it, never macOS `screencapture`/screen-recording (see below). Do NOT re-run test suites (`cargo test`, `just test`, pytest) — the worker already ran them green pre-push and pasted the summary; your job is exclusively behavior the suites can't see. Report a clear PASS, or a numbered list of concrete bugs/repro steps. Do not touch the code. **Publish your progress on your pane's typed slots (required) so I read your state cheaply instead of scraping your screen.** On every transition, event-driven, write your `status` slot with a step token: `plexi pane slot write status $PLEXI_PANE_ID \"test:working\"` when you start, then `test:done` on completion; write your final call to `verdict` (`PASS` or `FAIL`) and, on FAIL, a short reason to `last_error`. `plexi pane slot write` prints a one-line stderr ack on success and a named non-zero error on failure — trust the ack; never read the slot back to confirm."
 
    **The tester validates behavior, not the diff.** It does not re-review code — AI diff review already happened once, pre-push, in `/implement-stint` Phase 4. Live-driving the real build is the thing only this pane can do; that is its entire job.
 

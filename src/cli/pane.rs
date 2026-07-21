@@ -187,6 +187,12 @@ fn response_error(content: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Terse success ack for `pane slot write`, printed to stderr so stdout stays byte-clean.
+fn slot_write_ack(name: &str, bytes: usize, append: bool) -> String {
+    let verb = if append { "+<-" } else { "<-" };
+    format!("slot {name:?} {verb} {bytes} bytes")
+}
+
 /// `plexi pane slot write <name> [content] [pane_id]`
 pub fn pane_slot_write_cli(
     name: &str,
@@ -195,6 +201,10 @@ pub fn pane_slot_write_cli(
     replace: bool,
     pane_id: Option<u64>,
 ) -> i32 {
+    if name.trim().is_empty() {
+        eprintln!("error: slot name empty");
+        return 1;
+    }
     let resolved_pane_id = match resolve_pane_id(pane_id) {
         Ok(id) => id,
         Err(code) => return code,
@@ -234,6 +244,7 @@ pub fn pane_slot_write_cli(
         eprintln!("error: {err}");
         return 1;
     }
+    eprintln!("{}", slot_write_ack(name, bytes.len(), append));
     0
 }
 
@@ -1137,4 +1148,26 @@ pub(super) fn open_github_ephemeral(
     println!("queued: open github:{owner}/{repo}");
     println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
     0
+}
+
+#[cfg(test)]
+mod slot_write_tests {
+    use super::*;
+
+    #[test]
+    fn ack_replace_reports_byte_count() {
+        assert_eq!(slot_write_ack("status", 4, false), "slot \"status\" <- 4 bytes");
+    }
+
+    #[test]
+    fn ack_append_uses_append_arrow() {
+        assert_eq!(slot_write_ack("status", 12, true), "slot \"status\" +<- 12 bytes");
+    }
+
+    #[test]
+    fn empty_slot_name_exits_nonzero() {
+        // Must fail before any socket contact — no PLEXI_PANE_ID needed.
+        assert_eq!(pane_slot_write_cli("", Some("x"), false, true, Some(7)), 1);
+        assert_eq!(pane_slot_write_cli("   ", Some("x"), false, true, Some(7)), 1);
+    }
 }
