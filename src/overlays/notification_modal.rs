@@ -324,27 +324,11 @@ impl PlexiApp {
 
                 ui.add_space(style::SPACE_XL);
 
-                // Title — centered, large.
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new(&notif.title)
-                            .size(style::TEXT_TITLE_XL)
-                            .color(self.colors.text_primary)
-                            .strong(),
-                    );
-                });
+                crate::ui::typography::modal_title_large(ui, &notif.title, &self.colors);
 
-                // Body — centered under the title.
                 if !notif.body.is_empty() {
                     ui.add_space(style::SPACE_MD);
-                    ui.vertical_centered(|ui| {
-                        ui.set_max_width(style::MODAL_WIDTH_NOTIFY - 120.0);
-                        ui.label(
-                            RichText::new(&notif.body)
-                                .size(style::TEXT_BODY)
-                                .color(self.colors.text_primary),
-                        );
-                    });
+                    crate::ui::typography::modal_body(ui, &notif.body, &self.colors);
                 }
 
                 // Image attachment (#74) — renders above the

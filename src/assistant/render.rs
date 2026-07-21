@@ -19,6 +19,7 @@ use crate::ui::button::{chrome_button, ButtonKind};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::list::ListRow;
 use crate::ui::style;
+use crate::ui::text_field::TextArea;
 use crate::ui::theme::Colors;
 
 use crate::app_protocol::ModelTier;
@@ -1331,76 +1332,21 @@ impl AssistantRenderer {
             ))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                // Glyph-height caret, unified with every other host text input
-                // (see `text_field::draw_text_caret`): hide egui's full-row
-                // caret (transparent + no blink) and paint a replacement that
-                // matches the glyph height on top.
-                ui.visuals_mut().text_cursor.blink = false;
-                ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
-                // The TextEdit reports its own height; the ScrollArea caps it at
-                // `max_text_h` and scrolls past that. No hand-rolled galley
-                // measurement — same shape as the quick-note composer. Measuring
-                // the height ourselves fought the TextEdit's real layout (it
-                // wraps against a width already reduced by the floating
-                // scrollbar's reserved gutter), which flashed a stray scrollbar
-                // mid-growth.
-                egui::ScrollArea::vertical()
-                    .id_salt("assistant_composer_scroll")
-                    .max_height(max_text_h)
-                    .show(ui, |ui| {
-                        let output = egui::TextEdit::multiline(&mut model.composer)
-                            .id(te_id)
-                            .desired_rows(1)
-                            .desired_width(f32::INFINITY)
-                            .frame(egui::Frame::NONE)
-                            // Left padding beyond egui's default `symmetric(4,
-                            // 2)` margin, so the caret and hint text never
-                            // sit flush against the composer's edge.
-                            .margin(egui::Margin {
-                                left: 6,
-                                right: 4,
-                                top: 2,
-                                bottom: 2,
-                            })
-                            // The hint galley (rendered at its own, smaller
-                            // size below) and the real-text/caret galley
-                            // otherwise both default to top-aligned, which
-                            // reads as off-center whenever their line
-                            // heights differ. Center both so the composer's
-                            // single row always looks vertically balanced.
-                            .vertical_align(egui::Align::Center)
-                            // Keep Tab in the composer: without the focus
-                            // lock, egui's frame-start focus traversal
-                            // moves focus away before the picker's Tab
-                            // handler ever sees the key.
-                            .lock_focus(true)
-                            // Plain Enter is consumed for submit before
-                            // the TextEdit runs; Shift+Enter is the
-                            // newline key (the default return_key is
-                            // unmodified Enter, so Shift+Enter would
-                            // otherwise insert nothing).
-                            .return_key(Some(egui::KeyboardShortcut::new(
-                                egui::Modifiers::SHIFT,
-                                egui::Key::Enter,
-                            )))
-                            .hint_text(
-                                RichText::new("Message the assistant — / for commands")
-                                    .size(style::TEXT_CAPTION)
-                                    .color(colors.text_dim),
-                            )
-                            .font(font_id.clone())
-                            .show(ui);
-                        crate::ui::text_field::draw_text_caret(
-                            ui,
-                            &output,
-                            style::TEXT_BODY,
-                            row_height,
-                            egui::Stroke::new(1.0_f32, colors.accent),
-                        );
-                        if output.response.changed() {
-                            model.reset_history_recall();
-                        }
-                    });
+                // TextArea owns multiline growth, overflow scrolling, focus
+                // lock, newline semantics, and the shared glyph-height caret.
+                let response = TextArea::composer(
+                    te_id,
+                    RichText::new("Message the assistant — / for commands")
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.text_dim),
+                )
+                .max_height(max_text_h)
+                .font(font_id)
+                .hint_color(colors.text_dim)
+                .show(ui, &mut model.composer, colors);
+                if response.changed() {
+                    model.reset_history_recall();
+                }
             });
         frame_response.response.rect
     }

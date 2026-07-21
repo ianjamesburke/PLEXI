@@ -160,6 +160,11 @@ pub enum Step {
     Close { close: String },
     /// Toggle the host sidebar.
     Sidebar { sidebar: bool },
+    /// Seed one message notification through the real host modal render path.
+    /// Headless-only: live scenes must create notifications through an app.
+    SeedNotification {
+        seed_notification: NotificationSeedSpec,
+    },
     /// Switch to the context at this router index.
     SwitchContext { switch_context: usize },
     /// Push the focused pane into a new subcontext with this name.
@@ -176,6 +181,14 @@ pub enum Step {
     AssertLabel { assert_label: AssertLabelSpec },
     /// Save a headless screenshot to `<out_dir>/<name>`.
     Shot { shot: String },
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationSeedSpec {
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
 }
 
 /// One generic app-opening request. `kind` determines which production launch
@@ -1213,6 +1226,10 @@ impl LiveBackend {
                 "unsupported_live_verb",
                 "sidebar mutation has no sanctioned live CLI/IPC command",
             )),
+            Step::SeedNotification { .. } => Err(SceneError::new(
+                "unsupported_live_verb",
+                "seed_notification is headless-only; live scenes must notify through an app",
+            )),
         }
     }
 
@@ -1645,6 +1662,9 @@ fn step_label(step: &Step) -> String {
         Step::Focus { focus } => format!("focus {focus}"),
         Step::Close { close } => format!("close {close}"),
         Step::Sidebar { sidebar } => format!("sidebar {sidebar}"),
+        Step::SeedNotification { seed_notification } => {
+            format!("seed_notification {:?}", seed_notification.title)
+        }
         Step::SwitchContext { switch_context } => format!("switch_context {switch_context}"),
         Step::PushToSubcontext { push_to_subcontext } => {
             format!("push_to_subcontext {push_to_subcontext}")
@@ -1860,6 +1880,46 @@ impl HeadlessBackend {
                 self.h.with_app_mut(|app| app.sidebar_visible = v);
                 self.h.step();
                 Ok(None)
+            }
+            Step::SeedNotification { seed_notification } => {
+                let title = seed_notification.title.clone();
+                let body = seed_notification.body.clone();
+                let id = self.h.with_app_mut(|app| {
+                    let id = format!("__scene_notification_{}", app.pending_notifications.len());
+                    app.pending_notifications
+                        .push(crate::app::PendingNotification {
+                            notify_id: id.clone(),
+                            sender_pane_id: 0,
+                            source_context_id: 0,
+                            source_window_id: 0,
+                            level: "info".to_string(),
+                            title,
+                            body,
+                            kind: crate::app_protocol::NotifyKind::Message,
+                            options: Vec::new(),
+                            input_prompt: None,
+                            required: false,
+                            priority: 0,
+                            scope: crate::app_protocol::NotifyScope::Global,
+                            image_inline: None,
+                            image_pipe_id: None,
+                            response_file: None,
+                            timeout_secs: None,
+                            on_dismiss: None,
+                            enqueued_at: std::time::Instant::now(),
+                            tombstoned: false,
+                            deliver_after: None,
+                        });
+                    app.show_notification_modal = true;
+                    if app.current_notify_id.is_none() {
+                        app.current_notify_id = Some(id.clone());
+                    }
+                    id
+                });
+                self.h.run_steps(2);
+                Ok(Some(StepDetail::Message {
+                    message: format!("seeded notification {id}"),
+                }))
             }
             Step::SwitchContext { switch_context } => {
                 let idx = *switch_context;

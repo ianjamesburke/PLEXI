@@ -1,0 +1,10 @@
+size = [520.0, 640.0]
+
+[[steps]]
+seed_notification = { title = "The workspace synchronization needs your attention before publishing can continue", body = "A remote update changed files used by this release. Review the affected paths, resolve the differences, and run validation again before publishing the workspace." }
+
+[[steps]]
+assert_label = { target = "host", label = "The workspace synchronization needs your attention before publishing can continue" }
+
+[[steps]]
+shot = "notification-modal-wrapped-narrow.png"

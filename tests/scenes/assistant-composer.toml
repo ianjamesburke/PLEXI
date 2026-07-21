@@ -8,15 +8,47 @@ open = { kind = "builtin", id = "assistant", as = "assistant" }
 [[steps]]
 run_steps = 2
 
-# Stint 0423: pristine empty composer — hint text and caret must read as
-# vertically centered with left breathing room, not flush against the edge.
-# The hint is painted directly (not a `ui.label`), so it isn't visible to
-# `assert_label`; the screenshot is the evidence.
 [[steps]]
 assert = { target = "assistant", exists = true, focused = true, pane_count = 1 }
 
 [[steps]]
 shot = "assistant-composer-empty.png"
+
+[[steps]]
+text = { target = "assistant", value = "A single-line composer message." }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+shot = "assistant-composer-one-line.png"
+
+[[steps]]
+key = { target = "assistant", value = "cmd+a" }
+
+[[steps]]
+text = { target = "assistant", value = "This wrapped composer message is deliberately long enough to cross several visual lines while the editor grows naturally with its content and remains anchored above the hint bar." }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+shot = "assistant-composer-wrapped.png"
+
+[[steps]]
+key = { target = "assistant", value = "cmd+a" }
+
+[[steps]]
+text = { target = "assistant", value = "Maximum-height composer line one.\nLine two keeps growing.\nLine three keeps growing.\nLine four keeps growing.\nLine five keeps growing.\nLine six keeps growing.\nLine seven keeps growing.\nLine eight keeps growing.\nLine nine keeps growing.\nLine ten proves overflow scrolling." }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+shot = "assistant-composer-max-height.png"
+
+[[steps]]
+key = { target = "assistant", value = "cmd+a" }
 
 [[steps]]
 text = { target = "assistant", value = "/help" }
