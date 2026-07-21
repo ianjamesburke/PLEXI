@@ -80,7 +80,7 @@ pub(crate) fn draw_contact_footer(ui: &mut egui::Ui, colors: &Colors) {
             let email = "ADHDISNTREAL@GMAIL.COM";
             let mailto = "mailto:ADHDisntreal@gmail.com";
             let font_id = egui::FontId::proportional(style::TEXT_CAPTION);
-            let email_w = ui.fonts(|f| {
+            let email_w = ui.fonts_mut(|f| {
                 f.layout_no_wrap(email.to_string(), font_id, colors.text_dim)
                     .size()
                     .x

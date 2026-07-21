@@ -607,8 +607,7 @@ impl PlexiApp {
             Some(FocusKind::CommandPalette) => {
                 log::info!("quick_note: dismissing CommandPalette to open QuickNote");
                 self.show_command_palette = false;
-                self.focus_stack
-                    .retain(|l| *l != FocusKind::CommandPalette);
+                self.focus_stack.retain(|l| *l != FocusKind::CommandPalette);
             }
             _ => {}
         }
@@ -1441,7 +1440,7 @@ impl PlexiApp {
                 .order(egui::Order::Foreground)
                 .interactable(false)
                 .show(ctx, |ui| {
-                    let screen = ctx.screen_rect();
+                    let screen = ctx.content_rect();
                     let painter = ui.painter();
 
                     // Green phosphor tint

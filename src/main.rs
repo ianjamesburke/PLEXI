@@ -221,9 +221,8 @@ fn main() -> eframe::Result {
         .collect();
     use crate::cli::args::{
         AccountCmd, AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd,
-        EventsCmd, HookAction, HostCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd,
-        RoutineCmd, SecretCmd,
-        UpdateCmd, WorkspaceCmd,
+        EventsCmd, HookAction, HostCmd, NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd,
+        SecretCmd, UpdateCmd, WorkspaceCmd,
     };
     use clap::Parser;
     let args = cli::args::normalize_config_scope_aliases(args);
@@ -461,43 +460,41 @@ fn main() -> eframe::Result {
                                         log::info!("app_install:cli: workspace pack (no args)");
                                         std::process::exit(cli::install_workspace_pack_cli());
                                     }
-                                    Some(s) => {
-                                        match cli::app::classify_app_install_spec(&s) {
-                                            cli::app::AppInstallSpecKind::Package => {
-                                                log::info!(
-                                                    "app_install:cli: package={s} version={version:?}"
-                                                );
-                                                std::process::exit(cli::app_install_package(
-                                                    &s,
-                                                    version.as_deref(),
-                                                    cli::InstallConfirm::Interactive,
-                                                    yes,
-                                                ));
-                                            }
-                                            cli::app::AppInstallSpecKind::Source => {
-                                                log::info!(
+                                    Some(s) => match cli::app::classify_app_install_spec(&s) {
+                                        cli::app::AppInstallSpecKind::Package => {
+                                            log::info!(
+                                                "app_install:cli: package={s} version={version:?}"
+                                            );
+                                            std::process::exit(cli::app_install_package(
+                                                &s,
+                                                version.as_deref(),
+                                                cli::InstallConfirm::Interactive,
+                                                yes,
+                                            ));
+                                        }
+                                        cli::app::AppInstallSpecKind::Source => {
+                                            log::info!(
                                                     "app_install:cli: source spec={s} version={version:?}"
                                                 );
-                                                std::process::exit(cli::install_cli(&s, yes));
-                                            }
-                                            cli::app::AppInstallSpecKind::LocalPath => {
-                                                log::info!("app_install:cli: local path={s} version={version:?}");
-                                                std::process::exit(cli::app_install_with_pin(
-                                                    &s,
-                                                    version.as_deref(),
-                                                    cli::InstallConfirm::Interactive,
-                                                    yes,
-                                                ));
-                                            }
-                                            cli::app::AppInstallSpecKind::MarketplaceId => {
-                                                exit_if_feature_disabled(
-                                                    crate::release::ReleaseFeature::Marketplace,
-                                                );
-                                                log::info!("app_install:cli: marketplace id={s} version={version:?}");
-                                                std::process::exit(cli::install_cli(&s, yes));
-                                            }
+                                            std::process::exit(cli::install_cli(&s, yes));
                                         }
-                                    }
+                                        cli::app::AppInstallSpecKind::LocalPath => {
+                                            log::info!("app_install:cli: local path={s} version={version:?}");
+                                            std::process::exit(cli::app_install_with_pin(
+                                                &s,
+                                                version.as_deref(),
+                                                cli::InstallConfirm::Interactive,
+                                                yes,
+                                            ));
+                                        }
+                                        cli::app::AppInstallSpecKind::MarketplaceId => {
+                                            exit_if_feature_disabled(
+                                                crate::release::ReleaseFeature::Marketplace,
+                                            );
+                                            log::info!("app_install:cli: marketplace id={s} version={version:?}");
+                                            std::process::exit(cli::install_cli(&s, yes));
+                                        }
+                                    },
                                 }
                             }
                             AppCmd::Init {
@@ -618,9 +615,9 @@ fn main() -> eframe::Result {
                         )),
                         HostCmd::Stop => std::process::exit(cli::host_stop_cli()),
                         HostCmd::Status { json } => std::process::exit(cli::host_status_cli(json)),
-                        HostCmd::Screenshot { pane, output } => std::process::exit(
-                            cli::host_screenshot_cli(pane, output.as_deref()),
-                        ),
+                        HostCmd::Screenshot { pane, output } => {
+                            std::process::exit(cli::host_screenshot_cli(pane, output.as_deref()))
+                        }
                     },
                     Commands::Notify {
                         title,
@@ -713,202 +710,204 @@ fn main() -> eframe::Result {
                             parsed_scope,
                         ));
                     }
-                    Commands::Pane { cmd } => {
-                        match cmd {
-                            PaneCmd::Name { first, second } => {
-                                let (pane_id, name) = match second {
-                                    Some(title) => match first.parse::<u64>() {
-                                        Ok(id) => (Some(id), title),
-                                        Err(_) => {
-                                            eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
-                                            std::process::exit(1);
-                                        }
-                                    },
-                                    None => (None, first),
-                                };
-                                std::process::exit(cli::pane_set_title_cli(pane_id, &name))
-                            }
-                            PaneCmd::SetTitle { first, second } => {
-                                eprintln!("warning: `pane set-title` is deprecated — use `pane name` instead");
-                                let (pane_id, name) = match second {
-                                    Some(title) => match first.parse::<u64>() {
-                                        Ok(id) => (Some(id), title),
-                                        Err(_) => {
-                                            eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
-                                            std::process::exit(1);
-                                        }
-                                    },
-                                    None => (None, first),
-                                };
-                                std::process::exit(cli::pane_set_title_cli(pane_id, &name))
-                            }
-                            PaneCmd::List { context } => {
-                                let (context_id, current) = match context.as_deref() {
-                                    None => (None, false),
-                                    Some("current") => (None, true),
-                                    Some(s) => match s.parse::<u64>() {
-                                        Ok(id) => (Some(id), false),
-                                        Err(_) => {
-                                            eprintln!("error: --context value must be a numeric context ID or omitted for current context");
-                                            std::process::exit(1);
-                                        }
-                                    },
-                                };
-                                std::process::exit(cli::pane_list_cli(context_id, current))
-                            }
-                            PaneCmd::Focus { pane_id } => {
-                                std::process::exit(cli::pane_focus_cli(pane_id))
-                            }
-                            PaneCmd::Close { pane_id } => {
-                                let id = match pane_id {
-                                    Some(id) => id,
-                                    None => {
-                                        let s = match std::env::var("PLEXI_PANE_ID") {
-                                            Ok(s) => s,
-                                            Err(_) => {
-                                                eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or pass a pane ID explicitly");
-                                                std::process::exit(1);
-                                            }
-                                        };
-                                        match s.parse::<u64>() {
-                                            Ok(id) => id,
-                                            Err(_) => {
-                                                eprintln!("error: PLEXI_PANE_ID is not a valid number: {s}");
-                                                std::process::exit(1);
-                                            }
-                                        }
-                                    }
-                                };
-                                log::info!("pane_close:cli: pane_id={id}");
-                                std::process::exit(cli::pane_close_cli(id));
-                            }
-                            PaneCmd::Send { pane_id, text } => {
-                                std::process::exit(cli::pane_send_cli(pane_id, &text))
-                            }
-                            PaneCmd::Command {
-                                pane_id,
-                                text,
-                                enter,
-                            } => {
-                                let payload = if enter { format!("{text}\n") } else { text };
-                                log::info!(
-                                    "pane_command:cli: pane_id={pane_id} len={} enter={enter}",
-                                    payload.len()
-                                );
-                                std::process::exit(cli::pane_send_cli(pane_id, &payload));
-                            }
-                            PaneCmd::Key { pane_id, key } => {
-                                std::process::exit(cli::pane_key_cli(pane_id, &key))
-                            }
-                            PaneCmd::Click {
-                                pane_id,
-                                x,
-                                y,
-                                node,
-                                button,
-                            } => std::process::exit(match node {
-                                Some(node_id) => cli::pane_click_node_cli(pane_id, &node_id, &button),
-                                None => match (x, y) {
-                                    (Some(x), Some(y)) => cli::pane_click_cli(pane_id, x, y, &button),
-                                    _ => {
-                                        eprintln!(
-                                            "error: pane click requires either <x> <y> or --node <node_id>"
-                                        );
-                                        1
+                    Commands::Pane { cmd } => match cmd {
+                        PaneCmd::Name { first, second } => {
+                            let (pane_id, name) = match second {
+                                Some(title) => match first.parse::<u64>() {
+                                    Ok(id) => (Some(id), title),
+                                    Err(_) => {
+                                        eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
+                                        std::process::exit(1);
                                     }
                                 },
-                            }),
-                            PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
-                            PaneCmd::Info { previous } => {
-                                std::process::exit(cli::pane_info_cli(previous))
-                            }
-                            PaneCmd::Capture {
-                                pane_id,
-                                lines,
-                                full_output,
-                                from_cursor,
-                            } => std::process::exit(cli::pane_capture_cli(
-                                pane_id,
-                                lines,
-                                full_output,
-                                from_cursor,
-                            )),
-                            PaneCmd::State { pane_id } => {
-                                std::process::exit(cli::pane_state_cli(pane_id))
-                            }
-                            PaneCmd::Slot { cmd } => match cmd {
-                                PaneSlotCmd::Write {
-                                    name,
-                                    content,
-                                    pane_id,
-                                    append,
-                                    replace,
-                                } => {
-                                    std::process::exit(cli::pane_slot_write_cli(
-                                        &name,
-                                        content.as_deref(),
-                                        append,
-                                        replace,
-                                        pane_id,
-                                    ));
+                                None => (None, first),
+                            };
+                            std::process::exit(cli::pane_set_title_cli(pane_id, &name))
+                        }
+                        PaneCmd::SetTitle { first, second } => {
+                            eprintln!(
+                                "warning: `pane set-title` is deprecated — use `pane name` instead"
+                            );
+                            let (pane_id, name) = match second {
+                                Some(title) => match first.parse::<u64>() {
+                                    Ok(id) => (Some(id), title),
+                                    Err(_) => {
+                                        eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
+                                        std::process::exit(1);
+                                    }
+                                },
+                                None => (None, first),
+                            };
+                            std::process::exit(cli::pane_set_title_cli(pane_id, &name))
+                        }
+                        PaneCmd::List { context } => {
+                            let (context_id, current) = match context.as_deref() {
+                                None => (None, false),
+                                Some("current") => (None, true),
+                                Some(s) => match s.parse::<u64>() {
+                                    Ok(id) => (Some(id), false),
+                                    Err(_) => {
+                                        eprintln!("error: --context value must be a numeric context ID or omitted for current context");
+                                        std::process::exit(1);
+                                    }
+                                },
+                            };
+                            std::process::exit(cli::pane_list_cli(context_id, current))
+                        }
+                        PaneCmd::Focus { pane_id } => {
+                            std::process::exit(cli::pane_focus_cli(pane_id))
+                        }
+                        PaneCmd::Close { pane_id } => {
+                            let id = match pane_id {
+                                Some(id) => id,
+                                None => {
+                                    let s = match std::env::var("PLEXI_PANE_ID") {
+                                        Ok(s) => s,
+                                        Err(_) => {
+                                            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or pass a pane ID explicitly");
+                                            std::process::exit(1);
+                                        }
+                                    };
+                                    match s.parse::<u64>() {
+                                        Ok(id) => id,
+                                        Err(_) => {
+                                            eprintln!(
+                                                "error: PLEXI_PANE_ID is not a valid number: {s}"
+                                            );
+                                            std::process::exit(1);
+                                        }
+                                    }
                                 }
-                                PaneSlotCmd::Read { name, pane_id } => {
-                                    std::process::exit(cli::pane_slot_read_cli(&name, pane_id))
-                                }
-                                PaneSlotCmd::List { pane_id } => {
-                                    std::process::exit(cli::pane_slot_list_cli(pane_id))
-                                }
-                                PaneSlotCmd::Delete { name, pane_id } => {
-                                    std::process::exit(cli::pane_slot_delete_cli(&name, pane_id))
+                            };
+                            log::info!("pane_close:cli: pane_id={id}");
+                            std::process::exit(cli::pane_close_cli(id));
+                        }
+                        PaneCmd::Send { pane_id, text } => {
+                            std::process::exit(cli::pane_send_cli(pane_id, &text))
+                        }
+                        PaneCmd::Command {
+                            pane_id,
+                            text,
+                            enter,
+                        } => {
+                            let payload = if enter { format!("{text}\n") } else { text };
+                            log::info!(
+                                "pane_command:cli: pane_id={pane_id} len={} enter={enter}",
+                                payload.len()
+                            );
+                            std::process::exit(cli::pane_send_cli(pane_id, &payload));
+                        }
+                        PaneCmd::Key { pane_id, key } => {
+                            std::process::exit(cli::pane_key_cli(pane_id, &key))
+                        }
+                        PaneCmd::Click {
+                            pane_id,
+                            x,
+                            y,
+                            node,
+                            button,
+                        } => std::process::exit(match node {
+                            Some(node_id) => cli::pane_click_node_cli(pane_id, &node_id, &button),
+                            None => match (x, y) {
+                                (Some(x), Some(y)) => cli::pane_click_cli(pane_id, x, y, &button),
+                                _ => {
+                                    eprintln!(
+                                            "error: pane click requires either <x> <y> or --node <node_id>"
+                                        );
+                                    1
                                 }
                             },
-                            PaneCmd::New {
-                                cmd,
+                        }),
+                        PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
+                        PaneCmd::Info { previous } => {
+                            std::process::exit(cli::pane_info_cli(previous))
+                        }
+                        PaneCmd::Capture {
+                            pane_id,
+                            lines,
+                            full_output,
+                            from_cursor,
+                        } => std::process::exit(cli::pane_capture_cli(
+                            pane_id,
+                            lines,
+                            full_output,
+                            from_cursor,
+                        )),
+                        PaneCmd::State { pane_id } => {
+                            std::process::exit(cli::pane_state_cli(pane_id))
+                        }
+                        PaneCmd::Slot { cmd } => match cmd {
+                            PaneSlotCmd::Write {
                                 name,
-                                down,
-                                left,
-                                up,
-                                right,
-                                tab,
-                                window,
-                                overlay,
-                                from,
-                                ephemeral,
-                                no_focus,
-                                cwd,
+                                content,
+                                pane_id,
+                                append,
+                                replace,
                             } => {
-                                let layout = if down {
-                                    "split_v"
-                                } else if left {
-                                    "split_left"
-                                } else if up {
-                                    "split_above"
-                                } else if right {
-                                    "split_h"
-                                } else if tab {
-                                    "tab"
-                                } else if window {
-                                    "new_window"
-                                } else if overlay {
-                                    "overlay"
-                                } else {
-                                    "split_h"
-                                };
-                                std::process::exit(cli::pane_new_cli(
-                                    cmd.as_deref(),
-                                    name.as_deref(),
-                                    Some(layout),
-                                    from,
-                                    cwd.as_deref(),
-                                    ephemeral,
-                                    no_focus,
-                                    None,
-                                    &[],
-                                    &[],
+                                std::process::exit(cli::pane_slot_write_cli(
+                                    &name,
+                                    content.as_deref(),
+                                    append,
+                                    replace,
+                                    pane_id,
                                 ));
                             }
+                            PaneSlotCmd::Read { name, pane_id } => {
+                                std::process::exit(cli::pane_slot_read_cli(&name, pane_id))
+                            }
+                            PaneSlotCmd::List { pane_id } => {
+                                std::process::exit(cli::pane_slot_list_cli(pane_id))
+                            }
+                            PaneSlotCmd::Delete { name, pane_id } => {
+                                std::process::exit(cli::pane_slot_delete_cli(&name, pane_id))
+                            }
+                        },
+                        PaneCmd::New {
+                            cmd,
+                            name,
+                            down,
+                            left,
+                            up,
+                            right,
+                            tab,
+                            window,
+                            overlay,
+                            from,
+                            ephemeral,
+                            no_focus,
+                            cwd,
+                        } => {
+                            let layout = if down {
+                                "split_v"
+                            } else if left {
+                                "split_left"
+                            } else if up {
+                                "split_above"
+                            } else if right {
+                                "split_h"
+                            } else if tab {
+                                "tab"
+                            } else if window {
+                                "new_window"
+                            } else if overlay {
+                                "overlay"
+                            } else {
+                                "split_h"
+                            };
+                            std::process::exit(cli::pane_new_cli(
+                                cmd.as_deref(),
+                                name.as_deref(),
+                                Some(layout),
+                                from,
+                                cwd.as_deref(),
+                                ephemeral,
+                                no_focus,
+                                None,
+                                &[],
+                                &[],
+                            ));
                         }
-                    }
+                    },
                     Commands::Events { cmd } => match cmd {
                         EventsCmd::Subscribe {
                             app_id,
@@ -963,12 +962,8 @@ fn main() -> eframe::Result {
                             rollback_token: rollback_token.as_deref(),
                             changed_resources: &changed_resources,
                         })),
-                        EventsCmd::List { json } => {
-                            std::process::exit(cli::events_list_cli(json))
-                        }
-                        EventsCmd::McpConfig => {
-                            std::process::exit(cli::events_mcp_config_cli())
-                        }
+                        EventsCmd::List { json } => std::process::exit(cli::events_list_cli(json)),
+                        EventsCmd::McpConfig => std::process::exit(cli::events_mcp_config_cli()),
                     },
                     Commands::CompleteOpen { prefix } => {
                         std::process::exit(cli::complete_open_cli(&prefix));
@@ -1178,7 +1173,13 @@ fn main() -> eframe::Result {
     let heartbeat_ctx = crate::platform::logging::new_heartbeat_ctx_slot();
     crate::platform::logging::spawn_heartbeat(frame_tick.clone(), heartbeat_ctx.clone());
 
+    log::info!("ui_stack: egui=0.34.3 renderer=wgpu");
+
     let native_options = eframe::NativeOptions {
+        // eframe 0.34 split root close into CloseRequested followed by Exit.
+        // On macOS its run-on-demand loop can stall between those events after
+        // destroying the window, leaving a headless process behind.
+        run_and_return: false,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([400.0, 300.0])

@@ -209,13 +209,25 @@ mod tests {
     #[test]
     fn parse_alpha() {
         let t = tag("v0.1.12-alpha.3");
-        assert_eq!(t.pre, Some(Prerelease { kind: PreKind::Alpha, num: 3 }));
+        assert_eq!(
+            t.pre,
+            Some(Prerelease {
+                kind: PreKind::Alpha,
+                num: 3
+            })
+        );
     }
 
     #[test]
     fn parse_beta() {
         let t = tag("v0.1.12-beta.1");
-        assert_eq!(t.pre, Some(Prerelease { kind: PreKind::Beta, num: 1 }));
+        assert_eq!(
+            t.pre,
+            Some(Prerelease {
+                kind: PreKind::Beta,
+                num: 1
+            })
+        );
     }
 
     #[test]
@@ -274,15 +286,34 @@ mod tests {
 
     #[test]
     fn from_binary_name() {
-        assert_eq!(UpdateChannel::from_binary_name("plexi"), UpdateChannel::Stable);
-        assert_eq!(UpdateChannel::from_binary_name("plexi-beta"), UpdateChannel::Beta);
-        assert_eq!(UpdateChannel::from_binary_name("plexi-alpha"), UpdateChannel::Alpha);
-        assert_eq!(UpdateChannel::from_binary_name("plexi-pr-123"), UpdateChannel::Alpha);
-        assert_eq!(UpdateChannel::from_binary_name("plexi-rc-010"), UpdateChannel::Stable);
+        assert_eq!(
+            UpdateChannel::from_binary_name("plexi"),
+            UpdateChannel::Stable
+        );
+        assert_eq!(
+            UpdateChannel::from_binary_name("plexi-beta"),
+            UpdateChannel::Beta
+        );
+        assert_eq!(
+            UpdateChannel::from_binary_name("plexi-alpha"),
+            UpdateChannel::Alpha
+        );
+        assert_eq!(
+            UpdateChannel::from_binary_name("plexi-pr-123"),
+            UpdateChannel::Alpha
+        );
+        assert_eq!(
+            UpdateChannel::from_binary_name("plexi-rc-010"),
+            UpdateChannel::Stable
+        );
     }
 
     fn rel(t: &str) -> GithubRelease {
-        GithubRelease { tag_name: t.to_string(), prerelease: false, draft: false }
+        GithubRelease {
+            tag_name: t.to_string(),
+            prerelease: false,
+            draft: false,
+        }
     }
 
     #[test]

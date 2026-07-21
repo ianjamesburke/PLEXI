@@ -1244,8 +1244,6 @@ mod tests {
         );
     }
 
-
-
     #[test]
     fn text_drawcommand_missing_selectable_fails_deserialise() {
         // No `selectable` field — must fail because the field is required
@@ -2203,10 +2201,7 @@ mod tests {
     fn set_pane_title_deserializes() {
         let json = r#"{"type":"set_pane_title","pane_id":42,"name":"my label"}"#;
         let cmd: AppRequest = serde_json::from_str(json).unwrap();
-        assert!(matches!(
-            cmd,
-            AppRequest::SetPaneTitle { pane_id: 42, .. }
-        ));
+        assert!(matches!(cmd, AppRequest::SetPaneTitle { pane_id: 42, .. }));
     }
 
     #[test]
@@ -2380,8 +2375,7 @@ mod tests {
 
         // None should be omitted from serialised output.
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: AppRequest =
-            serde_json::from_str(json_absent).expect("deserialise absent");
+        let cmd_absent: AppRequest = serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
             AppRequest::SpawnPane { workspace_root, .. } => {
                 assert!(
@@ -2415,8 +2409,7 @@ mod tests {
         );
 
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: AppRequest =
-            serde_json::from_str(json_absent).expect("deserialise absent");
+        let cmd_absent: AppRequest = serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
             AppRequest::SpawnPane { name, .. } => {
                 assert!(name.is_none(), "absent name must deserialise to None");
@@ -2737,8 +2730,6 @@ mod tests {
         );
     }
 
-
-
     #[test]
     fn set_context_description_round_trips_serde() {
         let json = r#"{"type":"set_context_description","description":"Main project workspace"}"#;
@@ -2810,8 +2801,6 @@ mod tests {
         assert!(result.is_err(), "must fail without required height field");
     }
 
-
-
     #[test]
     fn measure_text_wrapped_missing_required_field_fails_deserialise() {
         // No `max_width` field — required, must fail.
@@ -2824,7 +2813,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn avatar_missing_required_field_fails_deserialise() {
         // No `radius` — required, must fail.
@@ -2832,14 +2820,6 @@ mod tests {
         let result: Result<AppRequest, _> = serde_json::from_str(json);
         assert!(result.is_err(), "must fail without required radius field");
     }
-
-
-
-
-
-
-
-
 
     #[test]
     fn list_select_event_round_trips_serde() {

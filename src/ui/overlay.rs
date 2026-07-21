@@ -118,7 +118,7 @@ impl<'a> ModalShell<'a> {
         let mut dismissed = self.escape
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
 
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         if self.scrim_strength > 0.0 {
             let alpha = (self.scrim_strength * 255.0).round() as u8;
             // Scrim sits one layer below the modal so an elevated modal

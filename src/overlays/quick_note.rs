@@ -83,7 +83,7 @@ impl PlexiApp {
             return;
         }
 
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
 
         // Modal — grows from ~25% to ~80% of screen height as the user types.
         let modal_w = (screen_rect.width() * 0.72).min(864.0).max(480.0);
@@ -112,7 +112,11 @@ impl PlexiApp {
                             egui::Id::new("quick_note_text"),
                             RichText::new("What's on your mind?").size(style::TEXT_BODY),
                         )
-                        .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::QuickNote)))
+                        .surface(crate::ui::focus::SurfaceKey::Overlay(
+                            crate::app::input_owner::OverlaySurface::Layer(
+                                crate::app::FocusKind::QuickNote,
+                            ),
+                        ))
                         .monospace(style::TEXT_BODY)
                         .text_color(self.colors.text_primary)
                         .hint_color(self.colors.text_dim.linear_multiply(0.3))

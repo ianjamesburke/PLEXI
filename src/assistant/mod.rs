@@ -276,7 +276,8 @@ mod render_detail_tests {
 
     #[test]
     fn file_edit_diffs_are_lifted_and_everything_else_is_ignored() {
-        let output = r#"{"ok": true, "path": "x", "diff": "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n"}"#;
+        let output =
+            r#"{"ok": true, "path": "x", "diff": "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n"}"#;
         let detail = tool_render_detail(super::HOST_TOOL_FILES_EDIT, Some(output)).unwrap();
         assert!(detail.starts_with("--- a/x"));
         assert!(tool_render_detail(super::HOST_TOOL_FILES_WRITE, Some(output)).is_some());
@@ -299,7 +300,8 @@ mod output_preview_tests {
 
     #[test]
     fn lifts_string_fields_with_real_newlines_and_falls_back_to_raw_json() {
-        let output = r#"{"ok": true, "exit_code": 1, "stdout": "line one\nline two", "stderr": "boom"}"#;
+        let output =
+            r#"{"ok": true, "exit_code": 1, "stdout": "line one\nline two", "stderr": "boom"}"#;
         let preview = tool_output_preview(output);
         assert_eq!(preview, "stdout: line one\nline two\nstderr: boom");
 
@@ -309,8 +311,7 @@ mod output_preview_tests {
         assert!(pretty.contains("\"count\": 3"));
 
         // Input detail: one key per line, string values unquoted.
-        let detail =
-            super::tool_input_detail(r#"{"path": "/tmp/x.py", "sizes": [480, 320]}"#);
+        let detail = super::tool_input_detail(r#"{"path": "/tmp/x.py", "sizes": [480, 320]}"#);
         assert_eq!(detail, "path: /tmp/x.py\nsizes: [480,320]");
 
         // Oversized output keeps head and tail lines around a marker line.
@@ -1533,7 +1534,10 @@ impl AssistantApp {
         let selected_skill = self.pending_skill.take().or_else(|| {
             self.skill_registry
                 .matching_enabled(&prompt, &agent.skills)
-                .or_else(|| self.skill_registry.app_build_fallback(&prompt, &agent.skills))
+                .or_else(|| {
+                    self.skill_registry
+                        .app_build_fallback(&prompt, &agent.skills)
+                })
                 .cloned()
         });
         // Session tier, with a skill-declared floor (stint 0459): a skill that
@@ -1580,18 +1584,17 @@ impl AssistantApp {
             if is_app_build_turn {
                 // Placement is knowable host-side; telling the model up front
                 // saves the guaranteed-failed `app init` probe (stint 0465).
-                let placement = match crate::app::registry::resolve_workspace_root(
-                    &self.workspace_root,
-                ) {
-                    Some(root) => format!(
-                        "\n\nApp placement: this session has a Plexi workspace at {} — \
+                let placement =
+                    match crate::app::registry::resolve_workspace_root(&self.workspace_root) {
+                        Some(root) => format!(
+                            "\n\nApp placement: this session has a Plexi workspace at {} — \
                          `app init <name>` with no flag creates a hot-reloading workspace app.",
-                        root.display()
-                    ),
-                    None => "\n\nApp placement: no Plexi workspace exists in this session's \
+                            root.display()
+                        ),
+                        None => "\n\nApp placement: no Plexi workspace exists in this session's \
                              directory — pass --global to `app init` on the first call."
-                        .to_string(),
-                };
+                            .to_string(),
+                    };
                 log::info!(
                     "assistant[{conversation_id}]: app-build placement — {}",
                     placement.trim_start()
@@ -3173,12 +3176,12 @@ impl AssistantApp {
             if current.get(&row.target_id) == Some(&row.decision) {
                 continue;
             }
-            let actor_id = if row.target_id.starts_with("app.") || row.target_id.starts_with("host.")
-            {
-                self.connector_actor().0
-            } else {
-                ASSISTANT_ACTOR_ID.to_string()
-            };
+            let actor_id =
+                if row.target_id.starts_with("app.") || row.target_id.starts_with("host.") {
+                    self.connector_actor().0
+                } else {
+                    ASSISTANT_ACTOR_ID.to_string()
+                };
             match row.decision {
                 Decision::Ask => {
                     let removed =
@@ -3557,8 +3560,7 @@ mod tests {
         let broker = Arc::new(CapturingBroker::default());
         let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path());
 
-        app.model.composer =
-            "Build me a tiny counter app with plus and minus buttons".to_string();
+        app.model.composer = "Build me a tiny counter app with plus and minus buttons".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
         wait_for_turn(&mut app);
@@ -3566,7 +3568,9 @@ mod tests {
         let seen = broker.seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "turn must have dispatched exactly once");
         assert!(
-            seen[0].system.contains("Generated by tools/gen_sdk_docs.py"),
+            seen[0]
+                .system
+                .contains("Generated by tools/gen_sdk_docs.py"),
             "SDK reference must be injected for this build prompt"
         );
         assert_eq!(
@@ -4559,11 +4563,9 @@ enabled = ["allowed.tool"]
             .expect("grant still persisted after set-to-block");
         assert_eq!(record.decision, Decision::Deny);
 
-        let audited = app
-            .audit
-            .tail(5)
-            .into_iter()
-            .any(|e| e.kind == "permission_set" && e.target == "app.view.tool" && e.decision == "deny");
+        let audited = app.audit.tail(5).into_iter().any(|e| {
+            e.kind == "permission_set" && e.target == "app.view.tool" && e.decision == "deny"
+        });
         assert!(audited, "block change must be audited");
     }
 
@@ -5324,7 +5326,10 @@ enabled = ["allowed.tool"]
 
         // The picker opens with the cursor on the resolved tier (low, index 0)
         // and the current agent listed. No text row is pushed.
-        assert!(app.model.turns.is_empty(), "picker opens instead of a text row");
+        assert!(
+            app.model.turns.is_empty(),
+            "picker opens instead of a text row"
+        );
         let AssistantOverlay::ModelPicker {
             selected,
             current_tier,
@@ -5522,8 +5527,8 @@ enabled = ["allowed.tool"]
 
         let egui_ctx = egui::Context::default();
         let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
-        let _ = egui_ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = egui_ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
                 let render_ctx = AppRenderContext {
                     colors: &colors,
                     pane_id: 1,

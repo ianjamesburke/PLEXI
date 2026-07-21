@@ -1550,14 +1550,8 @@ mod tests {
 
     #[test]
     fn global_socket_override_parses_after_subcommand() {
-        let cli = Cli::try_parse_from([
-            "plexi",
-            "pane",
-            "list",
-            "--socket",
-            "/tmp/explicit.sock",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["plexi", "pane", "list", "--socket", "/tmp/explicit.sock"])
+            .unwrap();
 
         assert_eq!(
             cli.socket,

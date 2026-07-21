@@ -147,7 +147,10 @@ fn send_and_read_reply(payload: serde_json::Value) -> i32 {
     match serde_json::from_str::<serde_json::Value>(reply) {
         Ok(val) => match val["type"].as_str() {
             Some("error") => {
-                eprintln!("error: {}", val["message"].as_str().unwrap_or("unknown error"));
+                eprintln!(
+                    "error: {}",
+                    val["message"].as_str().unwrap_or("unknown error")
+                );
                 1
             }
             _ => {

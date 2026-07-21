@@ -197,4 +197,3 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
     }
     resp
 }
-

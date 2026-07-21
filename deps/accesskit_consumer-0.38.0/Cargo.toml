@@ -10,12 +10,13 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
-rust-version = "1.75"
+edition = "2024"
+rust-version = "1.85"
 name = "accesskit_consumer"
-version = "0.26.0"
+version = "0.38.0"
 authors = ["The AccessKit contributors"]
 build = false
+autolib = false
 autobins = false
 autoexamples = false
 autotests = false
@@ -30,18 +31,16 @@ keywords = [
 categories = ["gui"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/AccessKit/accesskit"
+resolver = "2"
 
 [lib]
 name = "accesskit_consumer"
 path = "src/lib.rs"
 
 [dependencies.accesskit]
-version = "0.17.1"
+version = "0.24.1"
 
 [dependencies.hashbrown]
-version = "0.15"
+version = "0.16"
 features = ["default-hasher"]
 default-features = false
-
-[dependencies.immutable-chunkmap]
-version = "2.0.6"

@@ -118,7 +118,10 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn notes_picker_handle_key(&mut self, input: &mut crate::app::input_router::PlexiInput) {
+    pub(crate) fn notes_picker_handle_key(
+        &mut self,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) {
         let visible = self.notes_picker_filtered().len();
 
         #[derive(Clone, Copy)]
@@ -256,7 +259,7 @@ impl PlexiApp {
 
         let mut query = self.notes_picker_query.clone();
 
-        let list_max_h = ((ctx.screen_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
+        let list_max_h = ((ctx.content_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
 
         let modal_response = ModalShell::centered("notes_picker")
             .title("Notes")
@@ -265,7 +268,11 @@ impl PlexiApp {
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("notes_picker_search");
                 let te = TextField::singleline(te_id, "Search notes…")
-                    .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::NotesPicker)))
+                    .surface(crate::ui::focus::SurfaceKey::Overlay(
+                        crate::app::input_owner::OverlaySurface::Layer(
+                            crate::app::FocusKind::NotesPicker,
+                        ),
+                    ))
                     .log_name("notes_picker_search")
                     .show(ui, &mut query, &colors);
                 if te.changed() {

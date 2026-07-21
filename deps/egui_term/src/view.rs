@@ -823,17 +823,19 @@ impl<'a> TerminalView<'a> {
                     continue;
                 }
 
-                shapes.push(Shape::text(
-                    &painter.fonts(|c| c.clone()),
-                    Pos2 {
-                        x: cell_rect.center().x,
-                        y: cell_rect.min.y,
-                    },
-                    Align2::CENTER_TOP,
-                    indexed.c,
-                    self.font.font_type(),
-                    glyph_fg,
-                ));
+                shapes.push(painter.fonts_mut(|fonts| {
+                    Shape::text(
+                        fonts,
+                        Pos2 {
+                            x: cell_rect.center().x,
+                            y: cell_rect.min.y,
+                        },
+                        Align2::CENTER_TOP,
+                        indexed.c,
+                        self.font.font_type(),
+                        glyph_fg,
+                    )
+                }));
             }
         }
 
@@ -1578,8 +1580,7 @@ fn process_search_mode_event(
             recompile_search(sm, backend);
         },
         // Absorb all other key events to prevent them reaching the PTY
-        egui::Event::Key { .. } | egui::Event::Copy => {
-        },
+        egui::Event::Key { .. } | egui::Event::Copy => {},
         _ => {},
     }
 

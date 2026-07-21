@@ -3,32 +3,96 @@ use std::path::PathBuf;
 
 /// Static registry of all known config keys: (dotted_key, type_name, description).
 pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
-    ("config_version", "integer", "Config schema version (managed automatically)"),
+    (
+        "config_version",
+        "integer",
+        "Config schema version (managed automatically)",
+    ),
     ("font_size", "float", "UI font size in points"),
-    ("pane_gap", "float", "Inter-pane gap width in pixels (clamped 0–20, default 4)"),
-    ("pane_title_font_size", "float", "Pane title bar font size (clamped 6–32, default 11)"),
-    ("osc_pane_title", "bool", "Apply OSC 0/1/2 title sequences as pane names (default true)"),
-    ("theme_preset", "string", "Active theme preset name (e.g. dracula, nord, solarized-dark)"),
-    ("confirm_quit", "bool", "Triple-press Cmd+Q confirmation before quitting (default true)"),
-    ("confirm_close", "bool", "Confirmation dialog before closing a pane (default true)"),
-    ("confirm_context_close", "bool", "Confirmation dialog before closing a context (default true)"),
-    ("focus_history_depth", "integer", "Number of focus history entries to retain"),
+    (
+        "pane_gap",
+        "float",
+        "Inter-pane gap width in pixels (clamped 0–20, default 4)",
+    ),
+    (
+        "pane_title_font_size",
+        "float",
+        "Pane title bar font size (clamped 6–32, default 11)",
+    ),
+    (
+        "osc_pane_title",
+        "bool",
+        "Apply OSC 0/1/2 title sequences as pane names (default true)",
+    ),
+    (
+        "theme_preset",
+        "string",
+        "Active theme preset name (e.g. dracula, nord, solarized-dark)",
+    ),
+    (
+        "confirm_quit",
+        "bool",
+        "Triple-press Cmd+Q confirmation before quitting (default true)",
+    ),
+    (
+        "confirm_close",
+        "bool",
+        "Confirmation dialog before closing a pane (default true)",
+    ),
+    (
+        "confirm_context_close",
+        "bool",
+        "Confirmation dialog before closing a context (default true)",
+    ),
+    (
+        "focus_history_depth",
+        "integer",
+        "Number of focus history entries to retain",
+    ),
     // theme.*
-    ("theme.preset", "string", "Theme preset applied first; individual color fields override"),
-    ("theme.bg_darkest", "string", "Darkest background color (#rrggbb)"),
+    (
+        "theme.preset",
+        "string",
+        "Theme preset applied first; individual color fields override",
+    ),
+    (
+        "theme.bg_darkest",
+        "string",
+        "Darkest background color (#rrggbb)",
+    ),
     ("theme.bg_sidebar", "string", "Sidebar background color"),
     ("theme.bg_toolbar", "string", "Toolbar background color"),
-    ("theme.terminal_bg", "string", "Terminal pane background color"),
+    (
+        "theme.terminal_bg",
+        "string",
+        "Terminal pane background color",
+    ),
     ("theme.bg_hover", "string", "Hover state background color"),
-    ("theme.bg_sidebar_hover", "string", "Sidebar hover background color"),
-    ("theme.bg_active", "string", "Active/selected element background color"),
+    (
+        "theme.bg_sidebar_hover",
+        "string",
+        "Sidebar hover background color",
+    ),
+    (
+        "theme.bg_active",
+        "string",
+        "Active/selected element background color",
+    ),
     ("theme.text_primary", "string", "Primary text color"),
     ("theme.text_dim", "string", "Dimmed text color"),
     ("theme.text_section", "string", "Section header text color"),
     ("theme.accent", "string", "Accent/highlight color"),
     ("theme.border", "string", "Border color"),
-    ("theme.foreground", "string", "Terminal foreground (ANSI default)"),
-    ("theme.background", "string", "Terminal background (ANSI default)"),
+    (
+        "theme.foreground",
+        "string",
+        "Terminal foreground (ANSI default)",
+    ),
+    (
+        "theme.background",
+        "string",
+        "Terminal background (ANSI default)",
+    ),
     ("theme.black", "string", "ANSI black"),
     ("theme.red", "string", "ANSI red"),
     ("theme.green", "string", "ANSI green"),
@@ -45,47 +109,151 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     ("theme.bright_magenta", "string", "ANSI bright magenta"),
     ("theme.bright_cyan", "string", "ANSI bright cyan"),
     ("theme.bright_white", "string", "ANSI bright white"),
-    ("theme.bright_foreground", "string", "ANSI bright foreground"),
-    ("theme.pip_working", "string", "Activity pip color when working"),
+    (
+        "theme.bright_foreground",
+        "string",
+        "ANSI bright foreground",
+    ),
+    (
+        "theme.pip_working",
+        "string",
+        "Activity pip color when working",
+    ),
     ("theme.pip_idle", "string", "Activity pip color when idle"),
-    ("theme.pip_blocked", "string", "Activity pip color when blocked"),
-    ("theme.pip_dim", "float", "Opacity multiplier for unfocused pips (default 0.45)"),
+    (
+        "theme.pip_blocked",
+        "string",
+        "Activity pip color when blocked",
+    ),
+    (
+        "theme.pip_dim",
+        "float",
+        "Opacity multiplier for unfocused pips (default 0.45)",
+    ),
     // effects.*
     ("effects.crt", "bool", "CRT scanline overlay effect"),
     ("effects.ghost", "bool", "Ghost (unfocused pane dim) effect"),
-    ("effects.ghost_opacity", "float", "Opacity for unfocused panes when ghost enabled (0–1, default 0.75)"),
+    (
+        "effects.ghost_opacity",
+        "float",
+        "Opacity for unfocused panes when ghost enabled (0–1, default 0.75)",
+    ),
     // log.*
     ("log.level", "string", "Log level: error, warn, info, debug"),
-    ("log.retention_days", "integer", "How many days to retain log files"),
+    (
+        "log.retention_days",
+        "integer",
+        "How many days to retain log files",
+    ),
     // notifications.*
-    ("notifications.enabled", "bool", "Master notification switch (default true)"),
-    ("notifications.focus_mode", "bool", "Suppress all notification auto-open when true (default false)"),
-    ("notifications.interrupt_threshold", "integer", "Min priority to auto-open the modal (default 100)"),
+    (
+        "notifications.enabled",
+        "bool",
+        "Master notification switch (default true)",
+    ),
+    (
+        "notifications.focus_mode",
+        "bool",
+        "Suppress all notification auto-open when true (default false)",
+    ),
+    (
+        "notifications.interrupt_threshold",
+        "integer",
+        "Min priority to auto-open the modal (default 100)",
+    ),
     // agents.*
     ("agents.low", "string", "Command for low-tier agent tasks"),
-    ("agents.medium", "string", "Command for medium-tier agent tasks"),
+    (
+        "agents.medium",
+        "string",
+        "Command for medium-tier agent tasks",
+    ),
     ("agents.high", "string", "Command for high-tier agent tasks"),
     // ai.*
-    ("ai.backend", "string", "AI backend: openrouter (default) or ollama"),
-    ("ai.per_app_daily_usd", "float", "Per-app daily spend cap in USD (default 1.00)"),
-    ("ai.global_daily_usd", "float", "Global daily spend cap in USD (default 10.00)"),
-    ("ai.openrouter.api_key_env", "string", "Env var for OpenRouter API key (default OPENROUTER_API_KEY)"),
-    ("ai.openrouter.model_low", "string", "OpenRouter low-tier model"),
-    ("ai.openrouter.model_medium", "string", "OpenRouter medium-tier model"),
-    ("ai.openrouter.model_high", "string", "OpenRouter high-tier model"),
-    ("ai.ollama.host", "string", "Ollama host URL (default http://localhost:11434)"),
+    (
+        "ai.backend",
+        "string",
+        "AI backend: openrouter (default) or ollama",
+    ),
+    (
+        "ai.per_app_daily_usd",
+        "float",
+        "Per-app daily spend cap in USD (default 1.00)",
+    ),
+    (
+        "ai.global_daily_usd",
+        "float",
+        "Global daily spend cap in USD (default 10.00)",
+    ),
+    (
+        "ai.openrouter.api_key_env",
+        "string",
+        "Env var for OpenRouter API key (default OPENROUTER_API_KEY)",
+    ),
+    (
+        "ai.openrouter.model_low",
+        "string",
+        "OpenRouter low-tier model",
+    ),
+    (
+        "ai.openrouter.model_medium",
+        "string",
+        "OpenRouter medium-tier model",
+    ),
+    (
+        "ai.openrouter.model_high",
+        "string",
+        "OpenRouter high-tier model",
+    ),
+    (
+        "ai.ollama.host",
+        "string",
+        "Ollama host URL (default http://localhost:11434)",
+    ),
     ("ai.ollama.model_low", "string", "Ollama low-tier model"),
-    ("ai.ollama.model_medium", "string", "Ollama medium-tier model"),
+    (
+        "ai.ollama.model_medium",
+        "string",
+        "Ollama medium-tier model",
+    ),
     ("ai.ollama.model_high", "string", "Ollama high-tier model"),
     // cli.*
-    ("cli.tips", "bool", "Print contextual tips after CLI commands (default true)"),
+    (
+        "cli.tips",
+        "bool",
+        "Print contextual tips after CLI commands (default true)",
+    ),
     // marketplace.*
-    ("marketplace.registry_url", "string", "Override catalog index URL"),
-    ("marketplace.cdn_url", "string", "Override package CDN base URL"),
-    ("marketplace.submit_url", "string", "Publisher submission endpoint"),
-    ("marketplace.account_backend", "string", "Account/auth backend selector (\"plexi\" to enable)"),
-    ("marketplace.account_url", "string", "Accounts service base URL (default plexiapp.com)"),
-    ("marketplace.account_email", "string", "Default email for plexi account login"),
+    (
+        "marketplace.registry_url",
+        "string",
+        "Override catalog index URL",
+    ),
+    (
+        "marketplace.cdn_url",
+        "string",
+        "Override package CDN base URL",
+    ),
+    (
+        "marketplace.submit_url",
+        "string",
+        "Publisher submission endpoint",
+    ),
+    (
+        "marketplace.account_backend",
+        "string",
+        "Account/auth backend selector (\"plexi\" to enable)",
+    ),
+    (
+        "marketplace.account_url",
+        "string",
+        "Accounts service base URL (default plexiapp.com)",
+    ),
+    (
+        "marketplace.account_email",
+        "string",
+        "Default email for plexi account login",
+    ),
 ];
 
 pub fn config_check(scope: ConfigScope) -> i32 {
@@ -512,7 +680,10 @@ pub fn config_set(pairs: &[String], scope: ConfigScope) -> i32 {
 
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("error: could not create config dir {}: {e}", parent.display());
+            eprintln!(
+                "error: could not create config dir {}: {e}",
+                parent.display()
+            );
             return 1;
         }
     }
@@ -537,10 +708,7 @@ fn resolve_dotted_key<'a>(root: &'a toml::Value, key: &str) -> Option<&'a toml::
 }
 
 /// Parse a string value into the correct TOML edit value based on the key's declared type.
-fn parse_value_for_type(
-    raw: &str,
-    type_name: Option<&str>,
-) -> Result<toml_edit::Value, String> {
+fn parse_value_for_type(raw: &str, type_name: Option<&str>) -> Result<toml_edit::Value, String> {
     match type_name {
         Some("bool") => raw
             .parse::<bool>()

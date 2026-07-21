@@ -30,7 +30,7 @@ pub(crate) fn key_chip(
     font_id: egui::FontId,
 ) -> egui::Response {
     let fg = shortcut_key_color(colors);
-    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, fg));
+    let galley = ui.fonts_mut(|f| f.layout_no_wrap(label.to_string(), font_id, fg));
     let text_w = galley.size().x;
     let text_h = galley.size().y;
     let chip_h = text_h + style::KEYCHIP_PAD_V * 2.0;
@@ -107,7 +107,7 @@ pub(crate) fn key_combo_list_width(
     trailing: Option<&str>,
 ) -> f32 {
     let measure = |text: &str, font: egui::FontId| {
-        ui.fonts(|f| f.layout_no_wrap(text.to_string(), font, Color32::WHITE))
+        ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font, Color32::WHITE))
             .size()
     };
     let mut w = 0.0;

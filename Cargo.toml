@@ -27,11 +27,15 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
-egui = { version = "0.31", features = ["accesskit"] }
-egui_kittest = { version = "0.31", features = ["wgpu", "eframe"] }
-eframe = { version = "0.31", default-features = false, features = ["default_fonts", "wgpu", "accesskit"] }
-egui_extras = "0.31"
-egui_tiles = { version = "0.12.0", features = ["serde"] }
+# Keep the core egui crates on one patch generation; their renderer and test
+# types cross crate boundaries and cannot tolerate duplicate generations.
+egui = "0.34.3"
+egui_kittest = { version = "0.34.3", features = ["wgpu", "eframe"] }
+eframe = { version = "0.34.3", default-features = false, features = ["default_fonts", "wgpu", "accesskit"] }
+egui_extras = "0.34.3"
+egui_tiles = { version = "0.15.0", features = ["serde"] }
+# Vendored because Plexi's terminal owns keyboard focus and input extraction;
+# upstream egui_term still routes those events through egui's shared queue.
 egui_term = { path = "deps/egui_term" }
 dirs = "6"
 fern = "0.7"
@@ -69,13 +73,13 @@ rodio = "0.22"
 # `macos_fsevent` is the recommended backend (kqueue is the alt, slower for
 # nested dirs). default-features disabled to avoid pulling crossbeam-channel.
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
-egui_commonmark = "0.20"
+egui_commonmark = "0.23.0"
 # Native file picker dialog (#514). Uses NSOpenPanel on macOS.
 rfd = "0.17"
 # Headless app render (#850). Already transitive via eframe; declared directly for explicit use.
 pollster = "0.4"
-wgpu = { version = "24", default-features = false, features = ["wgsl", "metal"] }
-egui-wgpu = "0.31"
+wgpu = { version = "29", default-features = false, features = ["wgsl", "metal"] }
+egui-wgpu = "0.34.3"
 taffy = "0.5"
 # Single-app package artifact `.plexipkg` (stint 0015): gzipped tar + sha256 manifest.
 tar = "0.4"
@@ -131,7 +135,9 @@ objc2-core-foundation = { version = "0.3", features = [
 tempfile = "3"
 
 [patch.crates-io]
-accesskit_consumer = { path = "deps/accesskit_consumer-0.26.0" }
-# Vendored to add comfortable internal padding to fenced code blocks; upstream
-# 0.20 hardcodes egui's default 4x2 TextEdit margin with no public override.
-egui_commonmark_backend = { path = "deps/egui_commonmark_backend-0.20.0" }
+# Vendored because accesskit_consumer 0.38 still panics when a root-change
+# update removes the stale focused node before global validation.
+accesskit_consumer = { path = "deps/accesskit_consumer-0.38.0" }
+# Vendored because upstream 0.23 still hardcodes egui's compact TextEdit margin,
+# always shows a transparent copy button over code, and omits link underlines.
+egui_commonmark_backend = { path = "deps/egui_commonmark_backend-0.23.0" }

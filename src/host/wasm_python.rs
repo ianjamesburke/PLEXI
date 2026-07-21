@@ -474,7 +474,9 @@ impl WasmPythonRuntime {
     /// boot). Buffered stdout may still hold undrained messages after this
     /// turns true — drain once more before treating the guest as gone.
     pub fn is_finished(&self) -> bool {
-        self.thread.as_ref().is_none_or(std::thread::JoinHandle::is_finished)
+        self.thread
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
     }
 }
 
@@ -592,16 +594,19 @@ impl HeadlessPythonSession {
                         "tree_delta received before any full tree".to_string(),
                     )
                 })?;
-                let changed = message.get("changed").and_then(Value::as_array).ok_or_else(|| {
-                    WasmPythonError::BridgeJson("tree_delta missing 'changed' array".to_string())
-                })?;
+                let changed = message
+                    .get("changed")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        WasmPythonError::BridgeJson(
+                            "tree_delta missing 'changed' array".to_string(),
+                        )
+                    })?;
                 apply_tree_delta(base, changed)?
             }
             _ => {
                 let raw = message.get("tree").ok_or_else(|| {
-                    WasmPythonError::BridgeJson(
-                        "component_tree message missing 'tree'".to_string(),
-                    )
+                    WasmPythonError::BridgeJson("component_tree message missing 'tree'".to_string())
                 })?;
                 decode_python_ui_tree_value(raw)?
             }
@@ -754,11 +759,7 @@ impl PythonOutputDecoder {
                 decode_loop(thread_stdout, stdin, app_id, tx, repaint);
             })
             .ok();
-        Self {
-            rx,
-            thread,
-            stdout,
-        }
+        Self { rx, thread, stdout }
     }
 }
 
@@ -807,7 +808,9 @@ fn decode_loop(
             let json_time = json_started.elapsed();
             let message_type = value.get("type").and_then(Value::as_str);
             let output = match message_type {
-                Some("component_tree") => decode_full_tree(&value, json_time, bytes, &mut last_tree),
+                Some("component_tree") => {
+                    decode_full_tree(&value, json_time, bytes, &mut last_tree)
+                }
                 Some("tree_delta") => {
                     match decode_tree_delta(&value, json_time, bytes, &last_tree) {
                         Ok(output) => {
@@ -947,14 +950,11 @@ fn apply_tree_delta(
                         "commands_changed entry is not an [index, command] pair".to_string(),
                     )
                 })?;
-                let command_index = pair
-                    .first()
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| {
-                        WasmPythonError::BridgeJson(
-                            "commands_changed entry missing integer index".to_string(),
-                        )
-                    })? as usize;
+                let command_index = pair.first().and_then(Value::as_u64).ok_or_else(|| {
+                    WasmPythonError::BridgeJson(
+                        "commands_changed entry missing integer index".to_string(),
+                    )
+                })? as usize;
                 let command_value = pair.get(1).ok_or_else(|| {
                     WasmPythonError::BridgeJson(
                         "commands_changed entry missing command payload".to_string(),
@@ -1216,7 +1216,11 @@ impl LivePythonPane {
         // to still be meaningful); the carried one is dropped in that case.
         let pending_click = pending_click.or_else(|| self.pending_click_carry.take());
         if pending_click.is_some() {
-            log::info!("app::{}: pending pane click/node-click entering render (carried={})", self.app_id, self.pending_click_carry.is_none());
+            log::info!(
+                "app::{}: pending pane click/node-click entering render (carried={})",
+                self.app_id,
+                self.pending_click_carry.is_none()
+            );
         }
         {
             let mut repaint = self.repaint.lock().unwrap_or_else(|e| e.into_inner());
@@ -1445,8 +1449,8 @@ impl LivePythonPane {
                     self.perf_json_decode += json_time;
                     self.perf_tree_decode += tree_time;
                     self.perf_stdout_bytes += bytes;
-                    let frame_id = frame_id
-                        .or_else(|| self.frame_scheduler.oldest_pending_frame_id());
+                    let frame_id =
+                        frame_id.or_else(|| self.frame_scheduler.oldest_pending_frame_id());
                     if let Some(frame_id) = frame_id {
                         self.pending_trees.insert(frame_id, tree);
                     }
@@ -1461,10 +1465,7 @@ impl LivePythonPane {
                     self.handle_message(value);
                 }
                 Ok(DecodedOutput::DecodeError(error)) => {
-                    log::error!(
-                        "app::{}: decode CPython WASM message: {error}",
-                        self.app_id
-                    );
+                    log::error!("app::{}: decode CPython WASM message: {error}", self.app_id);
                     self.error = Some(error);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -1541,7 +1542,10 @@ impl LivePythonPane {
             }
             Some("schedule_render") => {
                 let delay = std::time::Duration::from_millis(
-                    message.get("after_ms").and_then(Value::as_u64).unwrap_or(16),
+                    message
+                        .get("after_ms")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(16),
                 );
                 self.frame_scheduler
                     .request_render_after(std::time::Instant::now(), delay);
@@ -2858,7 +2862,9 @@ fn decode_python_ui_tree_value(value: &Value) -> Result<PythonUiTree, WasmPython
 /// The `CanvasFit` an encoded node maps to, or `None` when it is not a canvas.
 /// Shared by the full decode and the delta full-node-replace path so both keep
 /// `canvas_fits` consistent.
-fn canvas_fit_for_node(node: &Value) -> Result<Option<super::wasm_render::CanvasFit>, WasmPythonError> {
+fn canvas_fit_for_node(
+    node: &Value,
+) -> Result<Option<super::wasm_render::CanvasFit>, WasmPythonError> {
     let Some(data) = node.get("data") else {
         return Ok(None);
     };
@@ -3704,8 +3710,8 @@ mod tests {
     // (including `0.0`, meaning "pack flush") always wins over the default.
     #[test]
     fn container_gap_defaults_when_unset_and_explicit_value_wins() {
-        let col_default = decode_node_data(&json!({"type": "column", "children": []}))
-            .expect("decode column");
+        let col_default =
+            decode_node_data(&json!({"type": "column", "children": []})).expect("decode column");
         let UiNodeData::Column(c) = col_default else {
             panic!("expected column");
         };
@@ -3726,17 +3732,15 @@ mod tests {
             "an unset row gap must fall back to the SPACE_SM token"
         );
 
-        let col_zero =
-            decode_node_data(&json!({"type": "column", "children": [], "gap": 0.0}))
-                .expect("decode column");
+        let col_zero = decode_node_data(&json!({"type": "column", "children": [], "gap": 0.0}))
+            .expect("decode column");
         let UiNodeData::Column(c) = col_zero else {
             panic!("expected column");
         };
         assert_eq!(c.gap, 0.0, "an explicit gap=0 must pack children flush");
 
-        let row_explicit =
-            decode_node_data(&json!({"type": "row", "children": [], "gap": 20.0}))
-                .expect("decode row");
+        let row_explicit = decode_node_data(&json!({"type": "row", "children": [], "gap": 20.0}))
+            .expect("decode row");
         let UiNodeData::Row(r) = row_explicit else {
             panic!("expected row");
         };
@@ -4567,7 +4571,10 @@ execution = "cloud"
     fn full_tree_frame_decodes_with_canvas_fit() {
         let tree = decode_python_ui_tree_value(&encoded_value(FULL_TREE_JSON)).expect("full tree");
         assert_eq!(tree.tree.nodes.len(), 3);
-        assert_eq!(tree.canvas_fits.get(&2), Some(&super::super::wasm_render::CanvasFit::Fill));
+        assert_eq!(
+            tree.canvas_fits.get(&2),
+            Some(&super::super::wasm_render::CanvasFit::Fill)
+        );
     }
 
     #[test]
@@ -4666,14 +4673,18 @@ execution = "cloud"
         );
         stdout.push_bytes(b"\n");
 
-        let first = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("first frame");
+        let first = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("first frame");
         let DecodedOutput::Tree { frame_id, tree, .. } = first else {
             panic!("expected full tree frame");
         };
         assert_eq!(frame_id, Some(1));
         assert_eq!(tree.tree.nodes.len(), 3);
 
-        let second = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("second frame");
+        let second = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("second frame");
         let DecodedOutput::Tree { frame_id, tree, .. } = second else {
             panic!("expected delta-reconstructed frame");
         };
@@ -4728,7 +4739,10 @@ execution = "cloud"
         while std::time::Instant::now() < deadline {
             let mut bytes = [0_u8; 256];
             let mut read = ReadBuf::new(&mut bytes);
-            if Pin::new(&mut input).poll_read(&mut context, &mut read).is_ready() {
+            if Pin::new(&mut input)
+                .poll_read(&mut context, &mut read)
+                .is_ready()
+            {
                 let filled = read.filled();
                 if !filled.is_empty() {
                     collected.extend_from_slice(filled);
@@ -4920,7 +4934,10 @@ execution = "cloud"
 
     #[test]
     fn decode_badge_color_accepts_canonical_roles() {
-        assert!(matches!(decode_badge_color("accent"), Ok(BadgeColor::Accent)));
+        assert!(matches!(
+            decode_badge_color("accent"),
+            Ok(BadgeColor::Accent)
+        ));
         assert!(matches!(
             decode_badge_color("success"),
             Ok(BadgeColor::Success)
@@ -4929,7 +4946,10 @@ execution = "cloud"
             decode_badge_color("warning"),
             Ok(BadgeColor::Warning)
         ));
-        assert!(matches!(decode_badge_color("danger"), Ok(BadgeColor::Danger)));
+        assert!(matches!(
+            decode_badge_color("danger"),
+            Ok(BadgeColor::Danger)
+        ));
         assert!(matches!(
             decode_badge_color("neutral"),
             Ok(BadgeColor::Neutral)
@@ -4959,7 +4979,10 @@ execution = "cloud"
         let err = decode_badge_color("blue").expect_err("blue is not a badge color");
         match err {
             WasmPythonError::BridgeJson(msg) => {
-                assert!(msg.contains("blue"), "error should name the bad value: {msg}");
+                assert!(
+                    msg.contains("blue"),
+                    "error should name the bad value: {msg}"
+                );
             }
             other => panic!("expected BridgeJson error, got {other:?}"),
         }

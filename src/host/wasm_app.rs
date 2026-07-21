@@ -833,16 +833,15 @@ mod tests {
         use crate::app::permissions::{parse_capability_strings, Capability};
         use crate::app::registry::AppManifest;
 
-        let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("apps/wasm-poc/pong/manifest.toml");
+        let manifest_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/wasm-poc/pong/manifest.toml");
         let manifest_text = std::fs::read_to_string(&manifest_path)
             .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
         let manifest: AppManifest =
             toml::from_str(&manifest_text).expect("pong manifest.toml parses");
 
-        let declared_caps =
-            parse_capability_strings(&manifest.app.capabilities.capabilities)
-                .expect("pong manifest declares only known capabilities");
+        let declared_caps = parse_capability_strings(&manifest.app.capabilities.capabilities)
+            .expect("pong manifest declares only known capabilities");
 
         let grants = Grants {
             state: true,

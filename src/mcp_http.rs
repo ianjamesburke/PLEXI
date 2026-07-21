@@ -62,7 +62,11 @@ pub fn read_json_rpc_request(stream: &TcpStream, token: &str) -> std::io::Result
         return Ok(RequestOutcome::Handled);
     }
     if !is_post_mcp || content_length == 0 {
-        write_http_response(&mut write_stream, 405, b"{\"error\":\"method not allowed\"}")?;
+        write_http_response(
+            &mut write_stream,
+            405,
+            b"{\"error\":\"method not allowed\"}",
+        )?;
         return Ok(RequestOutcome::Handled);
     }
     if content_length > MAX_BODY {
@@ -83,7 +87,11 @@ pub fn read_json_rpc_request(stream: &TcpStream, token: &str) -> std::io::Result
 }
 
 /// Write a `Connection: close` HTTP/1.1 response with a JSON body.
-pub fn write_http_response(stream: &mut impl Write, status: u16, body: &[u8]) -> std::io::Result<()> {
+pub fn write_http_response(
+    stream: &mut impl Write,
+    status: u16,
+    body: &[u8],
+) -> std::io::Result<()> {
     let status_text = match status {
         200 => "OK",
         400 => "Bad Request",

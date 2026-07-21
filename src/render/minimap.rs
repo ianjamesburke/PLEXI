@@ -68,7 +68,7 @@ pub fn minimap_panel_rect(
     let grid_pixel_h = rows as f32 * (CELL_H + CELL_GAP) - CELL_GAP;
     let padding = 10.0;
 
-    let name_w = ctx.fonts(|f| {
+    let name_w = ctx.fonts_mut(|f| {
         f.layout(
             workspace_name.to_string(),
             egui::FontId::proportional(NAME_FONT_SIZE),
@@ -78,7 +78,7 @@ pub fn minimap_panel_rect(
         .size()
         .x
     });
-    let name_h = ctx.fonts(|f| {
+    let name_h = ctx.fonts_mut(|f| {
         f.layout(
             workspace_name.to_string(),
             egui::FontId::proportional(NAME_FONT_SIZE),

@@ -562,8 +562,7 @@ mod tests {
         // session's fds. A dotfiles footgun like a `sleep()` function shelling
         // out to `sudo` used to bleed `sudo: a terminal is required` onto the
         // terminal Plexi was launched from.
-        let out =
-            run_login_shell_probe("/bin/sh", &["-c", "printf out; printf err 1>&2"]).unwrap();
+        let out = run_login_shell_probe("/bin/sh", &["-c", "printf out; printf err 1>&2"]).unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "out");
         assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "err");
     }

@@ -454,12 +454,7 @@ impl CliRendererApp {
         });
     }
 
-    fn render_form(
-        &mut self,
-        ui: &mut egui::Ui,
-        colors: &crate::ui::theme::Colors,
-        pane_key: u64,
-    ) {
+    fn render_form(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors, pane_key: u64) {
         let cmd = match self.current_command() {
             Some(c) => c,
             None => {
@@ -1018,8 +1013,8 @@ mod tests {
         crate::ui::theme::setup_fonts(&ctx);
 
         let render_once = |app: &mut CliRendererApp| {
-            let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show_inside(ui, |ui| {
                     let rctx = AppRenderContext {
                         colors: &colors,
                         pane_id: 1,
@@ -1046,7 +1041,7 @@ mod tests {
     ) -> KeyDisposition {
         let ctx = egui::Context::default();
         let mut disposition = KeyDisposition::Passthrough;
-        let _ = ctx.run(
+        let _ = ctx.run_ui(
             egui::RawInput {
                 // `input.modifiers` reads from the top-level snapshot, not the
                 // per-event field — set both so the guard sees the modifier.
@@ -1060,8 +1055,8 @@ mod tests {
                 }],
                 ..Default::default()
             },
-            |ctx| {
-                let input = crate::app::input_router::PlexiInput::take_from(ctx);
+            |ui| {
+                let input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
                 disposition = app.handle_key(&input);
             },
         );
@@ -1151,10 +1146,8 @@ mod tests {
     /// `$TMPDIR/plexi-descriptor-*.json` files do not accumulate per CLI open.
     #[test]
     fn drop_removes_temp_descriptor_file() {
-        let path = std::env::temp_dir().join(format!(
-            "plexi-descriptor-{}.json",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("plexi-descriptor-{}.json", uuid::Uuid::new_v4()));
         std::fs::write(&path, FIXTURE).expect("write temp descriptor");
         assert!(path.exists());
         {

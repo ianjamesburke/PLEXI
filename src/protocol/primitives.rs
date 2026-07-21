@@ -74,7 +74,9 @@ pub struct AiTool {
 ///   - `Low`    → Haiku
 ///   - `Medium` → Sonnet
 ///   - `High`   → Opus
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelTier {
     Low,

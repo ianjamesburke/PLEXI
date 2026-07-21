@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
-rust-version = "1.81"
+edition = "2024"
+rust-version = "1.92"
 name = "egui_commonmark_backend"
-version = "0.20.0"
+version = "0.23.0"
 authors = ["Erlend Walstad"]
 build = false
 include = [
@@ -22,6 +22,7 @@ include = [
     "LICENSE-APACHE",
     "Cargo.toml",
 ]
+autolib = false
 autobins = false
 autoexamples = false
 autotests = false
@@ -37,6 +38,10 @@ categories = ["gui"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lampsitter/egui_commonmark"
 
+[features]
+better_syntax_highlighting = ["dep:syntect"]
+embedded_image = ["dep:data-url"]
+
 [lib]
 name = "egui_commonmark_backend"
 path = "src/lib.rs"
@@ -46,15 +51,15 @@ version = "0.3.1"
 optional = true
 
 [dependencies.egui]
-version = "0.31"
+version = "0.34.0"
 default-features = false
 
 [dependencies.egui_extras]
-version = "0.31"
+version = "0.34.0"
 default-features = false
 
 [dependencies.pulldown-cmark]
-version = "0.12"
+version = "0.13"
 default-features = false
 
 [dependencies.syntect]
@@ -62,7 +67,3 @@ version = "5.0.0"
 features = ["default-fancy"]
 optional = true
 default-features = false
-
-[features]
-better_syntax_highlighting = ["dep:syntect"]
-embedded_image = ["dep:data-url"]

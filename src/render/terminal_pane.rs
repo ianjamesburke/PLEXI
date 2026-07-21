@@ -64,7 +64,7 @@ pub fn render(
     if terminal.exited {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
             ui.centered_and_justified(|ui| {
                 ui.colored_label(colors.text_dim, "[process exited]");
             });

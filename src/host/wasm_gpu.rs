@@ -74,7 +74,7 @@ struct AsyncReadbackComplete {
 
 /// Nonblocking surface readback for the rare non-shared-device path.
 ///
-/// `map_async` is issued from the UI thread, but the blocking `Maintain::Wait`
+/// `map_async` is issued from the UI thread, but the blocking `PollType::Wait`
 /// poll and row packing run on a worker. The UI only drains completed images;
 /// if every staging buffer is busy it keeps displaying the most recent frame.
 struct AsyncSurfaceReadbackRing {
@@ -185,15 +185,19 @@ impl AsyncSurfaceReadbackRing {
         queue.submit(Some(encoder.finish()));
 
         let (mapped_tx, mapped_rx) = mpsc::channel();
-        slot.buffer.slice(..).map_async(wgpu::MapMode::Read, move |result| {
-            let _ = mapped_tx.send(result.map_err(|err| err.to_string()));
-        });
+        slot.buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = mapped_tx.send(result.map_err(|err| err.to_string()));
+            });
         let worker_device = device.clone();
         let worker_buffer = slot.buffer.clone();
         let completed_tx = self.completed_tx.clone();
         let padded_bytes_per_row = self.padded_bytes_per_row;
         std::thread::spawn(move || {
-            worker_device.poll(wgpu::Maintain::Wait);
+            if let Err(error) = worker_device.poll(wgpu::PollType::wait_indefinitely()) {
+                log::error!("async surface readback poll failed: {error}");
+            }
             let image = match mapped_rx.recv() {
                 Ok(Ok(())) => {
                     let mapped = worker_buffer.slice(..).get_mapped_range();
@@ -248,26 +252,25 @@ impl GpuDevice {
     /// Acquire a headless wgpu device. Errors if no adapter is available
     /// (e.g. CI without a GPU) so the caller can fail the gpu grant cleanly.
     pub fn new() -> Result<Self, String> {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
-        .ok_or("no wgpu adapter available for the gpu capability")?;
+        .map_err(|error| format!("no wgpu adapter available for the gpu capability: {error}"))?;
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("plexi-wasm-gpu"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
-                memory_hints: Default::default(),
-            },
-            None,
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("plexi-wasm-gpu"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::downlevel_defaults(),
+            memory_hints: Default::default(),
+            experimental_features: Default::default(),
+            trace: Default::default(),
+        }))
         .map_err(|e| format!("failed to acquire wgpu device: {e}"))?;
 
         Ok(Self::from_shared(device, queue))
@@ -399,7 +402,9 @@ impl GpuDevice {
         let map_start = Instant::now();
         let slice = buf.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|error| format!("buffer readback poll failed: {error}"))?;
         let map_wait_us = map_start.elapsed().as_micros();
 
         let pack_start = Instant::now();
@@ -448,8 +453,13 @@ impl GpuDevice {
         ) {
             return Err("async readback only supports rgba8 surfaces".to_string());
         }
-        self.async_surface_readbacks
-            .submit(&self.device, &self.queue, &tex.texture, tex.width, tex.height);
+        self.async_surface_readbacks.submit(
+            &self.device,
+            &self.queue,
+            &tex.texture,
+            tex.width,
+            tex.height,
+        );
         Ok(())
     }
 
@@ -508,7 +518,9 @@ impl GpuDevice {
         self.queue.submit(Some(encoder.finish()));
         let slice = staging.slice(..);
         slice.map_async(wgpu::MapMode::Read, |_| {});
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|error| format!("buffer readback poll failed: {error}"))?;
         let out = slice.get_mapped_range().to_vec();
         staging.unmap();
         Ok(out)
@@ -610,7 +622,7 @@ impl GpuDevice {
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
 
@@ -748,6 +760,7 @@ impl GpuDevice {
                 label: Some("plexi-render-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load,
@@ -757,6 +770,7 @@ impl GpuDevice {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             rpass.set_pipeline(pipeline);
             for (idx, bg) in &groups {

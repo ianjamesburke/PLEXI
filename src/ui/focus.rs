@@ -67,8 +67,7 @@ impl SurfaceRegistry {
 fn with_registry(ctx: &egui::Context, f: impl FnOnce(&mut SurfaceRegistry)) {
     let registry_id = Id::new(TEXT_SURFACE_REGISTRY_ID);
     ctx.memory_mut(|memory| {
-        let mut registry: SurfaceRegistry =
-            memory.data.get_temp(registry_id).unwrap_or_default();
+        let mut registry: SurfaceRegistry = memory.data.get_temp(registry_id).unwrap_or_default();
         f(&mut registry);
         memory.data.insert_temp(registry_id, registry);
     });

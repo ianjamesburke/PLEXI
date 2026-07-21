@@ -1813,7 +1813,7 @@ impl HeadlessBackend {
                 } else {
                     let (modifiers, k) = parse_key(&key.value)
                         .map_err(|message| SceneError::new("invalid_key", message))?;
-                    self.h.harness().press_key_modifiers(modifiers, k);
+                    self.h.harness().key_press_modifiers(modifiers, k);
                 }
                 self.h.step();
                 log::info!(

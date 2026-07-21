@@ -184,7 +184,6 @@ impl Colors {
         .map(|(k, c)| (k.to_string(), hex(c)))
         .collect()
     }
-
 }
 
 /// Resolve the active `Colors` from a loaded config: merges the user's
@@ -846,7 +845,7 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
 pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     use crate::ui::style as tokens;
     log::info!("theme: setup_style dark_mode={dark_mode}");
-    let mut style = (*ctx.style()).clone();
+    let mut style = (*ctx.global_style()).clone();
     style.visuals = if dark_mode {
         egui::Visuals::dark()
     } else {
@@ -935,7 +934,7 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     // Reserve a gutter for the floating bar so full-width content (text
     // fields, selectable rows) never runs underneath it at the right edge.
     style.spacing.scroll.floating_allocated_width = tokens::SPACE_MD;
-    ctx.set_style(style);
+    ctx.set_global_style(style);
 }
 
 pub fn terminal_theme(cfg: &ThemeConfig) -> TerminalTheme {
@@ -1233,7 +1232,12 @@ mod tests {
             (hi + 0.05) / (lo + 0.05)
         }
 
-        for name in &["catppuccin-latte", "tokyo-day", "gruvbox-light", "solarized-light"] {
+        for name in &[
+            "catppuccin-latte",
+            "tokyo-day",
+            "gruvbox-light",
+            "solarized-light",
+        ] {
             let cfg = preset_colors(name).unwrap();
             let colors = Colors::from_config(&cfg);
             // bg_sidebar is where inactive row text (text_dim) appears — must be readable.

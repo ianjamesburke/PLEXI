@@ -148,7 +148,11 @@ impl PlexiInput {
     /// Consume a key press only if it isn't a synthetic OS auto-repeat.
     /// Mirrors `keys::consume_key_no_repeat`'s intent for callers holding a
     /// `PlexiInput` instead of a raw `InputState`.
-    pub(crate) fn consume_key_no_repeat(&mut self, modifiers: egui::Modifiers, key: egui::Key) -> bool {
+    pub(crate) fn consume_key_no_repeat(
+        &mut self,
+        modifiers: egui::Modifiers,
+        key: egui::Key,
+    ) -> bool {
         if let Some(pos) = self.events.iter().position(|e| {
             matches!(
                 e,
@@ -198,9 +202,12 @@ mod tests {
     fn take_from_removes_key_events_but_leaves_pointer_events() {
         let ctx = egui::Context::default();
         let mut raw = egui::RawInput::default();
-        raw.events.push(key_event(egui::Key::A, egui::Modifiers::COMMAND));
-        raw.events.push(egui::Event::PointerMoved(egui::pos2(1.0, 1.0)));
-        let _ = ctx.run(raw, |ctx| {
+        raw.events
+            .push(key_event(egui::Key::A, egui::Modifiers::COMMAND));
+        raw.events
+            .push(egui::Event::PointerMoved(egui::pos2(1.0, 1.0)));
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             let input = PlexiInput::take_from(ctx);
             assert_eq!(input.events.len(), 1);
             // Pointer event stays behind in ctx.
@@ -215,8 +222,10 @@ mod tests {
     fn consume_key_claims_exactly_one_matching_event() {
         let ctx = egui::Context::default();
         let mut raw = egui::RawInput::default();
-        raw.events.push(key_event(egui::Key::A, egui::Modifiers::COMMAND));
-        let _ = ctx.run(raw, |ctx| {
+        raw.events
+            .push(key_event(egui::Key::A, egui::Modifiers::COMMAND));
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             let mut input = PlexiInput::take_from(ctx);
             assert!(input.consume_key(egui::Modifiers::COMMAND, egui::Key::A));
             assert!(!input.consume_key(egui::Modifiers::COMMAND, egui::Key::A));
@@ -228,13 +237,21 @@ mod tests {
     fn give_back_restores_unclaimed_events_to_ctx() {
         let ctx = egui::Context::default();
         let mut raw = egui::RawInput::default();
-        raw.events.push(key_event(egui::Key::B, egui::Modifiers::NONE));
-        let _ = ctx.run(raw, |ctx| {
+        raw.events
+            .push(key_event(egui::Key::B, egui::Modifiers::NONE));
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             let input = PlexiInput::take_from(ctx);
             input.give_back(ctx);
             ctx.input(|i| {
                 assert_eq!(i.events.len(), 1);
-                assert!(matches!(i.events[0], egui::Event::Key { key: egui::Key::B, .. }));
+                assert!(matches!(
+                    i.events[0],
+                    egui::Event::Key {
+                        key: egui::Key::B,
+                        ..
+                    }
+                ));
             });
         });
     }
@@ -245,9 +262,9 @@ mod tests {
         let mut raw = egui::RawInput::default();
         raw.events.push(egui::Event::Copy);
         raw.events.push(egui::Event::Cut);
-        raw.events
-            .push(egui::Event::Ime(egui::ImeEvent::Enabled));
-        let _ = ctx.run(raw, |ctx| {
+        raw.events.push(egui::Event::Ime(egui::ImeEvent::Enabled));
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             let input = PlexiInput::take_from(ctx);
             // Copy + Cut are input-intent and taken.
             assert_eq!(input.events().len(), 2);
@@ -263,8 +280,10 @@ mod tests {
     fn key_pressed_matches_buffer_ignoring_modifiers() {
         let ctx = egui::Context::default();
         let mut raw = egui::RawInput::default();
-        raw.events.push(key_event(egui::Key::A, egui::Modifiers::COMMAND));
-        let _ = ctx.run(raw, |ctx| {
+        raw.events
+            .push(key_event(egui::Key::A, egui::Modifiers::COMMAND));
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             let input = PlexiInput::take_from(ctx);
             assert!(input.key_pressed(egui::Key::A));
             assert!(!input.key_pressed(egui::Key::B));
@@ -276,8 +295,10 @@ mod tests {
         let ctx = egui::Context::default();
         let mut raw = egui::RawInput::default();
         raw.modifiers = egui::Modifiers::COMMAND;
-        raw.events.push(key_event(egui::Key::A, egui::Modifiers::COMMAND));
-        let _ = ctx.run(raw, |ctx| {
+        raw.events
+            .push(key_event(egui::Key::A, egui::Modifiers::COMMAND));
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             let input = PlexiInput::take_from(ctx);
             let (events, modifiers) = input.into_events_and_modifiers();
             assert_eq!(events.len(), 1);

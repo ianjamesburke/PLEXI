@@ -677,7 +677,10 @@ mod open_cli_tests {
         // and wasmtime will reject it before the socket payload is ever sent.
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/wasm-fixtures/sysmon.wasm");
-        let app_id = fixture.file_stem().and_then(|s| s.to_str()).unwrap_or("wasm");
+        let app_id = fixture
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("wasm");
         let workspace_root = fixture.parent().expect("fixture parent");
 
         // Pre-approve all required grants so review does not prompt stdin.

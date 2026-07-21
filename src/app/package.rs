@@ -1603,9 +1603,8 @@ mod tests {
         // launch path for this shape (stint 0411: PackageRuntime::Native and
         // TrustLabel::NativeUnreviewed described a package that could never
         // actually launch, so validate-time now rejects it outright).
-        let err =
-            PackageRuntime::from_manifest(crate::app::registry::ManifestType::App, "bin/app")
-                .unwrap_err();
+        let err = PackageRuntime::from_manifest(crate::app::registry::ManifestType::App, "bin/app")
+            .unwrap_err();
         assert!(
             matches!(err, PackageError::UnlaunchableEntry(ref e) if e == "bin/app"),
             "expected UnlaunchableEntry, got: {err}"

@@ -4,7 +4,7 @@
 //! [`PendingScreenshot`] and asks egui for a viewport capture
 //! (`ViewportCommand::Screenshot`). The wgpu backend reads the real
 //! swapchain back and delivers it as `egui::Event::Screenshot` in a later
-//! frame's raw input, where [`PlexiApp::fulfill_pending_screenshots`] crops,
+//! frame's raw input, where [`PlexiApp::fulfill_screenshot_events`] crops,
 //! encodes, and writes the PNG plus the CLI response file. This captures the
 //! pixels the user actually sees — chrome, terminals, apps, overlays — with
 //! no OS-level screen capture involved.
@@ -17,28 +17,88 @@ pub struct PendingScreenshot {
     pub pane_id: Option<u64>,
     pub output_path: String,
     pub response_file: String,
+    pub capture_requested_at: Option<std::time::Instant>,
 }
 
 impl PlexiApp {
-    /// Drain any `Event::Screenshot` deliveries from this frame's raw input
-    /// and fulfill every queued request with the captured image.
-    pub(crate) fn fulfill_pending_screenshots(&mut self, ctx: &egui::Context) {
+    pub(crate) fn request_pending_screenshot(&mut self, ctx: &egui::Context) {
+        const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+        let now = std::time::Instant::now();
+        let should_capture = self.pending_screenshots.iter().any(|request| {
+            request
+                .capture_requested_at
+                .is_none_or(|requested_at| now.duration_since(requested_at) >= RETRY_INTERVAL)
+        });
+        if !should_capture {
+            return;
+        }
+        for request in &mut self.pending_screenshots {
+            request.capture_requested_at = Some(now);
+        }
+        ctx.send_viewport_cmd_to(
+            egui::ViewportId::ROOT,
+            egui::ViewportCommand::Screenshot(egui::UserData::default()),
+        );
+        let predicted_dt = ctx.input(|input| input.predicted_dt);
+        ctx.request_repaint_after(
+            std::time::Duration::from_secs_f32(predicted_dt) + std::time::Duration::from_millis(25),
+        );
+    }
+
+    /// Advance wgpu's asynchronous screenshot readback.
+    pub(crate) fn poll_pending_screenshots(
+        &self,
+        ctx: &egui::Context,
+        render_state: Option<&egui_wgpu::RenderState>,
+    ) {
         if self.pending_screenshots.is_empty() {
             return;
         }
-        let images: Vec<std::sync::Arc<egui::ColorImage>> = ctx.input(|i| {
-            i.raw
-                .events
-                .iter()
-                .filter_map(|event| match event {
-                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                    _ => None,
-                })
-                .collect()
-        });
+        // wgpu 29 no longer advances map_async callbacks without an explicit
+        // device poll. Keep this non-blocking: a blocking wait stalls the UI
+        // before eframe has painted and registered the capture callback.
+        if let Some(render_state) = render_state {
+            if let Err(error) = render_state.device.poll(wgpu::PollType::Poll) {
+                log::warn!("screenshot: wgpu device poll failed: {error}");
+            }
+        } else {
+            log::warn!("screenshot: eframe wgpu render state unavailable for readback polling");
+        }
+        // eframe 0.34 handles viewport commands after the current paint, then
+        // delivers wgpu's asynchronous result before a later pass. Keep those
+        // lifecycle stages moving while a CLI request is outstanding. egui
+        // advances delayed requests by predicted_dt, so include that interval
+        // to guarantee this targets a subsequent OS frame.
+        let predicted_dt = ctx.input(|input| input.predicted_dt);
+        ctx.request_repaint_after(
+            std::time::Duration::from_secs_f32(predicted_dt) + std::time::Duration::from_millis(25),
+        );
+    }
+
+    /// Fulfill queued requests from eframe's raw-input hook.
+    ///
+    /// eframe 0.34 injects completed wgpu captures immediately before this
+    /// hook. Consuming them here avoids depending on egui's later input-state
+    /// lifecycle.
+    pub(crate) fn fulfill_screenshot_events(
+        &mut self,
+        ctx: &egui::Context,
+        raw_input: &egui::RawInput,
+    ) {
+        let images: Vec<std::sync::Arc<egui::ColorImage>> = raw_input
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+            .collect();
         let Some(image) = images.last() else {
             return;
         };
+        if self.pending_screenshots.is_empty() {
+            return;
+        }
         let pixels_per_point = ctx.pixels_per_point();
         for request in std::mem::take(&mut self.pending_screenshots) {
             let result = self.write_screenshot(&request, image, pixels_per_point);
@@ -58,9 +118,7 @@ impl PlexiApp {
                     serde_json::json!({ "error": error })
                 }
             };
-            if let Err(error) =
-                std::fs::write(&request.response_file, response.to_string())
-            {
+            if let Err(error) = std::fs::write(&request.response_file, response.to_string()) {
                 log::warn!(
                     "screenshot: could not write response file {}: {error}",
                     request.response_file
@@ -140,10 +198,7 @@ fn crop_color_image(
     for y in y0..y1 {
         pixels.extend_from_slice(&image.pixels[y * frame_w + x0..y * frame_w + x1]);
     }
-    Ok(egui::ColorImage {
-        size: [x1 - x0, y1 - y0],
-        pixels,
-    })
+    Ok(egui::ColorImage::new([x1 - x0, y1 - y0], pixels))
 }
 
 #[cfg(test)]
@@ -152,7 +207,7 @@ mod tests {
 
     #[test]
     fn crop_scales_by_pixels_per_point_and_clamps_to_frame() {
-        let mut image = egui::ColorImage::new([100, 80], egui::Color32::BLACK);
+        let mut image = egui::ColorImage::filled([100, 80], egui::Color32::BLACK);
         // Mark a known pixel inside the crop region: logical (10,5) @2x = (20,10).
         image.pixels[10 * 100 + 20] = egui::Color32::WHITE;
         let rect = egui::Rect::from_min_max(egui::pos2(10.0, 5.0), egui::pos2(30.0, 25.0));

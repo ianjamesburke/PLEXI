@@ -38,7 +38,7 @@ impl PlexiApp {
                 ui.add_space(style::SPACE_MD);
 
                 egui::ScrollArea::vertical()
-                    .max_height((ctx.screen_rect().height() - 180.0).max(280.0))
+                    .max_height((ctx.content_rect().height() - 180.0).max(280.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         // available_width, not MODAL_WIDTH_NOTIFY — the scroll

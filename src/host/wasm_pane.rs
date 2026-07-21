@@ -3236,7 +3236,8 @@ mod tests {
             let mut raw = egui::RawInput::default();
             raw.events.push(event);
             let mut out = KeyDisposition::Passthrough;
-            let _ = ctx.run(raw, |ctx| {
+            let _ = ctx.run_ui(raw, |ui| {
+                let ctx = ui.ctx();
                 let input = crate::app::input_router::PlexiInput::take_from(ctx);
                 out = live.handle_key(&input);
             });

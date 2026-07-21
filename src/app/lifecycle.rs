@@ -1454,9 +1454,7 @@ impl PlexiApp {
                         Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
                     if let Err(e) = std::fs::write(rf, &json) {
-                        log::error!(
-                            "pane_ipc: click_pane: could not write response file: {e}"
-                        );
+                        log::error!("pane_ipc: click_pane: could not write response file: {e}");
                     }
                 }
             }
@@ -1482,7 +1480,9 @@ impl PlexiApp {
                             "pane {pane_id}: click injection is only supported for app panes"
                         ));
                     };
-                    let arena_id = app_pane.semantic_state().resolve_interactive_node(node_id)?;
+                    let arena_id = app_pane
+                        .semantic_state()
+                        .resolve_interactive_node(node_id)?;
                     if !self.pane_navigate(*pane_id) {
                         return Err(format!("pane {pane_id} could not be focused"));
                     }
@@ -1616,8 +1616,8 @@ impl PlexiApp {
                 );
                 // Validate a pane target up front so the CLI fails fast on a
                 // bad id; the rect itself is resolved at capture time.
-                let unknown_pane = pane_id
-                    .is_some_and(|id| self.find_pane_in_any_window(id).is_none());
+                let unknown_pane =
+                    pane_id.is_some_and(|id| self.find_pane_in_any_window(id).is_none());
                 if unknown_pane {
                     let response = serde_json::json!({
                         "error": format!("pane {} not found", pane_id.unwrap_or_default())
@@ -1633,11 +1633,9 @@ impl PlexiApp {
                             pane_id: *pane_id,
                             output_path: output_path.clone(),
                             response_file: response_file.clone(),
+                            capture_requested_at: None,
                         });
-                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
-                        egui::UserData::default(),
-                    ));
-                    self.ctx.request_repaint();
+                    self.ctx.request_repaint_of(egui::ViewportId::ROOT);
                 }
             }
             crate::app_protocol::AppRequest::GetPaneState {

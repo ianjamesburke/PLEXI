@@ -73,10 +73,12 @@ impl PlexiApp {
         self.drain_pane_cmd_channel();
         if self.shutdown_requested {
             // `plexi host stop`'s clean-shutdown path (AppRequest::Shutdown).
-            // Save state before closing so the next `host start` restores it.
-            log::info!("host: shutdown requested — saving workspace and closing");
+            // eframe 0.34's macOS CloseRequested path may destroy the window
+            // without terminating the process. Save synchronously, then exit
+            // successfully so launchd also treats this as a clean stop.
+            log::info!("host: shutdown requested — saving workspace and exiting");
             self.save_workspace();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            std::process::exit(0);
         }
         if let Some(rx) = &self.update_rx {
             if let Ok(version) = rx.try_recv() {
@@ -138,15 +140,16 @@ impl PlexiApp {
     /// after all overlay dispatch and command draining.
     pub(super) fn render_panels(
         &mut self,
-        ctx: &egui::Context,
+        ui: &mut egui::Ui,
         focused_terminal_input: Option<crate::render::terminal_pane::TerminalInput>,
     ) {
+        let ctx = ui.ctx().clone();
         // Taken by the CentralPanel's tiling behavior below; rebind as `mut`
         // so it can be `.take()`n into the behavior for the focused terminal.
         let mut focused_terminal_input = focused_terminal_input;
         // Toolbar
-        egui::TopBottomPanel::top("toolbar")
-            .exact_height(28.0)
+        egui::Panel::top("toolbar")
+            .exact_size(28.0)
             .frame(
                 egui::Frame::new()
                     .fill(self.colors.bg_toolbar)
@@ -157,15 +160,15 @@ impl PlexiApp {
                         bottom: 4,
                     }),
             )
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 self.draw_toolbar(ui);
             });
 
         // Separator line under toolbar
-        egui::TopBottomPanel::top("toolbar_sep")
-            .exact_height(1.0)
+        egui::Panel::top("toolbar_sep")
+            .exact_size(1.0)
             .frame(egui::Frame::new().fill(self.colors.border))
-            .show(ctx, |_ui| {});
+            .show_inside(ui, |_ui| {});
 
         // Sidebar
         if self.sidebar_visible {
@@ -182,9 +185,9 @@ impl PlexiApp {
                     }
                 }
             });
-            egui::SidePanel::left("sidebar")
-                .default_width(220.0)
-                .width_range(140.0..=400.0)
+            egui::Panel::left("sidebar")
+                .default_size(220.0)
+                .size_range(140.0..=400.0)
                 .resizable(true)
                 .show_separator_line(false)
                 .frame(
@@ -192,7 +195,7 @@ impl PlexiApp {
                         .fill(self.colors.bg_sidebar)
                         .inner_margin(egui::Margin::same(0)),
                 )
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     self.draw_sidebar(ui);
                 });
         }
@@ -205,7 +208,7 @@ impl PlexiApp {
                 outer_margin: egui::Margin::ZERO,
                 ..Default::default()
             })
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 let active = self.active_window;
                 if self.windows[active].panes.is_empty() || self.windows[active].tree.root.is_none() {
                     if self.router.len() > 1 {
@@ -248,7 +251,7 @@ impl PlexiApp {
                             self.welcome_delete_press_count = 0;
                             self.welcome_delete_last_press = None;
                         } else {
-                            self.draw_welcome_delete_overlay(ctx);
+                            self.draw_welcome_delete_overlay(&ctx);
                             // Same 100ms confirm-timeout poll as the quit overlay.
                             crate::platform::frame_diag::note(
                                 crate::platform::frame_diag::RepaintCause::QuitConfirm,
@@ -489,7 +492,7 @@ impl PlexiApp {
                             })
                             .map(|w| {
                                 let p = w.mouseLocationOutsideOfEventStream();
-                                let content_height = ui.ctx().screen_rect().height();
+                                let content_height = ui.ctx().content_rect().height();
                                 egui::pos2(p.x as f32, content_height - p.y as f32)
                             })
                     } else {
@@ -824,7 +827,7 @@ impl PlexiApp {
                                                     0.0,
                                                     self.colors.terminal_bg,
                                                 );
-                                                ui.allocate_new_ui(
+                                                ui.scope_builder(
                                                     egui::UiBuilder::new().max_rect(rect),
                                                     |ui| {
                                                         ui.centered_and_justified(|ui| {
@@ -846,7 +849,7 @@ impl PlexiApp {
                                                 // guard), so we skip only the hover-frame renders.
                                                 log::debug!("[DRAG] zoom overlay: skipping TerminalView render during file hover");
                                                 let rect = ui.max_rect();
-                                                ui.allocate_new_ui(
+                                                ui.scope_builder(
                                                     egui::UiBuilder::new().max_rect(rect),
                                                     |ui| {
                                                         ui.centered_and_justified(|ui| {
@@ -1012,16 +1015,16 @@ impl PlexiApp {
             });
 
         // Shortcuts overlay
-        self.draw_shortcuts_overlay(ctx);
+        self.draw_shortcuts_overlay(&ctx);
 
         // Changelog overlay
-        self.draw_changelog_overlay(ctx);
+        self.draw_changelog_overlay(&ctx);
 
         // Developer-only host chrome gallery
-        self.draw_ui_gallery(ctx);
+        self.draw_ui_gallery(&ctx);
 
         // First-launch completions nudge
-        self.draw_completions_banner(ctx);
+        self.draw_completions_banner(&ctx);
 
         // Minimap overlay — auto-hidden when current workspace has <2 windows.
         let ws_id = self.router.active().context_id;
@@ -1031,7 +1034,7 @@ impl PlexiApp {
             .filter(|c| c.context_id == ws_id)
             .count();
         if window_count >= 2 {
-            self.draw_minimap_overlay(ctx);
+            self.draw_minimap_overlay(&ctx);
         } else {
             self.minimap.visible = false;
         }
@@ -1052,7 +1055,7 @@ impl PlexiApp {
                 self.quit_press_count = 0;
                 self.quit_last_press = None;
             } else {
-                self.draw_quit_confirm_overlay(ctx);
+                self.draw_quit_confirm_overlay(&ctx);
                 // Keep repainting so the timeout dismissal fires promptly
                 crate::platform::frame_diag::note(
                     crate::platform::frame_diag::RepaintCause::QuitConfirm,
@@ -1061,7 +1064,7 @@ impl PlexiApp {
             }
         }
 
-        self.draw_feature_effects(ctx);
+        self.draw_feature_effects(&ctx);
 
         // Egui focus is NOT touched here: the post-frame reconciler
         // (`reconcile_egui_focus`, called at the end of `update()`) projects

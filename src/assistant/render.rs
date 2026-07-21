@@ -169,7 +169,7 @@ impl AssistantRenderer {
 
         // Bottom-anchored, content-sized: composer pinned to the pane bottom.
         // Stable height (composer + hints only) — the picker floats above it.
-        egui::TopBottomPanel::bottom(pane_id.with("assistant_bottom"))
+        egui::Panel::bottom(pane_id.with("assistant_bottom"))
             .show_separator_line(false)
             .frame(egui::Frame::new().inner_margin(egui::Margin {
                 left: style::SPACE_MD as i8,
@@ -275,7 +275,10 @@ impl AssistantRenderer {
         egui::ScrollArea::vertical()
             .id_salt("assistant_transcript")
             .auto_shrink([false, false])
-            .drag_to_scroll(false)
+            .scroll_source(egui::scroll_area::ScrollSource {
+                drag: false,
+                ..Default::default()
+            })
             // Follow new content (streamed chunks, command output) whenever
             // the view is already at the bottom; egui releases the stick as
             // soon as the user scrolls up to read history.
@@ -378,9 +381,8 @@ impl AssistantRenderer {
             .size(style::TEXT_CAPTION)
             .monospace()
             .color(color);
-        let has_body = turn.input_summary.is_some()
-            || turn.output_preview.is_some()
-            || turn.detail.is_some();
+        let has_body =
+            turn.input_summary.is_some() || turn.output_preview.is_some() || turn.detail.is_some();
         if !has_body {
             ui.label(header);
             ui.add_space(style::SPACE_SM);
@@ -517,8 +519,8 @@ impl AssistantRenderer {
             // that galley, `Align::Max` pins the shrunk frame to the right edge,
             // and the galley's own `LEFT` halign keeps wrapped lines left-read.
             TurnRole::User => {
-                let cap = Self::bubble_content_cap(ui);
-                let galley = ui.fonts(|f| {
+                let cap = Self::bubble_content_cap(ui, 1.0);
+                let galley = ui.fonts_mut(|f| {
                     f.layout(
                         text.to_owned(),
                         egui::FontId::proportional(style::TEXT_BODY),
@@ -581,7 +583,10 @@ impl AssistantRenderer {
         let line = if active.input_summary.is_empty() {
             format!("{frame} {}{elapsed_label}", active.tool)
         } else {
-            format!("{frame} {} {}{elapsed_label}", active.tool, active.input_summary)
+            format!(
+                "{frame} {} {}{elapsed_label}",
+                active.tool, active.input_summary
+            )
         };
         ui.scope(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
@@ -645,7 +650,11 @@ impl AssistantRenderer {
                 }
                 ui.add_space(style::SPACE_XS);
                 let actions: [(&str, ButtonKind, PermissionChoice); 4] = [
-                    ("Allow once", ButtonKind::Accent, PermissionChoice::AllowOnce),
+                    (
+                        "Allow once",
+                        ButtonKind::Accent,
+                        PermissionChoice::AllowOnce,
+                    ),
                     (
                         "Allow this session",
                         ButtonKind::Primary,
@@ -753,7 +762,7 @@ impl AssistantRenderer {
         md_cache: &mut egui_commonmark::CommonMarkCache,
         markdown: &str,
     ) {
-        let inner_w = Self::measure_wrapped_width(ui, markdown, Self::bubble_content_cap(ui));
+        let inner_w = Self::measure_wrapped_width(ui, markdown, Self::bubble_content_cap(ui, 0.0));
         Self::chat_bubble(ui, colors, BubbleSide::Left, false, |ui| {
             // Left origin, so `set_width` both constrains the fill-width
             // markdown renderer and keeps the frame anchored left.
@@ -801,15 +810,16 @@ impl AssistantRenderer {
     /// The content-area width cap for a chat bubble: the bubble frame caps at
     /// `BUBBLE_MAX_FRACTION` of the row, and the content sits inside the
     /// horizontal padding on each edge.
-    fn bubble_content_cap(ui: &egui::Ui) -> f32 {
-        (ui.available_width() * Self::BUBBLE_MAX_FRACTION - 2.0 * style::SPACE_SM).max(0.0)
+    fn bubble_content_cap(ui: &egui::Ui, stroke_width: f32) -> f32 {
+        (ui.available_width() * Self::BUBBLE_MAX_FRACTION - 2.0 * (style::SPACE_SM + stroke_width))
+            .max(0.0)
     }
 
     /// Natural wrapped width `text` wants at body scale, clamped to `cap`. Used
     /// to size the assistant bubble to its content; the user bubble measures a
     /// galley directly so it can also paint it.
     fn measure_wrapped_width(ui: &egui::Ui, text: &str, cap: f32) -> f32 {
-        let galley = ui.fonts(|f| {
+        let galley = ui.fonts_mut(|f| {
             f.layout(
                 text.to_owned(),
                 egui::FontId::proportional(style::TEXT_BODY),
@@ -1297,7 +1307,7 @@ impl AssistantRenderer {
         max_h: f32,
     ) -> egui::Rect {
         let font_id = egui::FontId::proportional(style::TEXT_BODY);
-        let row_height = ui.fonts(|f| f.row_height(&font_id));
+        let row_height = ui.fonts_mut(|f| f.row_height(&font_id));
         // Grow up to `max_h` (75% of the pane) before scrolling, never below a
         // single row even in a very short pane.
         let max_text_h = max_h.max(row_height);
@@ -1342,7 +1352,7 @@ impl AssistantRenderer {
                             .id(te_id)
                             .desired_rows(1)
                             .desired_width(f32::INFINITY)
-                            .frame(false)
+                            .frame(egui::Frame::NONE)
                             // Left padding beyond egui's default `symmetric(4,
                             // 2)` margin, so the caret and hint text never
                             // sit flush against the composer's edge.
@@ -1467,8 +1477,8 @@ mod tests {
         ));
 
         let mut row_rect = egui::Rect::NOTHING;
-        let output = ctx.run(raw_input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let output = ctx.run_ui(raw_input, |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
                 row_rect = ui.available_rect_before_wrap();
                 AssistantRenderer::draw_turn_row(
                     ui,

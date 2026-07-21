@@ -106,7 +106,9 @@ pub fn parse_pane_flag(s: &str) -> Result<PaneSpec, String> {
         }
     }
     if !have_cwd {
-        return Err(format!("malformed --pane spec {s:?}: cwd=<dir> is required"));
+        return Err(format!(
+            "malformed --pane spec {s:?}: cwd=<dir> is required"
+        ));
     }
     Ok(spec)
 }
@@ -213,7 +215,10 @@ fn detect_pid(socket_path: &Path) -> Option<u32> {
             .next()
             .and_then(|l| l.trim().parse::<u32>().ok()),
         Ok(out) => {
-            log::debug!("host: lsof found no owner for {socket_path:?} (status {:?})", out.status);
+            log::debug!(
+                "host: lsof found no owner for {socket_path:?} (status {:?})",
+                out.status
+            );
             None
         }
         Err(e) => {
@@ -299,7 +304,11 @@ fn query_ready_status(socket_path: &Path, channel: Option<&str>) -> Option<usize
 /// Retry `query_ready_status` until it answers or `timeout` elapses. Used
 /// after spawning the bundle process — the socket listener thread may not be
 /// bound yet on the first attempt.
-fn wait_for_ready(socket_path: &Path, timeout: Duration, channel: Option<&str>) -> Result<usize, String> {
+fn wait_for_ready(
+    socket_path: &Path,
+    timeout: Duration,
+    channel: Option<&str>,
+) -> Result<usize, String> {
     let start = Instant::now();
     let deadline = start + timeout;
     log::info!("host_start: readiness poll start socket={socket_path:?} timeout={timeout:?}");
@@ -312,7 +321,10 @@ fn wait_for_ready(socket_path: &Path, timeout: Duration, channel: Option<&str>) 
             return Ok(count);
         }
         if Instant::now() >= deadline {
-            log::error!("host_start: readiness poll end — timeout after {:?}", start.elapsed());
+            log::error!(
+                "host_start: readiness poll end — timeout after {:?}",
+                start.elapsed()
+            );
             return Err(format!(
                 "timed out after {timeout:?} waiting for Plexi host to become ready"
             ));
@@ -351,7 +363,10 @@ fn seed_pane(queue_dir: &Path, index: usize, spec: &PaneSpec) -> Result<PathBuf,
 /// Collect the ordered pane list from `--layout <file>` (its `[[pane]]`
 /// tables first) followed by repeated `--pane` flags in the order given on
 /// the command line.
-fn collect_pane_specs(layout_file: Option<&str>, panes: &[String]) -> Result<Vec<PaneSpec>, String> {
+fn collect_pane_specs(
+    layout_file: Option<&str>,
+    panes: &[String],
+) -> Result<Vec<PaneSpec>, String> {
     let mut specs = Vec::new();
     if let Some(path) = layout_file {
         let content = std::fs::read_to_string(path)
@@ -373,7 +388,11 @@ fn collect_pane_specs(layout_file: Option<&str>, panes: &[String]) -> Result<Vec
 /// blocks until a `notify.sock` round trip confirms the host is ready (or the
 /// timeout elapses). Errors non-zero if a host for this channel is already
 /// running.
-pub fn host_start_cli(layout_file: Option<&str>, panes: &[String], timeout_secs: Option<u64>) -> i32 {
+pub fn host_start_cli(
+    layout_file: Option<&str>,
+    panes: &[String],
+    timeout_secs: Option<u64>,
+) -> i32 {
     let specs = match collect_pane_specs(layout_file, panes) {
         Ok(s) => s,
         Err(e) => {
@@ -398,7 +417,10 @@ pub fn host_start_cli(layout_file: Option<&str>, panes: &[String], timeout_secs:
 
     let (channel, bundle_path, binary_path) = resolve_channel_paths();
     let socket_path = host_config_dir(channel.as_deref()).join("notify.sock");
-    log::info!("host_start: socket={socket_path:?} pane_count={}", specs.len());
+    log::info!(
+        "host_start: socket={socket_path:?} pane_count={}",
+        specs.len()
+    );
 
     if matches!(probe_notify_socket(&socket_path), RunningState::Running) {
         let pid = detect_pid(&socket_path);
@@ -444,7 +466,10 @@ pub fn host_start_cli(layout_file: Option<&str>, panes: &[String], timeout_secs:
         match seed_pane(&queue_dir, i, spec) {
             Ok(file) => seeded_files.push(file),
             Err(e) => {
-                log::error!("host_start: {e} — removing {} already-seeded file(s)", seeded_files.len());
+                log::error!(
+                    "host_start: {e} — removing {} already-seeded file(s)",
+                    seeded_files.len()
+                );
                 for f in &seeded_files {
                     let _ = std::fs::remove_file(f);
                 }
@@ -486,7 +511,10 @@ pub fn host_start_cli(layout_file: Option<&str>, panes: &[String], timeout_secs:
             return 1;
         }
     };
-    log::info!("host_start: process spawned pid={} detached=true", child.id());
+    log::info!(
+        "host_start: process spawned pid={} detached=true",
+        child.id()
+    );
 
     let timeout = Duration::from_secs(timeout_secs.unwrap_or(15));
     match wait_for_ready(&socket_path, timeout, channel.as_deref()) {
@@ -562,7 +590,9 @@ pub fn host_stop_cli() -> i32 {
                     );
                 }
                 Err(e) => {
-                    log::error!("host_stop: could not send shutdown request: {e} — falling back to SIGTERM");
+                    log::error!(
+                        "host_stop: could not send shutdown request: {e} — falling back to SIGTERM"
+                    );
                 }
             }
         }
@@ -623,12 +653,16 @@ pub fn host_status_cli(json: bool) -> i32 {
     } else if ready {
         println!(
             "Plexi host is running (pid {}), {} pane(s), socket {}",
-            pid.map(|p| p.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            pid.map(|p| p.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
             pane_count.unwrap_or(0),
             socket_path.display()
         );
     } else {
-        println!("Plexi host is not running (socket {})", socket_path.display());
+        println!(
+            "Plexi host is not running (socket {})",
+            socket_path.display()
+        );
     }
     0
 }
@@ -756,19 +790,28 @@ mod tests {
     #[test]
     fn parse_pane_flag_errors_on_missing_cwd() {
         let err = parse_pane_flag("cmd=htop").unwrap_err();
-        assert!(err.contains("cwd"), "error should mention missing cwd: {err}");
+        assert!(
+            err.contains("cwd"),
+            "error should mention missing cwd: {err}"
+        );
     }
 
     #[test]
     fn parse_pane_flag_errors_on_unknown_key() {
         let err = parse_pane_flag("cwd=/tmp,bogus=1").unwrap_err();
-        assert!(err.contains("bogus"), "error should name the bad key: {err}");
+        assert!(
+            err.contains("bogus"),
+            "error should name the bad key: {err}"
+        );
     }
 
     #[test]
     fn parse_pane_flag_errors_on_unrecognized_token() {
         let err = parse_pane_flag("cwd=/tmp,overlay").unwrap_err();
-        assert!(err.contains("overlay"), "error should name the bad token: {err}");
+        assert!(
+            err.contains("overlay"),
+            "error should name the bad token: {err}"
+        );
     }
 
     #[test]
@@ -892,7 +935,10 @@ mod tests {
         // calling it twice with the same argument from concurrent test
         // threads (this suite runs threaded) must always agree, which
         // would not hold if it consulted process env underneath.
-        assert_eq!(host_config_dir(Some("alpha")), host_config_dir(Some("alpha")));
+        assert_eq!(
+            host_config_dir(Some("alpha")),
+            host_config_dir(Some("alpha"))
+        );
         assert!(
             host_config_dir(Some("alpha")).ends_with(".plexi-alpha"),
             "expected .plexi-alpha profile dir"
@@ -902,7 +948,10 @@ mod tests {
     #[test]
     fn host_config_dir_main_channel_has_no_suffix() {
         let dir = host_config_dir(None);
-        assert!(dir.ends_with(".plexi"), "expected .plexi profile dir, got {dir:?}");
+        assert!(
+            dir.ends_with(".plexi"),
+            "expected .plexi profile dir, got {dir:?}"
+        );
     }
 
     // ── collect_pane_specs ordering ───────────────────────────────────────

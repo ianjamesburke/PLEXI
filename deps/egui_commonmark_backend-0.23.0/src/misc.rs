@@ -1,5 +1,5 @@
 use crate::alerts::AlertBundle;
-use egui::{text::LayoutJob, RichText, TextStyle, Ui};
+use egui::{RichText, TextBuffer, TextStyle, Ui, text::LayoutJob};
 use std::collections::HashMap;
 
 use crate::pulldown::ScrollableCache;
@@ -35,7 +35,7 @@ pub struct CommonMarkOptions<'f> {
     pub html_fn: Option<&'f crate::RenderHtmlFn>,
 }
 
-impl<'f> std::fmt::Debug for CommonMarkOptions<'f> {
+impl std::fmt::Debug for CommonMarkOptions<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("CommonMarkOptions");
 
@@ -199,6 +199,8 @@ impl Link {
 
         let mut layout_job = LayoutJob::default();
         for t in text {
+            // PLEXI PATCH: upstream 0.23 does not underline link text, so links
+            // otherwise read as ordinary body copy until hover.
             t.underline().append_to(
                 &mut layout_job,
                 ui.style(),
@@ -272,15 +274,15 @@ impl CodeBlock {
         ui.scope(|ui| {
             Self::pre_syntax_highlighting(cache, options, ui);
 
-            let mut layout = |ui: &Ui, string: &str, wrap_width: f32| {
+            let mut layout = |ui: &Ui, string: &dyn TextBuffer, wrap_width: f32| {
                 let mut job = if let Some(lang) = &self.lang {
-                    self.syntax_highlighting(cache, options, lang, ui, string)
+                    self.syntax_highlighting(cache, options, lang, ui, string.as_str())
                 } else {
-                    plain_highlighting(ui, string)
+                    plain_highlighting(ui, string.as_str())
                 };
 
                 job.wrap.max_width = wrap_width;
-                ui.fonts(|f| f.layout_job(job))
+                ui.fonts_mut(|f| f.layout_job(job))
             };
 
             crate::elements::code_block(ui, max_width, &self.content, &mut layout);
@@ -443,10 +445,15 @@ impl CommonMarkCache {
     }
 
     #[cfg(feature = "better_syntax_highlighting")]
-    pub fn add_syntax_from_str(&mut self, s: &str, fallback_name: Option<&str>) {
+    pub fn add_syntax_from_str(
+        &mut self,
+        s: &str,
+        fallback_name: Option<&str>,
+    ) -> Result<(), syntect::parsing::ParseSyntaxError> {
         let mut builder = self.ps.clone().into_builder();
-        let _ = SyntaxDefinition::load_from_str(s, true, fallback_name).map(|d| builder.add(d));
+        SyntaxDefinition::load_from_str(s, true, fallback_name).map(|d| builder.add(d))?;
         self.ps = builder.build();
+        Ok(())
     }
 
     #[cfg(feature = "better_syntax_highlighting")]
@@ -486,6 +493,7 @@ impl CommonMarkCache {
     pub fn clear_scrollable_with_id(&mut self, source_id: impl std::hash::Hash) -> bool {
         self.scroll.remove(&egui::Id::new(source_id)).is_some()
     }
+
     /// If the user clicks on a link in the markdown render that has `name` as a link. The hook
     /// specified with this method will be set to true. It's status can be acquired
     /// with [`get_link_hook`](Self::get_link_hook). Be aware that all hook state is reset once
@@ -498,7 +506,9 @@ impl CommonMarkCache {
     /// ```rust
     /// # use egui::__run_test_ctx;
     /// # __run_test_ctx(|ctx| {
-    /// ctx.output_mut(|o| o.open_url.is_some());
+    /// ctx.output_mut(|o| for command in &o.commands {
+    ///     matches!(command, egui::OutputCommand::OpenUrl(_));
+    /// });
     /// # });
     /// ```
     ///
