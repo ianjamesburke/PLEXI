@@ -1688,6 +1688,8 @@ impl FileBrowserApp {
                     "",
                 )
                 .show(ui, &mut self.rename_buffer, colors);
+                let submitted = text_response.lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter));
                 // Claim the rename field while the modal is open (stint 0429):
                 // the reconciler grants it while this pane owns input and
                 // surrenders it if ownership moves elsewhere.
@@ -1696,6 +1698,9 @@ impl FileBrowserApp {
                     crate::ui::focus::SurfaceKey::Pane(pane_key),
                     text_response.id,
                 );
+                if submitted {
+                    self.confirm_rename_modal();
+                }
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
