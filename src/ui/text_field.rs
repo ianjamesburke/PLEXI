@@ -211,6 +211,9 @@ pub(crate) struct TextArea<'a> {
     hint_color: Option<egui::Color32>,
     margin: egui::Margin,
     frame: bool,
+    vertical_align: egui::Align,
+    lock_focus: bool,
+    return_key: Option<egui::KeyboardShortcut>,
     log_name: &'a str,
 }
 
@@ -229,8 +232,38 @@ impl<'a> TextArea<'a> {
             hint_color: None,
             margin: egui::Margin::symmetric(8, 5),
             frame: true,
+            vertical_align: egui::Align::Min,
+            lock_focus: false,
+            // Preserve egui TextEdit's multiline default unless a semantic
+            // variant reserves Enter for its owner (for example, composer).
+            return_key: Some(egui::KeyboardShortcut::new(
+                egui::Modifiers::NONE,
+                egui::Key::Enter,
+            )),
             log_name: "text_area",
         }
+    }
+
+    /// A one-row composer that grows with wrapped content and keeps Tab in
+    /// the editor. Plain Enter is reserved for the owning surface's submit
+    /// handler; Shift+Enter is the editor's newline shortcut.
+    pub(crate) fn composer(id: egui::Id, hint: impl Into<egui::WidgetText>) -> Self {
+        Self::multiline(id, hint)
+            .rows(1)
+            .frame(false)
+            .margin(egui::Margin {
+                left: 6,
+                right: 4,
+                top: 2,
+                bottom: 2,
+            })
+            .vertical_align(egui::Align::Center)
+            .lock_focus(true)
+            .return_key(egui::KeyboardShortcut::new(
+                egui::Modifiers::SHIFT,
+                egui::Key::Enter,
+            ))
+            .log_name("composer")
     }
 
     /// See [`TextField::surface`].
@@ -289,6 +322,21 @@ impl<'a> TextArea<'a> {
         self
     }
 
+    fn vertical_align(mut self, vertical_align: egui::Align) -> Self {
+        self.vertical_align = vertical_align;
+        self
+    }
+
+    fn lock_focus(mut self, lock_focus: bool) -> Self {
+        self.lock_focus = lock_focus;
+        self
+    }
+
+    fn return_key(mut self, return_key: egui::KeyboardShortcut) -> Self {
+        self.return_key = Some(return_key);
+        self
+    }
+
     pub(crate) fn log_name(mut self, log_name: &'a str) -> Self {
         self.log_name = log_name;
         self
@@ -306,6 +354,7 @@ impl<'a> TextArea<'a> {
         let log_name = self.log_name;
         let response = if let Some(max_height) = self.max_height {
             egui::ScrollArea::vertical()
+                .id_salt(id.with("scroll"))
                 .max_height(max_height)
                 .show(ui, |ui| self.show_editor(ui, buf, colors))
                 .inner
@@ -353,6 +402,9 @@ impl<'a> TextArea<'a> {
                 .desired_width(self.desired_width)
                 .desired_rows(self.rows)
                 .margin(self.margin)
+                .vertical_align(self.vertical_align)
+                .lock_focus(self.lock_focus)
+                .return_key(self.return_key)
                 .hint_text(hint);
             let edit = if self.frame {
                 edit
@@ -370,5 +422,38 @@ impl<'a> TextArea<'a> {
             output.response.response
         })
         .inner
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composer_reserves_plain_enter_and_uses_shift_enter_for_newlines() {
+        let area = TextArea::composer(egui::Id::new("composer"), "hint");
+
+        assert_eq!(area.rows, 1);
+        assert!(area.lock_focus);
+        assert_eq!(
+            area.return_key,
+            Some(egui::KeyboardShortcut::new(
+                egui::Modifiers::SHIFT,
+                egui::Key::Enter,
+            ))
+        );
+    }
+
+    #[test]
+    fn ordinary_text_area_keeps_plain_enter_newlines() {
+        let area = TextArea::multiline(egui::Id::new("ordinary"), "hint");
+
+        assert_eq!(
+            area.return_key,
+            Some(egui::KeyboardShortcut::new(
+                egui::Modifiers::NONE,
+                egui::Key::Enter,
+            ))
+        );
     }
 }

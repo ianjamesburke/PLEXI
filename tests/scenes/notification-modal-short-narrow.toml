@@ -1,0 +1,10 @@
+size = [520.0, 640.0]
+
+[[steps]]
+seed_notification = { title = "Build complete", body = "The release candidate is ready." }
+
+[[steps]]
+assert_label = { target = "host", label = "Build complete" }
+
+[[steps]]
+shot = "notification-modal-short-narrow.png"

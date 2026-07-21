@@ -119,6 +119,12 @@ impl<'a> ModalShell<'a> {
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
 
         let screen = ctx.content_rect();
+        // Modal widths are preferred content widths, not permission to draw
+        // outside a narrow viewport. Preserve one spacing token of edge
+        // clearance in addition to the frame's horizontal padding.
+        let available_content_width =
+            (screen.width() - 2.0 * (style::SPACE_MD + f32::from(style::MODAL_PADDING_H))).max(0.0);
+        let content_width = self.width.min(available_content_width);
         if self.scrim_strength > 0.0 {
             let alpha = (self.scrim_strength * 255.0).round() as u8;
             // Scrim sits one layer below the modal so an elevated modal
@@ -173,7 +179,7 @@ impl<'a> ModalShell<'a> {
                     .show(ui, |ui| {
                         // width(0.0) = auto-size to content (toasts, pills).
                         if self.width > 0.0 {
-                            ui.set_width(self.width);
+                            ui.set_width(content_width);
                         }
                         if let Some(title) = self.title {
                             crate::ui::typography::modal_title(ui, title, colors);
