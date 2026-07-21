@@ -108,6 +108,58 @@ fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     assert!(!tmp.path().join("assets").exists());
 }
 
+/// `plexi pane click` on a builtin (egui-widget) pane must deliver a genuine
+/// pointer press/release into the production pass — nothing on the builtin
+/// render path consumes `PendingPaneClick`, so queuing one there silently
+/// drops the click (the pre-0474-fix failure mode: click never moved the
+/// Notes caret).
+#[test]
+fn click_pane_moves_notes_caret_through_real_pointer_events() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let note = tmp.path().join("note.md");
+    let body: String = (0..40)
+        .map(|i| format!("line number {i}\n"))
+        .collect();
+    std::fs::write(&note, &body).expect("seed note");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(note)),
+        crate::app::permissions::AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.run_frames(2);
+
+    let response = temp_response(tmp.path(), "notes-click");
+    h.inject_click(pane_id, 60.0, 120.0, "left", Some(response.clone()));
+    h.run_frames(1);
+    assert!(
+        h.app.pending_pane_inputs.contains_key(&pane_id),
+        "builtin pane click must queue real pointer events for the pre-pass raw-input merge"
+    );
+    assert!(
+        !h.app.pending_pane_clicks.contains_key(&pane_id),
+        "builtin panes have no PendingPaneClick consumer; queuing one drops the click"
+    );
+    h.run_frames(2);
+
+    assert_eq!(read_json_response(&response)["ok"], true);
+    let app = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .expect("notes pane");
+    let state = app.runtime.semantic_details().expect("notes semantics");
+    let caret = state["caret"].as_u64().expect("caret offset");
+    assert!(
+        caret > 0,
+        "a click inside the document must move the caret off offset 0; state={state}"
+    );
+}
+
 #[test]
 fn drop_rejects_apps_without_a_production_handler_observably() {
     let tmp = tempfile::tempdir().expect("tempdir");

@@ -4641,6 +4641,32 @@ fn parse_key_str_to_event(key: &str) -> (String, crate::app_protocol::Modifiers)
 /// apps read keys from `egui::InputState` via `App::handle_key`, not the PGAP
 /// event queue, so CLI key injection must produce egui events. Returns `None`
 /// for key strings that don't map to an `egui::Key`.
+/// Clipboard operations carried by a keyboard chord (matching egui-winit's
+/// `is_cut_command`/`is_copy_command`/`is_paste_command` vocabulary).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClipboardChord {
+    Cut,
+    Copy,
+    Paste,
+}
+
+/// Detects the platform clipboard chords (`cmd+x`/`cmd+c`/`cmd+v`; ctrl on
+/// non-mac, where `key_str_to_egui_raw_input` already maps ctrl→command).
+pub(crate) fn clipboard_chord(
+    modifiers: egui::Modifiers,
+    key: egui::Key,
+) -> Option<ClipboardChord> {
+    if !modifiers.command {
+        return None;
+    }
+    match key {
+        egui::Key::X => Some(ClipboardChord::Cut),
+        egui::Key::C => Some(ClipboardChord::Copy),
+        egui::Key::V => Some(ClipboardChord::Paste),
+        _ => None,
+    }
+}
+
 pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
     let mut parts: Vec<&str> = key.split('+').collect();
     let key_part = parts.pop().unwrap_or(key);
@@ -4691,6 +4717,40 @@ pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
         other => other.into(),
     };
     let egui_key = egui::Key::from_name(&name)?;
+    // Mirror egui-winit's chord translation: a physical clipboard chord never
+    // reaches widgets as a raw `Key` event — it becomes `Event::Cut`/`Copy`/
+    // `Paste` before egui sees it, and text surfaces consume only those
+    // translated events. Replaying the raw chord would be silently dropped by
+    // every text widget, so the synthetic path must translate identically.
+    if let Some(chord) = clipboard_chord(modifiers, egui_key) {
+        let events = match chord {
+            ClipboardChord::Cut => vec![egui::Event::Cut],
+            ClipboardChord::Copy => vec![egui::Event::Copy],
+            ClipboardChord::Paste => {
+                match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+                    Ok(contents) => {
+                        let contents = contents.replace("\r\n", "\n");
+                        if contents.is_empty() {
+                            vec![]
+                        } else {
+                            vec![egui::Event::Paste(contents)]
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "pane_ipc: paste chord: clipboard read failed, delivering no event: {error}"
+                        );
+                        vec![]
+                    }
+                }
+            }
+        };
+        return Some(egui::RawInput {
+            events,
+            modifiers,
+            ..Default::default()
+        });
+    }
     let mut events = vec![egui::Event::Key {
         key: egui_key,
         physical_key: None,

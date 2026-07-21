@@ -1450,15 +1450,18 @@ impl PlexiApp {
                             "pane {pane_id}: no known screen rect (pane has not rendered yet)"
                         ));
                     };
-                    let is_app_pane = self.windows[win_idx]
+                    let Some(is_builtin) = self.windows[win_idx]
                         .panes
-                        .get_mut(pane_id)
-                        .is_some_and(|pane| pane.as_app_mut().is_some());
-                    if !is_app_pane {
+                        .get(pane_id)
+                        .and_then(crate::host::pane::Pane::as_app)
+                        .map(|app_pane| {
+                            matches!(app_pane.runtime, crate::host::pane::AppRuntime::Builtin(_))
+                        })
+                    else {
                         return Err(format!(
                             "pane {pane_id}: click injection is only supported for app panes"
                         ));
-                    }
+                    };
                     if !self.pane_navigate(*pane_id) {
                         return Err(format!("pane {pane_id} could not be focused"));
                     }
@@ -1473,17 +1476,56 @@ impl PlexiApp {
                     // once, inside `Context::begin_pass`, strictly before this
                     // dispatch code runs, and discards unconsumed `events` at
                     // the next pass — so a mutated pointer event can never be
-                    // recognized as a click. Queue it instead; the Canvas
-                    // render branch (`wasm_render.rs`) picks it up against the
-                    // frame's live widget rect, still through the pane's real
-                    // `canvas_transform` inversion.
-                    self.pending_pane_clicks.insert(
-                        *pane_id,
-                        crate::host::pane::PendingPaneClick {
-                            target: crate::host::pane::PaneClickTarget::Pos(abs),
-                            button: button_str,
-                        },
-                    );
+                    // recognized as a click. Queue instead, on the plane the
+                    // pane's runtime actually consumes:
+                    if is_builtin {
+                        // Builtin apps are ordinary egui widgets — nothing
+                        // consumes `PendingPaneClick` on their render path, so
+                        // queue genuine pointer events through the same
+                        // pre-pass raw-input merge `KeyPane` uses
+                        // (`raw_input_hook`). egui then resolves an authentic
+                        // press/release click on whatever widget owns that
+                        // position, exactly as a physical click would.
+                        let pointer_button = match button_str {
+                            "right" => egui::PointerButton::Secondary,
+                            "middle" => egui::PointerButton::Middle,
+                            _ => egui::PointerButton::Primary,
+                        };
+                        let events = vec![
+                            egui::Event::PointerMoved(abs),
+                            egui::Event::PointerButton {
+                                pos: abs,
+                                button: pointer_button,
+                                pressed: true,
+                                modifiers: egui::Modifiers::default(),
+                            },
+                            egui::Event::PointerButton {
+                                pos: abs,
+                                button: pointer_button,
+                                pressed: false,
+                                modifiers: egui::Modifiers::default(),
+                            },
+                        ];
+                        self.pending_pane_inputs
+                            .entry(*pane_id)
+                            .or_default()
+                            .push(egui::RawInput {
+                                events,
+                                ..Default::default()
+                            });
+                    } else {
+                        // Canvas/Python panes: the render branch
+                        // (`wasm_render.rs`) picks the queued click up against
+                        // the frame's live widget rect, still through the
+                        // pane's real `canvas_transform` inversion.
+                        self.pending_pane_clicks.insert(
+                            *pane_id,
+                            crate::host::pane::PendingPaneClick {
+                                target: crate::host::pane::PaneClickTarget::Pos(abs),
+                                button: button_str,
+                            },
+                        );
+                    }
                     self.ctx.request_repaint();
                     log::info!(
                         "pane_ipc: click_pane: pane_id={pane_id} queued at abs=({:.1},{:.1})",
