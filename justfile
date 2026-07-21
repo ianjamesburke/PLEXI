@@ -47,7 +47,7 @@ website-smoke:
 
 # Run the full test suite — HostHarness regression tests + unit tests.
 test:
-    cargo test
+    env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test
 
 # Rebuild the WASM POC components and refresh the committed test fixtures the
 # host runtime gate tests load (G3/G5 etc). Run after changing any
@@ -417,7 +417,7 @@ ship +issues:
 scene FILE out="/tmp/plexi-scenes" shots="1":
     PLEXI_SCENE={{FILE}} PLEXI_SCENE_OUT={{out}} \
     {{ if shots == "0" { "PLEXI_SCENE_NO_SHOTS=1" } else { "" } }} \
-    cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
+    env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
 
 # Run the same TOML scene against an explicit installed host channel.
 # The runner owns and tears down the host unless PLEXI_SCENE_ATTACH=1 is set.

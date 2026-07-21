@@ -958,6 +958,7 @@ pub fn workspace_channel_dir() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
+    #[cfg(not(test))]
     if let Some(channel) = std::env::var("PLEXI_CHANNEL")
         .ok()
         .filter(|c| !c.is_empty())
@@ -966,15 +967,32 @@ pub fn workspace_channel_dir() -> String {
         return format!(".plexi-{channel}");
     }
     static CHANNEL_DIR: OnceLock<String> = OnceLock::new();
-    CHANNEL_DIR
-        .get_or_init(|| {
-            let basename = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| "plexi".to_string());
-            channel_suffix_from_basename(&basename)
-        })
-        .clone()
+    #[cfg(not(test))]
+    {
+        return CHANNEL_DIR
+            .get_or_init(|| {
+                let basename = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| "plexi".to_string());
+                channel_suffix_from_basename(&basename)
+            })
+            .clone();
+    }
+    #[cfg(test)]
+    {
+        let channel_dir = CHANNEL_DIR
+            .get_or_init(|| {
+                let basename = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| "plexi".to_string());
+                channel_suffix_from_basename(&basename)
+            })
+            .clone();
+        assert_test_profile_is_isolated(&channel_dir);
+        channel_dir
+    }
 }
 
 /// Returns the config directory name based on the running binary basename.
@@ -986,6 +1004,7 @@ fn config_dir_name() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
+    #[cfg(not(test))]
     if let Some(channel) = std::env::var("PLEXI_CHANNEL")
         .ok()
         .filter(|c| !c.is_empty())
@@ -993,11 +1012,38 @@ fn config_dir_name() -> String {
         log::info!("config_dir_name: using PLEXI_CHANNEL={channel}");
         return format!(".plexi-{channel}");
     }
-    let basename = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "plexi".to_string());
-    channel_suffix_from_basename(&basename)
+    #[cfg(not(test))]
+    {
+        let basename = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "plexi".to_string());
+        return channel_suffix_from_basename(&basename);
+    }
+    #[cfg(test)]
+    {
+        let basename = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "plexi".to_string());
+        let channel_dir = channel_suffix_from_basename(&basename);
+        assert_test_profile_is_isolated(&channel_dir);
+        channel_dir
+    }
+}
+
+#[cfg(test)]
+fn assert_test_profile_is_isolated(dir: &str) {
+    let is_real_profile = matches!(
+        dir,
+        ".plexi" | ".plexi-alpha" | ".plexi-beta" | ".plexi-stable"
+    ) || dir
+        .strip_prefix(".plexi-pr-")
+        .is_some_and(|suffix| !suffix.is_empty());
+    assert!(
+        !is_real_profile,
+        "test resolved config/workspace state to real channel profile dir {dir:?}; use set_test_profile_dir for isolated test state"
+    );
 }
 
 pub fn config_path() -> PathBuf {
@@ -1615,6 +1661,35 @@ mod tests {
     fn workspace_channel_dir_respects_test_channel_override() {
         let _guard = set_test_channel("pr-999");
         assert_eq!(workspace_channel_dir(), ".plexi-pr-999");
+    }
+
+    #[test]
+    fn ambient_channel_does_not_select_a_real_profile_in_tests_child() {
+        if std::env::var_os("TEST_AMBIENT_CHANNEL_CHILD").is_none() {
+            return;
+        }
+        assert_ne!(workspace_channel_dir(), ".plexi-beta");
+        assert_ne!(config_dir_name(), ".plexi-beta");
+    }
+
+    #[test]
+    fn ambient_channel_does_not_select_a_real_profile_in_tests() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::tests::ambient_channel_does_not_select_a_real_profile_in_tests_child",
+            ])
+            .env("PLEXI_CHANNEL", "beta")
+            .env("TEST_AMBIENT_CHANNEL_CHILD", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    #[should_panic(expected = "real channel profile dir \".plexi-beta\"")]
+    fn isolated_profile_guard_names_real_profile_dir() {
+        assert_test_profile_is_isolated(".plexi-beta");
     }
 
     fn write(path: &Path, contents: &str) {
