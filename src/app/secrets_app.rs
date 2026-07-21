@@ -1,4 +1,5 @@
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
+use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::{labels, row, shortcuts, style};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -395,7 +396,7 @@ impl App for SecretsApp {
         ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
 
         const HEADER_H: f32 = 44.0;
-        const FORM_H: f32 = 140.0;
+        const FORM_H: f32 = 212.0;
 
         // Process clipboard copy request (needs ui.ctx() — not available in handle_key).
         if self.copy_pending {
@@ -487,8 +488,10 @@ impl App for SecretsApp {
 
         // ── Add form (when active) ───────────────────────────────────────────
         if self.mode == Mode::Adding {
+            let available_form_h = (rect.bottom() - list_top).max(0.0);
+            let form_h = FORM_H.min(available_form_h);
             let form_rect =
-                egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - FORM_H), rect.max);
+                egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - form_h), rect.max);
             ui.painter().rect_filled(form_rect, 0.0, colors.bg_sidebar);
             ui.painter().line_segment(
                 [
@@ -498,9 +501,14 @@ impl App for SecretsApp {
                 egui::Stroke::new(1.0_f32, colors.border),
             );
 
+            let vertical_padding = if form_h < FORM_H {
+                0.0
+            } else {
+                style::SPACE_SM * 2.0
+            };
             let mut form_ui = ui.new_child(
                 egui::UiBuilder::new()
-                    .max_rect(form_rect.shrink2(egui::vec2(20.0, style::SPACE_SM * 2.0))),
+                    .max_rect(form_rect.shrink2(egui::vec2(20.0, vertical_padding))),
             );
 
             form_ui.vertical(|ui| {
@@ -609,22 +617,23 @@ impl App for SecretsApp {
                     {
                         self.cancel_add();
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new("Tab to advance · Enter to save · Esc to cancel")
-                                .color(colors.text_dim.linear_multiply(0.6))
-                                .size(style::TEXT_HINT)
-                                .family(egui::FontFamily::Monospace),
-                        );
-                    });
                 });
+
+                let hints = [
+                    HintGroup::new(&["Tab"], "advance"),
+                    HintGroup::new(&["Enter"], "save"),
+                    HintGroup::new(&["Esc"], "cancel"),
+                ];
+                HintBar::new(&hints).show(ui, colors);
             });
 
-            let list_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.left(), list_top),
-                egui::pos2(rect.right(), form_rect.top() - 1.0),
-            );
-            self.draw_list(ui, colors, list_rect);
+            if form_rect.top() > list_top + 1.0 {
+                let list_rect = egui::Rect::from_min_max(
+                    egui::pos2(rect.left(), list_top),
+                    egui::pos2(rect.right(), form_rect.top() - 1.0),
+                );
+                self.draw_list(ui, colors, list_rect);
+            }
         } else {
             let list_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), list_top), rect.max);
             self.draw_list(ui, colors, list_rect);
