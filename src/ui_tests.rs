@@ -996,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn ui_gallery_overlay_smoke() {
+    fn screenshot_ui_gallery_hint_bar_stays_centered_at_wide_width() {
         let mut h = PlexiUiHarness::new_sized(900.0, 640.0);
         h.step();
         h.with_app_mut(|app| {
@@ -1009,7 +1009,28 @@ mod tests {
         // Modal title and the first section header are real ui.label widgets.
         h.harness().get_by_label("Host UI Gallery");
         h.harness().get_by_label("Chrome primitives");
-        h.save_screenshot("/tmp/plexi_ui_gallery.png")
+        h.harness().get_by_label("palette");
+        h.harness().get_by_label("help");
+        h.harness().get_by_label("dismiss");
+        h.save_screenshot("/tmp/plexi_ui_gallery_hint_bar_wide.png")
+            .expect("render failed");
+    }
+
+    #[test]
+    fn screenshot_ui_gallery_hint_bar_wraps_at_narrow_width() {
+        let mut h = PlexiUiHarness::new_sized(290.0, 640.0);
+        h.step();
+        h.harness().set_size(egui::vec2(290.0, 640.0));
+        h.with_app_mut(|app| {
+            app.show_ui_gallery = true;
+        });
+        h.run_steps(2);
+
+        h.harness().get_by_label("Host UI Gallery");
+        h.harness().get_by_label("palette");
+        h.harness().get_by_label("help");
+        h.harness().get_by_label("dismiss");
+        h.save_screenshot("/tmp/plexi_ui_gallery_hint_bar_narrow.png")
             .expect("render failed");
     }
 
