@@ -1633,12 +1633,9 @@ impl PlexiApp {
                             pane_id: *pane_id,
                             output_path: output_path.clone(),
                             response_file: response_file.clone(),
+                            command_sent: false,
                         });
-                    self.ctx
-                        .send_viewport_cmd(egui::ViewportCommand::Screenshot(
-                            egui::UserData::default(),
-                        ));
-                    self.ctx.request_repaint();
+                    self.ctx.request_repaint_of(egui::ViewportId::ROOT);
                 }
             }
             crate::app_protocol::AppRequest::GetPaneState {

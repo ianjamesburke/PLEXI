@@ -1873,7 +1873,9 @@ impl PlexiApp {
         configure_egui_ctx(&ctx, &colors);
         let (tx, rx) = mpsc::channel();
         let (hr_watcher, hr_rx) = crate::host::hot_reload::HotReloadWatcher::new();
-        let path = std::env::temp_dir();
+        let path =
+            std::env::temp_dir().join(format!("plexi-test-workspace-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).expect("create isolated test workspace");
         let features = crate::features::FeatureFlags::from_config(&config);
         let (pane_ipc_tx, pane_ipc_rx) =
             std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
@@ -2329,14 +2331,17 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
 }
 
 impl eframe::App for PlexiApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Screenshot readback is stateful frame logic, not UI. Keeping it in
+        // eframe's once-per-frame hook ensures viewport commands and returned
+        // input events survive egui 0.34's UI layout passes.
+        self.fulfill_pending_screenshots(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
         self.frame_tick
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // Viewport captures requested by `plexi host screenshot` arrive as
-        // raw-input events; fulfill queued requests before anything else
-        // consumes this frame's input (stint 0461).
-        self.fulfill_pending_screenshots(ctx);
         // Repaint-cause diagnostics (#2019): count this frame, attribute
         // input-carrying frames to UserInput, and flush one summary per
         // 10s sample window.
