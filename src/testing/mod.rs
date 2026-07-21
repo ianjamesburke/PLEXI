@@ -77,6 +77,12 @@ pub struct HostHarness {
     pub last_platform_output: egui::PlatformOutput,
     /// Keeps the per-test tempdir alive for the harness lifetime; auto-deletes on drop.
     _profile_dir: tempfile::TempDir,
+    /// Isolated workspace root for panes the harness creates. Held alive for the
+    /// harness lifetime and auto-deleted on drop, so any channel dir a pane
+    /// writes (e.g. the assistant's `AssistantStore`) lands here — never in the
+    /// shared `std::env::temp_dir()` root, where it would leak into the walk-up
+    /// path of every other test's tempdir.
+    _workspace_dir: tempfile::TempDir,
     /// Keeps the thread-local profile dir override active for the harness lifetime.
     _profile_guard: crate::config::TestProfileDirGuard,
 }
@@ -85,6 +91,8 @@ impl HostHarness {
     /// Create a harness with an empty `PlexiApp` and a 1280×800 viewport.
     pub fn new() -> Self {
         let profile_dir = tempfile::TempDir::new().expect("failed to create test profile tempdir");
+        let workspace_dir =
+            tempfile::TempDir::new().expect("failed to create test workspace tempdir");
         let profile_guard = set_test_profile_dir(profile_dir.path().to_path_buf());
         let ctx = egui::Context::default();
         let frame_tick = Arc::new(AtomicU64::new(0));
@@ -96,6 +104,7 @@ impl HostHarness {
             ipc_tx,
             last_platform_output: egui::PlatformOutput::default(),
             _profile_dir: profile_dir,
+            _workspace_dir: workspace_dir,
             _profile_guard: profile_guard,
         }
     }
@@ -167,7 +176,7 @@ impl HostHarness {
 
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
-        let workspace_root = std::env::temp_dir();
+        let workspace_root = self._workspace_dir.path().to_path_buf();
         let assistant = crate::assistant::AssistantApp::new(
             workspace_root.clone(),
             Arc::new(InertBroker),
