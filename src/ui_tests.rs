@@ -587,6 +587,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn file_browser_rename_text_field_commits_on_enter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let original = dir.path().join("original.txt");
+        let renamed = dir.path().join("renamed.txt");
+        std::fs::write(&original, b"contents").expect("write fixture");
+
+        let mut h = PlexiUiHarness::new_sized(720.0, 520.0);
+        h.open_file_browser(dir.path().to_path_buf());
+        h.run_steps(2);
+        h.harness()
+            .press_key_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
+        h.run_steps(3);
+
+        h.harness()
+            .press_key_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Text("renamed.txt".to_string()));
+        h.step();
+        h.harness()
+            .press_key_modifiers(egui::Modifiers::NONE, egui::Key::Enter);
+        h.run_steps(2);
+
+        assert!(!original.exists(), "Enter must rename the original path");
+        assert!(renamed.exists(), "Enter must create the renamed path");
+        assert_eq!(
+            std::fs::read(&renamed).expect("read renamed file"),
+            b"contents"
+        );
+    }
+
     /// Render the initial empty state and save a screenshot for visual inspection.
     /// File written to /tmp/plexi_init.png.
     #[test]
@@ -1819,11 +1852,14 @@ mod tests {
         let img = h.render().expect("render failed");
         img.save("/tmp/plexi_catppuccin_latte_palette.png")
             .expect("save screenshot");
-        let center = img.get_pixel(img.width() / 2, img.height() / 2).0;
-        let center_luma = (u16::from(center[0]) + u16::from(center[1]) + u16::from(center[2])) / 3;
+        // Probe the blank right gutter inside the modal. The image center can
+        // land on a command description as the registered app list changes.
+        let surface = img.get_pixel(img.width() * 3 / 4, img.height() / 2).0;
+        let center_luma =
+            (u16::from(surface[0]) + u16::from(surface[1]) + u16::from(surface[2])) / 3;
         assert!(
             center_luma > 180,
-            "Catppuccin Latte palette center should be light, got rgba={center:?}"
+            "Catppuccin Latte palette surface should be light, got rgba={surface:?}"
         );
         println!("Screenshot saved to /tmp/plexi_catppuccin_latte_palette.png");
     }

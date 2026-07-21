@@ -10,6 +10,7 @@ use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::list::{self, ListRow};
 use crate::ui::overlay::ModalShell;
 use crate::ui::style;
+use crate::ui::text_field::TextField;
 use crate::ui::theme::Colors;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind};
 use image::imageops::FilterType;
@@ -1682,27 +1683,13 @@ impl FileBrowserApp {
             .title("Rename")
             .escape(true)
             .show(ctx, colors, |ui| {
-                let text_response = ui
-                    .scope(|ui| {
-                        // egui's caret is hidden (transparent, non-blinking);
-                        // draw_text_caret paints a glyph-height replacement on top.
-                        ui.visuals_mut().text_cursor.blink = false;
-                        ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
-                        let font_id = egui::TextStyle::Body.resolve(ui.style());
-                        let row_height = ui.fonts(|f| f.row_height(&font_id));
-                        let output = egui::TextEdit::singleline(&mut self.rename_buffer)
-                            .desired_width(f32::INFINITY)
-                            .show(ui);
-                        crate::ui::text_field::draw_text_caret(
-                            ui,
-                            &output,
-                            font_id.size,
-                            row_height,
-                            egui::Stroke::new(1.0_f32, colors.accent),
-                        );
-                        output.response
-                    })
-                    .inner;
+                let text_response = TextField::singleline(
+                    egui::Id::new(("file_browser_rename_input", pane_key)),
+                    "",
+                )
+                .show(ui, &mut self.rename_buffer, colors);
+                let submitted = text_response.lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter));
                 // Claim the rename field while the modal is open (stint 0429):
                 // the reconciler grants it while this pane owns input and
                 // surrenders it if ownership moves elsewhere.
@@ -1711,6 +1698,9 @@ impl FileBrowserApp {
                     crate::ui::focus::SurfaceKey::Pane(pane_key),
                     text_response.id,
                 );
+                if submitted {
+                    self.confirm_rename_modal();
+                }
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {

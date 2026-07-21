@@ -1,0 +1,17 @@
+# File Browser rename modal uses the shared text-field chrome.
+size = [720.0, 520.0]
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = ".", as = "files" }
+
+[[steps]]
+key = { target = "files", value = "cmd+r" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "Rename" }
+
+[[steps]]
+shot = "file-browser-rename.png"
