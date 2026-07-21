@@ -1,20 +1,31 @@
 ---
 name: babysitter
-description: "Land a queue of stint tasks as fast as possible by orchestrating agent instances in Plexi panes. You give a ready agent pane id + a list of stints; this loop batches them into as few PRs as possible, drives a WORKER pane to implement each batch, spawns a separate TESTER pane to validate the PR against the real install build, routes bugs between them until it passes, merges, then recycles panes for the next batch. You are the router, never the coder. Checks in every 15 min. Triggered by /babysitter, \"babysit the queue\", \"queue these stints in the other pane\"."
+description: "Land a queue of stint tasks as fast as possible by orchestrating agent instances (Claude `c` or Codex `co`) in Plexi panes. You give a ready agent pane id + a list of stints; this loop batches them into as few PRs as possible, drives a WORKER pane to implement each batch, spawns a separate TESTER pane to validate the PR against the real install build, routes bugs between them until it passes, merges, then spawns fresh panes for the next batch. You are the router, never the coder. Checks in every 15 min. Triggered by /babysitter, \"babysit the queue\", \"queue these stints in the other pane\"."
 source: local
 date_added: "2026-07-11"
 ---
 
 # Babysitter — Orchestrate Worker + Tester Panes Through a Stint Queue
 
-You are a **router and coordinator, not a coder.** You never touch code, git, or the repo yourself. You drive agent instances running in Plexi panes and pass messages between them. Two roles exist per batch:
+You are the **HEAD AGENT — a router and coordinator, not a coder.** You never touch code, git, or the repo yourself. Your sole job is to keep your own context window small and route messages: outsource every piece of real work — implementation, testing, research, reading long reports, any multi-step investigation — to agent panes. If a step would put more than ~20 lines of someone else's output into your context, delegate it. You hold distilled state (PR numbers, verdicts, decisions, timings), never scrollback. Two roles exist per batch:
 
 - **Worker** — a pane that implements the batch and opens the PR.
 - **Tester** — a *separate, fresh* pane that installs the PR build, drives the app to verify it, and reports bugs back to you.
 
-**Panes run Claude Code, launched with the `c` alias** (bypasses permissions). Set the model with `/model`. Everything below assumes that; there is no Codex in this loop.
+**Panes run Claude (`c` alias) or Codex (`co` alias) — both bypass permissions.** Never use bare `claude`/`codex`. The two TUIs drive identically for this loop: same send/enter two-step, same `/model <name>` switch, same `/compact`. The one divergence: fresh-conversation reset is `/clear` in Claude, `/new` in Codex. Examples below use `co`; substitute `c` freely.
 
-You are the wire between them: Worker → PR → Tester → (bugs) → you → Worker → (fix) → you → Tester → … → pass → merge → recycle.
+### Model tiers — pick per batch by difficulty
+
+| Tier | Claude (`c`) | Codex (`co`) | Use for |
+|---|---|---|---|
+| Mid | `sonnet` or `opus` | `gpt-5.6-terra` | small, simple, mechanical batches |
+| High | `fable` | `gpt-5.6-sol` | hard/ambiguous work, any fix round |
+
+Set via the two-step: `plexi pane send <id> "/model <name>"` then `plexi pane key <id> enter`. Judge difficulty from the stint bodies before briefing. **Every fix round runs on the high tier** — see step 4.
+
+**Panes are single-use — NEVER recycle a worker or a tester across tasks.** A tester validates exactly one thing (one PR, or one re-check of a fix) and is then done. A worker owns exactly one batch, from brief through merge, and is then done. For the next task or validation, **close the old pane and open a brand-new one** — a warm transcript biases the read, bloats context, and silently degrades the agent. (`/compact` mid-batch during a fix round is fine — that's the same task; carrying a pane into a *new* task is not.)
+
+You are the wire between them: Worker → PR → Tester → (bugs) → you → Worker → (fix) → you → Tester → … → pass → merge → fresh panes for the next batch.
 
 ## Invocation
 
@@ -48,7 +59,7 @@ Exact forms confirmed in live runs. Use them; don't invent variants.
 | **Submit** the prompt | `plexi pane key <id> enter` |
 | Interrupt the agent | `plexi pane key <id> ctrl+c` |
 | Open a new terminal pane | `plexi pane new -n "<label>"` |
-| Launch an agent in a shell pane | `plexi pane command <id> "c" --enter` |
+| Launch an agent in a shell pane | `plexi pane command <id> "co" --enter` (Codex) or `"c"` (Claude) |
 | Set the pane's model | `plexi pane send <id> "/model <name>"` then `key enter` |
 | Rename / label a pane | `plexi pane name <id> "<label>"` |
 | List panes (alive? find by name) | `plexi pane list` |
@@ -151,7 +162,7 @@ sleep 3
 plexi pane capture <id> --from-cursor 0   # confirm it took; re-send enter ONCE if not
 ```
 
-(This is for typing into a pane's *TUI*. Launching the agent at the *shell* level in a fresh pane uses `plexi pane command <id> "c" --enter`.)
+(This is for typing into a pane's *TUI*. Launching the agent at the *shell* level in a fresh pane uses `plexi pane command <id> "co" --enter`.)
 
 ## Batch into as few PRs as possible (hard rule)
 
@@ -159,35 +170,22 @@ Before feeding anything, group the queue. **Fewer PRs is always better.** Small 
 
 ## Spawning an agent pane
 
-Workers and testers are Claude Code panes launched with the `c` alias (bypasses permissions); `/model` sets the model.
+Workers and testers are agent panes launched with `co` (Codex) or `c` (Claude) — both bypass permissions.
 
 ```
 plexi pane new -n "worker-<N>"          # or tester-<N>
 # grab the new pane id from the command output (fall back to `plexi pane list`)
-plexi pane command <newid> "c" --enter
+plexi pane command <newid> "co" --enter
 sleep 4
 plexi pane capture <newid> --from-cursor 0   # confirm the agent booted to its prompt
+# then set the model tier before briefing: /model <name> two-step
 ```
 
-**GOTCHA: BOOT RACE. Never fire `/model` (or any brief) back-to-back on a just-launched `c` pane.** Claude Code takes a few seconds to boot to its prompt. If `/model <name>` or a brief lands before the prompt is up, the inputs concatenate and the slash command swallows the following text as its argument → API 400 `model: String should have at most 256 characters`, and the whole task brief is lost. Fix: after `plexi pane command <id> "c" --enter`, poll `plexi pane capture <id> --from-cursor 0` until you see the booted prompt (the `Claude Code v...` banner / idle input line) **before** sending `/model`. Then confirm `Set model to <X>` in the buffer **before** sending the work brief.
+**GOTCHA: BOOT RACE. Never fire a brief back-to-back on a just-launched agent pane.** Both TUIs take a few seconds to boot to their prompt. If a brief lands before the prompt is up, input is lost or mangled. Fix: after `plexi pane command <id> "co" --enter` (or `"c"`), poll `plexi pane capture <id> --from-cursor 0` until you see the booted prompt (the input line with the model footer, e.g. `gpt-...` for Codex) **before** sending the work brief.
 
 ## Model selection per pane
 
-Workers/testers here are Claude Code panes (launched with `c`). Set the model with the `/model <name>` slash command sent into the pane. Same two-step as any prompt; `send` does not auto-submit:
-
-```
-plexi pane send <id> "/model <name>"
-sleep 1
-plexi pane key <id> enter
-```
-
-Set the model at each batch boundary, based on the batch's size, **before** sending the work brief.
-
-| Batch size | Model |
-|---|---|
-| **S / M** | `/model sonnet` — the default |
-| **L** | `/model opus` |
-| **Hard task, or an agent fumbling/looping** | `/model fable` — escalate to a stronger model |
+Set the model right after boot, per the tier table above: mid tier (`sonnet`/`opus` or `gpt-5.6-terra`) for simple mechanical batches, high tier (`fable` or `gpt-5.6-sol`) for hard ones. Testers usually run mid tier — their job is following a drive script, not design. Escalate a pane to high tier the moment it is fumbling/looping, and always for fix rounds (step 4).
 
 ## The loop
 
@@ -197,6 +195,10 @@ For each **batch**, in order:
    > "Land stints `<ID>[, <ID>...]` **together in a single PR**. Run `stint show <ID>` for each, then claim them, implement in one worktree branched from alpha, and open ONE PR to alpha covering all of them per the repo AGENTS.md ship pipeline. **Stop once the PR is open and checks are green — do NOT invoke `/validate-pr`, and do NOT merge.** A separate tester pane owns validation. **Before pushing, run the full CI-equivalent local gate, not just `cargo test --bin plexi`**: `mypy sdk/python/plexi_sdk/ --ignore-missing-imports --check-untyped-defs --exclude testing.py`, and every `just gen-*-docs` / `just check-*-docs` generator touched by the diff (SDK, capability, config, authoring, CLI docs) — regenerate and commit any that are stale. `cargo test --bin plexi` passing is not sufficient evidence the PR is green; confirm with `gh pr checks <PR#>` after push and fix any red check before reporting done. **HARD GATE: paste the final green summary line of every suite you ran (`just test`, sdk pytest, mypy) in your reply — an unverified push gets bounced back without a tester round.** **Never end your turn while a build or test is still running — wait on it in the foreground and report its result.** **Publish your progress on your pane's typed slots so I can read your state cheaply instead of scraping your screen — this is required, not optional.** On every state transition write your `status` slot with a step token, event-driven (not on a timer): `plexi pane slot write status $PLEXI_PANE_ID \"impl:working\"` when you start, then `pr:working`, `blocked`, `needs-input`, or `failed` as they happen; write the PR number to `pr` and any blocker reason to `last_error`. Write `impl:done` (with `pr` set) the moment the PR is open and green. `plexi pane slot write` prints a one-line stderr ack on success and exits non-zero with a named error on failure — trust that ack; never read the slot back to confirm the write. Reply with the PR number when it's open and checks are green."
 
    These three brief clauses exist because they were the top token sinks in practice: workers running `/validate-pr` (the pipeline auto-chains `implement-stint` → `open-pr` → `validate-pr`, so a worker that follows the skills literally installs the build itself — a ~5 min compile the tester then repeats — and parks on a `[TESTING]` block waiting for a reply that never comes, which you then read as "idle with unfinished work" and burn a nudge on), workers pushing red (each unverified push burns a full tester round), and workers yielding their turn mid-compile (each yield burns a nudge round-trip). State all three up front in every worker brief, including fix-round briefs.
+
+   **Tests inside a live pane inherit the host's channel — strip `PLEXI_*` in every worker brief's test command.** Worker panes run inside a running Plexi host, so `PLEXI_CHANNEL` / `PLEXI_CONTEXT_*` / `PLEXI_SOCKET` are in their environment. `cargo test` reads these and resolves workspace/config state to the host's *real* channel profile (e.g. `~/.plexi-beta/`), colliding across tests and producing flaky failures that a worker will burn hours chasing as if they were its own bug. In every worker brief, give the test command with those vars stripped: `env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi`. If you see a worker chasing `.plexi-<channel>` / `config_dir` / `temp_dir` test failures, that is this leak, not its diff — tell it so and hand it the stripped command. (Permanent fix tracked in the test-hermeticity stint; once that lands, `just test` strips these itself.)
+
+   **The worker's gate is automated + headless only. NEVER put live-host-drive in a worker brief.** The worker runs `cargo test`/`mypy`/docs-gen and, at most, *headless* renders (`just scene` / `just scene-live` → a PNG). It must never be told to boot the installed GUI, foreground/activate the host window, or drive the running app — that is the tester's exclusive job (step 3), and it's the one thing only the tester pane does. This trap is easy to fall into because a stint's own **`## Done When`** frequently says "run a live channel-scoped host smoke" — do NOT copy that clause into the worker brief. When the stint's Done-When asks for live validation, that requirement is satisfied by the tester round, not by the worker. Observed cost: a worker handed "confirm terminals/Markdown/panes work in a live host" spent 40+ minutes stuck in macOS AppKit `NSRunningApplication.activate` returning `activated=false`, long after its code and Rust suite were green. If you catch a worker probing/foregrounding a live GUI, relieve it immediately: tell it the live smoke is the tester's job, confirm only the automated gate is green, and report the PR.
 
    **Verify, don't trust the worker's self-report.** After the worker replies with a PR number, you run `gh pr checks <PR#>` yourself before spawning the tester. If anything is red, send it straight back to the worker as a bug (same routing as a tester-found bug) — do not spawn the tester against a build with known-red CI.
 
@@ -233,12 +235,14 @@ For each **batch**, in order:
    Bash (run_in_background): until [ "$(gh pr view <PR#> --json state --jq .state)" != "OPEN" ]; do sleep 15; done; gh pr view <PR#> --json state,mergedAt
    ```
 
-3. **Spawn the Tester (fresh pane) once the PR is open.** New pane launched with `c`, labeled `tester-<N>`; set its model with `/model` before briefing. First gate on the diff — judge from `gh pr diff <PR#> --name-only`:
+3. **Spawn the Tester (always a brand-new pane) once the PR is open.** Open a fresh pane with `co`, labeled `tester-<N>`, boot it (poll for the Codex prompt), then brief it. **Never reuse an existing tester pane** — every validation and every re-check gets its own new pane; the old one is closed once its verdict is read. First gate on the diff — judge from `gh pr diff <PR#> --name-only`:
 
    - **Docs/scripts/manifests-only, no runtime behavior change** → the tester does a diff review only and skips both the install and the suites. There is nothing to live-drive and the worker already ran the suites pre-push; re-running them here duplicates that.
    - **Anything else** → the install-and-drive brief below.
 
-   > "Validate PR #`<PR#>` for Plexi. Install it with `just pr-install <PR#>` (from that PR's worktree), then **actually drive the installed `plexi-pr-<PR#>` build** — open the app, use the specific feature these stints added, and confirm end-to-end that it really works (not just that it compiles). Where the PR adds an assertion/validation/guard, prove it is **falsifiable**: deliberately violate it locally, watch it fail with a clear message, revert. Use the host's own primitives to observe it, never macOS `screencapture`/screen-recording (see below). Do NOT re-run test suites (`cargo test`, `just test`, pytest) — the worker already ran them green pre-push and pasted the summary; your job is exclusively behavior the suites can't see. Report a clear PASS, or a numbered list of concrete bugs/repro steps. Do not touch the code. **Publish your progress on your pane's typed slots (required) so I read your state cheaply instead of scraping your screen.** On every transition, event-driven, write your `status` slot with a step token: `plexi pane slot write status $PLEXI_PANE_ID \"test:working\"` when you start, then `test:done` on completion; write your final call to `verdict` (`PASS` or `FAIL`) and, on FAIL, a short reason to `last_error`. `plexi pane slot write` prints a one-line stderr ack on success and a named non-zero error on failure — trust the ack; never read the slot back to confirm."
+   > "Validate PR #`<PR#>` for Plexi. Install it with `just pr-install <PR#>` (from that PR's worktree), then **actually drive the installed `plexi-pr-<PR#>` build** — open the app, use the specific feature these stints added, and confirm end-to-end that it really works (not just that it compiles). Where the PR adds an assertion/validation/guard, prove it is **falsifiable**: deliberately violate it locally, watch it fail with a clear message, revert. Use the host's own primitives to observe it, never macOS `screencapture`/screen-recording (see below). Do NOT re-run test suites (`cargo test`, `just test`, pytest) — the worker already ran them green pre-push and pasted the summary; your job is exclusively behavior the suites can't see. **Operate fully autonomously: drive the host through the plexi CLI end to end and reach your own verdict — never ask a human to click, look at, or confirm anything.** Report a clear PASS, or a numbered list of concrete bugs/repro steps. Do not touch the code. **Publish your progress on your pane's typed slots (required) so I read your state cheaply instead of scraping your screen.** On every transition, event-driven, write your `status` slot with a step token: `plexi pane slot write status $PLEXI_PANE_ID \"test:working\"` when you start, then `test:done` on completion; write your final call to `verdict` (`PASS` or `FAIL`) and, on FAIL, a short reason to `last_error`. `plexi pane slot write` prints a one-line stderr ack on success and a named non-zero error on failure — trust the ack; never read the slot back to confirm."
+
+   **Autonomous verification is the default, always.** In ~99% of cases the tester can prove or disprove the behavior itself by driving a real `plexi-pr-<N>` instance through the CLI (`pane state`, `pane capture`, the channel log, `scene-live` shots). Only when a check is *genuinely* impossible agentically — needs human eyes on physical hardware, audio, an external account — does the loop stop: surface a specific alert to the user naming exactly what needs human verification, and park that batch. Never let a tester convert "this is tedious to drive" into a user alert.
 
    **The tester validates behavior, not the diff.** It does not re-review code — AI diff review already happened once, pre-push, in `/implement-stint` Phase 4. Live-driving the real build is the thing only this pane can do; that is its entire job.
 
@@ -251,12 +255,15 @@ For each **batch**, in order:
    If a tester pane starts calling `screencapture` or a permission dialog shows up in its transcript, that's a sign it's improvising instead of following this brief — correct it immediately with the primitives above.
 
 4. **Route the verdict.** Check the tester the same 15-min way (direct `--lines 20` read; sub-agent only for a long report).
-   - **Bugs found** → relay them verbatim to the **worker** pane, with the same hard-gate + no-yield clauses as the initial brief:
-     > "Tester found these on PR #`<PR#>`: <bug list>. Root-cause and fix on the same branch/PR — first determine whether each bug is caused by your change or pre-existing on alpha (prove pre-existing with a baseline repro before claiming it). Verify the fix yourself the same way the tester found it, paste green suite summary lines, push, reply with the commit."
+   - **Bugs found** → run the **fix-round protocol** on the worker, in order, before relaying anything:
+     1. **Compact:** send `/compact` (two-step, then poll until it finishes) — the worker is about to reason hard and its implement transcript is dead weight.
+     2. **Escalate the model:** if the worker isn't already on the high tier, `/model fable` (or `/model gpt-5.6-sol` on Codex).
+     3. **Relay the tester report verbatim, wrapped in the no-quick-fix directive,** plus the same hard-gate + no-yield clauses as the initial brief:
+     > "Tester found these on PR #`<PR#>`: <bug list>. **Do NOT quick-fix patch this.** A failure that survived your own gate is a high-level symptom of a lower-level problem — investigate the root cause first, and ask whether this reveals a chance to design the system so this *category* of bug is impossible in the future, not just this instance. Never reach for a hacky workaround because it's faster; time spent is not a constraint — optimize for long-term robustness, elegant system design, and current best practices. If the right fix is a real refactor, propose it to me before patching. Then: determine whether each bug is caused by your change or pre-existing on alpha (prove pre-existing with a baseline repro before claiming it). Verify the fix yourself the same way the tester found it, paste green suite summary lines, push, reply with the commit and a one-line root-cause statement."
      If the worker proves a bug pre-existing on alpha with baseline evidence, drop it from this PR's gate and have the worker file a follow-up stint for it — never scope-creep the PR.
-     When the worker reports fixed, bounce back to the **tester** with a **targeted re-check, not a full re-run**:
+     When the worker reports fixed, **close the previous tester pane and open a NEW `co` tester pane** for the re-check (never reuse the warm one), and give it a **targeted re-check, not a full re-run**:
      > "New commits pushed to PR #`<PR#>` (<what changed>). Re-install and re-validate ONLY the changed path thoroughly, plus a one-item smoke of the previously-passed area. Everything else already passed at <prior commit> — do not repeat it. PASS or bugs?"
-     Loop worker ↔ tester until the tester returns a clean PASS. You are the only channel between them.
+     Loop worker ↔ (a fresh tester each round) until a tester returns a clean PASS. You are the only channel between them, and you hold the running summary of what already passed so each fresh tester only re-checks the delta.
    - **PASS** → proceed to merge.
 
 5. **Merge — after tester PASS *and* the human gate.** A PASS is not permission to merge.
@@ -282,41 +289,49 @@ For each **batch**, in order:
 
    Sub-steps (`merge-rebase`, `merge-squash`, `merge-sync`, `merge-cleanup`, `merge-close-stints`) exist only for resuming a genuinely failed run — e.g. a rebase conflict. Reach for them after a failure, not as the normal path.
 
-6. **Recycle panes for the next batch — gate on context budget, not vibes.**
+6. **Retire the worker after EVERY task — never recycle a worker into the next one.**
 
-   **A worker's context is a budget you are spending.** Every batch it carries (task N, then N+1, then a `/create-stint` research flow…) compounds. An overloaded worker does not announce itself; it silently degrades — it re-reads files it already read, misses instructions buried in a long brief, and reasons from stale earlier tasks. By the time you notice, you have already paid for a bad PR and a wasted tester round.
-
-   **At every batch boundary, check the budget before assigning the next task:**
-   ```
-   plexi pane send <id> "/context"
-   sleep 1
-   plexi pane key <id> enter
-   sleep 3
-   plexi pane capture <id> --lines 12
-   ```
-
-   **`/context` output on a Claude Code pane can exceed 60KB; never full-dump it, grep for the one token line.** A full `--from-cursor 0` of a `/context` render overflows your own window. Instead grep the buffer for the single line matching the token summary, e.g. `NNNk/967k tokens (NN%)`, and take the **LAST** match; earlier `/context` runs stay in scrollback, so a naive `grep | head` returns a stale percentage. Use `grep -oE '[0-9]+k/967k tokens \([0-9]+%\)' | tail -1` (or capture more `--lines` and grep the tail) to read the freshest utilization.
-
-   Read the utilization percentage, then branch:
-
-   | Context | Action |
-   |---|---|
-   | **< 50%** | Assign the next batch in place. Cheapest path — the pane keeps its environment and warm repo knowledge. |
-   | **50–70%** | `/compact`, then assign. |
-   | **> 70%**, or the next task is unrelated to the last | **Close and respawn.** Do not compact. |
-
-   **Prefer close+respawn over `/compact` whenever the next task is unrelated.** A fresh pane costs ~20s to boot and starts at a clean slate. Compact costs a multi-minute stall, sometimes hangs (see below), and still leaves a lossy summary of work that has nothing to do with the next task. The information the new worker actually needs is *not* the old transcript — it is a good brief. You already hold the distilled state (PR numbers, merge results, decisions, gotchas); put that in the new prompt and throw the scrollback away.
+   **A worker's context bloats with every task it carries.** An overloaded worker silently degrades — it re-reads files it already read, misses instructions in a long brief, and reasons from stale earlier tasks. Do not gamble on how much is "too much." The rule is simple and unconditional: **when a worker's batch is done (PR merged, or the batch abandoned), close its pane and spawn a brand-new one for the next batch.** No in-place `/clear`/`/new` reuse — a fresh pane costs seconds and removes the entire class of stale-transcript bugs.
 
    ```
    plexi pane close <worker-id>
    plexi pane new -n "worker-<N+1>"
-   plexi pane command <newid> "c" --enter
-   # then send a self-contained brief carrying forward only what matters
+   plexi pane command <newid> "co" --enter
+   # poll for the booted prompt, set the model tier, then send a self-contained brief
    ```
 
-   **`/compact` can hang and swallow your next message.** Observed: a `/compact` on an idle worker never released; the follow-up brief sat queued behind it for minutes showing `Press up to edit queued messages`, while `agent.state` still read `idle`. A single `escape` cleared the queue and the brief submitted normally. Never re-send `enter` at a stuck queue — that is the thrash loop. If you compact, confirm it actually finished (status bar clear, no queued-message hint) *before* sending the next brief.
+   The information the next worker needs is **not** the old scrollback — it is a good self-contained brief. You already hold the distilled state (PR numbers, merge results, decisions, gotchas); put that in the brief and throw the transcript away. Never rely on "warm repo knowledge" as a reason to keep a pane alive.
 
-   Recycle at clean boundaries only — batch merged, or pane about to take an unrelated task. Never mid-fix.
+   **Never retire mid-task.** A batch belongs to one worker from brief through merge, including fix rounds (which use `/compact` in place, step 4). Retire only at the clean boundary.
+
+   (Testers likewise — fresh pane per validation, closed after each verdict; see step 3.)
+
+## Run log — `LOG.md` (next to this SKILL.md)
+
+The loop keeps a self-improvement log at `.agents/skills/babysitter/LOG.md`. It is telemetry about the **workflow**, not the codebase — its whole purpose is to make future babysitter runs cheaper and smoother. Append as you go; don't reconstruct at the end from memory.
+
+**Log an entry (UTC timestamp + a few lines) at each of these moments:**
+- Worker briefed: batch stints, agent (`c`/`co`), model tier, pane label, start time.
+- PR opened: PR#, elapsed since brief.
+- Each tester verdict: PASS/bugs, elapsed, attempt number.
+- Merge: total wall-clock brief→merge, number of worker↔tester rounds.
+- **Any workflow friction, immediately:** an agent forgot part of its brief, a redundant/wasted tool call, a thrash loop caught, an unclear brief that needed a nudge, a gotcha not yet in this skill. These are the highest-value lines in the file.
+
+**Sprints.** The queue runs in sprint blocks as detailed in the stint tasks. At the end of each sprint, append a **Sprint Recap**: what landed (stints → PRs), per-worker timing and try-count table, what we learned, and concrete suggestions to streamline the babysitter workflow (fewer tool calls, less token churn, brief wording fixes). When a recap suggestion is validated in practice, promote it into this SKILL.md and note the promotion in the log.
+
+Format (keep entries terse):
+
+```
+## 2026-07-21 — sprint <name/ids>
+- 18:04 worker-1 briefed: stints 0501+0502, co/gpt-5.6-terra
+- 18:41 PR #2460 open (37m)
+- 19:10 tester-1: 2 bugs (attempt 1)
+- 19:12 friction: worker ran /validate-pr despite brief clause — reword?
+- 20:02 tester-2: PASS (attempt 2)
+- 20:05 merged (2h01m, 2 rounds)
+### Sprint recap
+...
+```
 
 ## Usage-limit handling
 
@@ -345,6 +360,7 @@ When the user asks for a report, status, or "is the loop running", the deliverab
 - **No merge without a tester PASS.** Bugs route worker ↔ tester through you until clean.
 - **Opt-in auto-merge (user triggers it, never the default).** Default holds: surface each passing PR to the user and wait. But when the user explicitly says the queue is good to merge and they will test holistically at the end (e.g. a final e2e gate), drop the human-hold gate: on tester PASS, have the worker squash-merge to alpha immediately and roll to the next batch with no surfacing-and-waiting. Keep the tester round; it protects alpha's trunk for downstream stints. Only the human-hold is removed.
 - **Protect your context.** Default to `--lines 20` reads and narrow full-buffer reads with `grep`/`sed`. Sub-agent delegation is the exception for genuinely long reports, not the default — see the capture-forms section. You hold summaries, not scrollback.
-- **Label every pane** and recycle (close both, spawn fresh worker) between batches.
+- **Label every pane. Every pane is single-use.** Testers: close after each verdict, fresh pane per validation/re-check. Workers: one batch per pane, close + respawn at the boundary (step 6). Never carry a stale transcript into a new task.
+- **Log as you go.** Timestamped events into `LOG.md` next to this skill; sprint recap at each sprint boundary (see Run log).
 - Verify state with `gh`/`stint`, not any pane's self-report.
 - Keep the 15-min cadence via `ScheduleWakeup`; nudge rather than wait passively.

@@ -202,7 +202,7 @@ Raw/canvas remains the escape hatch:
 MCPUI lane:
 
 - first: export Plexi apps as MCPUI resources through the MCP bridge
-- later: host MCPUI apps in Plexi using WebView panes
+- later: host MCPUI apps in Plexi using the WebView pane contract in [`browser-surface.md`](browser-surface.md)
 - keep PGAP and MCPUI parallel; do not contort PGAP into HTML
 
 WASM/WASI lane:
