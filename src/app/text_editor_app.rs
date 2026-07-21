@@ -1159,7 +1159,12 @@ impl App for TextEditorApp {
                     .cursor_from_pos(egui::vec2(output.galley.size().x, local_bottom))
                     .index;
                 self.visible_char_range = [top.min(bottom), top.max(bottom)];
-                let focused = output.response.has_focus();
+                // `Response::has_focus` is stale for this frame when the
+                // post-frame input-owner reconciler granted the persistent
+                // TextEdit id. The memory entry is the production focus
+                // authority used by keyboard dispatch and survives CLI
+                // focus while the OS window is blurred.
+                let focused = ui.ctx().memory(|memory| memory.has_focus(te_id));
                 if focused != self.editor_focused {
                     log::info!("notes_editor: focus transition focused={focused}");
                     self.editor_focused = focused;

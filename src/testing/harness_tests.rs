@@ -250,12 +250,22 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
     h.run_frames(2);
     let response_file = temp_response(tmp.path(), "send-text");
 
-    h.inject_ipc(AppRequest::SendToPane {
+    h.app.handle_pane_ipc_request(AppRequest::SendToPane {
         pane_id,
         text: "/settings".to_string(),
         response_file: Some(response_file.clone()),
     });
+    assert_eq!(
+        h.app.pending_pane_inputs.get(&pane_id).map_or(0, Vec::len),
+        1,
+        "IPC text must remain queued until the target pane's production render"
+    );
     h.run_frames(1);
+
+    assert!(
+        !h.app.pending_pane_inputs.contains_key(&pane_id),
+        "target render must consume its queued IPC input exactly once"
+    );
 
     assert_eq!(read_json_response(&response_file)["ok"], true);
     let state = h.app.windows[0]
@@ -272,7 +282,7 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
         key: "enter".to_string(),
         response_file: Some(key_response.clone()),
     });
-    h.run_frames(1);
+    h.run_frames(2);
 
     let response = read_json_response(&key_response);
     assert_eq!(response["ok"], true);

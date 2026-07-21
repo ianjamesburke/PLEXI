@@ -1233,9 +1233,12 @@ impl PlexiApp {
                         if !self.pane_navigate(*pane_id) {
                             Err(format!("pane {pane_id} could not be focused"))
                         } else {
-                            self.ctx.input_mut(|input| {
-                                input.events.push(egui::Event::Text(text_with_newlines));
-                            });
+                            self.pending_pane_inputs.entry(*pane_id).or_default().push(
+                                egui::RawInput {
+                                    events: vec![egui::Event::Text(text_with_newlines)],
+                                    ..Default::default()
+                                },
+                            );
                             self.ctx.request_repaint();
                             log::info!(
                                 "pane_ipc: send_to_pane: app pane_id={pane_id} text_chars={}",
@@ -1368,10 +1371,10 @@ impl PlexiApp {
                 };
                 if let Some(raw) = passthrough_raw {
                     if self.pane_navigate(*pane_id) {
-                        self.ctx.input_mut(|input| {
-                            input.modifiers = raw.modifiers;
-                            input.events.extend(raw.events);
-                        });
+                        self.pending_pane_inputs
+                            .entry(*pane_id)
+                            .or_default()
+                            .push(raw);
                         self.ctx.request_repaint();
                     } else {
                         result = Err(format!("pane {pane_id} could not be focused"));
