@@ -65,6 +65,68 @@ fn read_json_response(path: &str) -> serde_json::Value {
     serde_json::from_str(&content).expect("response must be valid JSON")
 }
 
+#[test]
+fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let note = tmp.path().join("note.md");
+    std::fs::write(&note, "hello").expect("seed note");
+    let image = tmp.path().join("image.png");
+    std::fs::write(&image, b"png fixture").expect("seed image");
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(note.clone())),
+        crate::app::permissions::AppPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.run_frames(2);
+    let response = temp_response(tmp.path(), "notes-drop");
+    h.inject_ipc(AppRequest::DropFile {
+        pane_id,
+        path_or_url: image.to_string_lossy().into_owned(),
+        response_file: response.clone(),
+    });
+    h.run_frames(2);
+
+    let response = read_json_response(&response);
+    assert!(response.get("ok").is_none());
+    assert!(response["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("does not yet accept")));
+    let app = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .expect("notes pane");
+    let state = app.runtime.semantic_details().expect("notes semantics");
+    assert_eq!(state["kind"], "notes_editor");
+    assert_eq!(state["source_text"], "hello");
+    assert_eq!(state["last_drop_result"]["result"], "rejected");
+    assert!(!tmp.path().join("assets").exists());
+}
+
+#[test]
+fn drop_rejects_apps_without_a_production_handler_observably() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+    h.run_frames(2);
+    let response = temp_response(tmp.path(), "drop-rejected");
+    h.inject_ipc(AppRequest::DropFile {
+        pane_id,
+        path_or_url: "https://example.com/image.png".to_string(),
+        response_file: response.clone(),
+    });
+    h.run_frames(1);
+    assert!(read_json_response(&response)["error"]
+        .as_str()
+        .unwrap()
+        .contains("does not accept"));
+}
+
 #[derive(Default)]
 struct TextInputProbe {
     text: String,
@@ -188,12 +250,22 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
     h.run_frames(2);
     let response_file = temp_response(tmp.path(), "send-text");
 
-    h.inject_ipc(AppRequest::SendToPane {
+    h.app.handle_pane_ipc_request(AppRequest::SendToPane {
         pane_id,
         text: "/settings".to_string(),
         response_file: Some(response_file.clone()),
     });
+    assert_eq!(
+        h.app.pending_pane_inputs.get(&pane_id).map_or(0, Vec::len),
+        1,
+        "IPC text must remain queued until the target pane's production render"
+    );
     h.run_frames(1);
+
+    assert!(
+        !h.app.pending_pane_inputs.contains_key(&pane_id),
+        "target render must consume its queued IPC input exactly once"
+    );
 
     assert_eq!(read_json_response(&response_file)["ok"], true);
     let state = h.app.windows[0]
@@ -210,7 +282,7 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
         key: "enter".to_string(),
         response_file: Some(key_response.clone()),
     });
-    h.run_frames(1);
+    h.run_frames(2);
 
     let response = read_json_response(&key_response);
     assert_eq!(response["ok"], true);

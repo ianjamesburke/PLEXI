@@ -418,6 +418,14 @@ pub enum AppRequest {
         response_file: Option<String>,
     },
 
+    /// Deliver a local path or image URL to the pane through the same
+    /// production drop handler used by native host drops.
+    DropFile {
+        pane_id: u64,
+        path_or_url: String,
+        response_file: String,
+    },
+
     /// Deliver a synthetic pointer click to an app pane, in pane-pixel
     /// coordinates (origin at the pane's top-left). Sent by `plexi pane click`.
     /// The host injects a real `PointerMoved`+`PointerButton` press/release

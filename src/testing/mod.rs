@@ -225,10 +225,11 @@ impl HostHarness {
     // ── Frame pump ───────────────────────────────────────────────────────────
 
     /// Run one egui frame with the given raw input.
-    pub fn frame(&mut self, input: RawInput) -> &mut Self {
+    pub fn frame(&mut self, mut input: RawInput) -> &mut Self {
         let app = &mut self.app;
+        use eframe::App;
+        app.raw_input_hook(&self.ctx, &mut input);
         let full_output = self.ctx.run_ui(input, |ui| {
-            use eframe::App;
             app.ui(ui, &mut eframe::Frame::_new_kittest());
         });
         self.last_platform_output = full_output.platform_output;

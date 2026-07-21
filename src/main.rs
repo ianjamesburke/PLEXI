@@ -800,6 +800,10 @@ fn main() -> eframe::Result {
                         PaneCmd::Key { pane_id, key } => {
                             std::process::exit(cli::pane_key_cli(pane_id, &key))
                         }
+                        PaneCmd::Drop {
+                            pane_id,
+                            path_or_url,
+                        } => std::process::exit(cli::pane_drop_cli(pane_id, &path_or_url)),
                         PaneCmd::Click {
                             pane_id,
                             x,

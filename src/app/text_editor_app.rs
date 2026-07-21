@@ -101,6 +101,14 @@ pub struct TextEditorApp {
     /// it processes itself, so those edits need an explicit scroll on the
     /// next frame to keep the cursor in view.
     scroll_to_cursor_pending: bool,
+    primary_selection: [usize; 2],
+    scroll_y: f32,
+    visible_char_range: [usize; 2],
+    editor_focused: bool,
+    last_save_result: Option<String>,
+    undo_available: bool,
+    redo_available: bool,
+    last_drop_result: Option<serde_json::Value>,
 }
 
 impl TextEditorApp {
@@ -128,6 +136,14 @@ impl TextEditorApp {
             find_bar: None,
             content_pixel_height: 0.0,
             scroll_to_cursor_pending: false,
+            primary_selection: [0, 0],
+            scroll_y: 0.0,
+            visible_char_range: [0, 0],
+            editor_focused: false,
+            last_save_result: None,
+            undo_available: false,
+            redo_available: false,
+            last_drop_result: None,
         }
     }
 
@@ -234,6 +250,8 @@ impl TextEditorApp {
                         self.path
                     );
                     self.last_edit = Some(Instant::now());
+                    self.last_save_result = Some(format!("error: {e}"));
+                    return;
                 } else {
                     log::info!("TextEditorApp: deleted empty note {:?}", self.path);
                     self.last_edit = None;
@@ -241,20 +259,27 @@ impl TextEditorApp {
             } else {
                 self.last_edit = None;
             }
+            self.last_save_result = Some("ok".to_string());
+            log::info!(
+                "notes_editor: semantic save completed path={:?} bytes=0 result=ok",
+                self.path
+            );
             return;
         }
         let document = self.composed();
         match write_note_atomically(&self.path, document.as_bytes(), durability) {
             Ok(()) => {
                 self.last_edit = None;
+                self.last_save_result = Some("ok".to_string());
                 log::info!(
-                    "TextEditorApp: saved {:?} ({} bytes)",
+                    "notes_editor: semantic save completed path={:?} bytes={} result=ok",
                     self.path,
                     document.len()
                 );
             }
             Err(e) => {
                 self.last_edit = Some(Instant::now());
+                self.last_save_result = Some(format!("error: {e}"));
                 log::warn!("TextEditorApp: save failed for {:?}: {e}", self.path);
             }
         }
@@ -303,6 +328,19 @@ mod tests {
             with_body
         ));
         assert!(content_is_effectively_empty(&outside, &notes_dir, ""));
+    }
+
+    #[test]
+    fn semantic_active_block_handles_unicode_caret_positions() {
+        let dir = unique_temp_dir("notes-semantic-unicode");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("unicode.md");
+        std::fs::write(&path, "😀 café\nsecond").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+        app.primary_selection = [6, 6];
+        let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
+        assert_eq!(state["active_markdown_block"]["source"], "😀 café");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -710,6 +748,14 @@ impl App for TextEditorApp {
     }
 
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
+        if input.key_pressed(egui::Key::S)
+            && input
+                .modifiers()
+                .matches_logically(egui::Modifiers::COMMAND)
+        {
+            self.flush();
+            return KeyDisposition::Consumed;
+        }
         // Cmd+F: open find bar (or re-focus if already open).
         if input.key_pressed(egui::Key::F)
             && input
@@ -931,7 +977,7 @@ impl App for TextEditorApp {
             ui.fonts_mut(|f| f.layout_job(job))
         };
 
-        egui::ScrollArea::vertical()
+        let scroll_output = egui::ScrollArea::vertical()
             .id_salt(egui::Id::new("text_editor_scroll").with(&self.path))
             .auto_shrink([false, false])
             .max_height(editor_height)
@@ -1084,10 +1130,44 @@ impl App for TextEditorApp {
 
                 if output.response.changed() {
                     self.last_edit = Some(Instant::now());
+                    self.undo_available = true;
+                    self.redo_available = false;
                     // Recompute matches when content changes.
                     if let Some(bar) = &mut self.find_bar {
                         bar.recompute(&self.content);
                     }
+                }
+                if let Some(range) = output.state.cursor.char_range() {
+                    let current = (range, self.content.clone());
+                    let undoer = output.state.undoer();
+                    self.undo_available = undoer.has_undo(&current);
+                    self.redo_available = undoer.has_redo(&current);
+                }
+
+                if let Some(range) = output.cursor_range {
+                    self.primary_selection = [range.secondary.index, range.primary.index];
+                }
+                let clip = ui.clip_rect();
+                let local_top = (clip.top() - output.galley_pos.y).max(0.0);
+                let local_bottom = (clip.bottom() - output.galley_pos.y).max(local_top);
+                let top = output
+                    .galley
+                    .cursor_from_pos(egui::vec2(0.0, local_top))
+                    .index;
+                let bottom = output
+                    .galley
+                    .cursor_from_pos(egui::vec2(output.galley.size().x, local_bottom))
+                    .index;
+                self.visible_char_range = [top.min(bottom), top.max(bottom)];
+                // `Response::has_focus` is stale for this frame when the
+                // post-frame input-owner reconciler granted the persistent
+                // TextEdit id. The memory entry is the production focus
+                // authority used by keyboard dispatch and survives CLI
+                // focus while the OS window is blurred.
+                let focused = ui.ctx().memory(|memory| memory.has_focus(te_id));
+                if focused != self.editor_focused {
+                    log::info!("notes_editor: focus transition focused={focused}");
+                    self.editor_focused = focused;
                 }
 
                 if let Some(t) = self.last_edit {
@@ -1135,6 +1215,7 @@ impl App for TextEditorApp {
                     self.cursor_was_at_end = at_end;
                 }
             });
+        self.scroll_y = scroll_output.state.offset.y;
 
         // Render the find bar below the scroll area.
         if let Some(bar) = &mut self.find_bar {
@@ -1252,6 +1333,69 @@ impl App for TextEditorApp {
     fn on_pane_renamed(&mut self, name: &str) {
         self.apply_note_title(name);
     }
+
+    fn semantic_state(&self) -> Option<serde_json::Value> {
+        let caret = self.primary_selection[1];
+        let caret_byte = char_to_byte(&self.content, caret);
+        let line_start = self.content[..caret_byte].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = self.content[caret_byte..]
+            .find('\n')
+            .map_or(self.content.len(), |i| caret_byte + i);
+        let active = &self.content[line_start..line_end];
+        let line_start_char = self.content[..line_start].chars().count();
+        let line_end_char = self.content[..line_end].chars().count();
+        let visible_start = char_to_byte(&self.content, self.visible_char_range[0]);
+        let visible_end = char_to_byte(&self.content, self.visible_char_range[1]);
+        let visible_source = &self.content[visible_start.min(visible_end)..visible_end];
+        let links = markdown_targets(visible_source, false);
+        let images = markdown_targets(visible_source, true);
+        Some(serde_json::json!({
+            "kind": "notes_editor",
+            "source_text": self.content,
+            "primary_selection": {"anchor": self.primary_selection[0], "caret": caret},
+            "caret": caret,
+            "scroll": {"y": self.scroll_y},
+            "dirty": self.last_edit.is_some(),
+            "last_save_result": self.last_save_result,
+            "active_markdown_block": {"start": line_start_char, "end": line_end_char, "source": active, "granularity": "source_line"},
+            "visible_link_targets": links,
+            "visible_images": images,
+            "undo_available": self.undo_available,
+            "redo_available": self.redo_available,
+            "focused": self.editor_focused,
+            "last_drop_result": self.last_drop_result,
+            "path": self.path,
+        }))
+    }
+
+    fn drop_file(&mut self, path_or_url: &str) -> Result<serde_json::Value, String> {
+        let source_kind = if path_or_url.contains("://") {
+            "url"
+        } else {
+            "file"
+        };
+        self.last_drop_result = Some(serde_json::json!({
+            "result": "rejected",
+            "source_kind": source_kind,
+        }));
+        Err("Notes does not yet accept file drops".to_string())
+    }
+}
+
+fn markdown_targets(content: &str, images: bool) -> Vec<String> {
+    let prefix = if images { "![" } else { "[" };
+    content
+        .match_indices(prefix)
+        .filter_map(|(start, _)| {
+            if !images && start > 0 && content.as_bytes()[start - 1] == b'!' {
+                return None;
+            }
+            let rest = &content[start + prefix.len()..];
+            let open = rest.find("](")? + start + prefix.len() + 2;
+            let end = content[open..].find(')')? + open;
+            Some(content[open..end].to_string())
+        })
+        .collect()
 }
 
 impl Drop for TextEditorApp {

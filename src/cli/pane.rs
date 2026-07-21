@@ -684,6 +684,47 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
     }
 }
 
+pub fn pane_drop_cli(pane_id: u64, path_or_url: &str) -> i32 {
+    let response_file = std::env::temp_dir()
+        .join(format!(
+            "plexi-pane-drop-{}-{pane_id}.json",
+            std::process::id()
+        ))
+        .to_string_lossy()
+        .into_owned();
+    let code = send_to_socket(serde_json::json!({
+        "type": "drop_file",
+        "pane_id": pane_id,
+        "path_or_url": path_or_url,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Ok(content) = std::fs::read_to_string(&response_file) {
+            let _ = std::fs::remove_file(&response_file);
+            if serde_json::from_str::<serde_json::Value>(&content)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_owned))
+                .is_some_and(|error| {
+                    eprintln!("error: {error}");
+                    true
+                })
+            {
+                return 1;
+            }
+            return print_json_output(&content);
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for pane drop response");
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// Poll `response_file` for a `click_pane`/`click_pane_node` response,
 /// shared by the pixel and node-targeted `plexi pane click` variants.
 /// Returns 0 on success, 1 on error.

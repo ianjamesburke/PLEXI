@@ -1,0 +1,62 @@
+suite = false
+size = [1000.0, 700.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-notes-agent-drive.md"] }
+
+[[steps]]
+focus = "notes"
+
+[[steps]]
+expect = { target = "notes", focused = true }
+
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+text = { target = "notes", value = "# Agent-driven Notes\nfirst draft" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "first draft", rendered_text_contains = "first draft", caret = 32, undo_available = true }
+
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+expect = { target = "notes", selection = [0, 32] }
+
+[[steps]]
+text = { target = "notes", value = "# Agent-driven Notes\nrevised draft" }
+
+[[steps]]
+key = { target = "notes", value = "cmd+z" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "first draft", redo_available = true }
+
+[[steps]]
+key = { target = "notes", value = "cmd+shift+z" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "revised draft", active_markdown_contains = "revised draft", undo_available = true }
+
+[[steps]]
+key = { target = "notes", value = "cmd+s" }
+
+[[steps]]
+expect = { target = "notes", save_result = "ok", timeout_s = 5.0 }
+
+[[steps]]
+drop_file = { target = "notes", value = "tests/fixtures/notes-drop.txt", expect_rejected = true }
+
+[[steps]]
+expect = { target = "notes", drop_result = "rejected", timeout_s = 5.0 }
+
+[[steps]]
+close = "notes"
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "reopened", args = ["/tmp/plexi-notes-agent-drive.md"] }
+
+[[steps]]
+expect = { target = "reopened", source_text_contains = "revised draft", rendered_text_contains = "revised draft", focused = true, timeout_s = 5.0 }

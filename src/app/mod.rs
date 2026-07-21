@@ -426,6 +426,11 @@ pub struct PlexiApp {
     /// `crate::host::pane::PendingPaneClick`.
     pub(crate) pending_pane_clicks:
         HashMap<crate::spatial::tiling::PaneId, crate::host::pane::PendingPaneClick>,
+    /// Synthetic key/text input queued by pane IPC until the target pane's next
+    /// production render. Egui 0.34 rebuilds `InputState` at `begin_pass`, so
+    /// writing directly into `Context::input_mut` from IPC dispatch can be
+    /// acknowledged and then discarded before the widget sees it.
+    pub(crate) pending_pane_inputs: HashMap<crate::spatial::tiling::PaneId, Vec<egui::RawInput>>,
 }
 
 struct PendingAppSubscriptionReply {
@@ -1364,6 +1369,7 @@ impl PlexiApp {
                     overlay_held_cmds: Vec::new(),
                     agent_host: crate::agent::AgentHost::production(config.ai),
                     pending_pane_clicks: HashMap::new(),
+                    pending_pane_inputs: HashMap::new(),
                 };
                 // Reconstruct depth_stack so Cmd+Escape works immediately when
                 // the workspace was saved while viewing a subcontext. The stack
@@ -1611,6 +1617,7 @@ impl PlexiApp {
             overlay_held_cmds: Vec::new(),
             agent_host,
             pending_pane_clicks: HashMap::new(),
+            pending_pane_inputs: HashMap::new(),
         };
         // Seed the base root terminal so a fresh profile boots straight into a
         // live pane — identical in shape to a freshly created context (root pane
@@ -2038,6 +2045,7 @@ impl PlexiApp {
                 overlay_held_cmds: Vec::new(),
                 agent_host: crate::agent::AgentHost::inert(),
                 pending_pane_clicks: HashMap::new(),
+                pending_pane_inputs: HashMap::new(),
             },
             pane_ipc_tx,
         )
@@ -2333,6 +2341,23 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
 impl eframe::App for PlexiApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.fulfill_screenshot_events(ctx, raw_input);
+        let focused_pane = self.windows.get(self.active_window).and_then(|window| {
+            window
+                .focused_pane
+                .and_then(|tile_id| window.tree.tiles.get(tile_id))
+                .and_then(|tile| match tile {
+                    egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
+                    egui_tiles::Tile::Container(_) => None,
+                })
+        });
+        if let Some(batches) =
+            focused_pane.and_then(|pane_id| self.pending_pane_inputs.remove(&pane_id))
+        {
+            for batch in batches {
+                raw_input.modifiers = batch.modifiers;
+                raw_input.events.extend(batch.events);
+            }
+        }
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
