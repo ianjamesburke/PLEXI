@@ -95,6 +95,8 @@ impl Transaction {
 
 /// Minimal edit operations transforming `old` into `new` via prefix/suffix
 /// matching: at most one Delete followed by one Insert. Char-indexed.
+/// Test-only until a production caller lands.
+#[cfg(test)]
 #[must_use]
 pub fn compute_edit_ops(old: &str, new: &str) -> Vec<EditOperation> {
     if old == new {

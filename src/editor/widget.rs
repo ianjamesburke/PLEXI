@@ -22,54 +22,133 @@ use super::view::ViewState;
 pub struct EditorWidget<'a> {
     doc: &'a mut Document,
     view: &'a mut ViewState,
+    /// Stable widget id, so callers can register it with the host focus
+    /// reconciler (`crate::ui::focus`). Auto-generated when unset.
+    id: Option<egui::Id>,
+    /// When false, keyboard/IME/clipboard events are ignored (the caller's
+    /// focus model says another surface owns input); pointer placement still
+    /// works so clicking the editor can re-claim focus.
+    active: bool,
+    /// Monospace font size override; defaults to the style's monospace size.
+    font_size: Option<f32>,
+    /// Char ranges to paint with a background (find matches), plus the index
+    /// of the "current" range and the two fill colors (normal, current).
+    highlights: Vec<(usize, usize)>,
+    current_highlight: Option<usize>,
+    highlight_bg: egui::Color32,
+    current_highlight_bg: egui::Color32,
 }
 
 impl<'a> EditorWidget<'a> {
     pub fn new(doc: &'a mut Document, view: &'a mut ViewState) -> Self {
-        Self { doc, view }
+        Self {
+            doc,
+            view,
+            id: None,
+            active: true,
+            font_size: None,
+            highlights: Vec::new(),
+            current_highlight: None,
+            highlight_bg: egui::Color32::TRANSPARENT,
+            current_highlight_bg: egui::Color32::TRANSPARENT,
+        }
+    }
+
+    #[must_use]
+    pub fn id(mut self, id: egui::Id) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    #[must_use]
+    pub fn active(mut self, active: bool) -> Self {
+        self.active = active;
+        self
+    }
+
+    #[must_use]
+    pub fn font_size(mut self, size: f32) -> Self {
+        self.font_size = Some(size);
+        self
+    }
+
+    #[must_use]
+    pub fn highlights(
+        mut self,
+        ranges: Vec<(usize, usize)>,
+        current: Option<usize>,
+        bg: egui::Color32,
+        current_bg: egui::Color32,
+    ) -> Self {
+        self.highlights = ranges;
+        self.current_highlight = current;
+        self.highlight_bg = bg;
+        self.current_highlight_bg = current_bg;
+        self
     }
 
     pub fn show(self, ui: &mut Ui) -> egui::Response {
-        let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+        let font_id = match self.font_size {
+            Some(size) => egui::FontId::monospace(size),
+            None => egui::TextStyle::Monospace.resolve(ui.style()),
+        };
         let line_height = ui.fonts_mut(|f| f.row_height(&font_id));
-        let (rect, response) =
-            ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::click_and_drag());
+        let (auto_id, rect) = ui.allocate_space(ui.available_size_before_wrap());
+        let id = self.id.unwrap_or(auto_id);
+        let response = ui.interact(rect, id, Sense::click_and_drag());
 
         self.view.line_height = line_height;
         self.view.viewport_height = rect.height();
+        self.view.viewport_width = rect.width();
+        let page_rows = ((rect.height() / line_height).floor().max(1.0)) as usize;
 
         let mut commands: Vec<EditorCommand> = Vec::new();
         let mut copy_requested = false;
         let mut cut_requested = false;
 
-        let events = ui.input(|i| i.events.clone());
-        for event in &events {
-            match event {
-                Event::Text(text) => commands.push(EditorCommand::InsertText(text.clone())),
-                Event::Paste(text) => commands.push(EditorCommand::InsertText(text.clone())),
-                Event::Copy => copy_requested = true,
-                Event::Cut => cut_requested = true,
-                Event::Key {
-                    key,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } => {
-                    if let Some(cmd) = translate_key(*key, *modifiers) {
-                        commands.push(cmd);
+        if self.active {
+            // Lock focus-traversal keys (Tab, arrows) to this widget so egui
+            // never re-purposes them for widget navigation while editing.
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    id,
+                    egui::EventFilter {
+                        tab: true,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        escape: false,
+                    },
+                );
+            });
+            let events = ui.input(|i| i.events.clone());
+            for event in &events {
+                match event {
+                    Event::Text(text) => commands.push(EditorCommand::InsertText(text.clone())),
+                    Event::Paste(text) => commands.push(EditorCommand::InsertText(text.clone())),
+                    Event::Copy => copy_requested = true,
+                    Event::Cut => cut_requested = true,
+                    Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => {
+                        if let Some(cmd) = translate_key(*key, *modifiers, page_rows) {
+                            commands.push(cmd);
+                        }
                     }
+                    Event::Ime(ime) => match ime {
+                        ImeEvent::Preedit(text) => {
+                            commands.push(EditorCommand::ImePreedit(text.clone()));
+                        }
+                        ImeEvent::Commit(text) => {
+                            commands.push(EditorCommand::ImeCommit(text.clone()));
+                        }
+                        ImeEvent::Disabled => commands.push(EditorCommand::ImeCancel),
+                        ImeEvent::Enabled => {}
+                    },
+                    _ => {}
                 }
-                Event::Ime(ime) => match ime {
-                    ImeEvent::Preedit(text) => {
-                        commands.push(EditorCommand::ImePreedit(text.clone()));
-                    }
-                    ImeEvent::Commit(text) => {
-                        commands.push(EditorCommand::ImeCommit(text.clone()));
-                    }
-                    ImeEvent::Disabled => commands.push(EditorCommand::ImeCancel),
-                    ImeEvent::Enabled => {}
-                },
-                _ => {}
             }
         }
 
@@ -112,14 +191,24 @@ impl<'a> EditorWidget<'a> {
         // any command.
         let line_count = self.doc.buffer().line_count();
         if response.hovered() {
-            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-            if scroll != 0.0 {
-                self.view.scroll_y -= scroll;
+            let scroll = ui.input(|i| i.smooth_scroll_delta);
+            if scroll != egui::Vec2::ZERO {
+                self.view.scroll_y -= scroll.y;
+                self.view.scroll_x = (self.view.scroll_x - scroll.x).max(0.0);
             }
         }
         self.view.clamp_scroll(line_count);
         if edited {
-            self.view.scroll_to_line(self.doc.cursor().line, line_count);
+            let caret = self.doc.cursor();
+            self.view.scroll_to_line(caret.line, line_count);
+            // Keep the caret horizontally visible on unwrapped long lines.
+            let text = line_text(self.doc.buffer(), caret.line);
+            let galley =
+                ui.fonts_mut(|f| f.layout_no_wrap(text.clone(), font_id.clone(), egui::Color32::WHITE));
+            let caret_x = galley
+                .pos_from_cursor(CCursor::new(caret.column.min(text.chars().count())))
+                .left();
+            self.view.scroll_to_x(caret_x);
         }
 
         self.paint(ui, &font_id, rect);
@@ -135,7 +224,8 @@ impl<'a> EditorWidget<'a> {
             .min(line_count.saturating_sub(1));
         let text = line_text(self.doc.buffer(), line);
         let galley = ui.fonts_mut(|f| f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE));
-        let ccursor = galley.cursor_from_pos(Vec2::new(pos.x - rect.left(), 0.0));
+        let ccursor =
+            galley.cursor_from_pos(Vec2::new(pos.x - rect.left() + self.view.scroll_x, 0.0));
         Cursor::new(line, ccursor.index)
     }
 
@@ -157,7 +247,36 @@ impl<'a> EditorWidget<'a> {
             let text = line_text(buffer, line);
             let galley =
                 ui.fonts_mut(|f| f.layout_no_wrap(text.clone(), font_id.clone(), text_color));
-            let origin = egui::pos2(rect.left(), top);
+            let origin = egui::pos2(rect.left() - self.view.scroll_x, top);
+
+            // Find-match highlight fills under the text and selection.
+            if !self.highlights.is_empty() {
+                let line_start = buffer.line_to_char(line);
+                let char_count = text.chars().count();
+                let line_end_char = line_start + char_count;
+                for (i, &(hs, he)) in self.highlights.iter().enumerate() {
+                    if he <= line_start || hs >= line_end_char {
+                        continue;
+                    }
+                    let from = hs.saturating_sub(line_start).min(char_count);
+                    let to = (he - line_start).min(char_count);
+                    let x0 = galley.pos_from_cursor(CCursor::new(from)).left();
+                    let x1 = galley.pos_from_cursor(CCursor::new(to)).left();
+                    let bg = if Some(i) == self.current_highlight {
+                        self.current_highlight_bg
+                    } else {
+                        self.highlight_bg
+                    };
+                    painter.rect_filled(
+                        Rect::from_min_max(
+                            egui::pos2(origin.x + x0, top),
+                            egui::pos2(origin.x + x1, top + self.view.line_height),
+                        ),
+                        0.0,
+                        bg,
+                    );
+                }
+            }
 
             if selection.is_range() && selection.touches_line(line) {
                 let char_count = text.chars().count();
@@ -190,7 +309,7 @@ impl<'a> EditorWidget<'a> {
 
             painter.galley(origin, galley.clone(), text_color);
 
-            if line == caret.line {
+            if self.active && line == caret.line {
                 let x = galley
                     .pos_from_cursor(CCursor::new(caret.column.min(text.chars().count())))
                     .left();
@@ -237,13 +356,18 @@ impl<'a> EditorWidget<'a> {
 }
 
 /// Maps a key press (with modifiers) to an editor command. Returns `None`
-/// for keys the editor does not handle.
-fn translate_key(key: Key, modifiers: Modifiers) -> Option<EditorCommand> {
+/// for keys the editor does not handle. `page_rows` is the viewport height in
+/// lines, used by PageUp/PageDown.
+fn translate_key(key: Key, modifiers: Modifiers, page_rows: usize) -> Option<EditorCommand> {
     let extend = modifiers.shift;
     let word = modifiers.alt;
     let line = modifiers.command;
     let mv = |movement: Movement| Some(EditorCommand::Move { movement, extend });
     match key {
+        Key::Tab if modifiers.shift => Some(EditorCommand::Outdent),
+        Key::Tab if modifiers.is_none() => Some(EditorCommand::Indent),
+        Key::PageUp => mv(Movement::PageUp(page_rows)),
+        Key::PageDown => mv(Movement::PageDown(page_rows)),
         Key::ArrowLeft if line => mv(Movement::LineStart),
         Key::ArrowLeft if word => mv(Movement::WordLeft),
         Key::ArrowLeft => mv(Movement::Left),
@@ -352,6 +476,42 @@ mod tests {
         assert_eq!(state.text, "漢字");
         assert_eq!(state.ime_composition, None);
         assert_eq!(state.cursor, Cursor::new(0, 2));
+    }
+
+    #[test]
+    fn tab_indents_and_shift_tab_outdents() {
+        let mut h = harness("line");
+        h.key_press(Key::Tab);
+        h.step();
+        assert_eq!(semantic(&h).text, "    line");
+        h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+        h.step();
+        assert_eq!(semantic(&h).text, "line");
+    }
+
+    fn inactive_harness(text: &str) -> egui_kittest::Harness<'static, TestState> {
+        let state = TestState {
+            doc: Document::new(text),
+            view: ViewState::default(),
+        };
+        egui_kittest::Harness::new_ui_state(
+            |ui, state: &mut TestState| {
+                EditorWidget::new(&mut state.doc, &mut state.view)
+                    .active(false)
+                    .show(ui);
+            },
+            state,
+        )
+    }
+
+    #[test]
+    fn inactive_widget_ignores_keyboard_and_text() {
+        let mut h = inactive_harness("keep");
+        h.event(Event::Text("nope".into()));
+        h.step();
+        h.key_press(Key::Backspace);
+        h.step();
+        assert_eq!(semantic(&h).text, "keep");
     }
 
     #[test]

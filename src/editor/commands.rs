@@ -28,6 +28,10 @@ pub enum Movement {
     LineEnd,
     DocStart,
     DocEnd,
+    /// One viewport page up; carries the page size in lines.
+    PageUp(usize),
+    /// One viewport page down; carries the page size in lines.
+    PageDown(usize),
 }
 
 /// Everything the widget (or a test) can ask a [`Document`] to do.
@@ -41,6 +45,12 @@ pub enum EditorCommand {
     /// Delete selection, or one grapheme right of the caret.
     DeleteForward,
     Move { movement: Movement, extend: bool },
+    /// Tab: indent every selected line (or insert one indent at the caret)
+    /// as one undoable transaction.
+    Indent,
+    /// Shift-Tab: remove one indentation level from every selected line as
+    /// one undoable transaction.
+    Outdent,
     SetCursor(Cursor),
     /// Move the head only (mouse drag / shift-click).
     ExtendTo(Cursor),
@@ -69,6 +79,9 @@ pub struct Document {
     ime: ImeState,
     /// Column the caret aims for during vertical movement across short lines.
     goal_column: Option<usize>,
+    /// Monotonic counter bumped on every buffer mutation (edit, undo, redo).
+    /// Lets callers detect edits without diffing text.
+    revision: u64,
 }
 
 impl Document {
@@ -86,7 +99,14 @@ impl Document {
             history: EditHistory::default(),
             ime: ImeState::default(),
             goal_column: None,
+            revision: 0,
         }
+    }
+
+    /// Monotonic revision counter: bumped on every buffer mutation.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     #[must_use]
@@ -145,10 +165,24 @@ impl Document {
     pub fn apply(&mut self, command: EditorCommand) {
         match command {
             EditorCommand::InsertText(text) => self.insert_text(&text, true),
-            EditorCommand::InsertNewline => self.insert_text("\n", false),
+            EditorCommand::InsertNewline => {
+                // Auto-indent: carry the current line's leading whitespace onto
+                // the new line, capped at the caret column (an Enter at column
+                // 0 of an indented line must not duplicate the indent).
+                let (start, _) = self.selection.ordered();
+                let start = movement::clamp(&self.buffer, start);
+                let indent: String = movement::line_text(&self.buffer, start.line)
+                    .chars()
+                    .take(start.column)
+                    .take_while(|c| *c == ' ' || *c == '\t')
+                    .collect();
+                self.insert_text(&format!("\n{indent}"), false);
+            }
             EditorCommand::Backspace => self.delete(true),
             EditorCommand::DeleteForward => self.delete(false),
             EditorCommand::Move { movement, extend } => self.do_move(movement, extend),
+            EditorCommand::Indent => self.indent(),
+            EditorCommand::Outdent => self.outdent(),
             EditorCommand::SetCursor(cursor) => {
                 self.set_selection(Selection::collapsed(movement::clamp(&self.buffer, cursor)));
             }
@@ -167,12 +201,14 @@ impl Document {
             EditorCommand::Undo => {
                 if let Some(sel) = self.history.undo(&mut self.buffer) {
                     self.selection = clamp_selection(&self.buffer, sel);
+                    self.revision += 1;
                 }
                 self.goal_column = None;
             }
             EditorCommand::Redo => {
                 if let Some(sel) = self.history.redo(&mut self.buffer) {
                     self.selection = clamp_selection(&self.buffer, sel);
+                    self.revision += 1;
                 }
                 self.goal_column = None;
             }
@@ -220,9 +256,44 @@ impl Document {
         );
     }
 
+    /// Number of spaces smart backspace removes at the caret: when the line
+    /// prefix before the caret is pure spaces (2–4 of them), the whole
+    /// indentation step deletes in one keypress.
+    fn smart_backspace_spaces(&self) -> usize {
+        if self.selection.is_range() {
+            return 0;
+        }
+        let caret = movement::clamp(&self.buffer, self.selection.head);
+        let prefix: String = movement::line_text(&self.buffer, caret.line)
+            .chars()
+            .take(caret.column)
+            .collect();
+        if !prefix.is_empty() && prefix.chars().all(|c| c == ' ') {
+            prefix.chars().count().min(4)
+        } else {
+            0
+        }
+    }
+
     /// Deletes the selection, or one grapheme backward/forward of the caret.
+    /// Backward deletion inside pure leading spaces removes one logical
+    /// indentation level (smart backspace).
     fn delete(&mut self, backward: bool) {
         let selection_before = self.selection;
+        if backward {
+            let spaces = self.smart_backspace_spaces();
+            if spaces > 1 {
+                let caret = movement::clamp(&self.buffer, self.selection.head);
+                let end_char = movement::cursor_to_char(&self.buffer, caret);
+                let start_char = end_char - spaces;
+                let ops = vec![EditOperation::Delete {
+                    pos: start_char,
+                    text: self.buffer.slice(start_char, end_char),
+                }];
+                self.commit(ops, selection_before, start_char, false);
+                return;
+            }
+        }
         let (start_char, end_char) = if self.selection.is_range() {
             let (start, end) = self.selection.ordered();
             (
@@ -273,14 +344,129 @@ impl Document {
         transaction.selection_after = Selection::collapsed(caret);
         self.selection = transaction.selection_after;
         self.goal_column = None;
+        self.revision += 1;
         self.history.record(transaction, coalesce);
+    }
+
+    /// Like [`Self::commit`], but keeps an explicit (possibly ranged)
+    /// selection after the edit — used by indent/outdent, which must leave
+    /// the multi-line selection in place.
+    fn commit_with_selection(
+        &mut self,
+        ops: Vec<EditOperation>,
+        selection_before: Selection,
+        selection_after: Selection,
+    ) {
+        let transaction = Transaction {
+            ops,
+            selection_before,
+            selection_after,
+        };
+        if let Err(e) = transaction.apply(&mut self.buffer) {
+            log::error!("editor: invalid transaction application: {e}");
+            return;
+        }
+        self.selection = clamp_selection(&self.buffer, selection_after);
+        self.goal_column = None;
+        self.revision += 1;
+        self.history.record(transaction, false);
+    }
+
+    /// The inclusive line range an indent/outdent operates on. A selection
+    /// ending at column 0 of a later line excludes that line (platform
+    /// convention).
+    fn indent_line_range(&self) -> (usize, usize) {
+        let (start, end) = self.selection.ordered();
+        let last = if end.line > start.line && end.column == 0 {
+            end.line - 1
+        } else {
+            end.line
+        };
+        (start.line, last)
+    }
+
+    /// Tab: with a multi-line selection, prefix every selected line with one
+    /// indent step as one transaction; otherwise insert an indent at the caret.
+    fn indent(&mut self) {
+        const INDENT: &str = "    ";
+        let selection_before = self.selection;
+        let (first, last) = self.indent_line_range();
+        if !selection_before.is_range() || first == last {
+            self.insert_text(INDENT, false);
+            return;
+        }
+        // Insert back-to-front so earlier positions stay valid as ops apply
+        // in order.
+        let ops: Vec<EditOperation> = (first..=last)
+            .rev()
+            .map(|line| EditOperation::Insert {
+                pos: self.buffer.line_to_char(line),
+                text: INDENT.to_string(),
+            })
+            .collect();
+        let shift = |c: Cursor| {
+            if c.line >= first && c.line <= last && c.column > 0 {
+                Cursor::new(c.line, c.column + INDENT.len())
+            } else if c.line >= first && c.line <= last {
+                Cursor::new(c.line, INDENT.len())
+            } else {
+                c
+            }
+        };
+        let after = Selection::new(shift(selection_before.anchor), shift(selection_before.head));
+        self.commit_with_selection(ops, selection_before, after);
+    }
+
+    /// Shift-Tab: remove up to one indent step (4 spaces or one tab) from the
+    /// start of every selected line as one transaction.
+    fn outdent(&mut self) {
+        let selection_before = self.selection;
+        let (first, last) = self.indent_line_range();
+        let mut ops = Vec::new();
+        let mut removed_per_line = vec![0usize; last - first + 1];
+        for line in (first..=last).rev() {
+            let text = movement::line_text(&self.buffer, line);
+            let removed = if text.starts_with('\t') {
+                1
+            } else {
+                text.chars().take_while(|c| *c == ' ').count().min(4)
+            };
+            if removed > 0 {
+                let pos = self.buffer.line_to_char(line);
+                ops.push(EditOperation::Delete {
+                    pos,
+                    text: self.buffer.slice(pos, pos + removed),
+                });
+                removed_per_line[line - first] = removed;
+            }
+        }
+        if ops.is_empty() {
+            return;
+        }
+        let shift = |c: Cursor| {
+            if c.line >= first && c.line <= last {
+                Cursor::new(
+                    c.line,
+                    c.column.saturating_sub(removed_per_line[c.line - first]),
+                )
+            } else {
+                c
+            }
+        };
+        let after = Selection::new(shift(selection_before.anchor), shift(selection_before.head));
+        self.commit_with_selection(ops, selection_before, after);
     }
 
     fn do_move(&mut self, m: Movement, extend: bool) {
         let head = self.selection.head;
-        let goal = match m {
-            Movement::Up | Movement::Down => *self.goal_column.get_or_insert(head.column),
-            _ => head.column,
+        let vertical = matches!(
+            m,
+            Movement::Up | Movement::Down | Movement::PageUp(_) | Movement::PageDown(_)
+        );
+        let goal = if vertical {
+            *self.goal_column.get_or_insert(head.column)
+        } else {
+            head.column
         };
         let new_head = match m {
             Movement::Left => movement::left(&self.buffer, head),
@@ -293,6 +479,8 @@ impl Document {
             Movement::LineEnd => movement::line_end(&self.buffer, head),
             Movement::DocStart => movement::doc_start(),
             Movement::DocEnd => movement::doc_end(&self.buffer),
+            Movement::PageUp(rows) => movement::page_up(&self.buffer, head, goal, rows),
+            Movement::PageDown(rows) => movement::page_down(&self.buffer, head, goal, rows),
         };
         // Collapsing a selection with plain left/right jumps to its edge.
         let new_head = if !extend
@@ -313,7 +501,7 @@ impl Document {
         } else {
             Selection::collapsed(new_head)
         };
-        if !matches!(m, Movement::Up | Movement::Down) {
+        if !vertical {
             self.goal_column = None;
         }
         self.history.break_group();
@@ -494,6 +682,171 @@ mod tests {
         // Commit is undoable like any transaction.
         d.apply(EditorCommand::Undo);
         assert_eq!(d.text(), "x");
+    }
+
+    #[test]
+    fn tab_inserts_indent_at_caret_without_selection() {
+        let mut d = doc("ab");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 1)));
+        d.apply(EditorCommand::Indent);
+        assert_eq!(d.text(), "a    b");
+        assert_eq!(d.cursor(), Cursor::new(0, 5));
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "ab");
+    }
+
+    #[test]
+    fn indent_multiline_selection_is_one_transaction() {
+        let mut d = doc("one\ntwo\nthree");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 1)));
+        d.apply(EditorCommand::ExtendTo(Cursor::new(2, 2)));
+        d.apply(EditorCommand::Indent);
+        assert_eq!(d.text(), "    one\n    two\n    three");
+        // Selection survives, shifted by the indent.
+        assert_eq!(d.selected_text(), "ne\n    two\n    th");
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "one\ntwo\nthree");
+    }
+
+    #[test]
+    fn indent_excludes_line_when_selection_ends_at_its_start() {
+        let mut d = doc("one\ntwo\nthree");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 0)));
+        d.apply(EditorCommand::ExtendTo(Cursor::new(2, 0)));
+        d.apply(EditorCommand::Indent);
+        assert_eq!(d.text(), "    one\n    two\nthree");
+    }
+
+    #[test]
+    fn outdent_removes_one_level_per_line_as_one_transaction() {
+        let mut d = doc("    one\n  two\n\tthree\nfour");
+        d.apply(EditorCommand::SelectAll);
+        d.apply(EditorCommand::Outdent);
+        assert_eq!(d.text(), "one\ntwo\nthree\nfour");
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "    one\n  two\n\tthree\nfour");
+        // Fully outdented text is a no-op (no phantom transaction recorded).
+        let mut d = doc("plain");
+        d.apply(EditorCommand::Outdent);
+        assert!(!d.semantic_state(0.0).can_undo);
+    }
+
+    #[test]
+    fn smart_backspace_removes_pure_indent_block() {
+        let mut d = doc("    x");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 4)));
+        d.apply(EditorCommand::Backspace);
+        assert_eq!(d.text(), "x");
+        // Mixed prefix deletes one grapheme only.
+        let mut d = doc("foo   ");
+        d.apply(EditorCommand::Move {
+            movement: Movement::DocEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::Backspace);
+        assert_eq!(d.text(), "foo  ");
+        // A single leading space deletes normally.
+        let mut d = doc(" x");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 1)));
+        d.apply(EditorCommand::Backspace);
+        assert_eq!(d.text(), "x");
+    }
+
+    #[test]
+    fn enter_carries_leading_indent_capped_at_caret() {
+        let mut d = doc("    item");
+        d.apply(EditorCommand::Move {
+            movement: Movement::LineEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::InsertNewline);
+        assert_eq!(d.text(), "    item\n    ");
+        assert_eq!(d.cursor(), Cursor::new(1, 4));
+        // Enter at column 0 of an indented line does not duplicate the indent.
+        let mut d = doc("    item");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 0)));
+        d.apply(EditorCommand::InsertNewline);
+        assert_eq!(d.text(), "\n    item");
+    }
+
+    #[test]
+    fn page_movement_moves_by_rows_and_clamps() {
+        let text = (0..100).map(|i| format!("line{i}")).collect::<Vec<_>>();
+        let mut d = doc(&text.join("\n"));
+        d.apply(EditorCommand::Move {
+            movement: Movement::PageDown(20),
+            extend: false,
+        });
+        assert_eq!(d.cursor().line, 20);
+        d.apply(EditorCommand::Move {
+            movement: Movement::PageUp(50),
+            extend: false,
+        });
+        assert_eq!(d.cursor().line, 0);
+        d.apply(EditorCommand::Move {
+            movement: Movement::PageDown(500),
+            extend: true,
+        });
+        assert_eq!(d.cursor().line, 99);
+        assert!(d.selection().is_range());
+    }
+
+    #[test]
+    fn down_at_document_end_is_a_noop_never_an_append() {
+        // Regression: the old TextEditorApp appended a newline when pressing
+        // Down at the end of the document.
+        let mut d = doc("last line");
+        d.apply(EditorCommand::Move {
+            movement: Movement::DocEnd,
+            extend: false,
+        });
+        let before = d.revision();
+        d.apply(EditorCommand::Move {
+            movement: Movement::Down,
+            extend: false,
+        });
+        assert_eq!(d.text(), "last line");
+        assert_eq!(d.revision(), before);
+    }
+
+    #[test]
+    fn revision_bumps_on_edit_undo_and_redo_only() {
+        let mut d = doc("");
+        assert_eq!(d.revision(), 0);
+        d.apply(EditorCommand::Move {
+            movement: Movement::Right,
+            extend: false,
+        });
+        assert_eq!(d.revision(), 0);
+        d.apply(EditorCommand::InsertText("a".into()));
+        assert_eq!(d.revision(), 1);
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.revision(), 2);
+        d.apply(EditorCommand::Redo);
+        assert_eq!(d.revision(), 3);
+        // Empty undo stack: no bump.
+        d.apply(EditorCommand::Redo);
+        assert_eq!(d.revision(), 3);
+    }
+
+    #[test]
+    fn large_document_basic_ops() {
+        let text = (0..10_000).map(|i| format!("line {i}")).collect::<Vec<_>>();
+        let mut d = doc(&text.join("\n"));
+        assert_eq!(d.buffer().line_count(), 10_000);
+        d.apply(EditorCommand::Move {
+            movement: Movement::DocEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::InsertText("!".into()));
+        assert!(d.text().ends_with("line 9999!"));
+        d.apply(EditorCommand::SetCursor(Cursor::new(5000, 0)));
+        d.apply(EditorCommand::SelectLineAt(5000));
+        assert_eq!(d.selected_text(), "line 5000\n");
+        d.apply(EditorCommand::Backspace);
+        d.apply(EditorCommand::Undo);
+        d.apply(EditorCommand::Undo);
+        assert!(d.text().ends_with("line 9999"));
     }
 
     #[test]

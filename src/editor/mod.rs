@@ -32,7 +32,6 @@ pub mod widget;
 
 pub use commands::{Document, EditorCommand};
 pub use cursor::{Cursor, Selection};
-pub use transaction::Transaction;
 pub use view::ViewState;
 
 /// Snapshot of the editor's semantic state, for host inspection and tests.

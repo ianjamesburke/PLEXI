@@ -101,6 +101,33 @@ pub fn down(buffer: &TextBuffer, cursor: Cursor, goal_column: usize) -> Cursor {
     clamp(buffer, Cursor::new(cursor.line + 1, goal_column))
 }
 
+/// One page up: `rows` lines toward the document start, keeping `goal_column`.
+/// On the first line, jumps to the document start.
+#[must_use]
+pub fn page_up(buffer: &TextBuffer, cursor: Cursor, goal_column: usize, rows: usize) -> Cursor {
+    if cursor.line == 0 {
+        return Cursor::new(0, 0);
+    }
+    clamp(
+        buffer,
+        Cursor::new(cursor.line.saturating_sub(rows.max(1)), goal_column),
+    )
+}
+
+/// One page down: `rows` lines toward the document end, keeping `goal_column`.
+/// On the last line, jumps to the document end.
+#[must_use]
+pub fn page_down(buffer: &TextBuffer, cursor: Cursor, goal_column: usize, rows: usize) -> Cursor {
+    let last = buffer.line_count().saturating_sub(1);
+    if cursor.line >= last {
+        return doc_end(buffer);
+    }
+    clamp(
+        buffer,
+        Cursor::new((cursor.line + rows.max(1)).min(last), goal_column),
+    )
+}
+
 /// Char class of a grapheme cluster (by its first char): word, whitespace,
 /// or punctuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

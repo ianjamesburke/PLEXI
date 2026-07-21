@@ -17,6 +17,7 @@ mod broker;
 mod cli;
 
 mod config;
+mod editor;
 mod features;
 mod file_browser;
 mod host;

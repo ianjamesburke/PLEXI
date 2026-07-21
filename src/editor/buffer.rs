@@ -81,6 +81,7 @@ impl TextBuffer {
         self.rope.len_chars()
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rope.len_chars() == 0
