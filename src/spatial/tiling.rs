@@ -451,6 +451,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         if is_drag_hovering {
             if let Some(t) = self.panes.get_mut(pane_id).and_then(Pane::as_terminal_mut) {
                 write_dropped_paths_to_terminal(ui, t);
+            } else if let Some(app) = self.panes.get_mut(pane_id).and_then(Pane::as_app_mut) {
+                deliver_dropped_files_to_app(ui, *pane_id, app);
             }
         }
 
@@ -749,6 +751,35 @@ pub(crate) fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPan
             .process_command(BackendCommand::Write(escaped.as_bytes().to_vec()));
         log::info!("drop: path written ok");
     }
+}
+
+pub(crate) fn deliver_dropped_files_to_app(
+    ui: &egui::Ui,
+    pane_id: PaneId,
+    app: &mut crate::host::pane::AppPane,
+) {
+    for file in ui.input(|i| i.raw.dropped_files.clone()) {
+        let Some(path) = file.path else { continue };
+        let source = path.to_string_lossy();
+        match dispatch_drop_to_app(pane_id, app, &source, true) {
+            Ok(_) => log::info!("drop: delivery accepted pane_id={pane_id} source_kind=file"),
+            Err(error) => log::info!("drop: delivery rejected pane_id={pane_id} reason={error}"),
+        }
+    }
+}
+
+pub(crate) fn dispatch_drop_to_app(
+    pane_id: PaneId,
+    app: &mut crate::host::pane::AppPane,
+    source: &str,
+    pane_hovered: bool,
+) -> Result<serde_json::Value, String> {
+    if !pane_hovered || app.hidden {
+        return Err(format!(
+            "pane {pane_id} is not an eligible hovered drop target"
+        ));
+    }
+    app.runtime.drop_file(source)
 }
 
 // ── Portal mini-map ───────────────────────────────────────────────────────────

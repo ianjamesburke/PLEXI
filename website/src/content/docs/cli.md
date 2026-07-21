@@ -652,6 +652,7 @@ Control panes — list, focus, send input, capture output, and more
 | `info` | Print details about the current pane (or the previously focused pane) as JSON |
 | `capture` | Capture the last N lines of a pane's output as a JSON array |
 | `key` | Send a key press to a pane |
+| `drop` | Drop a local file or image URL onto a pane |
 | `click` | Inject a synthetic pointer click into an app pane, for driving canvas interaction without OS-level automation |
 | `command` | Send a shell command to a terminal pane as if typed from the keyboard |
 | `state` | Return the current UI state of a pane as JSON |
@@ -776,6 +777,15 @@ Example: plexi pane key 42 enter
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id to send the key to (from `plexi pane list`) |
 | `<key>` | string | yes | Key to press |
+
+### `plexi pane drop`
+
+Drop a local file or image URL onto a pane
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes |  |
+| `<path_or_url>` | string | yes |  |
 
 ### `plexi pane click`
 

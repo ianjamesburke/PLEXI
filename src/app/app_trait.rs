@@ -314,6 +314,17 @@ pub trait App: Send {
     /// the new name into the note's frontmatter `title`.
     fn on_pane_renamed(&mut self, _name: &str) {}
 
+    /// Read-only, app-owned semantic details appended to `plexi pane state`.
+    /// Production state is authoritative; callers may only serialize it.
+    fn semantic_state(&self) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Deliver a host file/URL drop through the app's production handler.
+    fn drop_file(&mut self, _path_or_url: &str) -> Result<serde_json::Value, String> {
+        Err("this app does not accept file drops".to_string())
+    }
+
     /// Concrete-type access for host tests that assert on app-internal state
     /// through `AppRuntime::Builtin`'s `dyn App`. Test-only: the sole consumer
     /// is `HostHarness` (`src/testing/`), which is `#[cfg(test)]`.

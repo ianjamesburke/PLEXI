@@ -540,10 +540,10 @@ pub use open::{
     OpenPrefix,
 };
 pub use pane::{
-    pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_focus_cli,
-    pane_info_cli, pane_key_cli, pane_list_cli, pane_self_cli, pane_send_cli, pane_set_title_cli,
-    pane_slot_delete_cli, pane_slot_list_cli, pane_slot_read_cli, pane_slot_write_cli,
-    pane_state_cli,
+    pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drop_cli,
+    pane_focus_cli, pane_info_cli, pane_key_cli, pane_list_cli, pane_self_cli, pane_send_cli,
+    pane_set_title_cli, pane_slot_delete_cli, pane_slot_list_cli, pane_slot_read_cli,
+    pane_slot_write_cli, pane_state_cli,
 };
 pub use routine::{routine_list, routine_run};
 pub use run::{run_command, run_list_commands};

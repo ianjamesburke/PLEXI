@@ -799,6 +799,11 @@ impl PlexiApp {
                             if let Some(app_pane) =
                                 ctx.panes.get_mut(&pane_id).and_then(|p| p.as_app_mut())
                             {
+                                if dropped_to_zoom {
+                                    crate::spatial::tiling::deliver_dropped_files_to_app(
+                                        &app_ui, pane_id, app_pane,
+                                    );
+                                }
                                 let pending_click = pending_pane_clicks.remove(&pane_id);
                                 crate::render::app_pane::render(
                                     &mut app_ui,

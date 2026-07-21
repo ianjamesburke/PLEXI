@@ -1387,6 +1387,47 @@ impl PlexiApp {
                     }
                 }
             }
+            crate::app_protocol::AppRequest::DropFile {
+                pane_id,
+                path_or_url,
+                response_file,
+            } => {
+                let result = (|| {
+                    let Some((win_idx, _tile_id)) = self.find_pane_in_any_window(*pane_id) else {
+                        return Err(format!("pane {pane_id} not found"));
+                    };
+                    if !self.pane_navigate(*pane_id) {
+                        return Err(format!("pane {pane_id} could not be focused for drop"));
+                    }
+                    let app = self.windows[win_idx]
+                        .panes
+                        .get_mut(pane_id)
+                        .and_then(crate::host::pane::Pane::as_app_mut)
+                        .ok_or_else(|| format!("pane {pane_id} cannot accept this drop"))?;
+                    crate::spatial::tiling::dispatch_drop_to_app(*pane_id, app, path_or_url, true)
+                })();
+                match &result {
+                    Ok(_) => log::info!(
+                        "drop: delivery accepted pane_id={pane_id} source_kind={}",
+                        if path_or_url.contains("://") {
+                            "url"
+                        } else {
+                            "file"
+                        }
+                    ),
+                    Err(error) => {
+                        log::info!("drop: delivery rejected pane_id={pane_id} reason={error}")
+                    }
+                }
+                let json = match result {
+                    Ok(value) => serde_json::json!({"ok": true, "delivery": value}),
+                    Err(error) => serde_json::json!({"error": error}),
+                };
+                if let Err(error) = std::fs::write(response_file, json.to_string()) {
+                    log::error!("pane_ipc: drop_file response write failed: {error}");
+                }
+                self.ctx.request_repaint();
+            }
             crate::app_protocol::AppRequest::ClickPane {
                 pane_id,
                 x,
@@ -1656,6 +1697,7 @@ impl PlexiApp {
                                 .frame_json()
                                 .unwrap_or(serde_json::Value::Array(vec![]));
                             let semantic = app_pane.semantic_state();
+                            let app_state = app_pane.runtime.semantic_details();
                             let lifecycle = match &app_pane.runtime {
                                 crate::host::pane::AppRuntime::Wasm(wasm) => if wasm.is_running() {
                                     "running"
@@ -1680,6 +1722,7 @@ impl PlexiApp {
                                 "lifecycle": lifecycle,
                                 "frame": frame,
                                 "semantic": semantic,
+                                "app_state": app_state,
                             })
                             .to_string()
                         } else if let Some(term) = pane.as_terminal() {

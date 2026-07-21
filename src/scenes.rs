@@ -154,6 +154,8 @@ pub enum Step {
     Text { text: TextSpec },
     /// Press a key combo against a pane handle or the whole host.
     Key { key: KeySpec },
+    /// Deliver a local file or image URL through the production pane drop path.
+    DropFile { drop_file: DropFileSpec },
     /// Focus an opened pane through the production pane-navigation path.
     Focus { focus: String },
     /// Close an opened pane through the production pane-close path.
@@ -257,6 +259,15 @@ pub struct KeySpec {
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
+pub struct DropFileSpec {
+    pub target: String,
+    pub value: String,
+    #[serde(default)]
+    pub expect_rejected: bool,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct AssertLabelSpec {
     pub target: String,
     pub label: String,
@@ -300,8 +311,87 @@ pub struct ExpectSpec {
     pub after_text: Option<String>,
     pub node_changes: Option<String>,
     pub tree_contains: Option<String>,
+    pub focused: Option<bool>,
+    pub caret: Option<usize>,
+    pub selection: Option<[usize; 2]>,
+    pub undo_available: Option<bool>,
+    pub redo_available: Option<bool>,
+    pub save_result: Option<String>,
+    pub source_text_contains: Option<String>,
+    pub active_markdown_contains: Option<String>,
+    pub rendered_text_contains: Option<String>,
+    pub visible_link_target: Option<String>,
+    pub visible_image_target: Option<String>,
+    pub drop_result: Option<String>,
     #[serde(default = "default_expect_timeout")]
     pub timeout_s: f32,
+}
+
+fn notes_expectations_match(spec: &ExpectSpec, state: &serde_json::Value) -> bool {
+    let app = state
+        .pointer("/app_state")
+        .unwrap_or(&serde_json::Value::Null);
+    let string_contains = |pointer: &str, needle: &Option<String>| {
+        needle.as_ref().is_none_or(|needle| {
+            app.pointer(pointer)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| value.contains(needle))
+        })
+    };
+    let array_contains = |pointer: &str, needle: &Option<String>| {
+        needle.as_ref().is_none_or(|needle| {
+            app.pointer(pointer)
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(needle)))
+        })
+    };
+    let rendered_matches = spec.rendered_text_contains.as_ref().is_none_or(|needle| {
+        state
+            .pointer("/semantic/nodes")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|nodes| nodes.iter().any(|node| node.to_string().contains(needle)))
+    });
+    spec.focused.is_none_or(|expected| {
+        app.get("focused").and_then(serde_json::Value::as_bool) == Some(expected)
+    }) && spec.caret.is_none_or(|expected| {
+        app.get("caret").and_then(serde_json::Value::as_u64) == Some(expected as u64)
+    }) && spec.selection.is_none_or(|[anchor, caret]| {
+        app.pointer("/primary_selection/anchor")
+            .and_then(serde_json::Value::as_u64)
+            == Some(anchor as u64)
+            && app
+                .pointer("/primary_selection/caret")
+                .and_then(serde_json::Value::as_u64)
+                == Some(caret as u64)
+    }) && spec.undo_available.is_none_or(|expected| {
+        app.get("undo_available")
+            .and_then(serde_json::Value::as_bool)
+            == Some(expected)
+    }) && spec.redo_available.is_none_or(|expected| {
+        app.get("redo_available")
+            .and_then(serde_json::Value::as_bool)
+            == Some(expected)
+    }) && spec.save_result.as_ref().is_none_or(|expected| {
+        app.get("last_save_result")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                app.pointer("/last_save_result/result")
+                    .and_then(serde_json::Value::as_str)
+            })
+            == Some(expected)
+    }) && string_contains("/source_text", &spec.source_text_contains)
+        && string_contains(
+            "/active_markdown_block/source",
+            &spec.active_markdown_contains,
+        )
+        && rendered_matches
+        && array_contains("/visible_link_targets", &spec.visible_link_target)
+        && array_contains("/visible_images", &spec.visible_image_target)
+        && spec.drop_result.as_ref().is_none_or(|expected| {
+            app.pointer("/last_drop_result/result")
+                .and_then(serde_json::Value::as_str)
+                == Some(expected)
+        })
 }
 
 fn default_expect_timeout() -> f32 {
@@ -682,7 +772,7 @@ fn write_failure_bundle(
         dir.join("semantic.json"),
         serde_json::to_vec_pretty(&semantic).unwrap_or_default(),
     );
-    let log_path = dirs::home_dir().map(|home| home.join(".plexi-alpha/plexi.log"));
+    let log_path = Some(crate::config::config_dir().join("plexi.log"));
     let log_tail = log_path
         .and_then(|path| std::fs::read_to_string(path).ok())
         .map(|log| {
@@ -697,6 +787,35 @@ fn write_failure_bundle(
         })
         .unwrap_or_default();
     let _ = std::fs::write(dir.join("log-tail.txt"), log_tail);
+    let _ = std::fs::write(
+        dir.join("scene-event-trace.json"),
+        serde_json::to_vec_pretty(&error.poll_history).unwrap_or_default(),
+    );
+    let note_path = semantic
+        .pointer("/app_state/path")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from);
+    if let Some(path) = &note_path {
+        if let Ok(saved) = std::fs::read(path) {
+            let _ = std::fs::write(dir.join("saved-note.md"), saved);
+        }
+    }
+    let attachments = note_path
+        .as_deref()
+        .and_then(Path::parent)
+        .map(|parent| parent.join("assets"))
+        .and_then(|assets| std::fs::read_dir(assets).ok())
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path().display().to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let _ = std::fs::write(
+        dir.join("attachment-manifest.json"),
+        serde_json::to_vec_pretty(&attachments).unwrap_or_default(),
+    );
     let manifest = serde_json::json!({"step_index": step, "backend": backend, "code": error.code, "message": error.message, "poll_history": error.poll_history, "screenshot": screenshot});
     let _ = std::fs::write(
         dir.join("manifest.json"),
@@ -1048,6 +1167,33 @@ impl LiveBackend {
                     target: key.target.clone(),
                     pane_id: Some(pane_id),
                     value: key.value.clone(),
+                }))
+            }
+            Step::DropFile { drop_file } => {
+                let pane_id =
+                    resolve_live_pane_target(&self.handles, &drop_file.target, "file drop")?;
+                let result = self.command(
+                    &[
+                        "pane".into(),
+                        "drop".into(),
+                        pane_id.to_string(),
+                        drop_file.value.clone(),
+                    ],
+                    true,
+                );
+                match (result, drop_file.expect_rejected) {
+                    (Ok(_), false) | (Err(_), true) => {}
+                    (Ok(_), true) => {
+                        return Err(SceneError::new(
+                            "drop_unexpectedly_accepted",
+                            "drop was accepted but the scene expected rejection",
+                        ));
+                    }
+                    (Err(error), false) => return Err(error),
+                }
+                let _ = self.settled_state(pane_id, Duration::from_secs(5))?;
+                Ok(Some(StepDetail::Message {
+                    message: format!("dropped file onto {} (pane {pane_id})", drop_file.target),
                 }))
             }
             Step::Focus { focus } => {
@@ -1439,7 +1585,7 @@ impl LiveBackend {
                 .tree_contains
                 .as_ref()
                 .is_none_or(|needle| state.to_string().contains(needle));
-            if changed && contains {
+            if changed && contains && notes_expectations_match(spec, &state) {
                 break;
             }
             if Instant::now() >= deadline {
@@ -1583,6 +1729,20 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
                         backend.app_state(),
                         None,
                     );
+                    if let Some(pane_id) = backend.last_app_pane {
+                        let screenshot = PathBuf::from(&bundle).join("screenshot.png");
+                        let _ = backend.command(
+                            &[
+                                "host".into(),
+                                "screenshot".into(),
+                                "--pane".into(),
+                                pane_id.to_string(),
+                                "--output".into(),
+                                screenshot.to_string_lossy().into_owned(),
+                            ],
+                            true,
+                        );
+                    }
                     steps.push(StepResult {
                         index,
                         step: step_label(step),
@@ -1659,6 +1819,7 @@ fn step_label(step: &Step) -> String {
             text.value.chars().count()
         ),
         Step::Key { key } => format!("key {} {}", key.target, key.value),
+        Step::DropFile { drop_file } => format!("drop_file {}", drop_file.target),
         Step::Focus { focus } => format!("focus {focus}"),
         Step::Close { close } => format!("close {close}"),
         Step::Sidebar { sidebar } => format!("sidebar {sidebar}"),
@@ -1845,6 +2006,41 @@ impl HeadlessBackend {
                     target: key.target.clone(),
                     pane_id,
                     value: key.value.clone(),
+                }))
+            }
+            Step::DropFile { drop_file } => {
+                let pane_id = self.handles.resolve(&drop_file.target)?;
+                let response = self
+                    .h
+                    .workspace_root()
+                    .join(format!("scene-drop-{pane_id}.json"));
+                self.h.with_app_mut(|app| {
+                    app.handle_pane_ipc_request(crate::app_protocol::AppRequest::DropFile {
+                        pane_id,
+                        path_or_url: drop_file.value.clone(),
+                        response_file: response.to_string_lossy().into_owned(),
+                    })
+                });
+                self.h.step();
+                let bytes = std::fs::read(&response)
+                    .map_err(|e| SceneError::new("drop_delivery_failed", e.to_string()))?;
+                let value: serde_json::Value = serde_json::from_slice(&bytes)
+                    .map_err(|e| SceneError::new("drop_delivery_failed", e.to_string()))?;
+                let rejected = value.get("error").and_then(|v| v.as_str());
+                match (rejected, drop_file.expect_rejected) {
+                    (None, false) | (Some(_), true) => {}
+                    (None, true) => {
+                        return Err(SceneError::new(
+                            "drop_unexpectedly_accepted",
+                            "drop was accepted but the scene expected rejection",
+                        ));
+                    }
+                    (Some(error), false) => {
+                        return Err(SceneError::new("drop_rejected", error));
+                    }
+                }
+                Ok(Some(StepDetail::Message {
+                    message: format!("dropped file onto {} (pane {pane_id})", drop_file.target),
                 }))
             }
             Step::Focus { focus } => {
@@ -2165,7 +2361,7 @@ impl HeadlessBackend {
                 .tree_contains
                 .as_ref()
                 .is_none_or(|needle| state.to_string().contains(needle));
-            if changed && contains {
+            if changed && contains && notes_expectations_match(spec, &state) {
                 return Ok(None);
             }
             if Instant::now() >= deadline {
@@ -2209,6 +2405,16 @@ impl HeadlessBackend {
         self.h.with_app(|app| {
             for win in &app.windows {
                 if let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) {
+                    if let AppRuntime::Builtin(_) = &app_pane.runtime {
+                        return Some(AppState {
+                            pane_id,
+                            lifecycle: "running".to_string(),
+                            tree: serde_json::json!({
+                                "semantic": app_pane.semantic_state(),
+                                "app_state": app_pane.runtime.semantic_details(),
+                            }),
+                        });
+                    }
                     if let AppRuntime::Python(_) = &app_pane.runtime {
                         return Some(AppState {
                             pane_id,

@@ -807,6 +807,22 @@ impl AppRuntime {
         }
     }
 
+    pub(crate) fn semantic_details(&self) -> Option<serde_json::Value> {
+        match self {
+            AppRuntime::Builtin(app) => app.semantic_state(),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+        }
+    }
+
+    pub(crate) fn drop_file(&mut self, path_or_url: &str) -> Result<serde_json::Value, String> {
+        match self {
+            AppRuntime::Builtin(app) => app.drop_file(path_or_url),
+            AppRuntime::Python(_) | AppRuntime::Wasm(_) => {
+                Err("target app does not accept file drops".to_string())
+            }
+        }
+    }
+
     pub fn type_id(&self) -> &'static str {
         match self {
             AppRuntime::Builtin(app) => app.type_id(),

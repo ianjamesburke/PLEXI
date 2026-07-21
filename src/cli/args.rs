@@ -1048,6 +1048,8 @@ pub enum PaneCmd {
         /// Key to press
         key: String,
     },
+    /// Drop a local file or image URL onto a pane.
+    Drop { pane_id: u64, path_or_url: String },
     /// Inject a synthetic pointer click into an app pane, for driving canvas
     /// interaction without OS-level automation.
     ///
