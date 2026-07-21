@@ -591,18 +591,30 @@ mod tests {
         h.open_file_browser(dir.path().to_path_buf());
         h.run_steps(2);
         h.harness()
-            .press_key_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
+            .key_down_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
+        h.step();
+        h.harness()
+            .key_up_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
+        h.step();
         h.run_steps(3);
 
         h.harness()
-            .press_key_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            .key_down_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.step();
+        h.harness()
+            .key_up_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.step();
         h.harness()
             .input_mut()
             .events
             .push(egui::Event::Text("renamed.txt".to_string()));
         h.step();
         h.harness()
-            .press_key_modifiers(egui::Modifiers::NONE, egui::Key::Enter);
+            .key_down_modifiers(egui::Modifiers::NONE, egui::Key::Enter);
+        h.step();
+        h.harness()
+            .key_up_modifiers(egui::Modifiers::NONE, egui::Key::Enter);
+        h.step();
         h.run_steps(2);
 
         assert!(!original.exists(), "Enter must rename the original path");
