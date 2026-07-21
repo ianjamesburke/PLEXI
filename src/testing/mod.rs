@@ -197,7 +197,10 @@ impl HostHarness {
         match win.tree.root {
             None => win.tree.root = Some(tile_id),
             Some(old_root) => {
-                let new_root = win.tree.tiles.insert_horizontal_tile(vec![old_root, tile_id]);
+                let new_root = win
+                    .tree
+                    .tiles
+                    .insert_horizontal_tile(vec![old_root, tile_id]);
                 win.tree.root = Some(new_root);
             }
         }
@@ -224,9 +227,9 @@ impl HostHarness {
     /// Run one egui frame with the given raw input.
     pub fn frame(&mut self, input: RawInput) -> &mut Self {
         let app = &mut self.app;
-        let full_output = self.ctx.run(input, |ctx| {
+        let full_output = self.ctx.run_ui(input, |ui| {
             use eframe::App;
-            app.update(ctx, &mut eframe::Frame::_new_kittest());
+            app.ui(ui, &mut eframe::Frame::_new_kittest());
         });
         self.last_platform_output = full_output.platform_output;
         self

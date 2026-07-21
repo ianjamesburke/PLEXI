@@ -1224,7 +1224,8 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         });
         let mut actions = Vec::new();
-        let _ = ctx.run(raw, |ctx| {
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             let mut input = crate::app::input_router::PlexiInput::take_from(ctx);
             actions = poll_actions(
                 &mut input, &table, /* app_active */ true, /* keyboard_capture */ false,

@@ -463,7 +463,11 @@ impl PlexiApp {
                             .font(egui::FontId::proportional(16.0))
                             .rows(6)
                             .margin(egui::Margin::symmetric(12, 10))
-                            .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::NotificationModal)))
+                            .surface(crate::ui::focus::SurfaceKey::Overlay(
+                                crate::app::input_owner::OverlaySurface::Layer(
+                                    crate::app::FocusKind::NotificationModal,
+                                ),
+                            ))
                             .log_name("notification_input")
                             .show(
                                 ui,

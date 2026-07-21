@@ -8,7 +8,11 @@ use std::path::{Path, PathBuf};
 /// already-loaded manifest, so `app check`/`app render` boot the app exactly
 /// the way the live host does (`wasm_python::WasmPythonRuntime`), not a
 /// separate native subprocess speaking a different wire protocol.
-fn python_launch_config(manifest: &AppManifest, entry_path: &Path, app_dir: &Path) -> PythonLaunchConfig {
+fn python_launch_config(
+    manifest: &AppManifest,
+    entry_path: &Path,
+    app_dir: &Path,
+) -> PythonLaunchConfig {
     python_launch_config_from_parts(
         &manifest.app.id,
         app_dir,
@@ -74,9 +78,13 @@ fn indexed_node_to_json(node: &crate::host::wasm_app::IndexedNode) -> serde_json
             "type": "Canvas", "width": c.width, "height": c.height, "commands": c.commands.len()
         }),
         UiNodeData::Divider => serde_json::json!({"type": "Divider"}),
-        UiNodeData::Space(s) => serde_json::json!({"type": "Space", "size": s.size, "grow": s.grow}),
+        UiNodeData::Space(s) => {
+            serde_json::json!({"type": "Space", "size": s.size, "grow": s.grow})
+        }
         UiNodeData::Surface(_) => serde_json::json!({"type": "Surface"}),
-        UiNodeData::AppBar(a) => serde_json::json!({"type": "AppBar", "title": a.title, "subtitle": a.subtitle}),
+        UiNodeData::AppBar(a) => {
+            serde_json::json!({"type": "AppBar", "title": a.title, "subtitle": a.subtitle})
+        }
         UiNodeData::FooterKeys(f) => serde_json::json!({
             "type": "FooterKeys",
             "entries": f.entries.iter().map(|e| serde_json::json!({"keys": e.keys, "description": e.description})).collect::<Vec<_>>(),
@@ -250,7 +258,8 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
             entry_path.display()
         ));
     }
-    let launch_config = is_python_entry.then(|| python_launch_config(&manifest, &entry_path, app_dir));
+    let launch_config =
+        is_python_entry.then(|| python_launch_config(&manifest, &entry_path, app_dir));
 
     // A guest that fails to boot fails identically at every size; stop after
     // the first boot failure instead of paying the probe cost 4 more times
@@ -327,9 +336,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                     &mut warnings,
                 );
             } else {
-                warnings.push(
-                    "seeded probe — skipped, not a Python entry".to_string(),
-                );
+                warnings.push("seeded probe — skipped, not a Python entry".to_string());
             }
         }
         Ok(None) => {
@@ -880,9 +887,12 @@ fn run_python_type_check_with(
     let entry_path = &entry_path
         .canonicalize()
         .map_err(|e| format!("could not resolve app entry {}: {e}", entry_path.display()))?;
-    let python = &python
-        .canonicalize()
-        .map_err(|e| format!("could not resolve app venv python {}: {e}", python.display()))?;
+    let python = &python.canonicalize().map_err(|e| {
+        format!(
+            "could not resolve app venv python {}: {e}",
+            python.display()
+        )
+    })?;
     if let Err(probe) = probe_mypy(python) {
         // One-time install into the app venv, mirroring how app
         // dependencies land there (`python_env::install_dependencies`).
@@ -898,7 +908,10 @@ fn run_python_type_check_with(
             )));
         }
         probe_mypy(python).map_err(|e| format!("mypy installed but still not importable: {e}"))?;
-        log::info!("app_check: installed mypy into the app venv at {}", python.display());
+        log::info!(
+            "app_check: installed mypy into the app venv at {}",
+            python.display()
+        );
     }
     let app_dir = entry_path.parent().unwrap_or_else(|| Path::new("."));
     let cache_dir = app_dir.join(".venv").join("mypy_cache");
@@ -1056,7 +1069,10 @@ mod app_check_tests {
         let manifest = manifest_with_on_launch("focus_maybe");
         let err = super::on_launch_error(&manifest)
             .expect("invalid on_launch must be reported as an error");
-        assert!(err.contains("on_launch"), "message must name the field: {err}");
+        assert!(
+            err.contains("on_launch"),
+            "message must name the field: {err}"
+        );
         assert!(
             err.contains("focus_existing") && err.contains("always_new"),
             "message must list the valid values: {err}"
@@ -1286,7 +1302,11 @@ profile_dir = ".plexi-beta"
 
         assert_eq!(
             super::discover_action_handlers(&frame),
-            vec!["cell-0".to_string(), "cell-1".to_string(), "reset".to_string()]
+            vec![
+                "cell-0".to_string(),
+                "cell-1".to_string(),
+                "reset".to_string()
+            ]
         );
     }
 
@@ -1401,7 +1421,9 @@ mod type_check_tests {
                 findings.contains("payload"),
                 "findings must name the bogus attribute: {findings}"
             ),
-            TypeCheckOutcome::Clean => panic!("`event.payload` on UiValueChange must fail the type gate"),
+            TypeCheckOutcome::Clean => {
+                panic!("`event.payload` on UiValueChange must fail the type gate")
+            }
             TypeCheckOutcome::Unavailable(reason) => panic!("mypy vanished mid-test: {reason}"),
         }
 

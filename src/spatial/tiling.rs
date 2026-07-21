@@ -233,7 +233,7 @@ pub(crate) fn paint_tab_bar(
             break_anywhere: true,
             overflow_character: Some('…'),
         };
-        let galley = painter.ctx().fonts(|f| f.layout_job(layout_job));
+        let galley = painter.ctx().fonts_mut(|f| f.layout_job(layout_job));
 
         let text_pos = egui::pos2(
             content_left + (tab_rect.right() - content_left) / 2.0 - galley.size().x / 2.0,
@@ -507,13 +507,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             }
 
             let pending_click = self.pending_pane_clicks.remove(pane_id);
-            render::app_pane::render(
-                &mut app_ui,
-                app_pane,
-                &self.colors,
-                has_tabs,
-                pending_click,
-            );
+            render::app_pane::render(&mut app_ui, app_pane, &self.colors, has_tabs, pending_click);
         } else if let Some(terminal) = pane.as_terminal_mut() {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
@@ -1143,8 +1137,7 @@ pub(crate) fn paint_portal_minimap(
                     let pw = glyph * 0.58;
                     let ph = glyph * 0.74;
                     let center = draw_area.center();
-                    let paper =
-                        egui::Rect::from_center_size(center, egui::vec2(pw, ph));
+                    let paper = egui::Rect::from_center_size(center, egui::vec2(pw, ph));
                     let fold = (pw * 0.30).clamp(2.5, 12.0);
 
                     let outline = egui::Color32::from_rgba_unmultiplied(

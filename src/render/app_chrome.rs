@@ -1,8 +1,8 @@
 use egui::{Color32, FontId, Response, RichText, Ui};
 
 use crate::host::wasm_app::bindings::plexi::platform::types::FooterKeyEntry;
-use crate::ui::theme::{self, Colors};
 use crate::ui::style;
+use crate::ui::theme::{self, Colors};
 
 const APP_BAR_TITLE_SIZE: f32 = style::TEXT_TITLE;
 const APP_BAR_SINGLE_BAND_H: f32 = 34.0;
@@ -179,7 +179,7 @@ impl<'a> AppChrome<'a> {
         font: FontId,
         color: Color32,
     ) {
-        let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font, color));
+        let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, color));
         painter.galley(pos, galley, color);
     }
 }
@@ -197,7 +197,7 @@ fn app_bar_band_height(has_subtitle: bool) -> f32 {
 }
 
 pub(crate) fn chip_row_height(ui: &egui::Ui) -> f32 {
-    let text_h = ui.fonts(|f| {
+    let text_h = ui.fonts_mut(|f| {
         f.layout_no_wrap(
             "X".to_string(),
             FontId::monospace(style::TEXT_HINT),
@@ -251,7 +251,7 @@ fn footer_entry_width(
         if ki > 0 {
             w += style::KEYCHIP_GAP;
         }
-        let tw = ui.fonts(|f| {
+        let tw = ui.fonts_mut(|f| {
             f.layout_no_wrap(key.clone(), chip_font.clone(), Color32::WHITE)
                 .size()
                 .x
@@ -261,7 +261,7 @@ fn footer_entry_width(
             .max(style::KEYCHIP_MIN_W);
     }
     w += 4.0;
-    w += ui.fonts(|f| {
+    w += ui.fonts_mut(|f| {
         f.layout_no_wrap(entry.description.clone(), desc_font.clone(), Color32::WHITE)
             .size()
             .x
@@ -339,7 +339,8 @@ fn paint_footer_keys_row(
             if ki > 0 {
                 x += style::KEYCHIP_GAP;
             }
-            let galley = ui.fonts(|f| f.layout_no_wrap(key.clone(), chip_font.clone(), key_color));
+            let galley =
+                ui.fonts_mut(|f| f.layout_no_wrap(key.clone(), chip_font.clone(), key_color));
             let text_size = galley.size();
             let chip_h = text_size.y + style::KEYCHIP_PAD_V * 2.0;
             let chip_w = (text_size.x + style::KEYCHIP_PAD_H * 2.0)
@@ -362,8 +363,9 @@ fn paint_footer_keys_row(
         }
 
         x += 4.0;
-        let desc_galley = ui
-            .fonts(|f| f.layout_no_wrap(entry.description.clone(), desc_font.clone(), desc_color));
+        let desc_galley = ui.fonts_mut(|f| {
+            f.layout_no_wrap(entry.description.clone(), desc_font.clone(), desc_color)
+        });
         let desc_size = desc_galley.size();
         painter.galley(
             egui::pos2(x, content_rect.center().y - desc_size.y / 2.0),
@@ -412,8 +414,7 @@ mod tests {
         let desc_font = FontId::proportional(style::TEXT_HINT);
 
         let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             // Wide band: everything fits on a single row.
             let wide = footer_keys_rows(ui, &entries, &chip_font, &desc_font, 10_000.0);
             assert_eq!(wide.len(), 1, "all entries fit on one row when wide");
@@ -435,6 +436,5 @@ mod tests {
                 "wrapped footer height must be at least one row tall"
             );
         });
-        let _ = ctx.end_pass();
     }
 }

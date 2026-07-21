@@ -140,5 +140,4 @@ mod tests {
         assert!(ReleaseTier::Alpha > ReleaseTier::Beta);
         assert!(ReleaseTier::Beta > ReleaseTier::Stable);
     }
-
 }

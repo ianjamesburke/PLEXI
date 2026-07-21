@@ -2219,14 +2219,16 @@ fn input_owner_precedence_os_overlay_pane() {
     );
 
     // A modal focus layer outranks the inline editor.
-    h.app.push_focus_layer(crate::app::FocusKind::CommandPalette);
+    h.app
+        .push_focus_layer(crate::app::FocusKind::CommandPalette);
     assert_eq!(
         h.app.input_owner(&ctx),
         InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::CommandPalette)),
         "the focus-stack top outranks inline editors"
     );
     h.app.renaming_window = None;
-    h.app.pop_focus_layer(&crate::app::FocusKind::CommandPalette);
+    h.app
+        .pop_focus_layer(&crate::app::FocusKind::CommandPalette);
 
     // An unfocused OS window outranks everything.
     let mut raw = egui::RawInput {
@@ -2503,7 +2505,10 @@ fn focused_text_input_receives_typing_and_enter_submits() {
     // on_change while the guest's raw-key counter stays frozen.
     frame_with_events(
         &mut h,
-        vec![pressed_key(egui::Key::H), egui::Event::Text("h".to_string())],
+        vec![
+            pressed_key(egui::Key::H),
+            egui::Event::Text("h".to_string()),
+        ],
     );
     wait_for_text_label(&mut h, pane_id, "draft:", "draft:h");
     assert_eq!(
@@ -2520,7 +2525,10 @@ fn focused_text_input_receives_typing_and_enter_submits() {
     // Focus survives the submit: more typing lands without another click.
     frame_with_events(
         &mut h,
-        vec![pressed_key(egui::Key::I), egui::Event::Text("i".to_string())],
+        vec![
+            pressed_key(egui::Key::I),
+            egui::Event::Text("i".to_string()),
+        ],
     );
     wait_for_text_label(&mut h, pane_id, "draft:", "draft:i");
     assert_eq!(

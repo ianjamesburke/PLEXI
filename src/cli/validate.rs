@@ -92,8 +92,7 @@ pub fn validate_cli(path: &str) -> i32 {
             } else {
                 crate::app::registry::ManifestType::App
             };
-            if let Err(e) =
-                crate::app::package::PackageRuntime::from_manifest(manifest_type, entry)
+            if let Err(e) = crate::app::package::PackageRuntime::from_manifest(manifest_type, entry)
             {
                 errors.push(format!("  {e}"));
             } else if entry.ends_with(".py") {
@@ -113,8 +112,7 @@ pub fn validate_cli(path: &str) -> i32 {
                         ));
                     }
                     Err(e) => {
-                        warnings
-                            .push(format!("  python3 not found — skipping syntax check: {e}"));
+                        warnings.push(format!("  python3 not found — skipping syntax check: {e}"));
                     }
                 }
             }

@@ -673,9 +673,14 @@ fn run_self_update() -> Result<String, String> {
         "cli: self-update input channel={channel} update_channel={update_channel:?} install_target={channel}"
     );
 
-    let profile_dir = dirs::home_dir()
-        .unwrap_or_default()
-        .join(format!(".plexi{}", if suffix.is_empty() { String::new() } else { format!("-{channel}") }));
+    let profile_dir = dirs::home_dir().unwrap_or_default().join(format!(
+        ".plexi{}",
+        if suffix.is_empty() {
+            String::new()
+        } else {
+            format!("-{channel}")
+        }
+    ));
     let current_version_raw = std::fs::read_to_string(profile_dir.join("installed_tag"))
         .ok()
         .and_then(|s| {
@@ -691,8 +696,7 @@ fn run_self_update() -> Result<String, String> {
         .timeout(std::time::Duration::from_secs(30))
         .build();
 
-    let releases = release_resolver::fetch_releases(&agent)
-        .map_err(|e| format!("error: {e}"))?;
+    let releases = release_resolver::fetch_releases(&agent).map_err(|e| format!("error: {e}"))?;
     let current_tag = release_resolver::ReleaseTag::parse(&current_version_raw)
         .ok_or_else(|| format!("error: could not parse current version {current_version_raw}"))?;
     let selected = match release_resolver::resolve_best(&releases, update_channel, &current_tag) {
@@ -712,7 +716,14 @@ fn run_self_update() -> Result<String, String> {
     println!("Updating source...");
     if src_dir.join(".git").is_dir() {
         let fetch = std::process::Command::new("git")
-            .args(["-C", &src_dir.to_string_lossy(), "fetch", "origin", "--tags", "--force"])
+            .args([
+                "-C",
+                &src_dir.to_string_lossy(),
+                "fetch",
+                "origin",
+                "--tags",
+                "--force",
+            ])
             .status()
             .map_err(|e| format!("error: git fetch failed: {e}"))?;
         if !fetch.success() {
@@ -729,7 +740,13 @@ fn run_self_update() -> Result<String, String> {
         }
     }
     let checkout = std::process::Command::new("git")
-        .args(["-C", &src_dir.to_string_lossy(), "checkout", "--force", &tag_name])
+        .args([
+            "-C",
+            &src_dir.to_string_lossy(),
+            "checkout",
+            "--force",
+            &tag_name,
+        ])
         .status()
         .map_err(|e| format!("error: git checkout failed: {e}"))?;
     if !checkout.success() {
@@ -748,7 +765,9 @@ fn run_self_update() -> Result<String, String> {
         return Err("error: install script failed — check output above".to_string());
     }
 
-    Ok(format!("Installed v{latest_version}. Restart Plexi to apply."))
+    Ok(format!(
+        "Installed v{latest_version}. Restart Plexi to apply."
+    ))
 }
 
 /// `plexi update` — thin CLI wrapper around `run_self_update`.

@@ -344,16 +344,18 @@ fn stream_openrouter(
             // Surface generation progress so the transcript can animate while
             // the model writes a long tool call (stint 0467) — these argument
             // streams are the longest silent stretch of an app-build turn.
-            let arg_chars: usize = partial_tool_calls
-                .values()
-                .map(|p| p.arguments.len())
-                .sum();
+            let arg_chars: usize = partial_tool_calls.values().map(|p| p.arguments.len()).sum();
             let name = partial_tool_calls
                 .iter()
                 .max_by_key(|(idx, _)| **idx)
                 .map(|(_, p)| &p.name)
                 .filter(|name| !name.is_empty())
-                .map(|name| tool_name_map.get(name).cloned().unwrap_or_else(|| name.clone()));
+                .map(|name| {
+                    tool_name_map
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| name.clone())
+                });
             let _ = tx.send(StreamEvent::ToolCallProgress { name, arg_chars });
         }
 

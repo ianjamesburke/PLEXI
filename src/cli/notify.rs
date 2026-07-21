@@ -293,5 +293,4 @@ mod notify_tests {
             "error should mention segment count: {err}"
         );
     }
-
 }

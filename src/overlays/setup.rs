@@ -8,7 +8,7 @@ impl PlexiApp {
             return;
         }
 
-        let content_rect = ctx.screen_rect();
+        let content_rect = ctx.content_rect();
         let active_context = self.active_window;
         let colors = self.colors;
         let ws_id = self.router.active().context_id;
@@ -59,7 +59,7 @@ impl PlexiApp {
         let center = ui.max_rect().center();
         let box_rect = egui::Rect::from_center_size(center, egui::vec2(480.0, 560.0));
 
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(box_rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(box_rect), |ui| {
             egui::Frame::new()
                 .fill(colors.bg_sidebar)
                 .stroke(Stroke::new(1.0_f32, colors.border))
@@ -74,7 +74,7 @@ impl PlexiApp {
                         let logo_size = style::TEXT_TITLE_XL + 4.0; // 32px — matches SVG native size
                         let gap = style::SPACE_SM;
                         let font_id = egui::FontId::proportional(style::TEXT_TITLE_XL);
-                        let text_w = ui.fonts(|f| {
+                        let text_w = ui.fonts_mut(|f| {
                             f.layout_no_wrap("PLEXI".to_string(), font_id, colors.text_primary)
                                 .size()
                                 .x

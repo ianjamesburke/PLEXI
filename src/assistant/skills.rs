@@ -147,7 +147,16 @@ impl SkillRegistry {
 
 const BUILD_VERBS: &[&str] = &["build", "make", "create", "write", "code"];
 const BUILD_NOUNS: &[&str] = &[
-    "app", "apps", "game", "games", "tool", "tools", "widget", "widgets", "utility", "utilities",
+    "app",
+    "apps",
+    "game",
+    "games",
+    "tool",
+    "tools",
+    "widget",
+    "widgets",
+    "utility",
+    "utilities",
 ];
 
 /// Whether `prompt` reads as a request to build something. Word-boundary
@@ -201,7 +210,11 @@ fn parse_skill(path: &Path, source: SkillSource) -> Result<SkillDefinition, Stri
     parse_skill_text(&text, source, path)
 }
 
-fn parse_skill_text(text: &str, source: SkillSource, path: &Path) -> Result<SkillDefinition, String> {
+fn parse_skill_text(
+    text: &str,
+    source: SkillSource,
+    path: &Path,
+) -> Result<SkillDefinition, String> {
     let body = text
         .strip_prefix("---\n")
         .ok_or("missing YAML frontmatter")?;
@@ -318,7 +331,9 @@ mod tests {
             "app builds must escalate off a default-sourced weak tier"
         );
         assert!(
-            !skill.instructions.contains("host.files.grep to find SDK symbols"),
+            !skill
+                .instructions
+                .contains("host.files.grep to find SDK symbols"),
             "the skill must not instruct SDK discovery — the API reference is embedded"
         );
         assert!(
@@ -333,7 +348,9 @@ mod tests {
              burns a failed no-workspace probe"
         );
         assert!(
-            skill.instructions.contains("`view()` is pure and returns exactly one component"),
+            skill
+                .instructions
+                .contains("`view()` is pure and returns exactly one component"),
             "the skill must state the effect contract — the 2026-07-19 tictactoe run \
              returned (tree, SetTimer) from view() and crashed on the first click"
         );
@@ -398,10 +415,7 @@ mod tests {
             .app_build_fallback("what's the weather like today", &[])
             .is_none());
         assert!(registry
-            .app_build_fallback(
-                "build me a small app",
-                &["some-other-skill".to_string()]
-            )
+            .app_build_fallback("build me a small app", &["some-other-skill".to_string()])
             .is_none());
         assert!(registry
             .app_build_fallback("make me a game", &[APP_BUILD_SKILL_NAME.to_string()])

@@ -529,7 +529,8 @@ impl TerminalBackend {
     }
 
     fn last_content_tail(mut lines: Vec<String>, n: usize) -> Vec<String> {
-        let last_content = lines.iter().rposition(|line| !line.trim().is_empty());
+        let last_content =
+            lines.iter().rposition(|line| !line.trim().is_empty());
         lines.truncate(last_content.map_or(0, |index| index + 1));
         let start = lines.len().saturating_sub(n);
         lines.drain(..start);
@@ -654,7 +655,12 @@ impl TerminalBackend {
                     matches!(c, '.' | ',' | ')' | ';' | ':' | '!' | '?')
                 })
                 .to_string();
-            log::info!("egui_term: open_link url={:?} rows={}..={}", url, start.line, end.line);
+            log::info!(
+                "egui_term: open_link url={:?} rows={}..={}",
+                url,
+                start.line,
+                end.line
+            );
             if let Err(e) = open::that(&url) {
                 log::warn!("egui_term: failed to open link {:?}: {}", url, e);
             }
@@ -988,10 +994,8 @@ fn extend_url_match_across_client_wraps(
             if end.column.0.saturating_mul(4) < last_col.0 {
                 break;
             }
-            let trailing_all_spaces =
-                ((end.column.0 + 1)..=last_col.0).all(|c| {
-                    grid[Point::new(end.line, Column(c))].c == ' '
-                });
+            let trailing_all_spaces = ((end.column.0 + 1)..=last_col.0)
+                .all(|c| grid[Point::new(end.line, Column(c))].c == ' ');
             if !trailing_all_spaces {
                 break;
             }
@@ -1030,7 +1034,9 @@ fn extend_url_match_across_client_wraps(
         // If we stopped before the right edge, the URL has genuinely ended.
         if col != last_col {
             log::info!(
-                "egui_term: url extended across wrap: {}..={}", start.line, end.line
+                "egui_term: url extended across wrap: {}..={}",
+                start.line,
+                end.line
             );
             break;
         }
@@ -1285,7 +1291,9 @@ mod tests {
 
         // First write establishes some initial content — deterministic,
         // rather than relying on the shell's startup banner formatting.
-        backend.process_command(BackendCommand::Write(b"echo line-one\n".to_vec()));
+        backend.process_command(BackendCommand::Write(
+            b"echo line-one\n".to_vec(),
+        ));
         wait_for(&backend, "line-one");
         let (_lines, cursor, _missed) = backend.capture_lines_since(0);
         assert!(cursor > 0, "initial capture should report a nonzero cursor");

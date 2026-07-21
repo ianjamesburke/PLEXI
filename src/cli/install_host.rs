@@ -920,10 +920,7 @@ pub(crate) mod test_support {
             self.failures.lock().unwrap().push(msg.to_string());
         }
         pub fn fail_next_checkout(&self, msg: &str) {
-            self.checkout_failures
-                .lock()
-                .unwrap()
-                .push(msg.to_string());
+            self.checkout_failures.lock().unwrap().push(msg.to_string());
         }
     }
 
@@ -1225,7 +1222,10 @@ mod pack_tests {
             refreshed[0].status
         );
         assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), embedded);
-        assert!(!stray.exists(), "refresh must remove files not in the embedded tree");
+        assert!(
+            !stray.exists(),
+            "refresh must remove files not in the embedded tree"
+        );
     }
 
     #[test]
@@ -1289,7 +1289,11 @@ mod pack_tests {
             "missing version ref should fall back to default branch HEAD, got {:?}",
             outcomes[0].status
         );
-        assert!(target.path().join("fallback").join("manifest.toml").exists());
+        assert!(target
+            .path()
+            .join("fallback")
+            .join("manifest.toml")
+            .exists());
     }
 }
 
@@ -1535,7 +1539,10 @@ mod core_pack_tests {
     #[test]
     fn core_pack_is_canonical_and_consistent() {
         let pack = Pack::from_toml_str(CORE_PACK_TOML).expect("core pack must parse");
-        assert!(!pack.apps.is_empty(), "core pack must list at least one app");
+        assert!(
+            !pack.apps.is_empty(),
+            "core pack must list at least one app"
+        );
 
         for entry in &pack.apps {
             assert_pack_entry_resolves_to_bundled_app(entry, "core pack");

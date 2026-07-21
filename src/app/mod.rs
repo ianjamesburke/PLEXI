@@ -12,7 +12,6 @@ pub mod host_version;
 pub mod http;
 pub mod image_viewer_app;
 pub(crate) mod input_owner;
-pub(crate) mod screenshot;
 pub(crate) mod input_router;
 pub(crate) mod launch_spec;
 mod lifecycle;
@@ -27,6 +26,7 @@ pub(crate) mod python_env;
 pub mod registry;
 pub mod registry_watcher;
 mod render;
+pub(crate) mod screenshot;
 pub mod secrets_app;
 mod sync;
 pub mod text_editor_app;
@@ -1619,7 +1619,10 @@ impl PlexiApp {
         // workspace path returns earlier and is untouched. The welcome screen
         // still renders for any genuinely-empty window elsewhere.
         let seed_cwd = app.windows[0].path.clone();
-        if app.seed_window_root_pane(0, seed_cwd, None, false).is_some() {
+        if app
+            .seed_window_root_pane(0, seed_cwd, None, false)
+            .is_some()
+        {
             log::info!("first boot: seeded base root pane in context 1");
         } else {
             log::warn!(
@@ -1939,7 +1942,7 @@ impl PlexiApp {
                 pending_context_close: None,
                 frame_tick,
                 frame_diag_window: None,
-            pending_screenshots: Vec::new(),
+                pending_screenshots: Vec::new(),
                 last_sent_window_title: None,
                 permission_store_dir: {
                     let dir = std::env::temp_dir()
@@ -1951,7 +1954,7 @@ impl PlexiApp {
                 rename_buffer: String::new(),
                 editing_description: None,
                 description_buffer: String::new(),
-                    drag_context: None,
+                drag_context: None,
                 parked_section_expanded: false,
                 show_command_palette: false,
                 palette_query: String::new(),
@@ -1963,7 +1966,7 @@ impl PlexiApp {
                 workspace_root_fallback_cache: None,
                 context_visit_history: Vec::new(),
                 renaming_pane: None,
-                    text_overlay: None,
+                text_overlay: None,
                 text_overlay_browse_rx: None,
                 registry: AppRegistry::load_with_global(&path, &path.join("nonexistent-apps-dir")),
                 features,
@@ -2326,7 +2329,8 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
 }
 
 impl eframe::App for PlexiApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         self.frame_tick
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Viewport captures requested by `plexi host screenshot` arrive as
@@ -4412,7 +4416,7 @@ impl eframe::App for PlexiApp {
         // above already claimed global hotkeys from the same buffer, so the
         // terminal only ever sees what the global allowlist left behind.
         let focused_terminal_input = self.take_focused_terminal_input(ctx);
-        self.render_panels(ctx, focused_terminal_input);
+        self.render_panels(ui, focused_terminal_input);
 
         // Detect genuine pane focus transitions, and periodically bank long
         // same-pane sessions so Stats has live data without keystroke tracking.
@@ -4711,8 +4715,8 @@ fn drive_native_pane_key(
     // live frame uses so `pane key` exercises the production keyboard path.
     let ctx = egui::Context::default();
     let mut disposition = app_trait::KeyDisposition::Passthrough;
-    let _ = ctx.run(raw, |ctx| {
-        let input = crate::app::input_router::PlexiInput::take_from(ctx);
+    let _ = ctx.run_ui(raw, |ui| {
+        let input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
         disposition = runtime.handle_key(&input);
     });
     Ok(disposition)

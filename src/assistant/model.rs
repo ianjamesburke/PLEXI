@@ -1657,7 +1657,12 @@ mod tests {
         assert!(matches!(&effects[0], AssistantEffect::SessionWrite { .. }));
 
         tool_started(&mut m, "csv.write_range");
-        tool_finished(&mut m, "csv.write_range", Some("tool_timeout".to_string()), None);
+        tool_finished(
+            &mut m,
+            "csv.write_range",
+            Some("tool_timeout".to_string()),
+            None,
+        );
         let row = m.turns.last().unwrap();
         assert_eq!(row.status, Some(ToolStatus::Failed));
         assert!(row.text.contains("tool_timeout"));
@@ -1893,7 +1898,10 @@ mod tests {
             rows,
             vec![
                 (TurnRole::User, "build the app".to_string()),
-                (TurnRole::Assistant, "Let me build this for you.".to_string()),
+                (
+                    TurnRole::Assistant,
+                    "Let me build this for you.".to_string()
+                ),
                 (TurnRole::Tool, "host.terminals.run".to_string()),
                 (TurnRole::Assistant, "Now the code.".to_string()),
                 (TurnRole::Tool, "host.files.write".to_string()),
@@ -1958,7 +1966,10 @@ mod tests {
             output_preview: Some(r#"{"matches": 3}"#.to_string()),
         });
         let row = m.turns.last().unwrap();
-        assert_eq!(row.input_summary.as_deref(), Some(r#"{"pattern": "draft"}"#));
+        assert_eq!(
+            row.input_summary.as_deref(),
+            Some(r#"{"pattern": "draft"}"#)
+        );
         assert_eq!(row.output_preview.as_deref(), Some(r#"{"matches": 3}"#));
         let json = serde_json::to_string(row).unwrap();
         let back: Turn = serde_json::from_str(&json).unwrap();

@@ -29,7 +29,7 @@ fn styled_text_input_inner(
         ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, colors.accent);
         ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, colors.border);
         let font_id = egui::TextStyle::Body.resolve(ui.style());
-        let row_height = ui.fonts(|f| f.row_height(&font_id));
+        let row_height = ui.fonts_mut(|f| f.row_height(&font_id));
         let edit = egui::TextEdit::singleline(buf)
             .id(id)
             .desired_width(f32::INFINITY)
@@ -45,7 +45,7 @@ fn styled_text_input_inner(
             row_height,
             egui::Stroke::new(1.0_f32, colors.accent),
         );
-        output.response
+        output.response.response
     })
     .inner
 }
@@ -72,7 +72,7 @@ pub(crate) fn draw_text_caret(
     let Some(cursor_range) = &output.cursor_range else {
         return;
     };
-    let index = cursor_range.primary.ccursor.index;
+    let index = cursor_range.primary.index;
     let now = ui.ctx().input(|i| i.time);
 
     let state_id = output.response.id.with("caret_blink");
@@ -100,7 +100,7 @@ pub(crate) fn draw_text_caret(
     // caret visible without returning to egui's full-row overshoot.
     let caret_height = caret_height + 2.0;
 
-    let cursor_pos = output.galley.pos_from_cursor(&cursor_range.primary);
+    let cursor_pos = output.galley.pos_from_cursor(cursor_range.primary);
     let row_h = if cursor_pos.height() > 0.01 {
         cursor_pos.height()
     } else {
@@ -345,17 +345,21 @@ impl<'a> TextArea<'a> {
             ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, colors.accent);
             ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, colors.border);
 
-            let row_height = ui.fonts(|f| f.row_height(&self.font_id));
-            let output = egui::TextEdit::multiline(buf)
+            let row_height = ui.fonts_mut(|f| f.row_height(&self.font_id));
+            let edit = egui::TextEdit::multiline(buf)
                 .id(self.id)
                 .font(self.font_id.clone())
                 .text_color(self.text_color.unwrap_or(colors.text_primary))
                 .desired_width(self.desired_width)
                 .desired_rows(self.rows)
-                .frame(self.frame)
                 .margin(self.margin)
-                .hint_text(hint)
-                .show(ui);
+                .hint_text(hint);
+            let edit = if self.frame {
+                edit
+            } else {
+                edit.frame(egui::Frame::NONE)
+            };
+            let output = edit.show(ui);
             draw_text_caret(
                 ui,
                 &output,
@@ -363,7 +367,7 @@ impl<'a> TextArea<'a> {
                 row_height,
                 egui::Stroke::new(1.0_f32, colors.accent),
             );
-            output.response
+            output.response.response
         })
         .inner
     }

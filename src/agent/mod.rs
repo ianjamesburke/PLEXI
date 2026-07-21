@@ -34,9 +34,7 @@ use crate::broker::{
     TargetType,
 };
 use crate::host::app_timeline::{AppTimeline, EventDelivery};
-use crate::plexi_ai::broker::{
-    AiBroker, AiBrokerRequest, ConcreteModelRoute, ReasoningEffort,
-};
+use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ConcreteModelRoute, ReasoningEffort};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -847,7 +845,11 @@ impl AgentHost {
         let request = AiBrokerRequest {
             app_id: format!("agent:{}", agent.def.id),
             model_tier: agent.def.default_tier,
-            concrete_model: agent.def.model_routes.for_tier(agent.def.default_tier).cloned(),
+            concrete_model: agent
+                .def
+                .model_routes
+                .for_tier(agent.def.default_tier)
+                .cloned(),
             reasoning_effort: agent.def.effort,
             system: agent.def.prompt.clone(),
             messages,
@@ -1227,7 +1229,9 @@ default_tier = "low"
             .unwrap();
         };
         write_agent(profile.path(), "User");
-        let workspace_channel = workspace.path().join(crate::config::workspace_channel_dir());
+        let workspace_channel = workspace
+            .path()
+            .join(crate::config::workspace_channel_dir());
         write_agent(&workspace_channel, "Workspace");
 
         let registry = AgentRegistry::load(profile.path(), workspace.path());
@@ -1240,10 +1244,7 @@ default_tier = "low"
             AgentSource::Workspace
         );
         assert_eq!(registry.shadowed("default").len(), 2);
-        assert_eq!(
-            registry.shadowed("default")[0].source,
-            AgentSource::BuiltIn
-        );
+        assert_eq!(registry.shadowed("default")[0].source, AgentSource::BuiltIn);
         assert_eq!(registry.shadowed("default")[1].source, AgentSource::User);
     }
 

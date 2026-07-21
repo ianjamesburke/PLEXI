@@ -565,7 +565,9 @@ fn run_turn_and_respond(
     // Callers expecting longer turns (app-build skill) raise this via
     // `AiBrokerRequest::max_tool_iterations`.
     const MAX_TOOL_ITERATIONS_DEFAULT: usize = 30;
-    let max_tool_iterations = request.max_tool_iterations.unwrap_or(MAX_TOOL_ITERATIONS_DEFAULT);
+    let max_tool_iterations = request
+        .max_tool_iterations
+        .unwrap_or(MAX_TOOL_ITERATIONS_DEFAULT);
     let mut total_tokens_in: u32 = 0;
     let mut total_tokens_out: u32 = 0;
     let mut last_generation_id: Option<String> = None;
@@ -1110,10 +1112,7 @@ mod tests {
         let config = test_ai_config();
         let or_config = config.openrouter.as_ref().unwrap();
         assert_eq!(or_config.model_low.as_deref(), Some("qwen/qwen3.6-flash"));
-        assert_eq!(
-            or_config.model_medium.as_deref(),
-            Some("xiaomi/mimo-v2.5")
-        );
+        assert_eq!(or_config.model_medium.as_deref(), Some("xiaomi/mimo-v2.5"));
         assert_eq!(
             or_config.model_high.as_deref(),
             Some("anthropic/claude-fable-5")

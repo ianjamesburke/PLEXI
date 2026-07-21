@@ -297,8 +297,7 @@ impl PlexiUiHarness {
                     return None;
                 }
                 let tile_id = window.tree.tiles.iter().find_map(|(tile_id, tile)| {
-                    matches!(tile, egui_tiles::Tile::Pane(id) if *id == pane_id)
-                        .then_some(tile_id)
+                    matches!(tile, egui_tiles::Tile::Pane(id) if *id == pane_id).then_some(tile_id)
                 })?;
                 window.tree.tiles.rect(*tile_id)
             })
@@ -307,15 +306,9 @@ impl PlexiUiHarness {
             return false;
         };
 
-        self.inner.query_all_by_label(label).any(|node| {
-            node.raw_bounds().is_some_and(|bounds| {
-                let center = egui::pos2(
-                    ((bounds.x0 + bounds.x1) / 2.0) as f32,
-                    ((bounds.y0 + bounds.y1) / 2.0) as f32,
-                );
-                pane_rect.contains(center)
-            })
-        })
+        self.inner
+            .query_all_by_label(label)
+            .any(|node| pane_rect.contains(node.rect().center()))
     }
 
     /// Exact semantic-label lookup against the whole headless host tree.
@@ -503,9 +496,9 @@ mod tests {
             let app_pane = AppPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::file_browser::FileBrowserApp::new(std::env::temp_dir()),
-                )),
+                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                    std::env::temp_dir(),
+                ))),
                 workspace_root: std::env::temp_dir(),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "test".to_string(),
@@ -669,7 +662,7 @@ mod tests {
             "unreviewed .wasm path launch must not spawn a WASM pane"
         );
 
-        h.harness().press_key(egui::Key::Enter);
+        h.harness().key_press(egui::Key::Enter);
         h.step();
         let queued = h.with_app(|app| app.pending_raw_wasm_launches.len());
         assert_eq!(queued, 0, "approval should drain the raw WASM review queue");
@@ -764,9 +757,9 @@ mod tests {
             let editor = AppPane {
                 pip_status: Some(crate::app_protocol::PipStatus::Green),
                 id: editor_pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::file_browser::FileBrowserApp::new(std::env::temp_dir()),
-                )),
+                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                    std::env::temp_dir(),
+                ))),
                 workspace_root: std::env::temp_dir(),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
@@ -875,11 +868,11 @@ mod tests {
 
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(540.0, 320.0))
-            .build(move |ctx| {
-                crate::ui::theme::setup_fonts(ctx);
+            .build_ui(move |ui| {
+                crate::ui::theme::setup_fonts(ui.ctx());
                 egui::CentralPanel::default()
                     .frame(egui::Frame::default().fill(colors.bg_darkest))
-                    .show(ctx, |ui| {
+                    .show_inside(ui, |ui| {
                         paint_portal_minimap(ui.painter(), ui.max_rect(), &windows, &colors, 0.0);
                     });
             });
@@ -1323,11 +1316,8 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
-        let mut assistant = crate::assistant::AssistantApp::new(
-            ws.path().to_path_buf(),
-            broker,
-            ws.path(),
-        );
+        let mut assistant =
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
         assistant.model.turns = vec![
             Turn {
                 role: TurnRole::User,
@@ -1468,13 +1458,13 @@ mod tests {
         let mut write_tool = Turn::tool("host.files.write", ToolStatus::Succeeded);
         write_tool.input_summary = Some("path: main.py".to_string());
         write_tool.output_preview = Some("{\n  \"ok\": true,\n  \"bytes\": 512\n}".to_string());
-        write_tool.detail =
-            Some("--- a/main.py\n+++ b/main.py\n@@ -1,1 +1,2 @@\n-pass\n+print(\"hi\")\n".to_string());
+        write_tool.detail = Some(
+            "--- a/main.py\n+++ b/main.py\n@@ -1,1 +1,2 @@\n-pass\n+print(\"hi\")\n".to_string(),
+        );
         let mut check_tool = Turn::tool("plexi.app_check", ToolStatus::Succeeded);
         check_tool.input_summary = Some(r#"{"app": "guessing-game"}"#.to_string());
         check_tool.output_preview = Some(r#"{"ok": true}"#.to_string());
-        let mut failed_tool =
-            Turn::tool("host.build.run — exit 1: mypy error", ToolStatus::Failed);
+        let mut failed_tool = Turn::tool("host.build.run — exit 1: mypy error", ToolStatus::Failed);
         failed_tool.input_summary = Some(r#"{"cmd": "app check"}"#.to_string());
         // Multi-line output preview (stint 0460): real newlines render as a
         // framed block, so a command's output reads as the lines it printed.
@@ -1483,7 +1473,10 @@ mod tests {
         );
 
         assistant.model.turns = vec![
-            Turn::now(TurnRole::User, "Build a simple number guessing game as a Plexi app."),
+            Turn::now(
+                TurnRole::User,
+                "Build a simple number guessing game as a Plexi app.",
+            ),
             Turn::now(
                 TurnRole::Assistant,
                 "Let me build this for you. Starting with scaffolding the app.",
@@ -1499,9 +1492,10 @@ mod tests {
         // An in-flight tool call so the animated running row (spinner +
         // elapsed seconds, stint 0460) is on the screenshot too.
         assistant.model.streaming.in_flight = true;
-        assistant
-            .model
-            .tool_call_started("host.build.run", r#"{"args": ["app", "check", "fish-game"]}"#);
+        assistant.model.tool_call_started(
+            "host.build.run",
+            r#"{"args": ["app", "check", "fish-game"]}"#,
+        );
 
         let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
         h.step();
@@ -1529,11 +1523,8 @@ mod tests {
         let ws = tempfile::tempdir().unwrap();
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
-        let mut assistant = crate::assistant::AssistantApp::new(
-            ws.path().to_path_buf(),
-            broker,
-            ws.path(),
-        );
+        let mut assistant =
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
         assistant.model.turns = vec![
             Turn {
                 role: TurnRole::User,
@@ -1740,7 +1731,6 @@ mod tests {
             .expect("render failed");
     }
 
-
     #[test]
     fn screenshot_command_palette_metadata_lane() {
         let mut h = PlexiUiHarness::new_sized(1168.0, 720.0);
@@ -1750,9 +1740,9 @@ mod tests {
             let app_pane = AppPane {
                 pip_status: None,
                 id: second_pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::file_browser::FileBrowserApp::new(std::env::temp_dir()),
-                )),
+                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                    std::env::temp_dir(),
+                ))),
                 workspace_root: std::env::temp_dir(),
                 permissions: AppPermissions::builtin(),
                 manifest_id: "hidden-test".to_string(),
@@ -1924,7 +1914,7 @@ mod tests {
 
         h.run_steps(2);
         for _ in 0..18 {
-            h.harness().press_key(egui::Key::ArrowDown);
+            h.harness().key_press(egui::Key::ArrowDown);
             h.step();
         }
         h.run_steps(2);
@@ -2014,7 +2004,7 @@ mod tests {
         });
 
         // Queue Enter for the next frame — processed by draw_rename_context_overlay.
-        h.harness().press_key(egui::Key::Enter);
+        h.harness().key_press(egui::Key::Enter);
         h.step();
 
         let (name, still_renaming) =
@@ -2041,7 +2031,7 @@ mod tests {
             app.focus_stack.push(FocusKind::ContextRename);
         });
 
-        h.harness().press_key(egui::Key::Escape);
+        h.harness().key_press(egui::Key::Escape);
         h.step();
 
         let (name, still_renaming) =
@@ -2068,7 +2058,7 @@ mod tests {
             app.focus_stack.push(FocusKind::ContextRename);
         });
 
-        h.harness().press_key(egui::Key::Enter);
+        h.harness().key_press(egui::Key::Enter);
         h.step();
 
         let name = h.with_app(|app| app.router.active().name.clone());

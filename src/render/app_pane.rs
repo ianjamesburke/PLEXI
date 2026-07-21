@@ -61,7 +61,7 @@ pub fn render(
             egui::Sense::hover(),
         );
         ui.painter().rect_filled(bar_rect, 0.0, colors.bg_active);
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(NAV_BAR_PAD);
                 let replaced_label = match app_pane.overlay_replaced.as_deref() {
@@ -103,7 +103,7 @@ pub fn render(
             egui::Sense::hover(),
         );
         ui.painter().rect_filled(bar_rect, 0.0, colors.bg_active);
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(NAV_BAR_PAD);
                 // Back arrow button — ‹ (single angle quotation mark, U+2039)

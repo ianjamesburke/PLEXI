@@ -418,8 +418,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     // manifest.toml — shape lives in the template file beside the other scaffold
     // artifacts so it can't silently diverge from the documented manifest. The
     // feature-gated marketplace placeholder is appended in Rust.
-    let manifest_template =
-        include_str!("../../sdk/python/plexi_sdk/templates/manifest.toml");
+    let manifest_template = include_str!("../../sdk/python/plexi_sdk/templates/manifest.toml");
     let manifest = format!(
         "{}{}",
         manifest_template
@@ -554,10 +553,7 @@ fn scaffold_wasm_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
         app_dir.join("AUTHORING.md"),
         include_str!("../../sdk/wasm/AUTHORING.md"),
     )?;
-    std::fs::write(
-        app_dir.join(".gitignore"),
-        "/target/\n**/src/bindings.rs\n",
-    )?;
+    std::fs::write(app_dir.join(".gitignore"), "/target/\n**/src/bindings.rs\n")?;
 
     let embedded = app_dir.join(".plexi-sdk");
     let embedded_sdk = embedded.join("plexi-wasm-sdk");
@@ -583,9 +579,15 @@ fn scaffold_wasm_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     #[cfg(windows)]
     {
         std::fs::create_dir_all(app_dir.join("wit"))?;
-        std::fs::write(app_dir.join("wit/plexi.wit"), include_str!("../../wit/plexi.wit"))?;
+        std::fs::write(
+            app_dir.join("wit/plexi.wit"),
+            include_str!("../../wit/plexi.wit"),
+        )?;
         std::fs::create_dir_all(embedded_sdk.join("wit"))?;
-        std::fs::write(embedded_sdk.join("wit/plexi.wit"), include_str!("../../wit/plexi.wit"))?;
+        std::fs::write(
+            embedded_sdk.join("wit/plexi.wit"),
+            include_str!("../../wit/plexi.wit"),
+        )?;
     }
     log::info!(
         "app_init: created self-contained wasm scaffold path={} entry=target/wasm32-wasip1/release/{crate_name}.wasm",
@@ -1657,14 +1659,14 @@ pub fn app_render(
         }
     } else {
         // JSON mode (default): return the semantic UI-node tree
-        let json = match serde_json::to_string_pretty(&crate::cli::app_check::ui_tree_to_json(&tree))
-        {
-            Ok(j) => j,
-            Err(e) => {
-                eprintln!("error: could not serialize frame: {e}");
-                return 1;
-            }
-        };
+        let json =
+            match serde_json::to_string_pretty(&crate::cli::app_check::ui_tree_to_json(&tree)) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!("error: could not serialize frame: {e}");
+                    return 1;
+                }
+            };
         match output {
             Some(path) => {
                 if let Err(e) = std::fs::write(path, &json) {
@@ -2657,7 +2659,9 @@ mod scaffold_marketplace_tests {
             std::fs::read_link(app_dir.join("wit")).unwrap(),
             std::path::Path::new(".plexi-sdk/wit")
         );
-        assert!(app_dir.join(".plexi-sdk/plexi-wasm-sdk/src/lib.rs").is_file());
+        assert!(app_dir
+            .join(".plexi-sdk/plexi-wasm-sdk/src/lib.rs")
+            .is_file());
         let readme = std::fs::read_to_string(app_dir.join("README.md")).unwrap();
         assert!(readme.contains("[Plexi WASM authoring guide](AUTHORING.md)"));
         assert!(app_dir.join("AUTHORING.md").is_file());

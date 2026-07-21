@@ -43,7 +43,11 @@ fn resolve_drag_drop(
 ) -> Option<SidebarDrop> {
     let pos = pointer?;
     let into_parked = parked_header.map_or(false, |h| pos.y >= h.top());
-    let rects = if into_parked { parked_rects } else { active_rects };
+    let rects = if into_parked {
+        parked_rects
+    } else {
+        active_rects
+    };
     let slot = drop_slot_from_rects(rects, pos.y);
     // Same-section drop onto the source's own edges leaves it in place.
     if into_parked == src_parked && (slot == src_slot || slot == src_slot + 1) {
@@ -328,38 +332,38 @@ impl PlexiApp {
                 response.context_menu(|ui| {
                     if ui.button("Rename").clicked() {
                         menu_action = Some((i, WindowMenuAction::Rename));
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button("Edit Description").clicked() {
                         menu_action = Some((i, WindowMenuAction::EditDescription));
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     if i > 0 {
                         if ui.button("Move to Top").clicked() {
                             menu_action = Some((i, WindowMenuAction::MoveToTop));
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("Move Up").clicked() {
                             menu_action = Some((i, WindowMenuAction::MoveUp));
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                     if i < num_ctxs - 1 {
                         if ui.button("Move Down").clicked() {
                             menu_action = Some((i, WindowMenuAction::MoveDown));
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("Move to Bottom").clicked() {
                             menu_action = Some((i, WindowMenuAction::MoveToBottom));
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                     ui.separator();
                     if let Some(cwd) = &cwd_for_menu {
                         if ui.button("Set root to current path").clicked() {
                             menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                     {
@@ -370,24 +374,24 @@ impl PlexiApp {
                         };
                         if ui.button(label).clicked() {
                             menu_action = Some((i, WindowMenuAction::OpenRootOverlay));
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                     if has_root {
                         if ui.button("Clear root").clicked() {
                             menu_action = Some((i, WindowMenuAction::ClearRoot));
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                     if num_ctxs > 1 {
                         ui.separator();
                         if ui.button("Park").clicked() {
                             menu_action = Some((i, WindowMenuAction::Park));
-                            ui.close_menu();
+                            ui.close();
                         }
                         if ui.button("Delete").clicked() {
                             menu_action = Some((i, WindowMenuAction::Delete));
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                 });
@@ -427,9 +431,11 @@ impl PlexiApp {
                 "Parked".to_string()
             };
 
-            let response = ListDropdownHeader::new(&label, expanded)
-                .indent(12.0)
-                .show(ui, divider_id, &self.colors);
+            let response = ListDropdownHeader::new(&label, expanded).indent(12.0).show(
+                ui,
+                divider_id,
+                &self.colors,
+            );
             parked_header_rect = Some(response.rect);
             if response.clicked() {
                 self.parked_section_expanded = !self.parked_section_expanded;
@@ -512,7 +518,7 @@ impl PlexiApp {
                     response.context_menu(|ui| {
                         if ui.button("Unpark").clicked() {
                             unpark_context = Some(i);
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
 
@@ -795,35 +801,65 @@ mod tests {
     fn active_dragged_into_empty_parked_parks() {
         // No parked rows yet; dropping below the header targets parked slot 0.
         let target = resolve(false, 0, 60.0, &[]);
-        assert_eq!(target, Some(SidebarDrop { parked: true, slot: 0 }));
+        assert_eq!(
+            target,
+            Some(SidebarDrop {
+                parked: true,
+                slot: 0
+            })
+        );
     }
 
     #[test]
     fn active_dragged_between_parked_rows_picks_slot() {
         // Pointer over the gap between the two parked rows → parked slot 1.
         let target = resolve(false, 0, 88.0, &parked_rects());
-        assert_eq!(target, Some(SidebarDrop { parked: true, slot: 1 }));
+        assert_eq!(
+            target,
+            Some(SidebarDrop {
+                parked: true,
+                slot: 1
+            })
+        );
     }
 
     #[test]
     fn parked_dragged_into_active_unparks_at_slot() {
         // Dragging parked row, pointer over the first active row → active slot 0.
         let target = resolve(true, 0, 5.0, &parked_rects());
-        assert_eq!(target, Some(SidebarDrop { parked: false, slot: 0 }));
+        assert_eq!(
+            target,
+            Some(SidebarDrop {
+                parked: false,
+                slot: 0
+            })
+        );
     }
 
     #[test]
     fn reorder_within_active_list() {
         // Dragging active row 0 down past the last active row → active slot 2.
         let target = resolve(false, 0, 35.0, &parked_rects());
-        assert_eq!(target, Some(SidebarDrop { parked: false, slot: 2 }));
+        assert_eq!(
+            target,
+            Some(SidebarDrop {
+                parked: false,
+                slot: 2
+            })
+        );
     }
 
     #[test]
     fn reorder_within_parked_list() {
         // Dragging parked row 0 (src_slot 0) past parked row 1 → parked slot 2.
         let target = resolve(true, 0, 105.0, &parked_rects());
-        assert_eq!(target, Some(SidebarDrop { parked: true, slot: 2 }));
+        assert_eq!(
+            target,
+            Some(SidebarDrop {
+                parked: true,
+                slot: 2
+            })
+        );
     }
 
     #[test]

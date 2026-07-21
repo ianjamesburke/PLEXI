@@ -66,7 +66,10 @@ fn installed_tag_or_cargo_version(cache_dir: &Path) -> String {
     if let Ok(tag) = std::fs::read_to_string(&tag_path) {
         let trimmed = tag.trim().to_string();
         if ReleaseTag::parse(&trimmed).is_some() {
-            log::info!("update check: using installed tag from {}", tag_path.display());
+            log::info!(
+                "update check: using installed tag from {}",
+                tag_path.display()
+            );
             return trimmed;
         }
     }
@@ -230,7 +233,14 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
     log::info!("background_build: fetching source for {tag}");
     if src_dir.join(".git").is_dir() {
         let status = std::process::Command::new("git")
-            .args(["-C", &src_dir.to_string_lossy(), "fetch", "origin", "--tags", "--force"])
+            .args([
+                "-C",
+                &src_dir.to_string_lossy(),
+                "fetch",
+                "origin",
+                "--tags",
+                "--force",
+            ])
             .status()
             .map_err(|e| format!("git fetch: {e}"))?;
         if !status.success() {
@@ -255,9 +265,10 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
     }
 
     log::info!("background_build: running install.sh for {tag} channel={channel} (PLEXI_SKIP_BIN_INSTALL=1 — non-TTY, shim unchanged)");
-    let log_file = std::fs::File::create(&log_path)
-        .map_err(|e| format!("create update log: {e}"))?;
-    let log_err = log_file.try_clone()
+    let log_file =
+        std::fs::File::create(&log_path).map_err(|e| format!("create update log: {e}"))?;
+    let log_err = log_file
+        .try_clone()
         .map_err(|e| format!("clone log handle: {e}"))?;
 
     let install_cmd = format!(
@@ -275,7 +286,10 @@ fn background_build(tag: &str, profile_dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("install.sh: {e}"))?;
 
     if !status.success() {
-        return Err(format!("install.sh exited {status} — see {}", log_path.display()));
+        return Err(format!(
+            "install.sh exited {status} — see {}",
+            log_path.display()
+        ));
     }
 
     log::info!("background_build: install complete for {tag}");

@@ -126,9 +126,7 @@ pub struct ResolvedUserCommand {
 ///
 /// Reads the file fresh on every call, so the palette hot-reloads on the next
 /// open with no mtime bookkeeping — same pattern as palette note loading.
-pub fn resolve_user_commands(
-    workspace_root: Option<&std::path::Path>,
-) -> Vec<ResolvedUserCommand> {
+pub fn resolve_user_commands(workspace_root: Option<&std::path::Path>) -> Vec<ResolvedUserCommand> {
     if let Some(root) = workspace_root {
         let config_path = root.join(commands_file());
         match std::fs::read_to_string(&config_path) {
@@ -265,9 +263,7 @@ mod socket_resolution_tests {
 
         assert_eq!(
             actual,
-            Some(PathBuf::from(
-                "/Users/test/.plexi-pr-2384/notify.sock"
-            ))
+            Some(PathBuf::from("/Users/test/.plexi-pr-2384/notify.sock"))
         );
     }
 
@@ -347,12 +343,8 @@ mod socket_resolution_tests {
 
     #[test]
     fn binary_suffix_alone_does_not_enable_direct_dispatch() {
-        let resolved = resolve_command_socket_from(
-            None,
-            Some("alpha"),
-            None,
-            Path::new("/Users/test"),
-        );
+        let resolved =
+            resolve_command_socket_from(None, Some("alpha"), None, Path::new("/Users/test"));
 
         assert_eq!(
             (resolved, command_socket_available_from(false, false)),
@@ -521,17 +513,19 @@ pub use app::{
 };
 pub use app_check::app_check_cli;
 pub use completions::{complete_open_cli, complete_run_cli, completions_cli};
-pub use config_cli::{config_check, config_edit, config_get, config_list, config_reset, config_set};
+pub use config_cli::{
+    config_check, config_edit, config_get, config_list, config_reset, config_set,
+};
 pub use context_cli::{
     context_current_cli, context_describe_cli, context_list_cli, context_new_cli, context_open_cli,
     context_push_cli, context_set_root_cli, context_zoom_cli, context_zoom_out_cli,
 };
 pub use demo::demo_cli;
+pub use doctor::doctor_cli;
 pub use events::{
     events_declare_cli, events_emit_cli, events_list_cli, events_mcp_config_cli,
     events_subscribe_cli, EmitArgs,
 };
-pub use doctor::doctor_cli;
 pub use host::{host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli};
 pub use install::{
     install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,
@@ -547,9 +541,9 @@ pub use open::{
 };
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_focus_cli,
-    pane_info_cli, pane_key_cli, pane_list_cli, pane_self_cli, pane_send_cli,
-    pane_set_title_cli, pane_slot_delete_cli, pane_slot_list_cli, pane_slot_read_cli,
-    pane_slot_write_cli, pane_state_cli,
+    pane_info_cli, pane_key_cli, pane_list_cli, pane_self_cli, pane_send_cli, pane_set_title_cli,
+    pane_slot_delete_cli, pane_slot_list_cli, pane_slot_read_cli, pane_slot_write_cli,
+    pane_state_cli,
 };
 pub use routine::{routine_list, routine_run};
 pub use run::{run_command, run_list_commands};

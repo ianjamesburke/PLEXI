@@ -89,9 +89,13 @@ pub(crate) fn run_build_command(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("spawn_failed: {} {}: {error}", exe.display(), args.join(" ")))?;
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "spawn_failed: {} {}: {error}",
+            exe.display(),
+            args.join(" ")
+        )
+    })?;
 
     let stdout = child
         .stdout

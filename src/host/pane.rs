@@ -162,7 +162,11 @@ impl SemanticPaneState {
                     UiNodeData::Space(space) => (
                         "space",
                         None,
-                        Some(format!("{}{}", space.size, if space.grow { "+grow" } else { "" })),
+                        Some(format!(
+                            "{}{}",
+                            space.size,
+                            if space.grow { "+grow" } else { "" }
+                        )),
                         Vec::new(),
                     ),
                     UiNodeData::Surface(surface) => (

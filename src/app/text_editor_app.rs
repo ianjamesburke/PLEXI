@@ -712,7 +712,9 @@ impl App for TextEditorApp {
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         // Cmd+F: open find bar (or re-focus if already open).
         if input.key_pressed(egui::Key::F)
-            && input.modifiers().matches_logically(egui::Modifiers::COMMAND)
+            && input
+                .modifiers()
+                .matches_logically(egui::Modifiers::COMMAND)
         {
             log::info!("TextEditorApp: Cmd+F — opening find bar");
             match &mut self.find_bar {
@@ -834,7 +836,7 @@ impl App for TextEditorApp {
         // Use the actual rendered row height (not font em-size) so desired_rows fills
         // the viewport exactly. font_size alone ignores line leading, causing the TextEdit
         // to be taller than the viewport and triggering an unwanted scrollbar.
-        let row_height = ui.fonts(|f| f.row_height(&font_id));
+        let row_height = ui.fonts_mut(|f| f.row_height(&font_id));
         let min_rows = ((editor_height / row_height).floor() as usize).max(1);
         // Overscroll: always keep at least half a viewport of empty space below
         // the last line. Computed from last frame's galley height so it grows
@@ -865,7 +867,8 @@ impl App for TextEditorApp {
         let text_color = colors.text_primary;
         let font_id_clone = font_id.clone();
 
-        let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
+        let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+            let text = text.as_str();
             let mut job = egui::text::LayoutJob::default();
             if match_positions.is_empty() || query_len == 0 {
                 job.append(
@@ -925,7 +928,7 @@ impl App for TextEditorApp {
                 }
             }
             job.wrap.max_width = wrap_width;
-            ui.fonts(|f| f.layout_job(job))
+            ui.fonts_mut(|f| f.layout_job(job))
         };
 
         egui::ScrollArea::vertical()
@@ -1049,7 +1052,7 @@ impl App for TextEditorApp {
                             .desired_width(f32::INFINITY)
                             .desired_rows(desired_rows)
                             .margin(egui::vec2(4.0, 0.0))
-                            .frame(false)
+                            .frame(egui::Frame::NONE)
                             .layouter(&mut layouter)
                             .show(ui)
                     })
@@ -1071,7 +1074,7 @@ impl App for TextEditorApp {
                     if let Some(cursor_range) = output.cursor_range {
                         let cursor_rect = output
                             .galley
-                            .pos_from_cursor(&cursor_range.primary)
+                            .pos_from_cursor(cursor_range.primary)
                             .translate(output.galley_pos.to_vec2());
                         ui.scroll_to_rect(cursor_rect, None);
                     }
@@ -1108,7 +1111,7 @@ impl App for TextEditorApp {
                 if output.response.has_focus() {
                     let at_end = output
                         .cursor_range
-                        .map(|r| r.primary.ccursor.index >= self.content.len())
+                        .map(|r| r.primary.index >= self.content.len())
                         .unwrap_or(false);
                     if at_end && self.cursor_was_at_end {
                         let presses = ui.input_mut(|i| {
@@ -1156,7 +1159,7 @@ impl App for TextEditorApp {
                         .desired_width(input_width)
                         .font(egui::FontId::proportional(FIND_BAR_FONT_SIZE))
                         .hint_text("Find…")
-                        .frame(false),
+                        .frame(egui::Frame::NONE),
                 );
 
                 crate::ui::focus::register_text_surface(

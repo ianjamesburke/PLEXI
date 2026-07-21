@@ -84,9 +84,9 @@ impl PlexiApp {
     /// ownership before `dispatch_app_key_events` runs.
     pub(crate) fn draw_capability_modal(&mut self, ctx: &egui::Context) {
         let active = self.active_window;
-        let pane_id = self.windows[active]
-            .focused_pane
-            .and_then(|tile| crate::app::PlexiApp::find_pane_in_tile(&self.windows[active].tree, tile));
+        let pane_id = self.windows[active].focused_pane.and_then(|tile| {
+            crate::app::PlexiApp::find_pane_in_tile(&self.windows[active].tree, tile)
+        });
         if let Some(pane_id) = pane_id {
             if let Some(app) = self.windows[active]
                 .panes

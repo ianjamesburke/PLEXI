@@ -26,6 +26,15 @@ impl PlexiApp {
         if self.pending_screenshots.is_empty() {
             return;
         }
+        // wgpu 29 no longer advances map_async callbacks without an explicit
+        // device poll. egui-wgpu queues the readback after the frame render,
+        // so poll non-blockingly on subsequent passes until its Screenshot
+        // event reaches egui's raw input.
+        if let Some(render_state) = crate::host::wasm_gpu::host_render_state() {
+            if let Err(error) = render_state.device.poll(wgpu::PollType::Poll) {
+                log::warn!("screenshot: wgpu device poll failed: {error}");
+            }
+        }
         let images: Vec<std::sync::Arc<egui::ColorImage>> = ctx.input(|i| {
             i.raw
                 .events
@@ -37,6 +46,7 @@ impl PlexiApp {
                 .collect()
         });
         let Some(image) = images.last() else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(10));
             return;
         };
         let pixels_per_point = ctx.pixels_per_point();
@@ -58,9 +68,7 @@ impl PlexiApp {
                     serde_json::json!({ "error": error })
                 }
             };
-            if let Err(error) =
-                std::fs::write(&request.response_file, response.to_string())
-            {
+            if let Err(error) = std::fs::write(&request.response_file, response.to_string()) {
                 log::warn!(
                     "screenshot: could not write response file {}: {error}",
                     request.response_file
@@ -140,10 +148,7 @@ fn crop_color_image(
     for y in y0..y1 {
         pixels.extend_from_slice(&image.pixels[y * frame_w + x0..y * frame_w + x1]);
     }
-    Ok(egui::ColorImage {
-        size: [x1 - x0, y1 - y0],
-        pixels,
-    })
+    Ok(egui::ColorImage::new([x1 - x0, y1 - y0], pixels))
 }
 
 #[cfg(test)]
@@ -152,7 +157,7 @@ mod tests {
 
     #[test]
     fn crop_scales_by_pixels_per_point_and_clamps_to_frame() {
-        let mut image = egui::ColorImage::new([100, 80], egui::Color32::BLACK);
+        let mut image = egui::ColorImage::filled([100, 80], egui::Color32::BLACK);
         // Mark a known pixel inside the crop region: logical (10,5) @2x = (20,10).
         image.pixels[10 * 100 + 20] = egui::Color32::WHITE;
         let rect = egui::Rect::from_min_max(egui::pos2(10.0, 5.0), egui::pos2(30.0, 25.0));

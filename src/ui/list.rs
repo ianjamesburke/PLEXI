@@ -90,7 +90,7 @@ pub(crate) fn paint_text_left_center(
     left: f32,
     center_y: f32,
 ) {
-    let galley = ui.fonts(|f| f.layout_no_wrap(text.into(), font_id, color));
+    let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.into(), font_id, color));
     ui.painter().galley(
         Pos2::new(left, center_y - galley.size().y / 2.0),
         galley,
@@ -105,7 +105,7 @@ pub(crate) fn paint_text_centered(
     color: Color32,
     center: Pos2,
 ) {
-    let galley = ui.fonts(|f| f.layout_no_wrap(text.into(), font_id, color));
+    let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.into(), font_id, color));
     ui.painter().galley(
         Pos2::new(
             center.x - galley.size().x / 2.0,
@@ -534,7 +534,7 @@ fn elided_galley(
     max_width: f32,
 ) -> std::sync::Arc<egui::Galley> {
     let text = elide_to_width(ui, text, font_id.clone(), max_width);
-    ui.fonts(|f| f.layout_no_wrap(text, font_id, color))
+    ui.fonts_mut(|f| f.layout_no_wrap(text, font_id, color))
 }
 
 pub(crate) fn elide_to_width(
@@ -548,7 +548,7 @@ pub(crate) fn elide_to_width(
     }
 
     let width = |s: &str| {
-        ui.fonts(|f| {
+        ui.fonts_mut(|f| {
             f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE)
                 .size()
                 .x
@@ -648,7 +648,7 @@ pub(crate) fn scroll_row_into_view(ui: &egui::Ui, row: &egui::Response, selectio
 const TRAILING_PAD_H: f32 = style::LIST_ROW_PAD_H + style::SPACE_SM;
 
 fn trailing_size(ui: &egui::Ui, label: &str) -> Vec2 {
-    let galley = ui.fonts(|f| {
+    let galley = ui.fonts_mut(|f| {
         f.layout_no_wrap(
             label.to_string(),
             egui::FontId::proportional(style::TEXT_CAPTION),
@@ -664,13 +664,17 @@ const CHIP_PAD_H: f32 = 4.0;
 const CHIP_PAD_V: f32 = 1.5;
 
 fn chip_galley(ui: &egui::Ui, label: &str, color: egui::Color32) -> std::sync::Arc<egui::Galley> {
-    ui.fonts(|f| {
-        f.layout_no_wrap(label.to_string(), egui::FontId::monospace(style::TEXT_HINT), color)
+    ui.fonts_mut(|f| {
+        f.layout_no_wrap(
+            label.to_string(),
+            egui::FontId::monospace(style::TEXT_HINT),
+            color,
+        )
     })
 }
 
 fn chip_size(ui: &egui::Ui, label: &str) -> Vec2 {
-    let galley = ui.fonts(|f| {
+    let galley = ui.fonts_mut(|f| {
         f.layout_no_wrap(
             label.to_string(),
             egui::FontId::monospace(style::TEXT_HINT),
@@ -807,8 +811,7 @@ mod tests {
     #[test]
     fn trailing_metadata_reserves_text_width() {
         let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             let row_rect =
                 egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(240.0, style::LIST_ROW_H));
             let plain = ListRow::new("Assistant").secondary("Long app description");
@@ -821,14 +824,12 @@ mod tests {
                 "metadata lane must reduce the text area so secondary text truncates before chips"
             );
         });
-        let _ = ctx.end_pass();
     }
 
     #[test]
     fn pane_pips_reserve_the_metadata_lane() {
         let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             let row_rect =
                 egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(240.0, style::LIST_ROW_H));
             let row = ListRow::new("Workspace").pane_pips(ListRowPips {
@@ -841,14 +842,12 @@ mod tests {
             assert!(row.metadata_lane_width(ui) > 0.0);
             assert!(row.text_right(ui, row_rect) < row_rect.right() - style::LIST_ROW_PAD_H);
         });
-        let _ = ctx.end_pass();
     }
 
     #[test]
     fn compact_metadata_keeps_pips_padded_below_chip() {
         let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             let primary_center_y = style::LIST_ROW_H / 2.0;
             let chip_bottom =
                 primary_center_y - COMPACT_METADATA_CHIP_OFFSET_Y + chip_size(ui, "ctx").y / 2.0;
@@ -859,7 +858,6 @@ mod tests {
                 "compact metadata pips need visible padding below the chip"
             );
         });
-        let _ = ctx.end_pass();
     }
 
     /// Drives one frame of a 30-row list with the given selection and reports
@@ -868,8 +866,8 @@ mod tests {
     /// scroll state all behave exactly as in the app.
     fn run_list_frame(ctx: &egui::Context, selected: usize) -> bool {
         let mut visible = false;
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .animated(false)
                     .id_salt("scroll_into_view_test")
@@ -918,8 +916,7 @@ mod tests {
         // rendered heights are always smaller, so if the bound holds, real
         // layout holds.
         let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             let primary_line_h = style::TEXT_CAPTION * 1.5;
             let secondary_line_h = style::TEXT_HINT * 1.5;
             let total_h = primary_line_h + 2.0 + secondary_line_h;
@@ -936,20 +933,17 @@ mod tests {
                 "two-line row: pip top ({pip_top:.1}) must clear chip bottom ({chip_bottom:.1})"
             );
         });
-        let _ = ctx.end_pass();
     }
 
     #[test]
     fn elide_to_width_keeps_text_single_line_within_width() {
         let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             let font = egui::FontId::proportional(style::TEXT_HINT);
             let elided = elide_to_width(ui, "a very long note filename.md", font.clone(), 40.0);
-            let galley = ui.fonts(|f| f.layout_no_wrap(elided, font, Color32::WHITE));
+            let galley = ui.fonts_mut(|f| f.layout_no_wrap(elided, font, Color32::WHITE));
             assert!(galley.size().x <= 40.0);
             assert_eq!(galley.rows.len(), 1);
         });
-        let _ = ctx.end_pass();
     }
 }

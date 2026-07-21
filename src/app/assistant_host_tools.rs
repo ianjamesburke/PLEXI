@@ -809,11 +809,7 @@ fn scoped_walk_starts(
             }
             Ok(vec![path])
         }
-        None => Ok(roots
-            .iter()
-            .filter(|root| root.exists())
-            .cloned()
-            .collect()),
+        None => Ok(roots.iter().filter(|root| root.exists()).cloned().collect()),
     }
 }
 
@@ -825,8 +821,7 @@ fn grep_scoped(
     pattern: &str,
     max_matches: usize,
 ) -> Result<serde_json::Value, String> {
-    let regex =
-        regex::Regex::new(pattern).map_err(|error| format!("invalid_pattern: {error}"))?;
+    let regex = regex::Regex::new(pattern).map_err(|error| format!("invalid_pattern: {error}"))?;
     let starts = scoped_walk_starts(roots, raw_path)?;
     let mut matches = Vec::new();
     let mut files_scanned = 0usize;
@@ -1098,7 +1093,11 @@ mod tests {
         let all = super::read_scoped_file_slice(&roots, &file, 1, 2000).unwrap();
         assert_eq!(all.total_lines, 10);
         assert_eq!(all.lines_returned, 10);
-        assert!(all.content.starts_with("     1\tline1\n"), "{}", all.content);
+        assert!(
+            all.content.starts_with("     1\tline1\n"),
+            "{}",
+            all.content
+        );
 
         let page = super::read_scoped_file_slice(&roots, &file, 4, 2).unwrap();
         assert_eq!(page.lines_returned, 2);
@@ -1224,7 +1223,10 @@ mod tests {
         assert!(diff.starts_with("--- a/demo/main.py\n+++ b/demo/main.py\n"));
         assert!(diff.contains("@@ -2,7 +2,7 @@"), "{diff}");
         assert!(diff.contains("-e\n+E\n"), "{diff}");
-        assert!(!diff.contains("\na\n"), "context must stay within 3 lines: {diff}");
+        assert!(
+            !diff.contains("\na\n"),
+            "context must stay within 3 lines: {diff}"
+        );
         assert_eq!(super::unified_diff("same\n", "same\n", "x"), "");
 
         let grow = super::unified_diff("a\n", "a\nb\nc\n", "x");
@@ -1298,9 +1300,8 @@ mod tests {
             context,
         );
         assert!(read.error.is_none(), "{:?}", read.error);
-        let value =
-            serde_json::from_str::<serde_json::Value>(read.output_json.as_deref().unwrap())
-                .unwrap();
+        let value = serde_json::from_str::<serde_json::Value>(read.output_json.as_deref().unwrap())
+            .unwrap();
         assert!(value["lines"].is_array());
 
         let not_terminal = harness.app.handle_assistant_host_tool(
@@ -1331,7 +1332,11 @@ mod tests {
             harness
                 .app
                 .handle_assistant_host_tool("host.terminals.read", "{}", origin, context);
-        assert!(no_arg.error.as_deref().unwrap().starts_with("invalid_input"));
+        assert!(no_arg
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("invalid_input"));
     }
 
     #[test]

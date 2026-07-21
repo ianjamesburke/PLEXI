@@ -1,4 +1,4 @@
-use egui::{self, epaint, NumExt, RichText, Sense, TextStyle, Ui, Vec2};
+use egui::{self, NumExt, RichText, Sense, TextBuffer, TextStyle, Ui, Vec2, epaint};
 
 #[inline]
 pub fn rule(ui: &mut Ui, end_line: bool) {
@@ -83,7 +83,7 @@ fn height_body(ui: &Ui) -> f32 {
 
 fn width_body_space(ui: &Ui) -> f32 {
     let id = TextStyle::Body.resolve(ui.style());
-    ui.fonts(|f| f.glyph_width(&id, ' '))
+    ui.fonts_mut(|f| f.glyph_width(&id, ' '))
 }
 
 /// Enhanced/specialized version of egui's code blocks. This one features copy button and borders
@@ -91,7 +91,7 @@ pub fn code_block<'t>(
     ui: &mut Ui,
     max_width: f32,
     text: &str,
-    layouter: &'t mut dyn FnMut(&Ui, &str, f32) -> std::sync::Arc<egui::Galley>,
+    layouter: &'t mut dyn FnMut(&Ui, &dyn TextBuffer, f32) -> std::sync::Arc<egui::Galley>,
 ) {
     let mut text = text.strip_suffix('\n').unwrap_or(text);
 
@@ -103,11 +103,8 @@ pub fn code_block<'t>(
     // Note that we take a `&mut` to a non-`mut` `&str`, which is
     // the how to tell `egui` that the text is not editable.
     //
-    // PLEXI PATCH: egui's default TextEdit margin (4x2) leaves code text
-    // crammed against the block's edges. Use a roomier inner margin so the
-    // themed code-block card has comfortable breathing room. Shrink the
-    // desired text width by the horizontal margin so the padded outer box
-    // still fits the available width instead of overflowing.
+    // PLEXI PATCH: keep code text clear of the block edge while preserving the
+    // caller's width. Upstream 0.23 still exposes no commonmark-level padding.
     let code_margin = egui::Margin::symmetric(16, 12);
     let inner_width = (max_width - code_margin.sum().x).max(0.0);
     let original_override_text_color = ui.visuals().override_text_color;
@@ -138,17 +135,9 @@ pub fn code_block<'t>(
     let persistent_id = ui.make_persistent_id(output.response.id);
     let copied_icon = ui.memory_mut(|m| *m.data.get_temp_mut_or_default::<bool>(persistent_id));
 
-    // Copy icon.
-    //
-    // PLEXI PATCH: two changes over upstream.
-    //   1. Reveal the button only while the block is hovered (like GitHub /
-    //      VS Code). Always-on, it overlapped the code text on narrow blocks.
-    //   2. Pin it to the block's top-right corner with a fixed inset and an
-    //      explicit, icon-sized rect. Upstream used a zero-size rect with
-    //      padding-derived offsets, so it drifted vertically with block height
-    //      and read as off-center.
-    // (`copied_icon` keeps the button alive for one frame after a copy so the
-    // ✔ confirmation shows even as the pointer leaves.)
+    // PLEXI PATCH: reveal a solid, fixed-size copy control only while the code
+    // block is hovered. Upstream's always-on transparent control obscures code
+    // and drifts with theme spacing on narrow blocks.
     let block_hovered = ui.rect_contains_pointer(frame_rect);
     if block_hovered || copied_icon {
         const COPY_INSET: f32 = 8.0;
@@ -161,11 +150,6 @@ pub fn code_block<'t>(
             copy_icon_size,
         );
 
-        // PLEXI PATCH: give the copy control a solid chip background (the code
-        // block's own fill + border) instead of a transparent frame. On wide
-        // blocks the button overlaps the end of the first code line; a
-        // transparent icon then sits messily on top of the text. A solid chip
-        // cleanly occludes whatever is beneath it, matching GitHub / VS Code.
         let copy_button = ui
             .put(
                 button_rect,
@@ -175,16 +159,12 @@ pub fn code_block<'t>(
                     .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
                     .corner_radius(ui.style().noninteractive().corner_radius),
             )
-            // workaround for a regression after egui 0.27 where the edit cursor was shown even when
-            // hovering over the button. We try interact_cursor first to allow the cursor to be
-            // overriden
             .on_hover_cursor(
                 ui.visuals()
                     .interact_cursor
                     .unwrap_or(egui::CursorIcon::Default),
             );
 
-        // Update icon state in persistent memory
         if copied_icon && !copy_button.hovered() {
             ui.memory_mut(|m| *m.data.get_temp_mut_or_default(persistent_id) = false);
         }
@@ -205,7 +185,7 @@ pub fn code_block<'t>(
             } else {
                 text.to_owned()
             };
-            ui.ctx().copy_text(copy_text);
+            ui.copy_text(copy_text);
         }
     }
 }
@@ -223,7 +203,7 @@ impl<'a> ImmutableCheckbox<'a> {
     }
 }
 
-impl<'a> egui::Widget for ImmutableCheckbox<'a> {
+impl egui::Widget for ImmutableCheckbox<'_> {
     fn ui(self, ui: &mut Ui) -> egui::Response {
         let ImmutableCheckbox { checked } = self;
 

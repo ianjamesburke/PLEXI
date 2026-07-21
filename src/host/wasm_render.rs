@@ -12,7 +12,9 @@ use std::collections::HashMap;
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
-use super::wasm_app::bindings::plexi::platform::types::{CanvasCommand, FooterKeysNode, PinnedEdge};
+use super::wasm_app::bindings::plexi::platform::types::{
+    CanvasCommand, FooterKeysNode, PinnedEdge,
+};
 use super::wasm_app::{Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, UiNodeData, UiTree};
 
 use crate::render::app_chrome::{self, AppChrome};
@@ -154,16 +156,16 @@ pub fn render_ui_tree_to_png(tree: &UiTree, width: f32, height: f32) -> Result<V
     let mut fonts_ready = false;
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::Vec2::new(width, height))
-        .build(move |ctx| {
+        .build_ui(move |ui| {
             if !fonts_ready {
-                crate::ui::theme::setup_fonts(ctx);
+                crate::ui::theme::setup_fonts(ui.ctx());
                 fonts_ready = true;
-                ctx.request_repaint();
+                ui.ctx().request_repaint();
                 return;
             }
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None);
                 });
         });
@@ -172,8 +174,11 @@ pub fn render_ui_tree_to_png(tree: &UiTree, width: f32, height: f32) -> Result<V
         .render()
         .map_err(|e| format!("offscreen render failed: {e}"))?;
     let mut bytes = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
-        .map_err(|e| format!("PNG encode failed: {e}"))?;
+    img.write_to(
+        &mut std::io::Cursor::new(&mut bytes),
+        image::ImageFormat::Png,
+    )
+    .map_err(|e| format!("PNG encode failed: {e}"))?;
     Ok(bytes)
 }
 
@@ -388,7 +393,18 @@ fn render_node(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = r.gap;
                 for child in &r.children {
-                    render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
+                    render_node(
+                        ui,
+                        nodes,
+                        *child,
+                        colors,
+                        out,
+                        depth + 1,
+                        surface,
+                        canvas_fits,
+                        pending_click,
+                        surface_key,
+                    );
                 }
             });
         }
@@ -405,17 +421,30 @@ fn render_node(
                 let stack_size = egui::vec2(ui.available_width(), ui.available_height());
                 let (stack_rect, _) = ui.allocate_exact_size(stack_size, egui::Sense::hover());
                 let body_h = (stack_rect.height() - footer_h).max(0.0);
-                let body_rect =
-                    egui::Rect::from_min_size(stack_rect.min, egui::vec2(stack_rect.width(), body_h));
+                let body_rect = egui::Rect::from_min_size(
+                    stack_rect.min,
+                    egui::vec2(stack_rect.width(), body_h),
+                );
 
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body_rect), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(body_rect), |ui| {
                     ui.set_clip_rect(body_rect);
                     ui.set_min_height(body_h);
                     ui.set_max_height(body_h);
                     ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
                         ui.spacing_mut().item_spacing.y = c.gap;
                         for &child in &c.children[..c.children.len() - 1] {
-                            render_node(ui, nodes, child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
+                            render_node(
+                                ui,
+                                nodes,
+                                child,
+                                colors,
+                                out,
+                                depth + 1,
+                                surface,
+                                canvas_fits,
+                                pending_click,
+                                surface_key,
+                            );
                         }
                     });
                 });
@@ -424,17 +453,39 @@ fn render_node(
                     egui::pos2(stack_rect.min.x, stack_rect.max.y - footer_h),
                     egui::vec2(stack_rect.width(), footer_h),
                 );
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
                     ui.set_clip_rect(footer_rect);
                     ui.set_min_height(footer_h);
                     ui.set_max_height(footer_h);
-                    render_node(ui, nodes, footer_id, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
+                    render_node(
+                        ui,
+                        nodes,
+                        footer_id,
+                        colors,
+                        out,
+                        depth + 1,
+                        surface,
+                        canvas_fits,
+                        pending_click,
+                        surface_key,
+                    );
                 });
             } else {
                 ui.with_layout(egui::Layout::top_down(cross_align(c.align)), |ui| {
                     ui.spacing_mut().item_spacing.y = c.gap;
                     for child in &c.children {
-                        render_node(ui, nodes, *child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
+                        render_node(
+                            ui,
+                            nodes,
+                            *child,
+                            colors,
+                            out,
+                            depth + 1,
+                            surface,
+                            canvas_fits,
+                            pending_click,
+                            surface_key,
+                        );
                     }
                 });
             }
@@ -485,7 +536,18 @@ fn render_node(
                         if selected {
                             ui.visuals_mut().override_text_color = Some(colors.accent);
                         }
-                        render_node(ui, nodes, *item_id, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
+                        render_node(
+                            ui,
+                            nodes,
+                            *item_id,
+                            colors,
+                            out,
+                            depth + 1,
+                            surface,
+                            canvas_fits,
+                            pending_click,
+                            surface_key,
+                        );
                     })
                     .response
                     .interact(egui::Sense::click());
@@ -504,7 +566,18 @@ fn render_node(
                 egui::ScrollArea::vertical()
             };
             area.show(ui, |ui| {
-                render_node(ui, nodes, s.child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
+                render_node(
+                    ui,
+                    nodes,
+                    s.child,
+                    colors,
+                    out,
+                    depth + 1,
+                    surface,
+                    canvas_fits,
+                    pending_click,
+                    surface_key,
+                );
             });
         }
 
@@ -517,7 +590,18 @@ fn render_node(
                     bottom: p.bottom as i8,
                 })
                 .show(ui, |ui| {
-                    render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
+                    render_node(
+                        ui,
+                        nodes,
+                        p.child,
+                        colors,
+                        out,
+                        depth + 1,
+                        surface,
+                        canvas_fits,
+                        pending_click,
+                        surface_key,
+                    );
                 });
         }
 
@@ -675,7 +759,18 @@ fn render_node(
         // `Column` (see `column_bottom_pin`). When `Pinned` appears outside a
         // `Column` (e.g. at the tree root), render its child inline.
         UiNodeData::Pinned(p) => {
-            render_node(ui, nodes, p.child, colors, out, depth + 1, surface, canvas_fits, pending_click, surface_key);
+            render_node(
+                ui,
+                nodes,
+                p.child,
+                colors,
+                out,
+                depth + 1,
+                surface,
+                canvas_fits,
+                pending_click,
+                surface_key,
+            );
         }
 
         UiNodeData::Spinner(sp) => {
@@ -789,10 +884,7 @@ mod tests {
         // The caller records our own change into last_app_value, so the
         // app's echo of it is a no-op.
         assert_eq!(
-            reconcile_text_input_buffer(
-                Some(("typed".to_string(), "typed".to_string())),
-                "typed"
-            ),
+            reconcile_text_input_buffer(Some(("typed".to_string(), "typed".to_string())), "typed"),
             ("typed".to_string(), "typed".to_string())
         );
 
@@ -838,10 +930,10 @@ mod tests {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, pane)),
             ..Default::default()
         };
-        let output = ctx.run(raw, |ctx| {
+        let output = ctx.run_ui(raw, |ui| {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     let _ = render_ui_tree_with_surface(ui, tree, &colors, None, None);
                 });
         });
@@ -1099,8 +1191,7 @@ mod tests {
     fn contained_canvas_preserves_source_aspect_ratio_and_centers_content() {
         let container = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 700.0));
 
-        let (origin, sx, sy) =
-            canvas_transform(container, 360.0, 440.0, CanvasFit::Contain);
+        let (origin, sx, sy) = canvas_transform(container, 360.0, 440.0, CanvasFit::Contain);
 
         let expected_scale = 300.0 / 360.0;
         let expected_height = 440.0 * expected_scale;
@@ -1157,10 +1248,10 @@ mod tests {
         ));
 
         let mut allocated_height = 0.0f32;
-        let _ = ctx.run(raw_input, |ctx| {
+        let _ = ctx.run_ui(raw_input, |ui| {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     let _ = render_ui_tree_with_surface(ui, &tree, &colors, None, None);
                     allocated_height = ui.min_rect().height();
                 });
@@ -1219,12 +1310,19 @@ mod tests {
             screen_rect: Some(screen_rect),
             ..Default::default()
         };
-        let _ = ctx.run(warmup, |ctx| {
+        let _ = ctx.run_ui(warmup, |ui| {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
-                    let _ =
-                        render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits), None, None);
+                .show_inside(ui, |ui| {
+                    let _ = render_ui_tree_with_canvas_fits(
+                        ui,
+                        &tree,
+                        &colors,
+                        None,
+                        Some(&fits),
+                        None,
+                        None,
+                    );
                 });
         });
 
@@ -1251,12 +1349,19 @@ mod tests {
             ..Default::default()
         };
         let mut captured = RenderResult::default();
-        let _ = ctx.run(click_frame, |ctx| {
+        let _ = ctx.run_ui(click_frame, |ui| {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
-                    captured =
-                        render_ui_tree_with_canvas_fits(ui, &tree, &colors, None, Some(&fits), None, None);
+                .show_inside(ui, |ui| {
+                    captured = render_ui_tree_with_canvas_fits(
+                        ui,
+                        &tree,
+                        &colors,
+                        None,
+                        Some(&fits),
+                        None,
+                        None,
+                    );
                 });
         });
 
@@ -1308,8 +1413,8 @@ mod tests {
         );
 
         let mut captured = RenderResult::default();
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
                 captured = render_ui_tree_with_surface(ui, &tree, &colors, None, None);
             });
         });

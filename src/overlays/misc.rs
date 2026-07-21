@@ -429,7 +429,11 @@ impl PlexiApp {
                 let te_id = egui::Id::new("text_input_overlay_field");
                 let (overlay, _target) = self.text_overlay.as_mut().unwrap();
                 crate::ui::text_field::TextField::singleline(te_id, hint.as_str())
-                    .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::TextInput)))
+                    .surface(crate::ui::focus::SurfaceKey::Overlay(
+                        crate::app::input_owner::OverlaySurface::Layer(
+                            crate::app::FocusKind::TextInput,
+                        ),
+                    ))
                     .select_all_on_focus(true)
                     .log_name("TextInputOverlay")
                     .show(ui, &mut overlay.buffer, &self.colors);
@@ -558,7 +562,11 @@ impl PlexiApp {
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("rename_pane_input");
                 crate::ui::text_field::TextField::singleline(te_id, "Pane name...")
-                    .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::RenamePane)))
+                    .surface(crate::ui::focus::SurfaceKey::Overlay(
+                        crate::app::input_owner::OverlaySurface::Layer(
+                            crate::app::FocusKind::RenamePane,
+                        ),
+                    ))
                     .select_all_on_focus(true)
                     .log_name("rename_pane")
                     .show(ui, &mut self.rename_buffer, &self.colors);
@@ -622,7 +630,11 @@ impl PlexiApp {
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("rename_context_input");
                 crate::ui::text_field::TextField::singleline(te_id, "Context name...")
-                    .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::ContextRename)))
+                    .surface(crate::ui::focus::SurfaceKey::Overlay(
+                        crate::app::input_owner::OverlaySurface::Layer(
+                            crate::app::FocusKind::ContextRename,
+                        ),
+                    ))
                     .select_all_on_focus(true)
                     .log_name("rename_context")
                     .show(ui, &mut self.rename_buffer, &self.colors);
@@ -681,7 +693,11 @@ impl PlexiApp {
                 .font(egui::TextStyle::Body.resolve(ui.style()))
                 .desired_width(MODAL_WIDTH)
                 .rows(3)
-                .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::ContextDescription)))
+                .surface(crate::ui::focus::SurfaceKey::Overlay(
+                    crate::app::input_owner::OverlaySurface::Layer(
+                        crate::app::FocusKind::ContextDescription,
+                    ),
+                ))
                 .select_all_on_focus(true)
                 .log_name("context_description")
                 .show(ui, &mut self.description_buffer, &self.colors);
@@ -691,7 +707,6 @@ impl PlexiApp {
                     crate::ui::hints::HintGroup::new(&["Esc"], "cancel"),
                 ];
                 crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
-
             });
 
         if cancel {

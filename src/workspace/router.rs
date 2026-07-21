@@ -242,7 +242,11 @@ mod tests {
     #[test]
     fn apply_order_permutes_and_tracks_active_by_identity() {
         let mut router = WorkspaceRouter::new(
-            vec![make_ctx(10, None, 0), make_ctx(20, None, 0), make_ctx(30, None, 0)],
+            vec![
+                make_ctx(10, None, 0),
+                make_ctx(20, None, 0),
+                make_ctx(30, None, 0),
+            ],
             1, // active = ctx 20
         );
         // Move ctx 20 (index 1) to the front: new order [20, 10, 30].

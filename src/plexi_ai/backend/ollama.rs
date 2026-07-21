@@ -75,9 +75,7 @@ fn messages_for_ollama(messages: &[serde_json::Value]) -> Result<Vec<serde_json:
                         .get("id")
                         .and_then(serde_json::Value::as_str)
                         .filter(|id| !id.is_empty())
-                        .ok_or_else(|| {
-                            format!("assistant tool call '{name}' is missing an id")
-                        })?;
+                        .ok_or_else(|| format!("assistant tool call '{name}' is missing an id"))?;
                     pending_tool_names.insert(id.to_string(), name);
                 }
             }

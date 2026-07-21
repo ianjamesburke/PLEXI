@@ -122,7 +122,7 @@ fn elide_path_leading(ui: &egui::Ui, path: &str, font_id: egui::FontId, max_widt
         return String::new();
     }
     let width = |s: &str| {
-        ui.fonts(|f| {
+        ui.fonts_mut(|f| {
             f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE)
                 .size()
                 .x
@@ -153,7 +153,10 @@ fn key_pressed_no_repeat(input: &crate::app::input_router::PlexiInput, key: egui
 // in_search gates all letter keys so that j/k/h/l/s/r/slash fall through
 // to AppendText instead of firing navigation/action commands while the user
 // is typing a query. Arrow keys, Enter, Escape, and Backspace always work.
-fn classify_key(input: &crate::app::input_router::PlexiInput, in_search: bool) -> Option<FileBrowserAction> {
+fn classify_key(
+    input: &crate::app::input_router::PlexiInput,
+    in_search: bool,
+) -> Option<FileBrowserAction> {
     if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::A) {
         return Some(FileBrowserAction::SelectAll);
     }
@@ -174,7 +177,8 @@ fn classify_key(input: &crate::app::input_router::PlexiInput, in_search: bool) -
     }
     // Cmd+D and Cmd+Shift+D are host split chords. Do not bind them inside
     // File Browser unless the full shortcut map is reviewed.
-    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::Backspace) {
+    if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::Backspace)
+    {
         return Some(FileBrowserAction::MoveToTrash);
     }
     if !in_search && input.modifiers().command && key_pressed_no_repeat(input, egui::Key::O) {
@@ -1894,85 +1898,90 @@ impl FileBrowserApp {
                 // click resolved inside `Context::begin_pass`, which
                 // `plexi pane click --node` / `PendingPaneClick` bypasses
                 // (stint 0469). When a pending click targets this button we
-                // open the menu directly through egui's public menu state
-                // (`menu::BarState` / `menu::MenuRoot`) so the popup renders
-                // this frame and exposes its items — including the Show hidden
-                // files checkbox — to the semantic tree and to a follow-up
-                // node click.
+                // open the menu directly through egui's popup state so it
+                // renders this frame and exposes its items — including the
+                // Show hidden files checkbox — to the semantic tree and to a
+                // follow-up node click.
                 let bar_id = ui.id().with("view_menu");
-                let mut bar_state = egui::menu::BarState::load(ui.ctx(), bar_id);
                 let menu_button = ui.add(egui::Button::new(
                     egui::RichText::new("View \u{2304}").size(style::TEXT_HINT),
                 ));
-                if bar_state.is_none()
-                    && pending_click.is_some_and(|c| c.targets_id(menu_button.id))
-                {
-                    let pos = menu_button.rect.left_bottom();
-                    **bar_state = Some(egui::menu::MenuRoot::new(pos, menu_button.id));
+                let synthetic_open =
+                    pending_click.is_some_and(|click| click.targets_id(menu_button.id));
+                if synthetic_open {
                     log::info!("file_browser: View menu opened via synthetic node click");
                 }
-                bar_state.bar_menu(&menu_button, |ui| {
-                    let mut folders_on_top = self.columns.folders_on_top;
-                    if ui.checkbox(&mut folders_on_top, "Folders first").changed() {
-                        self.columns.folders_on_top = folders_on_top;
-                        self.refresh_preserving_filter();
-                        log::info!(
-                            "file_browser: folders_on_top changed to {}",
-                            self.columns.folders_on_top
-                        );
-                    }
-                    let mut show_hidden = self.columns.show_hidden;
-                    let show_hidden_resp = ui.checkbox(&mut show_hidden, "Show hidden files");
-                    let synthetic_toggle =
-                        pending_click.is_some_and(|c| c.targets_id(show_hidden_resp.id));
-                    if show_hidden_resp.changed() || synthetic_toggle {
-                        self.columns.show_hidden = if show_hidden_resp.changed() {
-                            show_hidden
-                        } else {
-                            !self.columns.show_hidden
-                        };
-                        self.refresh_preserving_filter();
-                        log::info!(
-                            "file_browser: show_hidden changed to {}",
-                            self.columns.show_hidden
-                        );
-                    }
-                    let mut inspector = self.inspector_open;
-                    if ui.checkbox(&mut inspector, "Inspector").changed() {
-                        self.toggle_inspector();
-                    }
-                    // Column toggles only exist in the details table — in
-                    // the compact list they would be seven dead entries.
-                    if layout.shows_details() {
-                        ui.separator();
-                        for id in [
-                            ColumnId::Kind,
-                            ColumnId::Size,
-                            ColumnId::Modified,
-                            ColumnId::Created,
-                            ColumnId::Extension,
-                            ColumnId::Permissions,
-                            ColumnId::Tags,
-                        ] {
-                            let mut visible = self
-                                .columns
-                                .columns
-                                .iter()
-                                .find(|column| column.id == id)
-                                .map(|column| column.visible)
-                                .unwrap_or(false);
-                            if ui.checkbox(&mut visible, id.label()).changed() {
-                                self.columns.set_column_visible(id, visible);
-                                log::info!(
-                                    "file_browser: column {} visibility changed to {}",
-                                    id.key(),
-                                    visible
-                                );
+                let set_open = if synthetic_open {
+                    Some(egui::SetOpenCommand::Bool(true))
+                } else if menu_button.clicked() {
+                    Some(egui::SetOpenCommand::Toggle)
+                } else {
+                    None
+                };
+                egui::Popup::menu(&menu_button)
+                    .id(bar_id)
+                    .open_memory(set_open)
+                    .show(|ui| {
+                        let mut folders_on_top = self.columns.folders_on_top;
+                        if ui.checkbox(&mut folders_on_top, "Folders first").changed() {
+                            self.columns.folders_on_top = folders_on_top;
+                            self.refresh_preserving_filter();
+                            log::info!(
+                                "file_browser: folders_on_top changed to {}",
+                                self.columns.folders_on_top
+                            );
+                        }
+                        let mut show_hidden = self.columns.show_hidden;
+                        let show_hidden_resp = ui.checkbox(&mut show_hidden, "Show hidden files");
+                        let synthetic_toggle =
+                            pending_click.is_some_and(|c| c.targets_id(show_hidden_resp.id));
+                        if show_hidden_resp.changed() || synthetic_toggle {
+                            self.columns.show_hidden = if show_hidden_resp.changed() {
+                                show_hidden
+                            } else {
+                                !self.columns.show_hidden
+                            };
+                            self.refresh_preserving_filter();
+                            log::info!(
+                                "file_browser: show_hidden changed to {}",
+                                self.columns.show_hidden
+                            );
+                        }
+                        let mut inspector = self.inspector_open;
+                        if ui.checkbox(&mut inspector, "Inspector").changed() {
+                            self.toggle_inspector();
+                        }
+                        // Column toggles only exist in the details table — in
+                        // the compact list they would be seven dead entries.
+                        if layout.shows_details() {
+                            ui.separator();
+                            for id in [
+                                ColumnId::Kind,
+                                ColumnId::Size,
+                                ColumnId::Modified,
+                                ColumnId::Created,
+                                ColumnId::Extension,
+                                ColumnId::Permissions,
+                                ColumnId::Tags,
+                            ] {
+                                let mut visible = self
+                                    .columns
+                                    .columns
+                                    .iter()
+                                    .find(|column| column.id == id)
+                                    .map(|column| column.visible)
+                                    .unwrap_or(false);
+                                if ui.checkbox(&mut visible, id.label()).changed() {
+                                    self.columns.set_column_visible(id, visible);
+                                    log::info!(
+                                        "file_browser: column {} visibility changed to {}",
+                                        id.key(),
+                                        visible
+                                    );
+                                }
                             }
                         }
-                    }
-                });
-                bar_state.store(ui.ctx(), bar_id);
+                    });
             });
         });
     }
@@ -2541,7 +2550,8 @@ mod tests {
             ..Default::default()
         };
         let mut consumed = false;
-        let _ = ctx.run(raw, |ctx| {
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             let input = crate::app::input_router::PlexiInput::take_from(ctx);
             consumed = app.handle_key(&input) == KeyDisposition::Consumed;
         });
@@ -2627,7 +2637,6 @@ mod tests {
         assert!(!app.should_close);
     }
 
-
     #[test]
     fn t_hands_off_cwd_and_closes() {
         let (mut app, dir) = make_populated_dir_app();
@@ -2667,8 +2676,8 @@ mod tests {
     #[test]
     fn elide_path_keeps_leaf_visible() {
         let ctx = egui::Context::default();
-        let _ = ctx.run(RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(RawInput::default(), |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
                 let font = egui::FontId::monospace(11.0);
                 let full = "/Users/ian/Documents/GitHub/PLEXI/src/file_browser";
                 assert_eq!(elide_path_leading(ui, full, font.clone(), 10_000.0), full);
@@ -2845,7 +2854,8 @@ mod tests {
     fn key_pressed_no_repeat_requires_non_repeat_event() {
         // key_pressed_no_repeat returns false when no events are present.
         let ctx = egui::Context::default();
-        let _ = ctx.run(RawInput::default(), |ctx| {
+        let _ = ctx.run_ui(RawInput::default(), |ui| {
+            let ctx = ui.ctx();
             let input = crate::app::input_router::PlexiInput::take_from(ctx);
             assert!(!super::key_pressed_no_repeat(&input, Key::ArrowRight));
         });
@@ -2860,7 +2870,8 @@ mod tests {
             events: vec![key_event(Key::ArrowRight, Modifiers::default())],
             ..Default::default()
         };
-        let _ = ctx.run(raw, |ctx| {
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             let input = crate::app::input_router::PlexiInput::take_from(ctx);
             assert!(super::key_pressed_no_repeat(&input, Key::ArrowRight));
         });
@@ -3049,7 +3060,8 @@ mod tests {
             .expect("CLI key string 'enter' must map to an egui event");
         let ctx = egui::Context::default();
         let mut consumed = false;
-        let _ = ctx.run(raw, |ctx| {
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             let input = crate::app::input_router::PlexiInput::take_from(ctx);
             consumed = app.handle_key(&input) == crate::app::app_trait::KeyDisposition::Consumed;
         });

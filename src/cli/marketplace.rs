@@ -152,7 +152,9 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
     // gates the paid artifact download on the account's purchase row. Block a
     // bare CLI install of a paid app with a clear pointer. Free apps proceed.
     if !entry.price.is_free() {
-        log::info!("marketplace: bare install of paid app '{app_id}' blocked (buy via marketplace)");
+        log::info!(
+            "marketplace: bare install of paid app '{app_id}' blocked (buy via marketplace)"
+        );
         eprintln!(
             "error: '{}' is a paid app ({}). Buy it through the marketplace — open the app in \
              Plexi or visit https://plexiapp.com — then it installs for your account. \

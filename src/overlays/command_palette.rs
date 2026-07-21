@@ -902,7 +902,7 @@ impl PlexiApp {
         // ── Render ─────────────────────────────────────────────────────────
         // 0.8: the palette is a launcher, not a workspace — filling nearly
         // the whole screen height read as massive.
-        let palette_max_list_h = ((ctx.screen_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
+        let palette_max_list_h = ((ctx.content_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
         let modal_response = ModalShell::centered("command_palette")
             .width(style::MODAL_WIDTH_PALETTE)
             .escape(true)
@@ -916,7 +916,11 @@ impl PlexiApp {
                         )),
                         |ui| {
                             TextField::singleline(te_id, "Jump to context or launch app...")
-                                .surface(crate::ui::focus::SurfaceKey::Overlay(crate::app::input_owner::OverlaySurface::Layer(crate::app::FocusKind::CommandPalette)))
+                                .surface(crate::ui::focus::SurfaceKey::Overlay(
+                                    crate::app::input_owner::OverlaySurface::Layer(
+                                        crate::app::FocusKind::CommandPalette,
+                                    ),
+                                ))
                                 .log_name("command_palette")
                                 .show(ui, &mut self.palette_query, &colors)
                         },
@@ -957,223 +961,220 @@ impl PlexiApp {
                     scroll_area = scroll_area.vertical_scroll_offset(0.0);
                 }
                 scroll_area.show(ui, |ui| {
-                        // available_width — the scroll area reserves a
-                        // scrollbar gutter; forcing the modal width would
-                        // push rows back under the bar.
-                        ui.set_width(ui.available_width());
+                    // available_width — the scroll area reserves a
+                    // scrollbar gutter; forcing the modal width would
+                    // push rows back under the bar.
+                    ui.set_width(ui.available_width());
 
-                        for (i, entry) in entries.iter().enumerate() {
-                            let is_selected = i == self.palette_selected;
+                    for (i, entry) in entries.iter().enumerate() {
+                        let is_selected = i == self.palette_selected;
 
-                            match entry {
-                                PaletteEntry::Command {
-                                    command,
-                                    name,
-                                    description,
-                                    ..
-                                } => {
-                                    if !shown_commands_header {
-                                        shown_commands_header = true;
-                                        ui.add_space(style::SPACE_XS);
-                                        ui.label(
-                                            RichText::new("COMMANDS")
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.text_dim),
-                                        );
-                                        ui.add_space(style::SPACE_XS);
-                                    }
-                                    let row_response = ListRow::new(name)
-                                        .metadata_chips(&["cmd"])
-                                        .secondary(description)
-                                        .selected(is_selected)
-                                        .show(ui, &colors);
-                                    if is_selected {
-                                        row_response.scroll_into_view(ui, should_scroll);
-                                    }
-                                    if row_response.row_clicked() {
-                                        click_action = Some(Action::RunCommand(*command));
-                                    }
-                                    if row_response.row_hovered() {
-                                        hover_select = Some(i);
-                                    }
+                        match entry {
+                            PaletteEntry::Command {
+                                command,
+                                name,
+                                description,
+                                ..
+                            } => {
+                                if !shown_commands_header {
+                                    shown_commands_header = true;
+                                    ui.add_space(style::SPACE_XS);
+                                    ui.label(
+                                        RichText::new("COMMANDS")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.add_space(style::SPACE_XS);
                                 }
-                                PaletteEntry::Context {
-                                    ctx_idx,
-                                    context_id,
-                                    name,
-                                    workspace_name,
-                                    metadata_chip,
-                                    pane_pips,
-                                    pane_id,
-                                    ..
-                                } => {
-                                    let mut row = ListRow::new(name.as_str())
-                                        .metadata_chips(std::slice::from_ref(metadata_chip))
-                                        .secondary(workspace_name.as_str())
-                                        .selected(is_selected);
-                                    if let Some(pips) = pane_pips.clone() {
-                                        row = row.pane_pips(pips);
-                                    }
-                                    let row_response = row.show(ui, &colors);
-                                    if is_selected {
-                                        row_response.scroll_into_view(ui, should_scroll);
-                                    }
-
-                                    if row_response.row_clicked() {
-                                        click_action = Some(Action::JumpContext(
-                                            *ctx_idx,
-                                            *context_id,
-                                            *pane_id,
-                                        ));
-                                    }
-                                    if row_response.row_hovered() {
-                                        hover_select = Some(i);
-                                    }
+                                let row_response = ListRow::new(name)
+                                    .metadata_chips(&["cmd"])
+                                    .secondary(description)
+                                    .selected(is_selected)
+                                    .show(ui, &colors);
+                                if is_selected {
+                                    row_response.scroll_into_view(ui, should_scroll);
                                 }
-                                PaletteEntry::App {
-                                    id,
-                                    name,
-                                    description,
-                                    running_in_background,
-                                    is_workspace_local,
-                                    ..
-                                } => {
-                                    if !shown_apps_header {
-                                        shown_apps_header = true;
-                                        ui.add_space(style::SPACE_XS);
-                                        ui.label(
-                                            RichText::new("APPS")
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.text_dim),
-                                        );
-                                        ui.add_space(style::SPACE_XS);
-                                    }
-
-                                    let row = ListRow::new(name.as_str())
-                                        .metadata_chips(app_metadata_chips(
-                                            *running_in_background,
-                                            *is_workspace_local,
-                                        ))
-                                        .secondary(description)
-                                        .selected(is_selected);
-
-                                    let row_response = row.show(ui, &colors);
-                                    if is_selected {
-                                        row_response.scroll_into_view(ui, should_scroll);
-                                    }
-
-                                    if row_response.row_clicked() {
-                                        click_action = Some(Action::LaunchApp(id.clone()));
-                                    }
-                                    if row_response.row_hovered() {
-                                        hover_select = Some(i);
-                                    }
+                                if row_response.row_clicked() {
+                                    click_action = Some(Action::RunCommand(*command));
                                 }
-                                PaletteEntry::Builtin {
-                                    id,
-                                    name,
-                                    description,
-                                    ..
-                                } => {
-                                    if !shown_apps_header {
-                                        shown_apps_header = true;
-                                        ui.add_space(style::SPACE_XS);
-                                        ui.label(
-                                            RichText::new("APPS")
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.text_dim),
-                                        );
-                                        ui.add_space(style::SPACE_XS);
-                                    }
-
-                                    let row_response = ListRow::new(name)
-                                        .metadata_chips(&["app", "host"])
-                                        .secondary(description)
-                                        .selected(is_selected)
-                                        .show(ui, &colors);
-
-                                    if is_selected {
-                                        row_response.scroll_into_view(ui, should_scroll);
-                                    }
-                                    if row_response.row_clicked() {
-                                        click_action = Some(Action::LaunchBuiltin(id));
-                                    }
-                                    if row_response.row_hovered() {
-                                        hover_select = Some(i);
-                                    }
+                                if row_response.row_hovered() {
+                                    hover_select = Some(i);
                                 }
-                                PaletteEntry::Note {
-                                    path,
-                                    title,
-                                    preview,
-                                    ..
-                                } => {
-                                    if !shown_notes_header {
-                                        shown_notes_header = true;
-                                        ui.add_space(style::SPACE_XS);
-                                        ui.label(
-                                            RichText::new("NOTES")
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.text_dim),
-                                        );
-                                        ui.add_space(style::SPACE_XS);
-                                    }
-                                    let row = ListRow::new(title.as_str())
-                                        .metadata_chips(&["text"])
-                                        .secondary(preview.as_str())
-                                        .selected(is_selected);
-                                    let row_response = row.show(ui, &colors);
-                                    if is_selected {
-                                        row_response.scroll_into_view(ui, should_scroll);
-                                    }
-                                    if row_response.row_clicked() {
-                                        click_action = Some(Action::OpenNote(path.clone()));
-                                    }
-                                    if row_response.row_hovered() {
-                                        hover_select = Some(i);
-                                    }
+                            }
+                            PaletteEntry::Context {
+                                ctx_idx,
+                                context_id,
+                                name,
+                                workspace_name,
+                                metadata_chip,
+                                pane_pips,
+                                pane_id,
+                                ..
+                            } => {
+                                let mut row = ListRow::new(name.as_str())
+                                    .metadata_chips(std::slice::from_ref(metadata_chip))
+                                    .secondary(workspace_name.as_str())
+                                    .selected(is_selected);
+                                if let Some(pips) = pane_pips.clone() {
+                                    row = row.pane_pips(pips);
                                 }
-                                PaletteEntry::UserCommand {
-                                    name,
-                                    secondary,
-                                    scope,
-                                    ..
-                                } => {
-                                    if !shown_run_header {
-                                        shown_run_header = true;
-                                        ui.add_space(style::SPACE_XS);
-                                        ui.label(
-                                            RichText::new("RUN")
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.text_dim),
-                                        );
-                                        ui.add_space(style::SPACE_XS);
-                                    }
-                                    let chips: &[&str] = match scope {
-                                        crate::cli::UserCommandScope::Workspace => &["run", "ws"],
-                                        crate::cli::UserCommandScope::Global => &["run", "global"],
-                                    };
-                                    let row_response = ListRow::new(name.as_str())
-                                        .metadata_chips(chips)
-                                        .secondary(secondary.as_str())
-                                        .selected(is_selected)
-                                        .show(ui, &colors);
-                                    if is_selected {
-                                        row_response.scroll_into_view(ui, should_scroll);
-                                    }
-                                    if row_response.row_clicked() {
-                                        click_action = Some(Action::RunUserCommand {
-                                            name: name.clone(),
-                                            scope: *scope,
-                                        });
-                                    }
-                                    if row_response.row_hovered() {
-                                        hover_select = Some(i);
-                                    }
+                                let row_response = row.show(ui, &colors);
+                                if is_selected {
+                                    row_response.scroll_into_view(ui, should_scroll);
+                                }
+
+                                if row_response.row_clicked() {
+                                    click_action =
+                                        Some(Action::JumpContext(*ctx_idx, *context_id, *pane_id));
+                                }
+                                if row_response.row_hovered() {
+                                    hover_select = Some(i);
+                                }
+                            }
+                            PaletteEntry::App {
+                                id,
+                                name,
+                                description,
+                                running_in_background,
+                                is_workspace_local,
+                                ..
+                            } => {
+                                if !shown_apps_header {
+                                    shown_apps_header = true;
+                                    ui.add_space(style::SPACE_XS);
+                                    ui.label(
+                                        RichText::new("APPS")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.add_space(style::SPACE_XS);
+                                }
+
+                                let row = ListRow::new(name.as_str())
+                                    .metadata_chips(app_metadata_chips(
+                                        *running_in_background,
+                                        *is_workspace_local,
+                                    ))
+                                    .secondary(description)
+                                    .selected(is_selected);
+
+                                let row_response = row.show(ui, &colors);
+                                if is_selected {
+                                    row_response.scroll_into_view(ui, should_scroll);
+                                }
+
+                                if row_response.row_clicked() {
+                                    click_action = Some(Action::LaunchApp(id.clone()));
+                                }
+                                if row_response.row_hovered() {
+                                    hover_select = Some(i);
+                                }
+                            }
+                            PaletteEntry::Builtin {
+                                id,
+                                name,
+                                description,
+                                ..
+                            } => {
+                                if !shown_apps_header {
+                                    shown_apps_header = true;
+                                    ui.add_space(style::SPACE_XS);
+                                    ui.label(
+                                        RichText::new("APPS")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.add_space(style::SPACE_XS);
+                                }
+
+                                let row_response = ListRow::new(name)
+                                    .metadata_chips(&["app", "host"])
+                                    .secondary(description)
+                                    .selected(is_selected)
+                                    .show(ui, &colors);
+
+                                if is_selected {
+                                    row_response.scroll_into_view(ui, should_scroll);
+                                }
+                                if row_response.row_clicked() {
+                                    click_action = Some(Action::LaunchBuiltin(id));
+                                }
+                                if row_response.row_hovered() {
+                                    hover_select = Some(i);
+                                }
+                            }
+                            PaletteEntry::Note {
+                                path,
+                                title,
+                                preview,
+                                ..
+                            } => {
+                                if !shown_notes_header {
+                                    shown_notes_header = true;
+                                    ui.add_space(style::SPACE_XS);
+                                    ui.label(
+                                        RichText::new("NOTES")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.add_space(style::SPACE_XS);
+                                }
+                                let row = ListRow::new(title.as_str())
+                                    .metadata_chips(&["text"])
+                                    .secondary(preview.as_str())
+                                    .selected(is_selected);
+                                let row_response = row.show(ui, &colors);
+                                if is_selected {
+                                    row_response.scroll_into_view(ui, should_scroll);
+                                }
+                                if row_response.row_clicked() {
+                                    click_action = Some(Action::OpenNote(path.clone()));
+                                }
+                                if row_response.row_hovered() {
+                                    hover_select = Some(i);
+                                }
+                            }
+                            PaletteEntry::UserCommand {
+                                name,
+                                secondary,
+                                scope,
+                                ..
+                            } => {
+                                if !shown_run_header {
+                                    shown_run_header = true;
+                                    ui.add_space(style::SPACE_XS);
+                                    ui.label(
+                                        RichText::new("RUN")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.add_space(style::SPACE_XS);
+                                }
+                                let chips: &[&str] = match scope {
+                                    crate::cli::UserCommandScope::Workspace => &["run", "ws"],
+                                    crate::cli::UserCommandScope::Global => &["run", "global"],
+                                };
+                                let row_response = ListRow::new(name.as_str())
+                                    .metadata_chips(chips)
+                                    .secondary(secondary.as_str())
+                                    .selected(is_selected)
+                                    .show(ui, &colors);
+                                if is_selected {
+                                    row_response.scroll_into_view(ui, should_scroll);
+                                }
+                                if row_response.row_clicked() {
+                                    click_action = Some(Action::RunUserCommand {
+                                        name: name.clone(),
+                                        scope: *scope,
+                                    });
+                                }
+                                if row_response.row_hovered() {
+                                    hover_select = Some(i);
                                 }
                             }
                         }
-                    });
+                    }
+                });
 
                 ui.add_space(style::SPACE_SM);
                 let hints = [
@@ -1691,9 +1692,9 @@ mod tests {
             Pane::App(Box::new(AppPane {
                 pip_status: None,
                 id: 99,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::file_browser::FileBrowserApp::new(std::env::temp_dir()),
-                )),
+                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                    std::env::temp_dir(),
+                ))),
                 workspace_root: std::env::temp_dir(),
                 permissions: AppPermissions::builtin(),
                 manifest_id: manifest_id.to_string(),

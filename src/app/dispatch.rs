@@ -44,8 +44,7 @@ impl PlexiApp {
         // TextEdit consumes them (typing, arrows, Enter-submit). Escape
         // surrenders egui focus natively, flipping this gate back off so
         // keys reach the app's KeyEvent path again next frame.
-        let text_surface_focused =
-            crate::app::input_owner::focused_pane_text_surface(ctx, pane_id);
+        let text_surface_focused = crate::app::input_owner::focused_pane_text_surface(ctx, pane_id);
         let gate_id = egui::Id::new(("l1_text_input_gate", pane_id));
         let previously_focused =
             ctx.memory_mut(|m| m.data.get_temp::<bool>(gate_id).unwrap_or(false));
