@@ -1176,6 +1176,10 @@ fn main() -> eframe::Result {
     log::info!("ui_stack: egui=0.34.3 renderer=wgpu");
 
     let native_options = eframe::NativeOptions {
+        // eframe 0.34 split root close into CloseRequested followed by Exit.
+        // On macOS its run-on-demand loop can stall between those events after
+        // destroying the window, leaving a headless process behind.
+        run_and_return: false,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([400.0, 300.0])

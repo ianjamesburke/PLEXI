@@ -4,7 +4,7 @@
 //! [`PendingScreenshot`] and asks egui for a viewport capture
 //! (`ViewportCommand::Screenshot`). The wgpu backend reads the real
 //! swapchain back and delivers it as `egui::Event::Screenshot` in a later
-//! frame's raw input, where [`PlexiApp::fulfill_pending_screenshots`] crops,
+//! frame's raw input, where [`PlexiApp::fulfill_screenshot_events`] crops,
 //! encodes, and writes the PNG plus the CLI response file. This captures the
 //! pixels the user actually sees — chrome, terminals, apps, overlays — with
 //! no OS-level screen capture involved.
@@ -17,73 +17,88 @@ pub struct PendingScreenshot {
     pub pane_id: Option<u64>,
     pub output_path: String,
     pub response_file: String,
-    pub command_sent: bool,
+    pub capture_requested_at: Option<std::time::Instant>,
 }
 
 impl PlexiApp {
-    /// Drain any `Event::Screenshot` deliveries from this frame's raw input
-    /// and fulfill every queued request with the captured image.
-    pub(crate) fn fulfill_pending_screenshots(&mut self, ctx: &egui::Context) {
+    pub(crate) fn request_pending_screenshot(&mut self, ctx: &egui::Context) {
+        const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+        let now = std::time::Instant::now();
+        let should_capture = self.pending_screenshots.iter().any(|request| {
+            request
+                .capture_requested_at
+                .is_none_or(|requested_at| now.duration_since(requested_at) >= RETRY_INTERVAL)
+        });
+        if !should_capture {
+            return;
+        }
+        for request in &mut self.pending_screenshots {
+            request.capture_requested_at = Some(now);
+        }
+        ctx.send_viewport_cmd_to(
+            egui::ViewportId::ROOT,
+            egui::ViewportCommand::Screenshot(egui::UserData::default()),
+        );
+        let predicted_dt = ctx.input(|input| input.predicted_dt);
+        ctx.request_repaint_after(
+            std::time::Duration::from_secs_f32(predicted_dt) + std::time::Duration::from_millis(25),
+        );
+    }
+
+    /// Advance wgpu's asynchronous screenshot readback.
+    pub(crate) fn poll_pending_screenshots(
+        &self,
+        ctx: &egui::Context,
+        render_state: Option<&egui_wgpu::RenderState>,
+    ) {
         if self.pending_screenshots.is_empty() {
             return;
         }
         // wgpu 29 no longer advances map_async callbacks without an explicit
-        // device poll. egui-wgpu queues the readback after the frame render,
-        // so wait for the latest submitted work on subsequent passes until its
-        // Screenshot event reaches egui's raw input. A non-blocking poll is not
-        // sufficient on macOS: it can repeatedly observe the callback before
-        // Metal has completed the copy without driving it to completion.
-        if let Some(render_state) = crate::host::wasm_gpu::host_render_state() {
-            let poll = wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: Some(std::time::Duration::from_secs(1)),
-            };
-            if let Err(error) = render_state.device.poll(poll) {
+        // device poll. Keep this non-blocking: a blocking wait stalls the UI
+        // before eframe has painted and registered the capture callback.
+        if let Some(render_state) = render_state {
+            if let Err(error) = render_state.device.poll(wgpu::PollType::Poll) {
                 log::warn!("screenshot: wgpu device poll failed: {error}");
             }
         } else {
-            log::warn!("screenshot: no shared wgpu render state available for readback polling");
+            log::warn!("screenshot: eframe wgpu render state unavailable for readback polling");
         }
-        let images: Vec<std::sync::Arc<egui::ColorImage>> = ctx.input(|i| {
-            i.raw
-                .events
-                .iter()
-                .filter_map(|event| match event {
-                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                    _ => None,
-                })
-                .collect()
-        });
+        // eframe 0.34 handles viewport commands after the current paint, then
+        // delivers wgpu's asynchronous result before a later pass. Keep those
+        // lifecycle stages moving while a CLI request is outstanding. egui
+        // advances delayed requests by predicted_dt, so include that interval
+        // to guarantee this targets a subsequent OS frame.
+        let predicted_dt = ctx.input(|input| input.predicted_dt);
+        ctx.request_repaint_after(
+            std::time::Duration::from_secs_f32(predicted_dt) + std::time::Duration::from_millis(25),
+        );
+    }
+
+    /// Fulfill queued requests from eframe's raw-input hook.
+    ///
+    /// eframe 0.34 injects completed wgpu captures immediately before this
+    /// hook. Consuming them here avoids depending on egui's later input-state
+    /// lifecycle.
+    pub(crate) fn fulfill_screenshot_events(
+        &mut self,
+        ctx: &egui::Context,
+        raw_input: &egui::RawInput,
+    ) {
+        let images: Vec<std::sync::Arc<egui::ColorImage>> = raw_input
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+            .collect();
         let Some(image) = images.last() else {
-            let mut should_request_capture = false;
-            for request in &mut self.pending_screenshots {
-                should_request_capture |= !std::mem::replace(&mut request.command_sent, true);
-            }
-            if should_request_capture {
-                ctx.send_viewport_cmd_to(
-                    egui::ViewportId::ROOT,
-                    egui::ViewportCommand::Screenshot(egui::UserData::default()),
-                );
-            }
-            // The capture command is processed after the current frame paints,
-            // and the map callback is polled from a later OS frame. egui
-            // advances delayed repaints by predicted_dt, so add it here to
-            // avoid consuming the request in another pass of this same frame.
-            let predicted_dt = ctx.input(|input| input.predicted_dt);
-            let next_frame_delay = std::time::Duration::from_secs_f32(predicted_dt)
-                + std::time::Duration::from_millis(10);
-            let repaint_ctx = ctx.clone();
-            if let Err(error) = std::thread::Builder::new()
-                .name("plexi-screenshot-repaint".to_string())
-                .spawn(move || {
-                    std::thread::sleep(next_frame_delay);
-                    repaint_ctx.request_repaint();
-                })
-            {
-                log::warn!("screenshot: could not schedule readback repaint: {error}");
-            }
             return;
         };
+        if self.pending_screenshots.is_empty() {
+            return;
+        }
         let pixels_per_point = ctx.pixels_per_point();
         for request in std::mem::take(&mut self.pending_screenshots) {
             let result = self.write_screenshot(&request, image, pixels_per_point);

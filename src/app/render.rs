@@ -73,10 +73,12 @@ impl PlexiApp {
         self.drain_pane_cmd_channel();
         if self.shutdown_requested {
             // `plexi host stop`'s clean-shutdown path (AppRequest::Shutdown).
-            // Save state before closing so the next `host start` restores it.
-            log::info!("host: shutdown requested — saving workspace and closing");
+            // eframe 0.34's macOS CloseRequested path may destroy the window
+            // without terminating the process. Save synchronously, then exit
+            // successfully so launchd also treats this as a clean stop.
+            log::info!("host: shutdown requested — saving workspace and exiting");
             self.save_workspace();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            std::process::exit(0);
         }
         if let Some(rx) = &self.update_rx {
             if let Ok(version) = rx.try_recv() {

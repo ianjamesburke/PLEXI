@@ -1633,7 +1633,7 @@ impl PlexiApp {
                             pane_id: *pane_id,
                             output_path: output_path.clone(),
                             response_file: response_file.clone(),
-                            command_sent: false,
+                            capture_requested_at: None,
                         });
                     self.ctx.request_repaint_of(egui::ViewportId::ROOT);
                 }

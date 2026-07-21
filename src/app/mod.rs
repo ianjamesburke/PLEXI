@@ -2331,11 +2331,15 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
 }
 
 impl eframe::App for PlexiApp {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.fulfill_screenshot_events(ctx, raw_input);
+    }
+
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Screenshot readback is stateful frame logic, not UI. Keeping it in
         // eframe's once-per-frame hook ensures viewport commands and returned
         // input events survive egui 0.34's UI layout passes.
-        self.fulfill_pending_screenshots(ctx);
+        self.poll_pending_screenshots(ctx, frame.wgpu_render_state());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -2382,6 +2386,7 @@ impl eframe::App for PlexiApp {
             }
         }
         self.update_preamble(ctx);
+        self.request_pending_screenshot(ctx);
         self.drain_app_subscription_replies();
         self.deliver_app_event_subscriptions();
 
