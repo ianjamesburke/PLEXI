@@ -37,6 +37,9 @@ egui_tiles = { version = "0.15.0", features = ["serde"] }
 # Vendored because Plexi's terminal owns keyboard focus and input extraction;
 # upstream egui_term still routes those events through egui's shared queue.
 egui_term = { path = "deps/egui_term" }
+# Shared editor core (stint 0317): rope buffer + grapheme-aware caret movement.
+ropey = "1.6"
+unicode-segmentation = "1.11"
 dirs = "6"
 fern = "0.7"
 log = "0.4"
