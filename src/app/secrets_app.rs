@@ -495,13 +495,9 @@ impl App for SecretsApp {
                 HintGroup::new(&["Esc"], "cancel"),
             ];
             let form_content_width = (rect.width() - FORM_PAD_H * 2.0).max(0.0);
-            let hint_width = hints.iter().map(|group| group.width(ui)).sum::<f32>()
-                + style::SPACE_MD * hints.len().saturating_sub(1) as f32;
-            let wrap_hints = hint_width > form_content_width;
-            let wrapped_hint_row_h =
-                style::SPACE_MD + style::TEXT_HINT + style::KEYCHIP_PAD_V * 2.0;
             let available_form_h = (rect.bottom() - list_top).max(0.0);
-            let desired_form_h = FORM_H + if wrap_hints { wrapped_hint_row_h } else { 0.0 };
+            let desired_form_h =
+                FORM_H + HintBar::new(&hints).additional_height(ui, form_content_width);
             let form_h = desired_form_h.min(available_form_h);
             let form_rect =
                 egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - form_h), rect.max);
@@ -632,12 +628,7 @@ impl App for SecretsApp {
                     }
                 });
 
-                if wrap_hints {
-                    HintBar::new(&hints[..2]).show(ui, colors);
-                    HintBar::new(&hints[2..]).show(ui, colors);
-                } else {
-                    HintBar::new(&hints).show(ui, colors);
-                }
+                HintBar::new(&hints).show(ui, colors);
             });
 
             if form_rect.top() > list_top + 1.0 {
