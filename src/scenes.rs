@@ -59,6 +59,44 @@ fn classify_host_status(status: &serde_json::Value) -> HostStatusClass {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveStartAction {
+    /// Reuse the already-running host; teardown must leave it untouched.
+    Attach,
+    /// Boot a runner-owned ephemeral host and stop it on teardown.
+    StartOwned,
+}
+
+/// Pure decision behind [`LiveBackend::start_or_attach`]. Attach mode
+/// (`PLEXI_SCENE_ATTACH=1`) is a hard requirement, not a preference: the
+/// driver (e.g. editor-gate.sh) booted a specific host and the run is only
+/// meaningful against that host, so a stopped channel in attach mode is an
+/// error — silently starting an owned replacement would let a mid-gate host
+/// crash masquerade as a green run. Errors are `(code, detail)` for
+/// [`SceneError`].
+fn live_start_action(
+    class: HostStatusClass,
+    attach: bool,
+) -> Result<LiveStartAction, (&'static str, &'static str)> {
+    match (class, attach) {
+        (HostStatusClass::Running, true) => Ok(LiveStartAction::Attach),
+        (HostStatusClass::Running, false) => Err((
+            "live_host_already_running",
+            "channel already has a host; set PLEXI_SCENE_ATTACH=1 to attach",
+        )),
+        (HostStatusClass::Stopped, true) => Err((
+            "live_attach_host_missing",
+            "PLEXI_SCENE_ATTACH=1 but the channel has no running host; \
+             the attached host crashed or was stopped",
+        )),
+        (HostStatusClass::Stopped, false) => Ok(LiveStartAction::StartOwned),
+        (HostStatusClass::Unknown, _) => Err((
+            "live_status_invalid",
+            "could not classify host status for the channel",
+        )),
+    }
+}
+
 fn host_seed_ready(status: &serde_json::Value, minimum_panes: u64) -> bool {
     status.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
         && status
@@ -951,41 +989,37 @@ impl LiveBackend {
             .command(&status_args, false)
             .ok()
             .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok());
-        match status.as_ref().map(classify_host_status) {
-            Some(HostStatusClass::Running) => {
-                if std::env::var("PLEXI_SCENE_ATTACH").is_ok_and(|value| value == "1") {
-                    self.attached_host = true;
-                    log::info!(
-                        "scene_live: attached channel={} binary={}",
-                        self.channel,
-                        self.binary
-                    );
-                    return Ok(());
-                }
-                return Err(SceneError::new(
-                    "live_host_already_running",
-                    format!(
-                        "channel '{}' already has a host; set PLEXI_SCENE_ATTACH=1 to attach",
-                        self.channel
-                    ),
-                ));
+        let class = status
+            .as_ref()
+            .map_or(HostStatusClass::Unknown, classify_host_status);
+        let attach = std::env::var("PLEXI_SCENE_ATTACH").is_ok_and(|value| value == "1");
+        match live_start_action(class, attach) {
+            Ok(LiveStartAction::Attach) => {
+                self.attached_host = true;
+                log::info!(
+                    "scene_live: attached channel={} binary={}",
+                    self.channel,
+                    self.binary
+                );
+                return Ok(());
             }
-            Some(HostStatusClass::Stopped) => {}
-            Some(HostStatusClass::Unknown) | None => {
+            Ok(LiveStartAction::StartOwned) => {}
+            Err((code, detail)) => {
                 return Err(SceneError::new(
-                    "live_status_invalid",
-                    format!(
-                        "could not classify host status for channel '{}'",
-                        self.channel
-                    ),
+                    code,
+                    format!("channel '{}': {detail}", self.channel),
                 ));
             }
         }
         let pane = format!("cwd={}", env!("CARGO_MANIFEST_DIR"));
+        // Hermetic by construction: a runner-owned host must never restore
+        // (or overwrite) the channel's saved session — stale panes from a
+        // human session would pollute every live assertion.
         self.command(
             &[
                 "host".to_string(),
                 "start".to_string(),
+                "--ephemeral".to_string(),
                 "--pane".to_string(),
                 pane,
             ],
@@ -2707,6 +2741,33 @@ mod tests {
         assert_eq!(backend.binary, "plexi-pr-4242");
         assert!(backend.socket.ends_with(".plexi-pr-4242/notify.sock"));
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
+    }
+
+    #[test]
+    fn live_start_action_attach_mode_requires_running_host() {
+        use super::{live_start_action, HostStatusClass, LiveStartAction};
+        assert_eq!(
+            live_start_action(HostStatusClass::Running, true),
+            Ok(LiveStartAction::Attach)
+        );
+        assert_eq!(
+            live_start_action(HostStatusClass::Stopped, false),
+            Ok(LiveStartAction::StartOwned)
+        );
+        // A stopped channel in attach mode is a hard error — never a silent
+        // owned replacement (a crashed gate host must fail the gate).
+        assert_eq!(
+            live_start_action(HostStatusClass::Stopped, true).unwrap_err().0,
+            "live_attach_host_missing"
+        );
+        assert_eq!(
+            live_start_action(HostStatusClass::Running, false).unwrap_err().0,
+            "live_host_already_running"
+        );
+        assert_eq!(
+            live_start_action(HostStatusClass::Unknown, true).unwrap_err().0,
+            "live_status_invalid"
+        );
     }
 
     #[test]

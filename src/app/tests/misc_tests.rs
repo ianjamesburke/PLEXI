@@ -713,3 +713,60 @@ fn spawn_pane_seeds_root_in_empty_window() {
         "response file pane_id must match the seeded pane's id"
     );
 }
+
+/// The notify-socket thread must wake an idle UI thread promptly: one queued
+/// request, one repaint callback with the small nonzero IPC wake delay (a
+/// zero delay would schedule an extra settling paint; a missing or large
+/// delay leaves the request parked until an unrelated frame — stint 0479).
+#[test]
+fn socket_line_queues_request_and_requests_prompt_repaint() {
+    use std::sync::{Arc, Mutex};
+
+    let ctx = egui::Context::default();
+    let delays: Arc<Mutex<Vec<std::time::Duration>>> = Arc::new(Mutex::new(Vec::new()));
+    let delays_cb = delays.clone();
+    ctx.set_request_repaint_callback(move |info| {
+        delays_cb.lock().unwrap().push(info.delay);
+    });
+
+    let (tx, rx) = std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
+    let line = r#"{"type":"log_marker","source":"test","message":"wake"}"#;
+    handle_socket_line(line, &tx, &ctx);
+
+    match rx.try_recv() {
+        Ok(crate::app_protocol::AppRequest::LogMarker { source, .. }) => {
+            assert_eq!(source, "test");
+        }
+        other => panic!("expected queued LogMarker request, got {other:?}"),
+    }
+    let delays = delays.lock().unwrap();
+    assert_eq!(
+        delays.len(),
+        1,
+        "one socket line must trigger exactly one wake callback"
+    );
+    // egui subtracts the predicted frame time before invoking the callback,
+    // so the wire delay is at most the requested one — prompt either way.
+    assert!(
+        delays[0] <= IPC_WAKE_DELAY,
+        "wake delay must be prompt (requested {IPC_WAKE_DELAY:?}, got {:?})",
+        delays[0]
+    );
+}
+
+/// A malformed socket line must neither queue a request nor wake the UI.
+#[test]
+fn socket_line_parse_error_does_not_wake() {
+    use std::sync::{Arc, Mutex};
+
+    let ctx = egui::Context::default();
+    let woke: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+    let woke_cb = woke.clone();
+    ctx.set_request_repaint_callback(move |_| *woke_cb.lock().unwrap() += 1);
+
+    let (tx, rx) = std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
+    handle_socket_line("not json", &tx, &ctx);
+
+    assert!(rx.try_recv().is_err(), "malformed line must not queue");
+    assert_eq!(*woke.lock().unwrap(), 0, "malformed line must not wake");
+}

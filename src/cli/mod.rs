@@ -526,7 +526,7 @@ pub use events::{
     events_declare_cli, events_emit_cli, events_list_cli, events_mcp_config_cli,
     events_subscribe_cli, EmitArgs,
 };
-pub use host::{host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli};
+pub use host::{host_log_cli, host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli};
 pub use install::{
     install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,
     self_update_cli, update_cli,

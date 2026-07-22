@@ -1,4 +1,6 @@
 #[cfg(target_os = "macos")]
+pub mod app_nap;
+#[cfg(target_os = "macos")]
 pub mod finder_service;
 pub mod frame_diag;
 pub mod logging;

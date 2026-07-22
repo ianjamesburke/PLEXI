@@ -1212,6 +1212,7 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 |---|---|
 | `start` | Launch this channel's app bundle detached and wait for readiness |
 | `stop` | Stop the running host for this channel |
+| `log` | Write one info-level marker line into the running host's channel log |
 | `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
 | `screenshot` | Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture |
 
@@ -1228,12 +1229,26 @@ Example: plexi-pr-2357 host start --pane 'cwd=/tmp,cmd=htop'
 | `--layout` | string | no | TOML file with `[[pane]]` tables to seed on boot |
 | `--pane` | string (repeatable) | no | A pane to seed: 'cwd=<dir>[,cmd=<command>][,tab|window]'. Repeatable |
 | `--timeout-secs` | string | no | Seconds to wait for the host to confirm readiness (default 15) |
+| `--ephemeral` | flag | no | Boot a hermetic session: skip workspace restore on start and skip workspace save on shutdown. For automated runs (scene runners, release gates) that must never see or clobber the channel's saved session |
 
 ### `plexi host stop`
 
 Stop the running host for this channel.
 
 Sends a clean shutdown request first, falling back to SIGTERM if the host doesn't confirm exit in time.
+
+### `plexi host log`
+
+Write one info-level marker line into the running host's channel log.
+
+For automated drivers (release gates, scene runners, CI) that must leave start/finish summaries in `~/.plexi-<channel>/plexi.log` itself.
+
+Example: plexi host log --source editor_gate "gate finished passed=9 failed=0"
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<message>` | string | yes | The marker text (flattened to one line in the log) |
+| `--source` | string | no | Short tool identity prefixed to the line Default: `cli`. |
 
 ### `plexi host status`
 

@@ -20,6 +20,7 @@
 
 pub mod buffer;
 pub mod commands;
+pub mod gate;
 pub mod cursor;
 pub mod grapheme;
 pub mod highlight;
@@ -41,7 +42,7 @@ pub use mode::EditorMode;
 pub use view::ViewState;
 
 /// Snapshot of the editor's semantic state, for host inspection and tests.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct EditorSemanticState {
     /// Full document text.
     pub text: String,

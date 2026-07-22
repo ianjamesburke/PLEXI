@@ -1,0 +1,54 @@
+# Editor release gate (stint 0479): Unicode input — combining marks and ZWJ
+# emoji type as expected and backspace deletes whole grapheme clusters
+# (caret offsets are char counts, so a family emoji spans 5).
+size = [1000.0, 700.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-editor-gate-unicode.md"] }
+
+[[steps]]
+focus = "notes"
+
+[[steps]]
+expect = { target = "notes", focused = true }
+
+# Reset any prior content, then type mixed ASCII + combining mark + ZWJ emoji.
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+text = { target = "notes", value = "note: café 👨‍👩‍👧 done" }
+
+# "note: " (6) + "cafe" (4) + U+0301 (1) + " " (1) + family (5) + " " (1)
+# + "done" (4) = 22 chars.
+[[steps]]
+expect = { target = "notes", source_text_contains = "café 👨‍👩‍👧 done", caret = 22 }
+
+# Six backspaces: d, o, n, e, space, then ONE for the whole family cluster.
+[[steps]]
+key = { target = "notes", value = "backspace" }
+
+[[steps]]
+key = { target = "notes", value = "backspace" }
+
+[[steps]]
+key = { target = "notes", value = "backspace" }
+
+[[steps]]
+key = { target = "notes", value = "backspace" }
+
+[[steps]]
+key = { target = "notes", value = "backspace" }
+
+[[steps]]
+key = { target = "notes", value = "backspace" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "note: café ", caret = 12 }
+
+# Visual evidence of the composed clusters rendering.
+[[steps]]
+shot = "editor-gate-unicode.png"
+
+[[steps]]
+close = "notes"

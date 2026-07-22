@@ -448,13 +448,27 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_style(ctx, colors, true);
 }
 
-/// Handle one newline-delimited JSON line from the notify socket: parse the
-/// `AppRequest`, queue it on the pane-IPC channel, and wake the UI thread.
+/// Wake the UI thread for a request that just arrived over the notify socket.
 ///
 /// The repaint request is load-bearing: a fully idle Plexi produces zero
 /// frames, and the pane-IPC channel is only drained during a frame. Without
 /// the wake, a CLI request against an idle instance sits queued until the
 /// user touches the window (#s13 perf batch regression).
+///
+/// The delay is nonzero because a literal zero-delay request makes egui
+/// schedule a second settling paint; one prompt pass is all an IPC arrival
+/// needs, and handlers that change visible state mark their own frames dirty.
+/// This wake only works if the process itself is wakeable — see
+/// `platform::app_nap::disable_app_nap` for the App Nap exemption that keeps
+/// macOS from deferring these cross-thread wakeups on an idle host.
+pub(crate) const IPC_WAKE_DELAY: std::time::Duration = std::time::Duration::from_millis(1);
+
+fn wake_ui_for_ipc(egui_ctx: &egui::Context) {
+    egui_ctx.request_repaint_after(IPC_WAKE_DELAY);
+}
+
+/// Handle one newline-delimited JSON line from the notify socket: parse the
+/// `AppRequest`, queue it on the pane-IPC channel, and wake the UI thread.
 fn handle_socket_line(
     line: &str,
     tx: &std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
@@ -464,7 +478,7 @@ fn handle_socket_line(
         Ok(cmd) => {
             if tx.send(cmd).is_ok() {
                 log::debug!("pane_ipc: request queued — requesting repaint to wake idle UI thread");
-                egui_ctx.request_repaint();
+                wake_ui_for_ipc(egui_ctx);
             }
         }
         Err(e) => {
@@ -631,7 +645,7 @@ fn handle_events_subscribe(
         );
         return;
     }
-    egui_ctx.request_repaint();
+    wake_ui_for_ipc(egui_ctx);
 
     // Generous wait: a first-time subscribe under the broker's default `Ask`
     // posture blocks here until the user answers the host consent modal. A
@@ -861,7 +875,7 @@ fn handle_events_publish(
         );
         return;
     }
-    egui_ctx.request_repaint();
+    wake_ui_for_ipc(egui_ctx);
 
     // Generous wait: a first-time publish under the default `Ask` posture blocks
     // until the user answers the host consent modal; a pre-granted publish
@@ -1035,6 +1049,11 @@ impl PlexiApp {
             std::sync::mpsc::channel::<crate::host::event_subscriptions::HostSubscribeRequest>();
         let (event_publish_tx, event_publish_rx) =
             std::sync::mpsc::channel::<crate::host::event_subscriptions::HostPublishRequest>();
+        // The socket wake below only reaches an idle host if macOS never naps
+        // the process; an App-Napped host defers cross-thread event-loop
+        // wakeups and drains queued IPC in one late burst (stint 0479).
+        #[cfg(target_os = "macos")]
+        crate::platform::app_nap::disable_app_nap();
         spawn_socket_listener(
             pane_ipc_tx,
             event_subscribe_tx.clone(),

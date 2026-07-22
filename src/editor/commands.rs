@@ -17,7 +17,7 @@ use super::EditorSemanticState;
 
 /// Directional caret movements. `extend: true` moves only the head
 /// (shift-selection).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Movement {
     Left,
     Right,
@@ -36,7 +36,7 @@ pub enum Movement {
 }
 
 /// Everything the widget (or a test) can ask a [`Document`] to do.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EditorCommand {
     /// Insert text at the caret, replacing any selection.
     InsertText(String),

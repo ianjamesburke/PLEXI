@@ -437,6 +437,11 @@ scene FILE out="/tmp/plexi-scenes" shots="1":
 scene-live FILE channel out="/tmp/plexi-scenes-live":
     bash scripts/run-live-scene.sh {{FILE}} {{channel}} {{out}}
 
+# Installed-host editor release gate: run every editor scene against a channel,
+# collect reports + artifacts, and write summary.json (stint 0479).
+editor-gate channel:
+    bash scripts/editor-gate.sh {{channel}}
+
 # Run one agent-drives-agent app-authoring E2E session from a prompt fixture.
 # Provisions an isolated session and leaves a capture dir under benchmarks/app-authoring/sessions.
 #   just e2e-session tools/e2e_authoring/fixtures/counter.toml            — live (needs channel + display)

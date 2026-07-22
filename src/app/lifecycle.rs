@@ -206,6 +206,20 @@ impl PlexiApp {
                     log::warn!("pane_ipc: set_pane_title: pane_id={pane_id} not found");
                 }
             }
+            crate::app_protocol::AppRequest::LogMarker {
+                source,
+                message,
+                response_file,
+            } => {
+                // The host process owns the channel logger, so this is the
+                // one place an external driver's marker can reach
+                // `~/.plexi-<channel>/plexi.log`.
+                let flattened = message.replace(['\n', '\r'], " ");
+                log::info!("marker[{source}]: {flattened}");
+                if let Some(response_file) = response_file {
+                    write_json_response(response_file, serde_json::json!({"ok": true}));
+                }
+            }
             crate::app_protocol::AppRequest::ListPanes {
                 response_file,
                 context_id: filter_context_id,
