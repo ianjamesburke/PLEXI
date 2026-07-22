@@ -28,3 +28,13 @@ End each sprint block with a `### Sprint recap`: what landed, timing/tries table
 - 03:18 worker-2 fix-round2 done: root cause = tester-3 wrong-tree install (pr-install built tree WITHOUT PR head commit -> drove unfixed alpha; byte-identical symptom was the tell). Code was correct at 060e5eca. Shipped 70698237 (pr-install guard: hard-error if tree lacks PR head) + e7c56131 (accurate key-delivery msg). Suite 1641 passed. FRICTION->promote: pr-install could silently build wrong tree; guard now prevents it.
 
 - 03:35 tester-4: PASS (attempt 3, correct-tree install). Auto-merging PR#2463 (stint 0474).
+
+- 03:36 MERGED PR#2463 (stint 0474) — SHA on alpha, stint done. Batch1 (0317+0474) complete: 3 tester rounds (t3 false-FAIL wrong-tree install, t4 PASS). Total ~ multi-hr, 2 fix rounds.
+
+- 03:37 worker-3 briefed: stints 0318+0475+0476 (editor integration / md transactions / live preview), c/fable, one PR. Batch2 start.
+
+- 05:36 worker-3 PR #2464 open (batch2: 0318+0475+0476). Auto-resumed after background 0476 sub-agent, no stall. Checks green (CodeRabbit + check-cli-docs). ~2h impl (3 sub-agents, heavy tokens, no runaway). Spawning tester-5.
+
+- 05:37 tester-5 briefed for PR #2464 (install+drive 0318/0475/0476 + paste/click regression smoke).
+
+- 05:53 tester-5: PASS (attempt 1) — 0318/0475/0476 all verified live, paste/click no regression. Non-blocker found: pane send misparses leading-dash text as flag (clap), broke scene not feature -> follow-up. Auto-merging #2464.
