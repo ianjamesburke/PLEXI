@@ -14,7 +14,11 @@
 //! glyph metrics, line count, or line heights. The rendered layout position of
 //! any source position is therefore the identity mapping, which is what keeps
 //! caret geometry, hit-testing, drag selection, scroll anchoring, undo, and
-//! IME byte-for-byte coherent with source mode. If a future change styles
+//! IME byte-for-byte coherent with source mode. The one sanctioned vertical
+//! divergence is `ViewState::line_extras` (stint 0478): inline image strips
+//! reserve extra height *below* a line without touching the line's own text
+//! metrics, and all vertical math (`line_top`, `line_at_y`, scrolling) flows
+//! through `ViewState` so hit-testing stays exact. If a future change styles
 //! with a different font or hides characters, `hit_test`, caret x, and
 //! `view.viewport_width` in `widget.rs` must all learn the new mapping
 //! together.
@@ -65,6 +69,40 @@ pub enum InlineKind {
     Emphasis,
     Code,
     Strikethrough,
+    /// Markdown/auto/wiki link source span (delimiters included).
+    Link,
+}
+
+/// How a link was written in the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    /// `[display](dest)`.
+    Markdown,
+    /// `<https://…>` or a bare autolink.
+    Autolink,
+    /// `[[note name]]` wiki-style note link (not cmark syntax; scanned here).
+    Wiki,
+}
+
+/// One link in the document: byte range is delimiter-inclusive (covers the
+/// whole `[..](..)`, `<..>`, or `[[..]]` source span).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkTarget {
+    pub kind: LinkKind,
+    pub bytes: Range<usize>,
+    /// Raw destination as written (URL, relative path, or wiki note name).
+    pub dest: String,
+    /// Human-readable text (link label; the dest itself for autolinks).
+    pub display: String,
+}
+
+/// One inline image reference `![alt](dest)`: byte range delimiter-inclusive.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImageSpan {
+    pub bytes: Range<usize>,
+    /// Raw destination as written (relative path or URL).
+    pub dest: String,
+    pub alt: String,
 }
 
 /// An inline span in document byte offsets (delimiters included).
@@ -86,6 +124,8 @@ pub enum MdStyle {
     Code,
     Quote,
     Rule,
+    /// Link source span (Markdown, autolink, or wiki): accent + underline.
+    Link,
     Plain,
 }
 
@@ -101,11 +141,34 @@ pub struct StyleSpan {
 pub struct MarkdownLayout {
     pub blocks: Vec<Block>,
     pub inlines: Vec<InlineSpan>,
+    /// All links in source order (Markdown, autolink, wiki).
+    pub links: Vec<LinkTarget>,
+    /// All inline image references in source order.
+    pub images: Vec<ImageSpan>,
     /// Byte offset where each line starts, plus one final entry at `len()`.
     line_starts: Vec<usize>,
 }
 
 impl MarkdownLayout {
+    /// Line index containing document byte offset `byte`.
+    #[must_use]
+    pub fn line_of_byte(&self, byte: usize) -> usize {
+        let line_count = self.line_starts.len().saturating_sub(1);
+        if line_count == 0 {
+            return 0;
+        }
+        match self.line_starts[..line_count].binary_search(&byte) {
+            Ok(l) => l,
+            Err(l) => l.saturating_sub(1),
+        }
+    }
+
+    /// The link whose delimiter-inclusive span contains `byte`, if any.
+    #[must_use]
+    pub fn link_at_byte(&self, byte: usize) -> Option<&LinkTarget> {
+        self.links.iter().find(|l| l.bytes.contains(&byte))
+    }
+
     /// Index of the block containing `line`. Blocks cover every line, so this
     /// only returns `None` for an empty layout or out-of-range line.
     #[must_use]
@@ -198,10 +261,13 @@ impl MarkdownLayout {
                     InlineKind::Emphasis => MdStyle::Emphasis,
                     InlineKind::Code => MdStyle::Code,
                     InlineKind::Strikethrough => MdStyle::Emphasis,
+                    InlineKind::Link => MdStyle::Link,
                 };
                 let delim = match span.kind {
                     InlineKind::Strong | InlineKind::Strikethrough => 2,
                     InlineKind::Emphasis | InlineKind::Code => 1,
+                    // Whole span styled as a link, delimiters included.
+                    InlineKind::Link => 0,
                 };
                 for b in start..end {
                     let local = b - line_range.start;
@@ -327,6 +393,9 @@ pub fn parse_markdown_layout(text: &str) -> MarkdownLayout {
     let options = Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
     let mut raw_blocks: Vec<(BlockKind, Range<usize>)> = Vec::new();
     let mut inlines: Vec<InlineSpan> = Vec::new();
+    let mut links: Vec<LinkTarget> = Vec::new();
+    let mut images: Vec<ImageSpan> = Vec::new();
+    let mut code_ranges: Vec<Range<usize>> = Vec::new();
     let mut depth = 0usize;
     let mut item_open = false;
     let mut fallback_seen = false;
@@ -345,6 +414,7 @@ pub fn parse_markdown_layout(text: &str) -> MarkdownLayout {
                         }
                         Tag::CodeBlock(_) => {
                             raw_blocks.push((BlockKind::CodeFence, range.clone()));
+                            code_ranges.push(range.clone());
                         }
                         Tag::List(_) => {}
                         _ => {
@@ -370,6 +440,53 @@ pub fn parse_markdown_layout(text: &str) -> MarkdownLayout {
                         bytes: range.clone(),
                         kind: InlineKind::Strikethrough,
                     }),
+                    Tag::Link {
+                        link_type,
+                        dest_url,
+                        ..
+                    } => {
+                        let slice = &text[range.clone()];
+                        let autolink = matches!(
+                            link_type,
+                            pulldown_cmark::LinkType::Autolink | pulldown_cmark::LinkType::Email
+                        );
+                        let display = if autolink {
+                            dest_url.to_string()
+                        } else {
+                            slice
+                                .strip_prefix('[')
+                                .and_then(|rest| rest.split("](").next())
+                                .unwrap_or(slice)
+                                .to_string()
+                        };
+                        links.push(LinkTarget {
+                            kind: if autolink {
+                                LinkKind::Autolink
+                            } else {
+                                LinkKind::Markdown
+                            },
+                            bytes: range.clone(),
+                            dest: dest_url.to_string(),
+                            display,
+                        });
+                        inlines.push(InlineSpan {
+                            bytes: range.clone(),
+                            kind: InlineKind::Link,
+                        });
+                    }
+                    Tag::Image { dest_url, .. } => {
+                        let slice = &text[range.clone()];
+                        let alt = slice
+                            .strip_prefix("![")
+                            .and_then(|rest| rest.split("](").next())
+                            .unwrap_or("")
+                            .to_string();
+                        images.push(ImageSpan {
+                            bytes: range.clone(),
+                            dest: dest_url.to_string(),
+                            alt,
+                        });
+                    }
                     _ => {}
                 }
                 depth += 1;
@@ -390,6 +507,34 @@ pub fn parse_markdown_layout(text: &str) -> MarkdownLayout {
             _ => {}
         }
     }
+
+    // `[[wiki]]` note links: not cmark syntax, so a linear scan finds them.
+    // Spans inside code blocks or inline code render literally and are
+    // excluded; spans already inside a Markdown link are excluded too (the
+    // cmark link wins).
+    let mut excluded = code_ranges;
+    excluded.extend(inlines.iter().filter_map(|s| {
+        matches!(s.kind, InlineKind::Code | InlineKind::Link).then(|| s.bytes.clone())
+    }));
+    for (range, name) in scan_wiki_links(text) {
+        if excluded
+            .iter()
+            .any(|ex| range.start < ex.end && ex.start < range.end)
+        {
+            continue;
+        }
+        links.push(LinkTarget {
+            kind: LinkKind::Wiki,
+            bytes: range.clone(),
+            dest: name.clone(),
+            display: name,
+        });
+        inlines.push(InlineSpan {
+            bytes: range,
+            kind: InlineKind::Link,
+        });
+    }
+    links.sort_by_key(|l| l.bytes.start);
 
     if fallback_seen {
         log::info!("editor: markdown live preview falling back to source rendering for unsupported block(s)");
@@ -438,8 +583,48 @@ pub fn parse_markdown_layout(text: &str) -> MarkdownLayout {
     MarkdownLayout {
         blocks,
         inlines,
+        links,
+        images,
         line_starts,
     }
+}
+
+/// Finds `[[name]]` spans: same-line, non-empty name, delimiter-inclusive
+/// byte ranges. Purely lexical — the caller filters code regions.
+fn scan_wiki_links(text: &str) -> Vec<(Range<usize>, String)> {
+    let mut found = Vec::new();
+    let mut i = 0usize;
+    while let Some(open) = text[i..].find("[[") {
+        let start = i + open;
+        let inner_start = start + 2;
+        match text[inner_start..].find("]]") {
+            Some(close) => {
+                let inner = &text[inner_start..inner_start + close];
+                if !inner.is_empty() && !inner.contains('\n') && !inner.contains('[') {
+                    let end = inner_start + close + 2;
+                    found.push((start..end, inner.to_string()));
+                    i = end;
+                } else {
+                    i = inner_start;
+                }
+            }
+            None => break,
+        }
+    }
+    found
+}
+
+/// All links in `text` (Markdown, autolink, `[[wiki]]`), in source order.
+/// Byte ranges are delimiter-inclusive.
+#[must_use]
+pub fn link_targets(text: &str) -> Vec<LinkTarget> {
+    parse_markdown_layout(text).links
+}
+
+/// All inline image references in `text`, in source order.
+#[must_use]
+pub fn image_spans(text: &str) -> Vec<ImageSpan> {
+    parse_markdown_layout(text).images
 }
 
 /// Revision-keyed cache: reparses only when the document revision changes.
@@ -642,6 +827,106 @@ mod tests {
         assert_eq!(cache.layout_for(&TextBuffer::from_string("# CHANGED"), 1), &a);
         // New revision reparses.
         assert_ne!(cache.layout_for(&TextBuffer::from_string("plain now"), 2), &a);
+    }
+
+    #[test]
+    fn markdown_links_report_exact_byte_ranges_and_payload() {
+        let text = "intro [Plexi](https://plexiapp.com) tail";
+        let links = link_targets(text);
+        assert_eq!(links.len(), 1);
+        let link = &links[0];
+        assert_eq!(link.kind, LinkKind::Markdown);
+        assert_eq!(&text[link.bytes.clone()], "[Plexi](https://plexiapp.com)");
+        assert_eq!(link.dest, "https://plexiapp.com");
+        assert_eq!(link.display, "Plexi");
+    }
+
+    #[test]
+    fn autolinks_report_dest_as_display() {
+        let text = "see <https://example.com/x> now";
+        let links = link_targets(text);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].kind, LinkKind::Autolink);
+        assert_eq!(&text[links[0].bytes.clone()], "<https://example.com/x>");
+        assert_eq!(links[0].dest, "https://example.com/x");
+        assert_eq!(links[0].display, "https://example.com/x");
+    }
+
+    #[test]
+    fn wiki_links_scan_with_exact_ranges_and_skip_code() {
+        let text = "a [[trip ideas]] b `[[not this]]` c\n```\n[[nor this]]\n```\n[[second]]";
+        let links = link_targets(text);
+        let wikis: Vec<_> = links
+            .iter()
+            .filter(|l| l.kind == LinkKind::Wiki)
+            .collect();
+        assert_eq!(wikis.len(), 2);
+        assert_eq!(&text[wikis[0].bytes.clone()], "[[trip ideas]]");
+        assert_eq!(wikis[0].dest, "trip ideas");
+        assert_eq!(&text[wikis[1].bytes.clone()], "[[second]]");
+    }
+
+    #[test]
+    fn image_spans_report_dest_alt_and_range() {
+        let text = "before\n\n![alt text](assets/pic.png)\n\n![](https://x.test/i.jpg)";
+        let images = image_spans(text);
+        assert_eq!(images.len(), 2);
+        assert_eq!(&text[images[0].bytes.clone()], "![alt text](assets/pic.png)");
+        assert_eq!(images[0].dest, "assets/pic.png");
+        assert_eq!(images[0].alt, "alt text");
+        assert_eq!(images[1].dest, "https://x.test/i.jpg");
+        assert_eq!(images[1].alt, "");
+    }
+
+    #[test]
+    fn malformed_links_degrade_without_spans_or_panics() {
+        for text in ["[unclosed](http://x", "[[unclosed", "[]() empty", "![](  "] {
+            let layout = parse_markdown_layout(text);
+            // No panic, full line coverage, and any reported span slices cleanly.
+            for link in &layout.links {
+                assert!(text.get(link.bytes.clone()).is_some());
+            }
+            for (i, line) in text.split('\n').enumerate() {
+                let _ = layout.line_style_spans(i, line);
+            }
+        }
+        // A wiki-looking span inside a Markdown link label is not double-counted.
+        let text = "[a [[b]] c](http://x.test)";
+        let wiki_count = link_targets(text)
+            .iter()
+            .filter(|l| l.kind == LinkKind::Wiki)
+            .count();
+        assert_eq!(wiki_count, 0);
+    }
+
+    #[test]
+    fn link_spans_style_as_link_and_line_coverage_holds() {
+        let text = "go [Plexi](https://plexiapp.com) and [[wiki page]] now";
+        let layout = parse_markdown_layout(text);
+        let spans = layout.line_style_spans(0, text);
+        let style_at = |pos: usize| {
+            spans.iter().find(|s| s.range.contains(&pos)).unwrap().style
+        };
+        assert_eq!(style_at(text.find("Plexi").unwrap()), MdStyle::Link);
+        assert_eq!(style_at(text.find("wiki").unwrap()), MdStyle::Link);
+        assert_eq!(style_at(0), MdStyle::Plain);
+        let mut cursor = 0;
+        for span in &spans {
+            assert_eq!(span.range.start, cursor);
+            cursor = span.range.end;
+        }
+        assert_eq!(cursor, text.len());
+    }
+
+    #[test]
+    fn link_at_byte_and_line_of_byte_agree_with_ranges() {
+        let text = "first\n[X](http://a.test)\nlast";
+        let layout = parse_markdown_layout(text);
+        let link = layout.links.first().unwrap().clone();
+        assert_eq!(layout.line_of_byte(link.bytes.start), 1);
+        assert!(layout.link_at_byte(link.bytes.start + 1).is_some());
+        assert!(layout.link_at_byte(0).is_none());
+        assert!(layout.link_at_byte(text.len() - 1).is_none());
     }
 
     #[test]

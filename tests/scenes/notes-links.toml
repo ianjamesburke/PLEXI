@@ -1,0 +1,50 @@
+# Markdown + wiki links in the notes editor (stint 0477): link targets are
+# reported through semantic state, Ctrl+L / Ctrl+Shift+L walk the visible
+# links (selecting each span), and ordinary editing never activates links.
+size = [1000.0, 700.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-notes-links/note.md"] }
+
+[[steps]]
+focus = "notes"
+
+[[steps]]
+expect = { target = "notes", focused = true }
+
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+text = { target = "notes", value = "[Plexi](https://plexiapp.com) and [[trip ideas]]\n\nmore text" }
+
+# Both link kinds surface as raw targets in semantic state.
+[[steps]]
+expect = { target = "notes", visible_link_target = "https://plexiapp.com" }
+
+[[steps]]
+expect = { target = "notes", visible_link_target = "trip ideas" }
+
+# Ctrl+L from the document end wraps to the first link and selects its span.
+[[steps]]
+key = { target = "notes", value = "ctrl+l" }
+
+[[steps]]
+expect = { target = "notes", selection = [0, 29] }
+
+# Ctrl+L again advances to the wiki link.
+[[steps]]
+key = { target = "notes", value = "ctrl+l" }
+
+[[steps]]
+expect = { target = "notes", selection = [34, 48] }
+
+# Ctrl+Shift+L walks back to the first link.
+[[steps]]
+key = { target = "notes", value = "ctrl+shift+l" }
+
+[[steps]]
+expect = { target = "notes", selection = [0, 29] }
+
+[[steps]]
+close = "notes"

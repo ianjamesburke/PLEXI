@@ -1,0 +1,52 @@
+# Image attachment drops (stint 0478): a dropped decodable image copies into
+# assets/ under a content-hash stable name and inserts one relative Markdown
+# reference; Live Preview renders the inline image below its source line.
+# The fixture hash is deterministic (FNV-1a over tests/fixtures/notes-drop.png).
+size = [1000.0, 700.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-notes-image-drop/note.md"] }
+
+[[steps]]
+focus = "notes"
+
+[[steps]]
+expect = { target = "notes", focused = true, preview_mode = "live_preview" }
+
+# Reset any prior content, seed a heading, a link, and a trailing blank line
+# so the dropped image lands in its own paragraph.
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+text = { target = "notes", value = "# Drop Test\n\nSee [Plexi](https://plexiapp.com) for details.\n\n" }
+
+[[steps]]
+expect = { target = "notes", visible_link_target = "https://plexiapp.com" }
+
+[[steps]]
+drop_file = { target = "notes", value = "tests/fixtures/notes-drop.png" }
+
+[[steps]]
+expect = { target = "notes", drop_result = "accepted", source_text_contains = "![](assets/notes-drop-33c5f0892e70f916.png)", visible_image_target = "assets/notes-drop-33c5f0892e70f916.png", timeout_s = 5.0 }
+
+# Move the caret to the top so the image's block is inactive and renders its
+# inline strip (links styled + image visible below its source line).
+[[steps]]
+key = { target = "notes", value = "cmd+up" }
+
+[[steps]]
+expect = { target = "notes", caret = 0, active_markdown_contains = "# Drop Test" }
+
+[[steps]]
+shot = "notes-image-drop.png"
+
+# A non-image drop is rejected without mutating the note.
+[[steps]]
+drop_file = { target = "notes", value = "tests/fixtures/notes-drop.txt", expect_rejected = true }
+
+[[steps]]
+expect = { target = "notes", drop_result = "rejected", source_text_contains = "![](assets/notes-drop-33c5f0892e70f916.png)" }
+
+[[steps]]
+close = "notes"

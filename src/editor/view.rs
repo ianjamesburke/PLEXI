@@ -2,7 +2,9 @@
 //!
 //! Adapted from Ferrite <https://github.com/OlaProeis/Ferrite>
 //! @ 3ba085c561670342d72c560efbf6b0b92b5c0b46 (view.rs), MIT.
-//! Diverges from upstream: no soft-wrap; uniform line height.
+//! Diverges from upstream: no soft-wrap; uniform base line height plus
+//! optional per-line extra height (`line_extras`) for lines that render an
+//! inline attachment strip below their text (Live Preview images, 0478).
 
 use std::ops::Range;
 
@@ -25,6 +27,10 @@ pub struct ViewState {
     pub viewport_width: f32,
     /// Height of one line in points.
     pub line_height: f32,
+    /// Extra height below specific lines (sorted by line index, no
+    /// duplicates): reserved for inline attachment strips rendered under the
+    /// line's text. Set each frame by the widget; empty for uniform layout.
+    pub line_extras: Vec<(usize, f32)>,
 }
 
 impl Default for ViewState {
@@ -35,15 +41,62 @@ impl Default for ViewState {
             viewport_height: 0.0,
             viewport_width: 0.0,
             line_height: 16.0,
+            line_extras: Vec::new(),
         }
     }
 }
 
 impl ViewState {
+    /// Sum of extra heights for lines strictly before `line`.
+    fn extra_before(&self, line: usize) -> f32 {
+        self.line_extras
+            .iter()
+            .take_while(|(l, _)| *l < line)
+            .map(|(_, e)| e)
+            .sum()
+    }
+
+    /// Extra height reserved below `line` (0 for uniform lines).
+    #[must_use]
+    pub fn line_extra(&self, line: usize) -> f32 {
+        self.line_extras
+            .iter()
+            .find(|(l, _)| *l == line)
+            .map_or(0.0, |(_, e)| *e)
+    }
+
     /// Total content height for `line_count` lines.
     #[must_use]
     pub fn content_height(&self, line_count: usize) -> f32 {
         line_count as f32 * self.line_height
+            + self
+                .line_extras
+                .iter()
+                .filter(|(l, _)| *l < line_count)
+                .map(|(_, e)| e)
+                .sum::<f32>()
+    }
+
+    /// Line index containing content y-offset `y` (clamped to the document).
+    #[must_use]
+    pub fn line_at_y(&self, y: f32, line_count: usize) -> usize {
+        if self.line_height <= 0.0 || line_count == 0 {
+            return 0;
+        }
+        let y = y.max(0.0);
+        let mut acc = 0.0_f32;
+        for &(l, e) in &self.line_extras {
+            let top = l as f32 * self.line_height + acc;
+            if y < top {
+                break; // y is in the uniform region before line `l`
+            }
+            if y < top + self.line_height + e {
+                return l.min(line_count.saturating_sub(1));
+            }
+            acc += e;
+        }
+        ((((y - acc) / self.line_height).floor()).max(0.0) as usize)
+            .min(line_count.saturating_sub(1))
     }
 
     /// The window of lines to lay out, with overscan, clamped to the document.
@@ -52,17 +105,17 @@ impl ViewState {
         if self.line_height <= 0.0 || line_count == 0 {
             return 0..0;
         }
-        let first = (self.scroll_y / self.line_height).floor().max(0.0) as usize;
-        let visible = (self.viewport_height / self.line_height).ceil() as usize + 1;
+        let first = self.line_at_y(self.scroll_y, line_count);
+        let last = self.line_at_y(self.scroll_y + self.viewport_height, line_count);
         let start = first.saturating_sub(OVERSCAN_LINES);
-        let end = (first + visible + OVERSCAN_LINES).min(line_count);
+        let end = (last + 1 + OVERSCAN_LINES).min(line_count);
         start..end.max(start)
     }
 
     /// Top y-offset of `line` relative to the content origin.
     #[must_use]
     pub fn line_top(&self, line: usize) -> f32 {
-        line as f32 * self.line_height
+        line as f32 * self.line_height + self.extra_before(line)
     }
 
     /// Clamps `scroll_y` to the scrollable range for `line_count` lines.
@@ -88,7 +141,7 @@ impl ViewState {
     /// Adjusts `scroll_y` minimally so `line` is fully visible.
     pub fn scroll_to_line(&mut self, line: usize, line_count: usize) {
         let top = self.line_top(line);
-        let bottom = top + self.line_height;
+        let bottom = top + self.line_height + self.line_extra(line);
         if top < self.scroll_y {
             self.scroll_y = top;
         } else if bottom > self.scroll_y + self.viewport_height {
@@ -168,6 +221,27 @@ mod tests {
         assert_eq!(v.scroll_x, 12.0);
         v.scroll_to_x(0.0); // back to the start clamps at 0
         assert_eq!(v.scroll_x, 0.0);
+    }
+
+    #[test]
+    fn line_extras_shift_tops_heights_and_hit_mapping() {
+        let mut v = view();
+        v.line_extras = vec![(2, 50.0), (5, 20.0)];
+        assert_eq!(v.line_top(0), 0.0);
+        assert_eq!(v.line_top(2), 20.0);
+        assert_eq!(v.line_top(3), 80.0); // 30 uniform + 50 extra
+        assert_eq!(v.line_top(6), 130.0); // 60 uniform + 70 extras
+        assert_eq!(v.content_height(10), 170.0);
+        // y→line inverts line_top across uniform and extra regions.
+        assert_eq!(v.line_at_y(0.0, 10), 0);
+        assert_eq!(v.line_at_y(25.0, 10), 2); // inside line 2's text row
+        assert_eq!(v.line_at_y(45.0, 10), 2); // inside line 2's image strip
+        assert_eq!(v.line_at_y(80.0, 10), 3);
+        assert_eq!(v.line_at_y(1e9, 10), 9);
+        // Round-trip: every line's top maps back to itself.
+        for line in 0..10 {
+            assert_eq!(v.line_at_y(v.line_top(line), 10), line);
+        }
     }
 
     #[test]

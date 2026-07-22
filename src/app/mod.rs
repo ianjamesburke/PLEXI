@@ -2,7 +2,7 @@ pub mod account;
 pub mod app_trait;
 mod assistant_host_tools;
 pub mod audio_player_app;
-mod canvas_bindings;
+pub(crate) mod canvas_bindings;
 mod dispatch;
 pub mod file_handlers;
 mod focus;
