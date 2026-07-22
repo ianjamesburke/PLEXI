@@ -8,8 +8,8 @@
 //! command surface.
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
-use crate::editor::preview::{self, MarkdownLayoutCache};
-use crate::editor::widget::{CodeTheme, EditorWidget, MarkdownTheme};
+use crate::editor::preview::{self, LinkKind, LinkTarget, MarkdownLayoutCache};
+use crate::editor::widget::{CodeTheme, EditorWidget, ImageCache, MarkdownTheme};
 use crate::editor::{movement, Document, EditorCommand, EditorMode, SyntaxHighlighter, ViewState};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -128,6 +128,17 @@ pub struct TextEditorApp {
     editor_focused: bool,
     last_save_result: Option<String>,
     last_drop_result: Option<serde_json::Value>,
+    /// Result of the most recent link activation (kind, target, outcome).
+    last_link_activation: Option<serde_json::Value>,
+    /// Host commands queued by link activation, drained by the host each
+    /// frame via `take_pending_commands`.
+    pending_commands: Vec<AppCommand>,
+    /// Inline Live Preview image textures (mtime-keyed reload inside).
+    image_cache: ImageCache,
+    /// This pane's host id, observed from the render context each frame.
+    /// Anchors spawned link-target panes next to this note, not whatever
+    /// pane happens to be focused at dispatch time.
+    host_pane_id: Option<u64>,
 }
 
 impl TextEditorApp {
@@ -163,6 +174,10 @@ impl TextEditorApp {
             editor_focused: false,
             last_save_result: None,
             last_drop_result: None,
+            last_link_activation: None,
+            pending_commands: Vec::new(),
+            image_cache: ImageCache::default(),
+            host_pane_id: None,
         }
     }
 
@@ -389,6 +404,255 @@ impl TextEditorApp {
         }
         log::info!("notes_editor: replace-all rewrote {count} matches");
     }
+
+    /// Caret position as a byte offset into the document body.
+    fn caret_byte(&self) -> usize {
+        let text = self.doc.text();
+        let caret_char = movement::cursor_to_char(self.doc.buffer(), self.doc.cursor());
+        text.char_indices()
+            .nth(caret_char)
+            .map_or(text.len(), |(i, _)| i)
+    }
+
+    /// Selects `range` (document byte offsets) and scrolls it into view.
+    fn select_byte_range(&mut self, range: &std::ops::Range<usize>) {
+        let text = self.doc.text();
+        let start_char = text[..range.start].chars().count();
+        let end_char = start_char + text[range.start..range.end].chars().count();
+        self.select_match((start_char, end_char));
+    }
+
+    /// Inserts `text` at the caret (replacing any selection) as exactly one
+    /// undo step: the surrounding `SetCursor`s break typing coalescing on
+    /// both sides without moving the caret.
+    fn insert_isolated(&mut self, text: String) {
+        if !self.doc.selection().is_range() {
+            // Break typing coalescing without disturbing a selection (a
+            // selection replace never coalesces on its own).
+            self.doc.apply(EditorCommand::SetCursor(self.doc.cursor()));
+        }
+        self.doc.apply(EditorCommand::InsertText(text));
+        self.doc.apply(EditorCommand::SetCursor(self.doc.cursor()));
+        self.last_edit = Some(Instant::now());
+    }
+
+    /// Ctrl+K: with the caret inside an existing link, selects its
+    /// destination for editing; otherwise wraps the selection (or an empty
+    /// caret) in `[…](url)` with the `url` placeholder selected. One undo
+    /// step either way.
+    fn create_or_edit_link(&mut self) {
+        let text = self.doc.text();
+        let caret_b = self.caret_byte();
+        let existing = preview::link_targets(&text)
+            .into_iter()
+            .find(|l| l.bytes.contains(&caret_b) || l.bytes.end == caret_b);
+        if let Some(link) = existing {
+            let slice = &text[link.bytes.clone()];
+            let dest_range = match link.kind {
+                LinkKind::Wiki => link.bytes.start + 2..link.bytes.end - 2,
+                LinkKind::Markdown => match slice.find("](") {
+                    Some(i) => link.bytes.start + i + 2..link.bytes.end - 1,
+                    None => link.bytes.clone(),
+                },
+                LinkKind::Autolink => link.bytes.clone(),
+            };
+            self.select_byte_range(&dest_range);
+            log::info!("notes_editor: link edit — selected destination of {:?}", link.dest);
+            return;
+        }
+        let selected = self.doc.selected_text();
+        let insert = format!("[{selected}](url)");
+        self.insert_isolated(insert);
+        // Select the `url` placeholder (3 chars before the closing paren).
+        let caret_char = movement::cursor_to_char(self.doc.buffer(), self.doc.cursor());
+        self.select_match((caret_char - 4, caret_char - 1));
+        log::info!(
+            "notes_editor: link created around {} selected chars",
+            selected.chars().count()
+        );
+    }
+
+    /// Selects the next/previous link relative to the caret, wrapping.
+    fn focus_visible_link(&mut self, forward: bool) {
+        let text = self.doc.text();
+        let links = preview::link_targets(&text);
+        if links.is_empty() {
+            log::info!("notes_editor: focus link — no links in document");
+            return;
+        }
+        let caret_b = self.caret_byte();
+        let target = if forward {
+            links
+                .iter()
+                .find(|l| l.bytes.start >= caret_b)
+                .unwrap_or(&links[0])
+        } else {
+            links
+                .iter()
+                .rev()
+                .find(|l| l.bytes.end < caret_b)
+                .unwrap_or_else(|| links.last().expect("non-empty"))
+        };
+        let bytes = target.bytes.clone();
+        log::info!(
+            "notes_editor: focus {} link -> {:?}",
+            if forward { "next" } else { "prev" },
+            target.dest
+        );
+        self.select_byte_range(&bytes);
+    }
+
+    /// Keyboard link activation: the link containing the caret, if any.
+    fn activate_link_at_caret(&mut self) {
+        let text = self.doc.text();
+        let caret_b = self.caret_byte();
+        let link = preview::link_targets(&text)
+            .into_iter()
+            .find(|l| l.bytes.contains(&caret_b) || l.bytes.end == caret_b);
+        match link {
+            Some(link) => self.activate_link(&link),
+            None => {
+                log::info!("notes_editor: link activation — no link at caret");
+                self.last_link_activation = Some(serde_json::json!({
+                    "outcome": "no_link_at_caret",
+                }));
+            }
+        }
+    }
+
+    /// Activates a link: external http(s) URLs go through the scheme-validated
+    /// host opener; wiki and relative links resolve against the notes
+    /// collection / note directory and open the target note. Missing or
+    /// ambiguous targets surface deterministically — a file is never created.
+    fn activate_link(&mut self, link: &LinkTarget) {
+        let kind = match link.kind {
+            LinkKind::Markdown => "markdown",
+            LinkKind::Autolink => "autolink",
+            LinkKind::Wiki => "wiki",
+        };
+        let (outcome, detail) = if link.dest.contains("://") {
+            match crate::app::canvas_bindings::open_http_url(&link.dest) {
+                Ok(()) => ("opened_external".to_string(), None),
+                Err(e) => ("open_failed".to_string(), Some(e)),
+            }
+        } else if link.kind == LinkKind::Wiki {
+            self.resolve_wiki_link(&link.dest)
+        } else {
+            self.resolve_relative_link(&link.dest)
+        };
+        log::info!(
+            "notes_editor: link activation kind={kind} target={:?} outcome={outcome}{}",
+            link.dest,
+            detail
+                .as_deref()
+                .map(|d| format!(" detail={d}"))
+                .unwrap_or_default()
+        );
+        self.last_link_activation = Some(serde_json::json!({
+            "kind": kind,
+            "target": link.dest,
+            "outcome": outcome,
+            "detail": detail,
+        }));
+    }
+
+    /// Resolves `[[name]]` against `<config_dir>/notes/**/<name>.md`.
+    fn resolve_wiki_link(&mut self, name: &str) -> (String, Option<String>) {
+        let notes_dir = crate::config::config_dir().join("notes");
+        let mut matches: Vec<PathBuf> = Vec::new();
+        let mut stack = vec![notes_dir.clone()];
+        while let Some(dir) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    if dir == notes_dir {
+                        return (
+                            "missing".to_string(),
+                            Some(format!("notes dir unreadable: {e}")),
+                        );
+                    }
+                    log::warn!("notes_editor: wiki resolve skipping {dir:?}: {e}");
+                    continue;
+                }
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let file_type = match entry.file_type() {
+                    Ok(ft) => ft,
+                    Err(e) => {
+                        log::warn!("notes_editor: wiki resolve skipping {path:?}: {e}");
+                        continue;
+                    }
+                };
+                // Never descend symlinked directories: a cycle (notes/loop →
+                // notes) would spin the UI thread forever.
+                if file_type.is_dir() {
+                    stack.push(path);
+                } else if file_type.is_file()
+                    && path.extension().and_then(|e| e.to_str()) == Some("md")
+                    && path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|stem| stem.eq_ignore_ascii_case(name))
+                {
+                    matches.push(path);
+                }
+            }
+        }
+        matches.sort();
+        match matches.len() {
+            0 => ("missing".to_string(), Some(format!("no note named {name:?}"))),
+            1 => {
+                self.open_note_pane(&matches[0]);
+                ("opened_note".to_string(), None)
+            }
+            n => (
+                "ambiguous".to_string(),
+                Some(format!(
+                    "{n} notes named {name:?}: {}",
+                    matches
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            ),
+        }
+    }
+
+    /// Resolves a relative/absolute non-URL link against this note's
+    /// directory. Never creates the target.
+    fn resolve_relative_link(&mut self, dest: &str) -> (String, Option<String>) {
+        let base = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let candidate = if Path::new(dest).is_absolute() {
+            PathBuf::from(dest)
+        } else {
+            base.join(dest)
+        };
+        let resolved = note_path_identity(&candidate);
+        if resolved.is_file() {
+            self.open_note_pane(&resolved);
+            ("opened_note".to_string(), None)
+        } else {
+            (
+                "missing".to_string(),
+                Some(format!("no file at {}", resolved.display())),
+            )
+        }
+    }
+
+    /// Queues a host command to open `path` in a new text-editor pane,
+    /// anchored to this pane so the split lands next to the source note.
+    fn open_note_pane(&mut self, path: &Path) {
+        self.pending_commands.push(AppCommand::SpawnPane {
+            type_id: "text-editor".to_string(),
+            layout: "split_h".to_string(),
+            args: vec![path.to_string_lossy().into_owned()],
+            from_pane_id: self.host_pane_id,
+            request_id: None,
+            target_context: None,
+        });
+    }
 }
 
 /// Detects the editor mode from file metadata: notes and Markdown extensions
@@ -605,6 +869,35 @@ impl App for TextEditorApp {
             self.toggle_preview_mode();
             return KeyDisposition::Consumed;
         }
+        // Link commands (Markdown only). Ctrl-based: the host reserves most
+        // Cmd single-letter combos (see src/host/keys.rs header).
+        if self.mode.is_markdown() {
+            let ctrl = input
+                .modifiers()
+                .matches_logically(egui::Modifiers::CTRL);
+            let ctrl_shift = input
+                .modifiers()
+                .matches_logically(egui::Modifiers::CTRL | egui::Modifiers::SHIFT);
+            // Ctrl+K: create link around selection / edit link at caret.
+            if input.key_pressed(egui::Key::K) && ctrl {
+                self.create_or_edit_link();
+                return KeyDisposition::Consumed;
+            }
+            // Ctrl+L / Ctrl+Shift+L: focus next / previous link.
+            if input.key_pressed(egui::Key::L) && ctrl_shift {
+                self.focus_visible_link(false);
+                return KeyDisposition::Consumed;
+            }
+            if input.key_pressed(egui::Key::L) && ctrl {
+                self.focus_visible_link(true);
+                return KeyDisposition::Consumed;
+            }
+            // Ctrl+Enter: activate the link at the caret.
+            if input.key_pressed(egui::Key::Enter) && ctrl {
+                self.activate_link_at_caret();
+                return KeyDisposition::Consumed;
+            }
+        }
         // Cmd+F: open find bar (or re-focus if already open).
         if input.key_pressed(egui::Key::F)
             && input
@@ -656,6 +949,7 @@ impl App for TextEditorApp {
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
+        self.host_pane_id = Some(ctx.pane_id);
 
         if let Some(err) = &self.load_error {
             ui.centered_and_justified(|ui| {
@@ -744,6 +1038,21 @@ impl App for TextEditorApp {
             {
                 self.toggle_preview_mode();
             }
+            if self.mode.is_markdown() {
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::K)) {
+                    self.create_or_edit_link();
+                }
+                if ui.input_mut(|i| {
+                    i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::L)
+                }) {
+                    self.focus_visible_link(false);
+                } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::L)) {
+                    self.focus_visible_link(true);
+                }
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)) {
+                    self.activate_link_at_caret();
+                }
+            }
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
                 log::info!("notes_editor: Cmd+F — opening find bar");
                 match &mut self.find_bar {
@@ -829,9 +1138,11 @@ impl App for TextEditorApp {
                 widget = widget.span_provider(highlighter);
             }
         }
-        if self.mode.is_live_preview() {
-            // Live Preview styles map onto host design tokens; styling never
-            // changes glyph metrics (see src/editor/preview.rs).
+        if self.mode.is_markdown() {
+            // Live Preview styles map onto host design tokens; styling only
+            // changes color/underline within lines — inline image strips add
+            // per-line extra height through the shared view layout
+            // (see src/editor/preview.rs and src/editor/view.rs).
             widget = widget.markdown_theme(MarkdownTheme {
                 marker: colors.text_dim,
                 heading: colors.accent,
@@ -840,13 +1151,29 @@ impl App for TextEditorApp {
                 code: colors.success,
                 quote: colors.text_section,
                 rule: colors.text_dim,
+                link: colors.accent,
             });
+            // Cache attached in both presentations: source mode still needs
+            // link spans for modifier-click activation.
             if let Some(cache) = &mut self.md_cache {
                 widget = widget.markdown_preview(cache);
             }
+            if self.mode.is_live_preview() {
+                let base = self
+                    .path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf();
+                widget = widget.images(&mut self.image_cache, base);
+            }
         }
-        let response = widget.show(&mut editor_ui);
+        let output = widget.show(&mut editor_ui);
+        let response = output.response;
         ui.advance_cursor_after_rect(editor_rect);
+
+        if let Some(link) = output.link_activation {
+            self.activate_link(&link);
+        }
 
         // Clicking the editor while the find input holds focus claims the
         // editor surface back (the reconciler grants it post-frame).
@@ -982,7 +1309,7 @@ impl App for TextEditorApp {
     }
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
-        vec![]
+        std::mem::take(&mut self.pending_commands)
     }
 
     fn serialize_state(&self) -> Option<serde_json::Value> {
@@ -1082,8 +1409,37 @@ impl App for TextEditorApp {
             buffer.len()
         };
         let visible_source = buffer.slice(visible_start, visible_end);
-        let links = markdown_targets(&visible_source, false);
-        let images = markdown_targets(&visible_source, true);
+        let link_details = preview::link_targets(&visible_source);
+        let image_details = preview::image_spans(&visible_source);
+        let links: Vec<String> = link_details.iter().map(|l| l.dest.clone()).collect();
+        let images: Vec<String> = image_details.iter().map(|i| i.dest.clone()).collect();
+        let visible_links: Vec<serde_json::Value> = link_details
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "kind": match l.kind {
+                        LinkKind::Markdown => "markdown",
+                        LinkKind::Autolink => "autolink",
+                        LinkKind::Wiki => "wiki",
+                    },
+                    "target": l.dest,
+                    "display": l.display,
+                    "start": l.bytes.start,
+                    "end": l.bytes.end,
+                })
+            })
+            .collect();
+        let visible_image_details: Vec<serde_json::Value> = image_details
+            .iter()
+            .map(|i| {
+                serde_json::json!({
+                    "target": i.dest,
+                    "alt": i.alt,
+                    "start": i.bytes.start,
+                    "end": i.bytes.end,
+                })
+            })
+            .collect();
         Some(serde_json::json!({
             "kind": "notes_editor",
             "source_text": sem.text,
@@ -1106,7 +1462,10 @@ impl App for TextEditorApp {
                 _ => None,
             },
             "visible_link_targets": links,
+            "visible_links": visible_links,
             "visible_images": images,
+            "visible_image_details": visible_image_details,
+            "last_link_activation": self.last_link_activation,
             "undo_available": sem.can_undo,
             "redo_available": sem.can_redo,
             "focused": self.editor_focused,
@@ -1121,28 +1480,185 @@ impl App for TextEditorApp {
         } else {
             "file"
         };
-        self.last_drop_result = Some(serde_json::json!({
-            "result": "rejected",
-            "source_kind": source_kind,
-        }));
-        Err("Notes does not yet accept file drops".to_string())
+        let result = self.ingest_drop(path_or_url, source_kind);
+        match &result {
+            Ok(accepted) => {
+                log::info!(
+                    "notes_editor: drop ingest source_kind={source_kind} outcome=accepted \
+                     detail={accepted}"
+                );
+                self.last_drop_result = Some(accepted.clone());
+            }
+            Err(reason) => {
+                log::info!(
+                    "notes_editor: drop ingest source_kind={source_kind} outcome=rejected \
+                     reason={reason}"
+                );
+                self.last_drop_result = Some(serde_json::json!({
+                    "result": "rejected",
+                    "source_kind": source_kind,
+                    "reason": reason,
+                }));
+            }
+        }
+        result
     }
 }
 
-fn markdown_targets(content: &str, images: bool) -> Vec<String> {
-    let prefix = if images { "![" } else { "[" };
-    content
-        .match_indices(prefix)
-        .filter_map(|(start, _)| {
-            if !images && start > 0 && content.as_bytes()[start - 1] == b'!' {
-                return None;
+/// Stable 64-bit FNV-1a content hash: deterministic across builds/releases,
+/// so asset names derived from it stay stable forever.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Lexical relative path from `from_dir` to `target` (both absolute,
+/// lexically normalized), as a `/`-separated Markdown-ready string.
+fn relative_reference(from_dir: &Path, target: &Path) -> String {
+    let target = normalize_lexically(target);
+    let from: Vec<_> = from_dir.components().collect();
+    let to: Vec<_> = target.components().collect();
+    let common = from
+        .iter()
+        .zip(to.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut parts: Vec<String> = vec!["..".to_string(); from.len() - common];
+    parts.extend(
+        to[common..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    parts.join("/")
+}
+
+/// A safe lowercase asset-name stem from the dropped file's name.
+fn asset_stem(source: &Path) -> String {
+    let stem = source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("image");
+    let slug = slugify_title(stem);
+    if slug == "note" && !stem.eq_ignore_ascii_case("note") {
+        "image".to_string()
+    } else {
+        slug
+    }
+}
+
+impl TextEditorApp {
+    /// 0478 drop ingest: local decodable images copy into
+    /// `<note-parent>/assets/` under a content-hash stable name and insert a
+    /// relative reference; http(s) image URLs insert a remote reference
+    /// without downloading. Every rejection returns a reason without
+    /// mutating the note.
+    fn ingest_drop(
+        &mut self,
+        path_or_url: &str,
+        source_kind: &str,
+    ) -> Result<serde_json::Value, String> {
+        if !self.mode.is_markdown() {
+            return Err("image drops are only supported in Markdown documents".to_string());
+        }
+        if source_kind == "url" {
+            let url = url::Url::parse(path_or_url)
+                .map_err(|e| format!("invalid URL {path_or_url:?}: {e}"))?;
+            if let Ok(path) = url.to_file_path() {
+                return self.ingest_local_image(&path);
             }
-            let rest = &content[start + prefix.len()..];
-            let open = rest.find("](")? + start + prefix.len() + 2;
-            let end = content[open..].find(')')? + open;
-            Some(content[open..end].to_string())
-        })
-        .collect()
+            if !matches!(url.scheme(), "http" | "https") {
+                return Err(format!("unsupported URL scheme {:?}", url.scheme()));
+            }
+            let markdown = format!("![]({path_or_url})");
+            self.insert_isolated(markdown.clone());
+            return Ok(serde_json::json!({
+                "result": "accepted",
+                "source_kind": "url",
+                "markdown": markdown,
+            }));
+        }
+        self.ingest_local_image(Path::new(path_or_url))
+    }
+
+    fn ingest_local_image(&mut self, source: &Path) -> Result<serde_json::Value, String> {
+        let bytes = std::fs::read(source)
+            .map_err(|e| format!("failed to read dropped file {}: {e}", source.display()))?;
+        // Validate by decoding the content — never by extension.
+        image::load_from_memory(&bytes)
+            .map_err(|e| format!("not a decodable image ({}): {e}", source.display()))?;
+        let format = image::guess_format(&bytes)
+            .map_err(|e| format!("unrecognized image container ({}): {e}", source.display()))?;
+        let ext = format.extensions_str().first().copied().unwrap_or("img");
+
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| format!("note {} has no parent directory", self.path.display()))?;
+        // Notes in the collection share one collection-level `notes/assets/`
+        // directory (contract: docs/notes-editor.md) so identical content
+        // dedupes across note folders; arbitrary Markdown files outside the
+        // collection keep attachments next to themselves.
+        let notes_dir = crate::config::config_dir().join("notes");
+        let assets_dir = if self.path.starts_with(&notes_dir) {
+            notes_dir.join("assets")
+        } else {
+            parent.join("assets")
+        };
+        std::fs::create_dir_all(&assets_dir)
+            .map_err(|e| format!("failed to create {}: {e}", assets_dir.display()))?;
+
+        let hash = fnv1a64(&bytes);
+        let stem = asset_stem(source);
+        let mut name = format!("{stem}-{hash:016x}.{ext}");
+        let mut deduped = false;
+        let mut counter = 2usize;
+        loop {
+            let candidate = assets_dir.join(&name);
+            if !candidate.exists() {
+                std::fs::write(&candidate, &bytes)
+                    .map_err(|e| format!("failed to save {}: {e}", candidate.display()))?;
+                break;
+            }
+            match std::fs::read(&candidate) {
+                Ok(existing) if existing == bytes => {
+                    deduped = true; // identical content already stored
+                    break;
+                }
+                Ok(_) => {
+                    name = format!("{stem}-{hash:016x}-{counter}.{ext}");
+                    counter += 1;
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "failed to inspect existing asset {}: {e}",
+                        candidate.display()
+                    ));
+                }
+            }
+        }
+
+        // Reference relative to the note's own directory so standard
+        // Markdown resolution finds the asset (`assets/…` next to the file,
+        // `../assets/…` from a collection subfolder).
+        let reference = relative_reference(&normalize_lexically(parent), &assets_dir.join(&name));
+        let markdown = format!("![]({reference})");
+        self.insert_isolated(markdown.clone());
+        log::info!(
+            "notes_editor: drop saved asset {reference} ({} bytes, hash={hash:016x}, deduped={deduped})",
+            bytes.len()
+        );
+        Ok(serde_json::json!({
+            "result": "accepted",
+            "source_kind": "file",
+            "asset": reference,
+            "markdown": markdown,
+            "deduped": deduped,
+        }))
+    }
 }
 
 impl Drop for TextEditorApp {
@@ -1614,6 +2130,304 @@ mod tests {
         // or undo mutation.
         assert_eq!(app.doc.revision(), revision);
         assert!(!app.doc.semantic_state(0.0).can_undo);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn fixture_png() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("notes-drop.png")
+    }
+
+    #[test]
+    fn drop_file_copies_image_to_assets_and_inserts_one_undo_step() {
+        let dir = unique_temp_dir("notes-drop-image");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "seed\n").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+        app.doc.apply(EditorCommand::Move {
+            movement: crate::editor::commands::Movement::DocEnd,
+            extend: false,
+        });
+
+        let result = crate::app::app_trait::App::drop_file(
+            &mut app,
+            &fixture_png().to_string_lossy(),
+        )
+        .expect("decodable image drop accepted");
+        assert_eq!(result["result"], "accepted");
+        let asset = result["asset"].as_str().unwrap().to_string();
+        assert!(asset.starts_with("assets/notes-drop-"), "{asset}");
+        let asset_path = dir.join(&asset);
+        assert!(asset_path.is_file(), "asset copied to {asset_path:?}");
+        assert_eq!(
+            std::fs::read(&asset_path).unwrap(),
+            std::fs::read(fixture_png()).unwrap()
+        );
+        assert_eq!(app.doc.text(), format!("seed\n![]({asset})"));
+        assert!(app.last_edit.is_some(), "drop dirties the note");
+
+        // Exactly one undo step removes the reference; the asset survives.
+        app.doc.apply(EditorCommand::Undo);
+        assert_eq!(app.doc.text(), "seed\n");
+        assert!(asset_path.is_file(), "undo never deletes the copied asset");
+        app.last_edit = None;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn drop_into_collection_note_uses_collection_assets_dir() {
+        let profile = unique_temp_dir("notes-drop-collection");
+        std::fs::create_dir_all(&profile).unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let notes_dir = crate::config::config_dir().join("notes");
+        std::fs::create_dir_all(notes_dir.join("inbox")).unwrap();
+        let path = notes_dir.join("inbox").join("current.md");
+        std::fs::write(&path, "").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+
+        let result = crate::app::app_trait::App::drop_file(
+            &mut app,
+            &fixture_png().to_string_lossy(),
+        )
+        .expect("collection drop accepted");
+        let asset = result["asset"].as_str().unwrap();
+        // Collection notes share one notes/assets/ dir; the reference is
+        // relative to the note's own folder.
+        assert!(asset.starts_with("../assets/notes-drop-"), "{asset}");
+        let stored = notes_dir.join("assets").join(asset.rsplit('/').next().unwrap());
+        assert!(stored.is_file(), "asset stored at {stored:?}");
+        assert!(!notes_dir.join("inbox").join("assets").exists());
+        app.last_edit = None;
+        let _ = std::fs::remove_dir_all(profile);
+    }
+
+    #[test]
+    fn drop_file_dedupes_identical_content() {
+        let dir = unique_temp_dir("notes-drop-dedupe");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+        let source = fixture_png().to_string_lossy().into_owned();
+
+        let first = crate::app::app_trait::App::drop_file(&mut app, &source).unwrap();
+        let second = crate::app::app_trait::App::drop_file(&mut app, &source).unwrap();
+        assert_eq!(first["asset"], second["asset"]);
+        assert_eq!(second["deduped"], true);
+        let assets: Vec<_> = std::fs::read_dir(dir.join("assets"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(assets.len(), 1, "identical content stored once");
+        app.last_edit = None;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn drop_file_rejects_undecodable_content_without_mutating_note() {
+        let dir = unique_temp_dir("notes-drop-reject");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "body\n").unwrap();
+        // A .png extension with non-image bytes must still be rejected:
+        // validation is by decodable content, never extension.
+        let fake = dir.join("fake.png");
+        std::fs::write(&fake, b"not an image at all").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+
+        let err = crate::app::app_trait::App::drop_file(&mut app, &fake.to_string_lossy())
+            .expect_err("undecodable content rejected");
+        assert!(err.contains("not a decodable image"), "{err}");
+        assert_eq!(app.doc.text(), "body\n", "note unchanged");
+        assert!(!dir.join("assets").exists(), "no asset dir created");
+        assert_eq!(app.last_drop_result.as_ref().unwrap()["result"], "rejected");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn drop_file_inserts_remote_image_url_without_downloading() {
+        let dir = unique_temp_dir("notes-drop-url");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+
+        let url = "https://example.com/pic.png";
+        let result = crate::app::app_trait::App::drop_file(&mut app, url).unwrap();
+        assert_eq!(result["source_kind"], "url");
+        assert_eq!(app.doc.text(), format!("![]({url})"));
+        assert!(!dir.join("assets").exists(), "no download, no asset");
+
+        // Non-http(s) schemes are rejected.
+        let err = crate::app::app_trait::App::drop_file(&mut app, "ftp://example.com/x.png")
+            .expect_err("non-http scheme rejected");
+        assert!(err.contains("unsupported URL scheme"), "{err}");
+        app.last_edit = None;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn create_or_edit_link_wraps_selection_in_one_undo_step() {
+        let dir = unique_temp_dir("notes-link-create");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "visit plexi today").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+        app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 6)));
+        app.doc.apply(EditorCommand::ExtendTo(Cursor::new(0, 11)));
+
+        app.create_or_edit_link();
+        assert_eq!(app.doc.text(), "visit [plexi](url) today");
+        // The `url` placeholder is selected for immediate typing.
+        assert_eq!(app.doc.selected_text(), "url");
+        app.doc.apply(EditorCommand::Undo);
+        assert_eq!(app.doc.text(), "visit plexi today", "one undo step");
+
+        // Ctrl+K inside an existing link selects its destination (no edit).
+        app.doc.apply(EditorCommand::Redo);
+        app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 8)));
+        let revision = app.doc.revision();
+        app.create_or_edit_link();
+        assert_eq!(app.doc.selected_text(), "url");
+        assert_eq!(app.doc.revision(), revision, "edit mode is selection-only");
+        app.last_edit = None;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn focus_visible_link_walks_and_wraps() {
+        let dir = unique_temp_dir("notes-link-focus");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "[A](http://a.test) mid [[wiki b]] end").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+        app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 0)));
+
+        app.focus_visible_link(true);
+        assert_eq!(app.doc.selected_text(), "[A](http://a.test)");
+        app.focus_visible_link(true);
+        assert_eq!(app.doc.selected_text(), "[[wiki b]]");
+        app.focus_visible_link(true); // wraps
+        assert_eq!(app.doc.selected_text(), "[A](http://a.test)");
+        app.focus_visible_link(false); // wraps backward
+        assert_eq!(app.doc.selected_text(), "[[wiki b]]");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn activate_link_rejects_non_http_schemes() {
+        let dir = unique_temp_dir("notes-link-scheme");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "x").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+        let link = preview::LinkTarget {
+            kind: LinkKind::Markdown,
+            bytes: 0..1,
+            dest: "javascript://alert(1)".to_string(),
+            display: "x".to_string(),
+        };
+        app.activate_link(&link);
+        let activation = app.last_link_activation.clone().unwrap();
+        assert_eq!(activation["outcome"], "open_failed");
+        assert!(activation["detail"]
+            .as_str()
+            .unwrap()
+            .contains("non-http(s)"));
+        assert!(app.pending_commands.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn internal_link_resolution_is_deterministic_and_never_creates_files() {
+        let dir = unique_temp_dir("notes-link-internal");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("other.md");
+        std::fs::write(&target, "target note").unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "[other](other.md) [gone](missing.md)").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+
+        // Existing relative target opens via a queued SpawnPane command.
+        let link = preview::link_targets(&app.doc.text())[0].clone();
+        app.activate_link(&link);
+        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "opened_note");
+        let commands = crate::app::app_trait::App::take_pending_commands(&mut app);
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            AppCommand::SpawnPane { type_id, args, .. } => {
+                assert_eq!(type_id, "text-editor");
+                assert!(args[0].ends_with("other.md"));
+            }
+            _ => panic!("expected SpawnPane command"),
+        }
+        assert!(
+            crate::app::app_trait::App::take_pending_commands(&mut app).is_empty(),
+            "commands drain once"
+        );
+
+        // Missing target: deterministic missing outcome, no file created.
+        let link = preview::link_targets(&app.doc.text())[1].clone();
+        app.activate_link(&link);
+        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "missing");
+        assert!(!dir.join("missing.md").exists(), "never silently creates a file");
+        assert!(crate::app::app_trait::App::take_pending_commands(&mut app).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn wiki_link_resolution_missing_and_unique_match() {
+        let profile = unique_temp_dir("notes-wiki-profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.clone());
+        let notes_dir = crate::config::config_dir().join("notes");
+        std::fs::create_dir_all(notes_dir.join("inbox")).unwrap();
+        std::fs::write(notes_dir.join("inbox").join("trip-ideas.md"), "packing").unwrap();
+
+        let note_path = notes_dir.join("current.md");
+        std::fs::write(&note_path, "[[trip-ideas]] and [[nowhere]]").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(note_path);
+
+        let links = preview::link_targets(&app.doc.text());
+        app.activate_link(&links[0]);
+        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "opened_note");
+        let commands = crate::app::app_trait::App::take_pending_commands(&mut app);
+        assert_eq!(commands.len(), 1);
+
+        app.activate_link(&links[1]);
+        assert_eq!(app.last_link_activation.as_ref().unwrap()["outcome"], "missing");
+        assert!(!notes_dir.join("nowhere.md").exists());
+        let _ = std::fs::remove_dir_all(profile);
+    }
+
+    #[test]
+    fn semantic_state_reports_link_and_image_targets_from_preview_parser() {
+        let dir = unique_temp_dir("notes-semantic-links");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        // Everything on the first line: with a zero-height test viewport only
+        // the first visible line window is reported.
+        std::fs::write(
+            &path,
+            "[Plexi](https://plexiapp.com) [[wiki page]] ![alt](assets/p.png)",
+        )
+        .unwrap();
+        let app = TextEditorApp::new_for_test_note(path);
+        let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
+        let targets: Vec<&str> = state["visible_link_targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(targets, vec!["https://plexiapp.com", "wiki page"]);
+        assert_eq!(state["visible_links"][0]["kind"], "markdown");
+        assert_eq!(state["visible_links"][1]["kind"], "wiki");
+        assert_eq!(state["visible_images"][0], "assets/p.png");
+        assert_eq!(state["visible_image_details"][0]["alt"], "alt");
         let _ = std::fs::remove_dir_all(dir);
     }
 

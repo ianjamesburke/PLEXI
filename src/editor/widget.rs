@@ -15,8 +15,11 @@ use super::cursor::Cursor;
 use super::highlight::{SpanProvider, TokenKind};
 use super::mode::EditorMode;
 use super::movement::line_text;
-use super::preview::{MarkdownLayoutCache, MdStyle};
+use super::preview::{LinkTarget, MarkdownLayoutCache, MdStyle};
 use super::view::ViewState;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// Horizontal padding on each side of the gutter's line numbers.
 const GUTTER_PAD: f32 = 6.0;
@@ -84,6 +87,8 @@ pub struct MarkdownTheme {
     pub code: Color32,
     pub quote: Color32,
     pub rule: Color32,
+    /// Link source spans (Markdown, autolink, wiki): colored + underlined.
+    pub link: Color32,
 }
 
 impl MarkdownTheme {
@@ -99,22 +104,121 @@ impl MarkdownTheme {
             code: text,
             quote: weak,
             rule: weak,
+            link: visuals.hyperlink_color,
         }
     }
 
-    /// Color and italic flag for one style class.
-    fn format_for(&self, style: MdStyle, plain: Color32) -> (Color32, bool) {
+    /// Color, italic, and underline flags for one style class.
+    fn format_for(&self, style: MdStyle, plain: Color32) -> (Color32, bool, bool) {
         match style {
-            MdStyle::Marker => (self.marker, false),
-            MdStyle::Heading(_) => (self.heading, false),
-            MdStyle::Strong => (self.strong, false),
-            MdStyle::Emphasis => (self.emphasis, true),
-            MdStyle::Code => (self.code, false),
-            MdStyle::Quote => (self.quote, true),
-            MdStyle::Rule => (self.rule, false),
-            MdStyle::Plain => (plain, false),
+            MdStyle::Marker => (self.marker, false, false),
+            MdStyle::Heading(_) => (self.heading, false, false),
+            MdStyle::Strong => (self.strong, false, false),
+            MdStyle::Emphasis => (self.emphasis, true, false),
+            MdStyle::Code => (self.code, false, false),
+            MdStyle::Quote => (self.quote, true, false),
+            MdStyle::Rule => (self.rule, false, false),
+            MdStyle::Link => (self.link, false, true),
+            MdStyle::Plain => (plain, false, false),
         }
     }
+}
+
+/// Maximum on-screen height of one inline image strip.
+const IMAGE_MAX_HEIGHT: f32 = 320.0;
+/// Height of the placeholder strip for loading/missing/remote images.
+const IMAGE_PLACEHOLDER_HEIGHT: f32 = 40.0;
+/// Vertical padding around an inline image strip.
+const IMAGE_PAD: f32 = 4.0;
+
+/// Render state of one inline image destination.
+pub enum ImageState {
+    /// Decoded and uploaded; `size` is the source pixel size.
+    Ready {
+        texture: egui::TextureHandle,
+        size: [usize; 2],
+    },
+    /// Read or decode failed; the message paints in the placeholder.
+    Failed(String),
+    /// Remote (http/https) destination: never downloaded implicitly.
+    Remote,
+}
+
+/// Texture cache for inline Live Preview images, keyed by raw destination.
+/// Local files reload when their mtime changes; failures cache until the
+/// file changes so a broken image never re-decodes every frame.
+#[derive(Default)]
+pub struct ImageCache {
+    entries: HashMap<String, (Option<SystemTime>, ImageState)>,
+}
+
+impl ImageCache {
+    /// The render state for `dest`, loading/decoding on first sight (and
+    /// again when the file's mtime changes). `base` resolves relative paths.
+    fn get(&mut self, ctx: &egui::Context, base: &Path, dest: &str) -> &ImageState {
+        let (path, mtime) = if dest.starts_with("http://") || dest.starts_with("https://") {
+            (None, None)
+        } else {
+            let path = if Path::new(dest).is_absolute() {
+                PathBuf::from(dest)
+            } else {
+                base.join(dest)
+            };
+            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            (Some(path), mtime)
+        };
+        // Key by the *resolved* path (not the raw destination): two documents
+        // can both reference `assets/foo.png` meaning different files, and a
+        // retargeted pane must never paint the previous document's texture.
+        let key = match &path {
+            Some(path) => path.to_string_lossy().into_owned(),
+            None => dest.to_string(),
+        };
+        let stale = match self.entries.get(&key) {
+            Some((cached_mtime, _)) => *cached_mtime != mtime,
+            None => true,
+        };
+        if stale {
+            let state = match &path {
+                None => ImageState::Remote,
+                Some(path) => match Self::load(ctx, path, dest) {
+                    Ok(state) => state,
+                    Err(reason) => {
+                        log::info!(
+                            "notes_editor: inline image render failed for {dest:?}: {reason}"
+                        );
+                        ImageState::Failed(reason)
+                    }
+                },
+            };
+            self.entries.insert(key.clone(), (mtime, state));
+        }
+        &self.entries[&key].1
+    }
+
+    fn load(ctx: &egui::Context, path: &Path, dest: &str) -> Result<ImageState, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let decoded = image::load_from_memory(&bytes)
+            .map_err(|e| format!("decode {}: {e}", path.display()))?
+            .to_rgba8();
+        let size = [decoded.width() as usize, decoded.height() as usize];
+        let color = egui::ColorImage::from_rgba_unmultiplied(size, decoded.as_raw());
+        let texture = ctx.load_texture(
+            format!("editor-inline-image:{dest}"),
+            color,
+            egui::TextureOptions::LINEAR,
+        );
+        Ok(ImageState::Ready { texture, size })
+    }
+}
+
+/// Result of one [`EditorWidget::show`] pass.
+pub struct EditorOutput {
+    pub response: egui::Response,
+    /// A link the user explicitly activated this frame (modifier-click).
+    /// The widget only detects the gesture — acting on it is the caller's
+    /// job; ordinary clicks placed the caret as usual.
+    pub link_activation: Option<LinkTarget>,
 }
 
 /// Renders a [`Document`] and translates egui input into [`EditorCommand`]s.
@@ -146,6 +250,9 @@ pub struct EditorWidget<'a> {
     md_cache: Option<&'a mut MarkdownLayoutCache>,
     /// Live Preview colors; derived from egui visuals when unset.
     md_theme: Option<MarkdownTheme>,
+    /// Inline-image texture cache plus the base dir resolving relative
+    /// destinations. `None` disables inline image strips.
+    images: Option<(&'a mut ImageCache, PathBuf)>,
     /// Char ranges to paint with a background (find matches), plus the index
     /// of the "current" range and the two fill colors (normal, current).
     highlights: Vec<(usize, usize)>,
@@ -167,6 +274,7 @@ impl<'a> EditorWidget<'a> {
             code_theme: None,
             md_cache: None,
             md_theme: None,
+            images: None,
             highlights: Vec::new(),
             current_highlight: None,
             highlight_bg: egui::Color32::TRANSPARENT,
@@ -228,6 +336,15 @@ impl<'a> EditorWidget<'a> {
         self
     }
 
+    /// Enables inline image strips in Live Preview: `cache` holds textures
+    /// across frames, `base` resolves relative image destinations (the
+    /// document's parent directory). Ignored outside Live Preview.
+    #[must_use]
+    pub fn images(mut self, cache: &'a mut ImageCache, base: PathBuf) -> Self {
+        self.images = Some((cache, base));
+        self
+    }
+
     #[must_use]
     pub fn highlights(
         mut self,
@@ -243,7 +360,7 @@ impl<'a> EditorWidget<'a> {
         self
     }
 
-    pub fn show(mut self, ui: &mut Ui) -> egui::Response {
+    pub fn show(mut self, ui: &mut Ui) -> EditorOutput {
         let font_id = match self.font_size {
             Some(size) => egui::FontId::monospace(size),
             None => egui::TextStyle::Monospace.resolve(ui.style()),
@@ -320,22 +437,41 @@ impl<'a> EditorWidget<'a> {
         }
 
         // Pointer: click to place, shift-click / drag to extend, double-click
-        // word, triple-click line.
-        let hit = |pos: egui::Pos2| self.hit_test(ui, &font_id, rect, gutter_width, pos);
+        // word, triple-click line. An explicit modifier-click (Cmd on macOS)
+        // over a link span activates the link instead of moving the caret;
+        // every other click keeps ordinary caret semantics.
+        let mut link_activation: Option<LinkTarget> = None;
         if let Some(pos) = response.interact_pointer_pos() {
-            let cursor = hit(pos);
-            if response.triple_clicked() {
-                commands.push(EditorCommand::SelectLineAt(cursor.line));
-            } else if response.double_clicked() {
-                commands.push(EditorCommand::SelectWordAt(cursor));
-            } else if response.drag_started() || response.clicked() {
-                if ui.input(|i| i.modifiers.shift) {
-                    commands.push(EditorCommand::ExtendTo(cursor));
-                } else {
-                    commands.push(EditorCommand::SetCursor(cursor));
+            let cursor = self.hit_test(ui, &font_id, rect, gutter_width, pos);
+            if response.clicked()
+                && ui.input(|i| i.modifiers.command)
+                && self.mode.is_markdown()
+            {
+                if let Some(cache) = self.md_cache.as_deref_mut() {
+                    let layout = cache.layout_for(self.doc.buffer(), self.doc.revision());
+                    let text = line_text(self.doc.buffer(), cursor.line);
+                    let byte_in_line = text
+                        .char_indices()
+                        .nth(cursor.column)
+                        .map_or(text.len(), |(i, _)| i);
+                    let byte = layout.line_byte_start(cursor.line) + byte_in_line;
+                    link_activation = layout.link_at_byte(byte).cloned();
                 }
-            } else if response.dragged() {
-                commands.push(EditorCommand::ExtendTo(cursor));
+            }
+            if link_activation.is_none() {
+                if response.triple_clicked() {
+                    commands.push(EditorCommand::SelectLineAt(cursor.line));
+                } else if response.double_clicked() {
+                    commands.push(EditorCommand::SelectWordAt(cursor));
+                } else if response.drag_started() || response.clicked() {
+                    if ui.input(|i| i.modifiers.shift) {
+                        commands.push(EditorCommand::ExtendTo(cursor));
+                    } else {
+                        commands.push(EditorCommand::SetCursor(cursor));
+                    }
+                } else if response.dragged() {
+                    commands.push(EditorCommand::ExtendTo(cursor));
+                }
             }
         }
 
@@ -343,6 +479,21 @@ impl<'a> EditorWidget<'a> {
         for command in commands {
             self.doc.apply(command);
         }
+
+        // Live Preview: the blocks intersecting the selection reveal raw
+        // source; everything else renders styled. Computed after commands so
+        // it reflects this frame's final selection.
+        let (sel_start, sel_end) = self.doc.selection().ordered();
+        let md_active: Option<std::ops::Range<usize>> =
+            if self.mode.is_live_preview() && self.active {
+                self.md_cache.as_deref_mut().map(|cache| {
+                    let layout = cache.layout_for(self.doc.buffer(), self.doc.revision());
+                    layout.active_lines(sel_start.line, sel_end.line)
+                })
+            } else {
+                None
+            };
+        let image_rows = self.update_image_extras(ui.ctx(), md_active.as_ref());
 
         // Scrolling: wheel when hovered, then keep the caret visible after
         // any command.
@@ -368,8 +519,52 @@ impl<'a> EditorWidget<'a> {
             self.view.scroll_to_x(caret_x);
         }
 
-        self.paint(ui, &font_id, rect, gutter_width);
-        response
+        self.paint(ui, &font_id, rect, gutter_width, md_active, &image_rows);
+        EditorOutput {
+            response,
+            link_activation,
+        }
+    }
+
+    /// Reserves per-line extra height for inline image strips (Live Preview
+    /// only) and returns the `(line, dest)` rows to paint. Lines inside the
+    /// active (raw source) block render no strip.
+    fn update_image_extras(
+        &mut self,
+        ctx: &egui::Context,
+        md_active: Option<&std::ops::Range<usize>>,
+    ) -> Vec<(usize, String)> {
+        let enabled = self.mode.is_live_preview() && self.images.is_some();
+        let Some(cache) = self.md_cache.as_deref_mut().filter(|_| enabled) else {
+            self.view.line_extras.clear();
+            return Vec::new();
+        };
+        let layout = cache.layout_for(self.doc.buffer(), self.doc.revision());
+        let (image_cache, base) = self.images.as_mut().expect("checked above");
+        let max_width = (self.view.viewport_width - 2.0 * IMAGE_PAD).max(16.0);
+        let mut extras: Vec<(usize, f32)> = Vec::new();
+        let mut rows: Vec<(usize, String)> = Vec::new();
+        for span in &layout.images {
+            let line = layout.line_of_byte(span.bytes.start);
+            if md_active.is_some_and(|r| r.contains(&line)) {
+                continue;
+            }
+            if rows.iter().any(|(l, _)| *l == line) {
+                continue; // one strip per line
+            }
+            let height = match image_cache.get(ctx, base, &span.dest) {
+                ImageState::Ready { size, .. } => {
+                    let scale = (max_width / size[0] as f32).min(1.0);
+                    (size[1] as f32 * scale).min(IMAGE_MAX_HEIGHT)
+                }
+                ImageState::Failed(_) | ImageState::Remote => IMAGE_PLACEHOLDER_HEIGHT,
+            };
+            extras.push((line, height + 2.0 * IMAGE_PAD));
+            rows.push((line, span.dest.clone()));
+        }
+        extras.sort_by_key(|(l, _)| *l);
+        self.view.line_extras = extras;
+        rows
     }
 
     /// Width of the line-number gutter in code mode; zero otherwise.
@@ -394,8 +589,7 @@ impl<'a> EditorWidget<'a> {
     ) -> Cursor {
         let line_count = self.doc.buffer().line_count();
         let y = pos.y - rect.top() + self.view.scroll_y;
-        let line = ((y / self.view.line_height).floor().max(0.0) as usize)
-            .min(line_count.saturating_sub(1));
+        let line = self.view.line_at_y(y, line_count);
         let text = line_text(self.doc.buffer(), line);
         let galley = ui.fonts_mut(|f| f.layout_no_wrap(text, font_id.clone(), egui::Color32::WHITE));
         let ccursor = galley.cursor_from_pos(Vec2::new(
@@ -434,9 +628,13 @@ impl<'a> EditorWidget<'a> {
                     let mut job = LayoutJob::default();
                     job.wrap.max_width = f32::INFINITY;
                     for span in &spans {
-                        let (color, italics) = md_theme.format_for(span.style, text_color);
+                        let (color, italics, underline) =
+                            md_theme.format_for(span.style, text_color);
                         let mut format = TextFormat::simple(font_id.clone(), color);
                         format.italics = italics;
+                        if underline {
+                            format.underline = egui::Stroke::new(1.0_f32, color);
+                        }
                         job.append(&text[span.range.clone()], 0.0, format);
                     }
                     return ui.fonts_mut(|f| f.layout_job(job));
@@ -469,7 +667,15 @@ impl<'a> EditorWidget<'a> {
         ui.fonts_mut(|f| f.layout_job(job))
     }
 
-    fn paint(&mut self, ui: &Ui, font_id: &egui::FontId, rect: Rect, gutter_width: f32) {
+    fn paint(
+        &mut self,
+        ui: &Ui,
+        font_id: &egui::FontId,
+        rect: Rect,
+        gutter_width: f32,
+        md_active: Option<std::ops::Range<usize>>,
+        image_rows: &[(usize, String)],
+    ) {
         let visuals = ui.visuals();
         let text_color = visuals.text_color();
         let code_theme = self
@@ -491,18 +697,6 @@ impl<'a> EditorWidget<'a> {
         let mut caret_rect: Option<Rect> = None;
         let gutter_painter = ui.painter_at(rect);
         let show_code_chrome = self.mode.is_code();
-
-        // Live Preview: the blocks intersecting the selection reveal raw
-        // source; everything else renders styled.
-        let md_active: Option<std::ops::Range<usize>> =
-            if self.mode.is_live_preview() && self.active {
-                self.md_cache.as_deref_mut().map(|cache| {
-                    let layout = cache.layout_for(self.doc.buffer(), self.doc.revision());
-                    layout.active_lines(sel_start.line, sel_end.line)
-                })
-            } else {
-                None
-            };
 
         for line in self.view.visible_lines(line_count) {
             let top = rect.top() + self.view.line_top(line) - self.view.scroll_y;
@@ -629,6 +823,75 @@ impl<'a> EditorWidget<'a> {
                         egui::pos2(caret_x, top),
                         Vec2::new(1.0, self.view.line_height),
                     ));
+                }
+            }
+        }
+
+        // Inline image strips below their source lines (Live Preview only):
+        // bounded to content width, aspect preserved, placeholders for
+        // remote/missing/undecodable destinations.
+        if !image_rows.is_empty() {
+            let visible = self.view.visible_lines(line_count);
+            let weak = visuals.weak_text_color();
+            if let Some((cache, base)) = self.images.as_mut() {
+                for (line, dest) in image_rows {
+                    if !visible.contains(line) {
+                        continue;
+                    }
+                    let extra = self.view.line_extra(*line);
+                    if extra <= 0.0 {
+                        continue;
+                    }
+                    let strip_top = rect.top() + self.view.line_top(*line)
+                        - self.view.scroll_y
+                        + self.view.line_height
+                        + IMAGE_PAD;
+                    let height = extra - 2.0 * IMAGE_PAD;
+                    let left = rect.left() + gutter_width + IMAGE_PAD - self.view.scroll_x;
+                    match cache.get(ui.ctx(), base, dest) {
+                        ImageState::Ready { texture, size } => {
+                            let scale = (height / size[1] as f32).min(1.0);
+                            let width = size[0] as f32 * scale;
+                            let image_rect = Rect::from_min_size(
+                                egui::pos2(left, strip_top),
+                                Vec2::new(width, height),
+                            );
+                            painter.image(
+                                texture.id(),
+                                image_rect,
+                                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                Color32::WHITE,
+                            );
+                        }
+                        state @ (ImageState::Failed(_) | ImageState::Remote) => {
+                            let label = match state {
+                                ImageState::Failed(reason) => {
+                                    format!("image unavailable: {reason}")
+                                }
+                                _ => format!("remote image (not downloaded): {dest}"),
+                            };
+                            let strip_rect = Rect::from_min_size(
+                                egui::pos2(left, strip_top),
+                                Vec2::new(
+                                    (self.view.viewport_width - 2.0 * IMAGE_PAD).max(16.0),
+                                    height,
+                                ),
+                            );
+                            painter.rect_stroke(
+                                strip_rect,
+                                2.0,
+                                egui::Stroke::new(1.0_f32, weak),
+                                egui::StrokeKind::Inside,
+                            );
+                            painter.text(
+                                strip_rect.left_center() + egui::vec2(8.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                label,
+                                font_id.clone(),
+                                weak,
+                            );
+                        }
+                    }
                 }
             }
         }

@@ -93,9 +93,10 @@ fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
 
     let response = read_json_response(&response);
     assert!(response.get("ok").is_none());
+    // 0478: drops are validated by decodable content — fake PNG bytes reject.
     assert!(response["error"]
         .as_str()
-        .is_some_and(|error| error.contains("does not yet accept")));
+        .is_some_and(|error| error.contains("not a decodable image")));
     let app = h.app.windows[0]
         .panes
         .get(&pane_id)

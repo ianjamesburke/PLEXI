@@ -516,6 +516,32 @@ fn quote_for_shell(path: &str) -> String {
     }
 }
 
+/// Scheme-validated external URL open: only `http`/`https` URLs are handed
+/// to the OS opener; anything else (including `file:`, `javascript:`, bare
+/// paths) is rejected. Failures return to the caller so it can surface a
+/// visible state — never swallowed into a log line.
+pub fn open_http_url(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL {url:?}: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!(
+            "refusing to open non-http(s) URL scheme {:?}",
+            parsed.scheme()
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let result = std::process::Command::new("xdg-open").arg(url).spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let result: std::io::Result<std::process::Child> = Err(std::io::Error::other(
+        "URL open is macOS/Linux-only",
+    ));
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("OS opener failed for {url}: {e}")),
+    }
+}
+
 /// Cross-platform helper: shell out to `open` (macOS) / `xdg-open`
 /// (Linux). On Windows we currently log + skip — the binding-primitives
 /// surface is macOS-first for v3.5; cross-platform reveals can land in
