@@ -1,0 +1,54 @@
+# Code mode in the shared text editor (stint 0318): a .rs file gets a
+# line-number gutter, syntax spans, Tab indent / Shift-Tab outdent, and the
+# same undo/save semantics as every other mode.
+size = [1000.0, 700.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "code", args = ["/tmp/plexi-code-mode.rs"] }
+
+[[steps]]
+focus = "code"
+
+[[steps]]
+expect = { target = "code", focused = true }
+
+# Reset any prior content, then write code through real key events.
+[[steps]]
+key = { target = "code", value = "cmd+a" }
+
+[[steps]]
+text = { target = "code", value = "fn main() {" }
+
+# Enter is a plain auto-indent newline in code mode (no Markdown behavior).
+[[steps]]
+key = { target = "code", value = "enter" }
+
+# Tab inserts one indent step at the caret.
+[[steps]]
+key = { target = "code", value = "tab" }
+
+[[steps]]
+text = { target = "code", value = "let x = 1;" }
+
+[[steps]]
+expect = { target = "code", source_text_contains = "fn main() {\n    let x = 1;", caret = 26 }
+
+# Shift-Tab outdents the line; the indent removal is one undoable step.
+[[steps]]
+key = { target = "code", value = "shift+tab" }
+
+[[steps]]
+expect = { target = "code", source_text_contains = "fn main() {\nlet x = 1;", caret = 22 }
+
+[[steps]]
+key = { target = "code", value = "cmd+z" }
+
+[[steps]]
+expect = { target = "code", source_text_contains = "fn main() {\n    let x = 1;" }
+
+# Visual: gutter numbers, current-line highlight, syntax colors.
+[[steps]]
+shot = "code-editor-mode.png"
+
+[[steps]]
+close = "code"

@@ -8,8 +8,8 @@
 //! command surface.
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
-use crate::editor::widget::EditorWidget;
-use crate::editor::{movement, Document, EditorCommand, ViewState};
+use crate::editor::widget::{CodeTheme, EditorWidget};
+use crate::editor::{movement, Document, EditorCommand, EditorMode, SyntaxHighlighter, ViewState};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -109,6 +109,12 @@ pub struct TextEditorApp {
     note_title: String,
     /// True when `path` lives under `<config_dir>/notes/`.
     is_note: bool,
+    /// Editor presentation/input mode, detected from `path` (extension) and
+    /// note-ness. The core never inspects file metadata itself.
+    mode: EditorMode,
+    /// Syntax span source for code mode; `None` when the language is unknown
+    /// to the bundled syntax set (plain-text fallback).
+    highlighter: Option<SyntaxHighlighter>,
     last_edit: Option<Instant>,
     wants_close: bool,
     load_error: Option<String>,
@@ -131,6 +137,9 @@ impl TextEditorApp {
         let notes_dir = crate::config::config_dir().join("notes");
         let is_note = path.starts_with(&notes_dir);
         let (note_header, content, note_title) = split_note(is_note, raw);
+        let mode = detect_mode(&path, is_note);
+        log::info!("notes_editor: mode selected {} for {:?}", mode.describe(), path);
+        let highlighter = mode.language().and_then(SyntaxHighlighter::new);
         Self {
             path,
             doc: Document::new(&content),
@@ -138,6 +147,8 @@ impl TextEditorApp {
             note_header,
             note_title,
             is_note,
+            mode,
+            highlighter,
             last_edit: None,
             wants_close: false,
             load_error,
@@ -160,6 +171,8 @@ impl TextEditorApp {
         app.note_header = note_header;
         app.doc = Document::new(&content);
         app.note_title = note_title;
+        app.mode = detect_mode(&app.path, true);
+        app.highlighter = app.mode.language().and_then(SyntaxHighlighter::new);
         app
     }
 
@@ -354,6 +367,33 @@ impl TextEditorApp {
             bar.recompute(&text);
         }
         log::info!("notes_editor: replace-all rewrote {count} matches");
+    }
+}
+
+/// Detects the editor mode from file metadata: notes and Markdown extensions
+/// get [`EditorMode::Markdown`]; recognized source-code extensions get
+/// [`EditorMode::Code`] with the extension as the language identifier;
+/// everything else is plain text. The editor core only ever receives the
+/// resulting mode/identifier — it never inspects paths.
+fn detect_mode(path: &Path, is_note: bool) -> EditorMode {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    let ext = ext.as_deref();
+    if is_note || matches!(ext, Some("md" | "markdown")) {
+        return EditorMode::Markdown;
+    }
+    const CODE_EXTENSIONS: &[&str] = &[
+        "rs", "py", "js", "ts", "jsx", "tsx", "json", "toml", "yaml", "yml", "sh", "bash", "zsh",
+        "c", "h", "cpp", "hpp", "cc", "go", "rb", "java", "html", "css", "xml", "lua", "swift",
+        "sql", "php",
+    ];
+    match ext {
+        Some(ext) if CODE_EXTENSIONS.contains(&ext) => EditorMode::Code {
+            language: ext.to_string(),
+        },
+        _ => EditorMode::PlainText,
     }
 }
 
@@ -720,25 +760,36 @@ impl App for TextEditorApp {
         );
         editor_ui.visuals_mut().override_text_color = Some(colors.text_primary);
         editor_ui.visuals_mut().selection.stroke.color = colors.accent;
-        // Markdown-aware keyboard behavior for notes and .md/.markdown files.
-        let markdown = self.is_note
-            || self
-                .path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"));
-        let response = EditorWidget::new(&mut self.doc, &mut self.view)
+        let mut widget = EditorWidget::new(&mut self.doc, &mut self.view)
             .id(te_id)
             .active(editor_focused)
             .font_size(self.font_size)
-            .markdown(markdown)
+            .mode(self.mode.clone())
             .highlights(
                 highlights,
                 current_highlight,
                 colors.warning.gamma_multiply(0.45),
                 colors.accent.gamma_multiply(0.55),
-            )
-            .show(&mut editor_ui);
+            );
+        if self.mode.is_code() {
+            // Syntect styles map onto host design tokens — never a syntect
+            // theme's raw colors.
+            widget = widget.code_theme(CodeTheme {
+                gutter_text: colors.text_dim,
+                current_line_bg: colors.bg_hover.gamma_multiply(0.55),
+                keyword: colors.accent,
+                string: colors.success,
+                comment: colors.text_dim,
+                number: colors.warning,
+                ty: colors.warning,
+                function: colors.text_primary,
+                punctuation: colors.text_section,
+            });
+            if let Some(highlighter) = &mut self.highlighter {
+                widget = widget.span_provider(highlighter);
+            }
+        }
+        let response = widget.show(&mut editor_ui);
         ui.advance_cursor_after_rect(editor_rect);
 
         // Clicking the editor while the find input holds focus claims the
@@ -900,6 +951,13 @@ impl App for TextEditorApp {
                 let notes_dir = crate::config::config_dir().join("notes");
                 self.is_note = new_path.starts_with(&notes_dir);
                 let (note_header, content, note_title) = split_note(self.is_note, raw);
+                self.mode = detect_mode(&new_path, self.is_note);
+                log::info!(
+                    "notes_editor: mode selected {} for {:?}",
+                    self.mode.describe(),
+                    new_path
+                );
+                self.highlighter = self.mode.language().and_then(SyntaxHighlighter::new);
                 self.path = new_path;
                 self.doc = Document::new(&content);
                 self.view = ViewState::default();
@@ -1349,6 +1407,50 @@ mod tests {
         assert!(std::fs::read_to_string(&path)
             .unwrap()
             .starts_with("---\ntitle: \"Trip\""));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn detect_mode_routes_notes_markdown_code_and_plain() {
+        let p = |s: &str| PathBuf::from(s);
+        assert_eq!(detect_mode(&p("/x/scratch.txt"), true), EditorMode::Markdown);
+        assert_eq!(detect_mode(&p("/x/readme.MD"), false), EditorMode::Markdown);
+        assert_eq!(
+            detect_mode(&p("/x/main.rs"), false),
+            EditorMode::Code {
+                language: "rs".into()
+            }
+        );
+        assert_eq!(
+            detect_mode(&p("/x/script.PY"), false),
+            EditorMode::Code {
+                language: "py".into()
+            }
+        );
+        assert_eq!(detect_mode(&p("/x/notes.txt"), false), EditorMode::PlainText);
+        assert_eq!(detect_mode(&p("/x/no-extension"), false), EditorMode::PlainText);
+        assert_eq!(detect_mode(&p("/x/data.xyz"), false), EditorMode::PlainText);
+    }
+
+    #[test]
+    fn code_mode_file_saves_source_text_verbatim() {
+        let dir = unique_temp_dir("code-mode-save");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let mut app = TextEditorApp::new(path.clone());
+        assert!(app.mode.is_code());
+        assert!(app.highlighter.is_some(), "rust syntax is bundled");
+        app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 0)));
+        app.doc
+            .apply(EditorCommand::InsertText("// unicode: café 😀\n".into()));
+        app.last_edit = Some(Instant::now());
+        app.flush();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "// unicode: café 😀\nfn main() {}\n",
+            "code mode never rewrites source text"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
