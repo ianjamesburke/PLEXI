@@ -4745,6 +4745,10 @@ pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
                 }
             }
         };
+        log::info!(
+            "pane_ipc: clipboard chord {chord:?} translated to {} egui event(s)",
+            events.len()
+        );
         return Some(egui::RawInput {
             events,
             modifiers,
