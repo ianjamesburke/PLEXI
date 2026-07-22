@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 # Installed-host editor release gate (stint 0479).
 #
-# Runs the core qualification (matrix + long sequence + seeded fuzz, which
-# writes the editor-gate-core.json artifact), then every editor scene
-# (tests/scenes/editor-gate-*.toml plus the notes-*.toml scenes) against one
-# installed channel via run-live-scene.sh, collecting SceneReport JSONs and
-# failure bundles into one out dir (live runs are semantic-only; pixel
-# evidence comes from the headless scene suite's shot steps), tails the
-# channel's plexi.log, and writes summary.json. Exits nonzero when the core
-# qualification or any scene fails.
+# Flow:
+#   1. Core qualification (matrix + long sequence + seeded fuzz) — writes the
+#      editor-gate-core.json artifact; the gate fails outright without it.
+#   2. Boot ONE hermetic host for the channel (`host start --ephemeral`: no
+#      workspace restore, no workspace save) and leave an info-level start
+#      marker in the channel's plexi.log via `plexi host log`.
+#   3. Run every editor scene (tests/scenes/editor-gate-*.toml plus the
+#      notes-*.toml scenes) against that host in attach mode
+#      (PLEXI_SCENE_ATTACH=1), collecting SceneReport JSONs and failure
+#      bundles per scene, plus a best-effort bounded host screenshot per
+#      scene (`plexi host screenshot` can stall — a hang or failure only
+#      logs a warning and never affects the gate result).
+#   4. Leave a finish marker with pass/fail counts in the channel log, stop
+#      the host, tail the channel's plexi.log, and write summary.json.
+#
+# Exits nonzero when the core qualification, the host boot, or any scene
+# fails. Screenshots and log markers are evidence, not gate conditions.
 #
 # Usage: editor-gate.sh <channel> [out_dir]
 set -uo pipefail
@@ -19,7 +28,56 @@ out_dir="${2:-/tmp/plexi-editor-gate/$channel}"
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 scene_dir="$repo_root/tests/scenes"
 
+if [[ "$channel" == "main" ]]; then
+    plexi_bin="plexi"
+    profile_dir="$HOME/.plexi"
+else
+    plexi_bin="plexi-$channel"
+    profile_dir="$HOME/.plexi-$channel"
+fi
+
 mkdir -p "$out_dir"
+
+# Run a command with a hard wall-clock bound (portable: macOS ships no
+# `timeout`). Returns 124 on timeout, the command's exit code otherwise.
+run_bounded() {
+    local seconds="$1"
+    shift
+    "$@" &
+    local pid=$!
+    (
+        sleep "$seconds"
+        kill "$pid" 2>/dev/null
+    ) &
+    local watchdog=$!
+    local code=0
+    wait "$pid" 2>/dev/null || code=$?
+    kill "$watchdog" 2>/dev/null
+    wait "$watchdog" 2>/dev/null
+    if [[ $code -ge 128 ]]; then
+        return 124
+    fi
+    return "$code"
+}
+
+# Host log marker (FIX: the installed run's start/finish summary must reach
+# the channel's plexi.log, whose logger the host process owns). Bounded and
+# warn-only: a marker failure never changes the gate result.
+host_marker() {
+    if ! run_bounded 10 "$plexi_bin" host log --source editor_gate "$1" \
+        >> "$out_dir/host-markers.log" 2>&1; then
+        echo "editor-gate: warning: host log marker failed: $1" >&2
+    fi
+}
+
+gate_host_started=""
+cleanup_gate_host() {
+    if [[ -n "$gate_host_started" ]]; then
+        "$plexi_bin" host stop >/dev/null 2>&1 || true
+        gate_host_started=""
+    fi
+}
+trap cleanup_gate_host EXIT INT TERM HUP
 
 scenes=()
 for scene in "$scene_dir"/editor-gate-*.toml "$scene_dir"/notes-*.toml; do
@@ -51,6 +109,16 @@ fi
 cp "$core_artifact" "$out_dir/editor-gate-core.json"
 echo "editor-gate: collected core artifact editor-gate-core.json"
 
+# One hermetic host for the whole gate: --ephemeral means the channel's saved
+# session is neither restored nor overwritten.
+if ! "$plexi_bin" host start --ephemeral --pane "cwd=$repo_root" \
+    > "$out_dir/host-start.log" 2>&1; then
+    echo "editor-gate: HOST START FAILED (see $out_dir/host-start.log)" >&2
+    exit 1
+fi
+gate_host_started=1
+host_marker "gate started channel=$channel scenes=${#scenes[@]}"
+
 failures=0
 scene_entries=""
 for scene in "${scenes[@]}"; do
@@ -58,28 +126,40 @@ for scene in "${scenes[@]}"; do
     scene_out="$out_dir/scenes/$name"
     mkdir -p "$scene_out"
     echo "editor-gate: running scene $name"
-    if bash "$repo_root/scripts/run-live-scene.sh" "$scene" "$channel" "$scene_out" \
-        > "$scene_out/run.log" 2>&1; then
+    if PLEXI_SCENE_ATTACH=1 bash "$repo_root/scripts/run-live-scene.sh" \
+        "$scene" "$channel" "$scene_out" > "$scene_out/run.log" 2>&1; then
         passed=true
     else
         passed=false
         failures=$((failures + 1))
         echo "editor-gate: SCENE FAILED $name (see $scene_out/run.log)" >&2
     fi
+    # Best-effort pixel evidence. `plexi host screenshot` can silently stall
+    # (pre-existing host bug, tracked separately) — bound it hard and never
+    # let it affect the gate result.
+    if ! run_bounded 20 "$plexi_bin" host screenshot \
+        --output "$scene_out/host-after.png" \
+        > "$scene_out/screenshot.log" 2>&1; then
+        echo "editor-gate: warning: screenshot after scene $name failed or timed out (best-effort, gate unaffected)" \
+            | tee -a "$scene_out/screenshot.log" >&2
+    fi
     [[ -n "$scene_entries" ]] && scene_entries+=","
     scene_entries+=$'\n    '"{\"name\": \"$name\", \"passed\": $passed, \"report\": \"scenes/$name/$name.json\"}"
 done
 
-# Channel log tail for post-mortems.
-channel_log="$HOME/.plexi-$channel/plexi.log"
+total=${#scenes[@]}
+passed_count=$((total - failures))
+host_marker "gate finished channel=$channel passed=$passed_count failed=$failures"
+cleanup_gate_host
+
+# Channel log tail for post-mortems (includes the markers above).
+channel_log="$profile_dir/plexi.log"
 if [[ -f "$channel_log" ]]; then
     tail -n 500 "$channel_log" > "$out_dir/log-tail.txt"
 else
     echo "editor-gate: channel log $channel_log not found" > "$out_dir/log-tail.txt"
 fi
 
-total=${#scenes[@]}
-passed_count=$((total - failures))
 cat > "$out_dir/summary.json" <<SUMMARY
 {
   "channel": "$channel",

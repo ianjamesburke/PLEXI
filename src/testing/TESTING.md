@@ -166,13 +166,17 @@ release gate before push, in this order:
 3. **Scenes headless** — the `editor-gate-*.toml` and `notes-*.toml` scenes run
    in `scene_suite`; iterate on one with `just scene tests/scenes/<file>`.
 4. **Installed host** — `just editor-gate pr-<N>` re-runs the core
-   qualification, then runs every editor scene against the installed PR
-   channel and collects everything into `/tmp/plexi-editor-gate/pr-<N>/`:
-   per-scene SceneReports and failure bundles (live runs are semantic-only;
-   pixel evidence comes from the headless suite's shot steps), the core
-   qualification artifact (`editor-gate-core.json`: per-case
-   pass/duration/final semantic state, per-seed randomized results, totals),
-   a channel `log-tail.txt`, and `summary.json`.
+   qualification, boots one hermetic host (`plexi host start --ephemeral`:
+   no workspace restore, no workspace save), leaves start/finish markers in
+   the channel's `plexi.log` via `plexi host log --source editor_gate`, and
+   runs every editor scene against that host in attach mode. It collects
+   everything into `/tmp/plexi-editor-gate/pr-<N>/`: per-scene SceneReports
+   and failure bundles, a best-effort bounded `host screenshot` per scene
+   (never a gate condition), the core qualification artifact
+   (`editor-gate-core.json`: per-case pass/duration/final semantic state,
+   per-seed randomized results, totals), a channel `log-tail.txt`, and
+   `summary.json`. Non-attached live scene runs (`just scene-live`) are
+   hermetic too: the runner-owned host always boots `--ephemeral`.
 
 Randomized failures are replayable: the panic names a seed and writes a
 minimized replay bundle to `$TMPDIR/plexi-editor-gate-failure-<seed>.json`;

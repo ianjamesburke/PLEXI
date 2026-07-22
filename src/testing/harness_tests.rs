@@ -2907,6 +2907,28 @@ fn editor_gate_host_surfaces() {
         "click must move the caret off offset 0; state={state}"
     );
 
+    // The production semantic commit path (accesskit → SemanticPaneState in
+    // app_pane::render, the exact state `plexi pane state` serves live) must
+    // carry the editor's rendered text so `rendered_text_contains` scene
+    // assertions are truthful against an installed host.
+    let semantic = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_app)
+        .expect("notes pane")
+        .semantic_state();
+    assert!(
+        semantic.nodes.iter().any(|node| {
+            node.role == "paragraph"
+                && node
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("gate line 0"))
+        }),
+        "pane semantic nodes must include per-row rendered editor text; nodes={:?}",
+        semantic.nodes
+    );
+
     // Live Preview toggle through the app's real key handler.
     assert_eq!(state["preview_mode"].as_str(), Some("live_preview"));
     let response = temp_response(tmp.path(), "gate-toggle");
@@ -3025,4 +3047,21 @@ fn editor_gate_save_failure_reports_error_semantically() {
     // teardown (and the tempdir can be cleaned up).
     std::fs::set_permissions(&note_dir, std::fs::Permissions::from_mode(0o755))
         .expect("restore note dir permissions");
+}
+
+/// `plexi host log` / `AppRequest::LogMarker` must land in the host process
+/// (the owner of the channel logger) and acknowledge through the response
+/// file — the mechanism installed release gates use to leave start/finish
+/// summaries in `~/.plexi-<channel>/plexi.log`.
+#[test]
+fn host_log_marker_dispatches_and_acknowledges() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let response = temp_response(tmp.path(), "log-marker");
+    h.app.handle_pane_ipc_request(AppRequest::LogMarker {
+        source: "editor_gate".to_string(),
+        message: "started scenes=9\nsecond line flattened".to_string(),
+        response_file: Some(response.clone()),
+    });
+    assert_eq!(read_json_response(&response)["ok"], true);
 }

@@ -214,6 +214,21 @@ pub enum AppRequest {
     /// Update the status text shown in the parent pane chrome.
     StatusSummary { text: String },
 
+    /// Write one info-level marker line into the running host's channel log
+    /// (`~/.plexi-<channel>/plexi.log`). Sent by `plexi host log` — the
+    /// sanctioned way for automated drivers (release gates, scene runners,
+    /// CI) to leave start/finish summaries in the installed host's own log
+    /// instead of only in their local output. Newlines are flattened so the
+    /// marker stays one greppable line.
+    /// Host writes `{"ok":true}` to `response_file` when set.
+    LogMarker {
+        /// Short tool identity prefixed to the line (e.g. "editor_gate").
+        source: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
+
     /// Request the host to spawn a new app pane. Requires `spawn.app` capability.
     /// `layout`: "split_h" (new pane right), "split_v" (default, new pane below),
     ///           or "overlay" (full pane, no split).

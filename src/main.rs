@@ -609,12 +609,17 @@ fn main() -> eframe::Result {
                             layout,
                             panes,
                             timeout_secs,
+                            ephemeral,
                         } => std::process::exit(cli::host_start_cli(
                             layout.as_deref(),
                             &panes,
                             timeout_secs,
+                            ephemeral,
                         )),
                         HostCmd::Stop => std::process::exit(cli::host_stop_cli()),
+                        HostCmd::Log { message, source } => {
+                            std::process::exit(cli::host_log_cli(&source, &message))
+                        }
                         HostCmd::Status { json } => std::process::exit(cli::host_status_cli(json)),
                         HostCmd::Screenshot { pane, output } => {
                             std::process::exit(cli::host_screenshot_cli(pane, output.as_deref()))

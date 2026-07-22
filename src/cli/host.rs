@@ -126,7 +126,7 @@ fn placement_to_layout(spec: &PaneSpec) -> Result<&'static str, String> {
     }
 }
 
-/// The five pane/context-scoped `PLEXI_*` vars that must never leak into a
+/// The pane/context-scoped `PLEXI_*` vars that must never leak into a
 /// `host start`-launched process — reading them to decide what to launch
 /// would reintroduce the exact channel-leak trap this command exists to
 /// eliminate (see root CLAUDE.md Traps: "`PLEXI_CHANNEL` leaks into app
@@ -139,6 +139,10 @@ const STRIP_VARS: &[&str] = &[
     "PLEXI_CONTEXT_ROOT",
     "PLEXI_RUNNING",
     "PLEXI_CHANNEL",
+    // Never inherited: a pane inside an ephemeral host must not silently
+    // launch further ephemeral hosts. Re-added only for an explicit
+    // `host start --ephemeral`.
+    crate::workspace::EPHEMERAL_SESSION_ENV,
 ];
 
 /// Pure env-filter used to build the launched child's environment. Takes the
@@ -392,6 +396,7 @@ pub fn host_start_cli(
     layout_file: Option<&str>,
     panes: &[String],
     timeout_secs: Option<u64>,
+    ephemeral: bool,
 ) -> i32 {
     let specs = match collect_pane_specs(layout_file, panes) {
         Ok(s) => s,
@@ -479,9 +484,16 @@ pub fn host_start_cli(
         }
     }
 
-    let child_env = filter_child_env(std::env::vars().collect(), channel.as_deref());
+    let mut child_env = filter_child_env(std::env::vars().collect(), channel.as_deref());
+    if ephemeral {
+        // Hermetic session (`--ephemeral`): the launched host skips workspace
+        // restore on boot and workspace save on shutdown. The env var is the
+        // single switch, honored by `WorkspaceFile::load`/`save`
+        // (src/workspace/mod.rs).
+        child_env.push((crate::workspace::EPHEMERAL_SESSION_ENV.to_string(), "1".to_string()));
+    }
     log::info!(
-        "host_start: child env constructed — {} vars retained, PLEXI_CHANNEL={:?}",
+        "host_start: child env constructed — {} vars retained, PLEXI_CHANNEL={:?}, ephemeral={ephemeral}",
         child_env.len(),
         channel
     );
@@ -665,6 +677,66 @@ pub fn host_status_cli(json: bool) -> i32 {
         );
     }
     0
+}
+
+/// `plexi host log --source <tool> <message>` — write one info-level marker
+/// line into the running host's channel log via `AppRequest::LogMarker`.
+///
+/// Like every `host` subcommand it talks to the channel's `notify.sock`
+/// directly (derived from the running binary's own channel, see the module
+/// doc) — never through `PLEXI_SOCKET`, which is absent when a release gate
+/// runs from a plain terminal. Waits for the host's `{"ok":true}` ack so a
+/// nonzero exit reliably means the marker did not land.
+pub fn host_log_cli(source: &str, message: &str) -> i32 {
+    let channel = crate::config::build_channel();
+    let profile_dir = host_config_dir(channel.as_deref());
+    let socket_path = profile_dir.join("notify.sock");
+    let id = uuid::Uuid::new_v4();
+    let response_file = profile_dir
+        .join(format!("host-log-response-{id}.json"))
+        .to_string_lossy()
+        .into_owned();
+    log::info!(
+        "host_log:cli: channel={channel:?} source={source} message_chars={}",
+        message.chars().count()
+    );
+
+    let payload = serde_json::json!({
+        "type": "log_marker",
+        "source": source,
+        "message": message,
+        "response_file": response_file,
+    });
+    let mut stream = match UnixStream::connect(&socket_path) {
+        Ok(stream) => stream,
+        Err(e) => {
+            log::error!("host_log: could not connect to {socket_path:?}: {e}");
+            eprintln!(
+                "error: no Plexi host is running for this channel (socket {}): {e}",
+                socket_path.display()
+            );
+            return 1;
+        }
+    };
+    if let Err(e) = stream.write_all(format!("{payload}\n").as_bytes()) {
+        log::error!("host_log: could not send marker over {socket_path:?}: {e}");
+        eprintln!("error: could not send log marker: {e}");
+        return 1;
+    }
+
+    let response_path = std::path::PathBuf::from(&response_file);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if response_path.exists() {
+            let _ = std::fs::remove_file(&response_path);
+            return 0;
+        }
+        if Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for host log acknowledgement");
+            return 1;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// `plexi host screenshot [--pane <id>] [--output <path>]` — capture the
@@ -899,10 +971,15 @@ mod tests {
             ("PLEXI_CONTEXT_ROOT".to_string(), "/tmp".to_string()),
             ("PLEXI_RUNNING".to_string(), "1".to_string()),
             ("PLEXI_CHANNEL".to_string(), "beta".to_string()), // must be overridden, not inherited
+            (
+                crate::workspace::EPHEMERAL_SESSION_ENV.to_string(),
+                "1".to_string(), // must not cascade into later host starts
+            ),
             ("PATH".to_string(), "/usr/bin".to_string()),
         ];
         let env = filter_child_env(parent, Some("alpha"));
         let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+        assert_eq!(map.get(crate::workspace::EPHEMERAL_SESSION_ENV), None);
         assert_eq!(map.get("PLEXI_SOCKET"), None);
         assert_eq!(map.get("PLEXI_PANE_ID"), None);
         assert_eq!(map.get("PLEXI_CONTEXT_ID"), None);

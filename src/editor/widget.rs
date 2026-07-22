@@ -519,7 +519,7 @@ impl<'a> EditorWidget<'a> {
             self.view.scroll_to_x(caret_x);
         }
 
-        self.paint(ui, &font_id, rect, gutter_width, md_active, &image_rows);
+        self.paint(ui, id, &font_id, rect, gutter_width, md_active, &image_rows);
         EditorOutput {
             response,
             link_activation,
@@ -670,6 +670,7 @@ impl<'a> EditorWidget<'a> {
     fn paint(
         &mut self,
         ui: &Ui,
+        widget_id: egui::Id,
         font_id: &egui::FontId,
         rect: Rect,
         gutter_width: f32,
@@ -793,6 +794,31 @@ impl<'a> EditorWidget<'a> {
             }
 
             painter.galley(origin, galley.clone(), text_color);
+
+            // Semantic mirror of the painted text: the editor draws galleys
+            // directly (no egui text widgets), so without this the pane's
+            // accesskit tree — and therefore `plexi pane state` and the scene
+            // runner's `rendered_text_contains` evaluator — carries no
+            // rendered text at all. One node per visible rendered row, value
+            // = exactly what the galley shows this frame (including any
+            // Live Preview styling transforms), bounds = the painted rect.
+            // No-op when accesskit is off.
+            let rendered = galley.text();
+            if !rendered.is_empty() {
+                let node_id = egui::Id::new((widget_id, "editor_rendered_row", line));
+                let node_rect =
+                    Rect::from_min_size(egui::pos2(origin.x, top), galley.size());
+                ui.ctx().accesskit_node_builder(node_id, |node| {
+                    node.set_role(egui::accesskit::Role::Paragraph);
+                    node.set_value(rendered);
+                    node.set_bounds(egui::accesskit::Rect {
+                        x0: f64::from(node_rect.left()),
+                        y0: f64::from(node_rect.top()),
+                        x1: f64::from(node_rect.right()),
+                        y1: f64::from(node_rect.bottom()),
+                    });
+                });
+            }
 
             if self.active && line == caret.line {
                 let x = galley

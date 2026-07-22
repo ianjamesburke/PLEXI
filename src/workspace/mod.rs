@@ -79,8 +79,31 @@ fn workspace_path() -> PathBuf {
         .join("default.json")
 }
 
+/// Env switch for a hermetic host session, set by `plexi host start
+/// --ephemeral`. When present, [`WorkspaceFile::load`] restores nothing and
+/// [`WorkspaceFile::save`] persists nothing, so automated runs (scene
+/// runners, release gates) neither inherit nor clobber the channel's saved
+/// session. This is the sanctioned isolation affordance — gate any future
+/// automated-host workflow on the same variable instead of stashing
+/// `workspaces/default.json` by hand.
+pub const EPHEMERAL_SESSION_ENV: &str = "PLEXI_EPHEMERAL_SESSION";
+
+fn ephemeral_session() -> bool {
+    ephemeral_session_from(std::env::var_os(EPHEMERAL_SESSION_ENV).as_deref())
+}
+
+/// Pure predicate behind [`ephemeral_session`], testable without mutating
+/// process env: set (non-empty) means hermetic.
+fn ephemeral_session_from(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
+}
+
 impl WorkspaceFile {
     pub fn save(&self) -> io::Result<()> {
+        if ephemeral_session() {
+            log::info!("workspace_save: skipped (ephemeral session)");
+            return Ok(());
+        }
         let path = workspace_path();
         let temp_path = unique_temp_path(&path);
         let started = Instant::now();
@@ -122,6 +145,10 @@ impl WorkspaceFile {
     }
 
     pub fn load() -> Option<Self> {
+        if ephemeral_session() {
+            log::info!("workspace_load: skipped (ephemeral session)");
+            return None;
+        }
         let path = workspace_path();
         let data = match std::fs::read_to_string(&path) {
             Ok(d) => d,
@@ -249,6 +276,14 @@ mod tests {
         F: FnOnce(&mut File, &[u8]) -> io::Result<()>,
     {
         atomic_save(path, &unique_temp_path(path), bytes, write_temp)
+    }
+
+    #[test]
+    fn ephemeral_session_predicate_requires_nonempty_value() {
+        use std::ffi::OsStr;
+        assert!(!super::ephemeral_session_from(None));
+        assert!(!super::ephemeral_session_from(Some(OsStr::new(""))));
+        assert!(super::ephemeral_session_from(Some(OsStr::new("1"))));
     }
 
     #[test]

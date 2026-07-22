@@ -846,12 +846,32 @@ pub enum HostCmd {
         /// Seconds to wait for the host to confirm readiness (default 15)
         #[arg(long)]
         timeout_secs: Option<u64>,
+        /// Boot a hermetic session: skip workspace restore on start and skip
+        /// workspace save on shutdown. For automated runs (scene runners,
+        /// release gates) that must never see or clobber the channel's saved
+        /// session.
+        #[arg(long)]
+        ephemeral: bool,
     },
     /// Stop the running host for this channel.
     ///
     /// Sends a clean shutdown request first, falling back to SIGTERM if the
     /// host doesn't confirm exit in time.
     Stop,
+    /// Write one info-level marker line into the running host's channel log.
+    ///
+    /// For automated drivers (release gates, scene runners, CI) that must
+    /// leave start/finish summaries in `~/.plexi-<channel>/plexi.log` itself.
+    ///
+    /// Example: plexi host log --source editor_gate "gate finished passed=9 failed=0"
+    Log {
+        /// The marker text (flattened to one line in the log)
+        #[arg(allow_hyphen_values = true)]
+        message: String,
+        /// Short tool identity prefixed to the line
+        #[arg(long, default_value = "cli")]
+        source: String,
+    },
     /// Report whether this channel's host is running, its pid, socket path,
     /// and pane count.
     Status {
@@ -995,6 +1015,7 @@ pub enum PaneCmd {
         /// Pane id to send text to (from `plexi pane list`)
         pane_id: u64,
         /// Text to type into the pane (use `\n` for Enter)
+        #[arg(allow_hyphen_values = true)]
         text: String,
     },
     /// Print the id of the pane you are currently in.
@@ -1549,6 +1570,36 @@ mod tests {
         normalize_config_scope_aliases, AppCmd, Cli, Commands, ConfigCmd, ConfigScope, SecretCmd,
     };
     use clap::Parser;
+
+    #[test]
+    fn host_start_accepts_ephemeral_flag() {
+        let cli =
+            Cli::try_parse_from(["plexi", "host", "start", "--ephemeral", "--pane", "cwd=/tmp"])
+                .unwrap();
+        let Some(Commands::Host { cmd }) = cli.command else {
+            panic!("expected host command");
+        };
+        let super::HostCmd::Start { ephemeral, panes, .. } = cmd else {
+            panic!("expected host start command");
+        };
+        assert!(ephemeral);
+        assert_eq!(panes, ["cwd=/tmp"]);
+    }
+
+    #[test]
+    fn pane_send_accepts_leading_hyphen_text() {
+        // Markdown list markers ("- ") are routine `pane send` payloads;
+        // without allow_hyphen_values clap rejects them as unknown flags.
+        let cli = Cli::try_parse_from(["plexi", "pane", "send", "42", "- "]).unwrap();
+        let Some(Commands::Pane { cmd }) = cli.command else {
+            panic!("expected pane command");
+        };
+        let super::PaneCmd::Send { pane_id, text } = cmd else {
+            panic!("expected pane send command");
+        };
+        assert_eq!(pane_id, 42);
+        assert_eq!(text, "- ");
+    }
 
     #[test]
     fn global_socket_override_parses_after_subcommand() {
