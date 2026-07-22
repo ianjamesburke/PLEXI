@@ -664,11 +664,20 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
                             // handler consumed the key — surface a miss so
                             // driving agents don't assume the key acted.
                             if let Some(d) = v.get("disposition").and_then(|v| v.as_str()) {
-                                if d != "consumed" {
-                                    eprintln!(
+                                match d {
+                                    "consumed" => {}
+                                    // Routed into the focused text surface's real
+                                    // input queue; egui applies it next frame, so
+                                    // consumption is not knowable here — but this
+                                    // is the success path, not a miss.
+                                    "text_input" | "text_input_escape" => eprintln!(
+                                        "note: key routed to the pane's focused text \
+                                         surface (applied next frame)"
+                                    ),
+                                    _ => eprintln!(
                                         "note: key delivered but not consumed by the app \
                                          (disposition: {d})"
-                                    );
+                                    ),
                                 }
                             }
                             return 0;

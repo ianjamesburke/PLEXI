@@ -15,8 +15,14 @@ const OVERSCAN_LINES: usize = 1;
 pub struct ViewState {
     /// Vertical scroll offset in points (0 = top).
     pub scroll_y: f32,
+    /// Horizontal scroll offset in points (0 = left). Lines are laid out
+    /// unwrapped; this keeps the caret reachable on lines wider than the
+    /// viewport.
+    pub scroll_x: f32,
     /// Visible height in points.
     pub viewport_height: f32,
+    /// Visible width in points.
+    pub viewport_width: f32,
     /// Height of one line in points.
     pub line_height: f32,
 }
@@ -25,7 +31,9 @@ impl Default for ViewState {
     fn default() -> Self {
         Self {
             scroll_y: 0.0,
+            scroll_x: 0.0,
             viewport_height: 0.0,
+            viewport_width: 0.0,
             line_height: 16.0,
         }
     }
@@ -63,6 +71,20 @@ impl ViewState {
         self.scroll_y = self.scroll_y.clamp(0.0, max);
     }
 
+    /// Adjusts `scroll_x` minimally so a caret at horizontal offset `x`
+    /// (relative to the content origin) is visible, with a small margin.
+    pub fn scroll_to_x(&mut self, x: f32) {
+        const MARGIN: f32 = 8.0;
+        if self.viewport_width <= 0.0 {
+            return;
+        }
+        if x < self.scroll_x + MARGIN {
+            self.scroll_x = (x - MARGIN).max(0.0);
+        } else if x > self.scroll_x + self.viewport_width - MARGIN {
+            self.scroll_x = x - self.viewport_width + MARGIN;
+        }
+    }
+
     /// Adjusts `scroll_y` minimally so `line` is fully visible.
     pub fn scroll_to_line(&mut self, line: usize, line_count: usize) {
         let top = self.line_top(line);
@@ -82,9 +104,9 @@ mod tests {
 
     fn view() -> ViewState {
         ViewState {
-            scroll_y: 0.0,
             viewport_height: 100.0,
             line_height: 10.0,
+            ..ViewState::default()
         }
     }
 
@@ -130,6 +152,22 @@ mod tests {
         // Content shorter than viewport pins to 0.
         v.clamp_scroll(5);
         assert_eq!(v.scroll_y, 0.0);
+    }
+
+    #[test]
+    fn scroll_to_x_keeps_caret_horizontally_visible() {
+        let mut v = ViewState {
+            viewport_width: 100.0,
+            ..view()
+        };
+        v.scroll_to_x(50.0); // already visible
+        assert_eq!(v.scroll_x, 0.0);
+        v.scroll_to_x(200.0); // off the right edge
+        assert_eq!(v.scroll_x, 108.0);
+        v.scroll_to_x(20.0); // off the left edge
+        assert_eq!(v.scroll_x, 12.0);
+        v.scroll_to_x(0.0); // back to the start clamps at 0
+        assert_eq!(v.scroll_x, 0.0);
     }
 
     #[test]

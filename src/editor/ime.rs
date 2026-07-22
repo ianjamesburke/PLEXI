@@ -30,6 +30,7 @@ impl ImeState {
         self.preedit.as_deref()
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn is_composing(&self) -> bool {
         self.preedit.is_some()

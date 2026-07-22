@@ -1,6 +1,15 @@
 //! Built-in file-backed text editor pane.
+//!
+//! Thin adapter over the shared editor core (`src/editor/`): all editing —
+//! movement, selection, clipboard, undo/redo, IME, mouse placement, indent,
+//! smart backspace — flows through [`Document`] / [`EditorCommand`] via
+//! [`EditorWidget`]. This file owns only file/note loading, frontmatter,
+//! autosave, save errors, the find/replace bar, focus routing, and host
+//! command surface.
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
+use crate::editor::widget::EditorWidget;
+use crate::editor::{movement, Document, EditorCommand, ViewState};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -18,8 +27,9 @@ const FIND_BAR_FONT_SIZE: f32 = 13.0;
 
 struct FindBar {
     query: String,
-    /// Byte-offset positions of each match start in `content`.
-    matches: Vec<usize>,
+    replace: String,
+    /// Char-offset `(start, end)` ranges of each match in the document body.
+    matches: Vec<(usize, usize)>,
     /// Index into `matches` for the current (highlighted) match.
     current: usize,
     /// One-shot: claim the find input as this pane's focused surface on the
@@ -31,6 +41,7 @@ impl FindBar {
     fn new() -> Self {
         Self {
             query: String::new(),
+            replace: String::new(),
             matches: Vec::new(),
             current: 0,
             claim_focus: true,
@@ -42,13 +53,27 @@ impl FindBar {
         if self.query.is_empty() {
             return;
         }
-        let lower_content = content.to_lowercase();
-        let lower_query = self.query.to_lowercase();
-        let mut pos = 0;
-        while let Some(idx) = lower_content[pos..].find(&lower_query) {
-            let abs = pos + idx;
-            self.matches.push(abs);
-            pos = abs + lower_query.len().max(1);
+        // Case folding per char (first lowercase mapping) keeps the folded
+        // sequence the same length as the original, so match offsets are
+        // valid char offsets into `content`.
+        let fold = |s: &str| -> Vec<char> {
+            s.chars()
+                .map(|c| c.to_lowercase().next().unwrap_or(c))
+                .collect()
+        };
+        let haystack = fold(content);
+        let needle = fold(&self.query);
+        if needle.is_empty() || needle.len() > haystack.len() {
+            return;
+        }
+        let mut i = 0;
+        while i + needle.len() <= haystack.len() {
+            if haystack[i..i + needle.len()] == needle[..] {
+                self.matches.push((i, i + needle.len()));
+                i += needle.len();
+            } else {
+                i += 1;
+            }
         }
         if self.current >= self.matches.len() && !self.matches.is_empty() {
             self.current = self.matches.len() - 1;
@@ -72,11 +97,13 @@ impl FindBar {
 
 pub struct TextEditorApp {
     path: PathBuf,
-    /// Editable buffer. For notes this is the body only — the frontmatter
-    /// block is held in `note_header` and never shown in the editor.
-    content: String,
+    /// Editable document. For notes this holds the body only — the
+    /// frontmatter block is held in `note_header` and never shown.
+    doc: Document,
+    /// Viewport/scroll state for the editor widget.
+    view: ViewState,
     /// Raw frontmatter block (both `---` fences, trailing newline) for files
-    /// under the notes dir. Recomposed in front of `content` on save.
+    /// under the notes dir. Recomposed in front of the body on save.
     note_header: Option<String>,
     /// Display title parsed from `note_header` (empty when unset).
     note_title: String,
@@ -86,28 +113,10 @@ pub struct TextEditorApp {
     wants_close: bool,
     load_error: Option<String>,
     font_size: f32,
-    /// Whether the text cursor sat at the end of the buffer on the previous
-    /// rendered frame. Gates the down-arrow-appends-newline behavior: the
-    /// press that *moves* the cursor to the end must not also append.
-    cursor_was_at_end: bool,
-    /// Active find bar, or `None` when dismissed.
+    /// Active find/replace bar, or `None` when dismissed.
     find_bar: Option<FindBar>,
-    /// Pixel height of the text galley from the last rendered frame. Used to
-    /// keep the scroll region at least half a viewport taller than content,
-    /// so the cursor can always be centered when at the bottom of a long doc.
-    content_pixel_height: f32,
-    /// Set when a manually-handled key edit (Tab/Enter/smart-backspace) moves
-    /// the cursor. TextEdit's own scroll-to-cursor logic only fires for keys
-    /// it processes itself, so those edits need an explicit scroll on the
-    /// next frame to keep the cursor in view.
-    scroll_to_cursor_pending: bool,
-    primary_selection: [usize; 2],
-    scroll_y: f32,
-    visible_char_range: [usize; 2],
     editor_focused: bool,
     last_save_result: Option<String>,
-    undo_available: bool,
-    redo_available: bool,
     last_drop_result: Option<serde_json::Value>,
 }
 
@@ -118,13 +127,14 @@ impl TextEditorApp {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
             Err(e) => (String::new(), Some(e.to_string())),
         };
-        log::info!("TextEditorApp: opened {:?} ({} bytes)", path, raw.len());
+        log::info!("notes_editor: editor created for {:?} ({} bytes)", path, raw.len());
         let notes_dir = crate::config::config_dir().join("notes");
         let is_note = path.starts_with(&notes_dir);
         let (note_header, content, note_title) = split_note(is_note, raw);
         Self {
             path,
-            content,
+            doc: Document::new(&content),
+            view: ViewState::default(),
             note_header,
             note_title,
             is_note,
@@ -132,17 +142,9 @@ impl TextEditorApp {
             wants_close: false,
             load_error,
             font_size: FONT_SIZE_DEFAULT,
-            cursor_was_at_end: false,
             find_bar: None,
-            content_pixel_height: 0.0,
-            scroll_to_cursor_pending: false,
-            primary_selection: [0, 0],
-            scroll_y: 0.0,
-            visible_char_range: [0, 0],
             editor_focused: false,
             last_save_result: None,
-            undo_available: false,
-            redo_available: false,
             last_drop_result: None,
         }
     }
@@ -156,7 +158,7 @@ impl TextEditorApp {
         let (note_header, content, note_title) = split_note(true, raw);
         app.is_note = true;
         app.note_header = note_header;
-        app.content = content;
+        app.doc = Document::new(&content);
         app.note_title = note_title;
         app
     }
@@ -164,8 +166,8 @@ impl TextEditorApp {
     /// Full on-disk document: frontmatter (when held out) + editable body.
     fn composed(&self) -> String {
         match &self.note_header {
-            Some(header) => format!("{header}{}", self.content),
-            None => self.content.clone(),
+            Some(header) => format!("{header}{}", self.doc.text()),
+            None => self.doc.text(),
         }
     }
 
@@ -179,11 +181,15 @@ impl TextEditorApp {
         let updated = crate::notes::set_title_in_content(&self.composed(), title);
         let (note_header, content, note_title) = split_note(true, updated);
         self.note_header = note_header;
-        self.content = content;
+        if content != self.doc.text() {
+            // Title rewrites only touch the header in practice; rebuild the
+            // document (losing undo history) only if the body itself moved.
+            self.doc = Document::new(&content);
+        }
         self.note_title = note_title;
         self.last_edit = Some(Instant::now());
         log::info!(
-            "TextEditorApp: note title set to {:?} for {:?}",
+            "notes_editor: note title set to {:?} for {:?}",
             self.note_title,
             self.path
         );
@@ -196,7 +202,7 @@ impl TextEditorApp {
                     match std::fs::rename(&self.path, &new_path) {
                         Ok(()) => {
                             log::info!(
-                                "TextEditorApp: renamed note {:?} -> {:?}",
+                                "notes_editor: renamed note {:?} -> {:?}",
                                 self.path,
                                 new_path
                             );
@@ -204,7 +210,7 @@ impl TextEditorApp {
                         }
                         Err(e) => {
                             log::warn!(
-                                "TextEditorApp: failed to rename {:?} -> {:?}: {e}",
+                                "notes_editor: failed to rename {:?} -> {:?}: {e}",
                                 self.path,
                                 new_path
                             );
@@ -212,7 +218,7 @@ impl TextEditorApp {
                     }
                 } else if new_path.exists() && new_path != self.path {
                     log::warn!(
-                        "TextEditorApp: skipping rename, target already exists: {:?}",
+                        "notes_editor: skipping rename, target already exists: {:?}",
                         new_path
                     );
                 }
@@ -240,20 +246,30 @@ impl TextEditorApp {
         self.flush_with(Durability::Fast);
     }
 
+    /// Runs the debounced autosave when the last edit is old enough. Called
+    /// every rendered frame; extracted so tests can drive the race directly.
+    fn maybe_autosave(&mut self) {
+        if let Some(t) = self.last_edit {
+            if t.elapsed() >= DEBOUNCE {
+                self.autosave();
+            }
+        }
+    }
+
     fn flush_with(&mut self, durability: Durability) {
         // Empty content → delete the file rather than writing an empty document.
         if self.is_effectively_empty() {
             if self.path.exists() {
                 if let Err(e) = std::fs::remove_file(&self.path) {
                     log::warn!(
-                        "TextEditorApp: failed to delete empty note {:?}: {e}",
+                        "notes_editor: failed to delete empty note {:?}: {e}",
                         self.path
                     );
                     self.last_edit = Some(Instant::now());
                     self.last_save_result = Some(format!("error: {e}"));
                     return;
                 } else {
-                    log::info!("TextEditorApp: deleted empty note {:?}", self.path);
+                    log::info!("notes_editor: deleted empty note {:?}", self.path);
                     self.last_edit = None;
                 }
             } else {
@@ -280,8 +296,700 @@ impl TextEditorApp {
             Err(e) => {
                 self.last_edit = Some(Instant::now());
                 self.last_save_result = Some(format!("error: {e}"));
-                log::warn!("TextEditorApp: save failed for {:?}: {e}", self.path);
+                log::warn!("notes_editor: save failed for {:?}: {e}", self.path);
             }
+        }
+    }
+
+    /// Selects match `range` in the document and scrolls it into view.
+    /// Pure selection commands — never dirties the buffer.
+    fn select_match(&mut self, range: (usize, usize)) {
+        let start = movement::char_to_cursor(self.doc.buffer(), range.0);
+        let end = movement::char_to_cursor(self.doc.buffer(), range.1);
+        self.doc.apply(EditorCommand::SetCursor(start));
+        self.doc.apply(EditorCommand::ExtendTo(end));
+        let line_count = self.doc.buffer().line_count();
+        self.view.scroll_to_line(end.line, line_count);
+    }
+
+    /// Replaces the current match with the bar's replacement text through the
+    /// shared model (selection replace = one undoable transaction).
+    fn replace_current(&mut self) {
+        let Some(bar) = &mut self.find_bar else {
+            return;
+        };
+        let Some(&range) = bar.matches.get(bar.current) else {
+            return;
+        };
+        let replacement = bar.replace.clone();
+        self.select_match(range);
+        self.doc.apply(EditorCommand::InsertText(replacement));
+        self.last_edit = Some(Instant::now());
+        let text = self.doc.text();
+        if let Some(bar) = &mut self.find_bar {
+            bar.recompute(&text);
+        }
+        log::info!("notes_editor: replaced current find match");
+    }
+
+    /// Replaces every match, back to front so earlier offsets stay valid.
+    fn replace_all(&mut self) {
+        let Some(bar) = &mut self.find_bar else {
+            return;
+        };
+        if bar.matches.is_empty() {
+            return;
+        }
+        let replacement = bar.replace.clone();
+        let ranges: Vec<(usize, usize)> = bar.matches.iter().copied().rev().collect();
+        let count = ranges.len();
+        for range in ranges {
+            self.select_match(range);
+            self.doc
+                .apply(EditorCommand::InsertText(replacement.clone()));
+        }
+        self.last_edit = Some(Instant::now());
+        let text = self.doc.text();
+        if let Some(bar) = &mut self.find_bar {
+            bar.recompute(&text);
+        }
+        log::info!("notes_editor: replace-all rewrote {count} matches");
+    }
+}
+
+/// Split a note document into its raw frontmatter block (kept out of the
+/// editable buffer), the body, and the display title. Non-note files and
+/// notes without a frontmatter block pass through unchanged.
+fn split_note(is_note: bool, raw: String) -> (Option<String>, String, String) {
+    if !is_note {
+        return (None, raw, String::new());
+    }
+    if let Some(rest) = raw.strip_prefix("---\n") {
+        if let Some(end) = rest.find("\n---\n") {
+            // "---\n" + header + "\n---\n", plus any blank lines between the
+            // fence and the body — captures write "---\n\n" and that leading
+            // blank line must not render as dead space under the title bar.
+            let mut header_end = 4 + end + 5;
+            while raw[header_end..].starts_with('\n') {
+                header_end += 1;
+            }
+            let header = raw[..header_end].to_string();
+            let body = raw[header_end..].to_string();
+            let title = crate::notes::parse_note(&raw).0.title.unwrap_or_default();
+            return (Some(header), body, title);
+        }
+    }
+    (None, raw, String::new())
+}
+
+/// A note is empty when it has no content at all, or — for files under
+/// `notes_dir` — when only capture frontmatter remains (scratch/quick notes the
+/// user never typed into). Empty notes are deleted instead of saved.
+fn content_is_effectively_empty(path: &Path, notes_dir: &Path, content: &str) -> bool {
+    if content.is_empty() {
+        return true;
+    }
+    path.starts_with(notes_dir) && crate::notes::parse_note(content).1.trim().is_empty()
+}
+
+pub(crate) fn note_path_identity(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+
+    let path = normalize_lexically(path);
+    let Some(parent) = path.parent() else {
+        return path;
+    };
+    match parent.canonicalize() {
+        Ok(parent) => path
+            .file_name()
+            .map(|name| parent.join(name))
+            .unwrap_or(path),
+        Err(_) => path,
+    }
+}
+
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+/// Whether an atomic note write fsyncs before the rename.
+#[derive(Clone, Copy, PartialEq)]
+enum Durability {
+    /// fsync the temp file before renaming — survives power loss.
+    Fsync,
+    /// Skip fsync — still atomic (rename), but durability is deferred.
+    /// For debounced autosaves on the render thread, where an APFS fsync
+    /// (1-10ms) can land exactly on the next keystroke.
+    Fast,
+}
+
+/// Convert a note title into a safe lowercase filename slug (no `.md` suffix).
+/// Non-alphanumeric characters become `-`; leading/trailing and consecutive
+/// dashes are collapsed; falls back to `"note"` for an all-symbol title.
+fn slugify_title(title: &str) -> String {
+    let slug: String = title
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    // Collapse runs of dashes and trim edges.
+    let slug = slug
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        "note".to_string()
+    } else {
+        slug
+    }
+}
+
+fn write_note_atomically(path: &Path, bytes: &[u8], durability: Durability) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("note");
+    let temp_path = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+
+    let write_result = (|| {
+        let mut temp_file = std::fs::File::create(&temp_path)?;
+        temp_file.write_all(bytes)?;
+        if durability == Durability::Fsync {
+            temp_file.sync_all()?;
+        }
+        drop(temp_file);
+        std::fs::rename(&temp_path, path)
+    })();
+
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    write_result
+}
+
+impl App for TextEditorApp {
+    #[cfg(test)]
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn type_id(&self) -> &'static str {
+        "text-editor"
+    }
+
+    fn display_name(&self) -> String {
+        self.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "text-editor".to_string())
+    }
+
+    fn keyboard_capture(&self) -> bool {
+        false
+    }
+
+    fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
+        if input.key_pressed(egui::Key::S)
+            && input
+                .modifiers()
+                .matches_logically(egui::Modifiers::COMMAND)
+        {
+            self.flush();
+            return KeyDisposition::Consumed;
+        }
+        // Cmd+F: open find bar (or re-focus if already open).
+        if input.key_pressed(egui::Key::F)
+            && input
+                .modifiers()
+                .matches_logically(egui::Modifiers::COMMAND)
+        {
+            log::info!("notes_editor: Cmd+F — opening find bar");
+            match &mut self.find_bar {
+                Some(bar) => bar.claim_focus = true,
+                None => {
+                    let mut bar = FindBar::new();
+                    bar.recompute(&self.doc.text());
+                    self.find_bar = Some(bar);
+                }
+            }
+            return KeyDisposition::Consumed;
+        }
+
+        if let Some(bar) = &mut self.find_bar {
+            // Escape: close the find bar.
+            if input.key_pressed(egui::Key::Escape) {
+                log::info!("notes_editor: Escape — closing find bar");
+                self.find_bar = None;
+                return KeyDisposition::Consumed;
+            }
+            // Enter: next match. Shift+Enter: previous match.
+            if input.key_pressed(egui::Key::Enter) {
+                let forward = !input.modifiers().shift;
+                bar.advance(forward);
+                if let Some(&range) = bar.matches.get(bar.current) {
+                    self.select_match(range);
+                }
+                return KeyDisposition::Consumed;
+            }
+        }
+
+        KeyDisposition::Passthrough
+    }
+
+    fn adjust_font_size(&mut self, delta: f32) {
+        self.font_size = (self.font_size + delta).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
+        log::info!("notes_editor: font_size -> {}", self.font_size);
+    }
+
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &AppRenderContext<'_>,
+        _pending_click: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        let colors = ctx.colors;
+
+        if let Some(err) = &self.load_error {
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("Failed to open file: {err}"))
+                        .size(crate::ui::style::TEXT_BODY)
+                        .color(colors.danger),
+                );
+            });
+            return;
+        }
+
+        // Fill only the remaining rect, not `max_rect()`: when this editor
+        // overtakes another pane, `app_pane::render` has already allocated the
+        // overtake bar above us, and filling max_rect would paint over it —
+        // leaving an invisible bar-sized gap. Matches the terminal pane
+        // background so note panes and terminals read as the same surface.
+        ui.painter()
+            .rect_filled(ui.available_rect_before_wrap(), 0.0, colors.terminal_bg);
+
+        ui.visuals_mut().extreme_bg_color = colors.terminal_bg;
+        ui.visuals_mut().override_text_color = Some(colors.text_primary);
+
+        // Notes show their frontmatter title in a header bar styled exactly
+        // like the terminal pane name bar (same height, fill, and centered dim
+        // text — whether the title is custom or the file-name fallback). The
+        // YAML block itself is held out of the buffer and never rendered.
+        if self.is_note {
+            let title = if self.note_title.is_empty() {
+                self.path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "untitled".to_string())
+            } else {
+                self.note_title.clone()
+            };
+            let bar_rect = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), NOTE_HEADER_BAR_HEIGHT),
+            );
+            ui.advance_cursor_after_rect(bar_rect);
+            ui.painter()
+                .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
+            // A real label (not painter text) so the title stays in the
+            // accessibility tree for UI-harness queries.
+            let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
+            bar_ui.centered_and_justified(|ui| {
+                ui.label(
+                    egui::RichText::new(title)
+                        .size(NOTE_HEADER_FONT_SIZE)
+                        .color(colors.text_dim),
+                );
+            });
+            ui.add_space(crate::ui::style::SPACE_XS);
+        }
+
+        let te_id = egui::Id::new("text_editor_content").with(&self.path);
+        // The editor is this pane's default text surface (stint 0429): the
+        // post-frame reconciler grants it focus while the pane owns input.
+        crate::ui::focus::register_default_text_surface(
+            ui.ctx(),
+            crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+            te_id,
+        );
+
+        // The memory entry is the production focus authority used by keyboard
+        // dispatch and survives CLI focus while the OS window is blurred.
+        let editor_focused = ui.ctx().memory(|memory| memory.has_focus(te_id));
+        let find_input_id = egui::Id::new("text_editor_find_input").with(&self.path);
+        let replace_input_id = egui::Id::new("text_editor_replace_input").with(&self.path);
+        let find_focused = self.find_bar.is_some()
+            && ui.ctx().memory(|memory| {
+                memory.has_focus(find_input_id) || memory.has_focus(replace_input_id)
+            });
+
+        // App-level shortcuts, consumed out of the frame's event queue before
+        // the editor widget (which reads the same queue) can see them. Gated
+        // on this pane's surfaces owning input so an unfocused notes pane
+        // never steals another pane's keys.
+        if editor_focused || find_focused {
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
+                self.flush();
+            }
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
+                log::info!("notes_editor: Cmd+F — opening find bar");
+                match &mut self.find_bar {
+                    Some(bar) => bar.claim_focus = true,
+                    None => {
+                        let mut bar = FindBar::new();
+                        bar.recompute(&self.doc.text());
+                        self.find_bar = Some(bar);
+                    }
+                }
+            }
+            if self.find_bar.is_some() {
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                    log::info!("notes_editor: Escape — closing find bar");
+                    self.find_bar = None;
+                } else {
+                    let back =
+                        ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter));
+                    let forward =
+                        ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                    if back || forward {
+                        if let Some(bar) = &mut self.find_bar {
+                            bar.advance(forward);
+                            if let Some(&range) = bar.matches.get(bar.current) {
+                                self.select_match(range);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // When the find bar is open, reserve its height at the bottom before
+        // laying out the editor so it doesn't overlap the bar.
+        let find_bar_height = if self.find_bar.is_some() {
+            FIND_BAR_HEIGHT
+        } else {
+            0.0
+        };
+        let editor_height = (ui.available_height() - find_bar_height).max(1.0);
+        let editor_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), editor_height),
+        );
+
+        let (highlights, current_highlight) = match &self.find_bar {
+            Some(bar) => (bar.matches.clone(), Some(bar.current)),
+            None => (Vec::new(), None),
+        };
+        let revision_before = self.doc.revision();
+        // Same 4px horizontal text inset the old TextEdit margin provided.
+        let mut editor_ui = ui.new_child(
+            egui::UiBuilder::new().max_rect(editor_rect.shrink2(egui::vec2(4.0, 0.0))),
+        );
+        editor_ui.visuals_mut().override_text_color = Some(colors.text_primary);
+        editor_ui.visuals_mut().selection.stroke.color = colors.accent;
+        let response = EditorWidget::new(&mut self.doc, &mut self.view)
+            .id(te_id)
+            .active(editor_focused)
+            .font_size(self.font_size)
+            .highlights(
+                highlights,
+                current_highlight,
+                colors.warning.gamma_multiply(0.45),
+                colors.accent.gamma_multiply(0.55),
+            )
+            .show(&mut editor_ui);
+        ui.advance_cursor_after_rect(editor_rect);
+
+        // Clicking the editor while the find input holds focus claims the
+        // editor surface back (the reconciler grants it post-frame).
+        if response.clicked() && !editor_focused {
+            crate::ui::focus::claim_text_surface(
+                ui.ctx(),
+                crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                te_id,
+            );
+        }
+
+        if self.doc.revision() != revision_before {
+            self.last_edit = Some(Instant::now());
+            let text = self.doc.text();
+            if let Some(bar) = &mut self.find_bar {
+                bar.recompute(&text);
+            }
+        }
+
+        if editor_focused != self.editor_focused {
+            log::info!("notes_editor: focus transition focused={editor_focused}");
+            self.editor_focused = editor_focused;
+        }
+
+        self.maybe_autosave();
+
+        // Render the find/replace bar below the editor.
+        if self.find_bar.is_some() {
+            let find_rect = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), FIND_BAR_HEIGHT),
+            );
+            ui.advance_cursor_after_rect(find_rect);
+
+            ui.painter()
+                .rect_filled(find_rect, 0.0, colors.pane_header_bg());
+
+            let mut replace_one = false;
+            let mut replace_every = false;
+            let mut find_ui = ui.new_child(egui::UiBuilder::new().max_rect(find_rect));
+            find_ui.horizontal_centered(|ui| {
+                let Some(bar) = &mut self.find_bar else {
+                    return;
+                };
+                ui.add_space(8.0);
+
+                let input_width = ((find_rect.width() - 260.0) / 2.0).max(60.0);
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut bar.query)
+                        .id(find_input_id)
+                        .desired_width(input_width)
+                        .font(egui::FontId::proportional(FIND_BAR_FONT_SIZE))
+                        .hint_text("Find…")
+                        .frame(egui::Frame::NONE),
+                );
+
+                crate::ui::focus::register_text_surface(
+                    ui.ctx(),
+                    crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                    find_input_id,
+                );
+                if bar.claim_focus {
+                    crate::ui::focus::claim_text_surface(
+                        ui.ctx(),
+                        crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                        find_input_id,
+                    );
+                    bar.claim_focus = false;
+                }
+
+                let query_changed = response.changed();
+
+                ui.add_space(8.0);
+                let count_text = if bar.matches.is_empty() {
+                    if bar.query.is_empty() {
+                        String::new()
+                    } else {
+                        "No results".to_string()
+                    }
+                } else {
+                    format!("{} / {}", bar.current + 1, bar.matches.len())
+                };
+                ui.label(
+                    egui::RichText::new(count_text)
+                        .size(FIND_BAR_FONT_SIZE)
+                        .color(colors.text_dim),
+                );
+
+                ui.add_space(8.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut bar.replace)
+                        .id(replace_input_id)
+                        .desired_width(input_width)
+                        .font(egui::FontId::proportional(FIND_BAR_FONT_SIZE))
+                        .hint_text("Replace…")
+                        .frame(egui::Frame::NONE),
+                );
+                // Registered under the pane so the post-frame focus
+                // reconciler keeps a clicked replace field focused instead of
+                // snapping focus back to the editor.
+                crate::ui::focus::register_text_surface(
+                    ui.ctx(),
+                    crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
+                    replace_input_id,
+                );
+                let has_matches = !bar.matches.is_empty();
+                replace_one = ui
+                    .add_enabled(has_matches, egui::Button::new("Replace"))
+                    .clicked();
+                replace_every = ui
+                    .add_enabled(has_matches, egui::Button::new("All"))
+                    .clicked();
+
+                if query_changed {
+                    let text = self.doc.text();
+                    if let Some(bar) = &mut self.find_bar {
+                        bar.recompute(&text);
+                        log::info!("notes_editor: find query changed — {} matches", bar.matches.len());
+                    }
+                }
+            });
+            if replace_one {
+                self.replace_current();
+            }
+            if replace_every {
+                self.replace_all();
+            }
+        }
+    }
+
+    fn wants_close(&self) -> bool {
+        self.wants_close
+    }
+
+    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+        vec![]
+    }
+
+    fn serialize_state(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "path": self.path.to_string_lossy() }))
+    }
+
+    fn restore_state(&mut self, state: &serde_json::Value) {
+        if let Some(p) = state.get("path").and_then(|v| v.as_str()) {
+            let new_path = PathBuf::from(p);
+            if note_path_identity(&new_path) != note_path_identity(&self.path) {
+                log::info!(
+                    "notes_editor: switching from {:?} to {:?}",
+                    self.path,
+                    new_path
+                );
+                self.flush();
+                let (raw, load_error) = match std::fs::read_to_string(&new_path) {
+                    Ok(s) => (s, None),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
+                    Err(e) => (String::new(), Some(e.to_string())),
+                };
+                let notes_dir = crate::config::config_dir().join("notes");
+                self.is_note = new_path.starts_with(&notes_dir);
+                let (note_header, content, note_title) = split_note(self.is_note, raw);
+                self.path = new_path;
+                self.doc = Document::new(&content);
+                self.view = ViewState::default();
+                self.note_header = note_header;
+                self.note_title = note_title;
+                self.load_error = load_error;
+                self.last_edit = None;
+                self.find_bar = None;
+            }
+        }
+    }
+
+    fn rename_seed(&self) -> Option<String> {
+        self.is_note.then(|| self.note_title.clone())
+    }
+
+    fn on_pane_renamed(&mut self, name: &str) {
+        self.apply_note_title(name);
+    }
+
+    fn semantic_state(&self) -> Option<serde_json::Value> {
+        let sem = self.doc.semantic_state(self.view.scroll_y);
+        let buffer = self.doc.buffer();
+        let anchor_char = movement::cursor_to_char(buffer, sem.selection.anchor);
+        let caret_char = movement::cursor_to_char(buffer, sem.cursor);
+        let cursor = movement::clamp(buffer, sem.cursor);
+        let line_start_char = buffer.line_to_char(cursor.line);
+        let active = movement::line_text(buffer, cursor.line);
+        let line_end_char = line_start_char + active.chars().count();
+        let line_count = buffer.line_count();
+        let visible = self.view.visible_lines(line_count);
+        let visible_start = if visible.start < line_count {
+            buffer.line_to_char(visible.start)
+        } else {
+            buffer.len()
+        };
+        let visible_end = if visible.end < line_count {
+            buffer.line_to_char(visible.end)
+        } else {
+            buffer.len()
+        };
+        let visible_source = buffer.slice(visible_start, visible_end);
+        let links = markdown_targets(&visible_source, false);
+        let images = markdown_targets(&visible_source, true);
+        Some(serde_json::json!({
+            "kind": "notes_editor",
+            "source_text": sem.text,
+            "primary_selection": {"anchor": anchor_char, "caret": caret_char},
+            "caret": caret_char,
+            "scroll": {"y": sem.scroll_y},
+            "dirty": self.last_edit.is_some(),
+            "last_save_result": self.last_save_result,
+            "active_markdown_block": {"start": line_start_char, "end": line_end_char, "source": active, "granularity": "source_line"},
+            "visible_link_targets": links,
+            "visible_images": images,
+            "undo_available": sem.can_undo,
+            "redo_available": sem.can_redo,
+            "focused": self.editor_focused,
+            "last_drop_result": self.last_drop_result,
+            "path": self.path,
+        }))
+    }
+
+    fn drop_file(&mut self, path_or_url: &str) -> Result<serde_json::Value, String> {
+        let source_kind = if path_or_url.contains("://") {
+            "url"
+        } else {
+            "file"
+        };
+        self.last_drop_result = Some(serde_json::json!({
+            "result": "rejected",
+            "source_kind": source_kind,
+        }));
+        Err("Notes does not yet accept file drops".to_string())
+    }
+}
+
+fn markdown_targets(content: &str, images: bool) -> Vec<String> {
+    let prefix = if images { "![" } else { "[" };
+    content
+        .match_indices(prefix)
+        .filter_map(|(start, _)| {
+            if !images && start > 0 && content.as_bytes()[start - 1] == b'!' {
+                return None;
+            }
+            let rest = &content[start + prefix.len()..];
+            let open = rest.find("](")? + start + prefix.len() + 2;
+            let end = content[open..].find(')')? + open;
+            Some(content[open..end].to_string())
+        })
+        .collect()
+}
+
+impl Drop for TextEditorApp {
+    fn drop(&mut self) {
+        // Save unsaved edits; also clean up empty notes (flush deletes them).
+        if self.last_edit.is_some() || self.is_effectively_empty() {
+            self.flush();
         }
     }
 }
@@ -289,6 +997,7 @@ impl TextEditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::Cursor;
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("{name}-{}-{}", std::process::id(), unique_suffix()))
@@ -337,9 +1046,26 @@ mod tests {
         let path = dir.join("unicode.md");
         std::fs::write(&path, "😀 café\nsecond").unwrap();
         let mut app = TextEditorApp::new_for_test_note(path);
-        app.primary_selection = [6, 6];
+        app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 6)));
         let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
         assert_eq!(state["active_markdown_block"]["source"], "😀 café");
+        assert_eq!(state["caret"], 6);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn semantic_state_reports_multiline_selection_as_char_offsets() {
+        let dir = unique_temp_dir("notes-semantic-multiline");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("multi.md");
+        std::fs::write(&path, "one\ntwo\nthree").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+        app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 2)));
+        app.doc.apply(EditorCommand::ExtendTo(Cursor::new(2, 3)));
+        let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
+        assert_eq!(state["primary_selection"]["anchor"], 2);
+        assert_eq!(state["primary_selection"]["caret"], 11);
+        assert_eq!(app.doc.selected_text(), "e\ntwo\nthr");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -445,15 +1171,21 @@ mod tests {
     }
 
     #[test]
-    fn find_bar_recompute_finds_case_insensitive_matches() {
+    fn find_bar_recompute_finds_case_insensitive_char_ranges() {
         let mut bar = FindBar::new();
         bar.query = "hello".to_string();
         let content = "Hello world, hello there, HELLO!";
         bar.recompute(content);
-        assert_eq!(bar.matches.len(), 3);
-        assert_eq!(bar.matches[0], 0);
-        assert_eq!(bar.matches[1], 13);
-        assert_eq!(bar.matches[2], 26);
+        assert_eq!(
+            bar.matches,
+            vec![(0, 5), (13, 18), (26, 31)],
+            "char-offset ranges for each case-insensitive match"
+        );
+        // Unicode before a match: offsets are chars, not bytes.
+        let mut bar = FindBar::new();
+        bar.query = "x".to_string();
+        bar.recompute("émoji 😀 x");
+        assert_eq!(bar.matches, vec![(8, 9)]);
     }
 
     #[test]
@@ -482,6 +1214,137 @@ mod tests {
     }
 
     #[test]
+    fn replace_current_and_replace_all_route_through_document() {
+        let dir = unique_temp_dir("notes-replace");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("replace.md");
+        std::fs::write(&path, "foo bar foo baz foo").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut bar = FindBar::new();
+        bar.query = "foo".to_string();
+        bar.replace = "qux".to_string();
+        bar.recompute(&app.doc.text());
+        app.find_bar = Some(bar);
+
+        app.replace_current();
+        assert_eq!(app.doc.text(), "qux bar foo baz foo");
+        assert!(app.last_edit.is_some(), "replace marks the buffer dirty");
+        // Each replace is undoable through the shared history.
+        app.doc.apply(EditorCommand::Undo);
+        assert_eq!(app.doc.text(), "foo bar foo baz foo");
+        if let Some(bar) = &mut app.find_bar {
+            let text = "foo bar foo baz foo".to_string();
+            bar.recompute(&text);
+        }
+
+        app.replace_all();
+        assert_eq!(app.doc.text(), "qux bar qux baz qux");
+        assert!(app.find_bar.as_ref().unwrap().matches.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn select_match_selects_without_dirtying_the_buffer() {
+        let dir = unique_temp_dir("notes-select-match");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sel.md");
+        std::fs::write(&path, "alpha beta gamma").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+        let before = app.doc.revision();
+        app.select_match((6, 10));
+        assert_eq!(app.doc.selected_text(), "beta");
+        assert_eq!(app.doc.revision(), before, "selection is not an edit");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn autosave_debounce_only_fires_after_the_delay() {
+        let dir = unique_temp_dir("notes-autosave-debounce");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("debounce.md");
+        std::fs::write(&path, "seed").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path.clone());
+        app.doc.apply(EditorCommand::Move {
+            movement: crate::editor::commands::Movement::DocEnd,
+            extend: false,
+        });
+        app.doc.apply(EditorCommand::InsertText(" more".into()));
+        app.last_edit = Some(Instant::now());
+
+        // Within the debounce window: no write happens.
+        app.maybe_autosave();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed");
+        assert!(app.last_edit.is_some());
+
+        // A keystroke mid-window pushes the deadline out (autosave race:
+        // the save must reflect the latest edit, never a stale buffer).
+        app.doc.apply(EditorCommand::InsertText("!".into()));
+        app.last_edit = Some(Instant::now() - DEBOUNCE);
+        app.maybe_autosave();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed more!");
+        assert!(app.last_edit.is_none(), "successful save clears dirty");
+        assert_eq!(app.last_save_result.as_deref(), Some("ok"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn save_failure_surfaces_error_and_stays_dirty() {
+        let dir = unique_temp_dir("notes-save-failure");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Parent "note.md" is a *file*, so create_dir_all for the child's
+        // parent fails and the save errors.
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, "in the way").unwrap();
+        let path = blocker.join("child.md");
+        let mut app = TextEditorApp::new(path);
+        app.doc.apply(EditorCommand::InsertText("content".into()));
+        app.last_edit = Some(Instant::now() - DEBOUNCE);
+        app.maybe_autosave();
+        assert!(
+            app.last_save_result
+                .as_deref()
+                .is_some_and(|r| r.starts_with("error:")),
+            "failed save surfaces an error result, got {:?}",
+            app.last_save_result
+        );
+        assert!(app.last_edit.is_some(), "failed save stays dirty for retry");
+        // Silence the Drop-flush retry against the same broken path.
+        app.doc.apply(EditorCommand::Undo);
+        app.last_edit = None;
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reopen_round_trips_body_and_frontmatter() {
+        let dir = unique_temp_dir("notes-reopen");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(
+            &path,
+            "---\ntitle: \"Trip\"\nsource: \"scratchpad\"\n---\npacking list\n",
+        )
+        .unwrap();
+        {
+            let mut app = TextEditorApp::new_for_test_note(path.clone());
+            assert_eq!(app.doc.text(), "packing list\n");
+            app.doc.apply(EditorCommand::Move {
+                movement: crate::editor::commands::Movement::DocEnd,
+                extend: false,
+            });
+            app.doc.apply(EditorCommand::InsertText("tent\n".into()));
+            app.last_edit = Some(Instant::now());
+            app.flush();
+        }
+        let reopened = TextEditorApp::new_for_test_note(path.clone());
+        assert_eq!(reopened.doc.text(), "packing list\ntent\n");
+        assert_eq!(reopened.note_title, "Trip");
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .starts_with("---\ntitle: \"Trip\""));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn slugify_basic() {
         assert_eq!(slugify_title("My Note Title"), "my-note-title");
     }
@@ -494,915 +1357,5 @@ mod tests {
     #[test]
     fn slugify_empty_falls_back_to_note() {
         assert_eq!(slugify_title("---"), "note");
-    }
-
-    #[test]
-    fn spaces_before_cursor_pure_four_spaces() {
-        // "    " with cursor at end → 4 spaces → returns 4
-        assert_eq!(spaces_before_cursor("    ", 4), 4);
-    }
-
-    #[test]
-    fn spaces_before_cursor_two_spaces() {
-        assert_eq!(spaces_before_cursor("  ", 2), 2);
-    }
-
-    #[test]
-    fn spaces_before_cursor_mixed_line_returns_zero() {
-        // "foo   " — prefix has content, not pure indent, so no dedent
-        assert_eq!(spaces_before_cursor("foo   ", 6), 0);
-    }
-
-    #[test]
-    fn spaces_before_cursor_after_newline() {
-        // second line is "    " pure indent
-        assert_eq!(spaces_before_cursor("line\n    ", 9), 4);
-    }
-
-    #[test]
-    fn leading_whitespace_at_first_line() {
-        let s = "    hello";
-        assert_eq!(leading_whitespace_at(s, 0), "    ");
-    }
-
-    #[test]
-    fn leading_whitespace_at_second_line() {
-        let s = "line1\n  indented";
-        // char index 6 = 'i' in "indented"
-        assert_eq!(leading_whitespace_at(s, 6), "  ");
-    }
-
-    #[test]
-    fn leading_whitespace_at_empty_line() {
-        let s = "a\n\nb";
-        assert_eq!(leading_whitespace_at(s, 2), "");
-    }
-
-    #[test]
-    fn leading_whitespace_at_mid_word() {
-        let s = "    hello world";
-        // char 8 = 'o' in "hello"; line start is col 0 with 4-space indent
-        assert_eq!(leading_whitespace_at(s, 8), "    ");
-    }
-}
-
-/// Split a note document into its raw frontmatter block (kept out of the
-/// editable buffer), the body, and the display title. Non-note files and
-/// notes without a frontmatter block pass through unchanged.
-fn split_note(is_note: bool, raw: String) -> (Option<String>, String, String) {
-    if !is_note {
-        return (None, raw, String::new());
-    }
-    if let Some(rest) = raw.strip_prefix("---\n") {
-        if let Some(end) = rest.find("\n---\n") {
-            // "---\n" + header + "\n---\n", plus any blank lines between the
-            // fence and the body — captures write "---\n\n" and that leading
-            // blank line must not render as dead space under the title bar.
-            let mut header_end = 4 + end + 5;
-            while raw[header_end..].starts_with('\n') {
-                header_end += 1;
-            }
-            let header = raw[..header_end].to_string();
-            let body = raw[header_end..].to_string();
-            let title = crate::notes::parse_note(&raw).0.title.unwrap_or_default();
-            return (Some(header), body, title);
-        }
-    }
-    (None, raw, String::new())
-}
-
-/// A note is empty when it has no content at all, or — for files under
-/// `notes_dir` — when only capture frontmatter remains (scratch/quick notes the
-/// user never typed into). Empty notes are deleted instead of saved.
-fn content_is_effectively_empty(path: &Path, notes_dir: &Path, content: &str) -> bool {
-    if content.is_empty() {
-        return true;
-    }
-    path.starts_with(notes_dir) && crate::notes::parse_note(content).1.trim().is_empty()
-}
-
-pub(crate) fn note_path_identity(path: &Path) -> PathBuf {
-    if let Ok(canonical) = path.canonicalize() {
-        return canonical;
-    }
-
-    let path = normalize_lexically(path);
-    let Some(parent) = path.parent() else {
-        return path;
-    };
-    match parent.canonicalize() {
-        Ok(parent) => path
-            .file_name()
-            .map(|name| parent.join(name))
-            .unwrap_or(path),
-        Err(_) => path,
-    }
-}
-
-fn normalize_lexically(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    normalized.push(component.as_os_str());
-                }
-            }
-            _ => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
-}
-
-/// Whether an atomic note write fsyncs before the rename.
-#[derive(Clone, Copy, PartialEq)]
-enum Durability {
-    /// fsync the temp file before renaming — survives power loss.
-    Fsync,
-    /// Skip fsync — still atomic (rename), but durability is deferred.
-    /// For debounced autosaves on the render thread, where an APFS fsync
-    /// (1-10ms) can land exactly on the next keystroke.
-    Fast,
-}
-
-/// Convert a note title into a safe lowercase filename slug (no `.md` suffix).
-/// Non-alphanumeric characters become `-`; leading/trailing and consecutive
-/// dashes are collapsed; falls back to `"note"` for an all-symbol title.
-/// Converts a char index (as returned by `CCursor.index`) to a byte offset
-/// suitable for `String::insert_str`. Returns `content.len()` when out of range.
-fn char_to_byte(content: &str, char_idx: usize) -> usize {
-    content
-        .char_indices()
-        .nth(char_idx)
-        .map(|(b, _)| b)
-        .unwrap_or(content.len())
-}
-
-/// Returns the number of leading spaces on the current line immediately before
-/// `char_idx`, capped at 4. Used for smart backspace dedent.
-fn spaces_before_cursor(content: &str, char_idx: usize) -> usize {
-    let byte_idx = char_to_byte(content, char_idx);
-    let line_start = content[..byte_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let before = &content[line_start..byte_idx];
-    // Count trailing spaces (the ones immediately preceding cursor on this line).
-    let spaces = before.chars().rev().take_while(|c| *c == ' ').count();
-    // Only dedent if those spaces are ALL that's on the line prefix (pure indent).
-    if before.chars().all(|c| c == ' ') {
-        spaces.min(4)
-    } else {
-        0
-    }
-}
-
-/// Returns the leading whitespace (spaces/tabs) of the line that contains
-/// the char at `char_idx`. Used for auto-indent on Enter.
-fn leading_whitespace_at(content: &str, char_idx: usize) -> String {
-    let byte_idx = char_to_byte(content, char_idx);
-    let line_start = content[..byte_idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    content[line_start..]
-        .chars()
-        .take_while(|c| *c == ' ' || *c == '\t')
-        .collect()
-}
-
-fn slugify_title(title: &str) -> String {
-    let slug: String = title
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    // Collapse runs of dashes and trim edges.
-    let slug = slug
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    if slug.is_empty() {
-        "note".to_string()
-    } else {
-        slug
-    }
-}
-
-fn write_note_atomically(path: &Path, bytes: &[u8], durability: Durability) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("note");
-    let temp_path = parent.join(format!(
-        ".{file_name}.{}.{}.tmp",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-
-    let write_result = (|| {
-        let mut temp_file = std::fs::File::create(&temp_path)?;
-        temp_file.write_all(bytes)?;
-        if durability == Durability::Fsync {
-            temp_file.sync_all()?;
-        }
-        drop(temp_file);
-        std::fs::rename(&temp_path, path)
-    })();
-
-    if write_result.is_err() {
-        let _ = std::fs::remove_file(&temp_path);
-    }
-
-    write_result
-}
-
-impl App for TextEditorApp {
-    #[cfg(test)]
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn type_id(&self) -> &'static str {
-        "text-editor"
-    }
-
-    fn display_name(&self) -> String {
-        self.path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "text-editor".to_string())
-    }
-
-    fn keyboard_capture(&self) -> bool {
-        false
-    }
-
-    fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
-        if input.key_pressed(egui::Key::S)
-            && input
-                .modifiers()
-                .matches_logically(egui::Modifiers::COMMAND)
-        {
-            self.flush();
-            return KeyDisposition::Consumed;
-        }
-        // Cmd+F: open find bar (or re-focus if already open).
-        if input.key_pressed(egui::Key::F)
-            && input
-                .modifiers()
-                .matches_logically(egui::Modifiers::COMMAND)
-        {
-            log::info!("TextEditorApp: Cmd+F — opening find bar");
-            match &mut self.find_bar {
-                Some(bar) => bar.claim_focus = true,
-                None => {
-                    let mut bar = FindBar::new();
-                    bar.recompute(&self.content);
-                    self.find_bar = Some(bar);
-                }
-            }
-            return KeyDisposition::Consumed;
-        }
-
-        if let Some(bar) = &mut self.find_bar {
-            // Escape: close the find bar.
-            if input.key_pressed(egui::Key::Escape) {
-                log::info!("TextEditorApp: Escape — closing find bar");
-                self.find_bar = None;
-                return KeyDisposition::Consumed;
-            }
-            // Enter: next match. Shift+Enter: previous match.
-            if input.key_pressed(egui::Key::Enter) {
-                let forward = !input.modifiers().shift;
-                bar.advance(forward);
-                return KeyDisposition::Consumed;
-            }
-        }
-
-        KeyDisposition::Passthrough
-    }
-
-    fn adjust_font_size(&mut self, delta: f32) {
-        self.font_size = (self.font_size + delta).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
-        log::info!("TextEditorApp: font_size -> {}", self.font_size);
-    }
-
-    fn ui(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
-        _pending_click: Option<crate::host::pane::PendingPaneClick>,
-    ) {
-        let colors = ctx.colors;
-
-        if let Some(err) = &self.load_error {
-            ui.centered_and_justified(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("Failed to open file: {err}"))
-                        .size(crate::ui::style::TEXT_BODY)
-                        .color(colors.danger),
-                );
-            });
-            return;
-        }
-
-        // Fill only the remaining rect, not `max_rect()`: when this editor
-        // overtakes another pane, `app_pane::render` has already allocated the
-        // overtake bar above us, and filling max_rect would paint over it —
-        // leaving an invisible bar-sized gap. Matches the terminal pane
-        // background so note panes and terminals read as the same surface.
-        ui.painter()
-            .rect_filled(ui.available_rect_before_wrap(), 0.0, colors.terminal_bg);
-
-        ui.visuals_mut().extreme_bg_color = colors.terminal_bg;
-        ui.visuals_mut().override_text_color = Some(colors.text_primary);
-
-        // Notes show their frontmatter title in a header bar styled exactly
-        // like the terminal pane name bar (same height, fill, and centered dim
-        // text — whether the title is custom or the file-name fallback). The
-        // YAML block itself is held out of the buffer and never rendered.
-        if self.is_note {
-            let title = if self.note_title.is_empty() {
-                self.path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "untitled".to_string())
-            } else {
-                self.note_title.clone()
-            };
-            let bar_rect = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(ui.available_width(), NOTE_HEADER_BAR_HEIGHT),
-            );
-            ui.advance_cursor_after_rect(bar_rect);
-            ui.painter()
-                .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
-            // A real label (not painter text) so the title stays in the
-            // accessibility tree for UI-harness queries.
-            let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
-            bar_ui.centered_and_justified(|ui| {
-                ui.label(
-                    egui::RichText::new(title)
-                        .size(NOTE_HEADER_FONT_SIZE)
-                        .color(colors.text_dim),
-                );
-            });
-            ui.add_space(crate::ui::style::SPACE_XS);
-        }
-
-        let te_id = egui::Id::new("text_editor_content").with(&self.path);
-        // The editor is this pane's default text surface (stint 0429): the
-        // post-frame reconciler grants it focus while the pane owns input.
-        crate::ui::focus::register_default_text_surface(
-            ui.ctx(),
-            crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-            te_id,
-        );
-        let font_id = egui::FontId::monospace(self.font_size);
-
-        // When the find bar is open, reserve its height at the bottom before
-        // laying out the scroll area so the editor doesn't overlap the bar.
-        let find_bar_height = if self.find_bar.is_some() {
-            FIND_BAR_HEIGHT
-        } else {
-            0.0
-        };
-        let editor_height = (ui.available_height() - find_bar_height).max(1.0);
-
-        // Use the actual rendered row height (not font em-size) so desired_rows fills
-        // the viewport exactly. font_size alone ignores line leading, causing the TextEdit
-        // to be taller than the viewport and triggering an unwanted scrollbar.
-        let row_height = ui.fonts_mut(|f| f.row_height(&font_id));
-        let min_rows = ((editor_height / row_height).floor() as usize).max(1);
-        // Overscroll: always keep at least half a viewport of empty space below
-        // the last line. Computed from last frame's galley height so it grows
-        // with content; on the first frame `content_pixel_height` is 0 so we
-        // fall back to `min_rows` (viewport height) as the content estimate.
-        let half_viewport_rows = ((editor_height / row_height / 2.0).ceil() as usize).max(1);
-        let content_rows_last_frame = if self.content_pixel_height > 0.0 {
-            (self.content_pixel_height / row_height).ceil() as usize
-        } else {
-            min_rows
-        };
-        let desired_rows = (content_rows_last_frame + half_viewport_rows).max(min_rows);
-
-        // Snapshot match positions for the layouter closure (can't borrow self there).
-        let match_positions: Vec<usize> = self
-            .find_bar
-            .as_ref()
-            .map(|b| b.matches.clone())
-            .unwrap_or_default();
-        let current_match: Option<usize> = self
-            .find_bar
-            .as_ref()
-            .and_then(|b| b.matches.get(b.current).copied());
-        let query_len = self.find_bar.as_ref().map(|b| b.query.len()).unwrap_or(0);
-
-        let match_bg = colors.warning.gamma_multiply(0.45);
-        let current_match_bg = colors.accent.gamma_multiply(0.55);
-        let text_color = colors.text_primary;
-        let font_id_clone = font_id.clone();
-
-        let mut layouter = move |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
-            let text = text.as_str();
-            let mut job = egui::text::LayoutJob::default();
-            if match_positions.is_empty() || query_len == 0 {
-                job.append(
-                    text,
-                    0.0,
-                    egui::TextFormat {
-                        font_id: font_id_clone.clone(),
-                        color: text_color,
-                        ..Default::default()
-                    },
-                );
-            } else {
-                let mut pos = 0usize;
-                for &start in &match_positions {
-                    if start > text.len() {
-                        break;
-                    }
-                    let end = (start + query_len).min(text.len());
-                    if start > pos {
-                        job.append(
-                            &text[pos..start],
-                            0.0,
-                            egui::TextFormat {
-                                font_id: font_id_clone.clone(),
-                                color: text_color,
-                                ..Default::default()
-                            },
-                        );
-                    }
-                    let bg = if Some(start) == current_match {
-                        current_match_bg
-                    } else {
-                        match_bg
-                    };
-                    job.append(
-                        &text[start..end],
-                        0.0,
-                        egui::TextFormat {
-                            font_id: font_id_clone.clone(),
-                            color: text_color,
-                            background: bg,
-                            ..Default::default()
-                        },
-                    );
-                    pos = end;
-                }
-                if pos < text.len() {
-                    job.append(
-                        &text[pos..],
-                        0.0,
-                        egui::TextFormat {
-                            font_id: font_id_clone.clone(),
-                            color: text_color,
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
-            job.wrap.max_width = wrap_width;
-            ui.fonts_mut(|f| f.layout_job(job))
-        };
-
-        let scroll_output = egui::ScrollArea::vertical()
-            .id_salt(egui::Id::new("text_editor_scroll").with(&self.path))
-            .auto_shrink([false, false])
-            .max_height(editor_height)
-            .show(ui, |ui| {
-                // Intercept Tab and Enter before TextEdit consumes them for
-                // focus traversal / bare newlines respectively.
-                if ui.ctx().memory(|m| m.has_focus(te_id)) && self.find_bar.is_none() {
-                    // CCursor.index is a char index; String mutation needs byte offsets.
-                    let cursor_char = egui::TextEdit::load_state(ui.ctx(), te_id)
-                        .and_then(|s| s.cursor.char_range())
-                        .map(|r| r.primary.index);
-
-                    let tab_presses = ui.input_mut(|i| {
-                        i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Tab)
-                    });
-                    if tab_presses > 0 {
-                        if let Some(char_idx) = cursor_char {
-                            let byte_idx = char_to_byte(&self.content, char_idx);
-                            let indent = "    ";
-                            for _ in 0..tab_presses {
-                                self.content.insert_str(byte_idx, indent);
-                            }
-                            // Inserted text is ASCII so char count == byte count.
-                            let new_char_idx = char_idx + indent.len() * tab_presses;
-                            let mut state =
-                                egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
-                            let c = egui::text::CCursor::new(new_char_idx);
-                            state
-                                .cursor
-                                .set_char_range(Some(egui::text::CCursorRange::one(c)));
-                            egui::TextEdit::store_state(ui.ctx(), te_id, state);
-                            self.last_edit = Some(Instant::now());
-                            self.scroll_to_cursor_pending = true;
-                            log::info!(
-                                "TextEditorApp: Tab — inserted {} spaces at char {}",
-                                indent.len() * tab_presses,
-                                char_idx
-                            );
-                        }
-                    }
-
-                    let enter_presses = ui.input_mut(|i| {
-                        i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Enter)
-                    });
-                    if enter_presses > 0 {
-                        if let Some(char_idx) = cursor_char {
-                            let byte_idx = char_to_byte(&self.content, char_idx);
-                            let leading = leading_whitespace_at(&self.content, char_idx);
-                            // Always carry the current line's indent onto the new line.
-                            let insert = format!("\n{leading}");
-                            // insert is ASCII (\n + spaces/tabs) so char count == byte count.
-                            let insert_chars = insert.chars().count();
-                            for _ in 0..enter_presses {
-                                self.content.insert_str(byte_idx, &insert);
-                            }
-                            let new_char_idx = char_idx + insert_chars * enter_presses;
-                            let mut state =
-                                egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
-                            let c = egui::text::CCursor::new(new_char_idx);
-                            state
-                                .cursor
-                                .set_char_range(Some(egui::text::CCursorRange::one(c)));
-                            egui::TextEdit::store_state(ui.ctx(), te_id, state);
-                            self.last_edit = Some(Instant::now());
-                            self.scroll_to_cursor_pending = true;
-                            log::info!(
-                                "TextEditorApp: Enter — leading={:?} at char {}",
-                                leading,
-                                char_idx
-                            );
-                        }
-                    }
-
-                    // Smart backspace: if the line prefix up to the cursor is pure spaces
-                    // (2–4), remove the whole block in one keypress. Only consume the key
-                    // when we handle it ourselves — if we consumed it unconditionally,
-                    // single-char deletes (spaces == 0 or 1) would be silently swallowed.
-                    if let Some(char_idx) = cursor_char {
-                        let spaces = spaces_before_cursor(&self.content, char_idx);
-                        if spaces > 1 {
-                            let backspace_presses = ui.input_mut(|i| {
-                                i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
-                            });
-                            if backspace_presses > 0 {
-                                let byte_end = char_to_byte(&self.content, char_idx);
-                                let byte_start = byte_end - spaces;
-                                self.content.drain(byte_start..byte_end);
-                                let new_char_idx = char_idx - spaces;
-                                let mut state =
-                                    egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
-                                let c = egui::text::CCursor::new(new_char_idx);
-                                state
-                                    .cursor
-                                    .set_char_range(Some(egui::text::CCursorRange::one(c)));
-                                egui::TextEdit::store_state(ui.ctx(), te_id, state);
-                                self.last_edit = Some(Instant::now());
-                                self.scroll_to_cursor_pending = true;
-                                log::info!(
-                                    "TextEditorApp: smart backspace — removed {} spaces at char {}",
-                                    spaces,
-                                    char_idx
-                                );
-                            }
-                        }
-                        // spaces <= 1: don't consume — TextEdit handles the delete normally.
-                    }
-                }
-
-                // egui's caret is hidden (transparent, non-blinking) and
-                // draw_text_caret paints a glyph-height replacement on top.
-                let output = ui
-                    .scope(|ui| {
-                        ui.visuals_mut().text_cursor.blink = false;
-                        ui.visuals_mut().text_cursor.stroke.color = egui::Color32::TRANSPARENT;
-                        egui::TextEdit::multiline(&mut self.content)
-                            .id(te_id)
-                            .font(font_id)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(desired_rows)
-                            .margin(egui::vec2(4.0, 0.0))
-                            .frame(egui::Frame::NONE)
-                            .layouter(&mut layouter)
-                            .show(ui)
-                    })
-                    .inner;
-                crate::ui::text_field::draw_text_caret(
-                    ui,
-                    &output,
-                    self.font_size,
-                    row_height,
-                    egui::Stroke::new(1.0_f32, colors.accent),
-                );
-
-                // Tab/Enter/smart-backspace are consumed above before TextEdit
-                // sees them, so egui's own "scroll to keep cursor visible"
-                // logic (which only fires for keys TextEdit itself handles)
-                // never runs for those edits. Do it ourselves.
-                if self.scroll_to_cursor_pending {
-                    self.scroll_to_cursor_pending = false;
-                    if let Some(cursor_range) = output.cursor_range {
-                        let cursor_rect = output
-                            .galley
-                            .pos_from_cursor(cursor_range.primary)
-                            .translate(output.galley_pos.to_vec2());
-                        ui.scroll_to_rect(cursor_rect, None);
-                    }
-                }
-
-                self.content_pixel_height = output.galley.size().y;
-
-                if output.response.changed() {
-                    self.last_edit = Some(Instant::now());
-                    self.undo_available = true;
-                    self.redo_available = false;
-                    // Recompute matches when content changes.
-                    if let Some(bar) = &mut self.find_bar {
-                        bar.recompute(&self.content);
-                    }
-                }
-                if let Some(range) = output.state.cursor.char_range() {
-                    let current = (range, self.content.clone());
-                    let undoer = output.state.undoer();
-                    self.undo_available = undoer.has_undo(&current);
-                    self.redo_available = undoer.has_redo(&current);
-                }
-
-                if let Some(range) = output.cursor_range {
-                    self.primary_selection = [range.secondary.index, range.primary.index];
-                }
-                let clip = ui.clip_rect();
-                let local_top = (clip.top() - output.galley_pos.y).max(0.0);
-                let local_bottom = (clip.bottom() - output.galley_pos.y).max(local_top);
-                let top = output
-                    .galley
-                    .cursor_from_pos(egui::vec2(0.0, local_top))
-                    .index;
-                let bottom = output
-                    .galley
-                    .cursor_from_pos(egui::vec2(output.galley.size().x, local_bottom))
-                    .index;
-                self.visible_char_range = [top.min(bottom), top.max(bottom)];
-                // `Response::has_focus` is stale for this frame when the
-                // post-frame input-owner reconciler granted the persistent
-                // TextEdit id. The memory entry is the production focus
-                // authority used by keyboard dispatch and survives CLI
-                // focus while the OS window is blurred.
-                let focused = ui.ctx().memory(|memory| memory.has_focus(te_id));
-                if focused != self.editor_focused {
-                    log::info!("notes_editor: focus transition focused={focused}");
-                    self.editor_focused = focused;
-                }
-
-                if let Some(t) = self.last_edit {
-                    if t.elapsed() >= DEBOUNCE {
-                        self.autosave();
-                    }
-                }
-
-                // Down arrow at end of content → append a newline so the cursor
-                // can move past the last line without requiring an explicit Enter.
-                //
-                // Two constraints:
-                // * Gate on the cursor having been at the end on the PREVIOUS
-                //   frame. TextEdit has already processed this frame's presses
-                //   (egui reads but does not consume them), so the press that
-                //   moved the cursor TO the end must not also append.
-                // * Append one newline per queued press, not per frame —
-                //   key-repeat can deliver several presses in one frame and
-                //   consume_key would silently swallow the extras, making Down
-                //   feel slower than Enter.
-                if output.response.has_focus() {
-                    let at_end = output
-                        .cursor_range
-                        .map(|r| r.primary.index >= self.content.len())
-                        .unwrap_or(false);
-                    if at_end && self.cursor_was_at_end {
-                        let presses = ui.input_mut(|i| {
-                            i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                        });
-                        if presses > 0 {
-                            for _ in 0..presses {
-                                self.content.push('\n');
-                            }
-                            self.last_edit = Some(Instant::now());
-                            // Reposition cursor to the new end.
-                            let mut state =
-                                egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
-                            let end = egui::text::CCursor::new(self.content.len());
-                            state
-                                .cursor
-                                .set_char_range(Some(egui::text::CCursorRange::one(end)));
-                            egui::TextEdit::store_state(ui.ctx(), te_id, state);
-                        }
-                    }
-                    self.cursor_was_at_end = at_end;
-                }
-            });
-        self.scroll_y = scroll_output.state.offset.y;
-
-        // Render the find bar below the scroll area.
-        if let Some(bar) = &mut self.find_bar {
-            let find_rect = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(ui.available_width(), FIND_BAR_HEIGHT),
-            );
-            ui.advance_cursor_after_rect(find_rect);
-
-            ui.painter()
-                .rect_filled(find_rect, 0.0, colors.pane_header_bg());
-
-            let mut find_ui = ui.new_child(egui::UiBuilder::new().max_rect(find_rect));
-            find_ui.horizontal_centered(|ui| {
-                ui.add_space(8.0);
-
-                let input_id = egui::Id::new("text_editor_find_input").with(&self.path);
-                let input_width = (find_rect.width() - 140.0).max(80.0);
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut bar.query)
-                        .id(input_id)
-                        .desired_width(input_width)
-                        .font(egui::FontId::proportional(FIND_BAR_FONT_SIZE))
-                        .hint_text("Find…")
-                        .frame(egui::Frame::NONE),
-                );
-
-                crate::ui::focus::register_text_surface(
-                    ui.ctx(),
-                    crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-                    input_id,
-                );
-                if bar.claim_focus {
-                    crate::ui::focus::claim_text_surface(
-                        ui.ctx(),
-                        crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-                        input_id,
-                    );
-                    bar.claim_focus = false;
-                }
-
-                if response.changed() {
-                    bar.recompute(&self.content);
-                    log::info!(
-                        "TextEditorApp: find query {:?} — {} matches",
-                        bar.query,
-                        bar.matches.len()
-                    );
-                }
-
-                ui.add_space(8.0);
-                let count_text = if bar.matches.is_empty() {
-                    if bar.query.is_empty() {
-                        String::new()
-                    } else {
-                        "No results".to_string()
-                    }
-                } else {
-                    format!("{} / {}", bar.current + 1, bar.matches.len())
-                };
-                ui.label(
-                    egui::RichText::new(count_text)
-                        .size(FIND_BAR_FONT_SIZE)
-                        .color(colors.text_dim),
-                );
-            });
-        }
-    }
-
-    fn wants_close(&self) -> bool {
-        self.wants_close
-    }
-
-    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
-        vec![]
-    }
-
-    fn serialize_state(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({ "path": self.path.to_string_lossy() }))
-    }
-
-    fn restore_state(&mut self, state: &serde_json::Value) {
-        if let Some(p) = state.get("path").and_then(|v| v.as_str()) {
-            let new_path = PathBuf::from(p);
-            if note_path_identity(&new_path) != note_path_identity(&self.path) {
-                log::info!(
-                    "TextEditorApp: switching from {:?} to {:?}",
-                    self.path,
-                    new_path
-                );
-                self.flush();
-                let (raw, load_error) = match std::fs::read_to_string(&new_path) {
-                    Ok(s) => (s, None),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
-                    Err(e) => (String::new(), Some(e.to_string())),
-                };
-                let notes_dir = crate::config::config_dir().join("notes");
-                self.is_note = new_path.starts_with(&notes_dir);
-                let (note_header, content, note_title) = split_note(self.is_note, raw);
-                self.path = new_path;
-                self.content = content;
-                self.note_header = note_header;
-                self.note_title = note_title;
-                self.load_error = load_error;
-                self.last_edit = None;
-                self.find_bar = None;
-            }
-        }
-    }
-
-    fn rename_seed(&self) -> Option<String> {
-        self.is_note.then(|| self.note_title.clone())
-    }
-
-    fn on_pane_renamed(&mut self, name: &str) {
-        self.apply_note_title(name);
-    }
-
-    fn semantic_state(&self) -> Option<serde_json::Value> {
-        let caret = self.primary_selection[1];
-        let caret_byte = char_to_byte(&self.content, caret);
-        let line_start = self.content[..caret_byte].rfind('\n').map_or(0, |i| i + 1);
-        let line_end = self.content[caret_byte..]
-            .find('\n')
-            .map_or(self.content.len(), |i| caret_byte + i);
-        let active = &self.content[line_start..line_end];
-        let line_start_char = self.content[..line_start].chars().count();
-        let line_end_char = self.content[..line_end].chars().count();
-        let visible_start = char_to_byte(&self.content, self.visible_char_range[0]);
-        let visible_end = char_to_byte(&self.content, self.visible_char_range[1]);
-        let visible_source = &self.content[visible_start.min(visible_end)..visible_end];
-        let links = markdown_targets(visible_source, false);
-        let images = markdown_targets(visible_source, true);
-        Some(serde_json::json!({
-            "kind": "notes_editor",
-            "source_text": self.content,
-            "primary_selection": {"anchor": self.primary_selection[0], "caret": caret},
-            "caret": caret,
-            "scroll": {"y": self.scroll_y},
-            "dirty": self.last_edit.is_some(),
-            "last_save_result": self.last_save_result,
-            "active_markdown_block": {"start": line_start_char, "end": line_end_char, "source": active, "granularity": "source_line"},
-            "visible_link_targets": links,
-            "visible_images": images,
-            "undo_available": self.undo_available,
-            "redo_available": self.redo_available,
-            "focused": self.editor_focused,
-            "last_drop_result": self.last_drop_result,
-            "path": self.path,
-        }))
-    }
-
-    fn drop_file(&mut self, path_or_url: &str) -> Result<serde_json::Value, String> {
-        let source_kind = if path_or_url.contains("://") {
-            "url"
-        } else {
-            "file"
-        };
-        self.last_drop_result = Some(serde_json::json!({
-            "result": "rejected",
-            "source_kind": source_kind,
-        }));
-        Err("Notes does not yet accept file drops".to_string())
-    }
-}
-
-fn markdown_targets(content: &str, images: bool) -> Vec<String> {
-    let prefix = if images { "![" } else { "[" };
-    content
-        .match_indices(prefix)
-        .filter_map(|(start, _)| {
-            if !images && start > 0 && content.as_bytes()[start - 1] == b'!' {
-                return None;
-            }
-            let rest = &content[start + prefix.len()..];
-            let open = rest.find("](")? + start + prefix.len() + 2;
-            let end = content[open..].find(')')? + open;
-            Some(content[open..end].to_string())
-        })
-        .collect()
-}
-
-impl Drop for TextEditorApp {
-    fn drop(&mut self) {
-        // Save unsaved edits; also clean up empty notes (flush deletes them).
-        if self.last_edit.is_some() || self.is_effectively_empty() {
-            self.flush();
-        }
     }
 }

@@ -273,6 +273,19 @@ pr-install number: fetch-python-runtime sdk-smoke
       echo "  Make sure 'cargo metadata' runs cleanly from $(pwd) and Python 3 is available."
       exit 1
     fi
+    # Preflight: the working tree must actually contain the PR's head commit.
+    # pr-install builds whatever tree it runs from — run from the wrong
+    # directory (e.g. repo root on alpha) and it silently installs the wrong
+    # code under the PR channel name.
+    _pr_head="$(gh pr view {{number}} --json headRefOid --jq .headRefOid 2>/dev/null || echo "")"
+    if [[ -z "$_pr_head" ]]; then
+      echo "Warning: could not resolve PR #{{number}} head commit via gh; skipping tree check."
+    elif ! git merge-base --is-ancestor "$_pr_head" HEAD 2>/dev/null; then
+      echo "Error: this tree does not contain PR #{{number}}'s head commit ${_pr_head:0:8}."
+      echo "  Current HEAD: $(git rev-parse --short HEAD) on $(git branch --show-current)"
+      echo "  Run pr-install from the PR's feature worktree after pulling its latest push."
+      exit 1
+    fi
     bash scripts/pr-clean.sh {{number}}
     bash scripts/install.sh "pr-{{number}}"
 

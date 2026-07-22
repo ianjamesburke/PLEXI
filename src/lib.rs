@@ -7,9 +7,9 @@
 pub mod app_protocol;
 #[path = "cli/args.rs"]
 pub mod cli_args;
-/// Shared Ferrite-derived editor core (stint 0317). Lives in the lib target
-/// so its public API is the wiring until host integration (stint 0474);
-/// the bin consumes it as `plexi::editor`.
+/// Shared Ferrite-derived editor core (stint 0317). Also compiled into the
+/// binary target (`mod editor` in main.rs), where the Notes pane consumes it
+/// (stint 0474).
 pub mod editor;
 pub mod protocol;
 

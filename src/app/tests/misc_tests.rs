@@ -80,6 +80,50 @@ fn key_str_to_egui_raw_input_emits_text_for_printable_chars() {
 }
 
 #[test]
+fn clipboard_chord_matches_egui_winit_vocabulary() {
+    let cmd = egui::Modifiers::COMMAND;
+    assert_eq!(clipboard_chord(cmd, egui::Key::X), Some(ClipboardChord::Cut));
+    assert_eq!(
+        clipboard_chord(cmd, egui::Key::C),
+        Some(ClipboardChord::Copy)
+    );
+    assert_eq!(
+        clipboard_chord(cmd, egui::Key::V),
+        Some(ClipboardChord::Paste)
+    );
+    assert_eq!(clipboard_chord(cmd, egui::Key::A), None);
+    assert_eq!(
+        clipboard_chord(egui::Modifiers::default(), egui::Key::V),
+        None,
+        "bare v is ordinary typing, never a paste chord"
+    );
+}
+
+#[test]
+fn key_str_clipboard_chords_translate_like_physical_input() {
+    // Physical cmd+c/cmd+x reach widgets as Copy/Cut events (egui-winit
+    // translates before egui sees them); the synthetic path must match or
+    // every text surface silently drops the replayed raw chord.
+    let raw = key_str_to_egui_raw_input("cmd+c").expect("cmd+c must map");
+    assert_eq!(raw.events, vec![egui::Event::Copy]);
+
+    let raw = key_str_to_egui_raw_input("cmd+x").expect("cmd+x must map");
+    assert_eq!(raw.events, vec![egui::Event::Cut]);
+
+    // cmd+v reads the live system clipboard, so only assert the shape: never
+    // raw Key/Text events, at most one Paste carrying the clipboard text.
+    let raw = key_str_to_egui_raw_input("cmd+v").expect("cmd+v must map");
+    assert!(raw.events.len() <= 1, "got {:?}", raw.events);
+    assert!(
+        raw.events
+            .iter()
+            .all(|e| matches!(e, egui::Event::Paste(_))),
+        "cmd+v must translate to Paste, never raw Key events; got {:?}",
+        raw.events
+    );
+}
+
+#[test]
 fn key_str_to_egui_raw_input_chords_set_modifiers_and_suppress_text() {
     let raw = key_str_to_egui_raw_input("ctrl+c").expect("ctrl+c must map");
     assert!(raw.modifiers.ctrl);
