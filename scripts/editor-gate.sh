@@ -110,13 +110,16 @@ cp "$core_artifact" "$out_dir/editor-gate-core.json"
 echo "editor-gate: collected core artifact editor-gate-core.json"
 
 # One hermetic host for the whole gate: --ephemeral means the channel's saved
-# session is neither restored nor overwritten.
+# session is neither restored nor overwritten. The started flag is set before
+# the attempt: a host that spawns but fails readiness still exists, and the
+# EXIT trap must stop it rather than orphan it (stopping a never-started host
+# is a bounded no-op).
+gate_host_started=1
 if ! "$plexi_bin" host start --ephemeral --pane "cwd=$repo_root" \
     > "$out_dir/host-start.log" 2>&1; then
     echo "editor-gate: HOST START FAILED (see $out_dir/host-start.log)" >&2
     exit 1
 fi
-gate_host_started=1
 host_marker "gate started channel=$channel scenes=${#scenes[@]}"
 
 failures=0
