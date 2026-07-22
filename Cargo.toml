@@ -80,6 +80,7 @@ rodio = "0.22"
 # nested dirs). default-features disabled to avoid pulling crossbeam-channel.
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 egui_commonmark = "0.23.0"
+pulldown-cmark = { version = "0.13", default-features = false }
 # Native file picker dialog (#514). Uses NSOpenPanel on macOS.
 rfd = "0.17"
 # Headless app render (#850). Already transitive via eframe; declared directly for explicit use.

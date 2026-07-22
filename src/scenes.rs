@@ -319,6 +319,9 @@ pub struct ExpectSpec {
     pub save_result: Option<String>,
     pub source_text_contains: Option<String>,
     pub active_markdown_contains: Option<String>,
+    /// Exact match on the editor's Markdown presentation:
+    /// "live_preview" | "source".
+    pub preview_mode: Option<String>,
     pub rendered_text_contains: Option<String>,
     pub visible_link_target: Option<String>,
     pub visible_image_target: Option<String>,
@@ -384,6 +387,9 @@ fn notes_expectations_match(spec: &ExpectSpec, state: &serde_json::Value) -> boo
             "/active_markdown_block/source",
             &spec.active_markdown_contains,
         )
+        && spec.preview_mode.as_ref().is_none_or(|expected| {
+            app.get("preview_mode").and_then(serde_json::Value::as_str) == Some(expected)
+        })
         && rendered_matches
         && array_contains("/visible_link_targets", &spec.visible_link_target)
         && array_contains("/visible_images", &spec.visible_image_target)

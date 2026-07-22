@@ -8,7 +8,8 @@
 //! command surface.
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
-use crate::editor::widget::{CodeTheme, EditorWidget};
+use crate::editor::preview::{self, MarkdownLayoutCache};
+use crate::editor::widget::{CodeTheme, EditorWidget, MarkdownTheme};
 use crate::editor::{movement, Document, EditorCommand, EditorMode, SyntaxHighlighter, ViewState};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -115,6 +116,9 @@ pub struct TextEditorApp {
     /// Syntax span source for code mode; `None` when the language is unknown
     /// to the bundled syntax set (plain-text fallback).
     highlighter: Option<SyntaxHighlighter>,
+    /// Markdown block/inline layout cache for Live Preview; present only in
+    /// Markdown mode.
+    md_cache: Option<MarkdownLayoutCache>,
     last_edit: Option<Instant>,
     wants_close: bool,
     load_error: Option<String>,
@@ -140,6 +144,7 @@ impl TextEditorApp {
         let mode = detect_mode(&path, is_note);
         log::info!("notes_editor: mode selected {} for {:?}", mode.describe(), path);
         let highlighter = mode.language().and_then(SyntaxHighlighter::new);
+        let md_cache = mode.is_markdown().then(MarkdownLayoutCache::default);
         Self {
             path,
             doc: Document::new(&content),
@@ -149,6 +154,7 @@ impl TextEditorApp {
             is_note,
             mode,
             highlighter,
+            md_cache,
             last_edit: None,
             wants_close: false,
             load_error,
@@ -173,7 +179,22 @@ impl TextEditorApp {
         app.note_title = note_title;
         app.mode = detect_mode(&app.path, true);
         app.highlighter = app.mode.language().and_then(SyntaxHighlighter::new);
+        app.md_cache = app.mode.is_markdown().then(MarkdownLayoutCache::default);
         app
+    }
+
+    /// Flips Markdown presentation between Live Preview and source mode.
+    /// Presentation only: document, selection, history, IME, and scroll
+    /// anchor are untouched. No-op outside Markdown mode.
+    fn toggle_preview_mode(&mut self) {
+        if let EditorMode::Markdown { live_preview } = &mut self.mode {
+            *live_preview = !*live_preview;
+            log::info!(
+                "notes_editor: preview mode changed -> {} for {:?}",
+                self.mode.describe(),
+                self.path
+            );
+        }
     }
 
     /// Full on-disk document: frontmatter (when held out) + editable body.
@@ -382,7 +403,9 @@ fn detect_mode(path: &Path, is_note: bool) -> EditorMode {
         .map(str::to_ascii_lowercase);
     let ext = ext.as_deref();
     if is_note || matches!(ext, Some("md" | "markdown")) {
-        return EditorMode::Markdown;
+        // Live Preview is the default Markdown presentation (Obsidian
+        // convention); Cmd+E toggles to source mode.
+        return EditorMode::Markdown { live_preview: true };
     }
     const CODE_EXTENSIONS: &[&str] = &[
         "rs", "py", "js", "ts", "jsx", "tsx", "json", "toml", "yaml", "yml", "sh", "bash", "zsh",
@@ -570,6 +593,18 @@ impl App for TextEditorApp {
             self.flush();
             return KeyDisposition::Consumed;
         }
+        // Cmd+G: toggle Live Preview / source. (Obsidian uses Cmd+E, but the
+        // host binds that to open_file_browser, and host bindings are
+        // non-exact so any Cmd+E-with-extra-modifiers triggers it too.)
+        if input.key_pressed(egui::Key::G)
+            && input
+                .modifiers()
+                .matches_logically(egui::Modifiers::COMMAND)
+            && self.mode.is_markdown()
+        {
+            self.toggle_preview_mode();
+            return KeyDisposition::Consumed;
+        }
         // Cmd+F: open find bar (or re-focus if already open).
         if input.key_pressed(egui::Key::F)
             && input
@@ -704,6 +739,11 @@ impl App for TextEditorApp {
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
                 self.flush();
             }
+            if self.mode.is_markdown()
+                && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::G))
+            {
+                self.toggle_preview_mode();
+            }
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
                 log::info!("notes_editor: Cmd+F — opening find bar");
                 match &mut self.find_bar {
@@ -787,6 +827,22 @@ impl App for TextEditorApp {
             });
             if let Some(highlighter) = &mut self.highlighter {
                 widget = widget.span_provider(highlighter);
+            }
+        }
+        if self.mode.is_live_preview() {
+            // Live Preview styles map onto host design tokens; styling never
+            // changes glyph metrics (see src/editor/preview.rs).
+            widget = widget.markdown_theme(MarkdownTheme {
+                marker: colors.text_dim,
+                heading: colors.accent,
+                strong: colors.warning,
+                emphasis: colors.text_primary,
+                code: colors.success,
+                quote: colors.text_section,
+                rule: colors.text_dim,
+            });
+            if let Some(cache) = &mut self.md_cache {
+                widget = widget.markdown_preview(cache);
             }
         }
         let response = widget.show(&mut editor_ui);
@@ -958,6 +1014,7 @@ impl App for TextEditorApp {
                     new_path
                 );
                 self.highlighter = self.mode.language().and_then(SyntaxHighlighter::new);
+                self.md_cache = self.mode.is_markdown().then(MarkdownLayoutCache::default);
                 self.path = new_path;
                 self.doc = Document::new(&content);
                 self.view = ViewState::default();
@@ -984,10 +1041,35 @@ impl App for TextEditorApp {
         let anchor_char = movement::cursor_to_char(buffer, sem.selection.anchor);
         let caret_char = movement::cursor_to_char(buffer, sem.cursor);
         let cursor = movement::clamp(buffer, sem.cursor);
-        let line_start_char = buffer.line_to_char(cursor.line);
-        let active = movement::line_text(buffer, cursor.line);
-        let line_end_char = line_start_char + active.chars().count();
         let line_count = buffer.line_count();
+        // Markdown mode reports the caret's parsed block (Live Preview
+        // granularity); other modes fall back to the caret's source line.
+        let (block_start_line, block_end_line, block_kind) = if self.mode.is_markdown() {
+            let layout = preview::parse_markdown_layout(&sem.text);
+            match layout.block_at_line(cursor.line) {
+                Some(block) => (
+                    block.lines.start,
+                    block.lines.end,
+                    format!("{:?}", block.kind),
+                ),
+                None => (cursor.line, cursor.line + 1, "Blank".to_string()),
+            }
+        } else {
+            (cursor.line, cursor.line + 1, "SourceLine".to_string())
+        };
+        let line_start_char = buffer.line_to_char(block_start_line.min(line_count - 1));
+        let block_end_char = if block_end_line < line_count {
+            buffer.line_to_char(block_end_line)
+        } else {
+            buffer.len()
+        };
+        let active = buffer
+            .slice(line_start_char, block_end_char)
+            .trim_end_matches('\n')
+            .to_string();
+        // Report the range that slices back to exactly `active`: the trailing
+        // block-separator newline(s) trimmed above are excluded from `end`.
+        let line_end_char = line_start_char + active.chars().count();
         let visible = self.view.visible_lines(line_count);
         let visible_start = if visible.start < line_count {
             buffer.line_to_char(visible.start)
@@ -1010,7 +1092,19 @@ impl App for TextEditorApp {
             "scroll": {"y": sem.scroll_y},
             "dirty": self.last_edit.is_some(),
             "last_save_result": self.last_save_result,
-            "active_markdown_block": {"start": line_start_char, "end": line_end_char, "source": active, "granularity": "source_line"},
+            "active_markdown_block": {
+                "start": line_start_char,
+                "end": line_end_char,
+                "source": active,
+                "kind": block_kind,
+                "granularity": if self.mode.is_markdown() { "block" } else { "source_line" },
+            },
+            "editor_mode": self.mode.describe(),
+            "preview_mode": match &self.mode {
+                EditorMode::Markdown { live_preview: true } => Some("live_preview"),
+                EditorMode::Markdown { live_preview: false } => Some("source"),
+                _ => None,
+            },
             "visible_link_targets": links,
             "visible_images": images,
             "undo_available": sem.can_undo,
@@ -1114,7 +1208,9 @@ mod tests {
         let mut app = TextEditorApp::new_for_test_note(path);
         app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 6)));
         let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
-        assert_eq!(state["active_markdown_block"]["source"], "😀 café");
+        // Markdown block granularity: the two lines are one paragraph block.
+        assert_eq!(state["active_markdown_block"]["source"], "😀 café\nsecond");
+        assert_eq!(state["active_markdown_block"]["kind"], "Paragraph");
         assert_eq!(state["caret"], 6);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1413,8 +1509,14 @@ mod tests {
     #[test]
     fn detect_mode_routes_notes_markdown_code_and_plain() {
         let p = |s: &str| PathBuf::from(s);
-        assert_eq!(detect_mode(&p("/x/scratch.txt"), true), EditorMode::Markdown);
-        assert_eq!(detect_mode(&p("/x/readme.MD"), false), EditorMode::Markdown);
+        assert_eq!(
+            detect_mode(&p("/x/scratch.txt"), true),
+            EditorMode::Markdown { live_preview: true }
+        );
+        assert_eq!(
+            detect_mode(&p("/x/readme.MD"), false),
+            EditorMode::Markdown { live_preview: true }
+        );
         assert_eq!(
             detect_mode(&p("/x/main.rs"), false),
             EditorMode::Code {
@@ -1451,6 +1553,67 @@ mod tests {
             "// unicode: café 😀\nfn main() {}\n",
             "code mode never rewrites source text"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn preview_toggle_preserves_caret_selection_scroll_and_history() {
+        let dir = unique_temp_dir("notes-preview-toggle");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("preview.md");
+        std::fs::write(&path, "# Title\n\npara **bold** text\n\n- item").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+        assert!(app.mode.is_live_preview(), "markdown defaults to live preview");
+        assert!(app.md_cache.is_some());
+
+        app.doc.apply(EditorCommand::SetCursor(Cursor::new(2, 1)));
+        app.doc.apply(EditorCommand::ExtendTo(Cursor::new(2, 4)));
+        app.view.scroll_y = 12.5;
+        let before = app.doc.semantic_state(app.view.scroll_y);
+
+        app.toggle_preview_mode();
+        assert_eq!(app.mode, EditorMode::Markdown { live_preview: false });
+        assert_eq!(app.doc.semantic_state(app.view.scroll_y), before);
+        let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
+        assert_eq!(state["preview_mode"], "source");
+        assert_eq!(state["editor_mode"], "markdown:source");
+
+        app.toggle_preview_mode();
+        assert_eq!(app.doc.semantic_state(app.view.scroll_y), before);
+        let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
+        assert_eq!(state["preview_mode"], "live_preview");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn semantic_active_block_tracks_caret_across_blocks_without_edits() {
+        let dir = unique_temp_dir("notes-active-block");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("blocks.md");
+        std::fs::write(&path, "# Head\n\n- one\n- two\n\n```\ncode\n```").unwrap();
+        let mut app = TextEditorApp::new_for_test_note(path);
+        let revision = app.doc.revision();
+
+        let block_at = |app: &TextEditorApp| {
+            let s = crate::app::app_trait::App::semantic_state(app).unwrap();
+            (
+                s["active_markdown_block"]["kind"].as_str().unwrap().to_string(),
+                s["active_markdown_block"]["source"].as_str().unwrap().to_string(),
+            )
+        };
+        app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 2)));
+        assert_eq!(block_at(&app), ("Heading(1)".into(), "# Head".into()));
+        app.doc.apply(EditorCommand::SetCursor(Cursor::new(3, 1)));
+        assert_eq!(block_at(&app), ("ListItem".into(), "- two".into()));
+        app.doc.apply(EditorCommand::SetCursor(Cursor::new(6, 0)));
+        let (kind, source) = block_at(&app);
+        assert_eq!(kind, "CodeFence");
+        assert_eq!(source, "```\ncode\n```");
+
+        // Active-block transitions are pure reads: no text, selection-history,
+        // or undo mutation.
+        assert_eq!(app.doc.revision(), revision);
+        assert!(!app.doc.semantic_state(0.0).can_undo);
         let _ = std::fs::remove_dir_all(dir);
     }
 

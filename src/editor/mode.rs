@@ -14,7 +14,13 @@ pub enum EditorMode {
     PlainText,
     /// Markdown structure commands on Tab/Shift-Tab/Enter/Backspace
     /// (list continuation, line-wise indent, marker-aware backspace).
-    Markdown,
+    /// `live_preview` selects Obsidian-style presentation: inactive blocks
+    /// render styled while the active block reveals raw source. `false` is
+    /// plain source mode. The presentation flag never changes document,
+    /// selection, history, or IME behavior.
+    Markdown {
+        live_preview: bool,
+    },
     /// Code presentation: line-number gutter, current-line highlight, and
     /// syntax-highlight spans for `language` (a language identifier such as a
     /// file extension token — detection from file metadata is the caller's
@@ -29,7 +35,14 @@ impl EditorMode {
     /// Markdown-aware commands.
     #[must_use]
     pub fn is_markdown(&self) -> bool {
-        matches!(self, EditorMode::Markdown)
+        matches!(self, EditorMode::Markdown { .. })
+    }
+
+    /// Whether Markdown Live Preview presentation is on (styled inactive
+    /// blocks, raw source around the caret).
+    #[must_use]
+    pub fn is_live_preview(&self) -> bool {
+        matches!(self, EditorMode::Markdown { live_preview: true })
     }
 
     /// Whether code chrome (gutter, current-line highlight, syntax spans)
@@ -53,7 +66,8 @@ impl EditorMode {
     pub fn describe(&self) -> String {
         match self {
             EditorMode::PlainText => "plain".to_string(),
-            EditorMode::Markdown => "markdown".to_string(),
+            EditorMode::Markdown { live_preview: true } => "markdown:live-preview".to_string(),
+            EditorMode::Markdown { live_preview: false } => "markdown:source".to_string(),
             EditorMode::Code { language } => format!("code:{language}"),
         }
     }

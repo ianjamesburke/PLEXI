@@ -15,6 +15,7 @@ use super::cursor::Cursor;
 use super::highlight::{SpanProvider, TokenKind};
 use super::mode::EditorMode;
 use super::movement::line_text;
+use super::preview::{MarkdownLayoutCache, MdStyle};
 use super::view::ViewState;
 
 /// Horizontal padding on each side of the gutter's line numbers.
@@ -69,6 +70,53 @@ impl CodeTheme {
     }
 }
 
+/// Theme colors for Markdown Live Preview styling. Callers build this from
+/// host design tokens; the editor core never picks concrete colors. Styling
+/// is color/italic only — it must never change glyph metrics (see
+/// `super::preview` for the source↔layout mapping contract).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarkdownTheme {
+    /// Structural syntax markers (`#`, `-`, `>`, `**`, fences): dimmed.
+    pub marker: Color32,
+    pub heading: Color32,
+    pub strong: Color32,
+    pub emphasis: Color32,
+    pub code: Color32,
+    pub quote: Color32,
+    pub rule: Color32,
+}
+
+impl MarkdownTheme {
+    /// Fallback derived from egui visuals, for callers without host tokens.
+    fn from_visuals(visuals: &egui::Visuals) -> Self {
+        let text = visuals.text_color();
+        let weak = visuals.weak_text_color();
+        Self {
+            marker: weak,
+            heading: visuals.strong_text_color(),
+            strong: visuals.strong_text_color(),
+            emphasis: text,
+            code: text,
+            quote: weak,
+            rule: weak,
+        }
+    }
+
+    /// Color and italic flag for one style class.
+    fn format_for(&self, style: MdStyle, plain: Color32) -> (Color32, bool) {
+        match style {
+            MdStyle::Marker => (self.marker, false),
+            MdStyle::Heading(_) => (self.heading, false),
+            MdStyle::Strong => (self.strong, false),
+            MdStyle::Emphasis => (self.emphasis, true),
+            MdStyle::Code => (self.code, false),
+            MdStyle::Quote => (self.quote, true),
+            MdStyle::Rule => (self.rule, false),
+            MdStyle::Plain => (plain, false),
+        }
+    }
+}
+
 /// Renders a [`Document`] and translates egui input into [`EditorCommand`]s.
 ///
 /// The widget processes keyboard/IME input every frame it is shown; callers
@@ -93,6 +141,11 @@ pub struct EditorWidget<'a> {
     span_provider: Option<&'a mut dyn SpanProvider>,
     /// Code-mode chrome/token colors; derived from egui visuals when unset.
     code_theme: Option<CodeTheme>,
+    /// Cached Markdown block/inline layout for Live Preview. `None` renders
+    /// Markdown mode as plain source.
+    md_cache: Option<&'a mut MarkdownLayoutCache>,
+    /// Live Preview colors; derived from egui visuals when unset.
+    md_theme: Option<MarkdownTheme>,
     /// Char ranges to paint with a background (find matches), plus the index
     /// of the "current" range and the two fill colors (normal, current).
     highlights: Vec<(usize, usize)>,
@@ -112,6 +165,8 @@ impl<'a> EditorWidget<'a> {
             mode: EditorMode::PlainText,
             span_provider: None,
             code_theme: None,
+            md_cache: None,
+            md_theme: None,
             highlights: Vec::new(),
             current_highlight: None,
             highlight_bg: egui::Color32::TRANSPARENT,
@@ -155,6 +210,21 @@ impl<'a> EditorWidget<'a> {
     #[must_use]
     pub fn code_theme(mut self, theme: CodeTheme) -> Self {
         self.code_theme = Some(theme);
+        self
+    }
+
+    /// Markdown block/inline layout cache for Live Preview. Ignored unless
+    /// the mode is [`EditorMode::Markdown`] with `live_preview: true`.
+    #[must_use]
+    pub fn markdown_preview(mut self, cache: &'a mut MarkdownLayoutCache) -> Self {
+        self.md_cache = Some(cache);
+        self
+    }
+
+    /// Live Preview colors (host theme tokens).
+    #[must_use]
+    pub fn markdown_theme(mut self, theme: MarkdownTheme) -> Self {
+        self.md_theme = Some(theme);
         self
     }
 
@@ -346,7 +416,33 @@ impl<'a> EditorWidget<'a> {
         text: &str,
         text_color: Color32,
         theme: &CodeTheme,
+        md_active: Option<&std::ops::Range<usize>>,
     ) -> std::sync::Arc<egui::Galley> {
+        // Markdown Live Preview: inactive blocks render styled per-line
+        // LayoutJobs; the active block (and everything in source mode) shows
+        // raw source. Same font everywhere, so galley metrics — and with them
+        // hit-testing and caret geometry — are identical to plain rendering.
+        if self.mode.is_live_preview() && !text.is_empty() {
+            let active = md_active.is_some_and(|r| r.contains(&line));
+            if let (false, Some(cache)) = (active, self.md_cache.as_deref_mut()) {
+                let md_theme = self
+                    .md_theme
+                    .unwrap_or_else(|| MarkdownTheme::from_visuals(ui.visuals()));
+                let layout = cache.layout_for(self.doc.buffer(), self.doc.revision());
+                let spans = layout.line_style_spans(line, text);
+                if !spans.is_empty() {
+                    let mut job = LayoutJob::default();
+                    job.wrap.max_width = f32::INFINITY;
+                    for span in &spans {
+                        let (color, italics) = md_theme.format_for(span.style, text_color);
+                        let mut format = TextFormat::simple(font_id.clone(), color);
+                        format.italics = italics;
+                        job.append(&text[span.range.clone()], 0.0, format);
+                    }
+                    return ui.fonts_mut(|f| f.layout_job(job));
+                }
+            }
+        }
         let spans = match (self.mode.is_code(), self.span_provider.as_deref_mut()) {
             (true, Some(provider)) => {
                 provider.line_spans(self.doc.buffer(), line, self.doc.revision())
@@ -396,10 +492,30 @@ impl<'a> EditorWidget<'a> {
         let gutter_painter = ui.painter_at(rect);
         let show_code_chrome = self.mode.is_code();
 
+        // Live Preview: the blocks intersecting the selection reveal raw
+        // source; everything else renders styled.
+        let md_active: Option<std::ops::Range<usize>> =
+            if self.mode.is_live_preview() && self.active {
+                self.md_cache.as_deref_mut().map(|cache| {
+                    let layout = cache.layout_for(self.doc.buffer(), self.doc.revision());
+                    layout.active_lines(sel_start.line, sel_end.line)
+                })
+            } else {
+                None
+            };
+
         for line in self.view.visible_lines(line_count) {
             let top = rect.top() + self.view.line_top(line) - self.view.scroll_y;
             let text = line_text(self.doc.buffer(), line);
-            let galley = self.line_galley(ui, font_id, line, &text, text_color, &code_theme);
+            let galley = self.line_galley(
+                ui,
+                font_id,
+                line,
+                &text,
+                text_color,
+                &code_theme,
+                md_active.as_ref(),
+            );
             let origin = egui::pos2(rect.left() + gutter_width - self.view.scroll_x, top);
 
             if show_code_chrome {
@@ -784,7 +900,8 @@ mod tests {
         // the document (text, selection, undo history, IME) may change.
         for mode in [
             EditorMode::PlainText,
-            EditorMode::Markdown,
+            EditorMode::Markdown { live_preview: false },
+            EditorMode::Markdown { live_preview: true },
             EditorMode::Code {
                 language: "py".into(),
             },
@@ -817,6 +934,81 @@ mod tests {
         h.event(Event::Text("!".into()));
         h.step();
         assert_eq!(h.state().doc.text(), "!some text");
+    }
+
+    struct PreviewState {
+        doc: Document,
+        view: ViewState,
+        cache: MarkdownLayoutCache,
+        live: bool,
+    }
+
+    fn preview_harness(text: &str) -> egui_kittest::Harness<'static, PreviewState> {
+        let state = PreviewState {
+            doc: Document::new(text),
+            view: ViewState::default(),
+            cache: MarkdownLayoutCache::default(),
+            live: true,
+        };
+        egui_kittest::Harness::new_ui_state(
+            |ui, state: &mut PreviewState| {
+                EditorWidget::new(&mut state.doc, &mut state.view)
+                    .mode(EditorMode::Markdown {
+                        live_preview: state.live,
+                    })
+                    .markdown_preview(&mut state.cache)
+                    .show(ui);
+            },
+            state,
+        )
+    }
+
+    #[test]
+    fn live_preview_editing_selection_and_undo_stay_coherent() {
+        let mut h = preview_harness("# Title\n\npara **bold** text\n\n- item");
+        // Move across blocks, then type into the paragraph.
+        h.key_press(Key::ArrowDown);
+        h.key_press(Key::ArrowDown);
+        h.step();
+        h.event(Event::Text("X".into()));
+        h.step();
+        assert_eq!(
+            h.state().doc.text(),
+            "# Title\n\nXpara **bold** text\n\n- item"
+        );
+        // Undo through the shared history, unchanged by preview rendering.
+        h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        h.step();
+        assert_eq!(h.state().doc.text(), "# Title\n\npara **bold** text\n\n- item");
+        // Cross-block select-all + copy path still sees the full source.
+        h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        h.step();
+        assert_eq!(
+            h.state().doc.selected_text(),
+            "# Title\n\npara **bold** text\n\n- item"
+        );
+        // Flipping to source mode and back never alters document state.
+        let before = h.state().doc.semantic_state(0.0);
+        h.state_mut().live = false;
+        h.step();
+        h.state_mut().live = true;
+        h.step();
+        assert_eq!(h.state().doc.semantic_state(0.0), before);
+    }
+
+    #[test]
+    fn live_preview_caret_movement_across_styled_blocks_hits_real_positions() {
+        let mut h = preview_harness("# Head\ntext\n- one\n- two");
+        // Walk the caret through every line end-to-end; every position is a
+        // real source position (movement never skips styled markers).
+        h.key_press_modifiers(Modifiers::COMMAND, Key::ArrowDown); // DocEnd
+        h.step();
+        assert_eq!(h.state().doc.cursor(), Cursor::new(3, 5));
+        for _ in 0..(6 + 1 + 4 + 1 + 5 + 1 + 5) {
+            h.key_press(Key::ArrowLeft);
+        }
+        h.step();
+        assert_eq!(h.state().doc.cursor(), Cursor::new(0, 0));
     }
 
     #[test]

@@ -4049,6 +4049,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "pollster",
+ "pulldown-cmark",
  "regex",
  "rfd",
  "rodio",

@@ -28,6 +28,7 @@ pub mod ime;
 pub mod markdown;
 pub mod mode;
 pub mod movement;
+pub mod preview;
 pub mod selection;
 pub mod transaction;
 pub mod view;

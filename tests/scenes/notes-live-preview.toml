@@ -1,0 +1,60 @@
+# Markdown Live Preview in the notes editor (stint 0476): inactive blocks
+# render styled (heading/emphasis colors, dimmed markers) while the active
+# block reveals raw source; Cmd+G toggles to source mode without moving the
+# caret; the semantic state reports block-level active_markdown_block.
+size = [1000.0, 700.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-notes-live-preview.md"] }
+
+[[steps]]
+focus = "notes"
+
+[[steps]]
+expect = { target = "notes", focused = true, preview_mode = "live_preview" }
+
+# Reset any prior content, then seed realistic mixed Markdown in one insert
+# (Event::Text, so no list-continuation side effects).
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+text = { target = "notes", value = "# Trip Notes\n\nPack **warm** layers and *maybe* a raincoat.\n\n- [ ] tent\n- [x] sleeping bag\n1. drive north\n\n> leave before sunrise\n\n```rust\nlet km = 420;\n```\n\n---\n\nFinal thoughts go here." }
+
+# Jump to the top: the heading becomes the active block (raw source).
+[[steps]]
+key = { target = "notes", value = "cmd+up" }
+
+[[steps]]
+expect = { target = "notes", caret = 0, active_markdown_contains = "# Trip Notes", preview_mode = "live_preview" }
+
+# Down into the paragraph: active block switches without any edit.
+[[steps]]
+key = { target = "notes", value = "down" }
+
+[[steps]]
+key = { target = "notes", value = "down" }
+
+[[steps]]
+expect = { target = "notes", active_markdown_contains = "Pack **warm** layers", undo_available = true }
+
+# Visual: styled heading/list/quote/fence/rule around a raw active block.
+[[steps]]
+shot = "notes-live-preview.png"
+
+# Cmd+G flips to source mode; the caret does not move.
+[[steps]]
+key = { target = "notes", value = "cmd+g" }
+
+[[steps]]
+expect = { target = "notes", preview_mode = "source", active_markdown_contains = "Pack **warm** layers" }
+
+# And back to Live Preview.
+[[steps]]
+key = { target = "notes", value = "cmd+g" }
+
+[[steps]]
+expect = { target = "notes", preview_mode = "live_preview" }
+
+[[steps]]
+close = "notes"
