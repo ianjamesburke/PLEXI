@@ -31,6 +31,10 @@ pub struct EditorWidget<'a> {
     active: bool,
     /// Monospace font size override; defaults to the style's monospace size.
     font_size: Option<f32>,
+    /// When true, Tab/Shift-Tab/Enter/Backspace route through the
+    /// Markdown-aware commands (list continuation, line-wise indent,
+    /// marker-aware backspace).
+    markdown: bool,
     /// Char ranges to paint with a background (find matches), plus the index
     /// of the "current" range and the two fill colors (normal, current).
     highlights: Vec<(usize, usize)>,
@@ -47,6 +51,7 @@ impl<'a> EditorWidget<'a> {
             id: None,
             active: true,
             font_size: None,
+            markdown: false,
             highlights: Vec::new(),
             current_highlight: None,
             highlight_bg: egui::Color32::TRANSPARENT,
@@ -69,6 +74,12 @@ impl<'a> EditorWidget<'a> {
     #[must_use]
     pub fn font_size(mut self, size: f32) -> Self {
         self.font_size = Some(size);
+        self
+    }
+
+    #[must_use]
+    pub fn markdown(mut self, markdown: bool) -> Self {
+        self.markdown = markdown;
         self
     }
 
@@ -133,7 +144,8 @@ impl<'a> EditorWidget<'a> {
                         modifiers,
                         ..
                     } => {
-                        if let Some(cmd) = translate_key(*key, *modifiers, page_rows) {
+                        if let Some(cmd) = translate_key(*key, *modifiers, page_rows, self.markdown)
+                        {
                             commands.push(cmd);
                         }
                     }
@@ -357,12 +369,29 @@ impl<'a> EditorWidget<'a> {
 
 /// Maps a key press (with modifiers) to an editor command. Returns `None`
 /// for keys the editor does not handle. `page_rows` is the viewport height in
-/// lines, used by PageUp/PageDown.
-fn translate_key(key: Key, modifiers: Modifiers, page_rows: usize) -> Option<EditorCommand> {
+/// lines, used by PageUp/PageDown. `markdown` routes Tab/Enter/Backspace to
+/// the Markdown-aware commands.
+fn translate_key(
+    key: Key,
+    modifiers: Modifiers,
+    page_rows: usize,
+    markdown: bool,
+) -> Option<EditorCommand> {
     let extend = modifiers.shift;
     let word = modifiers.alt;
     let line = modifiers.command;
     let mv = |movement: Movement| Some(EditorCommand::Move { movement, extend });
+    if markdown {
+        match key {
+            Key::Tab if modifiers.shift => return Some(EditorCommand::MarkdownOutdent),
+            Key::Tab if modifiers.is_none() => return Some(EditorCommand::MarkdownIndent),
+            Key::Enter if modifiers.is_none() => return Some(EditorCommand::MarkdownNewline),
+            Key::Backspace if modifiers.is_none() => {
+                return Some(EditorCommand::MarkdownBackspace)
+            }
+            _ => {}
+        }
+    }
     match key {
         Key::Tab if modifiers.shift => Some(EditorCommand::Outdent),
         Key::Tab if modifiers.is_none() => Some(EditorCommand::Indent),

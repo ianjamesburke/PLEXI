@@ -24,6 +24,7 @@ pub mod cursor;
 pub mod grapheme;
 pub mod history;
 pub mod ime;
+pub mod markdown;
 pub mod movement;
 pub mod selection;
 pub mod transaction;

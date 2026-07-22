@@ -9,6 +9,7 @@ use super::buffer::TextBuffer;
 use super::cursor::{Cursor, Selection};
 use super::history::EditHistory;
 use super::ime::ImeState;
+use super::markdown::{self, MarkdownPlan};
 use super::movement;
 use super::selection;
 use super::transaction::{EditOperation, Transaction};
@@ -51,6 +52,18 @@ pub enum EditorCommand {
     /// Shift-Tab: remove one indentation level from every selected line as
     /// one undoable transaction.
     Outdent,
+    /// Markdown Tab: indent the current line or all selected lines (falls
+    /// back to a plain caret indent inside fenced code blocks).
+    MarkdownIndent,
+    /// Markdown Shift-Tab: same as [`Self::Outdent`] (named for symmetric
+    /// key wiring and logging).
+    MarkdownOutdent,
+    /// Markdown Enter: continue or exit list/task/quote structures; plain
+    /// auto-indent newline everywhere else (including fenced code blocks).
+    MarkdownNewline,
+    /// Markdown Backspace: remove an empty structure marker; plain (smart)
+    /// backspace everywhere else.
+    MarkdownBackspace,
     SetCursor(Cursor),
     /// Move the head only (mouse drag / shift-click).
     ExtendTo(Cursor),
@@ -165,24 +178,35 @@ impl Document {
     pub fn apply(&mut self, command: EditorCommand) {
         match command {
             EditorCommand::InsertText(text) => self.insert_text(&text, true),
-            EditorCommand::InsertNewline => {
-                // Auto-indent: carry the current line's leading whitespace onto
-                // the new line, capped at the caret column (an Enter at column
-                // 0 of an indented line must not duplicate the indent).
-                let (start, _) = self.selection.ordered();
-                let start = movement::clamp(&self.buffer, start);
-                let indent: String = movement::line_text(&self.buffer, start.line)
-                    .chars()
-                    .take(start.column)
-                    .take_while(|c| *c == ' ' || *c == '\t')
-                    .collect();
-                self.insert_text(&format!("\n{indent}"), false);
-            }
+            EditorCommand::InsertNewline => self.insert_newline(),
             EditorCommand::Backspace => self.delete(true),
             EditorCommand::DeleteForward => self.delete(false),
             EditorCommand::Move { movement, extend } => self.do_move(movement, extend),
             EditorCommand::Indent => self.indent(),
             EditorCommand::Outdent => self.outdent(),
+            EditorCommand::MarkdownIndent => {
+                match markdown::plan_indent(&self.buffer, self.selection) {
+                    Some(plan) => self.apply_markdown_plan("indent", plan),
+                    // Collapsed caret inside a fenced code block: plain indent.
+                    None => self.insert_text("    ", false),
+                }
+            }
+            EditorCommand::MarkdownOutdent => {
+                log::info!("editor: markdown command outdent");
+                self.outdent();
+            }
+            EditorCommand::MarkdownNewline => {
+                match markdown::plan_newline(&self.buffer, self.selection) {
+                    Some(plan) => self.apply_markdown_plan("newline", plan),
+                    None => self.insert_newline(),
+                }
+            }
+            EditorCommand::MarkdownBackspace => {
+                match markdown::plan_backspace(&self.buffer, self.selection) {
+                    Some(plan) => self.apply_markdown_plan("backspace", plan),
+                    None => self.delete(true),
+                }
+            }
             EditorCommand::SetCursor(cursor) => {
                 self.set_selection(Selection::collapsed(movement::clamp(&self.buffer, cursor)));
             }
@@ -254,6 +278,40 @@ impl Document {
             caret_after,
             coalesce && !selection_before.is_range(),
         );
+    }
+
+    /// Auto-indent newline: carry the current line's leading whitespace onto
+    /// the new line, capped at the caret column (an Enter at column 0 of an
+    /// indented line must not duplicate the indent).
+    fn insert_newline(&mut self) {
+        let (start, _) = self.selection.ordered();
+        let start = movement::clamp(&self.buffer, start);
+        let indent: String = movement::line_text(&self.buffer, start.line)
+            .chars()
+            .take(start.column)
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect();
+        self.insert_text(&format!("\n{indent}"), false);
+    }
+
+    /// Commits a Markdown planner's ops as one transaction, logging the
+    /// command name and edit ranges (never the text content).
+    fn apply_markdown_plan(&mut self, name: &str, plan: MarkdownPlan) {
+        let ranges: Vec<String> = plan
+            .ops
+            .iter()
+            .map(|op| match op {
+                EditOperation::Insert { pos, text } => {
+                    format!("insert@{pos}+{}", text.chars().count())
+                }
+                EditOperation::Delete { pos, text } => {
+                    format!("delete@{pos}-{}", text.chars().count())
+                }
+            })
+            .collect();
+        log::info!("editor: markdown command {name}: {}", ranges.join(","));
+        let selection_before = self.selection;
+        self.commit_with_selection(plan.ops, selection_before, plan.selection_after);
     }
 
     /// Number of spaces smart backspace removes at the caret: when the line
@@ -847,6 +905,257 @@ mod tests {
         d.apply(EditorCommand::Undo);
         d.apply(EditorCommand::Undo);
         assert!(d.text().ends_with("line 9999"));
+    }
+
+    #[test]
+    fn markdown_enter_continues_unordered_task_and_quote() {
+        for (text, expected) in [
+            ("- item", "- item\n- "),
+            ("* item", "* item\n* "),
+            ("+ item", "+ item\n+ "),
+            ("  - nested", "  - nested\n  - "),
+            ("- [x] done", "- [x] done\n- [ ] "),
+            ("> quoted", "> quoted\n> "),
+            ("> > deep", "> > deep\n> > "),
+        ] {
+            let mut d = doc(text);
+            d.apply(EditorCommand::Move {
+                movement: Movement::LineEnd,
+                extend: false,
+            });
+            d.apply(EditorCommand::MarkdownNewline);
+            assert_eq!(d.text(), expected, "continuation for {text:?}");
+            let lines: Vec<&str> = expected.split('\n').collect();
+            assert_eq!(
+                d.cursor(),
+                Cursor::new(1, lines[1].chars().count()),
+                "caret sits after the new marker for {text:?}"
+            );
+            // One atomic undo.
+            d.apply(EditorCommand::Undo);
+            assert_eq!(d.text(), text);
+        }
+    }
+
+    #[test]
+    fn markdown_enter_mid_item_splits_with_marker() {
+        let mut d = doc("- alpha beta");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 7)));
+        d.apply(EditorCommand::MarkdownNewline);
+        assert_eq!(d.text(), "- alpha\n- beta");
+        assert_eq!(d.cursor(), Cursor::new(1, 2));
+    }
+
+    #[test]
+    fn markdown_enter_on_empty_continuation_removes_marker() {
+        let mut d = doc("- item\n- ");
+        d.apply(EditorCommand::Move {
+            movement: Movement::DocEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::MarkdownNewline);
+        assert_eq!(d.text(), "- item\n");
+        assert_eq!(d.cursor(), Cursor::new(1, 0));
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "- item\n- ");
+
+        // Indented empty continuation removes indent + marker in one step.
+        let mut d = doc("  - [ ] ");
+        d.apply(EditorCommand::Move {
+            movement: Movement::LineEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::MarkdownNewline);
+        assert_eq!(d.text(), "");
+    }
+
+    #[test]
+    fn markdown_enter_ordered_continues_and_renumbers_siblings() {
+        let mut d = doc("1. one\n2. two\n3. three");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 6)));
+        d.apply(EditorCommand::MarkdownNewline);
+        assert_eq!(d.text(), "1. one\n2. \n3. two\n4. three");
+        assert_eq!(d.cursor(), Cursor::new(1, 3));
+        // The whole continuation + renumber is one undo step.
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "1. one\n2. two\n3. three");
+
+        // Exiting an empty ordered item closes the numbering gap it leaves.
+        let mut d = doc("1. one\n2. \n3. three");
+        d.apply(EditorCommand::SetCursor(Cursor::new(1, 3)));
+        d.apply(EditorCommand::MarkdownNewline);
+        assert_eq!(d.text(), "1. one\n\n2. three");
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "1. one\n2. \n3. three");
+
+        // Renumbering stops at a non-list line and skips different indents.
+        let mut d = doc("1. a\n2. b\nplain\n3. c");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 4)));
+        d.apply(EditorCommand::MarkdownNewline);
+        assert_eq!(d.text(), "1. a\n2. \n3. b\nplain\n3. c");
+    }
+
+    #[test]
+    fn markdown_enter_before_marker_and_on_plain_lines_is_plain_newline() {
+        // Caret inside the marker prefix: plain newline, no continuation.
+        let mut d = doc("- item");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 0)));
+        d.apply(EditorCommand::MarkdownNewline);
+        assert_eq!(d.text(), "\n- item");
+
+        // Plain text: auto-indent newline as usual.
+        let mut d = doc("    text");
+        d.apply(EditorCommand::Move {
+            movement: Movement::LineEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::MarkdownNewline);
+        assert_eq!(d.text(), "    text\n    ");
+
+        // A selection replaces with a plain newline.
+        let mut d = doc("- one\n- two");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 2)));
+        d.apply(EditorCommand::ExtendTo(Cursor::new(1, 2)));
+        d.apply(EditorCommand::MarkdownNewline);
+        assert_eq!(d.text(), "- \ntwo");
+    }
+
+    #[test]
+    fn markdown_no_list_behavior_inside_fenced_code_blocks() {
+        let text = "```\n- not a list\n```";
+        let mut d = doc(text);
+        d.apply(EditorCommand::SetCursor(Cursor::new(1, 12)));
+        d.apply(EditorCommand::MarkdownNewline);
+        assert_eq!(d.text(), "```\n- not a list\n\n```", "plain newline in fence");
+
+        // Tab in a fence is a plain caret indent, not a line indent.
+        let mut d = doc(text);
+        d.apply(EditorCommand::SetCursor(Cursor::new(1, 0)));
+        d.apply(EditorCommand::MarkdownIndent);
+        assert_eq!(d.text(), "```\n    - not a list\n```");
+        assert_eq!(d.cursor(), Cursor::new(1, 4));
+
+        // After the closing fence, Markdown behavior returns.
+        let mut d = doc("```\ncode\n```\n- item");
+        d.apply(EditorCommand::Move {
+            movement: Movement::DocEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::MarkdownNewline);
+        assert_eq!(d.text(), "```\ncode\n```\n- item\n- ");
+    }
+
+    #[test]
+    fn markdown_tab_indents_whole_line_at_any_caret_position() {
+        let mut d = doc("- item");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 3)));
+        d.apply(EditorCommand::MarkdownIndent);
+        assert_eq!(d.text(), "    - item");
+        assert_eq!(d.cursor(), Cursor::new(0, 7), "caret shifts with the line");
+        d.apply(EditorCommand::MarkdownOutdent);
+        assert_eq!(d.text(), "- item");
+        assert_eq!(d.cursor(), Cursor::new(0, 3));
+    }
+
+    #[test]
+    fn markdown_tab_uses_tab_unit_on_tab_indented_lines() {
+        let mut d = doc("\t- item");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 3)));
+        d.apply(EditorCommand::MarkdownIndent);
+        assert_eq!(d.text(), "\t\t- item");
+        assert_eq!(d.cursor(), Cursor::new(0, 4));
+    }
+
+    #[test]
+    fn markdown_indent_mixed_selection_preserves_direction() {
+        // Selection spans list and non-list lines, head above anchor.
+        let mut d = doc("- one\nplain\n- two");
+        d.apply(EditorCommand::SetCursor(Cursor::new(2, 3)));
+        d.apply(EditorCommand::ExtendTo(Cursor::new(0, 1)));
+        d.apply(EditorCommand::MarkdownIndent);
+        assert_eq!(d.text(), "    - one\n    plain\n    - two");
+        let sel = d.selection();
+        assert_eq!(sel.anchor, Cursor::new(2, 7));
+        assert_eq!(sel.head, Cursor::new(0, 5), "direction preserved");
+        // One undo restores everything.
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "- one\nplain\n- two");
+    }
+
+    #[test]
+    fn markdown_indent_excludes_line_when_selection_ends_at_its_start() {
+        let mut d = doc("- one\n- two\n- three");
+        d.apply(EditorCommand::SetCursor(Cursor::new(0, 0)));
+        d.apply(EditorCommand::ExtendTo(Cursor::new(2, 0)));
+        d.apply(EditorCommand::MarkdownIndent);
+        assert_eq!(d.text(), "    - one\n    - two\n- three");
+    }
+
+    #[test]
+    fn markdown_backspace_removes_empty_marker_then_indent_level() {
+        let mut d = doc("    - ");
+        d.apply(EditorCommand::Move {
+            movement: Movement::LineEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::MarkdownBackspace);
+        assert_eq!(d.text(), "    ", "marker removed, indent kept");
+        assert_eq!(d.cursor(), Cursor::new(0, 4));
+        d.apply(EditorCommand::MarkdownBackspace);
+        assert_eq!(d.text(), "", "smart backspace removes the indent level");
+        d.apply(EditorCommand::Undo);
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "    - ");
+    }
+
+    #[test]
+    fn markdown_backspace_is_plain_elsewhere() {
+        // Mid-content: ordinary grapheme deletion.
+        let mut d = doc("- ab");
+        d.apply(EditorCommand::Move {
+            movement: Movement::LineEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::MarkdownBackspace);
+        assert_eq!(d.text(), "- a");
+
+        // Empty marker line inside a fence: plain deletion, not marker-aware.
+        let mut d = doc("```\n- \n```");
+        d.apply(EditorCommand::SetCursor(Cursor::new(1, 2)));
+        d.apply(EditorCommand::MarkdownBackspace);
+        assert_eq!(d.text(), "```\n-\n```");
+
+        // Selection: deletes the selection.
+        let mut d = doc("- one");
+        d.apply(EditorCommand::SelectAll);
+        d.apply(EditorCommand::MarkdownBackspace);
+        assert_eq!(d.text(), "");
+    }
+
+    #[test]
+    fn markdown_pasted_multiline_content_is_one_plain_transaction() {
+        let mut d = doc("- item");
+        d.apply(EditorCommand::Move {
+            movement: Movement::LineEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::InsertText("\nline a\nline b".into()));
+        assert_eq!(d.text(), "- item\nline a\nline b");
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "- item");
+    }
+
+    #[test]
+    fn markdown_newline_at_document_end_grapheme_safe() {
+        let mut d = doc("- caf\u{65}\u{301}👨\u{200D}👩\u{200D}👧");
+        d.apply(EditorCommand::Move {
+            movement: Movement::DocEnd,
+            extend: false,
+        });
+        d.apply(EditorCommand::MarkdownNewline);
+        assert!(d.text().ends_with("\n- "));
+        d.apply(EditorCommand::Undo);
+        assert_eq!(d.text(), "- caf\u{65}\u{301}👨\u{200D}👩\u{200D}👧");
     }
 
     #[test]

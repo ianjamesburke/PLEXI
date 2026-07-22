@@ -720,10 +720,18 @@ impl App for TextEditorApp {
         );
         editor_ui.visuals_mut().override_text_color = Some(colors.text_primary);
         editor_ui.visuals_mut().selection.stroke.color = colors.accent;
+        // Markdown-aware keyboard behavior for notes and .md/.markdown files.
+        let markdown = self.is_note
+            || self
+                .path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"));
         let response = EditorWidget::new(&mut self.doc, &mut self.view)
             .id(te_id)
             .active(editor_focused)
             .font_size(self.font_size)
+            .markdown(markdown)
             .highlights(
                 highlights,
                 current_highlight,

@@ -1,0 +1,65 @@
+# Markdown-aware keyboard behavior in the notes editor (stint 0475):
+# Enter continues a list, Enter on an empty continuation exits it, Tab
+# indents the whole line, and undo treats each command atomically.
+size = [1000.0, 700.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["/tmp/plexi-notes-md-editing.md"] }
+
+[[steps]]
+focus = "notes"
+
+[[steps]]
+expect = { target = "notes", focused = true }
+
+# Reset any prior content, then build a list through real key events.
+[[steps]]
+key = { target = "notes", value = "cmd+a" }
+
+[[steps]]
+text = { target = "notes", value = "- alpha" }
+
+[[steps]]
+key = { target = "notes", value = "enter" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "- alpha\n- ", caret = 10 }
+
+[[steps]]
+text = { target = "notes", value = "beta" }
+
+# Enter on the item, then Enter on the empty continuation exits the list.
+[[steps]]
+key = { target = "notes", value = "enter" }
+
+[[steps]]
+key = { target = "notes", value = "enter" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "- alpha\n- beta\n", caret = 15 }
+
+# Tab with the caret at column 0 of the last (empty) line indents that line.
+[[steps]]
+text = { target = "notes", value = "- gamma" }
+
+[[steps]]
+key = { target = "notes", value = "tab" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "    - gamma", caret = 26 }
+
+# Shift-Tab outdents it again; the indent was one undoable step.
+[[steps]]
+key = { target = "notes", value = "shift+tab" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "- alpha\n- beta\n- gamma", caret = 22 }
+
+[[steps]]
+key = { target = "notes", value = "cmd+z" }
+
+[[steps]]
+expect = { target = "notes", source_text_contains = "    - gamma" }
+
+[[steps]]
+close = "notes"
